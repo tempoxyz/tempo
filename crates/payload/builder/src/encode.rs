@@ -236,7 +236,9 @@ impl Drop for ExecutionBlockEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockBody, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+    use alloy_consensus::{
+        BlockBody, SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
+    };
     use alloy_eips::{
         eip2718::Encodable2718,
         eip4895::{Withdrawal, Withdrawals},
@@ -276,7 +278,7 @@ mod tests {
         )
             .prop_map(
                 |(chain_id, nonce, gas_price, gas_limit, to, value, input)| {
-                    TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TempoTxEnvelope::Legacy(
                         TxLegacy {
                             chain_id,
                             nonce,
@@ -285,9 +287,9 @@ mod tests {
                             to: to.into(),
                             value,
                             input,
-                        },
-                        Signature::test_signature(),
-                    ))
+                        }
+                        .into_signed(Signature::test_signature()),
+                    )
                 },
             )
     }
@@ -314,7 +316,7 @@ mod tests {
                     value,
                     input,
                 )| {
-                    TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+                    TempoTxEnvelope::Eip1559(
                         TxEip1559 {
                             chain_id,
                             nonce,
@@ -325,9 +327,9 @@ mod tests {
                             value,
                             access_list: Default::default(),
                             input,
-                        },
-                        Signature::test_signature(),
-                    ))
+                        }
+                        .into_signed(Signature::test_signature()),
+                    )
                 },
             )
     }
@@ -436,7 +438,7 @@ mod tests {
     }
 
     fn legacy_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(1),
                 nonce: 0,
@@ -445,13 +447,13 @@ mod tests {
                 to: Address::ZERO.into(),
                 value: U256::ZERO,
                 input,
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip1559_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip1559(Signed::new_unhashed(
+        TempoTxEnvelope::Eip1559(
             TxEip1559 {
                 chain_id: 1,
                 nonce: 1,
@@ -462,39 +464,35 @@ mod tests {
                 value: U256::ZERO,
                 access_list: Default::default(),
                 input,
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip2930_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn eip7702_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+        TempoTxEnvelope::Eip7702(
             TxEip7702 {
                 input,
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        ))
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::AA(
             TempoTransaction {
-                calls: vec![Call {
-                    to: Address::ZERO.into(),
-                    value: U256::ZERO,
-                    input,
-                }],
+                calls: vec![Call::new(Address::ZERO, input)],
                 ..Default::default()
             }
             .into_signed(Signature::test_signature().into()),
@@ -655,8 +653,7 @@ mod tests {
             encoded_transactions.encode_block_with_transactions(&block, &mut encoded_from_cache)
         );
 
-        let mut expected = Vec::new();
-        block.encode(&mut expected);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded_from_cache, expected);
     }
@@ -681,8 +678,7 @@ mod tests {
         let mut encoded = Vec::new();
         assert!(!cached_transactions.encode_block_with_transactions(&block, &mut encoded));
 
-        let mut expected = Vec::new();
-        block.encode(&mut expected);
+        let expected = alloy_rlp::encode(&block);
 
         assert_eq!(encoded, expected);
     }

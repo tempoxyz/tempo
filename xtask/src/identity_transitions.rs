@@ -259,9 +259,10 @@ impl<'a, P: Provider + ?Sized> OutcomeCache<'a, P> {
             "block {height} has empty extraData (not an epoch boundary?)"
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref()).wrap_err_with(|| {
-            format!("failed to parse DKG outcome from block {height} extraData")
-        })?;
+        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+            .wrap_err_with(|| {
+                format!("failed to parse DKG outcome from block {height} extraData")
+            })?;
 
         let outcome = EpochOutcome {
             epoch,

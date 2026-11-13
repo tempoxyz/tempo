@@ -5,6 +5,7 @@
 //! testnet RPC.
 
 use alloy::{
+    consensus::constants::ETH_TO_WEI,
     primitives::{Address, B256, Bytes, U256},
     providers::Provider,
     rpc::types::TransactionRequest,
@@ -12,16 +13,22 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
+use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_primitives_traits::transaction::TxHashRef;
+use sha2::{Digest, Sha256};
+use tempo_alloy::provider::keychain::{KeyRestrictions, authorize_key, authorize_key_legacy};
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
         FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
         tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            normalize_p256_s,
+        },
     },
 };
 
@@ -32,9 +39,9 @@ fn pre_t3_tip1011_rejection_reason(
 ) -> Option<&'static str> {
     let key_authorization = key_authorization?;
 
-    if key_authorization.authorization.has_periodic_limits() {
+    if key_authorization.authorization().has_periodic_limits() {
         Some("periodic token limits are not active before T3")
-    } else if key_authorization.authorization.has_call_scopes() {
+    } else if key_authorization.authorization().has_call_scopes() {
         Some("call scopes are not active before T3")
     } else {
         None
@@ -488,11 +495,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     // Fund the signer so transfer cases can move a non-zero amount.
     let _ = env.fund_account(signer_addr).await?;
 
-    let noop_call = || Call {
-        to: TxKind::Call(recipient),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    };
+    let noop_call = || Call::new(recipient, Bytes::new());
 
     let cases: Vec<_> = gas_estimation_cases()
         .into_iter()
@@ -531,14 +534,11 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 recipient,
                 U256::from(10e6), // 10 tokens (6 decimals)
             )],
-            GasPayload::ContractCreation => vec![Call {
-                to: TxKind::Create,
-                value: U256::ZERO,
+            GasPayload::ContractCreation => vec![Call::new(
+                TxKind::Create,
                 // PUSH1 0x01, PUSH1 0x00, MSTORE, PUSH1 0x01, PUSH1 0x00, RETURN
-                input: Bytes::from_static(&[
-                    0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3,
-                ]),
-            }],
+                Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x52, 0x60, 0x01, 0x60, 0x00, 0xf3]),
+            )],
             GasPayload::Batch(n) => (0..*n)
                 .map(|_| create_transfer_call(DEFAULT_FEE_TOKEN, recipient, U256::from(10e6)))
                 .collect(),
@@ -598,24 +598,23 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 key_type,
                 num_limits,
             } => {
-                let mut auth = create_signed_key_authorization(
+                let authorization = create_signed_key_authorization(
                     &signer,
                     *key_type,
                     *num_limits,
                     env.chain_id(),
                     AllowedCallsMode::None,
                     recipient,
-                );
-                auth.authorization = auth
-                    .authorization
-                    .with_witness(B256::with_last_byte((i + 1) as u8));
-                auth.signature = PrimitiveSignature::Secp256k1(
-                    signer
-                        .sign_hash_sync(&auth.authorization.signature_hash())
-                        .expect("signing should succeed"),
                 )
-                .into();
-                request.key_authorization = Some(auth);
+                .authorization()
+                .clone()
+                .with_witness(B256::with_last_byte((i + 1) as u8));
+                let signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&authorization.signature_hash())
+                        .expect("signing should succeed"),
+                );
+                request.key_authorization = Some(authorization.into_signed(signature));
             }
         }
 
@@ -936,17 +935,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
 
     // --- build calls based on TestAction ---
     let calls = match &test_case.test_action {
-        TestAction::NoOp => vec![Call {
-            to: Address::random().into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        TestAction::NoOp => vec![Call::new(Address::random(), Bytes::new())],
         TestAction::Empty => vec![],
-        TestAction::InvalidCreate => vec![Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: alloy_primitives::bytes!("ef"),
-        }],
+        TestAction::InvalidCreate => {
+            vec![Call::new(TxKind::Create, alloy_primitives::bytes!("ef"))]
+        }
         TestAction::Transfer(amount) => {
             vec![create_transfer_call(
                 DEFAULT_FEE_TOKEN,
@@ -957,7 +950,7 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
         TestAction::AdminCall => vec![tempo_alloy::provider::keychain::update_spending_limit(
             Address::random(),
             DEFAULT_FEE_TOKEN,
-            U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+            U256::from(20u64) * U256::from(ETH_TO_WEI),
         )],
     };
 
@@ -975,10 +968,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             // Sign with root key directly (handled below)
         }
         KeySetup::ZeroPubKey => {
-            use tempo_alloy::provider::keychain::{
-                KeyRestrictions, authorize_key, authorize_key_legacy,
-            };
-
             let restrictions = KeyRestrictions::default().with_no_spending();
             let call = if env.hardfork().is_t3() {
                 authorize_key(Address::ZERO, SignatureType::P256, restrictions)
@@ -1153,10 +1142,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                 }
                 _ => {
                     // P256 / WebAuthn path (existing logic)
-                    use tempo_primitives::transaction::tt_signature::{
-                        P256SignatureWithPreHash, normalize_p256_s,
-                    };
-
                     let (another_key, pub_x_3, pub_y_3, addr_3) = generate_p256_access_key();
                     let (wrong_signer_key, wrong_pub_x, wrong_pub_y, _) =
                         generate_p256_access_key();
@@ -1165,8 +1150,6 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
                         KeyAuthorization::unrestricted(chain_id, SignatureType::P256, addr_3)
                             .signature_hash();
 
-                    use p256::ecdsa::signature::hazmat::PrehashSigner;
-                    use sha2::{Digest, Sha256};
                     let wrong_sig_hash =
                         B256::from_slice(Sha256::digest(auth_message_hash).as_ref());
                     let wrong_signature: p256::ecdsa::Signature =
@@ -1431,11 +1414,7 @@ async fn run_raw_access_key_case<E: TestEnv>(
                     *tx = create_basic_aa_tx(
                         chain_id,
                         new_nonce,
-                        vec![Call {
-                            to: Address::random().into(),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        }],
+                        vec![Call::new(Address::random(), Bytes::new())],
                         2_000_000,
                     );
                     tx.key_authorization = Some(key_auth_2);
@@ -1984,11 +1963,7 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> ey
     let mut tx = create_basic_aa_tx(
         chain_id,
         0,
-        vec![Call {
-            to: Address::random().into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        vec![Call::new(Address::random(), Bytes::new())],
         2_000_000,
     );
     tx.fee_payer_signature = Some(alloy::primitives::Signature::new(
@@ -2036,8 +2011,6 @@ pub(super) async fn run_fee_payer_cosign_scenario<E: TestEnv>(env: &mut E) -> ey
 
 /// EIP-7702 authorization list with 3 key types.
 pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> eyre::Result<()> {
-    use tempo_primitives::transaction::TempoSignedAuthorization;
-
     println!("\n=== Authorization list scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2086,11 +2059,7 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
             chain_id: Some(chain_id),
             ..Default::default()
         },
-        calls: vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(recipient, Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         tempo_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed],
         ..Default::default()
@@ -2140,10 +2109,6 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
 pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::{
-        TempoSignedAuthorization, tt_signature::KeychainSignature,
-    };
-
     println!("\n=== Keychain auth list skipped scenario ===\n");
 
     let chain_id = env.chain_id();
@@ -2188,11 +2153,7 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
             chain_id: Some(chain_id),
             ..Default::default()
         },
-        calls: vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(recipient, Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         tempo_authorization_list: vec![spoofed_auth],
         ..Default::default()
@@ -2456,11 +2417,7 @@ pub(super) async fn run_send_negative_scenario<E: TestEnv>(env: &mut E) -> eyre:
                 from: Some(signer_addr),
                 ..Default::default()
             },
-            calls: vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             key_type: Some(SignatureType::WebAuthn),
             key_data: None,
             ..Default::default()
@@ -2507,11 +2464,7 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         sign_fee_payer(&mut tx, user_addr, &wrong_signer)?;
@@ -2527,11 +2480,7 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         tx.fee_payer_signature = Some(alloy::primitives::Signature::new(
@@ -2555,11 +2504,7 @@ pub(super) async fn run_fee_payer_negative_scenario<E: TestEnv>(env: &mut E) -> 
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
 
@@ -2618,11 +2563,7 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
         let tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         let sig = sign_aa_tx_secp256k1(&tx, &signer)?;
@@ -2634,11 +2575,7 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
         let replay_tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &signer)?;
@@ -2658,11 +2595,7 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
         let mut tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         tx.nonce_key = U256::from(42);
@@ -2675,11 +2608,7 @@ pub(super) async fn run_nonce_rejection_scenario<E: TestEnv>(env: &mut E) -> eyr
         let mut replay_tx = create_basic_aa_tx(
             chain_id,
             0,
-            vec![Call {
-                to: Address::random().into(),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            vec![Call::new(Address::random(), Bytes::new())],
             2_000_000,
         );
         replay_tx.nonce_key = U256::from(42);
@@ -2698,11 +2627,7 @@ pub(super) async fn run_gas_fee_boundary_scenario<E: TestEnv>(env: &mut E) -> ey
     println!("\n=== Gas/fee boundary scenario ===\n");
 
     let chain_id = env.chain_id();
-    let calls = vec![Call {
-        to: Address::random().into(),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    }];
+    let calls = vec![Call::new(Address::random(), Bytes::new())];
 
     // Case 1: Gas limit too low
     {
@@ -2783,11 +2708,7 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
         max_priority_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: init_code,
-        }],
+        calls: vec![Call::new(TxKind::Create, init_code)],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
@@ -2819,8 +2740,7 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
     .await?;
     assert!(!deployed_code.is_empty(), "Contract should be deployed");
 
-    let mut expected_code = [0u8; 32];
-    expected_code[31] = 0x2a;
+    let expected_code: [u8; 32] = B256::with_last_byte(0x2a).into();
     assert_eq!(deployed_code.as_ref(), &expected_code);
 
     println!("✓ Create contract address scenario passed");

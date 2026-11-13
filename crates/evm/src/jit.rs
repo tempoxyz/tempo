@@ -33,7 +33,7 @@ mod tests {
         TempoBlockEnv, TempoEvmConfig, TempoEvmEnv, TempoEvmFactory, TempoTxEnv,
         test_utils::test_chainspec,
     };
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use evm2::{
         TxResultWithState,
@@ -96,15 +96,15 @@ mod tests {
             .with_jit_support();
         let mut evm = ConfigureEvm::evm_with_env(&config, db, env);
         let tx = TempoTxEnv::from(Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     gas_limit: 1_000_000,
                     to: TxKind::Call(CONTRACT),
                     ..TxLegacy::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             CALLER,
         ));
         evm.transact(&Recovered::new_unchecked(tx, CALLER))

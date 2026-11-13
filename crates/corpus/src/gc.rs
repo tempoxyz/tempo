@@ -3,10 +3,9 @@
 //! Writers keep superseded checkpoints, compacted sorted runs, WAL SSTs and manifests, so a
 //! finished corpus holds far more than its live records.
 
-use crate::store::{SLATEDB_RETRIES, Store};
+use crate::store::{Catalog, SLATEDB_RETRIES, Store};
 use eyre::OptionExt;
 use futures::TryStreamExt;
-use object_store::ObjectStoreExt;
 use slatedb::{
     admin::Admin,
     config::{GarbageCollectorDirectoryOptions, GarbageCollectorOptions},
@@ -14,19 +13,42 @@ use slatedb::{
 use std::{collections::BTreeMap, time::Duration};
 use tracing::info;
 
-/// Deletes every checkpoint except the one the catalog pins, then garbage collects the
-/// manifests, WAL SSTs, compacted SSTs and compactor state nothing references any more, and
-/// logs the objects and bytes of each data directory before and after.
+/// Deletes every checkpoint except the one the catalog pins and retired ones still within
+/// their grace lifetime, then garbage collects the manifests, WAL SSTs, compacted SSTs and
+/// compactor state nothing references any more, and logs the objects and bytes of each data
+/// directory before and after.
 ///
-/// Fails unless the corpus is complete: fill never opens a writer on a complete corpus, so
-/// collection needs no minimum file age. Fails as well if the catalog changed meanwhile or its
-/// checkpoint no longer opens.
-pub async fn gc(store: &Store) -> eyre::Result<()> {
-    let (catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+/// Fails unless the corpus is complete: a fill clears it before opening its writer. Before
+/// deleting anything gc marks the catalog as collecting through a conditional PUT, which a
+/// fill refuses to claim and which fails the claim of a fill that read the catalog earlier,
+/// so collection needs no minimum file age. It clears the mark the same way once the
+/// checkpoint still opens. An interrupted gc leaves it set; gc refuses a catalog marked
+/// collecting, since that gc may still be running, unless `force` says it is gone.
+pub async fn gc(store: &Store, force: bool) -> eyre::Result<()> {
+    let (mut catalog, version) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
     eyre::ensure!(
         catalog.complete,
         "corpus is not complete; its writer may still be running"
     );
+    eyre::ensure!(
+        force || !catalog.collecting,
+        "another gc is collecting this corpus; rerun with --force only if it was interrupted"
+    );
+    catalog.collecting = true;
+    let claim = store.publish(&catalog, Some(version)).await?;
+    let collected = collect(store, &catalog).await;
+    // Keep the mark only if the pinned checkpoint no longer opens, so no fill builds on it; any
+    // other failure leaves nothing running, and the next fill or gc may proceed.
+    let opens = async { eyre::Ok(store.reader(&catalog).await?.close().await?) }.await;
+    if opens.is_ok() {
+        catalog.collecting = false;
+        store.publish(&catalog, Some(claim)).await?;
+    }
+    collected.and(opens)
+}
+
+/// Deletes the checkpoints and garbage collects the files described on [gc].
+async fn collect(store: &Store, catalog: &Catalog) -> eyre::Result<()> {
     let pinned = catalog
         .checkpoint
         .as_deref()
@@ -38,7 +60,14 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
         checkpoints.iter().any(|c| c.id.to_string() == pinned),
         "catalog checkpoint is missing from the corpus manifest"
     );
-    for checkpoint in checkpoints.iter().filter(|c| c.id.to_string() != pinned) {
+    let started = std::time::SystemTime::now();
+    // A checkpoint a fill retired keeps its grace lifetime, so replays still pinned to it
+    // finish; collection keeps the files it references until it expires.
+    for checkpoint in checkpoints.iter().filter(|c| {
+        c.id.to_string() != pinned
+            && c.expire_time
+                .is_none_or(|expiry| std::time::SystemTime::from(expiry) <= started)
+    }) {
         admin.delete_checkpoint(checkpoint.id).await?;
     }
     let now = GarbageCollectorDirectoryOptions {
@@ -75,12 +104,6 @@ pub async fn gc(store: &Store) -> eyre::Result<()> {
             "Collected corpus garbage"
         );
     }
-    let current = store.objects.head(&store.catalog_path()).await?;
-    eyre::ensure!(
-        current.e_tag == version.e_tag,
-        "corpus catalog changed during gc; another writer published"
-    );
-    store.reader(&catalog).await?.close().await?;
     Ok(())
 }
 
@@ -119,12 +142,17 @@ mod tests {
         catalog.complete = false;
         let version = store.publish(&catalog, None).await?;
         assert_eq!(
-            gc(&store).await.unwrap_err().to_string(),
+            gc(&store, false).await.unwrap_err().to_string(),
             "corpus is not complete; its writer may still be running"
         );
         catalog.complete = true;
-        store.publish(&catalog, Some(version)).await?;
-        gc(&store).await?;
+        let version = store.publish(&catalog, Some(version)).await?;
+        gc(&store, false).await?;
+        let (collected, _) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+        assert!(!collected.collecting);
+        // gc claimed the catalog, so a fill that read it before gc cannot claim it.
+        catalog.complete = false;
+        assert!(store.publish(&catalog, Some(version)).await.is_err());
         let checkpoints = Admin::builder(store.data(), store.objects.clone())
             .build()
             .list_checkpoints(None)
@@ -136,6 +164,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             [catalog.checkpoint]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refuses_a_collecting_corpus_unless_forced() -> eyre::Result<()> {
+        let store = in_memory("gc-force");
+        let mut catalog = catalog(1, 1, 0);
+        catalog.seal()?;
+        let db = open_db(&store, &catalog).await?;
+        catalog.checkpoint = Some(store.checkpoint(&db).await?);
+        db.close().await?;
+        // Left set by a gc that may still be running, or was interrupted.
+        catalog.collecting = true;
+        store.publish(&catalog, None).await?;
+        assert_eq!(
+            gc(&store, false).await.unwrap_err().to_string(),
+            "another gc is collecting this corpus; rerun with --force only if it was interrupted"
+        );
+        gc(&store, true).await?;
+        let (collected, _) = store.catalog().await?.ok_or_eyre("no corpus catalog")?;
+        assert!(!collected.collecting);
         Ok(())
     }
 }

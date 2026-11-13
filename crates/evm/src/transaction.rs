@@ -1,7 +1,7 @@
 //! EVM2 transaction envelope and conversion helpers.
 
 use alloy_consensus::{
-    Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
+    SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     transaction::{Either, Recovered, TxHashRef},
 };
 use alloy_eips::eip2930::AccessList;
@@ -11,6 +11,9 @@ use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut};
 use reth_primitives_traits::WithEncoded;
 use std::{borrow::Borrow, ops::Deref, sync::Arc};
+use tempo_chainspec::{
+    constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, gas_params::EIP7702_PER_EMPTY_ACCOUNT_COST_T1,
+};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
 /// Identifies the kind of execution represented by a transaction environment.
@@ -262,10 +265,21 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
                 transaction.strip_signature(),
                 signer,
             )),
-            TempoTxEnvelope::Eip7702(transaction) => Self::Eip7702(Recovered::new_unchecked(
-                LazyTxEip7702::from_recovered_authorizations(transaction.strip_signature()),
-                signer,
-            )),
+            TempoTxEnvelope::Eip7702(transaction) => {
+                let transaction = transaction.strip_signature();
+                // Execution checks intrinsic gas, which charges every authorization at least
+                // `EIP7702_PER_EMPTY_ACCOUNT_COST_T1`, and the T1+ gas cap before it reads an
+                // authority. Lists past that budget stay unrecovered and recover on demand.
+                let max_authorizations = transaction.gas_limit.min(TEMPO_T1_TX_GAS_LIMIT_CAP)
+                    / u64::from(EIP7702_PER_EMPTY_ACCOUNT_COST_T1);
+                let transaction =
+                    if transaction.authorization_list.len() as u64 > max_authorizations {
+                        LazyTxEip7702::from_signed_authorizations(transaction)
+                    } else {
+                        LazyTxEip7702::from_recovered_authorizations(transaction)
+                    };
+                Self::Eip7702(Recovered::new_unchecked(transaction, signer))
+            }
             TempoTxEnvelope::AA(transaction) => Self::AA(TempoAaTx::new(Recovered::new_unchecked(
                 transaction,
                 signer,
@@ -291,18 +305,18 @@ impl TempoTxEnv {
         let signature = Signature::test_signature();
         let envelope = match transaction {
             EthTxEnvelope::Legacy(transaction) => {
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Legacy(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip2930(transaction) => {
-                TempoTxEnvelope::Eip2930(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Eip2930(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip1559(transaction) => {
-                TempoTxEnvelope::Eip1559(Signed::new_unhashed(transaction, signature))
+                TempoTxEnvelope::Eip1559(transaction.into_signed(signature))
             }
             EthTxEnvelope::Eip4844(_) => return None,
             EthTxEnvelope::Eip7702(transaction) => {
                 let transaction_env = &transaction;
-                let envelope = TempoTxEnvelope::Eip7702(Signed::new_unhashed(
+                let envelope = TempoTxEnvelope::Eip7702(
                     TxEip7702 {
                         chain_id: transaction_env.chain_id,
                         nonce: transaction_env.nonce,
@@ -313,20 +327,14 @@ impl TempoTxEnv {
                         value: transaction_env.value,
                         access_list: transaction_env.access_list.clone(),
                         authorization_list: transaction_env
-                            .authorization_list
-                            .iter()
-                            .map(|authorization| {
-                                authorization.as_signed().cloned().unwrap_or_else(|| {
-                                    authorization.inner().clone().into_signed(signature)
-                                })
-                            })
-                            .collect(),
+                            .authorization_list()
+                            .expect("EIP-7702 transactions have an authorization list")
+                            .to_vec(),
                         input: transaction_env.input.clone(),
-                    },
-                    signature,
-                ));
-                // Keep the recovered authorizations: re-recovering the placeholder signatures
-                // above would yield wrong authorities.
+                    }
+                    .into_signed(signature),
+                );
+                // Keep the cached authority recovery results for execution.
                 return Some(Self {
                     evm_tx: TempoEvmTx::Eip7702(Recovered::new_unchecked(transaction, signer)),
                     execution_context: ExecutionContext::Simulation,
@@ -623,13 +631,18 @@ impl TransactionEnvMut for TempoTxEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{Signed, TxEip7702, transaction::TxHashRef};
-    use alloy_eips::eip2930::AccessListItem;
+    use alloy_consensus::{TxEip7702, transaction::TxHashRef};
+    use alloy_eips::{
+        eip2930::AccessListItem,
+        eip7702::{Authorization, SignedAuthorization},
+    };
     use alloy_primitives::{B256, Signature, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
+    use evm2::ethereum::LazyAuthorization;
     use proptest::prelude::*;
+    use tempo_chainspec::TempoHardfork;
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
         transaction::{
@@ -646,10 +659,7 @@ mod tests {
 
     fn legacy_env(transaction: TxLegacy, signer: Address) -> TempoTxEnv {
         Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                transaction,
-                Signature::test_signature(),
-            )),
+            TempoTxEnvelope::Legacy(transaction.into_signed(Signature::test_signature())),
             signer,
         )
         .into()
@@ -667,18 +677,15 @@ mod tests {
 
     #[test]
     fn converts_standard_transactions() {
-        let legacy = convert(TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            Signature::test_signature(),
-        )));
-        let eip2930 = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
-            TxEip2930::default(),
-            Signature::test_signature(),
-        )));
-        let eip1559 = convert(TempoTxEnvelope::Eip1559(Signed::new_unhashed(
-            TxEip1559::default(),
-            Signature::test_signature(),
-        )));
+        let legacy = convert(TempoTxEnvelope::Legacy(
+            TxLegacy::default().into_signed(Signature::test_signature()),
+        ));
+        let eip2930 = convert(TempoTxEnvelope::Eip2930(
+            TxEip2930::default().into_signed(Signature::test_signature()),
+        ));
+        let eip1559 = convert(TempoTxEnvelope::Eip1559(
+            TxEip1559::default().into_signed(Signature::test_signature()),
+        ));
 
         assert_eq!(legacy.ty(), 0);
         assert_eq!(eip2930.ty(), 1);
@@ -692,10 +699,9 @@ mod tests {
 
     #[test]
     fn converts_eip7702_to_lazy_authorizations() {
-        let transaction = convert(TempoTxEnvelope::Eip7702(Signed::new_unhashed(
-            TxEip7702::default(),
-            Signature::test_signature(),
-        )));
+        let transaction = convert(TempoTxEnvelope::Eip7702(
+            TxEip7702::default().into_signed(Signature::test_signature()),
+        ));
 
         assert_eq!(transaction.ty(), 4);
         assert_eq!(transaction.signer(), SIGNER);
@@ -703,11 +709,59 @@ mod tests {
     }
 
     #[test]
+    fn eip7702_recovers_authorizations_only_when_gas_covers_them() {
+        let authorization = SignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::ZERO,
+                address: Address::ZERO,
+                nonce: 0,
+            },
+            0,
+            U256::from(1),
+            U256::from(1),
+        );
+        let is_recovered = |count, gas_limit| {
+            let transaction = convert(TempoTxEnvelope::Eip7702(
+                TxEip7702 {
+                    gas_limit,
+                    authorization_list: vec![authorization.clone(); count],
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            ));
+            transaction
+                .as_eip7702()
+                .unwrap()
+                .authorizations()
+                .all(|authorization| matches!(authorization, LazyAuthorization::Recovered { .. }))
+        };
+        let per_authorization = u64::from(EIP7702_PER_EMPTY_ACCOUNT_COST_T1);
+        let max_per_tx = (TEMPO_T1_TX_GAS_LIMIT_CAP / per_authorization) as usize;
+
+        assert!(is_recovered(2, 2 * per_authorization));
+        assert!(!is_recovered(2, 2 * per_authorization - 1));
+        assert!(!is_recovered(max_per_tx + 1, u64::MAX));
+    }
+
+    /// The EIP-7702 recovery budget assumes no fork's per-tx gas cap exceeds
+    /// `TEMPO_T1_TX_GAS_LIMIT_CAP`. Raising it without updating the budget leaves valid
+    /// transactions recovering their authorizations during execution.
+    #[test]
+    fn eip7702_recovery_budget_covers_every_tx_gas_cap() {
+        for fork in TempoHardfork::VARIANTS {
+            assert!(
+                fork.tx_gas_limit_cap()
+                    .is_some_and(|cap| cap <= TEMPO_T1_TX_GAS_LIMIT_CAP),
+                "{fork} raises the tx gas cap past the EIP-7702 recovery budget"
+            );
+        }
+    }
+
+    #[test]
     fn preserves_system_transaction_marker() {
-        let transaction = convert(TempoTxEnvelope::Legacy(Signed::new_unhashed(
-            TxLegacy::default(),
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        )));
+        let transaction = convert(TempoTxEnvelope::Legacy(
+            TxLegacy::default().into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        ));
 
         assert!(transaction.is_system_tx());
     }
@@ -776,11 +830,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 valid_before: Some(NonZeroU64::new(100).unwrap()),
-                calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x42)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
                 ..Default::default()
             };
             let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -829,8 +879,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let tx_hash = *envelope.tx_hash();
         let TempoTxEnvelope::Legacy(signed) = &envelope else {
             unreachable!()
@@ -981,13 +1030,13 @@ mod tests {
                 storage_keys: vec![B256::repeat_byte(1), B256::repeat_byte(2)],
             },
         ]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        let transaction = convert(TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 access_list: access_list.clone(),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
+            }
+            .into_signed(Signature::test_signature()),
+        ));
         assert_eq!(transaction.as_eip2930().unwrap().access_list, access_list);
     }
 
@@ -997,15 +1046,15 @@ mod tests {
             address: Address::repeat_byte(0xab),
             storage_keys: Vec::new(),
         }]);
-        let transaction = convert(TempoTxEnvelope::Eip2930(Signed::new_unhashed(
+        let transaction = convert(TempoTxEnvelope::Eip2930(
             TxEip2930 {
                 gas_limit: 50_000,
                 nonce: 100,
                 access_list: access_list.clone(),
                 ..Default::default()
-            },
-            Signature::test_signature(),
-        )));
+            }
+            .into_signed(Signature::test_signature()),
+        ));
         let transaction = transaction.as_eip2930().unwrap();
         assert_eq!(transaction.gas_limit, 50_000);
         assert_eq!(transaction.nonce, 100);
@@ -1059,11 +1108,7 @@ mod tests {
         let tx_env = aa_env(
             TempoTransaction {
                 calls: vec![
-                    Call {
-                        to: TxKind::Call(first_address),
-                        value: U256::ZERO,
-                        input: first_input.clone(),
-                    },
+                    Call::new(first_address, first_input.clone()),
                     Call {
                         to: TxKind::Call(second_address),
                         value: U256::from(100),
@@ -1114,11 +1159,7 @@ mod tests {
         let tx_env = aa_env(
             TempoTransaction {
                 calls: vec![
-                    Call {
-                        to: TxKind::Call(first),
-                        value: U256::ZERO,
-                        input: first_input.clone(),
-                    },
+                    Call::new(first, first_input.clone()),
                     Call {
                         to: TxKind::Call(second),
                         value: U256::from(50),
@@ -1158,11 +1199,7 @@ mod tests {
             let tx = aa_env(
                 TempoTransaction {
                     calls: (0..num_calls)
-                        .map(|_| Call {
-                            to: TxKind::Call(Address::ZERO),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        })
+                        .map(|_| Call::new(Address::ZERO, Bytes::new()))
                         .collect(),
                     ..Default::default()
                 },

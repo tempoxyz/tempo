@@ -695,14 +695,16 @@ mod tests {
 
     struct StubDebugApi(ZoneExecutionWitness);
 
-    #[jsonrpsee::core::async_trait]
     impl ZoneDebugApi for StubDebugApi {
-        async fn zone_execution_witness(
+        fn zone_execution_witness(
             &self,
             block: alloy_eips::BlockId,
-        ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
-            assert_eq!(block, self.0.block_hash.into());
-            Ok(self.0.clone())
+        ) -> futures::future::BoxFuture<'_, jsonrpsee::core::RpcResult<ZoneExecutionWitness>>
+        {
+            Box::pin(async move {
+                assert_eq!(block, self.0.block_hash.into());
+                Ok(self.0.clone())
+            })
         }
     }
 
@@ -1019,22 +1021,24 @@ mod tests {
         failures: std::sync::atomic::AtomicUsize,
     }
 
-    #[jsonrpsee::core::async_trait]
     impl ZoneDebugApi for FlakyDebugApi {
-        async fn zone_execution_witness(
+        fn zone_execution_witness(
             &self,
             block: alloy_eips::BlockId,
-        ) -> jsonrpsee::core::RpcResult<ZoneExecutionWitness> {
-            if block == self.served.block_hash.into() {
-                return Ok(self.served.clone());
-            }
-            self.failures
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Err(jsonrpsee::types::ErrorObject::owned(
-                -32000,
-                "proof window exceeded",
-                None::<()>,
-            ))
+        ) -> futures::future::BoxFuture<'_, jsonrpsee::core::RpcResult<ZoneExecutionWitness>>
+        {
+            Box::pin(async move {
+                if block == self.served.block_hash.into() {
+                    return Ok(self.served.clone());
+                }
+                self.failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(jsonrpsee::types::ErrorObject::owned(
+                    -32000,
+                    "proof window exceeded",
+                    None::<()>,
+                ))
+            })
         }
     }
 

@@ -17,11 +17,16 @@ impl Precompile for SignatureVerifier {
             return err;
         }
 
-        // `verifyConfigurableAccount` input is bounded by its decoder and already charged.
+        // `verifyConfigurableAccount` and `verifyKeychain` input, which can carry a configurable
+        // account signature, is bounded by its decoder and already charged.
         if calldata.len() > MAX_CALLDATA_LEN
             && !(self.storage.spec().is_t14()
-                && calldata
-                    .starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR))
+                && [
+                    ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR,
+                    ISignatureVerifier::verifyKeychainCall::SELECTOR,
+                ]
+                .iter()
+                .any(|selector| calldata.starts_with(selector)))
         {
             return self
                 .storage
@@ -32,17 +37,17 @@ impl Precompile for SignatureVerifier {
             calldata,
             |call| match call {
                 ISignatureVerifier::ISignatureVerifierCalls {
-                    recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
+                    recover(call) => view(call, |c| self.recover(c.hash, &c.signature)),
                     verify(call) => view(call, |c| {
-                        self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
+                        self.recover(c.hash, &c.signature).map(|sig| sig == c.signer)
                     }),
                     #[schedule(since = T6)]
                     verifyKeychain(call) => view(call, |c| {
-                        self.verify_keychain(c.account, c.hash, c.signature)
+                        self.verify_keychain(c.account, c.hash, &c.signature)
                     }),
                     #[schedule(since = T6)]
                     verifyKeychainAdmin(call) => view(call, |c| {
-                        self.verify_keychain_admin(c.account, c.hash, c.signature)
+                        self.verify_keychain_admin(c.account, c.hash, &c.signature)
                     }),
                     #[schedule(since = T14)]
                     verifyConfigurableAccount(call) => view(call, |c| {

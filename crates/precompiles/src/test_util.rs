@@ -25,15 +25,15 @@ use crate::{
 #[cfg(test)]
 use alloy::primitives::Bytes;
 use alloy::{
-    primitives::{Address, B256, U256, address, fixed_bytes, hex_literal::hex},
-    sol_types::SolError,
+    primitives::{Address, B256, Log, U256, address, fixed_bytes, hex_literal::hex},
+    sol_types::{SolError, SolEvent},
 };
 use evm2::PrecompileError;
 #[cfg(test)]
 use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
-use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use tempo_contracts::precompiles::{ITIP20Factory, TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Returns the revert payload or panics with the unexpected EVM2 result.
@@ -160,8 +160,7 @@ pub struct TIP20Setup {
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
-    reward_opt_ins: Vec<Address>,
-    distribute_rewards: Vec<U256>,
+    transfer_policy: Option<TIP403Setup>,
     clear_events: bool,
 }
 
@@ -248,9 +247,7 @@ impl TIP20Setup {
         self
     }
 
-    /// Mint tokens to an address after creation.
-    ///
-    /// Note: Requires ISSUER_ROLE on admin (use `with_issuer(admin)`).
+    /// Mint tokens to an address after creation, granting the admin ISSUER_ROLE if it lacks it.
     pub fn with_mint(mut self, to: Address, amount: U256) -> Self {
         self.mints.push((to, amount));
         self
@@ -262,15 +259,9 @@ impl TIP20Setup {
         self
     }
 
-    /// Opt a user into rewards (sets reward recipient to themselves).
-    pub fn with_reward_opt_in(mut self, user: Address) -> Self {
-        self.reward_opt_ins.push(user);
-        self
-    }
-
-    /// Distribute rewards (requires tokens minted to admin first).
-    pub fn with_reward(mut self, amount: U256) -> Self {
-        self.distribute_rewards.push(amount);
+    /// Create `policy` and make it the token's transfer policy, after mints and approvals.
+    pub fn with_transfer_policy(mut self, policy: TIP403Setup) -> Self {
+        self.transfer_policy = Some(policy);
         self
     }
 
@@ -347,12 +338,20 @@ impl TIP20Setup {
             token.grant_role_internal(account, role)?;
         }
 
+        // Resolved at most once, and only when a mint or the transfer policy needs it.
+        let (mut admin, token_address) = (self.admin, token.address());
+        let mut admin = || {
+            *admin.get_or_insert_with(|| {
+                get_tip20_admin(token_address).expect("unable to get token admin")
+            })
+        };
+
         // Apply mints
+        if !self.mints.is_empty() {
+            token.grant_role_internal(admin(), tip20::ISSUER_ROLE)?;
+        }
         for (to, amount) in self.mints {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.mint(admin, ITIP20::mintCall { to, amount })?;
+            token.mint(admin(), ITIP20::mintCall { to, amount })?;
         }
 
         // Apply approvals
@@ -360,17 +359,13 @@ impl TIP20Setup {
             token.approve(owner, ITIP20::approveCall { spender, amount })?;
         }
 
-        // Apply reward opt-ins
-        for user in self.reward_opt_ins {
-            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
-        }
-
-        // Distribute rewards
-        for amount in self.distribute_rewards {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
+        if let Some(policy) = self.transfer_policy {
+            token.change_transfer_policy_id(
+                admin(),
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy.apply()?,
+                },
+            )?;
         }
 
         if self.clear_events {
@@ -393,6 +388,88 @@ impl TIP20Setup {
     }
 }
 
+/// Helper for TIP-403 policy setup in tests.
+///
+/// ```ignore
+/// let policy_id = TIP403Setup::whitelist(admin).with_members([alice, bob]).apply()?;
+/// let token = TIP20Setup::create("Test", "TST", admin)
+///     .with_transfer_policy(TIP403Setup::compound(policy_id, ALLOW_ALL_POLICY_ID, policy_id))
+///     .apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub enum TIP403Setup {
+    /// A whitelist or blacklist.
+    Simple {
+        /// Policy admin, also the creator.
+        admin: Address,
+        /// `WHITELIST` or `BLACKLIST`.
+        policy_type: PolicyType,
+        /// Accounts the policy starts with.
+        members: Vec<Address>,
+    },
+    /// A compound policy over existing simple policy IDs.
+    Compound(ITIP403Registry::createCompoundPolicyCall),
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl TIP403Setup {
+    /// A whitelist owned by `admin`.
+    pub fn whitelist(admin: Address) -> Self {
+        Self::Simple {
+            admin,
+            policy_type: PolicyType::WHITELIST,
+            members: Vec::new(),
+        }
+    }
+
+    /// A blacklist owned by `admin`.
+    pub fn blacklist(admin: Address) -> Self {
+        Self::Simple {
+            admin,
+            policy_type: PolicyType::BLACKLIST,
+            members: Vec::new(),
+        }
+    }
+
+    /// A compound policy over the given simple policy IDs, created by the zero address.
+    pub fn compound(sender: u64, recipient: u64, mint_recipient: u64) -> Self {
+        Self::Compound(ITIP403Registry::createCompoundPolicyCall {
+            senderPolicyId: sender,
+            recipientPolicyId: recipient,
+            mintRecipientPolicyId: mint_recipient,
+        })
+    }
+
+    /// Add accounts to the whitelist or blacklist. Panics on a compound policy.
+    pub fn with_members(mut self, accounts: impl IntoIterator<Item = Address>) -> Self {
+        let Self::Simple { members, .. } = &mut self else {
+            panic!("compound policies have no members");
+        };
+        members.extend(accounts);
+        self
+    }
+
+    /// Creates the policy and returns its ID.
+    pub fn apply(self) -> Result<u64> {
+        let mut registry = TIP403Registry::new();
+        match self {
+            Self::Simple {
+                admin,
+                policy_type,
+                members,
+            } => registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: policy_type,
+                    accounts: members,
+                },
+            ),
+            Self::Compound(call) => registry.create_compound_policy(Address::ZERO, call),
+        }
+    }
+}
+
 /// Checks if a contract at the given address has bytecode deployed.
 #[cfg(any(test, feature = "test-utils"))]
 fn is_initialized(address: Address) -> Result<bool> {
@@ -402,9 +479,6 @@ fn is_initialized(address: Address) -> Result<bool> {
 /// Looks up the admin of a TIP-20 token by scanning `TokenCreated` events from the factory.
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
-    use alloy::{primitives::Log, sol_types::SolEvent};
-    use tempo_contracts::precompiles::ITIP20Factory;
-
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
     for log_data in events {
         let log = Log::new_unchecked(

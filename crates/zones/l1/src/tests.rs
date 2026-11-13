@@ -5,11 +5,12 @@ use alloy_primitives::{Bloom, Bytes, address};
 use alloy_rpc_types_eth::{Header as RpcHeader, TransactionReceipt};
 use alloy_sol_types::SolEvent;
 use alloy_transport::mock::Asserter;
+use k256::{AffinePoint, ProjectivePoint, Scalar};
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use serde::Deserialize;
 use std::{collections::HashSet, time::Duration};
 use tempo_alloy::rpc::{TempoHeaderResponse, TempoTransactionReceipt};
-use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
+use tempo_contracts::precompiles::{ITIP20, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::{TempoReceipt, TempoTxType};
 
 #[derive(Deserialize)]
@@ -442,6 +443,56 @@ fn subscriber_applies_state_and_records_observation() {
     assert_eq!(
         subscriber.block_tracker.observed_hash(10),
         Some(anchor.hash)
+    );
+}
+
+#[test]
+fn token_pause_update_refreshes_cached_token_state() {
+    let subscriber = test_subscriber(9);
+    let token = address!("0x20C0000000000000000000000000000000000999");
+    // Invalidation is per account, so any token slot stands in for `paused`.
+    let paused_slot = B256::with_last_byte(1);
+    {
+        let mut cache = subscriber.l1_state_cache.lock();
+        cache.invalidate_and_set_anchor(9, []);
+        cache.set(token, paused_slot, 9, B256::ZERO);
+    }
+
+    let block = NumHash::new(10, B256::with_last_byte(10));
+    let mut receipt = make_test_receipt(
+        block.number,
+        block.hash,
+        B256::with_last_byte(1),
+        0,
+        0,
+        Bloom::ZERO,
+    );
+    receipt
+        .inner
+        .inner
+        .receipt
+        .logs
+        .push(alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address: token,
+                data: ITIP20::PauseStateUpdate {
+                    updater: Address::repeat_byte(0x11),
+                    isPaused: true,
+                }
+                .encode_log_data(),
+            },
+            ..Default::default()
+        });
+    let (_, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    assert_eq!(invalidated, HashSet::from([token]));
+
+    subscriber.update_l1_state_anchor(block.number, &invalidated);
+    assert_eq!(
+        subscriber
+            .l1_state_cache
+            .lock()
+            .get(token, paused_slot, block.number),
+        None
     );
 }
 
@@ -1123,8 +1174,6 @@ fn test_withdrawal_bounce_back_and_deposit_hash_chain() {
 
 #[tokio::test]
 async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
-    use k256::{AffinePoint, ProjectivePoint, Scalar};
-
     let token = address!("0x0000000000000000000000000000000000001000");
     let sender = address!("0x0000000000000000000000000000000000001234");
     let recipient = address!("0x000000000000000000000000000000000000BEEF");
@@ -1157,21 +1206,28 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         })
         .unwrap();
 
+    let deposit = Deposit {
+        token,
+        sender,
+        amount: 1_000_000,
+        fee: 0,
+        tempo_refund_recipient: sender,
+        key_index: U256::ZERO,
+        ephemeral_pubkey_x: encrypted.eph_pub_x,
+        ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        tag: encrypted.tag,
+    };
+    // A bad tag fails decryption but still yields an ECDH proof for the on-chain refund.
+    let mut tampered = deposit.clone();
+    tampered.tag[0] ^= 1;
     let block = L1BlockDeposits {
         header: seal(make_test_header(block_number)),
-        events: L1PortalEvents::from_deposits(vec![L1Deposit::Deposit(Deposit {
-            token,
-            sender,
-            amount: 1_000_000,
-            fee: 0,
-            tempo_refund_recipient: sender,
-            key_index: U256::ZERO,
-            ephemeral_pubkey_x: encrypted.eph_pub_x,
-            ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
-            ciphertext: encrypted.ciphertext,
-            nonce: encrypted.nonce,
-            tag: encrypted.tag,
-        })]),
+        events: L1PortalEvents::from_deposits(vec![
+            L1Deposit::Deposit(deposit),
+            L1Deposit::Deposit(tampered),
+        ]),
     };
 
     let prepared = block
@@ -1179,16 +1235,17 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         .await
         .expect("decrypted deposit should prepare without an engine-side policy read");
 
-    assert_eq!(prepared.queued_deposits.len(), 1);
+    assert_eq!(prepared.queued_deposits.len(), 2);
     assert_eq!(
         prepared.queued_deposits[0].depositType,
         DepositType::Deposit
     );
     assert_eq!(
         prepared.decryptions.len(),
-        1,
-        "successfully decrypted deposits must provide on-chain decryption data"
+        2,
+        "every user deposit must provide on-chain decryption data"
     );
+    assert_eq!(prepared.recipients, vec![Some(recipient), None]);
 }
 
 #[tokio::test]
@@ -1201,6 +1258,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
     let encryption_keys = EncryptionKeyRing::new([old.clone(), current.clone()]);
     let mut deposits = Vec::new();
     let mut expected_shared_secrets = Vec::new();
+    let mut expected_recipients = Vec::new();
 
     for (key_index, key, recipient) in [
         (
@@ -1248,6 +1306,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
         )
         .unwrap();
         expected_shared_secrets.push(decrypted.proof.shared_secret);
+        expected_recipients.push(Some(recipient));
         deposits.push(L1Deposit::Deposit(Deposit {
             token,
             sender,
@@ -1279,6 +1338,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
             .collect::<Vec<_>>(),
         expected_shared_secrets
     );
+    assert_eq!(prepared.recipients, expected_recipients);
 }
 
 #[test]

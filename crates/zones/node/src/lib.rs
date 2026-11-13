@@ -15,6 +15,7 @@ pub mod engine;
 mod follower;
 pub mod genesis;
 pub mod node;
+mod pool_maintenance;
 mod replication;
 pub mod role;
 pub mod rpc;
@@ -26,7 +27,10 @@ pub mod version;
 pub mod state_bloat;
 
 pub use consensus::ZoneConsensus;
-pub use deposit_allowlist::{DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError};
+pub use deposit_allowlist::{
+    DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError, DepositAllowlistSnapshot,
+    SequencerAllowlistStatus,
+};
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};
 pub use node::{ZoneExecutorBuilder, ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig};
 pub use version::init_version_metadata;

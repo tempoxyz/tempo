@@ -279,10 +279,15 @@ both the outgoing and incoming leaders retain transactions before the activation
 rpc-follower may originate forwarding, but it does not receive forwarded transactions because it
 is outside the on-chain quorum.
 
-This permits operator RPC to be exposed on followers while keeping the leader's RPC private. Every
-quorum receiver decodes and validates each forwarded transaction through its pool again; follower
-validation is not trusted. Only the active leader selects and orders transactions into blocks.
-Followers periodically retry live pool transactions, recovering from listener overflow and
+This lets rpc-only followers serve operator RPC in front of the quorum, so quorum nodes never have
+to. Operator RPC is never for untrusted callers on any node, because it serves unredacted zone
+state; they use the authenticated redacted RPC (`--redacted-rpc.port`). Every quorum node's
+operator RPC, leader and follower alike, must also stay private and operator-only, because
+`zone_setLeader` relays leader rotation with the node's individual sequencer key.
+
+Every quorum receiver decodes and validates each forwarded transaction through its pool again;
+follower validation is not trusted. Only the active leader selects and orders transactions into
+blocks. Followers periodically retry live pool transactions, recovering from listener overflow and
 temporary leader disconnections.
 
 ## Deposit allowlist relay

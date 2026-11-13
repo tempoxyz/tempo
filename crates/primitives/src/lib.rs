@@ -33,6 +33,9 @@ extern crate alloc;
 
 pub mod account;
 
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+
 use once_cell as _;
 // TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
 #[cfg(feature = "rpc")]
@@ -59,3 +62,13 @@ pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::EthereumRece
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TempoPrimitives;
+
+/// Kind of Tempo EVM, which fixes the protocol rules that differ between Tempo L1 and its zones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TempoEvmKind {
+    /// Tempo L1, including its mainnet, testnets, and devnets.
+    #[default]
+    L1,
+    /// A Tempo zone.
+    Zone,
+}
