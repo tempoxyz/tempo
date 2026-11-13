@@ -84,6 +84,13 @@ response includes `proofBundle.verifierConfig = 0x01` and the raw COSE/CBOR docu
 `proofBundle.proof`. The prover returns `attestation_unavailable` when `/dev/nsm` is unavailable or
 the NSM request fails.
 
+A successful response also carries `timings`: the enclave's chain-spec setup, each SPF phase
+(witness databases, block execution, state roots, block assembly and the SPF total) and the NSM
+attestation. They are unauthenticated diagnostics: the sequencer records them as
+`tempo_zone_prover_spf_*_duration_seconds` metrics and never uses them for validation. Sequencers
+accept responses without `timings` from older enclaves; an older sequencer rejects the field, so
+upgrade sequencers before enclaves.
+
 Pass `--use-tcp` to listen on localhost TCP instead of AF_VSOCK. Both modes require Nitro;
 AF_VSOCK remains the default. Set `SPF_PORT` or
 pass `--port` to change the selected transport's port. The maximum request payload defaults to 2

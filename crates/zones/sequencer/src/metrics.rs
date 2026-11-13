@@ -4,6 +4,7 @@ use reth_metrics::{
     Metrics,
     metrics::{Counter, Gauge, Histogram},
 };
+use zone_spf::SpfTimings;
 
 /// Metrics emitted for the sequencer account.
 #[derive(Metrics, Clone)]
@@ -40,6 +41,27 @@ pub(crate) struct ProverMetrics {
 
     /// Time spent verifying a generated batch witness locally or remotely.
     pub(crate) spf_execution_duration_seconds: Histogram,
+
+    /// Time the SPF spent building its witness databases, wherever it ran.
+    pub(crate) spf_witness_database_duration_seconds: Histogram,
+
+    /// Time the SPF spent executing Zone blocks, wherever it ran.
+    pub(crate) spf_block_execution_duration_seconds: Histogram,
+
+    /// Time the SPF spent computing Zone post-state roots, wherever it ran.
+    pub(crate) spf_state_root_duration_seconds: Histogram,
+
+    /// Time the SPF spent assembling Zone block headers, wherever it ran.
+    pub(crate) spf_block_assembly_duration_seconds: Histogram,
+
+    /// Total time spent inside the SPF, wherever it ran. Excludes transport to a remote prover.
+    pub(crate) spf_function_duration_seconds: Histogram,
+
+    /// Time the remote prover spent resolving its chain spec and building the SPF configuration.
+    pub(crate) spf_remote_setup_duration_seconds: Histogram,
+
+    /// Time the remote prover spent obtaining a Nitro attestation document for the batch.
+    pub(crate) spf_remote_attestation_duration_seconds: Histogram,
 
     /// Time spent establishing a TCP connection to the remote prover.
     pub(crate) spf_remote_connect_duration_seconds: Histogram,
@@ -115,6 +137,22 @@ pub(crate) struct ProverMetrics {
 
     /// Number of Tempo state trie nodes in the latest successfully validated batch witness.
     pub(crate) tempo_state_nodes_last: Gauge,
+}
+
+impl ProverMetrics {
+    /// Record the phase timings of one successful SPF call.
+    pub(crate) fn record_spf_timings(&self, timings: &SpfTimings) {
+        self.spf_witness_database_duration_seconds
+            .record(timings.witness_database.as_secs_f64());
+        self.spf_block_execution_duration_seconds
+            .record(timings.block_execution.as_secs_f64());
+        self.spf_state_root_duration_seconds
+            .record(timings.state_root.as_secs_f64());
+        self.spf_block_assembly_duration_seconds
+            .record(timings.block_assembly.as_secs_f64());
+        self.spf_function_duration_seconds
+            .record(timings.total.as_secs_f64());
+    }
 }
 
 /// Metrics emitted by the withdrawal processor.

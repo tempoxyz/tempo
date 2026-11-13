@@ -166,7 +166,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
         tempo_ancestry_headers: vec![],
     };
 
-    let output = prove_zone_batch(&config, witness)?;
+    let output = prove_zone_batch(&config, witness)?.output;
 
     assert_eq!(output.block_transition.prevBlockHash, B256::ZERO);
     assert_eq!(output.block_transition.nextBlockHash, expected_hash);
@@ -197,7 +197,7 @@ async fn spf_builder_equivalence() -> eyre::Result<()> {
     let config = spf_config(&genesis);
     let witness = built.batch_witness(&config, zone_state_witness, vec![]);
 
-    let output = prove_zone_batch(&config, witness)?;
+    let output = prove_zone_batch(&config, witness)?.output;
 
     assert_eq!(output.next_zone_height, 1);
     assert_eq!(
@@ -253,7 +253,7 @@ async fn spf_replays_migrated_policy_transaction_with_parent_forks() -> eyre::Re
     let config = spf_config(&genesis);
     let witness = built.batch_witness(&config, zone_state_witness, tempo_state_nodes);
 
-    let output = prove_zone_batch(&config, witness)?;
+    let output = prove_zone_batch(&config, witness)?.output;
 
     assert_eq!(output.next_zone_height, 1);
     assert_eq!(

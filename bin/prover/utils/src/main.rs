@@ -384,7 +384,8 @@ async fn generate_input(args: GenerateInputArgs) -> Result<()> {
 
     let started = start_phase("SPF validation");
     let output = prove_zone_batch(&spf_config, witness.clone())
-        .context("generated witness failed SPF validation")?;
+        .context("generated witness failed SPF validation")?
+        .output;
     if output.block_transition.nextBlockHash != next_block_hash {
         bail!(
             "SPF replay produced {}, but Zone block {to_block} has hash {next_block_hash}",
@@ -1401,6 +1402,7 @@ mod tests {
                 verifier_config: Bytes::from_static(&[1]),
                 proof: Bytes::from_static(&[0x12, 0x34]),
             },
+            timings: None,
         }
     }
 

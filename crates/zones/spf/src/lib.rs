@@ -4,6 +4,8 @@
 //! execution. It is presently a normal Rust verifier rather than a `no_std`
 //! proving guest.
 
+use std::time::Instant;
+
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::{B256, U256, keccak256};
 use evm2::evm::{CacheDB, Db};
@@ -33,7 +35,12 @@ pub use types::*;
 /// other value is prover supplied and must be validated against witness-backed
 /// execution. The prover launches with TIP-1096, so every batch must end at a full
 /// block's withdrawal finalization boundary.
-pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<BatchOutput, Error> {
+pub fn prove_zone_batch(
+    config: &SpfConfig,
+    witness: BatchWitness,
+) -> Result<BatchExecution, Error> {
+    let started = Instant::now();
+    let mut timings = SpfTimings::default();
     // The parent header is the committed starting point for this batch. Its
     // hash binds the witness to the previously submitted Zone block, and its
     // state root selects the initial Zone state.
@@ -55,11 +62,13 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
     // The Zone database is backed by the parent state root and the supplied
     // trie nodes. Reads performed during execution are therefore limited to
     // state proven by the witness, while writes remain in the EVM's accepted-state overlay.
+    let phase = Instant::now();
     let zone_database = WitnessDatabase::from_zone_state_witness(
         witness.zone_state_witness,
         witness.parent_header.state_root(),
     )?;
     let mut zone_state = CacheDB::new(Db::new(zone_database));
+    timings.witness_database += phase.elapsed();
 
     // Capture the pre-batch deposit state from the parent Zone state. The
     // transition output commits to this exact pair.
@@ -87,8 +96,10 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
     // The initial Tempo header supplies the root for Tempo-side reads. The
     // Zone's own TempoState must already contain the same number and hash;
     // otherwise the witness would describe a different L1 checkpoint.
+    let phase = Instant::now();
     let mut tempo_database =
         TempoWitnessDatabase::from_tempo_state_witness(witness.tempo_state_witness)?;
+    timings.witness_database += phase.elapsed();
     let (witnessed_tempo_number, witnessed_tempo_hash) = tempo_database.checkpoint();
     let zone_tempo_hash = B256::from(read_zone_storage(
         &mut zone_state,
@@ -159,6 +170,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             .last()
             .expect("validated nonempty Tempo headers");
         tempo_database = tempo_database.with_imported_checkpoint(final_imported_header)?;
+        let phase = Instant::now();
         let executed_block = execution::evm::execute_zone_block(
             &mut zone_state,
             config.evm_config(tempo_database.clone()),
@@ -168,6 +180,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             },
             block,
         );
+        timings.block_execution += phase.elapsed();
         let executed_block = match executed_block {
             Ok(executed_block) => executed_block,
             Err(error) => {
@@ -182,10 +195,14 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             }
         };
 
+        let phase = Instant::now();
         let state_root = zone_state
             .db
             .inner_mut()
             .state_root(&executed_block.output.state)?;
+        timings.state_root += phase.elapsed();
+
+        let phase = Instant::now();
         let gas_limit = executed_block.evm_env.block.gas_limit.to::<u64>();
         let execution_context =
             execution::evm::next_block_execution_context(config.chain_spec(), block, gas_limit);
@@ -215,6 +232,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             &executed_block.output.state,
         ));
         previous_header = assembled.header;
+        timings.block_assembly += phase.elapsed();
     }
 
     // These reads see the final execution overlay rather than just the parent
@@ -297,7 +315,7 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             actual: withdrawal_batch_index,
         });
     }
-    Ok(BatchOutput {
+    let output = BatchOutput {
         next_zone_height: previous_header.number(),
         block_transition: BlockTransition {
             prevBlockHash: output_parent_hash,
@@ -317,7 +335,9 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         last_batch_commitment: LastBatchCommitment {
             withdrawal_batch_index,
         },
-    })
+    };
+    timings.total = started.elapsed();
+    Ok(BatchExecution { output, timings })
 }
 
 /// Validates witness-controlled timestamp fields before they select fork rules or enter the EVM.
