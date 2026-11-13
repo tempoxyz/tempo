@@ -61,20 +61,6 @@ impl ZoneVerifier {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
     }
 
-    /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
-    ///
-    /// This Rust-only observer entry point uses the AWS root and requires a `StorageCtx`
-    /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
-    /// activate T13 or change the measurements used by the on-chain entry point.
-    pub fn verify_with_pcrs(
-        &self,
-        portal: Address,
-        call: IZoneVerifier::verifyCall,
-        approved_pcrs: [[u8; 48]; 3],
-    ) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
-    }
-
     fn verify_with_policy(
         &self,
         portal: Address,
@@ -463,12 +449,6 @@ mod tests {
                         &root,
                         APPROVED_PCRS.at(TempoHardfork::T12)
                     )
-                    .unwrap()
-            );
-            // The public observer API must still reject a synthetic, non-AWS trust root.
-            assert!(
-                !verifier
-                    .verify_with_pcrs(portal, call.clone(), pcrs)
                     .unwrap()
             );
             assert!(!verifier.verify(portal, call).unwrap());

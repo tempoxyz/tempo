@@ -6,6 +6,7 @@ use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
+use eyre::OptionExt as _;
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
@@ -21,8 +22,7 @@ use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
 use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
 
 use crate::{
-    DepositAllowlist, ZoneConsensus, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
-    ZoneSequencerAddOnsConfig,
+    DepositAllowlist, ZoneConsensus, ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig,
     deposit_allowlist::{DEPOSIT_ALLOWLIST_FILE_NAME, DepositAllowlistAdmin},
     dev::DevCommand,
     rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
@@ -356,34 +356,22 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    eyre::ensure!(
-        args.shadow_prover_pcrs.is_none() || (rpc_only && !should_sequence_blocks),
-        "--shadow-prover.pcrs requires an rpc_only follower; it is not a settlement policy"
-    );
     let policy = args
         .prover_attestation_policy
         .as_deref()
         .map(std::fs::read)
         .transpose()?;
     let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
-    let prover_config = if !args.enable_prover {
-        None
-    } else if should_sequence_blocks {
-        let addresses = prover_addresses.ok_or_else(|| {
-            eyre::eyre!(
-                "settlement proving requires --sequencer.prover-address for Nitro attestation"
-            )
-        })?;
-        Some(ZoneProverConfig::Settlement(addresses))
-    } else {
+    let prover_addresses = if args.enable_prover {
         eyre::ensure!(
-            rpc_only,
-            "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
+            should_sequence_blocks,
+            "--sequencer.enable-prover requires a sequencer; it is not supported on rpc_only P2P followers"
         );
-        Some(ZoneProverConfig::Shadow {
-            prover_addresses,
-            proof_verifier: args.shadow_prover_pcrs.clone(),
-        })
+        Some(prover_addresses.ok_or_eyre(
+            "settlement proving requires --sequencer.prover-address for Nitro attestation",
+        )?)
+    } else {
+        None
     };
 
     eyre::ensure!(
@@ -420,8 +408,8 @@ async fn configure_sequencing(
             zone_chain_id,
         });
     }
-    if let Some(config) = prover_config {
-        node = node.with_prover(config);
+    if let Some(prover_addresses) = prover_addresses {
+        node = node.with_prover(prover_addresses);
     }
     if let Some(config) = p2p_config {
         node = node.with_p2p(config);
@@ -701,8 +689,8 @@ pub struct ZoneArgs {
     )]
     pub checker_mode: zone_checker::CheckerMode,
 
-    /// Require Nitro-attested SPF validation for settlement, or run observational SPF validation
-    /// on an rpc_only follower.
+    /// Require Nitro-attested SPF validation for settlement. Requires a sequencer; rejected on
+    /// rpc_only P2P followers.
     ///
     /// Enables durable witness persistence.
     #[arg(long = "sequencer.enable-prover", env = "SEQUENCER_ENABLE_PROVER")]
@@ -727,16 +715,6 @@ pub struct ZoneArgs {
         requires_all = ["enable_prover", "prover_addresses"]
     )]
     pub prover_attestation_policy: Option<PathBuf>,
-
-    /// Verify shadow Nitro proofs locally against independently approved PCR0, PCR1 and PCR2.
-    /// Works before T13; applies only to RPC followers and never enables settlement enforcement.
-    #[arg(
-        long = "shadow-prover.pcrs",
-        env = "SHADOW_PROVER_PCRS",
-        value_name = "PCR0,PCR1,PCR2",
-        requires = "prover_addresses"
-    )]
-    pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
 
     /// Bounce deposits whose L1 sender or zone recipient is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`, and reject Zone TIP-20 transfers unless both parties
@@ -951,44 +929,6 @@ mod tests {
     }
 
     #[test]
-    fn shadow_verification_requires_remote_proving_and_complete_measurements() {
-        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let pcr = "11".repeat(48);
-        let pcrs = format!("{pcr},{pcr},{pcr}");
-        assert!(
-            ZoneArgsParser::try_parse_from(
-                common
-                    .into_iter()
-                    .chain(["--shadow-prover.pcrs", pcrs.as_str(),])
-            )
-            .is_err()
-        );
-        let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
-            "--sequencer.enable-prover",
-            "--sequencer.prover-attestation-policy",
-            "policy.json",
-            "--sequencer.prover-address",
-            "T13=localhost:5000",
-            "--shadow-prover.pcrs",
-            pcrs.as_str(),
-        ]))
-        .unwrap();
-        assert!(args.zone.shadow_prover_pcrs.is_some());
-        assert!(
-            ZoneArgsParser::try_parse_from(common.into_iter().chain([
-                "--sequencer.enable-prover",
-                "--sequencer.prover-attestation-policy",
-                "policy.json",
-                "--sequencer.prover-address",
-                "T13=localhost:5000",
-                "--shadow-prover.pcrs",
-                "00,00,00",
-            ]))
-            .is_err()
-        );
-    }
-
-    #[test]
     fn prover_addresses_accept_repeated_and_comma_separated_assignments() {
         let common = [
             "tempo-zone",
@@ -1042,6 +982,33 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[tokio::test]
+    async fn prover_requires_a_sequencer() {
+        let args = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.enable-prover",
+            "--sequencer.prover-address",
+            "T13=prover:5000",
+        ])
+        .unwrap()
+        .zone;
+        let node = ZoneNode::new(
+            "ws://localhost:8546".to_owned(),
+            Address::ZERO,
+            1,
+            Duration::from_secs(1),
+        );
+        let error = configure_sequencing(&args, 1, 1, std::path::Path::new("unused"), node)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--sequencer.enable-prover requires a sequencer; it is not supported on rpc_only P2P followers"
+        );
     }
 
     #[test]
