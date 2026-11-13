@@ -1777,9 +1777,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        let mut keychain = AccountKeychain::new();
-
-        keychain.initialize().expect("keychain initialized");
+        let mut keychain = AccountKeychain::initialized().expect("keychain initialized");
         keychain
             .set_transaction_key(Address::ZERO)
             .expect("root key setup succeeds");
@@ -1895,9 +1893,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-        let mut keychain = AccountKeychain::new();
-
-        keychain.initialize().expect("keychain initialized");
+        let mut keychain = AccountKeychain::initialized().expect("keychain initialized");
         keychain
             .set_transaction_key(Address::ZERO)
             .expect("root key setup succeeds");
@@ -2768,8 +2764,7 @@ mod keychain {
         let mut evm = test_evm(spec);
 
         StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-            let mut kc = AccountKeychain::new();
-            kc.initialize().unwrap();
+            let mut kc = AccountKeychain::initialized().unwrap();
             kc.set_transaction_key(Address::ZERO).unwrap();
             kc.set_tx_origin(user).unwrap();
             if seed_key {

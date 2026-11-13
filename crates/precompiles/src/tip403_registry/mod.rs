@@ -219,6 +219,14 @@ impl TIP403Registry {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Returns the next policy ID to be assigned (always ≥ 2, since IDs 0 and 1 are reserved).
     pub fn policy_id_counter(&self) -> Result<u64> {
         // Skips the built-in policy IDs, when initializing the counter for the first time.
@@ -1034,7 +1042,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP403Setup,
+        test_util::{TIP403Setup, with_storage},
     };
     use alloy::{
         primitives::{Address, Log},
@@ -1104,8 +1112,7 @@ mod tests {
         let admin = Address::random();
 
         // pre-T6 the address is NOT protected
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let registry = TIP403Registry::new();
             assert!(!registry.is_authorized_as(
                 REJECT_ALL_POLICY_ID,
@@ -1116,8 +1123,7 @@ mod tests {
         })?;
 
         // T6+ the address is protected
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T6, || {
             let registry = TIP403Registry::new();
             let whitelist_id = TIP403Setup::whitelist(admin).apply()?;
             let blacklist_id = TIP403Setup::blacklist(admin)
@@ -1153,8 +1159,7 @@ mod tests {
     fn test_whitelist_and_blacklist_policies() -> eyre::Result<()> {
         let [admin, user] = actors();
         for hardfork in [TempoHardfork::T0, TempoHardfork::default()] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(hardfork, || {
                 let mut registry = TIP403Registry::new();
 
                 // Whitelist: user not authorized until added
@@ -1197,10 +1202,7 @@ mod tests {
 
             // Querying a non-existent policy ID reverts with PolicyNotFound
             let result = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 100 });
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
-            ));
+            assert_eq!(result, Err(TIP403RegistryError::policy_not_found().into()));
 
             Ok(())
         })
@@ -1214,8 +1216,7 @@ mod tests {
             // T2: virtual builtins return correct types
             (TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(hardfork, || {
                 let registry = TIP403Registry::new();
 
                 // reject-all → WHITELIST on every fork (coincides with default storage)
@@ -1321,8 +1322,7 @@ mod tests {
 
     #[test]
     fn test_set_receive_policy_rejects_virtual_account() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T6, || {
             let mut registry = TIP403Registry::new();
 
             let virtual_result = registry.set_receive_policy(
@@ -1333,12 +1333,10 @@ mod tests {
                     recoveryAuthority: Address::ZERO,
                 },
             );
-            assert!(matches!(
+            assert_eq!(
                 virtual_result,
-                Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::VirtualAddressNotAllowed(_)
-                ))
-            ));
+                Err(TIP403RegistryError::virtual_address_not_allowed().into())
+            );
 
             Ok(())
         })
@@ -1416,12 +1414,10 @@ mod tests {
                     recoveryAuthority: Address::ZERO,
                 },
             );
-            assert!(matches!(
+            assert_eq!(
                 missing_result,
-                Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::PolicyNotFound(_)
-                ))
-            ));
+                Err(TIP403RegistryError::policy_not_found().into())
+            );
 
             let compound_id = registry.create_compound_policy(
                 creator,
@@ -1439,12 +1435,10 @@ mod tests {
                     recoveryAuthority: Address::ZERO,
                 },
             );
-            assert!(matches!(
+            assert_eq!(
                 compound_result,
-                Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::InvalidReceivePolicyType(_)
-                ))
-            ));
+                Err(TIP403RegistryError::invalid_receive_policy_type().into())
+            );
 
             Ok(())
         })
@@ -1734,9 +1728,7 @@ mod tests {
         let [admin, user] = actors();
 
         for hardfork in [TempoHardfork::T0, TempoHardfork::T1] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-
-            StorageCtx::enter(&mut storage, || {
+            with_storage(hardfork, || {
                 let mut registry = TIP403Registry::new();
 
                 // Create sender and recipient whitelists
@@ -1917,8 +1909,7 @@ mod tests {
     fn test_create_policy_rejects_non_simple_policy_types() -> eyre::Result<()> {
         let admin = Address::random();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let mut registry = TIP403Registry::new();
 
             for policy_type in [
@@ -1932,12 +1923,10 @@ mod tests {
                         policyType: policy_type,
                     },
                 );
-                assert!(matches!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP403RegistryError(
-                        TIP403RegistryError::IncompatiblePolicyType(_)
-                    )
-                ));
+                assert_eq!(
+                    result,
+                    Err(TIP403RegistryError::incompatible_policy_type().into())
+                );
             }
 
             Ok(())
@@ -1963,12 +1952,10 @@ mod tests {
                         accounts: vec![account],
                     },
                 );
-                assert!(matches!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP403RegistryError(
-                        TIP403RegistryError::IncompatiblePolicyType(_)
-                    )
-                ));
+                assert_eq!(
+                    result,
+                    Err(TIP403RegistryError::incompatible_policy_type().into())
+                );
             }
 
             Ok(())
@@ -2017,8 +2004,7 @@ mod tests {
     fn test_create_policy_stores_simple_type_u8() -> eyre::Result<()> {
         let admin = Address::random();
         for hardfork in [TempoHardfork::T0, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(hardfork, || {
                 let registry = TIP403Registry::new();
 
                 // WHITELIST should store as 0, BLACKLIST as 1
@@ -2054,12 +2040,10 @@ mod tests {
                         accounts: vec![account],
                     },
                 );
-                assert!(matches!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP403RegistryError(
-                        TIP403RegistryError::IncompatiblePolicyType(_)
-                    )
-                ));
+                assert_eq!(
+                    result,
+                    Err(TIP403RegistryError::incompatible_policy_type().into())
+                );
             }
 
             // With empty accounts: succeeds (loop never enters revert path)
@@ -2111,10 +2095,7 @@ mod tests {
                     mintRecipientPolicyId: valid_policy_id,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotSimple(_))
-            ));
+            assert_eq!(result, Err(TIP403RegistryError::policy_not_simple().into()));
 
             Ok(())
         })
@@ -2209,22 +2190,17 @@ mod tests {
             // Non-existent policy should return PolicyNotFound
             let result = registry
                 .compound_policy_data(ITIP403Registry::compoundPolicyDataCall { policyId: 999 });
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotFound(_))
-            ));
+            assert_eq!(result, Err(TIP403RegistryError::policy_not_found().into()));
 
             // Simple policy should return IncompatiblePolicyType
             let simple_policy_id = TIP403Setup::whitelist(admin).apply()?;
             let result = registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
                 policyId: simple_policy_id,
             });
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::IncompatiblePolicyType(_)
-                )
-            ));
+            assert_eq!(
+                result,
+                Err(TIP403RegistryError::incompatible_policy_type().into())
+            );
 
             Ok(())
         })
@@ -2291,8 +2267,7 @@ mod tests {
 
     #[test]
     fn test_initialize_sets_storage_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let mut registry = TIP403Registry::new();
 
             // Before init, should not be initialized
@@ -2397,12 +2372,10 @@ mod tests {
                     allowed: true,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::VirtualAddressNotAllowed(_)
-                )
-            ));
+            assert_eq!(
+                result,
+                Err(TIP403RegistryError::virtual_address_not_allowed().into())
+            );
 
             Ok(())
         })
@@ -2425,12 +2398,10 @@ mod tests {
                     restricted: true,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::VirtualAddressNotAllowed(_)
-                )
-            ));
+            assert_eq!(
+                result,
+                Err(TIP403RegistryError::virtual_address_not_allowed().into())
+            );
 
             Ok(())
         })
@@ -2455,12 +2426,10 @@ mod tests {
                     ],
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::VirtualAddressNotAllowed(_)
-                )
-            ));
+            assert_eq!(
+                result,
+                Err(TIP403RegistryError::virtual_address_not_allowed().into())
+            );
 
             // Verify counter was not incremented (no policy created)
             assert_eq!(registry.policy_id_counter()?, 2);
