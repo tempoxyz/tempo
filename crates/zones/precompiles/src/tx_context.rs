@@ -1,47 +1,57 @@
 //! Transaction execution context for authenticated withdrawals.
 //!
-//! The zone outbox needs the real hash and effective fee payer of the currently executing user
-//! transaction. The Zone EVM publishes both into a thread-local context before EVM execution for
-//! the native outbox to read.
-
-use std::{cell::RefCell, thread_local};
+//! The zone outbox needs the real hash, sender, and effective fee payer of the currently executing
+//! user transaction. The Zone EVM publishes them into a thread-local context before EVM execution
+//! for the native outbox to read.
 
 use alloy_primitives::{Address, B256};
 
-thread_local! {
-    static CURRENT_TRANSACTION: RefCell<Option<TransactionContext>> = const { RefCell::new(None) };
+/// Identity of the currently executing user transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransactionContext {
+    /// Transaction hash.
+    pub tx_hash: B256,
+    /// Transaction sender (`tx.origin`).
+    pub origin: Address,
+    /// Effective fee payer: the sponsor when one signed the transaction, otherwise the sender.
+    pub fee_payer: Address,
 }
 
-#[derive(Clone, Copy)]
-struct TransactionContext {
-    tx_hash: B256,
-    fee_payer: Address,
+impl TransactionContext {
+    /// Whether a fee payer other than the sender pays for this transaction.
+    pub(crate) fn is_sponsored(&self) -> bool {
+        self.fee_payer != self.origin
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static CURRENT_TRANSACTION: core::cell::RefCell<Option<TransactionContext>> =
+        const { core::cell::RefCell::new(None) };
 }
 
 /// Guard that clears the current transaction context when dropped.
+#[cfg(feature = "std")]
 pub struct TransactionContextGuard;
 
+#[cfg(feature = "std")]
 impl Drop for TransactionContextGuard {
     fn drop(&mut self) {
         CURRENT_TRANSACTION.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
-/// Publish the current transaction hash and effective fee payer for EVM execution.
-pub fn set_current_transaction(tx_hash: B256, fee_payer: Address) -> TransactionContextGuard {
-    CURRENT_TRANSACTION.with(|slot| {
-        *slot.borrow_mut() = Some(TransactionContext { tx_hash, fee_payer });
-    });
+/// Publish the current transaction context for EVM execution.
+#[cfg(feature = "std")]
+pub fn set_current_transaction(context: TransactionContext) -> TransactionContextGuard {
+    CURRENT_TRANSACTION.with(|slot| *slot.borrow_mut() = Some(context));
     TransactionContextGuard
 }
 
-/// Return the current transaction hash and effective fee payer, when published by the EVM.
-pub(crate) fn current_transaction() -> Option<(B256, Address)> {
-    CURRENT_TRANSACTION.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|context| (context.tx_hash, context.fee_payer))
-    })
+/// Return the current transaction context, when published by the EVM.
+#[cfg(feature = "std")]
+pub(crate) fn current_transaction() -> Option<TransactionContext> {
+    CURRENT_TRANSACTION.with(|slot| *slot.borrow())
 }
 
 #[cfg(test)]
@@ -50,11 +60,14 @@ mod tests {
 
     #[test]
     fn publishes_and_clears_current_transaction() {
-        let tx_hash = B256::repeat_byte(0x42);
-        let fee_payer = Address::repeat_byte(0x24);
+        let context = TransactionContext {
+            tx_hash: B256::repeat_byte(0x42),
+            origin: Address::repeat_byte(0x12),
+            fee_payer: Address::repeat_byte(0x24),
+        };
 
-        let guard = set_current_transaction(tx_hash, fee_payer);
-        assert_eq!(current_transaction(), Some((tx_hash, fee_payer)));
+        let guard = set_current_transaction(context);
+        assert_eq!(current_transaction(), Some(context));
 
         drop(guard);
         assert_eq!(current_transaction(), None, "guard must clear the context");
