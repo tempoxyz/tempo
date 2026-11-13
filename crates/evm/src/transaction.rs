@@ -11,6 +11,9 @@ use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut};
 use reth_primitives_traits::WithEncoded;
 use std::{borrow::Borrow, ops::Deref, sync::Arc};
+use tempo_chainspec::{
+    constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, gas_params::EIP7702_PER_EMPTY_ACCOUNT_COST_T1,
+};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
 
 /// Identifies the kind of execution represented by a transaction environment.
@@ -262,10 +265,21 @@ impl From<Recovered<TempoTxEnvelope>> for TempoEvmTx {
                 transaction.strip_signature(),
                 signer,
             )),
-            TempoTxEnvelope::Eip7702(transaction) => Self::Eip7702(Recovered::new_unchecked(
-                LazyTxEip7702::from_recovered_authorizations(transaction.strip_signature()),
-                signer,
-            )),
+            TempoTxEnvelope::Eip7702(transaction) => {
+                let transaction = transaction.strip_signature();
+                // Execution checks intrinsic gas, which charges every authorization at least
+                // `EIP7702_PER_EMPTY_ACCOUNT_COST_T1`, and the T1+ gas cap before it reads an
+                // authority. Lists past that budget stay unrecovered and recover on demand.
+                let max_authorizations = transaction.gas_limit.min(TEMPO_T1_TX_GAS_LIMIT_CAP)
+                    / u64::from(EIP7702_PER_EMPTY_ACCOUNT_COST_T1);
+                let transaction =
+                    if transaction.authorization_list.len() as u64 > max_authorizations {
+                        LazyTxEip7702::from_signed_authorizations(transaction)
+                    } else {
+                        LazyTxEip7702::from_recovered_authorizations(transaction)
+                    };
+                Self::Eip7702(Recovered::new_unchecked(transaction, signer))
+            }
             TempoTxEnvelope::AA(transaction) => Self::AA(TempoAaTx::new(Recovered::new_unchecked(
                 transaction,
                 signer,
@@ -618,12 +632,17 @@ impl TransactionEnvMut for TempoTxEnv {
 mod tests {
     use super::*;
     use alloy_consensus::{TxEip7702, transaction::TxHashRef};
-    use alloy_eips::eip2930::AccessListItem;
+    use alloy_eips::{
+        eip2930::AccessListItem,
+        eip7702::{Authorization, SignedAuthorization},
+    };
     use alloy_primitives::{B256, Signature, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
+    use evm2::ethereum::LazyAuthorization;
     use proptest::prelude::*;
+    use tempo_chainspec::TempoHardfork;
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
         transaction::{
@@ -687,6 +706,55 @@ mod tests {
         assert_eq!(transaction.ty(), 4);
         assert_eq!(transaction.signer(), SIGNER);
         assert!(transaction.as_eip7702().is_some());
+    }
+
+    #[test]
+    fn eip7702_recovers_authorizations_only_when_gas_covers_them() {
+        let authorization = SignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::ZERO,
+                address: Address::ZERO,
+                nonce: 0,
+            },
+            0,
+            U256::from(1),
+            U256::from(1),
+        );
+        let is_recovered = |count, gas_limit| {
+            let transaction = convert(TempoTxEnvelope::Eip7702(
+                TxEip7702 {
+                    gas_limit,
+                    authorization_list: vec![authorization.clone(); count],
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            ));
+            transaction
+                .as_eip7702()
+                .unwrap()
+                .authorizations()
+                .all(|authorization| matches!(authorization, LazyAuthorization::Recovered { .. }))
+        };
+        let per_authorization = u64::from(EIP7702_PER_EMPTY_ACCOUNT_COST_T1);
+        let max_per_tx = (TEMPO_T1_TX_GAS_LIMIT_CAP / per_authorization) as usize;
+
+        assert!(is_recovered(2, 2 * per_authorization));
+        assert!(!is_recovered(2, 2 * per_authorization - 1));
+        assert!(!is_recovered(max_per_tx + 1, u64::MAX));
+    }
+
+    /// The EIP-7702 recovery budget assumes no fork's per-tx gas cap exceeds
+    /// `TEMPO_T1_TX_GAS_LIMIT_CAP`. Raising it without updating the budget leaves valid
+    /// transactions recovering their authorizations during execution.
+    #[test]
+    fn eip7702_recovery_budget_covers_every_tx_gas_cap() {
+        for fork in TempoHardfork::VARIANTS {
+            assert!(
+                fork.tx_gas_limit_cap()
+                    .is_some_and(|cap| cap <= TEMPO_T1_TX_GAS_LIMIT_CAP),
+                "{fork} raises the tx gas cap past the EIP-7702 recovery budget"
+            );
+        }
     }
 
     #[test]
