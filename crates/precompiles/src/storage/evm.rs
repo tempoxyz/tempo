@@ -46,11 +46,8 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     actions: StorageActions,
     /// The precompile call frame that nested calls start from, if the provider serves one.
     frame: Option<Frame>,
-    /// Gas merged from the successful nested callees that a checkpoint can still roll back.
-    merged_call_gas: Vec<MergedCallGas>,
-    /// Whether a checkpoint revert took back a nested callee's state gas refill that the frame
-    /// had spent and could not pay back.
-    gas_overdrawn: bool,
+    /// Checkpoints taken and not yet committed or reverted, during which nested calls are refused.
+    open_checkpoints: u32,
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -100,8 +97,7 @@ where
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
             frame: None,
-            merged_call_gas: Vec::new(),
-            gas_overdrawn: false,
+            open_checkpoints: 0,
         }
     }
 
@@ -129,9 +125,12 @@ where
         self
     }
 
-    /// Returns whether the precompile call must fail with out of gas, whatever it returned.
-    pub(crate) fn gas_overdrawn(&self) -> bool {
-        self.gas_overdrawn
+    /// Counts a checkpoint as closed by a commit or revert.
+    fn close_checkpoint(&mut self) {
+        self.open_checkpoints = self
+            .open_checkpoints
+            .checked_sub(1)
+            .expect("every checkpoint commit or revert closes a checkpoint taken earlier");
     }
 
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
@@ -673,9 +672,15 @@ where
         is_static: bool,
     ) -> Result<CallOutcome, TempoPrecompileError> {
         // A refusal fails the precompile call: as a failed callee, it would let whoever nests the
-        // calls pick the path the precompile takes.
+        // calls pick the path the precompile takes. Inside a checkpoint, a revert would roll back a
+        // successful callee's state but not the gas and refund it merged, so calls are refused
+        // there: like the EVM, only a whole frame reverts after a call.
         let frame = match &self.frame {
-            Some(frame) if frame.nested_calls.get() < MAX_NESTED_CALLS => frame.clone(),
+            Some(frame)
+                if self.open_checkpoints == 0 && frame.nested_calls.get() < MAX_NESTED_CALLS =>
+            {
+                frame.clone()
+            }
             _ => return Err(TempoPrecompileError::NestedCallUnavailable),
         };
         // The callee's storage accesses are not recorded as storage actions.
@@ -722,7 +727,6 @@ where
             ext: Default::default(),
             _non_exhaustive: (),
         };
-        let journal_len = self.checkpoint().journal_len();
         frame.nested_calls.set(frame.nested_calls.get() + 1);
         let running = RunningNestedCall(frame.nested_calls);
         let result = self.evm.execute_message(&mut message);
@@ -741,50 +745,26 @@ where
         if !result.is_success() {
             return Ok(CallOutcome::Failure(result.output));
         }
-        self.merged_call_gas.push(MergedCallGas {
-            journal_len,
-            state_gas_spent: result.gas.state_gas_spent(),
-            refunded: result.gas.refunded(),
-        });
         Ok(CallOutcome::Success(result.output))
     }
 
     #[inline]
     fn checkpoint(&mut self) -> StateCheckpoint {
+        self.open_checkpoints += 1;
         self.evm.state_mut().checkpoint()
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
+    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {
+        self.close_checkpoint();
+    }
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
-        let journal_len = checkpoint.journal_len();
+        self.close_checkpoint();
         self.evm
             .state_mut()
             .rollback(checkpoint, self.version.features);
-
-        // Settle the gas merged from the nested callees this rolled back as if they had reverted.
-        let (mut state_gas_spent, mut refunded) = (0i64, 0i64);
-        while let Some(call) = self
-            .merged_call_gas
-            .pop_if(|call| call.journal_len >= journal_len)
-        {
-            state_gas_spent = state_gas_spent.saturating_add(call.state_gas_spent);
-            refunded = refunded.saturating_add(call.refunded);
-        }
-        self.gas_tracker.record_refund(refunded.saturating_neg());
-        if state_gas_spent > 0 {
-            self.gas_tracker
-                .refill_reservoir(state_gas_spent.unsigned_abs());
-        } else if self
-            .gas_tracker
-            .try_spend_state(state_gas_spent.unsigned_abs())
-            .is_err()
-        {
-            // The frame spent the state gas the callees refilled and cannot pay it back.
-            self.gas_overdrawn = true;
-        }
     }
 
     #[inline]
@@ -981,16 +961,6 @@ impl Drop for RunningNestedCall {
     fn drop(&mut self) {
         self.0.set(self.0.get() - 1);
     }
-}
-
-/// Gas merged from a successful nested callee, taken back when a checkpoint rolls it back.
-struct MergedCallGas {
-    /// Length of the state journal when the call started.
-    journal_len: usize,
-    /// The callee's net EIP-8037 state gas, negative when it cleared more than it created.
-    state_gas_spent: i64,
-    /// The callee's refund.
-    refunded: i64,
 }
 
 enum GasTrackerStorage<'a> {
@@ -2293,42 +2263,30 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_revert_takes_back_gas_merged_from_callee() -> eyre::Result<()> {
-        // sstore(1, 1); sstore(0, 0); stop
-        let code = Bytecode::new_raw(bytes!("60016001555f5f5500"));
-        // The reservoir covers the new slot's state gas, or the callee's gas pays for all of it.
-        for reservoir in [500_000, 0] {
-            let mut database = InMemoryDB::default();
-            database.insert_account_info(&CALLEE, AccountInfo::default().with_code(code.clone()));
-            database.insert_account_storage(&CALLEE, &U256::ZERO, &U256::from(7));
-            let mut evm = TestEvm::with_database(TempoHardfork::T4, true, database);
-            let mut provider = evm
-                .provider_with_gas_limit(10_000_000, reservoir)
-                .with_frame(frame());
+    fn test_call_refused_inside_checkpoint() -> eyre::Result<()> {
+        let mut evm = evm_with_callee(bytes!("00"));
+        let mut provider = evm
+            .provider_with_gas_limit(1_000_000, 0)
+            .with_frame(frame());
 
-            let checkpoint = provider.checkpoint();
-            let outcome = provider.call(CALLEE, Bytes::new(), 1_000_000, false)?;
-            assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
-            let (refunded, state_gas) = (provider.gas_refunded(), provider.state_gas_used());
-            assert!(refunded > 0);
-            assert!(state_gas > 0);
+        // Refused while any checkpoint is open, before anything is charged.
+        let outer = provider.checkpoint();
+        let inner = provider.checkpoint();
+        assert_eq!(
+            provider.call(CALLEE, Bytes::new(), u64::MAX, false),
+            Err(TempoPrecompileError::NestedCallUnavailable)
+        );
+        provider.checkpoint_commit(inner);
+        assert_eq!(
+            provider.call(CALLEE, Bytes::new(), u64::MAX, false),
+            Err(TempoPrecompileError::NestedCallUnavailable)
+        );
+        assert_eq!(provider.gas_used(), 0);
 
-            // A checkpoint taken after the call does not cover the callee.
-            let later = provider.checkpoint();
-            provider.checkpoint_revert(later);
-            assert_eq!(provider.gas_refunded(), refunded);
-            assert_eq!(provider.state_gas_used(), state_gas);
-
-            // The one taken before it undoes the callee's writes, the refund they earned and the
-            // state gas they cost, wherever that was drawn from.
-            provider.checkpoint_revert(checkpoint);
-            assert_eq!(provider.sload(CALLEE, U256::ONE)?, U256::ZERO);
-            assert_eq!(provider.gas_refunded(), 0);
-            assert_eq!(provider.state_gas_used(), 0);
-            assert_eq!(provider.state_gas_spilled(), 0);
-            assert_eq!(provider.reservoir(), reservoir);
-            assert!(!provider.gas_overdrawn());
-        }
+        // Allowed again once every checkpoint is committed or reverted.
+        provider.checkpoint_revert(outer);
+        let outcome = provider.call(CALLEE, Bytes::new(), u64::MAX, false)?;
+        assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
         Ok(())
     }
 

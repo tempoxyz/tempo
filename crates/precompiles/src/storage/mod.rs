@@ -198,7 +198,8 @@ pub trait PrecompileStorageProvider {
     /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
     /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
     /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
-    /// propagated.
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
     fn call(
         &mut self,
         _target: Address,
@@ -223,9 +224,6 @@ pub trait PrecompileStorageProvider {
     fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint);
 
     /// Reverts all state changes back to the given checkpoint.
-    ///
-    /// The gas merged from the nested callees ([`call`](Self::call)) that this rolls back is
-    /// settled as if they had reverted.
     ///
     /// Prefer [`CheckpointGuard`] (auto-reverts on drop).
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint);

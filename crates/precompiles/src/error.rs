@@ -145,7 +145,7 @@ pub enum TempoPrecompileError {
     #[error("Invalid account commitment write")]
     InvalidConfigCommitmentWrite,
 
-    /// A nested call was made without a precompile call frame, or with
+    /// A nested call was made without a precompile call frame, inside a checkpoint, or with
     /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS) of them running.
     #[error("Nested call unavailable")]
     NestedCallUnavailable,

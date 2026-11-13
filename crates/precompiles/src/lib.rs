@@ -271,12 +271,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
                 depth: message.depth,
                 nested_calls: self.nested_calls.clone(),
             });
-        let result = StorageCtx::enter(&mut storage, || precompile(&input));
-        // A halt already takes all gas, and a fatal error must stay one.
-        if storage.gas_overdrawn() && matches!(result, Ok(_) | Err(PrecompileError::Revert(_))) {
-            return error::TempoPrecompileError::OutOfGas.into_precompile_result();
-        }
-        result
+        StorageCtx::enter(&mut storage, || precompile(&input))
     }
 }
 
@@ -356,12 +351,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        error::TempoPrecompileError,
-        storage::{
-            CallOutcome, PrecompileStorageProvider, StorageCtx, evm::MAX_NESTED_CALLS,
-            hashmap::HashMapStorageProvider,
-        },
+    use crate::storage::{
+        CallOutcome, StorageCtx, evm::MAX_NESTED_CALLS, hashmap::HashMapStorageProvider,
     };
     use alloy::{
         primitives::{Bytes, U256, bytes},
@@ -377,7 +368,6 @@ mod tests {
         interpreter::{Interpreter, MessageResult},
         precompiles::Precompile,
         registry::TxRegistry,
-        version::GasId,
     };
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
@@ -709,51 +699,6 @@ mod tests {
         let panic = call(panicking).unwrap_err();
         assert_eq!(panic.downcast_ref(), Some(&"callee panics"));
         assert_eq!(precompiles.nested_calls.get(), 0);
-    }
-
-    /// A precompile that rolls back a callee's state gas refill after spending it pays the refill
-    /// back from its gas, and runs out of gas if it cannot, whatever it returns.
-    #[test]
-    fn test_precompile_pays_back_rolled_back_refill_or_runs_out_of_gas() {
-        let spec = TempoHardfork::T4;
-        let callee = Address::repeat_byte(0xc5);
-        for (gas_limit, fails) in [(10_000_000, false), (100_000, false), (100_000, true)] {
-            let mut evm = test_evm_with_amsterdam(spec, false, true);
-            let state_gas = evm.version().gas_params.get(GasId::SstoreSetState);
-            // An earlier frame of the transaction deploys `sstore(1, 0); stop` and creates the slot.
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-            storage.set_code(callee, bytes!("5f60015500")).unwrap();
-            storage.sstore(callee, U256::ONE, U256::ONE).unwrap();
-            drop(storage);
-
-            let precompiles = test_tempo_precompiles(spec);
-            let (result, gas) =
-                execute_in_frame(&mut evm, &precompiles, gas_limit, |mut storage| {
-                    let checkpoint = storage.checkpoint();
-                    let outcome = storage.call(callee, Bytes::new(), u64::MAX, false)?;
-                    assert_eq!(outcome, CallOutcome::Success(Bytes::new()));
-                    assert_eq!(storage.state_gas_used(), 0);
-                    // The precompile spends the callee's refill on a slot of its own.
-                    storage.sstore(TIP20_FACTORY_ADDRESS, U256::ZERO, U256::ONE)?;
-                    drop(checkpoint);
-                    if fails {
-                        return Err(TempoPrecompileError::under_overflow());
-                    }
-                    Ok(())
-                });
-            if gas_limit == 100_000 {
-                assert!(matches!(
-                    result,
-                    Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
-                ));
-            } else {
-                // A checkpoint revert keeps the state gas of the precompile's own slot, which now
-                // comes out of its gas.
-                assert!(result.is_ok());
-                assert_eq!(gas.state_gas_spent(), state_gas as i64);
-                assert_eq!(gas.state_gas_spilled(), state_gas);
-            }
-        }
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
