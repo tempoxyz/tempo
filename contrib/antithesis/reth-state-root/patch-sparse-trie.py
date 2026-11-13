@@ -10,7 +10,9 @@ import tempfile
 REVISION = "4f58052785aed2f716faa2126ed57c3790cc0233"
 SOURCE = Path("crates/trie/sparse/src/arena/mod.rs")
 PRISTINE = "dfa6c2118863f6517f5bcc8783cb16e0a7f24a2269742108dd6fd6950fe48c0d"
-PATCHED = "81c81398234421f726e8e672230d58fb71fe1b2fb7d062b293c93d580f1c9a2d"
+PATCHED = "905d4879325b89c14a05995811a0410b1f57ca92b299fdacb7af0705ebd4aa6d"
+# Also upgrade the previous combined encoder/proof hook from validated pristine HEAD.
+COMBINED_PATCHED = "81c81398234421f726e8e672230d58fb71fe1b2fb7d062b293c93d580f1c9a2d"
 # Docker/Cargo caches may contain the encoding-only observation hook at this revision.
 LEGACY_PATCHED = "9a86698317c2997b338f6e00b6c414b130615a299176a5ea78e7ac4cd3b617e4"
 
@@ -33,7 +35,7 @@ def apply(checkouts):
         print(f"Sparse branch hook already applied at {REVISION}")
         return
     pristine = source.read_bytes()
-    if digest == LEGACY_PATCHED:
+    if digest in (LEGACY_PATCHED, COMBINED_PATCHED):
         pristine = subprocess.check_output(["git", "-C", str(root), "show", f"HEAD:{SOURCE}"])
         if hashlib.sha256(pristine).hexdigest() != PRISTINE:
             raise RuntimeError("Committed Reth sparse source does not match pinned SHA256")

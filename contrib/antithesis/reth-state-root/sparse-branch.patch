@@ -1,35 +1,6 @@
 --- a/crates/trie/sparse/src/arena/mod.rs
 +++ b/crates/trie/sparse/src/arena/mod.rs
-@@ -1,3 +1,28 @@
-+// Docker-only exploration hook; normal Reth builds do not contain this macro.
-+macro_rules! sometimes_each {
-+    ($branch_path_len:expr, $is_root:expr, $state_mask:expr, $revealed_mask:expr, $leaf_mask:expr) => {{
-+        unsafe extern "C" {
-+            fn antithesis_sparse_branch_shape(
-+                branch_path_len: usize,
-+                is_root: bool,
-+                state_mask: u16,
-+                revealed_mask: u16,
-+                leaf_mask: u16,
-+            );
-+        }
-+        // SAFETY: the workload exports this exact primitive-only C ABI signature.
-+        unsafe {
-+            antithesis_sparse_branch_shape(
-+                $branch_path_len,
-+                $is_root,
-+                $state_mask,
-+                $revealed_mask,
-+                $leaf_mask,
-+            );
-+        }
-+    }};
-+}
-+
- mod branch_child_idx;
- mod cursor;
- mod node_arena;
-@@ -29,6 +54,55 @@
+@@ -29,6 +29,55 @@
  /// The maximum path length (in nibbles) for nodes that live in the upper trie. Nodes at this
  /// depth or deeper belong to lower subtries.
  const UPPER_TRIE_MAX_DEPTH: usize = 2;
@@ -85,7 +56,7 @@
 
  /// Returns the branch data for a branch or extension node.
  fn branch_data(arena: &NodeArena, idx: Index) -> &ArenaSparseNodeBranch {
-@@ -419,6 +493,11 @@
+@@ -419,6 +468,11 @@
              // If the path hits a blinded node, request a proof regardless of update type.
              if matches!(find_result, SeekResult::Blinded) {
                  let logical_len = self.buffers.cursor.head_logical_branch_path_len(&self.arena);
@@ -97,39 +68,7 @@
                  self.required_proofs.push((
                      idx,
                      ArenaRequiredProof { key, parent: ProofV2TargetParent::new(logical_len) },
-@@ -1186,6 +1265,31 @@
-             rlp_buf.clear();
-             let rlp_node = BranchNodeRef::new(rlp_node_buf, state_mask).rlp(rlp_buf);
-
-+            {
-+                // Observe live arena handles, not model keys or persistence hash/tree masks.
-+                let branch = branch_data(arena, head_idx);
-+                let mut revealed_mask = TrieMask::default();
-+                let mut leaf_mask = TrieMask::default();
-+                for (nibble, child) in branch.child_iter() {
-+                    if let Some(child_idx) = child.revealed_index() {
-+                        revealed_mask.set_bit(nibble);
-+                        let mut node = &arena[child_idx];
-+                        while let ArenaSparseNode::Subtrie(subtrie) = node {
-+                            node = &subtrie.arena[subtrie.root];
-+                        }
-+                        if matches!(node, ArenaSparseNode::Leaf { .. }) {
-+                            leaf_mask.set_bit(nibble);
-+                        }
-+                    }
-+                }
-+                let branch_path_len = cursor.head_logical_branch_path_len(arena);
-+                let is_root = branch_path_len == 0;
-+                let state_mask = branch.state_mask.get();
-+                let revealed_mask = revealed_mask.get();
-+                let leaf_mask = leaf_mask.get();
-+                sometimes_each!(branch_path_len, is_root, state_mask, revealed_mask, leaf_mask);
-+            }
-+
-             let rlp_node = if short_key.is_empty() {
-                 rlp_node
-             } else {
-@@ -1669,6 +1773,11 @@
+@@ -1669,6 +1723,11 @@
                          let mut sibling_path = cursor.parent_logical_branch_path(arena);
                          sibling_path.push_unchecked(sibling_nibble);
                          trace!(target: TRACE_TARGET, ?full_path, ?sibling_path, "Removal would collapse branch onto blinded sibling, requesting proof");
@@ -141,7 +80,7 @@
                          return (
                              RemoveLeafResult::NeedsProof {
                                  key,
-@@ -1796,6 +1905,11 @@
+@@ -1796,6 +1855,11 @@
          let mut sibling_path = cursor.parent_logical_branch_path(arena);
          sibling_path.push_unchecked(sibling_nibble);
 
@@ -153,7 +92,7 @@
          Some(ArenaRequiredProof {
              key: Self::nibbles_to_padded_b256(&sibling_path),
              parent: ProofV2TargetParent::new(
-@@ -2808,6 +2922,11 @@
+@@ -2808,6 +2872,11 @@
                      let logical_len = cursor.head_logical_branch_path_len(&self.upper_arena);
                      let parent = ProofV2TargetParent::new(logical_len);
                      trace!(target: TRACE_TARGET, ?key, ?parent, "Update hit blinded node, requesting proof");

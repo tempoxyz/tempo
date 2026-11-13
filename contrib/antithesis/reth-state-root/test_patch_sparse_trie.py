@@ -35,6 +35,7 @@ class PatchSparseTrieTests(unittest.TestCase):
         self.module.PRISTINE = hashlib.sha256(b"original\n").hexdigest()
         self.module.PATCHED = hashlib.sha256(b"patched\n").hexdigest()
         self.module.LEGACY_PATCHED = hashlib.sha256(b"legacy\n").hexdigest()
+        self.module.COMBINED_PATCHED = hashlib.sha256(b"combined\n").hexdigest()
         self.module.__file__ = str(self.root / "patch-sparse-trie.py")
         (self.root / "sparse-branch.patch").write_text("".join(difflib.unified_diff(
             ["original\n"], ["patched\n"],
@@ -56,22 +57,26 @@ class PatchSparseTrieTests(unittest.TestCase):
             run.assert_not_called()
         self.assertEqual(self.source.read_text(), "patched\n")
 
-    def test_upgrade_legacy_cache(self):
-        self.source.write_text("legacy\n")
-        with patch.object(self.module.subprocess, "check_output", side_effect=[
-            self.module.REVISION + "\n", b"original\n",
-        ]):
-            self.module.apply(self.root / "checkouts")
-        self.assertEqual(self.source.read_text(), "patched\n")
+    def test_upgrade_both_historical_caches(self):
+        for cached in ("legacy\n", "combined\n"):
+            with self.subTest(cached=cached):
+                self.source.write_text(cached)
+                with patch.object(self.module.subprocess, "check_output", side_effect=[
+                    self.module.REVISION + "\n", b"original\n",
+                ]):
+                    self.module.apply(self.root / "checkouts")
+                self.assertEqual(self.source.read_text(), "patched\n")
 
     def test_upgrade_rejects_changed_committed_source(self):
-        self.source.write_text("legacy\n")
-        with patch.object(self.module.subprocess, "check_output", side_effect=[
-            self.module.REVISION + "\n", b"unexpected\n",
-        ]):
-            with self.assertRaisesRegex(RuntimeError, "Committed Reth sparse source"):
-                self.module.apply(self.root / "checkouts")
-        self.assertEqual(self.source.read_text(), "legacy\n")
+        for cached in ("legacy\n", "combined\n"):
+            with self.subTest(cached=cached):
+                self.source.write_text(cached)
+                with patch.object(self.module.subprocess, "check_output", side_effect=[
+                    self.module.REVISION + "\n", b"unexpected\n",
+                ]):
+                    with self.assertRaisesRegex(RuntimeError, "Committed Reth sparse source"):
+                        self.module.apply(self.root / "checkouts")
+                self.assertEqual(self.source.read_text(), cached)
 
     def test_reject_unexpected_source(self):
         self.source.write_text("unexpected\n")
@@ -112,6 +117,8 @@ class PinnedSparseTrieTests(unittest.TestCase):
         cls.module = load_patcher()
         # Exact upstream arena/mod.rs at REVISION, gzip-compressed with mtime=0.
         cls.pristine = gzip.decompress((HERE / "sparse-arena-pinned.rs.gz").read_bytes())
+        # Historical combined-hook source is only a cache-upgrade fixture, never built.
+        cls.combined = gzip.decompress((HERE / "sparse-arena-combined.rs.gz").read_bytes()).decode()
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.root = Path(cls.temporary.name)
@@ -127,20 +134,8 @@ class PinnedSparseTrieTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.pristine).hexdigest(), self.module.PRISTINE)
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), self.module.PATCHED)
 
-    def test_only_observation_additions_and_encoding_hook_unchanged(self):
-        # Removing the proof observer and its four calls preserves the encoding-only hook.
-        old = self.patched
-        start = old.index("/// Observes a proof target")
-        end = old.index("/// Returns the branch data", start)
-        old = old[:start] + old[end:]
-        old, count = re.subn(
-            r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", old, flags=re.S
-        )
-        self.assertEqual(count, 4)
-        self.assertEqual(hashlib.sha256(old.encode()).hexdigest(), self.module.LEGACY_PATCHED)
-
     def test_observation_only_patch_preserves_all_upstream_behaviour(self):
-        stripped = self.patched[self.patched.index("mod branch_child_idx;"):]
+        stripped = self.patched
         start = stripped.index("/// Observes a proof target")
         end = stripped.index("/// Returns the branch data", start)
         stripped = stripped[:start] + stripped[end:]
@@ -148,22 +143,17 @@ class PinnedSparseTrieTests(unittest.TestCase):
             r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", stripped, flags=re.S
         )
         self.assertEqual(count, 4)
-        start = stripped.index("            {\n                // Observe live arena handles")
-        end = stripped.index("            let rlp_node = if short_key.is_empty()", start)
-        stripped = stripped[:start] + stripped[end:]
         self.assertEqual(stripped.encode(), self.pristine)
-        # The new upstream removal path requests only the blinded sibling's proof.
+        self.assertNotIn("antithesis_sparse_branch_shape", self.patched)
+        self.assertNotIn("sometimes_each", self.patched)
+        self.assertNotIn("// Observe live arena handles", self.patched)
         self.assertIn("if let RemoveLeafResult::NeedsProof { proof_key, parent, .. } = result", stripped)
         self.assertNotIn("self.required_proofs.push((idx, ArenaRequiredProof { key, parent }));", stripped)
 
-    def test_parent_and_encoding_observers_resolve_explicit_extensions(self):
+    def test_parent_observer_resolves_explicit_extensions(self):
         start = self.patched.index("fn antithesis_observe_proof_target(")
         end = self.patched.index("/// Returns the branch data", start)
         self.assertIn("let branch = branch_data(arena, parent_idx);", self.patched[start:end])
-        start = self.patched.index("// Observe live arena handles")
-        end = self.patched.index("sometimes_each!", start)
-        self.assertIn("let branch = branch_data(arena, head_idx);", self.patched[start:end])
-        self.assertIn("cursor.head_logical_branch_path_len(arena)", self.patched[start:end])
 
     def test_reject_embedded_leaf_revert_without_changing_checkout(self):
         # A reverted duplicate proof request cannot pass the new pristine-source guard.
@@ -211,21 +201,24 @@ class PinnedSparseTrieTests(unittest.TestCase):
         self.assertIn("Some((parent_entry.index, sibling_path.len() - 1)),\n            &sibling_path,", collapse)
         self.assertLess(collapse.index("antithesis_observe_proof_target("), collapse.index("Some(ArenaRequiredProof {"))
 
-    def test_actual_legacy_cache_upgrade(self):
-        old = self.patched
-        start = old.index("/// Observes a proof target")
-        end = old.index("/// Returns the branch data", start)
-        old = old[:start] + old[end:]
-        old = re.sub(r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", old, flags=re.S)
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "checkouts/reth/pinned" / self.module.SOURCE
-            source.parent.mkdir(parents=True)
-            source.write_text(old)
-            with patch.object(self.module.subprocess, "check_output", side_effect=[
-                self.module.REVISION + "\n", self.pristine,
-            ]):
-                self.module.apply(Path(directory) / "checkouts")
-            self.assertEqual(source.read_text(), self.patched)
+    def test_actual_historical_cache_upgrades(self):
+        self.assertEqual(hashlib.sha256(self.combined.encode()).hexdigest(), self.module.COMBINED_PATCHED)
+        legacy = self.combined
+        start = legacy.index("/// Observes a proof target")
+        end = legacy.index("/// Returns the branch data", start)
+        legacy = legacy[:start] + legacy[end:]
+        legacy = re.sub(r"(?m)^ +antithesis_observe_proof_target\(\n.*?^ +\);\n", "", legacy, flags=re.S)
+        self.assertEqual(hashlib.sha256(legacy.encode()).hexdigest(), self.module.LEGACY_PATCHED)
+        for cached in (legacy, self.combined):
+            with self.subTest(digest=hashlib.sha256(cached.encode()).hexdigest()), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "checkouts/reth/pinned" / self.module.SOURCE
+                source.parent.mkdir(parents=True)
+                source.write_text(cached)
+                with patch.object(self.module.subprocess, "check_output", side_effect=[
+                    self.module.REVISION + "\n", self.pristine,
+                ]):
+                    self.module.apply(Path(directory) / "checkouts")
+                self.assertEqual(source.read_text(), self.patched)
 
     @unittest.skipUnless(shutil.which("rustc"), "rustc is needed for the executable ABI/mask contract")
     def test_rust_observer_contract(self):

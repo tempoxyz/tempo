@@ -11,6 +11,7 @@ from generate_sparse_buckets import arms
 
 def verify(binary):
     symbols = subprocess.check_output(['objdump', '-tC', str(binary)], text=True)
+    assert 'antithesis_sparse_branch_shape' not in symbols, 'Removed encoder ABI retained'
     found = {}
     for line in symbols.splitlines():
         match = re.match(r'([0-9a-f]+)\s+\w+\s+F\s+(\S+)\s+([0-9a-f]+) .*::coverage_(\w+)(?:::h[0-9a-f]+)?$', line)
@@ -20,6 +21,9 @@ def verify(binary):
             name = re.sub(r'::h[0-9a-f]+$', '', name)
             assert name not in found, f'duplicate function {name}'
             found[name] = (int(address, 16), int(size, 16), section)
+    # Reject any retained combined-bank body, even if it is no longer dispatched.
+    assert all(name.startswith('local_') or name in ('proof_no_parent', 'invalid_proof')
+               for name in found), f'Removed coverage family retained: {set(found) - {name for name, _ in arms()}}'
     expected = {name for name, _ in arms()}
     assert set(found) == expected, (expected - set(found), set(found) - expected)
     assert len({(address, section) for address, _, section in found.values()}) == len(expected), 'folded coverage functions'
