@@ -98,8 +98,9 @@ impl AddressFilter {
         )
     }
 
-    /// Checks the signers that need recovery: the key authorization signer, the fee payer, the
-    /// keychain access key, and the recovered authorization authorities.
+    /// Checks the transaction's authorities ([`TempoPooledTransaction::authorities`]: the sender,
+    /// the key authorization signer, a separate fee payer and the keychain access key) and the
+    /// recovered authorization authorities.
     ///
     /// The key authorization signer is the recovered primitive signer or the named configurable
     /// account. The access key is the recovered primitive key or, for a configurable account
@@ -117,10 +118,9 @@ impl AddressFilter {
             return Ok(());
         }
 
-        // The sender is checked by `check`.
-        let [_, signers @ ..] = transaction.authorities();
         self.find_match(
-            signers
+            transaction
+                .authorities()
                 .into_iter()
                 .flatten()
                 .chain(authorities.iter().copied()),
