@@ -27,6 +27,12 @@ case "$NODE" in
         ;;
 esac
 
+# Quorum nodes see L1 through their own gate; the independent RPC follower stays direct.
+if [ "$NODE" != rpc ]; then
+    L1_WS="ws://10.20.0.$((41 + NODE)):8546"
+fi
+# The proxy changes TCP source IPs; P2P cryptographic peer authentication stays enabled.
+
 # shellcheck disable=SC2086
 exec /usr/local/bin/tempo-zone node \
     --chain "$S/genesis.json" \
@@ -38,6 +44,7 @@ exec /usr/local/bin/tempo-zone node \
     --sequencer.manifest "$S/manifest.toml" \
     --p2p.key "$P2P_KEY" \
     --p2p.listen 0.0.0.0:9200 \
+    --p2p.bypass-ip-check \
     --zone.batch-interval-blocks 20 \
     --disable-discovery \
     --ipcdisable \
