@@ -356,7 +356,11 @@ impl Inner {
 
         if self.is_boundary(block.height()) {
             let proposed_outcome =
-                read_boundary_outcome(block.header(), self.is_t15(block.header().timestamp()))?;
+                read_boundary_outcome(block.header(), self.is_t15(block.header().timestamp()))
+                    .wrap_err(
+                        "failed decoding extra data header as DKG ceremony \
+                        outcome; cannot verify end of epoch block",
+                    )?;
             return Ok(Some(proposed_outcome));
         }
 
@@ -653,15 +657,12 @@ impl Reporter for Inner {
 fn read_boundary_outcome(header: &TempoHeader, strict: bool) -> eyre::Result<OnchainDkgOutcome> {
     validate_header_extra_data(header, TEMPO_MAXIMUM_EXTRA_DATA_SIZE)?;
     let mut extra_data = commonware_codec::Copying(header.extra_data().as_ref());
-    if strict {
-        OnchainDkgOutcome::decode(extra_data)
+    let outcome = if strict {
+        OnchainDkgOutcome::decode(extra_data)?
     } else {
-        OnchainDkgOutcome::read(&mut extra_data)
-    }
-    .wrap_err(
-        "failed decoding extra data header as DKG ceremony \
-            outcome; cannot verify end of epoch block",
-    )
+        OnchainDkgOutcome::read(&mut extra_data)?
+    };
+    Ok(outcome)
 }
 
 /// Waits for a validated block's timestamp without making a validity decision.
