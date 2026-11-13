@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 use super::cache::L1StateCache;
-use crate::rpc::rpc_connection_config;
+use crate::rpc::{L1Connect, rpc_connection_config};
 
 /// Configuration for the [`L1StateProvider`].
 #[derive(Debug, Clone)]
@@ -120,7 +120,7 @@ impl L1StateProvider {
 
         let client = RpcClient::builder()
             .layer(retry_layer)
-            .connect_with_config(&config.l1_rpc_url, conn_config)
+            .connect_with(L1Connect::new(&config.l1_rpc_url, conn_config))
             .await
             .map_err(|e| {
                 eyre::eyre!(
@@ -192,6 +192,9 @@ impl L1StateProvider {
     /// Runs `fetch` on the runtime from a blocking thread, retrying until it succeeds or
     /// [`L1StateProviderConfig::max_sync_attempts`] is reached. `read` names the value in logs
     /// and errors.
+    ///
+    /// The transport fails each attempt that gets no response within its request timeout (see
+    /// [`L1Connect`]), so an unanswered request is retried rather than blocking forever.
     fn fetch_blocking<T, Fut>(
         &self,
         read: std::fmt::Arguments<'_>,

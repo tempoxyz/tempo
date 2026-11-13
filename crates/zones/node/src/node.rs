@@ -94,6 +94,7 @@ use zone_l1::{
     DepositQueue, EncryptionKeyRing, EncryptionKeyRotation, L1BlockTracker, L1Subscriber,
     L1SubscriberConfig, LeaderTransition, LeadershipSink, TempoStateExt, encryption_key_address,
     initialize_portal_pause,
+    rpc::L1Connect,
     state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
     watch_portal_pause,
 };
@@ -593,10 +594,10 @@ where
                 Some(last_operational_tempo_block.saturating_add(1));
         }
         let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_with_config(
+            .connect_with(&L1Connect::new(
                 &self.l1_config.l1_rpc_url,
                 rpc_connection_config(self.l1_config.retry_connection_interval),
-            )
+            ))
             .await?
             .erased();
         let l1_chain_id = l1_provider.get_chain_id().await?;
@@ -1592,10 +1593,10 @@ where
     ) -> eyre::Result<()> {
         let eth_handlers = handle.eth_handlers().clone();
         let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_with_config(
+            .connect_with(&L1Connect::new(
                 &l1_rpc_url,
                 rpc_connection_config(retry_connection_interval),
-            )
+            ))
             .await?
             .erased();
         let redacted_rpc_config = zone_rpc::RedactedRpcConfig {
