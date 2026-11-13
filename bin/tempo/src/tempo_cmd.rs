@@ -1,5 +1,7 @@
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::Write as _,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -1060,12 +1062,7 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        create_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| match passphrase {
                 Some(passphrase) => signing_key
@@ -1133,6 +1130,31 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
     }
 }
 
+/// Opens `path` for writing a signing key, readable and writable only by its owner on Unix.
+///
+/// Fails if `path` exists unless `force` is set, in which case the file is truncated and its
+/// permissions are restricted before anything is written.
+fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(!force)
+        .create(force)
+        .truncate(force);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let file = options.open(path)?;
+
+    // `mode` only applies when the file is created, so an overwritten file keeps its permissions.
+    #[cfg(unix)]
+    if force {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(file)
+}
+
 #[derive(Debug, clap::Args)]
 pub struct EncryptSigningKey {
     /// Existing plaintext ed25519 signing key file.
@@ -1174,12 +1196,7 @@ impl EncryptSigningKey {
             )
         })?;
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
+        create_signing_key_file(&output, force)
             .map_err(Report::new)
             .and_then(|f| {
                 signing_key
@@ -1712,6 +1729,41 @@ mod tests {
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const TEST_INGRESS: &str = "127.0.0.1:8000";
     const TEST_EGRESS: &str = "127.0.0.1";
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+
+        create_signing_key_file(&path, false).unwrap();
+
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_restricts_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"existing contents").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        create_signing_key_file(&path, true).unwrap();
+
+        let metadata = path.metadata().unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+    }
+
+    #[test]
+    fn create_signing_key_file_refuses_existing_file_without_force() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+
+        let err = create_signing_key_file(file.path(), false).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
 
     #[test]
     fn parse_p2p_proxy_defaults() {
