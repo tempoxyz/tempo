@@ -67,7 +67,7 @@ impl ZoneSpec {
             ctx,
             l1: self.l1,
             l1_state,
-            next_header: TempoHeader {
+            child_header: TempoHeader {
                 inner: Header {
                     parent_hash: keccak256(&genesis_rlp),
                     number: self.tempo_block + 1,
@@ -118,13 +118,16 @@ impl Default for ZoneSpec {
 
 /// A Zone built by [`ZoneSpec::apply`]: the Zone precompiles on a test EVM over a mocked L1.
 pub(crate) struct ZoneEnv {
+    /// Zone EVM and block environment the precompiles execute against.
     pub(crate) ctx: TestContext,
+    /// Zone precompiles, reading L1 through `l1_state`.
     pub(crate) precompiles: TestPrecompiles,
+    /// Mocked L1 holding the portal's storage and recording the Zone's reads of it.
     pub(crate) l1: MockL1Reader,
     /// L1 state the precompiles share, holding the Tempo anchor the Zone selected.
     pub(crate) l1_state: L1State<MockL1Reader>,
     /// Header `advance_tempo` submits: the child of the Tempo block the Zone starts at.
-    pub(crate) next_header: TempoHeader,
+    pub(crate) child_header: TempoHeader,
 }
 
 impl ZoneEnv {
@@ -185,7 +188,7 @@ impl ZoneEnv {
         )
     }
 
-    /// Appends `deposit` to the portal's deposit queue at the next Tempo block and returns the
+    /// Appends `deposit` to the portal's deposit queue at `child_header`'s block and returns the
     /// entry `advance_tempo` consumes it with.
     pub(crate) fn queue_deposit<T: SolValue>(
         &self,
@@ -193,7 +196,7 @@ impl ZoneEnv {
         deposit: T,
     ) -> QueuedDeposit {
         let deposit_data = deposit.abi_encode().into();
-        self.write_portal(self.next_header.inner.number, |portal| {
+        self.write_portal(self.child_header.inner.number, |portal| {
             let head = portal.current_deposit_queue_hash.read()?;
             portal
                 .current_deposit_queue_hash
@@ -206,16 +209,17 @@ impl ZoneEnv {
         }
     }
 
-    /// Enables `token` on the portal at the next Tempo block.
-    pub(crate) fn enable_token(&self, token: &EnabledToken) {
-        self.write_portal(self.next_header.inner.number, |portal| {
-            let hash = token.hash_with_previous(portal.token_enablement_hash.read()?);
+    /// Appends `enabled` to the portal's token enablement queue at `child_header`'s block, for
+    /// `advance_tempo` to consume in `enabled_tokens`.
+    pub(crate) fn queue_token_enablement(&self, enabled: &EnabledToken) {
+        self.write_portal(self.child_header.inner.number, |portal| {
+            let hash = enabled.hash_with_previous(portal.token_enablement_hash.read()?);
             portal.token_enablement_hash.write(hash)?;
-            portal.enabled_tokens.push(token.token)
+            portal.enabled_tokens.push(enabled.token)
         });
     }
 
-    /// Advances the Zone to `next_header` as the system, rolling Zone state back unless the
+    /// Advances the Zone to `child_header` as the system, rolling Zone state back unless the
     /// call succeeds.
     pub(crate) fn advance_tempo(
         &mut self,
@@ -224,7 +228,7 @@ impl ZoneEnv {
         enabled_tokens: Vec<EnabledToken>,
     ) -> PrecompileResult {
         let calldata = IZoneInbox::advanceTempoCall {
-            header: alloy_rlp::encode(&self.next_header).into(),
+            header: alloy_rlp::encode(&self.child_header).into(),
             deposits,
             decryptions,
             enabledTokens: enabled_tokens,

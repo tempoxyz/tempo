@@ -55,7 +55,7 @@ fn path_usd() -> TIP20Setup {
 /// `advanceTempo` calldata without deposits, decryptions or token enablements.
 fn empty_advance(env: &ZoneEnv) -> Vec<u8> {
     IZoneInbox::advanceTempoCall {
-        header: alloy_rlp::encode(&env.next_header).into(),
+        header: alloy_rlp::encode(&env.child_header).into(),
         deposits: Vec::new(),
         decryptions: Vec::new(),
         enabledTokens: Vec::new(),
@@ -90,7 +90,7 @@ fn failed_deposit_gas(deposits: usize, token_enablements: usize) -> eyre::Result
         .map(|index| maximum_metadata_token(index as u16))
         .collect::<Vec<_>>();
     for enabled in &enabled_tokens {
-        env.enable_token(enabled);
+        env.queue_token_enablement(enabled);
     }
     env.with_storage(|| -> eyre::Result<()> {
         TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
@@ -125,17 +125,19 @@ fn seed_encryption_key(env: &ZoneEnv, fixture: &EncryptedDepositFixture) -> U256
     let (sequencer_x, sequencer_y_parity) = compressed_x_and_parity(&fixture.seq_pub);
     let base: U256 = keccak256(B256::from(portal::slots::ENCRYPTION_KEYS)).into();
     let slot_x = base + fixture.key_index * U256::from(2);
-    env.l1.insert(PORTAL, slot_x, 1, sequencer_x.into());
+    let block = env.child_header.inner.number;
+    env.l1.insert(PORTAL, slot_x, block, sequencer_x.into());
     env.l1.insert(
         PORTAL,
         slot_x + U256::ONE,
-        1,
+        block,
         U256::from(sequencer_y_parity),
     );
     slot_x
 }
 
-/// A pathUSD deposit of `amount` from ALICE to `to`, encrypted to the fixture's sequencer key.
+/// A pathUSD deposit of `amount` from ALICE to `to`, encrypted to the fixture's sequencer key,
+/// with the decryption data that proves it.
 fn encrypted_deposit(
     fixture: &EncryptedDepositFixture,
     to: Address,
@@ -228,7 +230,7 @@ fn advance_tempo_headers_activates_at_t13() -> eyre::Result<()> {
     for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
         let mut env = ZoneSpec { hardfork, ..spec() }.apply()?;
         let calldata = IZoneInbox::advanceTempoHeadersCall {
-            headers: vec![alloy_rlp::encode(&env.next_header).into()],
+            headers: vec![alloy_rlp::encode(&env.child_header).into()],
         }
         .abi_encode();
         let output = env.call(Address::ZERO, ZONE_INBOX_ADDRESS, calldata)?;
@@ -384,7 +386,7 @@ fn enabled_token_is_initialized_before_deposit_processing() -> eyre::Result<()> 
         symbol: "EXD".into(),
         currency: "USD".into(),
     };
-    env.enable_token(&enabled);
+    env.queue_token_enablement(&enabled);
 
     env.advance_tempo(Vec::new(), Vec::new(), vec![enabled])?;
 
@@ -407,7 +409,7 @@ fn enabled_token_is_initialized_before_deposit_processing() -> eyre::Result<()> 
 #[test]
 fn omitted_token_enablement_reverts() -> eyre::Result<()> {
     let mut env = spec().apply()?;
-    env.enable_token(&EnabledToken {
+    env.queue_token_enablement(&EnabledToken {
         token: address!("0x20c00000000000000000000000000000000000ab"),
         name: "Example Dollar".into(),
         symbol: "EXD".into(),

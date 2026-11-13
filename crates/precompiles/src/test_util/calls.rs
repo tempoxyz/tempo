@@ -1,8 +1,4 @@
-//! Lowers test setups to precompile calls, which can run against a node over RPC.
-
-use alloy::{primitives::B256, sol_types::SolCall};
-use tempo_contracts::precompiles::IRolesAuth;
-use tempo_primitives::transaction::Call;
+//! Lowers test setups to the precompile calls that perform them, so they can run against a node.
 
 use super::{Action, TIP20Setup, TIP403Setup};
 use crate::{
@@ -11,7 +7,12 @@ use crate::{
     tip20_factory::{self, compute_tip20_address},
     tip403_registry::ITIP403Registry,
 };
-use alloy::primitives::Address;
+use alloy::{
+    primitives::{Address, B256},
+    sol_types::SolCall,
+};
+use tempo_contracts::precompiles::IRolesAuth;
+use tempo_primitives::transaction::Call;
 
 /// One call of a test setup lowered by [`TIP20Setup::calls`] or [`TIP403Setup::call`].
 #[derive(Debug)]
@@ -93,57 +94,6 @@ impl TIP20Setup {
             ));
         }
         (token, calls)
-    }
-
-    /// Performs [`Self::calls`] over RPC and returns the token address.
-    ///
-    /// Sends every call before awaiting any receipt, so `provider` must sign for each caller and
-    /// fill consecutive nonces. Reads the registry's next policy ID first when there is a transfer
-    /// policy, so policies created concurrently by others can race it. Fails if a call reverts or
-    /// isn't mined within a minute.
-    #[cfg(feature = "rpc-test-utils")]
-    pub async fn apply_rpc<N: alloy::network::Network>(
-        self,
-        provider: &impl alloy::providers::Provider<N>,
-    ) -> eyre::Result<Address> {
-        use alloy::network::{ReceiptResponse, TransactionBuilder};
-
-        let next_policy_id = match self.transfer_policy {
-            Some(_) => {
-                ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider)
-                    .policyIdCounter()
-                    .call()
-                    .await?
-            }
-            None => 0,
-        };
-        let (token, calls) = self.calls(next_policy_id);
-        let mut pending = Vec::new();
-        // Sent one at a time so the provider fills consecutive nonces in order.
-        for SetupCall { caller, call } in calls {
-            let tx = N::TransactionRequest::default()
-                .with_from(caller)
-                .with_kind(call.to)
-                .with_input(call.input)
-                // Fixed: estimating a call that depends on an earlier, unmined one fails.
-                .with_gas_limit(5_000_000);
-            pending.push(
-                provider
-                    .send_transaction(tx)
-                    .await?
-                    .with_timeout(Some(std::time::Duration::from_secs(60))),
-            );
-        }
-        for receipt in
-            futures::future::try_join_all(pending.into_iter().map(|tx| tx.get_receipt())).await?
-        {
-            eyre::ensure!(
-                receipt.status(),
-                "setup call {} reverted",
-                receipt.transaction_hash()
-            );
-        }
-        Ok(token)
     }
 }
 

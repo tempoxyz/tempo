@@ -3,6 +3,8 @@
 pub mod abi_conformance;
 #[cfg(any(test, feature = "test-utils"))]
 mod calls;
+#[cfg(feature = "rpc-test-utils")]
+mod rpc;
 pub mod storage_conformance;
 
 #[cfg(any(test, feature = "test-utils"))]
