@@ -42,15 +42,7 @@ const P2P_RECOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 async fn test_zero_fee_transactions_are_admitted_and_included() -> eyre::Result<()> {
     let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
     let (provider, sender) = local_dev_zone_account(&zone)?;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, sender, 1_000_000);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        sender,
-        U256::from(1_000_000),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture.deposit(&zone, sender, sender, 1_000_000).await?;
 
     for legacy in [true, false] {
         let token = ITIP20::new(PATH_USD_ADDRESS, &provider);
@@ -463,16 +455,8 @@ async fn test_deposit_via_queue_injection() -> eyre::Result<()> {
     let recipient = address!("0x0000000000000000000000000000000000005678");
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)
 
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, depositor, recipient, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    let balance = zone
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            recipient,
-            U256::from(deposit_amount),
-            DEFAULT_TIMEOUT,
-        )
+    let balance = fixture
+        .deposit(&zone, depositor, recipient, deposit_amount)
         .await?;
     assert_eq!(
         balance,
@@ -493,15 +477,9 @@ async fn test_contract_creation_transaction_is_rejected() -> eyre::Result<()> {
 
     let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
     let (provider, dev_address) = local_dev_zone_account(&zone)?;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, 1_000_000);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(1_000_000u128),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, 1_000_000)
+        .await?;
 
     let request = TransactionRequest::default()
         .with_deploy_code(Bytes::from_static(&[0x00]))
@@ -789,17 +767,9 @@ async fn test_zone_inbox_events_on_deposit() -> eyre::Result<()> {
     let recipient = address!("0x0000000000000000000000000000000000002222");
     let deposit_amount: u128 = 5_000_000;
 
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, recipient, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    // Wait for the deposit to be processed
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        recipient,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, sender, recipient, deposit_amount)
+        .await?;
 
     // Query TempoAdvanced events from ZoneInbox
     let zone_inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, zone.provider());
@@ -1076,15 +1046,9 @@ async fn test_withdrawal_request_finalizes_same_block() -> eyre::Result<()> {
     let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, provider.clone());
 
     let deposit_amount: u128 = 2_000_000;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
     let batch_index_before = outbox.lastBatch().call().await?.withdrawalBatchIndex;
@@ -1178,15 +1142,9 @@ async fn test_multiple_withdrawals_finalize_in_one_batch() -> eyre::Result<()> {
     let (provider, dev_address) = local_dev_zone_account(&zone)?;
     let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, provider.clone());
 
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, 2_000_000);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(2_000_000u128),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, 2_000_000)
+        .await?;
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
     let batch_index_before = outbox.lastBatch().call().await?.withdrawalBatchIndex;
@@ -1296,15 +1254,9 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     )
     .await?;
 
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, 1_000_000);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(1_000_000u128),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, 1_000_000)
+        .await?;
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
     // Advance to exactly one block before the next batch boundary, then wait
@@ -1405,16 +1357,9 @@ async fn test_withdrawal_request_rejects_over_max_callback_gas() -> eyre::Result
     let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &provider);
 
     let deposit_amount: u128 = 1_000_000;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
 
     approve_outbox(&mut fixture, &zone, &provider).await?;
 

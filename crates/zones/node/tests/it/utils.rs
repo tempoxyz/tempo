@@ -94,12 +94,14 @@ use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
 
 #[path = "../../../rpc/test-utils/auth_tokens.rs"]
 mod auth_tokens;
+mod harness;
 mod network;
 
 pub(crate) use auth_tokens::{
     build_signed_token_blob, build_token_with_signature, now_secs, p256_public_key,
     sign_keychain_signature, sign_p256_signature, sign_webauthn_signature,
 };
+pub(crate) use harness::Network;
 pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 
 /// Atomic counter for unique zone IDs across concurrent tests.
@@ -1540,6 +1542,37 @@ impl L1TestNode {
         Ok(())
     }
 
+    /// Transfer pathUSD from the dev account to each `(recipient, amount)`.
+    ///
+    /// Sends the transfers back to back with explicit nonces, then awaits their receipts together.
+    pub(crate) async fn fund_users(
+        &self,
+        transfers: impl IntoIterator<Item = (Address, u128)>,
+    ) -> eyre::Result<()> {
+        let provider = self.dev_provider();
+        let pathusd = ITIP20::new(PATH_USD_ADDRESS, &provider);
+        let nonce = provider
+            .get_transaction_count(self.dev_address())
+            .pending()
+            .await?;
+        let mut pending = Vec::new();
+        for (offset, (to, amount)) in (0..).zip(transfers) {
+            pending.push(
+                pathusd
+                    .transfer(to, U256::from(amount))
+                    .nonce(nonce + offset)
+                    .send()
+                    .await?,
+            );
+        }
+        for receipt in
+            try_join_all(pending.into_iter().map(|pending| pending.get_receipt())).await?
+        {
+            eyre::ensure!(receipt.status(), "funding transfer failed");
+        }
+        Ok(())
+    }
+
     /// Read a TIP-20 token balance on L1 (single-shot, no polling).
     pub(crate) async fn balance_of(&self, token: Address, account: Address) -> eyre::Result<U256> {
         Ok(ITIP20::new(token, self.provider())
@@ -1731,7 +1764,8 @@ impl L1TestNode {
     ///
     /// Polls the account's L1 token balance until it increases by at least
     /// `amount` from the caller-provided pre-withdrawal balance, then asserts
-    /// both `BatchSubmitted` and `WithdrawalProcessed` events exist on the portal.
+    /// both `BatchSubmitted` and `WithdrawalProcessed` events exist on the portal. Returns the
+    /// account's L1 balance after the withdrawal.
     pub(crate) async fn wait_for_withdrawal_on_l1(
         &self,
         portal_address: Address,
@@ -1739,7 +1773,7 @@ impl L1TestNode {
         balance_before: U256,
         amount: u128,
         timeout: Duration,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<U256> {
         self.wait_for_withdrawal_on_l1_token(
             portal_address,
             PATH_USD_ADDRESS,
@@ -1753,7 +1787,8 @@ impl L1TestNode {
 
     /// Wait for a withdrawal of a specific token to be fully processed on L1.
     ///
-    /// `balance_before` must be captured before submitting the withdrawal request.
+    /// `balance_before` must be captured before submitting the withdrawal request. Returns the
+    /// account's L1 balance after the withdrawal.
     pub(crate) async fn wait_for_withdrawal_on_l1_token(
         &self,
         portal_address: Address,
@@ -1762,13 +1797,15 @@ impl L1TestNode {
         balance_before: U256,
         amount: u128,
         timeout: Duration,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<U256> {
         let expected = balance_before + U256::from(amount);
-        self.wait_for_balance(token, account, expected, timeout)
+        let balance = self
+            .wait_for_balance(token, account, expected, timeout)
             .await?;
         self.assert_batch_submitted(portal_address).await?;
         self.assert_withdrawal_processed(portal_address, account, amount)
-            .await
+            .await?;
+        Ok(balance)
     }
 
     /// Create a StablecoinDEX pair for a base token.
@@ -2012,40 +2049,6 @@ impl L1TestNode {
         receipt
             .contract_address
             .ok_or_else(|| eyre::eyre!("SwapAndDepositRouter deployment missing contract address"))
-    }
-
-    /// Deploy two open zones for cross-zone routing, with separate sequencers.
-    pub(crate) async fn deploy_two_open_zones_with_sequencers(
-        &self,
-        sequencer_a: alloy_signer_local::PrivateKeySigner,
-        sequencer_b: alloy_signer_local::PrivateKeySigner,
-    ) -> eyre::Result<(Address, Address, Address)> {
-        let factory = self.native_zone_factory().await?;
-        let portal_a = self
-            .create_zone_with_admin_sequencer_and_config(
-                factory,
-                self.dev_address(),
-                sequencer_a.address(),
-                ZoneCreationConfig::open(),
-            )
-            .await?;
-        let portal_b = self
-            .create_zone_with_admin_sequencer_and_config(
-                factory,
-                self.dev_address(),
-                sequencer_b.address(),
-                ZoneCreationConfig::open(),
-            )
-            .await?;
-        let encryption_key_a = k256::SecretKey::from(sequencer_a.credential());
-        self.set_sequencer_encryption_key_with_signer(portal_a, &encryption_key_a, sequencer_a)
-            .await?;
-        let encryption_key_b = k256::SecretKey::from(sequencer_b.credential());
-        self.set_sequencer_encryption_key_with_signer(portal_b, &encryption_key_b, sequencer_b)
-            .await?;
-        let router = self.deploy_router(factory).await?;
-
-        Ok((portal_a, portal_b, router))
     }
 
     /// Create a new TIP-20 token on L1 via the factory precompile.
@@ -3762,26 +3765,12 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
         .await?;
     // Tempo's test genesis funds only the dev key. Settlement is submitted from the
     // individual registered quorum key, so each member needs a gas balance of its own.
-    // Send the transfers back to back with explicit nonces, then await their receipts together.
-    let dev_provider = l1.dev_provider();
-    let pathusd = ITIP20::new(PATH_USD_ADDRESS, &dev_provider);
-    let nonce = dev_provider
-        .get_transaction_count(l1.dev_address())
-        .pending()
-        .await?;
-    let mut transfers = Vec::with_capacity(attestation_signers.len());
-    for (offset, signer) in (0..).zip(&attestation_signers) {
-        transfers.push(
-            pathusd
-                .transfer(signer.address(), U256::from(10_000_000))
-                .nonce(nonce + offset)
-                .send()
-                .await?,
-        );
-    }
-    for receipt in try_join_all(transfers.into_iter().map(|pending| pending.get_receipt())).await? {
-        eyre::ensure!(receipt.status(), "quorum member funding transfer failed");
-    }
+    l1.fund_users(
+        attestation_signers
+            .iter()
+            .map(|signer| (signer.address(), 10_000_000)),
+    )
+    .await?;
     let encryption_key = SecretKey::from(attestation_signers[0].credential());
     l1.set_sequencer_encryption_key_with_signer(
         portal_address,
@@ -5160,6 +5149,26 @@ impl L1Fixture {
             zone.wait_for_block_number(height, DEFAULT_TIMEOUT).await?;
         }
         Ok(height)
+    }
+
+    /// Inject an L1 block depositing `amount` pathUSD from `from` to `to` into `zone`, then wait
+    /// for `to`'s zone balance to grow by `amount`.
+    ///
+    /// Returns `to`'s zone balance after the deposit.
+    pub(crate) async fn deposit(
+        &mut self,
+        zone: &ZoneTestNode,
+        from: Address,
+        to: Address,
+        amount: u128,
+    ) -> eyre::Result<U256> {
+        let expected = zone.balance_of(PATH_USD_ADDRESS, to).await? + U256::from(amount);
+        self.inject_deposits(
+            zone.deposit_queue(),
+            vec![self.make_deposit(PATH_USD_ADDRESS, from, to, amount)],
+        );
+        zone.wait_for_balance(PATH_USD_ADDRESS, to, expected, DEFAULT_TIMEOUT)
+            .await
     }
 
     /// Inject an L1 block with the given deposits into the queue.

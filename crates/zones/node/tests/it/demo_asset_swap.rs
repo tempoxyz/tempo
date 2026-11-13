@@ -1,6 +1,6 @@
 //! Multi-asset zone deposit and withdrawal.
 
-use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, spawn_sequencer};
+use crate::utils::{L1_TIMEOUT, Network, ZoneCreationConfig};
 use alloy::{
     primitives::{B256, U256},
     providers::Provider,
@@ -8,13 +8,12 @@ use alloy::{
 
 /// Multi-asset deposit + withdrawal:
 ///
-/// 1. Start L1 dev node.
+/// 1. Start L1 dev node and a zone.
 /// 2. Create AlphaUSD and BetaUSD on L1.
-/// 3. Deploy zone, enable both tokens.
-/// 4. Start zone node (tokens auto-initialized via `TokenEnabled` events from L1).
-/// 5. Alice deposits AlphaUSD and BetaUSD.
-/// 6. Spawn sequencer, withdraw both tokens.
-/// 7. Verify L1 withdrawals and L2 balance decreases.
+/// 3. Enable both tokens (auto-initialized on the zone via `TokenEnabled` events from L1).
+/// 4. Alice deposits AlphaUSD and BetaUSD.
+/// 5. Spawn sequencer, withdraw both tokens and wait for the L1 withdrawals.
+/// 6. Verify L2 balance decreases.
 ///
 /// ```text
 ///  L1 (AlphaUSD + BetaUSD)            Zone L2
@@ -29,8 +28,16 @@ use alloy::{
 async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
+    // --- Step 1: Start L1 and a zone ---
+    let net = Network::builder()
+        .zone(ZoneCreationConfig::closed(Vec::new()))
+        .accounts(1, 10_000_000) // pathUSD for gas
+        .start()
+        .await?;
+    let l1 = net.l1();
+    let [zone] = net.zones();
+    let [alice] = net.accounts();
+    let portal_address = zone.portal_address();
 
     // --- Step 2: Create two TIP-20 tokens on L1 ---
     let alpha_salt = B256::with_last_byte(100);
@@ -45,11 +52,7 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     l1.mint_tip20(l1_beta, l1.dev_address(), mint_amount)
         .await?;
 
-    // --- Step 3: Deploy zone and start zone node ---
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
-
-    // --- Step 4: Enable both tokens on the portal ---
+    // --- Step 3: Enable both tokens on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled events from live blocks.
     l1.enable_token_on_portal(portal_address, l1_alpha).await?;
@@ -64,24 +67,23 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     let l2_alpha = l1_alpha;
     let l2_beta = l1_beta;
 
-    // --- Step 5: Alice deposits both tokens ---
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    // --- Step 4: Alice deposits both tokens ---
     let alpha_deposit: u128 = 1_000_000; // 1 AlphaUSD
     let beta_deposit: u128 = 2_000_000; // 2 BetaUSD
 
     // Fund Alice on L1
-    l1.fund_user(account.address(), 10_000_000).await?; // pathUSD for gas
-    l1.fund_user_token(l1_alpha, account.address(), alpha_deposit * 2)
+    l1.fund_user_token(l1_alpha, alice.address(), alpha_deposit * 2)
         .await?;
-    l1.fund_user_token(l1_beta, account.address(), beta_deposit * 2)
+    l1.fund_user_token(l1_beta, alice.address(), beta_deposit * 2)
         .await?;
 
     // Deposit pathUSD for L2 gas
-    account.deposit(5_000_000, L1_TIMEOUT, &zone).await?;
+    zone.deposit(alice, 5_000_000).await?;
 
     // Deposit AlphaUSD
-    let alpha_minted = account
-        .deposit_token(l1_alpha, l2_alpha, alpha_deposit, L1_TIMEOUT, &zone)
+    let alpha_minted = zone
+        .account(alice)
+        .deposit_token(l1_alpha, l2_alpha, alpha_deposit, L1_TIMEOUT, zone)
         .await?;
     assert_eq!(
         alpha_minted,
@@ -90,8 +92,9 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     );
 
     // Deposit BetaUSD
-    let beta_minted = account
-        .deposit_token(l1_beta, l2_beta, beta_deposit, L1_TIMEOUT, &zone)
+    let beta_minted = zone
+        .account(alice)
+        .deposit_token(l1_beta, l2_beta, beta_deposit, L1_TIMEOUT, zone)
         .await?;
     assert_eq!(
         beta_minted,
@@ -99,48 +102,21 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
         "BetaUSD minted should equal deposit"
     );
 
-    // --- Step 6: Spawn zone sequencer (batch submitter + withdrawal processor) ---
-    let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let withdrawal_timeout = std::time::Duration::from_secs(60);
-
-    // Withdraw AlphaUSD
+    // --- Step 5: Spawn zone sequencer (batch submitter + withdrawal processor) ---
+    let _sequencer_handle = zone.spawn_sequencer().await;
     let alpha_withdrawal: u128 = 500_000; // 0.5 AlphaUSD
-    let alpha_balance_before = l1.balance_of(l1_alpha, account.address()).await?;
-    account.withdraw_token(l2_alpha, alpha_withdrawal).await?;
-
-    l1.wait_for_withdrawal_on_l1_token(
-        portal_address,
-        l1_alpha,
-        account.address(),
-        alpha_balance_before,
-        alpha_withdrawal,
-        withdrawal_timeout,
-    )
-    .await?;
-
-    // Withdraw BetaUSD
+    zone.withdraw(alice, l2_alpha, alpha_withdrawal).await?;
     let beta_withdrawal: u128 = 1_000_000; // 1 BetaUSD
-    let beta_balance_before = l1.balance_of(l1_beta, account.address()).await?;
-    account.withdraw_token(l2_beta, beta_withdrawal).await?;
+    zone.withdraw(alice, l2_beta, beta_withdrawal).await?;
 
-    l1.wait_for_withdrawal_on_l1_token(
-        portal_address,
-        l1_beta,
-        account.address(),
-        beta_balance_before,
-        beta_withdrawal,
-        withdrawal_timeout,
-    )
-    .await?;
-
-    // --- Step 7: Verify L2 balances decreased ---
-    let final_alpha = zone.balance_of(l2_alpha, account.address()).await?;
+    // --- Step 6: Verify L2 balances decreased ---
+    let final_alpha = zone.balance_of(l2_alpha, alice.address()).await?;
     assert!(
         final_alpha <= U256::from(alpha_deposit - alpha_withdrawal),
         "L2 AlphaUSD should decrease after withdrawal (got {final_alpha})"
     );
 
-    let final_beta = zone.balance_of(l2_beta, account.address()).await?;
+    let final_beta = zone.balance_of(l2_beta, alice.address()).await?;
     assert!(
         final_beta <= U256::from(beta_deposit - beta_withdrawal),
         "L2 BetaUSD should decrease after withdrawal (got {final_beta})"
