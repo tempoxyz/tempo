@@ -197,6 +197,9 @@ struct Dispute {
     provisional: U96,
     /// Part of `provisional` that repaid the record's credit line instead of landing as balance.
     line_share: U96,
+    /// Part of the line's share of `provisional` that landed as balance because the owner had
+    /// already repaid the line, so a later step never repays a newer draw for it.
+    line_landed: U96,
 }
 
 impl Dispute {
@@ -958,6 +961,9 @@ impl Reservations {
                 dispute.provisional -= U96::from(settled);
                 // The balance part settles first; a line share stays repaid.
                 dispute.line_share = dispute.line_share.min(dispute.provisional);
+                dispute.line_landed = dispute
+                    .line_landed
+                    .min(dispute.provisional - dispute.line_share);
                 self.disputes[call.owner][call.id].write(dispute)?;
                 self.emit_event(ReservationsEvent::dispute_settled(
                     call.owner, call.id, settled,
@@ -968,7 +974,14 @@ impl Reservations {
             0
         };
         if call.amount != settled {
-            self.pay_back(payee, call.owner, call.id, &auth, call.amount - settled)?;
+            self.pay_back(
+                payee,
+                call.owner,
+                call.id,
+                &auth,
+                call.amount - settled,
+                u128::MAX,
+            )?;
         }
         let committed = auth.committed();
         // Refunds of non-final captures leave a live hold's amount committed.
@@ -985,7 +998,8 @@ impl Reservations {
 
     /// Pays `amount` of `owner`'s record `id` from its payee back to the owner, as a refund does: debt
     /// the owner owes the payee is cancelled first, then the part a credit line paid and the owner
-    /// still owes repays the line, and the rest moves to the owner. Returns what repaid the line.
+    /// still owes repays the line, up to `line_cap`, and the rest moves to the owner. Returns what
+    /// repaid the line.
     fn pay_back(
         &mut self,
         payee: Address,
@@ -993,6 +1007,7 @@ impl Reservations {
         id: B256,
         auth: &Authorization,
         amount: u128,
+        line_cap: u128,
     ) -> Result<u128> {
         let mut token = TIP20Token::from_address(auth.token)?;
         token.ensure_transfer_authorized(payee, owner)?;
@@ -1010,7 +1025,7 @@ impl Reservations {
         let repaid = match line_hold {
             Some(hold) if moved != 0 && !hold.drawn.is_zero() => {
                 let owed = self.credits[owner][hold.lender][hold.line].owed.read()?;
-                moved.min(hold.drawn.min(owed).to::<u128>())
+                moved.min(hold.drawn.min(owed).to::<u128>()).min(line_cap)
             }
             _ => 0,
         };
@@ -1032,6 +1047,40 @@ impl Reservations {
         }
         token.reservation_transfer(payee, owner, U256::from(moved - repaid))?;
         Ok(repaid)
+    }
+
+    /// The credit line's share of `amount` more provisional credit on a dispute: its part of the
+    /// purchase's total provisional credit, less what earlier steps repaid on the line or landed
+    /// for it, and never more than the line part still drawn.
+    fn line_share_of(
+        &self,
+        owner: Address,
+        id: B256,
+        auth: &Authorization,
+        dispute: &Dispute,
+        amount: u128,
+    ) -> Result<u128> {
+        let Some(hold) = self.credit_hold(owner, id, auth)? else {
+            return Ok(0);
+        };
+        let given = dispute.line_share.to::<u128>() + dispute.line_landed.to::<u128>();
+        // A line share lowers what the hold still has drawn, never what the purchase captured.
+        let base = (auth.captured - auth.refunded).to::<u128>();
+        let line_base = hold.drawn.to::<u128>() + dispute.line_share.to::<u128>();
+        if base == 0 {
+            return Ok(0);
+        }
+        let total = dispute.provisional.to::<u128>() + amount;
+        let target = U256::from(total) * U256::from(line_base) / U256::from(base);
+        let open = hold
+            .drawn
+            .to::<u128>()
+            .saturating_sub(dispute.line_landed.to::<u128>());
+        Ok(target
+            .saturating_sub(U256::from(given))
+            .min(U256::from(open))
+            .min(U256::from(amount))
+            .to::<u128>())
     }
 
     /// Opens a dispute on `call.owner`'s record for its payee, the caller.
@@ -1087,10 +1136,14 @@ impl Reservations {
                             <= auth.captured.to::<u128>()
                 })
                 .ok_or_else(ReservationsError::refund_exceeds_capture)?;
-            let repaid = self.pay_back(payee, call.owner, call.id, &auth, call.provisional)?;
+            let share =
+                self.line_share_of(call.owner, call.id, &auth, &dispute, call.provisional)?;
+            let repaid =
+                self.pay_back(payee, call.owner, call.id, &auth, call.provisional, share)?;
             dispute.provisional = provisional;
-            // Fits: at most `provisional`.
+            // Fits: both at most `provisional`.
             dispute.line_share += U96::from(repaid);
+            dispute.line_landed += U96::from(share - repaid);
         }
         dispute.state = call.state;
         self.disputes[call.owner][call.id].write(dispute)?;
@@ -1124,7 +1177,7 @@ impl Reservations {
                 .ok_or_else(TempoPrecompileError::under_overflow)?
                 .to::<u128>();
             if rest != 0 {
-                self.pay_back(payee, owner, id, &auth, rest)?;
+                self.pay_back(payee, owner, id, &auth, rest, u128::MAX)?;
             }
             let committed = auth.committed();
             // Fits: at most `captured`.
@@ -1175,9 +1228,9 @@ impl Reservations {
         ))
     }
 
-    /// Draws up to `wanted` of `hold`'s line again within the credit's undrawn limit, the lender
-    /// paying `payee` from its lien, and returns what was drawn. Called when a merchant wins a
-    /// dispute whose provisional credit repaid the line.
+    /// Draws up to `wanted` of `hold`'s line again, the lender paying `payee` from its lien within
+    /// the credit's undrawn limit and then from its free balance past the limit, and returns what was
+    /// drawn. Called when a merchant wins a dispute whose provisional credit repaid the line.
     fn redraw_line(
         &mut self,
         owner: Address,
@@ -1189,23 +1242,32 @@ impl Reservations {
     ) -> Result<u128> {
         let mut credit = self.credits[owner][hold.lender][hold.line].read()?;
         let planned = wanted.min(credit.headroom());
-        if planned == 0 {
-            return Ok(0);
+        let mut drawn = 0;
+        if planned != 0 {
+            let before = credit.lien();
+            // Fits: within the limit, a `U96`.
+            credit.owed += U96::from(planned);
+            let mut line = self.lines[hold.lender][hold.line].read()?;
+            // Drawing within the headroom lowers the lien by what it draws (see `Credit::lien`).
+            let lowered = before
+                .checked_sub(credit.lien())
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            let freed = self.shrink_lien(hold.lender, hold.line, &mut line, lowered)?;
+            // A compliance burn of the lender's balance can leave the lien short.
+            drawn = planned.min(freed);
+            credit.owed -= U96::from(planned - drawn);
+            return_to_balance(line.token, hold.lender, freed)?;
         }
-        let before = credit.lien();
-        // Fits: within the limit, a `U96`.
-        credit.owed += U96::from(planned);
-        let mut line = self.lines[hold.lender][hold.line].read()?;
-        // Drawing within the headroom lowers the lien by what it draws (see `Credit::lien`).
-        let lowered = before
-            .checked_sub(credit.lien())
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        let freed = self.shrink_lien(hold.lender, hold.line, &mut line, lowered)?;
-        // A compliance burn of the lender's balance can leave the lien short.
-        let drawn = planned.min(freed);
-        credit.owed -= U96::from(planned - drawn);
+        // Past the undrawn limit the lender pays only from balance no lien or hold reserves.
+        let beyond = (wanted - drawn).min(available(token, hold.lender)?.saturating_sub(drawn));
+        if beyond != 0 {
+            credit.owed = credit
+                .owed
+                .checked_add(amount_u96(beyond)?)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            drawn += beyond;
+        }
         self.credits[owner][hold.lender][hold.line].write(credit)?;
-        return_to_balance(line.token, hold.lender, freed)?;
         if drawn == 0 {
             return Ok(0);
         }
@@ -6895,15 +6957,16 @@ mod tests {
             f.capture(id, 300)?;
             assert_eq!(f.credit(lender, line)?, (500, 200, 0));
             f.open_dispute(id, 300)?;
-            // Provisional credit repays the line first, as a refund does; the rest lands.
+            // Provisional credit follows how the purchase was paid: two thirds repay the line and
+            // the rest lands.
             f.dispute_step(id, 2, 250)?;
-            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
-            assert_eq!(f.balance(f.owner)?, U256::from(50));
-            assert_eq!(f.dispute(id)?, (2, 300, 250, 200));
+            assert_eq!(f.credit(lender, line)?, (500, 34, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(84));
+            assert_eq!(f.dispute(id)?, (2, 300, 250, 166));
             assert_eq!(f.balance(f.payee)?, U256::from(50));
             // Only the part that landed can have been collected elsewhere.
             assert_eq!(
-                f.resolve_dispute(id, false, 51).unwrap_err(),
+                f.resolve_dispute(id, false, 85).unwrap_err(),
                 ReservationsError::invalid_amount().into()
             );
 
@@ -6911,8 +6974,8 @@ mod tests {
             f.resolve_dispute(id, false, 0)?;
             f.reservations.assert_emitted_events(vec![
                 ReservationsEvent::line_reserved(lender, line, f.token.address(), 300),
-                ReservationsEvent::credit_drawn(f.owner, id, lender, line, 200),
-                ReservationsEvent::dispute_resolved(f.owner, id, false, 50, 0),
+                ReservationsEvent::credit_drawn(f.owner, id, lender, line, 166),
+                ReservationsEvent::dispute_resolved(f.owner, id, false, 84, 0),
             ]);
             assert_eq!(f.credit(lender, line)?, (500, 200, 0));
             assert_eq!(f.balance(f.owner)?, U256::ZERO);
@@ -6923,7 +6986,36 @@ mod tests {
     }
 
     #[test]
-    fn test_dispute_line_share_redraws_only_the_undrawn_limit() -> eyre::Result<()> {
+    fn test_dispute_line_share_counts_what_landed() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(40)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 100, 60, lender, line)?;
+            f.capture(id, 100)?;
+            assert_eq!(f.credit(lender, line)?, (500, 60, 0));
+            f.mint(f.owner, 60)?;
+            f.repay_credit(lender, line, 60)?;
+            f.open_dispute(id, 100)?;
+            // The owner already repaid the line, so its share of the first step lands as balance.
+            f.dispute_step(id, 2, 50)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(50));
+            // A newer draw is repaid only by what is left of the line's share.
+            let later = B256::random();
+            f.hold_on_line(later, 100, 50, lender, line)?;
+            f.capture(later, 100)?;
+            assert_eq!(f.credit(lender, line)?, (500, 50, 0));
+            f.dispute_step(id, 3, 50)?;
+            assert_eq!(f.credit(lender, line)?, (500, 20, 0));
+            assert_eq!(f.balance(f.owner)?, U256::from(20));
+            assert_eq!(f.dispute(id)?, (3, 100, 100, 30));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_dispute_line_share_redraws_past_the_limit_from_free_balance() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(100)?;
             let (lender, line) = f.open_credit(1_000, 500)?;
@@ -6932,13 +7024,14 @@ mod tests {
             f.capture(id, 300)?;
             f.open_dispute(id, 300)?;
             f.dispute_step(id, 2, 250)?;
-            // The lender lowers the limit, so only 100 goes back on the line.
+            // The lender lowers the limit, so 66 goes back on the line from its lien and the other
+            // 100 from its free balance, past the limit.
             f.offer_credit(lender, line, f.payee, 100)?;
             f.resolve_dispute(id, false, 0)?;
-            assert_eq!(f.credit(lender, line)?, (100, 100, 0));
+            assert_eq!(f.credit(lender, line)?, (100, 200, 0));
             assert_eq!(f.balance(f.owner)?, U256::ZERO);
-            assert_eq!(f.debt()?.amount, 100);
-            assert_eq!(f.balance(f.payee)?, U256::from(200));
+            assert_eq!(f.debt()?.amount, 0);
+            assert_eq!(f.balance(f.payee)?, U256::from(300));
             Ok(())
         })
     }
