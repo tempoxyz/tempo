@@ -642,6 +642,7 @@ mod tests {
     use core::num::NonZeroU64;
     use evm2::ethereum::LazyAuthorization;
     use proptest::prelude::*;
+    use tempo_chainspec::TempoHardfork;
     use tempo_primitives::{
         TempoSignature, TempoTransaction,
         transaction::{
@@ -740,6 +741,20 @@ mod tests {
         assert!(is_recovered(2, 2 * per_authorization));
         assert!(!is_recovered(2, 2 * per_authorization - 1));
         assert!(!is_recovered(max_per_tx + 1, u64::MAX));
+    }
+
+    /// The EIP-7702 recovery budget assumes no fork's per-tx gas cap exceeds
+    /// `TEMPO_T1_TX_GAS_LIMIT_CAP`. Raising it without updating the budget leaves valid
+    /// transactions recovering their authorizations during execution.
+    #[test]
+    fn eip7702_recovery_budget_covers_every_tx_gas_cap() {
+        for fork in TempoHardfork::VARIANTS {
+            assert!(
+                fork.tx_gas_limit_cap()
+                    .is_some_and(|cap| cap <= TEMPO_T1_TX_GAS_LIMIT_CAP),
+                "{fork} raises the tx gas cap past the EIP-7702 recovery budget"
+            );
+        }
     }
 
     #[test]
