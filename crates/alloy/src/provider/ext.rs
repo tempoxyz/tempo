@@ -467,6 +467,7 @@ mod tests {
         getAllowedCallsReturn, getRemainingLimitReturn,
     };
     use tempo_primitives::transaction::{CallScope, SelectorRule, TEMPO_EXPIRING_NONCE_KEY};
+    use test_case::test_case;
 
     use crate::{
         TempoFillers, TempoNetwork,
@@ -806,19 +807,16 @@ mod tests {
         }
     }
 
+    #[test_case(TempoHardfork::Genesis => true)]
+    #[test_case(TempoHardfork::T0 => true)]
+    #[test_case(TempoHardfork::T1 => false)]
     #[tokio::test]
-    async fn test_is_hardfork_active() {
+    async fn test_is_hardfork_active(fork: TempoHardfork) -> bool {
         let asserter = Asserter::new();
         let provider = mock_provider(asserter.clone());
 
-        for (fork, expected) in [
-            (TempoHardfork::Genesis, true),
-            (TempoHardfork::T0, true),
-            (TempoHardfork::T1, false),
-        ] {
-            asserter.push_success(&serde_json::json!({ "active": "T0", "schedule": [] }));
-            assert_eq!(provider.is_hardfork_active(fork).await.unwrap(), expected);
-        }
+        asserter.push_success(&serde_json::json!({ "active": "T0", "schedule": [] }));
+        provider.is_hardfork_active(fork).await.unwrap()
     }
 
     #[tokio::test]

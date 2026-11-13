@@ -36,7 +36,7 @@ mod tests {
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         storage_credits::StorageCredits,
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, with_storage},
     };
     use alloy::{primitives::B256, sol_types::SolCall};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -120,8 +120,7 @@ mod tests {
 
     #[test]
     fn test_set_committee_members_does_not_mint_storage_credits() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T8, || {
             let mut committee = CurrentCommittee::new();
             committee.set_committee_members(
                 Address::ZERO,

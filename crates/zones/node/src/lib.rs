@@ -22,7 +22,6 @@ mod replication;
 pub mod role;
 pub mod rpc;
 mod settlement_attestation;
-mod shadow_prover;
 mod tx_forwarding;
 pub mod version;
 
@@ -35,8 +34,5 @@ pub use deposit_allowlist::{
     SequencerAllowlistStatus,
 };
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};
-pub use node::{
-    ZoneExecutorBuilder, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
-    ZoneSequencerAddOnsConfig,
-};
+pub use node::{ZoneExecutorBuilder, ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig};
 pub use version::init_version_metadata;

@@ -360,9 +360,11 @@ where
     /// Notably, this does not persist the dealer logs to disk! On restart, it
     /// is expected that the actor reads the dealer logs from the marshal actor
     /// and forwards them one-by-one to the state cache.
-    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block) {
+    ///
+    /// With `strict` (from T15), a dealer log with trailing bytes is ignored.
+    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block, strict: bool) {
         let cache = self.cache.entry(round.epoch).or_default();
-        let log = ReducedBlock::from_block_for_round(block, round);
+        let log = ReducedBlock::from_block_for_round(block, round, strict);
         cache.notarized_blocks.insert(log.digest, log);
     }
 
@@ -1188,37 +1190,26 @@ pub(super) struct ReducedBlock {
 }
 
 impl ReducedBlock {
-    pub(super) fn from_block_for_round(block: &Block, round: &Round) -> Self {
+    pub(super) fn from_block_for_round(block: &Block, round: &Round, strict: bool) -> Self {
         let log = if block.header().extra_data().is_empty() {
             None
         } else {
-            dkg::SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-                &mut commonware_codec::Copying(block.header().extra_data().as_ref()),
-                &NZU32!(round.players.len() as u32),
-            )
-            .inspect(|_| {
-                info!(
-                    height = %block.height(),
-                    digest = %block.digest(),
-                    "found dealer log in block"
-                )
-            })
-            .inspect_err(|error| {
-                warn!(
-                    %error,
-                    "block header extraData had data, but it could not be read as \
-                    a signed dealer log",
-                )
-            })
-            .ok()
-            .and_then(|log| match log.check(&round.info) {
-                Some((dealer, log)) => Some((dealer, log)),
-                None => {
-                    // TODO(janis): some more fidelity here would be nice.
-                    warn!("log failed check against current round");
-                    None
-                }
-            })
+            super::read_dealer_log(block.header().extra_data().as_ref(), round, strict)
+                .inspect(|_| {
+                    info!(
+                        height = %block.height(),
+                        digest = %block.digest(),
+                        "found dealer log in block"
+                    )
+                })
+                .inspect_err(|error| {
+                    warn!(
+                        %error,
+                        "block header extraData had data, but it was not a valid \
+                        signed dealer log for the current round",
+                    )
+                })
+                .ok()
         };
         let context = block.context();
         Self {
@@ -1249,6 +1240,7 @@ mod tests {
     use futures::FutureExt as _;
     use rand::SeedableRng as _;
     use std::panic::AssertUnwindSafe;
+    use test_case::test_case;
 
     fn make_test_state(rng: &mut impl rand_core::CryptoRng, epoch: u64) -> State {
         let mut keys: Vec<_> = (0..3)
@@ -1374,52 +1366,48 @@ mod tests {
         });
     }
 
-    #[test]
-    fn metadata_write_failures_panic() {
-        for (operation, expected) in [
-            ("initialize", "failed to persist initial DKG state"),
-            ("set_state", "failed to persist DKG state"),
-            ("prune", "failed to prune DKG state metadata"),
-        ] {
-            deterministic::Runner::default().start(|mut context| async move {
-                let unverified = builder()
-                    .partition_prefix("metadata_write_failure")
-                    .init_unverified(context.child("storage"))
-                    .await
-                    .unwrap();
-                let state = make_test_state(&mut context, 1);
-                let faults = context.storage_fault_config();
-                let write = async {
-                    if operation == "initialize" {
-                        faults.write().sync_rate = Some(probability!(1.0));
-                        unverified.init_verified(state).await;
+    #[test_case("initialize", "failed to persist initial DKG state")]
+    #[test_case("set_state", "failed to persist DKG state")]
+    #[test_case("prune", "failed to prune DKG state metadata")]
+    fn metadata_write_failures_panic(operation: &str, expected: &str) {
+        deterministic::Runner::default().start(|mut context| async move {
+            let unverified = builder()
+                .partition_prefix("metadata_write_failure")
+                .init_unverified(context.child("storage"))
+                .await
+                .unwrap();
+            let state = make_test_state(&mut context, 1);
+            let faults = context.storage_fault_config();
+            let write = async {
+                if operation == "initialize" {
+                    faults.write().sync_rate = Some(probability!(1.0));
+                    unverified.init_verified(state).await;
+                } else {
+                    let mut storage = unverified.init_verified(state.clone()).await;
+                    faults.write().sync_rate = Some(probability!(1.0));
+                    if operation == "set_state" {
+                        storage
+                            .set_state(State {
+                                epoch: state.epoch.next(),
+                                ..state
+                            })
+                            .await;
                     } else {
-                        let mut storage = unverified.init_verified(state.clone()).await;
-                        faults.write().sync_rate = Some(probability!(1.0));
-                        if operation == "set_state" {
-                            storage
-                                .set_state(State {
-                                    epoch: state.epoch.next(),
-                                    ..state
-                                })
-                                .await;
-                        } else {
-                            storage.prune(state.epoch.next()).await;
-                        }
+                        storage.prune(state.epoch.next()).await;
                     }
-                };
-                let panic = AssertUnwindSafe(write)
-                    .catch_unwind()
-                    .await
-                    .expect_err("metadata write failures must panic");
-                let message = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .expect("panic must have an error message");
-                assert!(message.starts_with(expected), "unexpected panic: {message}");
-            });
-        }
+                }
+            };
+            let panic = AssertUnwindSafe(write)
+                .catch_unwind()
+                .await
+                .expect_err("metadata write failures must panic");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .expect("panic must have an error message");
+            assert!(message.starts_with(expected), "unexpected panic: {message}");
+        });
     }
 
     #[test]
