@@ -282,12 +282,11 @@ where
                 );
                 (
                     context.start(prepared),
-                    Some(context.lookahead(
-                        self.pool.best_transactions_with_attributes(
+                    Some(
+                        context.lookahead(self.pool.best_transactions_with_attributes(
                             BestTransactionsAttributes::new(base_fee, None),
-                        ),
-                        block_gas_limit,
-                    )),
+                        )),
+                    ),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
@@ -1098,7 +1097,6 @@ mod tests {
                 queue: txs.iter().cloned().collect(),
                 oversized_marked: 0,
             },
-            u64::MAX,
             Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
         );
         assert_eq!(
@@ -1117,9 +1115,9 @@ mod tests {
         assert!(lookahead.next().is_none());
     }
 
-    /// The lookahead caps simulated gas; an invalid expiring-nonce tx keeps its sender's others.
+    /// An invalid expiring-nonce tx keeps its sender's other txs.
     #[test]
-    fn pool_lookahead_caps_gas_and_keeps_expiring_nonce_txs() {
+    fn pool_lookahead_keeps_expiring_nonce_txs() {
         let expiring = |gas_limit| {
             let tx = TempoTransaction {
                 gas_limit,
@@ -1152,12 +1150,11 @@ mod tests {
                 queue: [large.clone(), small.clone()].into(),
                 oversized_marked: 0,
             },
-            5,
             Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
         );
         assert_eq!(
             simulations.try_iter().collect::<Vec<_>>(),
-            vec![*small.hash()]
+            vec![*large.hash(), *small.hash()]
         );
 
         let first = lookahead.next().unwrap();

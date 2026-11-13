@@ -110,17 +110,15 @@ where
         handle
     }
 
-    /// Wraps the builder's pool iterator to simulate each tx, within `gas`, before it's taken.
+    /// Wraps the builder's pool iterator to simulate each tx before it's taken.
     /// Dropping the iterator cancels its queued simulations.
     pub(crate) fn lookahead<I: BestTransactions<Item = BestTransaction>>(
         self: &Arc<Self>,
         inner: I,
-        gas: u64,
     ) -> PoolLookahead<I> {
         let (context, prewarming) = (self.clone(), Prewarming::default());
         PoolLookahead::new(
             inner,
-            gas,
             Box::new(move |tx| context.spawn(&prewarming.0, Simulation::Pool(tx.clone()))),
         )
     }
@@ -197,20 +195,14 @@ impl Drop for Prewarming {
 pub(crate) struct PoolLookahead<I> {
     inner: I,
     buffer: VecDeque<BestTransaction>,
-    gas_left: u64,
     simulate: Box<dyn FnMut(&BestTransaction) + Send>,
 }
 
 impl<I: BestTransactions<Item = BestTransaction>> PoolLookahead<I> {
-    pub(crate) fn new(
-        inner: I,
-        gas_left: u64,
-        simulate: Box<dyn FnMut(&BestTransaction) + Send>,
-    ) -> Self {
+    pub(crate) fn new(inner: I, simulate: Box<dyn FnMut(&BestTransaction) + Send>) -> Self {
         let mut lookahead = Self {
             inner,
             buffer: VecDeque::with_capacity(POOL_LOOKAHEAD),
-            gas_left,
             simulate,
         };
         lookahead.fill();
@@ -222,10 +214,7 @@ impl<I: BestTransactions<Item = BestTransaction>> PoolLookahead<I> {
         while self.buffer.len() < POOL_LOOKAHEAD
             && let Some(tx) = self.inner.next()
         {
-            if let Some(gas_left) = self.gas_left.checked_sub(tx.gas_limit()) {
-                self.gas_left = gas_left;
-                (self.simulate)(&tx);
-            }
+            (self.simulate)(&tx);
             self.buffer.push_back(tx);
         }
     }
@@ -309,7 +298,7 @@ impl L1StoragePrewarmer {
         provider: L1StateProvider,
         l1_block_number: u64,
     ) -> (Self, impl Future<Output = ()> + Send + 'static) {
-        // Bounded by block gas, since each commitment read costs `L1_COMMITMENT_READ_GAS`.
+        // Bounded by the lookahead's txs, each paying `L1_COMMITMENT_READ_GAS` per read.
         let (fetches, mut accounts) = mpsc::unbounded_channel();
         let reader = Self {
             provider: provider.clone(),
