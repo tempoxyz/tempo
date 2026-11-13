@@ -1,7 +1,7 @@
 use alloy::genesis::{Genesis, GenesisAccount};
 use alloy_consensus::{Header, Sealable as _};
 use alloy_eips::NumHash;
-use alloy_network::{ReceiptResponse, TransactionBuilder as _};
+use alloy_network::TransactionBuilder as _;
 use alloy_primitives::{Address, B256, U256, address, keccak256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, bindings::IMulticall3};
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag, Filter, TransactionRequest};
@@ -35,19 +35,15 @@ use std::{
     },
     time::Duration,
 };
-use tempo_alloy::{
-    TempoNetwork,
-    rpc::{TempoCallBuilderExt, TempoHeaderResponse},
-    test_utils::CallBuilderExt,
-};
+use tempo_alloy::{TempoNetwork, rpc::TempoHeaderResponse, test_utils::CallBuilderExt};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TEMPO_T0_BASE_FEE, TempoChainSpec},
 };
 use tempo_contracts::{
     precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS, IRolesAuth, IStablecoinDEX, ITIP20, ITIP20Factory,
-        ITIP403Registry, TIP403_REGISTRY_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        ACCOUNT_KEYCHAIN_ADDRESS, IStablecoinDEX, ITIP20, ITIP403Registry, TIP403_REGISTRY_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
         account_keychain::IAccountKeychain::{
             IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
         },
@@ -61,11 +57,11 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS,
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
-    tip20::{self, ISSUER_ROLE},
+    tip20,
     tip403_registry::{
         ALLOW_ALL_POLICY_ID, AuthRole, CompoundPolicyData as RawCompoundPolicyData, PolicyData,
         PolicyType, TIP403Registry, tip403_registry_slots,
@@ -113,6 +109,11 @@ pub(crate) fn next_unique_chain_id() -> u64 {
 }
 
 /// Returns a signer derived from [`TEST_MNEMONIC`] at the given BIP-44 index.
+///
+/// Only for keys tests must agree on across nodes and genesis: the L1 roles (dev at 0, which the
+/// dev node signs with, user at 1, admin at 2) and deterministic owners. Genesis funds the first
+/// mnemonic accounts, so a test that reuses one inherits its balance. Any other party draws a
+/// fresh, unfunded key from [`signers`](tempo_primitives::test_utils::signers).
 pub(crate) fn signer_at(index: u32) -> alloy_signer_local::PrivateKeySigner {
     MnemonicBuilder::<English>::default()
         .phrase(TEST_MNEMONIC)
@@ -260,16 +261,9 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
     portal.code = Some(code.into());
 
     // The native factory requires the initial token's TIP-403 policy binding to exist.
-    let token_policy_slot =
-        PATH_USD_ADDRESS.mapping_slot(tip403_registry_slots::TOKEN_TRANSFER_POLICIES);
-    let packed_policy = U256::from(ALLOW_ALL_POLICY_ID) | (U256::ONE << u64::BITS);
-    genesis
-        .alloc
-        .entry(TIP403_REGISTRY_ADDRESS)
-        .or_default()
-        .storage
-        .get_or_insert_default()
-        .insert(token_policy_slot.into(), packed_policy.into());
+    alloc_precompile_writes(genesis, || {
+        TIP403Registry::new().set_token_transfer_policy(PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID)
+    })?;
 
     Ok(())
 }
@@ -485,18 +479,55 @@ impl Check403Registry {
     }
 }
 
+/// Runs `write` against empty precompile storage and returns every slot it stored, zeros included.
+fn precompile_writes(
+    write: impl FnOnce() -> tempo_precompiles::Result<()>,
+) -> eyre::Result<impl Iterator<Item = (Address, U256, U256)>> {
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+    StorageCtx::enter(&mut storage, write)?;
+    Ok(storage.into_storage())
+}
+
+/// Add every slot `write` stores through the precompiles' typed storage to `genesis`.
+pub(crate) fn alloc_precompile_writes(
+    genesis: &mut Genesis,
+    write: impl FnOnce() -> tempo_precompiles::Result<()>,
+) -> eyre::Result<()> {
+    for (address, slot, value) in precompile_writes(write)? {
+        genesis
+            .alloc
+            .entry(address)
+            .or_default()
+            .storage
+            .get_or_insert_default()
+            .insert(slot.into(), value.into());
+    }
+    Ok(())
+}
+
+/// Seed the raw L1 cache at `block_number` with every slot `write` stores through the
+/// precompiles' typed storage, so tests never pack slots by hand.
+pub(crate) fn seed_raw_l1_storage(
+    cache: &mut zone_l1::state::L1StateCacheInner,
+    block_number: u64,
+    write: impl FnOnce() -> tempo_precompiles::Result<()>,
+) -> eyre::Result<()> {
+    for (address, slot, value) in precompile_writes(write)? {
+        cache.set(address, slot.into(), block_number, value.into());
+    }
+    Ok(())
+}
+
 /// Seed a TIP-1092 token-policy binding in the TIP-403 registry's raw L1 storage.
 pub(crate) fn seed_raw_tip403_token_policy(
     cache: &mut zone_l1::state::L1StateCacheInner,
     block_number: u64,
     token: Address,
     policy_id: u64,
-) {
-    let slot: B256 = token
-        .mapping_slot(tip403_registry_slots::TOKEN_TRANSFER_POLICIES)
-        .into();
-    let packed: U256 = U256::from(policy_id) | (U256::ONE << 64);
-    cache.set(TIP403_REGISTRY_ADDRESS, slot, block_number, packed.into());
+) -> eyre::Result<()> {
+    seed_raw_l1_storage(cache, block_number, || {
+        TIP403Registry::new().set_token_transfer_policy(token, policy_id)
+    })
 }
 
 /// Seed an unpaused L1 TIP-20 token. Zone transfers read the token's L1 pause flag.
@@ -543,29 +574,14 @@ pub(crate) fn seed_raw_tip403_policy(
     block_number: u64,
     policies: &[PolicySeed<'_>],
 ) -> eyre::Result<()> {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-    let registry = TIP403Registry::new();
-    let counter_slot = registry.policy_id_counter.slot();
+    let counter_slot = TIP403Registry::new().policy_id_counter.slot();
+    let mut cache = cache.lock();
     let existing_next_policy_id = cache
-        .lock()
         .get(TIP403_REGISTRY_ADDRESS, counter_slot.into(), block_number)
         .and_then(|value| U256::from_be_bytes(value.0).try_into().ok())
         .unwrap_or(2u64);
-    let mut slots = vec![counter_slot];
-    for policy in policies {
-        slots.push(registry.policy_records[policy.id].base.base_slot());
-        if policy.compound.is_some() {
-            slots.push(registry.policy_records[policy.id].compound.base_slot());
-        }
-        slots.extend(
-            policy
-                .members
-                .iter()
-                .map(|(account, _)| registry.policy_set[policy.id][*account].slot()),
-        );
-    }
 
-    StorageCtx::enter(&mut storage, || -> tempo_precompiles::Result<()> {
+    seed_raw_l1_storage(&mut cache, block_number, || {
         let mut registry = TIP403Registry::new();
         let next_policy_id = policies
             .iter()
@@ -593,19 +609,7 @@ pub(crate) fn seed_raw_tip403_policy(
             }
         }
         Ok(())
-    })?;
-
-    let mut cache = cache.lock();
-    for slot in slots {
-        let value = storage.sload(TIP403_REGISTRY_ADDRESS, slot)?;
-        cache.set(
-            TIP403_REGISTRY_ADDRESS,
-            slot.into(),
-            block_number,
-            value.into(),
-        );
-    }
-    Ok(())
+    })
 }
 
 pub(crate) trait TestNodeHandle: Send {
@@ -1231,7 +1235,7 @@ impl ZoneTestNode {
         }
         if is_local_dummy_l1 {
             let mut cache = l1_state_cache.lock();
-            seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
+            seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID)?;
         }
 
         let node_handle = NodeBuilder::new(node_config)
@@ -1510,7 +1514,7 @@ impl L1TestNode {
     /// pre-funded; [`create_zone`](Self::create_zone) funds it with pathUSD for
     /// gas so it can make admin-only portal calls.
     pub(crate) fn admin_signer(&self) -> alloy_signer_local::PrivateKeySigner {
-        self.signer_at(2)
+        signer_at(2)
     }
 
     /// Returns the address of the ZonePortal admin account.
@@ -1523,12 +1527,7 @@ impl L1TestNode {
     /// This account is NOT pre-funded — use [`fund_user`](Self::fund_user) to
     /// transfer pathUSD from the dev account before depositing.
     pub(crate) fn user_signer(&self) -> alloy_signer_local::PrivateKeySigner {
-        self.signer_at(1)
-    }
-
-    /// Returns a signer derived from [`TEST_MNEMONIC`] at the given BIP-44 index.
-    pub(crate) fn signer_at(&self, index: u32) -> alloy_signer_local::PrivateKeySigner {
-        signer_at(index)
+        signer_at(1)
     }
 
     /// Transfer pathUSD from the dev account to a recipient on L1.
@@ -2051,37 +2050,6 @@ impl L1TestNode {
             .ok_or_else(|| eyre::eyre!("SwapAndDepositRouter deployment missing contract address"))
     }
 
-    /// Create a new TIP-20 token on L1 via the factory precompile.
-    ///
-    /// Returns the new token's address.
-    pub(crate) async fn create_tip20(
-        &self,
-        name: &str,
-        symbol: &str,
-        salt: B256,
-    ) -> eyre::Result<Address> {
-        let provider = self.dev_provider();
-        let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, &provider);
-        let receipt = factory
-            .createToken_0(
-                name.to_string(),
-                symbol.to_string(),
-                "USD".to_string(),
-                PATH_USD_ADDRESS,
-                self.dev_address(),
-                salt,
-            )
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "createToken failed");
-
-        let event = receipt
-            .decoded_log::<ITIP20Factory::TokenCreated>()
-            .ok_or_else(|| eyre::eyre!("TokenCreated event not found"))?;
-
-        Ok(event.token)
-    }
-
     /// Enable a token on a ZonePortal (must be called by the admin).
     pub(crate) async fn enable_token_on_portal(
         &self,
@@ -2289,136 +2257,12 @@ impl L1TestNode {
         ))
     }
 
-    /// Transfer a specific TIP-20 token from the dev account to a recipient on L1.
-    pub(crate) async fn fund_user_token(
-        &self,
-        token: Address,
-        to: Address,
-        amount: u128,
-    ) -> eyre::Result<()> {
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .wallet(self.dev_signer())
-            .connect_http(self.http_url.clone());
-        let receipt = ITIP20::new(token, &provider)
-            .transfer(to, U256::from(amount))
-            // A transfer call would otherwise infer `token` as its L1 fee token. Newly created
-            // test tokens intentionally have no FeeAMM pool, so pay gas explicitly in pathUSD.
-            .fee_token(PATH_USD_ADDRESS)
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "fund_user_token transfer failed");
-        Ok(())
-    }
-
-    /// Mint tokens on L1.
-    ///
-    /// The dev account must be the admin of the token (set during `createToken`).
-    /// Grants `ISSUER_ROLE` to self first unless already held (admin can grant roles), then mints.
-    pub(crate) async fn mint_tip20(
-        &self,
-        token: Address,
-        to: Address,
-        amount: u128,
-    ) -> eyre::Result<()> {
-        let provider = self.dev_provider();
-
-        let roles = IRolesAuth::new(token, &provider);
-        if !roles
-            .hasRole(self.dev_address(), ISSUER_ROLE)
+    /// The transfer policy ID `token` uses on L1.
+    pub(crate) async fn transfer_policy_id(&self, token: Address) -> eyre::Result<u64> {
+        Ok(ITIP20::new(token, self.provider())
+            .transferPolicyId()
             .call()
-            .await?
-        {
-            let receipt = roles
-                .grantRole(ISSUER_ROLE, self.dev_address())
-                .mined()
-                .await?;
-            eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
-        }
-
-        let receipt = ITIP20::new(token, &provider)
-            .mint(to, U256::from(amount))
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "mint_tip20 failed");
-        Ok(())
-    }
-
-    /// Create a new BLACKLIST policy on L1. Returns the policy ID.
-    pub(crate) async fn create_blacklist_policy(&self) -> eyre::Result<u64> {
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .createPolicy(self.dev_address(), ITIP403Registry::PolicyType::BLACKLIST)
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "createPolicy (BLACKLIST) failed");
-
-        let event = receipt
-            .decoded_log::<ITIP403Registry::PolicyCreated>()
-            .ok_or_else(|| eyre::eyre!("PolicyCreated event not found"))?;
-
-        Ok(event.policyId)
-    }
-
-    /// Add an address to a blacklist policy.
-    pub(crate) async fn blacklist_address(
-        &self,
-        policy_id: u64,
-        account: Address,
-    ) -> eyre::Result<()> {
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .modifyPolicyBlacklist(policy_id, account, true)
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "modifyPolicyBlacklist failed");
-        Ok(())
-    }
-
-    /// Change a token's transfer policy on L1.
-    ///
-    /// The dev account must hold `DEFAULT_ADMIN_ROLE` on the token.
-    pub(crate) async fn change_transfer_policy_id(
-        &self,
-        token: Address,
-        policy_id: u64,
-    ) -> eyre::Result<()> {
-        let provider = self.dev_provider();
-        let receipt = ITIP20::new(token, &provider)
-            .changeTransferPolicyId(policy_id)
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "changeTransferPolicyId failed");
-        Ok(())
-    }
-
-    /// Create a COMPOUND policy on L1 that delegates to sub-policies by role.
-    ///
-    /// Returns the compound policy ID.
-    pub(crate) async fn create_compound_policy(
-        &self,
-        sender_policy_id: u64,
-        recipient_policy_id: u64,
-        mint_recipient_policy_id: u64,
-    ) -> eyre::Result<u64> {
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .createCompoundPolicy(
-                sender_policy_id,
-                recipient_policy_id,
-                mint_recipient_policy_id,
-            )
-            .mined()
-            .await?;
-        eyre::ensure!(receipt.status(), "createCompoundPolicy failed");
-
-        let event = receipt
-            .decoded_log::<ITIP403Registry::CompoundPolicyCreated>()
-            .ok_or_else(|| eyre::eyre!("CompoundPolicyCreated event not found"))?;
-
-        Ok(event.policyId)
+            .await?)
     }
 
     /// Check if a user is authorized under a policy on L1.
@@ -4865,8 +4709,10 @@ impl L1Fixture {
 
         // System transactions resolve their zero-address fee token before execution. Keep that
         // synthetic token permissive in RPC-free fixtures, matching the old policy-provider stub.
-        seed_raw_tip403_token_policy(&mut cache, 0, Address::ZERO, ALLOW_ALL_POLICY_ID);
-        seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
+        seed_raw_tip403_token_policy(&mut cache, 0, Address::ZERO, ALLOW_ALL_POLICY_ID)
+            .expect("in-memory policy write succeeds");
+        seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID)
+            .expect("in-memory policy write succeeds");
         seed_raw_tip20_unpaused(&mut cache, 0, PATH_USD_ADDRESS);
         // Zones read every sender's TIP-1108 commitment from Tempo; the dev account has none.
         cache.set_commitment(l1_dev_signer().address(), 0, B256::ZERO);
@@ -4895,7 +4741,7 @@ impl L1Fixture {
             block_number,
             token,
             policy_id,
-        );
+        )?;
         Ok(Check403Registry {
             provider: zone.provider(),
             token,
@@ -4958,7 +4804,8 @@ impl L1Fixture {
                     block_number,
                     token.token,
                     ALLOW_ALL_POLICY_ID,
-                );
+                )
+                .expect("in-memory policy write succeeds");
                 seed_raw_tip20_unpaused(&mut cache, block_number, token.token);
             }
         }

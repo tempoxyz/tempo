@@ -36,7 +36,7 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
         anchor,
         PATH_USD_ADDRESS,
         BLACKLIST_POLICY_ID,
-    );
+    )?;
     seed_raw_tip403_policy(
         zone.l1_state_cache(),
         anchor,

@@ -20,6 +20,7 @@ use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::ITIP20;
+use tempo_precompiles::test_util::TIP20Setup;
 
 /// Enable a new token (AlphaUSD) via a `TokenEnabled` event, then deposit it
 /// and verify the recipient receives the minted balance.
@@ -233,12 +234,12 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     let portal_address = zone.portal_address();
 
     // --- Step 2: Create AlphaUSD on L1 ---
-    let alpha_salt = B256::with_last_byte(0x63);
-    let l1_alpha_usd = l1.create_tip20("AlphaUSD", "aUSD", alpha_salt).await?;
-
-    // --- Step 3: Mint AlphaUSD to the dev account ---
-    let mint_amount: u128 = 100_000_000; // 100 AlphaUSD (6 decimals)
-    l1.mint_tip20(l1_alpha_usd, l1.dev_address(), mint_amount)
+    // --- Step 3: Mint AlphaUSD to the user ---
+    let alpha_deposit_amount: u128 = 2_000_000; // 2 AlphaUSD
+    let l1_alpha_usd = TIP20Setup::create("AlphaUSD", "aUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0x63))
+        .with_mint(user.address(), U256::from(alpha_deposit_amount * 2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
 
     // --- Step 4: Enable AlphaUSD on the portal ---
@@ -253,12 +254,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
         .await?;
 
-    // --- Step 6: Fund user account with AlphaUSD on L1 ---
-    let alpha_deposit_amount: u128 = 2_000_000; // 2 AlphaUSD
-    l1.fund_user_token(l1_alpha_usd, user.address(), alpha_deposit_amount * 2)
-        .await?;
-
-    // --- Step 7: Deposit pathUSD (gas) then AlphaUSD ---
+    // --- Step 6: Deposit pathUSD (gas) then AlphaUSD ---
     zone.deposit(user, pathusd_gas_amount).await?;
 
     // The L2 token address is deterministic — same factory sender + salt means

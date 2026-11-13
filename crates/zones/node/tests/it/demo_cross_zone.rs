@@ -4,6 +4,7 @@ use crate::utils::{Network, WithdrawalArgs, ZoneCreationConfig};
 use alloy::primitives::U256;
 use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
 use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_primitives::test_utils::actors;
 
 /// Cross-zone transfer via SwapAndDepositRouter:
 ///
@@ -40,7 +41,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     let [zone_a, zone_b] = net.zones();
     let [alice, bob] = net.accounts();
     let bob_address = bob.address();
-    let refund_burner = l1.signer_at(5).address();
+    let [refund_burner] = actors();
     let (portal_a, portal_b) = (zone_a.portal_address(), zone_b.portal_address());
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;

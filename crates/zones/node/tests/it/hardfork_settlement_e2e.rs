@@ -25,6 +25,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    test_util::TIP20Setup,
     zone_factory::{ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots},
 };
 use tempo_primitives::TempoHeader;
@@ -63,14 +64,17 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         .await?;
     let portal = ZonePortal::new(portal_address, l1.provider());
     // Create metadata before the zone starts; only alpha is processed before the upgrade.
-    let alpha = l1
-        .create_tip20("Alpha", "ALP", B256::with_last_byte(1))
+    let alpha = TIP20Setup::create("Alpha", "ALP", l1.dev_address())
+        .with_salt(B256::with_last_byte(1))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let beta = l1
-        .create_tip20("Beta", "BET", B256::with_last_byte(2))
+    let beta = TIP20Setup::create("Beta", "BET", l1.dev_address())
+        .with_salt(B256::with_last_byte(2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let gamma = l1
-        .create_tip20("Gamma", "GAM", B256::with_last_byte(3))
+    let gamma = TIP20Setup::create("Gamma", "GAM", l1.dev_address())
+        .with_salt(B256::with_last_byte(3))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     // HTTP polling retains pending block-filter changes while responses are paused, without
     // WebSocket keepalive timeouts obscuring the hardfork coordination under test.

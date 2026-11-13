@@ -31,7 +31,13 @@ use tempo_contracts::{
         ZONE_TOKEN_ADDRESS, ZonePortal, ZonePortal::Role as PortalRole,
     },
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, zone_factory::portal};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    test_util::{TIP20Setup, TIP403Setup},
+    tip403_registry::ALLOW_ALL_POLICY_ID,
+    zone_factory::portal,
+};
+use tempo_primitives::test_utils::{actors, signers, signers_vec};
 use zone_node::{
     DepositAllowlist, DepositAllowlistAdmin,
     dev::{ProvisionConfig, provision_zone},
@@ -79,16 +85,19 @@ struct SameZoneSwapFixture {
 async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
     let l1 = L1TestNode::start().await?;
 
-    let alpha = l1
-        .create_tip20("AlphaUSD", "aUSD", B256::with_last_byte(0xA1))
+    // The dev account makes the DEX market. The swapper holds the alpha it swaps.
+    let swapper = l1.user_signer().address();
+    let alpha = TIP20Setup::create("AlphaUSD", "aUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xA1))
+        .with_mint(l1.dev_address(), U256::from(ROUTER_DEX_LIQUIDITY))
+        .with_mint(swapper, U256::from(ROUTER_SWAP_AMOUNT))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let beta = l1
-        .create_tip20("BetaUSD", "bUSD", B256::with_last_byte(0xB2))
+    let beta = TIP20Setup::create("BetaUSD", "bUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xB2))
+        .with_mint(l1.dev_address(), U256::from(ROUTER_DEX_LIQUIDITY))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-
-    let mint_amount = ROUTER_DEX_LIQUIDITY + ROUTER_SWAP_AMOUNT;
-    l1.mint_tip20(alpha, l1.dev_address(), mint_amount).await?;
-    l1.mint_tip20(beta, l1.dev_address(), mint_amount).await?;
 
     let factory = l1.native_zone_factory().await?;
     let portal_address = l1.create_zone(factory).await?;
@@ -120,8 +129,6 @@ async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
     l1.fund_user(account.address(), 10_000_000).await?;
-    l1.fund_user_token(alpha, account.address(), ROUTER_SWAP_AMOUNT)
-        .await?;
     account.deposit(5_000_000, L1_TIMEOUT, &zone).await?;
 
     let alpha_minted = account
@@ -462,8 +469,9 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
     reth_tracing::init_test_tracing();
 
     let l1 = L1TestNode::start().await?;
-    let initial_token = l1
-        .create_tip20("DevUSD", "dUSD", B256::with_last_byte(0xD0))
+    let initial_token = TIP20Setup::create("DevUSD", "dUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xD0))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     let provisioned = provision_zone(ProvisionConfig {
         l1_rpc_url: l1.ws_url().to_string(),
@@ -515,7 +523,6 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     const MAX_WITHDRAWALS_PER_BATCH: usize = 2;
     const TEST_MAX_BATCH_GAS: u64 = 2_500_000;
     const TEST_MAX_IN_FLIGHT_BATCHES: usize = 2;
-    const FIRST_ACCOUNT_INDEX: u32 = 3;
     const DEPOSIT_AMOUNT: u128 = 2_000_000;
     const WITHDRAWAL_AMOUNT: u128 = 250_000;
     const WITHDRAWAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -525,9 +532,7 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    let signers = (FIRST_ACCOUNT_INDEX..FIRST_ACCOUNT_INDEX + ACCOUNT_COUNT)
-        .map(|index| l1.signer_at(index))
-        .collect::<Vec<_>>();
+    let signers = signers_vec(ACCOUNT_COUNT as usize);
     let recipients = signers
         .iter()
         .map(|signer| signer.address())
@@ -742,20 +747,19 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
     account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
 
     // A second arbitrary account can also deposit without a membership update.
-    let second_signer = l1.signer_at(3);
+    let [second_signer] = signers();
     let mut second_account =
         ZoneAccount::with_signer(second_signer.clone(), &l1, &zone, portal_address);
     l1.fund_user(second_signer.address(), 500_000).await?;
     second_account.deposit(200_000, L1_TIMEOUT, &zone).await?;
 
     // The encrypted recipient is also arbitrary; only the depositor/refund address is public.
-    let encrypted_recipient = l1.signer_at(4).address();
+    let [encrypted_recipient, arbitrary_l1_recipient] = actors();
     account
         .deposit_with_memo(300_000, encrypted_recipient, B256::ZERO, L1_TIMEOUT, &zone)
         .await?;
 
     let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let arbitrary_l1_recipient = l1.signer_at(5).address();
     let mut withdrawal = WithdrawalArgs::new(withdrawal_amount);
     withdrawal.to = Some(arbitrary_l1_recipient);
     let l1_balance_before = l1
@@ -861,7 +865,7 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone.assert_access_enforced(true).await?;
 
-    let outsider_signer = l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     let portal = ZonePortal::new(portal_address, l1.provider());
     assert!(portal.hasRole(outsider, PortalRole::None).call().await?);
@@ -951,7 +955,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
     zone.assert_access_enforced(true).await?;
     zone.assert_gateway_open(false).await?;
 
-    let outsider_signer = l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     let mut outsider_account =
         ZoneAccount::with_signer(outsider_signer, &l1, &zone, portal_address);
@@ -1339,14 +1343,15 @@ async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
     let [alice] = net.accounts();
     let (portal_a, portal_b) = (zone_a.portal_address(), zone_b.portal_address());
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
-    let blacklisted_recipient = l1.signer_at(4).address();
-    let refund_burner = l1.signer_at(5).address();
+    let [blacklisted_recipient, refund_burner] = actors();
 
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_recipient]),
+        )
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    l1.blacklist_address(policy_id, blacklisted_recipient)
-        .await?;
+    let policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
     assert!(
         !l1.is_authorized(policy_id, blacklisted_recipient).await?,
         "recipient should be blacklisted on L1"
@@ -1702,12 +1707,11 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     let portal_address = zone.portal_address();
 
     // --- Step 2: Create a second TIP-20 token on L1 ---
-    let zone_usd_salt = B256::with_last_byte(0x2a);
-    let l1_zone_usd = l1.create_tip20("ZoneUSD", "zUSD", zone_usd_salt).await?;
-
-    // Mint ZoneUSD to the dev account so we can fund the user
-    let mint_amount: u128 = 100_000_000; // 100 ZoneUSD (6 decimals)
-    l1.mint_tip20(l1_zone_usd, l1.dev_address(), mint_amount)
+    let zoneusd_amount: u128 = 2_000_000; // 2 ZoneUSD
+    let l1_zone_usd = TIP20Setup::create("ZoneUSD", "zUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0x2a))
+        .with_mint(user.address(), U256::from(zoneusd_amount * 2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
 
     // --- Step 3: Enable ZoneUSD on the portal ---
@@ -1725,9 +1729,6 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     let l2_zone_usd = l1_zone_usd;
 
     // --- Step 4: Deposit both tokens (user account) ---
-    let zoneusd_amount: u128 = 2_000_000; // 2 ZoneUSD
-    l1.fund_user_token(l1_zone_usd, user.address(), zoneusd_amount * 2)
-        .await?;
 
     // Deposit pathUSD
     let pathusd_minted = zone.deposit(user, pathusd_amount).await?;
@@ -1938,8 +1939,9 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
 
     // Ingestion keeps following finalized L1 within its lookahead window while the Zone anchor
     // and block height remain frozen, so governance landing during the pause is applied.
-    let token = l1
-        .create_tip20("PausedUSD", "pUSD", B256::with_last_byte(0x7f))
+    let token = TIP20Setup::create("PausedUSD", "pUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0x7f))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     let governance_receipt = portal.enableToken(token).mined().await?;
     eyre::ensure!(
@@ -2055,16 +2057,15 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    // --- Create policy infrastructure on L1 ---
-    let policy_id = l1.create_blacklist_policy().await?;
-
-    // Assign the blacklist to pathUSD
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
-        .await?;
-
-    // Blacklist the user account
+    // --- Blacklist the user account through pathUSD's transfer policy ---
     let blacklisted_user = l1.user_signer().address();
-    l1.blacklist_address(policy_id, blacklisted_user).await?;
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_user]),
+        )
+        .apply_rpc(&l1.dev_provider())
+        .await?;
+    let policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
 
     // Verify policy state on L1
     let auth_result = l1.is_authorized(policy_id, blacklisted_user).await?;
@@ -2074,7 +2075,8 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     );
 
     // Non-blacklisted address should be authorized
-    let clean_user = l1.signer_at(3).address();
+    let [clean_signer] = signers();
+    let clean_user = clean_signer.address();
     let clean_auth = l1.is_authorized(policy_id, clean_user).await?;
     assert!(
         clean_auth,
@@ -2100,12 +2102,12 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     );
 
     // Deposit to a non-blacklisted user should still work.
-    // Use signer_at(3) — the same `clean_user` verified above — because the default
+    // Use `clean_user`, verified above, because the default
     // user_signer (index 1) was blacklisted earlier in this test.
-    let clean_signer = l1.signer_at(3);
     let mut account = ZoneAccount::with_signer(clean_signer, &l1, &zone, portal_address);
     let deposit_amount: u128 = 1_000_000;
-    l1.fund_user(account.address(), deposit_amount).await?;
+    // The fresh key holds nothing on L1, so fund its gas too.
+    l1.fund_user(account.address(), deposit_amount * 2).await?;
     let minted = account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
     assert_eq!(
         minted,
@@ -2125,9 +2127,11 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(TIP403Setup::blacklist(l1.dev_address()))
+        .apply_rpc(&l1.dev_provider())
         .await?;
+    let policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
 
     let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
@@ -2142,7 +2146,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
         policy_block,
         PATH_USD_ADDRESS,
         policy_id,
-    );
+    )?;
     let blocked_members = [(rejected_recipient, true)];
     seed_raw_tip403_policy(
         zone.l1_state_cache(),
@@ -2238,8 +2242,7 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
     l1.set_access_mode_on_portal(portal_address, false).await?;
 
-    let listed_signer = l1.signer_at(3);
-    let unlisted_signer = l1.signer_at(4);
+    let [listed_signer, unlisted_signer] = signers();
     let datadir = tempfile::tempdir()?;
     // This test changes the list in process, so no admin signs RPC writes.
     let allowlist = DepositAllowlist::load(
@@ -2259,8 +2262,9 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
 
     let mut listed = ZoneAccount::with_signer(listed_signer, &l1, &zone, portal_address);
     let mut unlisted = ZoneAccount::with_signer(unlisted_signer, &l1, &zone, portal_address);
-    l1.fund_user(listed.address(), 2 * AMOUNT).await?;
-    l1.fund_user(unlisted.address(), 3 * AMOUNT).await?;
+    // Fresh keys hold nothing on L1, so each gets one extra AMOUNT for gas.
+    l1.fund_user(listed.address(), 3 * AMOUNT).await?;
+    l1.fund_user(unlisted.address(), 4 * AMOUNT).await?;
     // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
@@ -2409,8 +2413,7 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
 
     const AMOUNT: u128 = 1_000_000;
 
-    let first_signer = crate::utils::signer_at(3);
-    let second_signer = crate::utils::signer_at(4);
+    let [first_signer, second_signer] = signers();
     let (first, second) = (first_signer.address(), second_signer.address());
     let cluster = start_real_p2p_cluster(ClusterConfig {
         deposit_allowlist: Some(AllowlistSetup {
@@ -2506,8 +2509,9 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     let leader = &cluster.nodes[0];
     let mut removed = ZoneAccount::with_signer(first_signer, l1, leader, cluster.portal_address);
     let mut added = ZoneAccount::with_signer(second_signer, l1, leader, cluster.portal_address);
-    l1.fund_user(removed.address(), AMOUNT).await?;
-    l1.fund_user(added.address(), AMOUNT).await?;
+    // Fresh keys hold nothing on L1, so each gets a second AMOUNT for gas.
+    l1.fund_user(removed.address(), 2 * AMOUNT).await?;
+    l1.fund_user(added.address(), 2 * AMOUNT).await?;
 
     assert_eq!(
         added.deposit(AMOUNT, L1_TIMEOUT, leader).await?,
@@ -2549,7 +2553,7 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
 async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let added = crate::utils::signer_at(4).address();
+    let [added] = actors();
     let cluster = start_real_p2p_cluster(ClusterConfig {
         active_nodes: 2,
         deposit_allowlist: Some(AllowlistSetup {
@@ -2640,12 +2644,9 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     const AMOUNT: u128 = 1_000_000;
     const TRANSFER_GAS: u64 = 500_000;
 
-    let alice_signer = crate::utils::signer_at(3);
-    let (alice, bob, carol) = (
-        alice_signer.address(),
-        crate::utils::signer_at(4).address(),
-        crate::utils::signer_at(5).address(),
-    );
+    let [alice_signer] = signers();
+    let alice = alice_signer.address();
+    let [bob, carol] = actors();
     let cluster = start_real_p2p_cluster(ClusterConfig {
         deposit_allowlist: Some(AllowlistSetup {
             seed: vec![alice, bob],
@@ -2662,7 +2663,8 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         .await?;
     let mut account =
         ZoneAccount::with_signer(alice_signer.clone(), l1, leader, cluster.portal_address);
-    l1.fund_user(alice, AMOUNT).await?;
+    // Alice is a fresh key, so fund her L1 gas too.
+    l1.fund_user(alice, 2 * AMOUNT).await?;
     account.deposit(AMOUNT, L1_TIMEOUT, leader).await?;
     for node in &cluster.nodes {
         node.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
@@ -2814,8 +2816,9 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
     const AMOUNT: u128 = 1_000_000;
     const TRANSFER_GAS: u64 = 500_000;
 
-    let alice_signer = crate::utils::signer_at(3);
-    let (alice, bob) = (alice_signer.address(), crate::utils::signer_at(4).address());
+    let [alice_signer] = signers();
+    let alice = alice_signer.address();
+    let [bob] = actors();
     // Without the admin the RPC node relays no writes but still mirrors the sequencers' list.
     let cluster = start_real_p2p_cluster(ClusterConfig {
         deposit_allowlist: Some(AllowlistSetup {
@@ -2833,7 +2836,8 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
         .await?;
     let mut account =
         ZoneAccount::with_signer(alice_signer.clone(), l1, leader, cluster.portal_address);
-    l1.fund_user(alice, AMOUNT).await?;
+    // Alice is a fresh key, so fund her L1 gas too.
+    l1.fund_user(alice, 2 * AMOUNT).await?;
     account.deposit(AMOUNT, L1_TIMEOUT, leader).await?;
     rpc.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
         .await?;
@@ -2961,7 +2965,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
         .mined()
         .await?;
 
-    let current_recipient = l1.signer_at(2).address();
+    let [current_recipient, historical_recipient] = actors();
     let current_entry = portal.sequencerEncryptionKey().call().await?;
     let current = ecies::encrypt_deposit(
         &current_entry.x,
@@ -2991,7 +2995,6 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
         .await?;
     eyre::ensure!(current_receipt.status(), "current-key deposit was rejected");
 
-    let historical_recipient = l1.signer_at(3).address();
     let old_scalar: Scalar = *old_key.to_nonzero_scalar();
     let old_point = AffinePoint::from(ProjectivePoint::GENERATOR * old_scalar);
     let (old_x, old_y_parity) = ecies::compressed_x_and_parity(&old_point);
@@ -3063,13 +3066,14 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 2: Create blacklist policy and blacklist the intended recipient ---
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
+    let [blacklisted_recipient] = actors();
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_recipient]),
+        )
+        .apply_rpc(&l1.dev_provider())
         .await?;
-
-    let blacklisted_recipient = l1.signer_at(2).address();
-    l1.blacklist_address(policy_id, blacklisted_recipient)
-        .await?;
+    let policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
 
     // Verify on L1
     assert!(
@@ -3171,11 +3175,21 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     let alice_signer = l1.user_signer();
     let alice = alice_signer.address();
 
-    let sender_policy_id = l1.create_blacklist_policy().await?;
-    let compound_policy_id = l1.create_compound_policy(sender_policy_id, 1, 1).await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, compound_policy_id)
+    // pathUSD briefly uses the sender blacklist alone, which mints its policy ID.
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(TIP403Setup::blacklist(l1.dev_address()).with_members([alice]))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    l1.blacklist_address(sender_policy_id, alice).await?;
+    let sender_policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
+    TIP20Setup::path_usd(l1.dev_address())
+        .with_transfer_policy(TIP403Setup::compound(
+            sender_policy_id,
+            ALLOW_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
+        ))
+        .apply_rpc(&l1.dev_provider())
+        .await?;
+    let compound_policy_id = l1.transfer_policy_id(PATH_USD_ADDRESS).await?;
 
     // Verify on L1: Alice is NOT authorized as sender
     {

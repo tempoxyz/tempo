@@ -32,9 +32,10 @@ use crate::utils::{
     DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, PolicySeed, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneL1,
     ZoneLaunch, ZoneTestNode, approve_outbox, leader_p2p_config, local_dev_zone_account,
     next_unique_chain_id, poll_until, seed_fixture_for_zone, seed_raw_tip403_policy,
-    seed_raw_tip403_token_policy, signer_at, start_chain_id_rpc, start_local_p2p_cluster,
+    seed_raw_tip403_token_policy, start_chain_id_rpc, start_local_p2p_cluster,
     start_local_zone_with_fixture,
 };
+use tempo_primitives::test_utils::signers;
 
 const CONTRACT_CREATION_TX_GAS: u64 = 1_000_000;
 const LEADER_INCLUSION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -296,7 +297,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
         .map_err(|_| eyre::eyre!("cluster must have three nodes"))?;
 
     // Alice funds the transfer; Bob becomes blacklisted at the next L1 anchor.
-    let alice_signer = signer_at(1);
+    let [alice_signer] = signers();
     let alice = alice_signer.address();
     let bob = address!("0x0000000000000000000000000000000000000B0B");
 
@@ -360,7 +361,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
             POLICY_L1_BLOCK,
             PATH_USD_ADDRESS,
             BLACKLIST_POLICY_ID,
-        );
+        )?;
     }
 
     // --- Block 2: Alice's transfer is submitted, then the anchoring L1 block is

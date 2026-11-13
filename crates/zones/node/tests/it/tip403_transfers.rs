@@ -21,8 +21,9 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 
 use crate::utils::{
     DEFAULT_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, approve_outbox, l1_dev_signer,
-    local_dev_zone_account, signer_at, start_local_zone_with_fixture,
+    local_dev_zone_account, start_local_zone_with_fixture,
 };
+use tempo_primitives::test_utils::signers;
 
 /// Deposit pathUSD to the dev account, then transfer a portion to Bob.
 ///
@@ -191,13 +192,8 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let alice_signer = l1_dev_signer();
     let alice = alice_signer.address();
 
-    // Bob = mnemonic index 1
-    let bob_signer = signer_at(1);
-    let bob = bob_signer.address();
-
-    // Charlie = mnemonic index 2
-    let charlie_signer = signer_at(2);
-    let charlie = charlie_signer.address();
+    let [bob_signer, charlie_signer] = signers();
+    let (bob, charlie) = (bob_signer.address(), charlie_signer.address());
 
     let deposit_amount: u128 = 2_000_000;
 

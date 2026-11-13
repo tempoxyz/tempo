@@ -5,6 +5,7 @@ use alloy::{
     primitives::{B256, U256},
     providers::Provider,
 };
+use tempo_precompiles::test_util::TIP20Setup;
 
 /// Multi-asset deposit + withdrawal:
 ///
@@ -43,13 +44,18 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     let alpha_salt = B256::with_last_byte(100);
     let beta_salt = B256::with_last_byte(101);
 
-    let l1_alpha = l1.create_tip20("AlphaUSD", "aUSD", alpha_salt).await?;
-    let l1_beta = l1.create_tip20("BetaUSD", "bUSD", beta_salt).await?;
+    let alpha_deposit: u128 = 1_000_000; // 1 AlphaUSD
+    let beta_deposit: u128 = 2_000_000; // 2 BetaUSD
 
-    let mint_amount: u128 = 100_000_000; // 100 tokens (6 decimals)
-    l1.mint_tip20(l1_alpha, l1.dev_address(), mint_amount)
+    let l1_alpha = TIP20Setup::create("AlphaUSD", "aUSD", l1.dev_address())
+        .with_salt(alpha_salt)
+        .with_mint(alice.address(), U256::from(alpha_deposit * 2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    l1.mint_tip20(l1_beta, l1.dev_address(), mint_amount)
+    let l1_beta = TIP20Setup::create("BetaUSD", "bUSD", l1.dev_address())
+        .with_salt(beta_salt)
+        .with_mint(alice.address(), U256::from(beta_deposit * 2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
 
     // --- Step 3: Enable both tokens on the portal ---
@@ -68,15 +74,6 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     let l2_beta = l1_beta;
 
     // --- Step 4: Alice deposits both tokens ---
-    let alpha_deposit: u128 = 1_000_000; // 1 AlphaUSD
-    let beta_deposit: u128 = 2_000_000; // 2 BetaUSD
-
-    // Fund Alice on L1
-    l1.fund_user_token(l1_alpha, alice.address(), alpha_deposit * 2)
-        .await?;
-    l1.fund_user_token(l1_beta, alice.address(), beta_deposit * 2)
-        .await?;
-
     // Deposit pathUSD for L2 gas
     zone.deposit(alice, 5_000_000).await?;
 
