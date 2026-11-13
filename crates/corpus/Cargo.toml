@@ -34,6 +34,14 @@ exec = [
   "dep:tempo-evm",
   "dep:schnellru",
 ]
+# The `corpus` subcommands a node binary mounts (the `cli` module).
+cli = [
+  "exec",
+  "dep:clap",
+  "dep:reth-cli",
+  "dep:reth-cli-commands",
+  "dep:reth-tasks",
+]
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["serde"] }
@@ -45,7 +53,10 @@ tempo-primitives = { workspace = true, features = ["default"] }
 reth-evm = { workspace = true, optional = true }
 reth-provider = { workspace = true, optional = true }
 reth-chainspec.workspace = true
+reth-cli = { workspace = true, optional = true }
+reth-cli-commands = { workspace = true, optional = true }
 reth-cli-util = { workspace = true, optional = true }
+reth-tasks = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true, optional = true }
 reth-consensus = { workspace = true, optional = true }
 reth-trie-common = { workspace = true, optional = true }
@@ -59,6 +70,7 @@ tempo-fuzz-types.workspace = true
 
 bincode.workspace = true
 bytes.workspace = true
+clap = { workspace = true, optional = true }
 eyre.workspace = true
 futures.workspace = true
 object_store = { version = "0.14.2", features = ["aws"] }

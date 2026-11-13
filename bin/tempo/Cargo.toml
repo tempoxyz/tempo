@@ -170,7 +170,7 @@ fuzz-execution = [
 localnet = ["dep:nix"]
 
 # Historical execution corpus commands (`tempo corpus fill/replay`).
-corpus = ["dep:tempo-corpus"]
+corpus = ["dep:tempo-corpus", "tempo-corpus/cli"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

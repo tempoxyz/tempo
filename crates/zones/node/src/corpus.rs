@@ -3,206 +3,71 @@
 
 use crate::{ZoneConsensus, ZoneNode, cli::cli_l1_provider};
 use alloy_primitives::{Address, B256};
-use clap::{Parser, Subcommand};
+use clap::Args;
 use evm2::evm::Database;
 use parking_lot::Mutex;
-use reth_cli::chainspec::ChainSpecParser;
-use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
-use reth_cli_util::cancellation::CancellationToken;
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::RecoveredBlock;
-use reth_tasks::Runtime;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tempo_corpus::{
-    exec::{
-        chain::{Chain, Evm, Source},
-        fill, replay, workers,
-    },
-    gc,
-    store::Store,
+    cli::CliChain,
+    exec::chain::{Chain, Evm, Source},
     types::{L1Read, L1Reads},
 };
 use tempo_precompiles::zone_factory::portal_address;
 use tempo_primitives::Block;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
 use zone_evm::{ZoneBlockExecutor, ZoneEvmConfig, ZoneExecutorState};
+use zone_l1::state::L1StateProvider;
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 /// Why replay refused an L1 read.
 const UNRECORDED: &str = "not recorded in the corpus";
 
 /// Historical execution corpus commands.
-#[derive(Debug, Subcommand)]
-pub enum CorpusCommand {
-    /// Capture archive blocks and the L1 state they read into `--corpus s3://bucket/prefix`,
-    /// appending to an existing corpus.
-    Fill(Box<FillCommand>),
-    /// Replay a corpus range without opening a database or reading L1.
-    Replay(ReplayCommand),
-    /// Delete the superseded checkpoints and unreferenced files of a complete corpus.
-    Gc(GcCommand),
-}
+pub type CorpusCommand = tempo_corpus::cli::CorpusCommand<Zone>;
 
-impl CorpusCommand {
-    /// Runs the command; `runtime` opens the archive a fill reads.
-    pub async fn execute(self, runtime: Runtime) -> eyre::Result<()> {
-        match self {
-            Self::Fill(cmd) => cmd.execute(runtime).await,
-            Self::Replay(cmd) => cmd.execute().await,
-            Self::Gc(cmd) => cmd.execute().await,
+/// A zone, whose blocks read Tempo L1 state: a fill records each read with its block, and a
+/// replay serves reads only from those records, without L1 access.
+#[derive(Debug)]
+pub struct Zone;
+
+impl CliChain for Zone {
+    type ChainSpecParser = ZoneChainSpecParser;
+    type Node = ZoneNode;
+    type Chain = ZoneChain;
+    type Source = ZoneSource<L1StateProvider>;
+    type Consensus = ZoneConsensus;
+    type FillArgs = L1Args;
+
+    fn chain(spec: Arc<ZoneChainSpec>) -> ZoneChain {
+        ZoneChain::new(spec)
+    }
+
+    fn source(spec: Arc<ZoneChainSpec>, args: L1Args) -> ZoneSource<L1StateProvider> {
+        let chain = ZoneChain::new(spec);
+        ZoneSource {
+            l1: cli_l1_provider(chain.portal, args.l1_http_rpc_url),
+            chain,
         }
+    }
+
+    fn consensus(spec: Arc<ZoneChainSpec>) -> ZoneConsensus {
+        ZoneConsensus::new(spec)
     }
 }
 
-/// Capture archive blocks from a zone archive datadir up to a pinned exclusive end, appending
-/// after the blocks a corpus already published. Every Tempo L1 read a block makes is read over
-/// `L1_HTTP_RPC_URL` and stored with it.
-#[derive(Debug, Parser)]
-pub struct FillCommand {
-    #[command(flatten)]
-    env: EnvironmentArgs<ZoneChainSpecParser>,
+/// Where a zone fill reads the Tempo L1 state its blocks read.
+#[derive(Debug, Args)]
+pub struct L1Args {
     /// Tempo L1 HTTP RPC URL the L1 state blocks read is read from.
     #[arg(long = "l1.http-rpc-url", env = "L1_HTTP_RPC_URL")]
     l1_http_rpc_url: url::Url,
-    /// First block of a new corpus (genesis is context, not a captured block); an existing
-    /// corpus must start here.
-    #[arg(long, default_value = "1")]
-    from: u64,
-    /// Exclusive end, clamped to the available head; defaults to the head.
-    #[arg(long)]
-    to: Option<u64>,
-    /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
-    #[arg(long)]
-    corpus: String,
-    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-    /// Re-read and fully replay published records instead of checking metadata only.
-    #[arg(long)]
-    verify_existing: bool,
-    /// Capture worker threads; defaults to the available parallelism.
-    #[arg(long)]
-    workers: Option<usize>,
-}
-
-impl FillCommand {
-    async fn execute(self, runtime: Runtime) -> eyre::Result<()> {
-        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
-        let Environment {
-            provider_factory, ..
-        } = self.env.init::<ZoneNode>(AccessRights::RO, runtime)?;
-        let chain = ZoneChain::new(self.env.chain.clone());
-        let source = ZoneSource {
-            l1: cli_l1_provider(chain.portal, self.l1_http_rpc_url),
-            chain,
-        };
-        let consensus = ZoneConsensus::new(self.env.chain.clone());
-        let args = fill::FillArgs {
-            from: self.from,
-            to: self.to,
-            verify_existing: self.verify_existing,
-            workers: workers(self.workers),
-        };
-        let cancellation = CancellationToken::new();
-        let _guard = cancellation.drop_guard();
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
-            fill::fill(
-                provider_factory,
-                store,
-                &source,
-                &consensus,
-                args,
-                &cancellation,
-                handle,
-            )
-        })
-        .await?
-    }
-}
-
-/// Replay a published corpus range.
-#[derive(Debug, Parser)]
-pub struct ReplayCommand {
-    /// The zone genesis the corpus was captured from.
-    #[arg(long, value_name = "CHAIN_OR_PATH", value_parser = ZoneChainSpecParser::parser())]
-    chain: Arc<ZoneChainSpec>,
-    /// Source s3://bucket/prefix.
-    #[arg(long)]
-    corpus: String,
-    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-    /// First block; defaults to the corpus start.
-    #[arg(long)]
-    from: Option<u64>,
-    /// Exclusive end; defaults to the end of the published blocks.
-    #[arg(long)]
-    to: Option<u64>,
-    /// Replay only transactions with ordinal in [tx-from, tx-to), each independently.
-    #[arg(long, requires = "tx_to")]
-    tx_from: Option<u64>,
-    /// Exclusive end of the standalone transaction ordinal range.
-    #[arg(long, requires = "tx_from")]
-    tx_to: Option<u64>,
-    /// Execution worker threads; defaults to the available parallelism.
-    #[arg(long)]
-    workers: Option<usize>,
-    /// Replay only the blocks a block list file names, such as a fuzz corpus minimizer's.
-    #[arg(long, conflicts_with_all = ["from", "to", "tx_from"])]
-    blocks: Option<PathBuf>,
-}
-
-impl ReplayCommand {
-    async fn execute(self) -> eyre::Result<()> {
-        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
-        let (catalog, _) = store
-            .catalog()
-            .await?
-            .ok_or_else(|| eyre::eyre!("no corpus catalog at {}", self.corpus))?;
-        let request = replay::Request {
-            from: self.from,
-            to: self.to,
-            transactions: self.tx_from.zip(self.tx_to),
-            blocks: self.blocks,
-            workers: workers(self.workers),
-        };
-        let consensus = ZoneConsensus::new(self.chain.clone());
-        let chain = ZoneChain::new(self.chain);
-        let cancellation = CancellationToken::new();
-        let _guard = cancellation.drop_guard();
-        tokio::task::spawn_blocking(move || {
-            replay::run_request(store, catalog, chain, consensus, request, cancellation)
-        })
-        .await?
-    }
-}
-
-/// Shrink a complete corpus to its published checkpoint.
-#[derive(Debug, Parser)]
-pub struct GcCommand {
-    /// Corpus s3://bucket/prefix or file:///directory; must be complete.
-    #[arg(long)]
-    corpus: String,
-    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
-    #[arg(long)]
-    s3_endpoint: Option<String>,
-    /// Take over a corpus an interrupted gc left marked as collecting. Only when no gc is
-    /// still running on it.
-    #[arg(long)]
-    force: bool,
-}
-
-impl GcCommand {
-    async fn execute(self) -> eyre::Result<()> {
-        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
-        gc::gc(&store, self.force).await
-    }
 }
 
 /// A zone whose blocks a corpus replays.
 #[derive(Clone, Debug)]
-struct ZoneChain {
+pub struct ZoneChain {
     chain_spec: Arc<ZoneChainSpec>,
     /// The portal the zone ID in `chain_spec` derives.
     portal: Address,
@@ -242,7 +107,7 @@ impl Chain for ZoneChain {
 
 /// A zone whose blocks a corpus captures, reading Tempo L1 state through `l1`.
 #[derive(Clone, Debug)]
-struct ZoneSource<L1> {
+pub struct ZoneSource<L1> {
     chain: ZoneChain,
     l1: L1,
 }
@@ -280,7 +145,7 @@ impl<L1: L1StorageReader + Unpin> Source for ZoneSource<L1> {
 }
 
 /// Zone block execution over `reader`, kept to take the L1 reads it recorded.
-struct CorpusEvm<R> {
+pub struct CorpusEvm<R> {
     config: ZoneEvmConfig<R>,
     reader: R,
 }
@@ -308,7 +173,7 @@ impl<R: L1StorageReader + Unpin> Evm for CorpusEvm<R> {
 
 /// Reads Tempo L1 state from `l1`, recording every successful read and its value.
 #[derive(Clone, Debug)]
-struct RecordingReader<L1> {
+pub struct RecordingReader<L1> {
     l1: L1,
     reads: Arc<Mutex<L1Reads>>,
 }
@@ -344,7 +209,7 @@ impl<L1: L1StorageReader> L1StorageReader for RecordingReader<L1> {
 
 /// Serves Tempo L1 reads only from the ones a block recorded; any other read fails.
 #[derive(Clone, Debug)]
-struct RecordedReader(Arc<L1Reads>);
+pub struct RecordedReader(Arc<L1Reads>);
 
 impl L1StorageReader for RecordedReader {
     fn read_l1_storage(
@@ -417,7 +282,7 @@ mod tests {
     use tempo_chainspec::spec::DEV;
     use tempo_contracts::zones::IZoneInbox;
     use tempo_corpus::{
-        exec::capture,
+        exec::{capture, replay},
         store::{self, CaseRecord, Record},
     };
     use tempo_primitives::{
