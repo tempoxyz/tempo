@@ -366,30 +366,49 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
         // minicbor-serde recurses once per nesting level and the flattened witness buffers unknown
         // keys recursively, so bound the depth iteratively before deserializing.
         let mut depth_check = minicbor::Decoder::new(input);
-        // Items left in each open container, `None` while indefinite.
-        let mut open: Vec<Option<u64>> = Vec::new();
+        // An open container: items left in a definite one, or whether an indefinite map still
+        // owes the value of its last key.
+        enum Open {
+            Definite(u64),
+            IndefiniteArray,
+            IndefiniteMap { value_due: bool },
+        }
+        let mut open = Vec::new();
         loop {
             let datatype = depth_check.datatype()?;
             if datatype == Type::Break {
-                eyre::ensure!(open.pop() == Some(None), "unexpected CBOR break");
-            } else if let Some(Some(remaining)) = open.last_mut() {
-                *remaining -= 1;
+                let closed = open.pop();
+                eyre::ensure!(
+                    matches!(
+                        closed,
+                        Some(Open::IndefiniteArray | Open::IndefiniteMap { value_due: false })
+                    ),
+                    "unexpected CBOR break"
+                );
+            } else {
+                match open.last_mut() {
+                    Some(Open::Definite(remaining)) => *remaining -= 1,
+                    Some(Open::IndefiniteMap { value_due }) => *value_due = !*value_due,
+                    Some(Open::IndefiniteArray) | None => {}
+                }
             }
             match datatype {
-                Type::Array | Type::ArrayIndef => open.push(depth_check.array()?),
-                Type::Map | Type::MapIndef => open.push(
+                Type::Array | Type::ArrayIndef => open.push(
                     depth_check
-                        .map()?
-                        .map(|pairs| {
-                            pairs
-                                .checked_mul(2)
-                                .ok_or_eyre("witness CBOR map is too long")
-                        })
-                        .transpose()?,
+                        .array()?
+                        .map_or(Open::IndefiniteArray, Open::Definite),
                 ),
+                Type::Map | Type::MapIndef => open.push(match depth_check.map()? {
+                    Some(pairs) => Open::Definite(
+                        pairs
+                            .checked_mul(2)
+                            .ok_or_eyre("witness CBOR map is too long")?,
+                    ),
+                    None => Open::IndefiniteMap { value_due: false },
+                }),
                 Type::Tag => {
                     depth_check.tag()?;
-                    open.push(Some(1));
+                    open.push(Open::Definite(1));
                 }
                 // Also consumes a break.
                 _ => depth_check.skip()?,
@@ -398,14 +417,16 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
                 open.len() <= MAX_WITNESS_CBOR_DEPTH,
                 "witness CBOR nests deeper than {MAX_WITNESS_CBOR_DEPTH} levels"
             );
-            while open.last() == Some(&Some(0)) {
+            while matches!(open.last(), Some(Open::Definite(0))) {
                 open.pop();
             }
             if open.is_empty() {
                 break;
             }
         }
-        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(input));
+        // serde must only see the bytes the walk checked.
+        let checked = &input[..depth_check.position()];
+        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(checked));
         let proof = serde::Deserialize::deserialize(&mut deserializer)?;
         input = &input[deserializer.decoder().position()..];
         Some(proof)
@@ -832,6 +853,28 @@ mod tests {
                 .unwrap();
             assert_eq!(err, "witness CBOR nests deeper than 32 levels");
         }
+
+        // A break where an indefinite map owes a value must not end the walk early: serde reads
+        // it as the ignored value of "x" and decodes the unchecked rest.
+        let early_break = [
+            EncodedBlock::WITNESS_PREFIX,
+            &bare,
+            &[0xbf, 0x6d],
+            b"formatVersion",
+            &[0x02, 0x61, b'x', 0xff, 0x67],
+            b"witness",
+            &[0xa1, 0x61, b'x'],
+            &[0x81; 5_000],
+            &[0x00, 0xff],
+        ]
+        .concat();
+        let err = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || decode_peer_block(&early_break).unwrap_err().to_string())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(err, "unexpected CBOR break");
 
         let stray_break = [EncodedBlock::WITNESS_PREFIX, &bare, &prefix, &[0xff]].concat();
         assert_eq!(
