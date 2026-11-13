@@ -7,7 +7,7 @@ use crate::builder::build_advance_tempo_tx_owned;
 use alloy_primitives::{Address, B256, map::HashSet};
 use futures::{
     FutureExt as _, StreamExt as _,
-    future::{AbortHandle, Abortable, ready},
+    future::{AbortHandle, Abortable},
     stream,
 };
 use reth_evm::{
@@ -17,7 +17,13 @@ use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
-use std::{collections::VecDeque, error::Error, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    error::Error,
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempo_contracts::zones::DepositType;
 use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
 use tempo_primitives::TempoHeader;
@@ -272,6 +278,7 @@ impl<I: BestTransactions<Item = BestTransaction>> BestTransactions for PoolLooka
 struct L1StoragePrewarmer {
     provider: L1StateProvider,
     l1_block_number: u64,
+    queued: Arc<Mutex<HashSet<Address>>>,
     fetches: mpsc::Sender<Address>,
 }
 
@@ -298,8 +305,13 @@ impl L1StorageReader for L1StoragePrewarmer {
         {
             return Ok(commitment);
         }
-        // A miss dropped from a full queue is fetched by canonical execution instead.
-        if let Err(TrySendError::Closed(_)) = self.fetches.try_send(account) {
+        // Each miss is queued once; one dropped from a full queue is left to canonical execution.
+        if self
+            .queued
+            .lock()
+            .is_ok_and(|mut queued| queued.insert(account))
+            && let Err(TrySendError::Closed(_)) = self.fetches.try_send(account)
+        {
             debug!(target: "zone::payload", %account, "Commitment prewarm fetch task stopped");
         }
         Ok(B256::ZERO)
@@ -317,13 +329,12 @@ impl L1StoragePrewarmer {
         let reader = Self {
             provider: provider.clone(),
             l1_block_number,
+            queued: Default::default(),
             fetches,
         };
         let task = async move {
             let provider = &provider;
-            let mut fetched = HashSet::<Address>::default();
             stream::poll_fn(move |cx| accounts.poll_recv(cx))
-                .filter(move |account| ready(fetched.insert(*account)))
                 .for_each_concurrent(MAX_COMMITMENT_FETCHES, |account| async move {
                     // A failed fetch is retried by canonical execution on its own cache miss.
                     let fetch = provider.read_l1_commitment_async(account, l1_block_number);
@@ -379,11 +390,12 @@ mod tests {
             cache.set_commitment(cached, TEMPO_BLOCK, commitment);
             cache.set(cached, slot, TEMPO_BLOCK - 1, value);
         }
-        // Room for two misses: the third is dropped.
-        let (fetches, mut sent) = mpsc::channel(2);
+        // Room for one miss: a repeated miss isn't resent and the next one is dropped.
+        let (fetches, mut sent) = mpsc::channel(1);
         let reader = L1StoragePrewarmer {
             provider,
             l1_block_number: TEMPO_BLOCK,
+            queued: Default::default(),
             fetches,
         };
 
@@ -412,12 +424,12 @@ mod tests {
         );
         assert_eq!(
             std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>(),
-            [fresh, fresh]
+            [fresh]
         );
     }
 
     #[tokio::test]
-    async fn prewarm_reader_fetches_each_sent_account_once() {
+    async fn prewarm_reader_fetches_each_miss_once() {
         let asserter = Asserter::new();
         let (failed, fetched, commitment) = (
             Address::repeat_byte(1),
@@ -433,7 +445,10 @@ mod tests {
         let provider = provider(asserter);
         let (reader, task) = L1StoragePrewarmer::new(provider.clone(), TEMPO_BLOCK);
         for account in [failed, failed, fetched] {
-            reader.fetches.try_send(account).unwrap();
+            assert_eq!(
+                reader.read_l1_commitment(account, TEMPO_BLOCK),
+                Ok(B256::ZERO)
+            );
         }
         drop(reader);
 
