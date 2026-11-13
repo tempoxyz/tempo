@@ -68,6 +68,14 @@ impl Precompile for Cards {
                     getCard(call) => view(call, |c| self.get_card(c.payee, c.card)),
                     cardByToken(call) => view(call, |c| self.card_by_token(c.payee, c.tokenHash)),
                     programAllows(call) => view(call, |c| self.program_allows(c.payee, c.token)),
+                    attest(call) => mutate(call, msg_sender, |sender, c| self.attest(sender, c)),
+                    setIdentityPolicy(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_identity_policy(sender, c)
+                    }),
+                    attestationOf(call) => view(call, |c| {
+                        self.attestation_of(c.owner, c.attester, c.claim)
+                    }),
+                    identityPolicy(call) => view(call, |c| self.identity_policy(c.payee)),
                 }
             }
         )

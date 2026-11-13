@@ -520,6 +520,20 @@ impl Reservations {
             }
             _ => (0, 0, 0),
         };
+        // A program with an identity policy admits only owners it accepts an attestation for: the
+        // card's issuer for a card hold, the payee for a direct one.
+        match placement {
+            Placement::Card { issuer, .. }
+            | Placement::CardLine { issuer, .. }
+            | Placement::CardMerchant { issuer, .. }
+            | Placement::CardStandIn { issuer, .. } => {
+                Cards::new().ensure_identity(owner, issuer)?
+            }
+            Placement::Plain | Placement::StandIn | Placement::Line { .. } => {
+                Cards::new().ensure_identity(owner, payee)?
+            }
+            Placement::Dispute { .. } => {}
+        }
         // A dormant, closed or estate account takes no new holds; a card's checks above already
         // refuse one through a closed or estate account's card as inactive.
         Cards::new().ensure_account_active(owner)?;
@@ -681,6 +695,13 @@ impl Reservations {
         let decrease = previous.saturating_sub(call.amount);
         if call.amount > previous {
             let increase = call.amount - previous;
+            // A hold grows only while its owner still meets the program's identity policy.
+            let program = if auth.card_line != 0 {
+                Cards::new().line_payee(auth.card_line)?
+            } else {
+                auth.payee
+            };
+            Cards::new().ensure_identity(owner, program)?;
             // A card hold grows only while its card is active and within its limit; a direct hold
             // only within the windows it counted in.
             if auth.card_line != 0 {
@@ -4484,6 +4505,105 @@ mod tests {
                     AccountKeychainError::call_not_allowed().into()
                 );
             }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_identity_policy_admits_only_attested_owners() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let mut cards = Cards::new();
+            cards.initialize()?;
+            let card = B256::random();
+            issue_card(
+                &mut cards,
+                &f,
+                f.owner,
+                card,
+                ICards::Status::Active,
+                U96::MAX,
+            )?;
+            let (kyc, other) = (Address::random(), Address::random());
+            let (claim, us, eu) = (
+                B256::repeat_byte(0x01),
+                B256::repeat_byte(0x02),
+                B256::repeat_byte(0x03),
+            );
+            cards.set_identity_policy(
+                f.payee,
+                ICards::setIdentityPolicyCall {
+                    claim,
+                    jurisdiction: us,
+                    attesters: vec![kyc],
+                },
+            )?;
+            let required = CardsError::identity_required().into();
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                required
+            );
+            assert_eq!(f.hold(B256::random(), 10).unwrap_err(), required);
+            // An attester the policy does not name, or a check under another jurisdiction, admits nothing.
+            let owner = f.owner;
+            let attest =
+                |cards: &mut Cards, attester: Address, jurisdiction: B256, expires_at: u64| {
+                    cards.attest(
+                        attester,
+                        ICards::attestCall {
+                            owner,
+                            claim,
+                            jurisdiction,
+                            record: B256::repeat_byte(0x1d),
+                            expiresAt: expires_at,
+                        },
+                    )
+                };
+            attest(&mut cards, other, us, EXPIRY)?;
+            attest(&mut cards, kyc, eu, EXPIRY)?;
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                required
+            );
+            attest(&mut cards, kyc, us, EXPIRY)?;
+            assert_eq!(cards.attestation_of(f.owner, kyc, claim)?.expiresAt, EXPIRY);
+            let id = B256::random();
+            hold_card(&mut f, id, 10, card)?;
+            f.hold(B256::random(), 10)?;
+            // Revoked or expired, the attestation stops new holds and increases, while open holds stay.
+            attest(&mut cards, kyc, us, 0)?;
+            assert_eq!(f.adjust(id, 20).unwrap_err(), required);
+            f.adjust(id, 5)?;
+            attest(&mut cards, kyc, us, EXPIRY - 1)?;
+            StorageCtx.set_timestamp(U256::from(EXPIRY - 1));
+            assert_eq!(
+                hold_card(&mut f, B256::random(), 10, card).unwrap_err(),
+                required
+            );
+            // Clearing the policy admits everyone again; a policy names at most eight attesters.
+            cards.set_identity_policy(
+                f.payee,
+                ICards::setIdentityPolicyCall {
+                    claim,
+                    jurisdiction: us,
+                    attesters: vec![],
+                },
+            )?;
+            assert!(cards.identity_policy(f.payee)?.attesters.is_empty());
+            hold_card(&mut f, B256::random(), 10, card)?;
+            assert_eq!(
+                cards
+                    .set_identity_policy(
+                        f.payee,
+                        ICards::setIdentityPolicyCall {
+                            claim,
+                            jurisdiction: us,
+                            attesters: vec![kyc; 9]
+                        },
+                    )
+                    .unwrap_err(),
+                CardsError::too_many_attesters().into()
+            );
             Ok(())
         })
     }

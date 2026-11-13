@@ -119,6 +119,16 @@ crate::sol! {
         function cardByToken(address payee, bytes32 tokenHash) external view returns (bytes32 card);
         /// Whether `payee`'s cards may hold `token`.
         function programAllows(address payee, address token) external view returns (bool);
+        /// Records that the caller (an attester) checked `owner` for `claim` under `jurisdiction`,
+        /// keeping only the hash of its record, until `expiresAt`; replaces the caller's earlier
+        /// attestation of the claim, and an `expiresAt` of zero revokes it.
+        function attest(address owner, bytes32 claim, bytes32 jurisdiction, bytes32 record, uint64 expiresAt) external;
+        /// Sets the caller's (a payee's) identity policy: holds paid to it, or through its cards,
+        /// need a live attestation of `claim` under `jurisdiction` from one of `attesters`. No
+        /// attesters clears the policy.
+        function setIdentityPolicy(bytes32 claim, bytes32 jurisdiction, address[] calldata attesters) external;
+        function attestationOf(address owner, address attester, bytes32 claim) external view returns (bytes32 jurisdiction, bytes32 record, uint64 expiresAt);
+        function identityPolicy(address payee) external view returns (bytes32 claim, bytes32 jurisdiction, address[] memory attesters);
 
         event CardIssued(address indexed payee, bytes32 indexed card, address indexed owner, uint64 line);
         event CardUpdated(address indexed payee, bytes32 indexed card, Status status, uint96 limit, uint64 expiresAt, Program program);
@@ -131,6 +141,8 @@ crate::sol! {
         event SpendWindowSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint96 limit);
         event DailyLimitsSet(address indexed owner, address indexed issuer, uint32 periodEnd, uint64 limit, uint64 perPurchase);
         event MerchantMandateSet(address indexed owner, address indexed issuer, bytes32 indexed merchant, bool revoked, uint96 limit);
+        event Attested(address indexed owner, address indexed attester, bytes32 indexed claim, bytes32 jurisdiction, bytes32 record, uint64 expiresAt);
+        event IdentityPolicySet(address indexed payee, bytes32 claim, bytes32 jurisdiction, address[] attesters);
         event AuthoritySet(address indexed authority, Role role, bool listed, address payout, uint32 dormancy, uint32 escheatAfter);
 
         error CardExists();
@@ -146,5 +158,7 @@ crate::sol! {
         error HoldsOpen();
         error MerchantRevoked();
         error WindowLimitExceeded();
+        error IdentityRequired();
+        error TooManyAttesters();
     }
 }

@@ -64,6 +64,28 @@ struct TokenList {
     restricted: bool,
 }
 
+/// An attester's check of one owner for one claim, in three slots.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct Attestation {
+    jurisdiction: B256,
+    /// Hash of the attester's record; nothing identifying is stored.
+    record: B256,
+    /// Unix time from which the attestation no longer counts; zero is revoked.
+    expires_at: u64,
+}
+
+/// A payee's identity policy, in three slots; no attesters is no policy.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+struct IdentityPolicy {
+    claim: B256,
+    jurisdiction: B256,
+    /// How many attesters `identity_attesters` lists for the payee.
+    attesters: u8,
+}
+
+/// Most attesters one identity policy names, which bounds what a hold reads.
+const MAX_ATTESTERS: usize = 8;
+
 /// An owner's account record, in one slot; an owner never recorded reads Active.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct AccountRecord {
@@ -165,6 +187,12 @@ pub struct Cards {
     payouts: Mapping<Address, Mapping<Address, Mapping<Address, Payout>>>,
     /// Daily limits keyed by owner then issuer.
     daily: Mapping<Address, Mapping<Address, DailyLimits>>,
+    /// Attestations keyed by owner, attester then claim.
+    attestations: Mapping<Address, Mapping<Address, Mapping<B256, Attestation>>>,
+    /// Identity policies keyed by payee.
+    identity: Mapping<Address, IdentityPolicy>,
+    /// Attesters of each payee's identity policy, keyed by payee then position.
+    identity_attesters: Mapping<Address, Mapping<u8, Address>>,
 }
 
 impl Cards {
@@ -1109,6 +1137,99 @@ impl Cards {
 
     fn now(&self) -> u64 {
         self.storage.timestamp().saturating_to()
+    }
+
+    pub(crate) fn attest(&mut self, attester: Address, call: ICards::attestCall) -> Result<()> {
+        if attester.is_zero() || call.owner.is_zero() {
+            return Err(CardsError::unauthorized().into());
+        }
+        self.attestations[call.owner][attester][call.claim].write(Attestation {
+            jurisdiction: call.jurisdiction,
+            record: call.record,
+            expires_at: call.expiresAt,
+        })?;
+        self.emit_event(CardsEvent::attested(
+            call.owner,
+            attester,
+            call.claim,
+            call.jurisdiction,
+            call.record,
+            call.expiresAt,
+        ))
+    }
+
+    pub(crate) fn set_identity_policy(
+        &mut self,
+        payee: Address,
+        call: ICards::setIdentityPolicyCall,
+    ) -> Result<()> {
+        if call.attesters.len() > MAX_ATTESTERS {
+            return Err(CardsError::too_many_attesters().into());
+        }
+        for (position, attester) in call.attesters.iter().enumerate() {
+            self.identity_attesters[payee][position as u8].write(*attester)?;
+        }
+        self.identity[payee].write(IdentityPolicy {
+            claim: call.claim,
+            jurisdiction: call.jurisdiction,
+            attesters: call.attesters.len() as u8,
+        })?;
+        self.emit_event(CardsEvent::identity_policy_set(
+            payee,
+            call.claim,
+            call.jurisdiction,
+            call.attesters,
+        ))
+    }
+
+    pub(crate) fn attestation_of(
+        &self,
+        owner: Address,
+        attester: Address,
+        claim: B256,
+    ) -> Result<ICards::attestationOfReturn> {
+        let found = self.attestations[owner][attester][claim].read()?;
+        Ok(ICards::attestationOfReturn {
+            jurisdiction: found.jurisdiction,
+            record: found.record,
+            expiresAt: found.expires_at,
+        })
+    }
+
+    pub(crate) fn identity_policy(&self, payee: Address) -> Result<ICards::identityPolicyReturn> {
+        let policy = self.identity[payee].read()?;
+        let attesters = (0..policy.attesters)
+            .map(|position| self.identity_attesters[payee][position].read())
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ICards::identityPolicyReturn {
+            claim: policy.claim,
+            jurisdiction: policy.jurisdiction,
+            attesters,
+        })
+    }
+
+    /// Reverts `IdentityRequired` unless `owner` holds a live attestation `payee`'s identity
+    /// policy accepts: its claim, under its jurisdiction, from one of its attesters. A payee
+    /// without a policy admits everyone.
+    pub(crate) fn ensure_identity(&self, owner: Address, payee: Address) -> Result<()> {
+        let policy = self.identity[payee].read()?;
+        if policy.attesters == 0 {
+            return Ok(());
+        }
+        let now = self.now();
+        for position in 0..policy.attesters {
+            let attester = self.identity_attesters[payee][position].read()?;
+            let found = self.attestations[owner][attester][policy.claim].read()?;
+            if found.expires_at > now && found.jurisdiction == policy.jurisdiction {
+                return Ok(());
+            }
+        }
+        Err(CardsError::identity_required().into())
+    }
+
+    /// The payee a card line belongs to, whose identity policy its holds follow.
+    pub(crate) fn line_payee(&self, line: u64) -> Result<Address> {
+        self.lines[line].payee.read()
     }
 }
 
