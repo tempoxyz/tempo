@@ -55,6 +55,21 @@ where
         &config.scheme_provider,
     )?;
 
+    // Marshal resumes from the floor, so bound the floor's epoch like the DKG
+    // manager does: an execution layer that lags the floor must not hide it.
+    let floor_epoch = config
+        .epoch_strategy
+        .containing(config.last_finalized_height.next())
+        .expect("strategy valid for all heights and epochs")
+        .epoch();
+    crate::startup::ensure_outcome_within_tip_epoch(floor_epoch, tip.map(|(_, tip)| tip))
+        .wrap_err_with(|| {
+            format!(
+                "the finalized floor at height `{}`",
+                config.last_finalized_height
+            )
+        })?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -80,16 +95,20 @@ where
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
-        epoch_info.last()
-    } else if let Some(previous) = epoch_info.epoch().previous() {
-        config
-            .epoch_strategy
-            .last(previous)
-            .expect("strategy valid for all heights and epochs")
-    } else {
-        Height::zero()
-    };
+    let (startup_execution_boundary, boundary_outcome_epoch) =
+        if epoch_info.last().get() == last_finalized_number {
+            (epoch_info.last(), epoch_info.epoch().next())
+        } else if let Some(previous) = epoch_info.epoch().previous() {
+            (
+                config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy valid for all heights and epochs"),
+                epoch_info.epoch(),
+            )
+        } else {
+            (Height::zero(), Epoch::zero())
+        };
 
     let boundary_header = config
         .execution_provider
@@ -103,6 +122,20 @@ where
             )
         })?;
 
+    let claimed_epoch =
+        OnchainDkgOutcome::read(&mut commonware_codec::Copying(boundary_header.extra_data().as_ref()))
+            .wrap_err_with(|| {
+                format!(
+                    "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+                )
+            })?
+            .epoch();
+    ensure!(
+        claimed_epoch == boundary_outcome_epoch,
+        "the last boundary (`{startup_execution_boundary}`) contains an outcome for epoch \
+         `{claimed_epoch}`, expected epoch `{boundary_outcome_epoch}`",
+    );
+
     let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
         .with_scheme_provider(config.scheme_provider.clone());
     let outcome = verifier
@@ -112,8 +145,6 @@ where
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
             )
         })?;
-    crate::startup::ensure_outcome_within_tip_epoch(outcome.epoch(), tip.map(|(_, tip)| tip))
-        .wrap_err_with(|| format!("the last boundary (`{startup_execution_boundary}`)"))?;
 
     let actor = Driver {
         context: ContextCell::new(context),
@@ -243,13 +274,6 @@ where
                  epoch `{claimed_epoch}`, expected the next epoch `{}`",
                 previous.next(),
             );
-            crate::startup::ensure_outcome_within_tip_epoch(
-                claimed_epoch,
-                self.config.finalized_tip.as_ref().map(|(_, tip)| tip),
-            )
-            .wrap_err_with(|| {
-                format!("the boundary block at height `{last_consensus_boundary}`")
-            })?;
 
             let onchain_outcome = self
                 .verifier
