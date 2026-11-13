@@ -28,8 +28,31 @@ for network in false true; do
     else
         grep -qx 'custom.disable_network_faults=true' "$ARGS_FILE"
     fi
-    grep -Fqx '^(l1|provision|workload|zone-rpc|proxy-[0-2])$' "$ARGS_FILE"
-    grep -Fqx 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc|proxy-[0-2])$' "$ARGS_FILE"
+    # Check emitted scopes, not just the presence of a regex elsewhere in argv.
+    exclusions=$(awk '$0 == "--fault-exclusions" { getline; print }' "$ARGS_FILE")
+    network_exclusions=$(sed -n 's/^custom.exclude_from_network_faults=//p' "$ARGS_FILE")
+    termination=$(sed -n 's/^custom.include_for_node_termination=//p' "$ARGS_FILE")
+    [[ "$exclusions" == '^(l1|provision|workload|zone-rpc)$' ]]
+    [[ "$network_exclusions" == "$exclusions" ]]
+    grep -Fqx 'custom.include_all_for_node_termination=false' "$ARGS_FILE"
+    for fault in throttle hang; do
+        grep -Fqx "custom.include_for_node_$fault=" "$ARGS_FILE"
+        grep -Fqx "custom.include_all_for_node_$fault=false" "$ARGS_FILE"
+    done
+    for service in l1 provision workload zone-rpc; do
+        [[ "$service" =~ $exclusions && "$service" =~ $network_exclusions ]]
+        [[ ! "$service" =~ $termination ]]
+    done
+    for index in 0 1 2; do
+        zone="zone-$index"
+        proxy="proxy-$index"
+        [[ "$zone" =~ $termination && ! "$proxy" =~ $termination ]]
+        # Neither endpoint of a sequencer/proxy hop may be excluded. This checks
+        # launch eligibility only, not the server's selection or actual packet loss.
+        for service in "$zone" "$proxy"; do
+            [[ ! "$service" =~ $exclusions && ! "$service" =~ $network_exclusions ]]
+        done
+    done
     if grep -Eq 'antithesis.duration|--duration|fault.tolerance' "$ARGS_FILE"; then
         echo 'unexpected duration or fault_tolerance parameter' >&2
         exit 1

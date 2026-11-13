@@ -165,6 +165,8 @@ enum Command {
         #[arg(long, value_enum)]
         case: Option<campaign::Case>,
     },
+    /// Submits two different admin targets against one epoch and proves only the first wins.
+    CompetingHandoffs,
     /// Hands leadership across asymmetric L1/P2P views with an observed pending payment pipeline.
     AsymmetricHandoff,
     /// Runs one transparent test-only L1/P2P gate without connecting to zone RPC.
@@ -240,6 +242,9 @@ impl Antithesis {
             }
             Command::HandoffCampaign { case } => {
                 return ctx.handoff_campaign(&self.fault_control_dir, case).await;
+            }
+            Command::CompetingHandoffs => {
+                return ctx.competing_handoffs(&self.fault_control_dir).await;
             }
             Command::AsymmetricHandoff => {
                 return ctx.asymmetric_handoff(&self.fault_control_dir).await;

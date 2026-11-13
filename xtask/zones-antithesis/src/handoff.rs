@@ -4,21 +4,25 @@ use alloy::{
     network::AnyTransactionReceipt,
     primitives::{Address, B256, U256},
     providers::Provider as _,
-    rpc::types::{BlockId, BlockNumberOrTag, Filter, Log},
+    rpc::types::{BlockId, BlockNumberOrTag, Filter, Log, TransactionReceipt},
     sol_types::SolEvent as _,
 };
 use antithesis_sdk::{assert_always, assert_reachable, assert_sometimes};
 use eyre::{OptionExt as _, WrapErr as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::Duration,
+};
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZonePortal};
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout, timeout_at};
 use zone_rpc::types::SetLeaderResponse;
 
 use super::{
     ADMIN_INDEX, Account, BRIDGE_WAIT, Context, Record, SEQUENCER_INDICES,
-    intents::{Chain, Effect},
+    intents::{Chain, Effect, Intent},
     outage::Membership,
     poll_until, random_below, random_choice, random_index,
     recovery::{ReceiptProof, recover_until},
@@ -26,6 +30,12 @@ use super::{
 
 /// Maximum L1 block range in one history query.
 const LOG_CHUNK: u64 = 10_000;
+/// A stale-epoch transaction must be mined, not rejected by gas estimation.
+const HANDOFF_GAS: u64 = 500_000;
+/// Each admission, submission and recovery phase has its own budget.
+const COMPETING_PHASE: Duration = Duration::from_secs(180);
+/// Includes the bounded episode-lock wait and all four phases, below the quiet window.
+const COMPETING_EPISODE: Duration = Duration::from_secs(1200);
 
 /// Intent persisted before either an admin send or a node relay can have an effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +82,232 @@ pub(super) struct Update {
 }
 
 impl Context {
+    /// Signs two different targets from one observation before broadcasting either. The caller
+    /// holds the exclusive episode lock and admin lease; both nonces remain journal-reserved.
+    async fn prepare_competing_handoffs(
+        &self,
+        admin: &Account,
+        prior: &Membership,
+        from_l1_block: u64,
+    ) -> eyre::Result<[(Request, Intent); 2]> {
+        let targets: Vec<_> = prior
+            .members
+            .iter()
+            .copied()
+            .filter(|member| *member != prior.leader)
+            .collect();
+        eyre::ensure!(
+            targets.len() == 2
+                && targets[0] != targets[1]
+                && targets.iter().all(|target| !target.is_zero()),
+            "competing handoffs require two distinct eligible successors"
+        );
+        let chain_id = self.l1.get_chain_id().await?;
+        let gas_price = self.l1.get_gas_price().await?;
+        let mut nonce = self
+            .l1
+            .get_transaction_count(admin.address())
+            .pending()
+            .await?;
+        let mut pair = Vec::with_capacity(2);
+        for target in targets {
+            let mut transaction = ZonePortal::new(self.portal, &self.l1)
+                .setLeader(target, prior.epoch)
+                .gas(HANDOFF_GAS)
+                .gas_price(gas_price)
+                .nonce(nonce)
+                .into_transaction_request();
+            transaction.chain_id = Some(chain_id);
+            let intent = self
+                .prepare_intent(
+                    admin,
+                    Chain::L1,
+                    0,
+                    transaction,
+                    Effect::Leadership { target },
+                )
+                .await?;
+            nonce = intent
+                .nonce
+                .checked_add(1)
+                .ok_or_eyre("competing handoff nonce overflow")?;
+            let request = Request {
+                id: self.ledger.next_id()?,
+                previous_leader: prior.leader,
+                expected_epoch: prior.epoch,
+                target,
+                relayed: false,
+                from_l1_block,
+                l1_tx: Some(intent.tx),
+            };
+            self.ledger
+                .append(&Record::HandoffRequest(request.clone()))?;
+            pair.push((request, intent));
+        }
+        pair.try_into()
+            .map_err(|_| eyre::eyre!("competing handoff pair is incomplete"))
+    }
+
+    // None retries finality, while contradictory receipt/event identities fail immediately.
+    async fn finalized_competing_handoff(
+        &self,
+        requests: &[Request; 2],
+        receipts: &[TransactionReceipt; 2],
+    ) -> eyre::Result<Option<Update>> {
+        let finalized = self
+            .l1
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?
+            .ok_or_eyre("no finalized competing handoff snapshot")?;
+        for receipt in receipts {
+            let number = receipt
+                .block_number
+                .ok_or_eyre("competing receipt has no block")?;
+            if number > finalized.header.number {
+                return Ok(None);
+            }
+            let canonical = self
+                .l1
+                .get_block_by_number(number.into())
+                .await?
+                .ok_or_eyre("competing receipt block disappeared")?;
+            eyre::ensure!(
+                Some(canonical.header.hash) == receipt.block_hash,
+                "competing receipt is not canonical"
+            );
+        }
+        let history = self.canonical_handoffs().await?;
+        let update = validate_competing_handoffs(requests, receipts, &history)?;
+        let canonical = self
+            .l1
+            .get_block_by_number(finalized.header.number.into())
+            .await?
+            .ok_or_eyre("competing finalized snapshot disappeared")?;
+        eyre::ensure!(
+            canonical.header.hash == finalized.header.hash,
+            "competing finalized snapshot changed"
+        );
+        Ok(Some(update.clone()))
+    }
+
+    /// Runs one quiet, exclusive two-request CAS conflict, then proves fresh winner settlement.
+    /// Prior unknowable relays skip admission without signing; admitted errors never become skips.
+    pub(super) async fn competing_handoffs(&self, dir: &Path) -> eyre::Result<()> {
+        let mut admitted = false;
+        let result = timeout(COMPETING_EPISODE, async {
+            let _episode = self.ledger.episode_lock(true).await?;
+            super::proxy::release_network_faults(dir).await?;
+            self.release_outages(dir).await?;
+            let drained = recover_until(Instant::now() + COMPETING_PHASE, async || {
+                if self.handoffs_drained().await? {
+                    return Ok(Some(()));
+                }
+                self.reconcile_intents().await?;
+                Ok(None)
+            })
+            .await;
+            if drained.as_ref().is_err_and(|error| {
+                error
+                    .downcast_ref::<tokio::time::error::Elapsed>()
+                    .is_some()
+            }) {
+                println!("competing-handoffs: INCONCLUSIVE: prior handoff quiescence is unknown");
+                return Ok(());
+            }
+            drained?;
+            let members = SEQUENCER_INDICES
+                .map(|index| Ok(Account::at(index)?.address()))
+                .collect::<eyre::Result<Vec<_>>>()?;
+            let (baseline, initial) = self.outage_preconditions(&members).await?;
+            let admin = Account::at(ADMIN_INDEX)?;
+            let lease = self
+                .ledger
+                .try_lease(&admin)?
+                .ok_or_eyre("competing handoff admin is busy")?;
+            admitted = true;
+            let update = timeout(COMPETING_PHASE, async {
+                let snapshot = self
+                    .l1
+                    .get_block_by_number(BlockNumberOrTag::Latest)
+                    .await?
+                    .ok_or_eyre("no competing handoff snapshot")?;
+                eyre::ensure!(
+                    self.outage_membership(BlockId::hash(snapshot.header.hash))
+                        .await?
+                        == initial,
+                    "competing handoff membership changed before signing"
+                );
+                let [(first, a), (second, b)] = self
+                    .prepare_competing_handoffs(&admin, &initial, snapshot.header.number)
+                    .await?;
+                // One sender fixes the winner by nonce, but both calls use the same CAS epoch.
+                // Each helper retries only its exact signed bytes after an ambiguous response.
+                let (first_receipt, second_receipt) =
+                    tokio::try_join!(self.outage_receipt(&a), self.outage_receipt(&b))?;
+                let requests = [first, second];
+                let receipts = [first_receipt, second_receipt];
+                let update = recover_until(Instant::now() + COMPETING_PHASE, async || {
+                    self.finalized_competing_handoff(&requests, &receipts).await
+                })
+                .await?;
+                self.check_handoff_history().await?;
+                Ok::<_, eyre::Report>(update)
+            })
+            .await
+            .wrap_err("competing submissions and finality timed out")??;
+            drop(lease);
+            let expected = Membership {
+                leader: update.new_leader,
+                epoch: update.epoch,
+                ..initial
+            };
+            let deadline = Instant::now() + COMPETING_PHASE;
+            timeout_at(deadline, async {
+                recover_until(deadline, async || {
+                    Ok(self
+                        .handoff_term_ready(&update, &expected, None)
+                        .await?
+                        .then_some(()))
+                })
+                .await?;
+                let ceiling = self.maximum_zone_tip().await?;
+                let active = members
+                    .iter()
+                    .position(|member| *member == update.new_leader)
+                    .ok_or_eyre("competing winner is not controlled")?;
+                let (settled, fresh) = self
+                    .outage_canary(&baseline, ceiling, active, None, &expected)
+                    .await?;
+                recover_until(deadline, async || {
+                    Ok(self
+                        .handoff_term_ready(&update, &expected, Some(&fresh))
+                        .await?
+                        .then_some(()))
+                })
+                .await?;
+                println!(
+                    "competing-handoffs: {}",
+                    json!({"result": "PASSED", "winner": update,
+                    "fresh": fresh, "settled": settled})
+                );
+                Ok::<_, eyre::Report>(())
+            })
+            .await
+            .wrap_err("competing winner recovery timed out")?
+        })
+        .await
+        .wrap_err("competing handoff episode exceeded its quiet window")
+        .and_then(|result| result);
+        if admitted || result.is_err() {
+            assert_always!(
+                result.is_ok(),
+                "Competing handoffs fence the stale target and settle fresh work within the deadline",
+                &json!({"admitted": admitted, "error": result.as_ref().err().map(|error| format!("{error:#}"))})
+            );
+        }
+        result
+    }
+
     /// Journals a handoff before sending it, then observes production and settlement if its
     /// term survives. A lost reply leaves an intent recoverable by `reconcile_handoffs`.
     /// `direct_only` suppresses new relays; it never clears earlier unknown submissions.
@@ -731,6 +967,52 @@ fn returns_to_previous_leader(history: &[Update]) -> bool {
     })
 }
 
+// The caller proves both receipts canonical/finalized before treating this as the winner.
+fn validate_competing_handoffs<'a>(
+    requests: &[Request; 2],
+    receipts: &[TransactionReceipt; 2],
+    history: &'a [Update],
+) -> eyre::Result<&'a Update> {
+    validate_history(history)?;
+    eyre::ensure!(
+        competing_requests(requests)
+            && requests.iter().all(|request| !request.relayed)
+            && requests[0].previous_leader == requests[1].previous_leader,
+        "competing requests do not share one direct epoch observation"
+    );
+    for (request, receipt) in requests.iter().zip(receipts) {
+        eyre::ensure!(
+            request.l1_tx == Some(receipt.transaction_hash),
+            "competing receipt differs from exact signed request"
+        );
+    }
+    eyre::ensure!(
+        receipts[0].status() && !receipts[1].status(),
+        "competing handoffs did not produce one success and one stale revert"
+    );
+    eyre::ensure!(
+        !history
+            .iter()
+            .any(|event| Some(event.l1_tx) == requests[1].l1_tx),
+        "rejected competing target emitted a leadership event"
+    );
+    let update = history
+        .iter()
+        .find(|event| Some(event.l1_tx) == requests[0].l1_tx)
+        .ok_or_eyre("winning competing handoff has no exact finalized event")?;
+    eyre::ensure!(
+        history.last() == Some(update)
+            && update.new_leader == requests[0].target
+            && update.previous_leader == requests[0].previous_leader
+            && requests[0].expected_epoch.checked_add(1) == Some(update.epoch)
+            && Some(update.l1_block) == receipts[0].block_number
+            && Some(update.l1_block_hash) == receipts[0].block_hash
+            && update.l1_block >= requests[0].from_l1_block,
+        "competing winner differs from the signed epoch or receipt"
+    );
+    Ok(update)
+}
+
 fn competing_requests(requests: &[Request]) -> bool {
     requests.iter().enumerate().any(|(index, first)| {
         requests[index + 1..].iter().any(|second| {
@@ -748,10 +1030,12 @@ fn competing_requests(requests: &[Request]) -> bool {
 mod tests {
     use super::*;
     use alloy::{
+        consensus::{Transaction as _, TxEnvelope},
+        eips::Decodable2718 as _,
         primitives::{Bloom, Bytes},
         providers::ProviderBuilder,
         rpc::types::Block,
-        sol_types::SolValue as _,
+        sol_types::{SolCall as _, SolValue as _},
         transports::mock::Asserter,
     };
     use clap::Parser as _;
@@ -760,12 +1044,317 @@ mod tests {
         net::TcpListener,
     };
 
+    fn competing_context(dir: &Path, l1: &Asserter) -> Context {
+        Context {
+            ledger: crate::ledger::Ledger::open(dir).unwrap(),
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            http: Default::default(),
+            l1_url: "http://localhost:1".parse().unwrap(),
+            zone_urls: vec![],
+            zones: vec![],
+            portal: Address::repeat_byte(9),
+        }
+    }
+
+    #[tokio::test]
+    async fn competing_pair_signs_one_epoch_with_reserved_consecutive_nonces() {
+        let dir = tempfile::tempdir().unwrap();
+        let l1 = Asserter::new();
+        let ctx = competing_context(dir.path(), &l1);
+        let admin = Account::at(ADMIN_INDEX).unwrap();
+        let _episode = ctx.ledger.episode_lock(true).await.unwrap();
+        let lease = ctx.ledger.try_lease(&admin).unwrap().unwrap();
+        let prior = Membership {
+            members: (1..=3).map(Address::repeat_byte).collect(),
+            threshold: 2,
+            version: 1,
+            leader: Address::repeat_byte(1),
+            epoch: 8,
+        };
+        let mut all = Vec::new();
+        for (network_nonce, expected_nonce) in [(7, 7), (0, 9)] {
+            l1.push_success(&"0x7b");
+            l1.push_success(&"0x1");
+            l1.push_success(&format!("0x{network_nonce:x}"));
+            let pair = ctx
+                .prepare_competing_handoffs(&admin, &prior, 40)
+                .await
+                .unwrap();
+            assert_ne!(pair[0].1.tx, pair[1].1.tx);
+            assert_ne!(pair[0].0.target, pair[1].0.target);
+            for (offset, (request, intent)) in pair.iter().enumerate() {
+                assert_eq!(intent.nonce, expected_nonce + offset as u64);
+                let envelope = TxEnvelope::decode_2718(&mut intent.raw.as_ref()).unwrap();
+                assert_eq!(*envelope.tx_hash(), intent.tx);
+                assert_eq!(envelope.nonce(), intent.nonce);
+                assert_eq!(envelope.gas_limit(), HANDOFF_GAS);
+                assert_eq!(envelope.to(), Some(ctx.portal));
+                let call = ZonePortal::setLeaderCall::abi_decode(envelope.input()).unwrap();
+                assert_eq!(call.expectedEpoch, prior.epoch);
+                assert_eq!(call.newLeader, request.target);
+                assert_eq!(request.l1_tx, Some(intent.tx));
+                assert_eq!(request.from_l1_block, 40);
+                assert!(
+                    ctx.ledger
+                        .records()
+                        .unwrap()
+                        .contains(&Record::HandoffRequest(request.clone()))
+                );
+                all.push(intent.clone());
+            }
+            assert!(l1.read_q().is_empty());
+        }
+        assert_eq!(
+            crate::intents::pending(&ctx.ledger.records().unwrap()).unwrap(),
+            all
+        );
+        drop(lease);
+        assert!(
+            ctx.ledger.try_lease(&admin).unwrap().is_none(),
+            "cancellation cannot free signed nonces"
+        );
+    }
+
+    #[tokio::test]
+    async fn competing_pair_rejects_missing_duplicate_or_zero_successors_before_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let l1 = Asserter::new();
+        let ctx = competing_context(dir.path(), &l1);
+        for members in [vec![1, 2], vec![1, 2, 2], vec![1, 2, 0]] {
+            let prior = Membership {
+                members: members.into_iter().map(Address::repeat_byte).collect(),
+                threshold: 2,
+                version: 1,
+                leader: Address::repeat_byte(1),
+                epoch: 8,
+            };
+            assert_eq!(
+                ctx.prepare_competing_handoffs(&Account::at(ADMIN_INDEX).unwrap(), &prior, 40)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "competing handoffs require two distinct eligible successors"
+            );
+            assert!(ctx.ledger.records().unwrap().is_empty());
+        }
+    }
+
+    fn competing_receipt(request: &Request, success: bool, event: &Update) -> TransactionReceipt {
+        serde_json::from_value(
+            json!({"type":"0x0", "status": if success {"0x1"} else {"0x0"},
+            "cumulativeGasUsed":"0x1", "logs":[], "logsBloom":Bloom::ZERO,
+            "transactionHash": request.l1_tx.unwrap(), "transactionIndex":"0x0",
+            "blockHash": event.l1_block_hash, "blockNumber": format!("0x{:x}", event.l1_block),
+            "gasUsed":"0x1", "effectiveGasPrice":"0x1", "from":Address::repeat_byte(9),
+            "to":Address::repeat_byte(8), "contractAddress":null}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn competing_result_requires_exact_winner_and_rejected_competitor() {
+        let requests = [request(3, 2, 2), request(4, 2, 3)];
+        let history = [update(3, 20, 1, 2)];
+        let receipts = [
+            competing_receipt(&requests[0], true, &history[0]),
+            competing_receipt(&requests[1], false, &history[0]),
+        ];
+        assert_eq!(
+            validate_competing_handoffs(&requests, &receipts, &history).unwrap(),
+            &history[0]
+        );
+        let mut both_succeed = receipts.clone();
+        both_succeed[1] = competing_receipt(&requests[1], true, &history[0]);
+        assert_eq!(
+            validate_competing_handoffs(&requests, &both_succeed, &history)
+                .unwrap_err()
+                .to_string(),
+            "competing handoffs did not produce one success and one stale revert"
+        );
+        let both_revert = [
+            competing_receipt(&requests[0], false, &history[0]),
+            receipts[1].clone(),
+        ];
+        assert_eq!(
+            validate_competing_handoffs(&requests, &both_revert, &history)
+                .unwrap_err()
+                .to_string(),
+            "competing handoffs did not produce one success and one stale revert"
+        );
+        let mut wrong_receipt = receipts.clone();
+        wrong_receipt[1].transaction_hash = B256::repeat_byte(99);
+        assert_eq!(
+            validate_competing_handoffs(&requests, &wrong_receipt, &history)
+                .unwrap_err()
+                .to_string(),
+            "competing receipt differs from exact signed request"
+        );
+        let both_apply = [history[0].clone(), update(4, 30, 2, 3)];
+        assert_eq!(
+            validate_competing_handoffs(&requests, &receipts, &both_apply)
+                .unwrap_err()
+                .to_string(),
+            "rejected competing target emitted a leadership event"
+        );
+        let mut unknown = requests.clone();
+        unknown[1].l1_tx = None;
+        assert_eq!(
+            validate_competing_handoffs(&unknown, &receipts, &history)
+                .unwrap_err()
+                .to_string(),
+            "competing requests do not share one direct epoch observation"
+        );
+        let mut unrelated = history.clone();
+        unrelated[0].l1_tx = B256::repeat_byte(99);
+        assert_eq!(
+            validate_competing_handoffs(&requests, &receipts, &unrelated)
+                .unwrap_err()
+                .to_string(),
+            "winning competing handoff has no exact finalized event"
+        );
+        for change in 0..4 {
+            let mut wrong = history.clone();
+            match change {
+                0 => wrong[0].new_leader = requests[1].target,
+                1 => wrong[0].epoch += 1,
+                2 => wrong[0].l1_block_hash = B256::ZERO,
+                3 => wrong[0].previous_leader = Address::repeat_byte(4),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_competing_handoffs(&requests, &receipts, &wrong)
+                    .unwrap_err()
+                    .to_string(),
+                "competing winner differs from the signed epoch or receipt"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn competing_finality_waits_and_rejects_orphaned_receipts_or_changed_snapshot() {
+        for case in ["valid", "unfinalized", "orphan", "changed snapshot"] {
+            let dir = tempfile::tempdir().unwrap();
+            let l1 = Asserter::new();
+            let ctx = competing_context(dir.path(), &l1);
+            let requests = [request(3, 2, 2), request(4, 2, 3)];
+            let event = update(3, 20, 1, 2);
+            let receipts = [
+                competing_receipt(&requests[0], true, &event),
+                competing_receipt(&requests[1], false, &event),
+            ];
+            let mut finalized = Block::<B256>::default();
+            finalized.header.number = if case == "unfinalized" { 19 } else { 20 };
+            finalized.header.hash = event.l1_block_hash;
+            l1.push_success(&finalized);
+            if case != "unfinalized" {
+                let mut canonical = finalized.clone();
+                if case == "orphan" {
+                    canonical.header.hash = B256::ZERO;
+                }
+                l1.push_success(&canonical);
+                if case != "orphan" {
+                    l1.push_success(&canonical);
+                    l1.push_success(&finalized);
+                    let logs = [Log {
+                        inner: alloy::primitives::Log {
+                            address: ctx.portal,
+                            data: ZonePortal::LeaderUpdated {
+                                previousLeader: event.previous_leader,
+                                newLeader: event.new_leader,
+                                epoch: event.epoch,
+                                activationTempoBlock: event.activation_tempo_block,
+                            }
+                            .encode_log_data(),
+                        },
+                        block_number: Some(event.l1_block),
+                        block_hash: Some(event.l1_block_hash),
+                        transaction_hash: Some(event.l1_tx),
+                        log_index: Some(0),
+                        ..Default::default()
+                    }];
+                    l1.push_success(&logs);
+                    l1.push_success(&finalized);
+                    if case == "changed snapshot" {
+                        canonical.header.hash = B256::ZERO;
+                    }
+                    l1.push_success(&canonical);
+                }
+            }
+            let result = ctx.finalized_competing_handoff(&requests, &receipts).await;
+            match case {
+                "valid" => assert_eq!(result.unwrap(), Some(event)),
+                "unfinalized" => assert_eq!(result.unwrap(), None),
+                "orphan" => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "competing receipt is not canonical"
+                ),
+                "changed snapshot" => assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "competing finalized snapshot changed"
+                ),
+                _ => unreachable!(),
+            }
+            assert!(l1.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn competing_admission_keeps_unknown_relay_and_never_signs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = competing_context(dir.path(), &Asserter::new());
+        let unknown = Record::HandoffRequest(relay_request());
+        ctx.ledger.append(&unknown).unwrap();
+        crate::proxy::initial_statuses(dir.path());
+        let start = Instant::now();
+        let (result, ()) = tokio::join!(ctx.competing_handoffs(dir.path()), async {
+            for node in 0..3 {
+                let request = timeout(Duration::from_secs(2), async {
+                    let path = dir.path().join(format!("zone-{node}.request"));
+                    loop {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                break serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                tokio::time::sleep(Duration::from_millis(1)).await
+                            }
+                            Err(error) => panic!("{error}"),
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(request["action"], "start");
+                std::fs::write(
+                    dir.path().join(format!("zone-{node}.status")),
+                    json!({"id": request["id"], "state": "running", "generation": 1}).to_string(),
+                )
+                .unwrap();
+            }
+        });
+        result.unwrap();
+        assert!(Instant::now() - start >= COMPETING_PHASE);
+        assert!(Instant::now() - start < COMPETING_EPISODE);
+        assert!(!ctx.handoffs_drained().await.unwrap());
+        let records: Vec<_> = ctx
+            .ledger
+            .records()
+            .unwrap()
+            .into_iter()
+            .filter(|record| !matches!(record, Record::Sequence { .. }))
+            .collect();
+        assert_eq!(records, vec![unknown]);
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum RelayTransport {
         Refused,
         LostReply,
         Timeout,
         Redirect,
+        RetryableStatus,
     }
 
     async fn relay_transport_fixture(mode: RelayTransport) -> (bool, bool) {
@@ -824,6 +1413,12 @@ mod tests {
                         drop(closed);
                         socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{destination}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
                     }
+                    RelayTransport::RetryableStatus => {
+                        // The endpoint saw bytes, then asks for a retry and disappears. A provider
+                        // retry must not replace this ambiguity with its later connect refusal.
+                        drop(listener);
+                        socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    }
                     RelayTransport::LostReply => {}
                     RelayTransport::Refused => unreachable!(),
                 }
@@ -861,8 +1456,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_lost_reply_and_redirect_remain_unknown() {
-        for mode in [RelayTransport::LostReply, RelayTransport::Redirect] {
+    async fn relay_lost_reply_redirect_and_retryable_status_remain_unknown() {
+        for mode in [
+            RelayTransport::LostReply,
+            RelayTransport::Redirect,
+            RelayTransport::RetryableStatus,
+        ] {
             assert_eq!(
                 relay_transport_fixture(mode).await,
                 (false, false),

@@ -34,12 +34,15 @@ fi
 
 # custom_faults uses legacy internally. Do not send antithesis.fault_tolerance:
 # the custom parameters below, not a built-in level, select the disruptions.
+# --fault-exclusions covers network faults too: proxies must stay eligible there.
+# The node-termination allowlist below excludes proxies without shielding their links;
+# node hangs/throttling stay disabled. Proxy controls use the shared volume, not TCP.
 args=(
     launch --launcher custom_faults --config-image "$image"
     --test-name "$name" --performance-tier standard
     --max-compute-hours "$hours" --setup-timeout 5m
-    --fault-exclusions '^(l1|provision|workload|zone-rpc|proxy-[0-2])$'
-    --param 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc|proxy-[0-2])$'
+    --fault-exclusions '^(l1|provision|workload|zone-rpc)$'
+    --param 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc)$'
     --param "custom.disable_network_faults=$disable_network"
     --param custom.include_for_node_throttle=
     --param custom.include_all_for_node_throttle=false

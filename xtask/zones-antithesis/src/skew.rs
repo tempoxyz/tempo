@@ -89,22 +89,26 @@ impl Context {
             // Cancellation of the aggregate future drops it and publishes the cancellation.
             let mut gate = None;
             executed = true;
+            let mut phase = "successor replication gate";
             let fault = timeout(HELD_TIMEOUT, async {
                 gate = Some(Fault::apply(dir, 0, 1 << successor, Duration::from_secs(180)).await?);
                 let gate = gate.as_mut().ok_or_eyre("network gate was not installed")?;
+                phase = "predecessor canary under replication gate";
                 let (tail, predecessor) = gate.while_active(async {
                     let ceiling = self.maximum_zone_tip().await?;
                     self.outage_canary(&baseline, ceiling, leader, Some(successor), &initial).await
                 }).await?;
-                gate.reconfigure(1 << leader, 1 << successor).await?;
+                phase = "pipeline preparation before old-leader L1 gate";
+                let (intents, lease) = self.prepare_skew_pipeline_and_gate(
+                    gate, leader, other_backup, successor,
+                ).await?;
+                phase = "old-leader baseline under both gates";
                 gate.while_active(async {
                     assert_reachable!("Asymmetric handoff: L1 and replication gates are independently acknowledged",
                         &json!({"old_leader": leader, "successor": successor}));
                     let before = self.skew_tip(leader).await?;
-                    let (intents, lease) = recover_until(Instant::now() + HELD_TIMEOUT,
-                        async || self.prepare_skew_pipeline(leader, other_backup).await).await?;
-                    // Journal n before n+1 so prepare_intent's nonce floor stays intact. The head
-                    // is not broadcast here; every tail send goes to an explicit ingress.
+                    phase = "tail broadcast under both gates";
+                    // The durable head stays withheld until heal; only explicit tail ingresses send.
                     for intent in &intents[1..] {
                         match self.zones[intent.node].send_raw_transaction(&intent.raw).await {
                             Ok(_) => {},
@@ -115,16 +119,19 @@ impl Context {
                             }
                         }
                     }
+                    phase = "pending tail before Portal transition";
                     let pending_before = observation_expired(recover_until(
                         Instant::now() + PENDING_OBSERVATION,
                         async || self.pending_skew_tail(&intents[1..]).await,
                     ).await)?;
+                    phase = "finalized Portal transition under both gates";
                     let update = self.campaign_handoff(&initial, members[successor]).await?;
                     // campaign_handoff proves the exact finalized Portal event, deliberately
                     // without waiting for B's activation or assuming automatic leader election.
                     gate.ensure_active().await?;
                     assert_reachable!("Asymmetric handoff: Direct journaled Portal transition finalizes under both gates",
                         &json!({"update": update}));
+                    phase = "independent skew and pending witnesses under both gates";
                     let proof = observation_expired(recover_until(
                         Instant::now() + PENDING_OBSERVATION, async || {
                             let current = self.skew_tip(leader).await?;
@@ -151,24 +158,28 @@ impl Context {
                     expected.epoch = update.epoch;
                     Ok((tail, predecessor, intents, lease, update, expected, eligible))
                 }).await
-            }).await.wrap_err("asymmetric fault phase timed out").and_then(|result| result);
+            }).await.wrap_err_with(|| format!("asymmetric held stage timed out: {phase}"))
+                .and_then(|result| result.wrap_err_with(|| format!("asymmetric held stage failed: {phase}")));
             // Healing acknowledgements, old-prefix catch-up, pending work and fresh final-term
             // settlement all consume this ONE deadline, starting before release is issued.
             let deadline = Instant::now() + RECOVERY_TIMEOUT;
+            let proof = match fault {
+                Ok(proof) => proof,
+                Err(error) => return Err(self.cleanup_skew_error(dir, gate.as_mut(), deadline, error).await),
+            };
+            let mut recovery_phase = "release network gates";
             let recovery = timeout_at(deadline, async {
-                let healed = match gate.as_mut() {
+                match gate.as_mut() {
                     Some(gate) => gate.heal().await,
                     None => release_network_faults(dir).await,
-                };
-                let (tail, predecessor, intents, lease, update, expected, eligible) = match (fault, healed) {
-                    (Ok(proof), Ok(())) => proof,
-                    (Err(fault), Err(heal)) => eyre::bail!("asymmetric phase failed: {fault:#}; heal failed: {heal:#}"),
-                    (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
-                };
+                }.wrap_err("asymmetric recovery: release network gates")?;
+                let (tail, predecessor, intents, lease, update, expected, eligible) = proof;
                 // Pending durable intents, not an OS lock, now reserve all four nonces.
                 // Reconciliation must be able to send the head, including through another node.
                 drop(lease);
+                recovery_phase = "reconcile durable pipeline";
                 recover_until(deadline, async || Ok(self.reconcile_intents().await?.then_some(()))).await?;
+                recovery_phase = "exact pipeline receipts";
                 let mut receipts = vec![predecessor];
                 for intent in &intents {
                     let receipt = self.outage_receipt(intent).await?;
@@ -178,14 +189,17 @@ impl Context {
                         height: receipt.block_number.ok_or_eyre("skew receipt has no height")?,
                         hash: receipt.block_hash.ok_or_eyre("skew receipt has no block hash")?, success: true });
                 }
+                recovery_phase = "final-term activation";
                 recover_until(deadline, async || {
                     Ok(self.handoff_term_ready(&update, &expected, None).await?.then_some(()))
                 }).await?;
+                recovery_phase = "fresh final-term canary";
                 let ceiling = self.maximum_zone_tip().await?;
                 // This is signed only after heal and exact final-term activation on all nodes.
                 let (settled, fresh) = self.outage_canary(&tail, ceiling, successor, None, &expected).await?;
                 receipts.push(fresh.clone());
                 let all: Vec<_> = (0..self.zones.len()).collect();
+                recovery_phase = "exact receipts, prefix and fresh settlement on all nodes";
                 recover_until(deadline, async || {
                     if !self.handoff_term_ready(&update, &expected, Some(&fresh)).await? { return Ok(None); }
                     for receipt in &receipts {
@@ -199,7 +213,8 @@ impl Context {
                 println!("asymmetric-handoff: {}", json!({"result": if eligible { "PASSED" } else { "INCONCLUSIVE" },
                     "recovery": "PASSED", "update": update, "receipts": receipts, "settled": settled}));
                 Ok(())
-            }).await.wrap_err("asymmetric recovery timed out from fault release").and_then(|result| result);
+            }).await.wrap_err_with(|| format!("asymmetric recovery timed out from fault release: {recovery_phase}"))
+                .and_then(|result| result.wrap_err_with(|| format!("asymmetric recovery failed: {recovery_phase}")));
             assert_always!(recovery.is_ok(),
                 "Asymmetric handoff: Released faults recover every exact receipt and fresh final-term settlement within one deadline",
                 &json!({"error": recovery.as_ref().err().map(|error| format!("{error:#}"))}));
@@ -218,6 +233,70 @@ impl Context {
         result
     }
 
+    // An incomplete held stage has no full recovery proof. Clean up its durable work without
+    // evaluating that oracle, and keep its original error even when cleanup succeeds.
+    async fn cleanup_skew_error(
+        &self,
+        dir: &Path,
+        gate: Option<&mut Fault>,
+        deadline: Instant,
+        held_error: eyre::Report,
+    ) -> eyre::Report {
+        let cleanup = timeout_at(deadline, async {
+            match gate {
+                Some(gate) => gate.heal().await,
+                None => release_network_faults(dir).await,
+            }
+            .wrap_err("release network gates after held-stage error")?;
+            recover_until(deadline, async || {
+                if !self.reconcile_intents().await? {
+                    return Ok(None);
+                }
+                self.reconcile_handoffs().await?;
+                Ok(self.handoffs_drained().await?.then_some(()))
+            })
+            .await
+            .wrap_err("reconcile durable work after held-stage error")
+        })
+        .await
+        .wrap_err("held-stage cleanup exceeded recovery deadline")
+        .and_then(|result| result);
+        println!(
+            "asymmetric-handoff: {}",
+            json!({"held_error": format!("{held_error:#}"),
+            "cleanup": if cleanup.is_ok() { "PASSED" } else { "FAILED" },
+            "cleanup_error": cleanup.as_ref().err().map(|error| format!("{error:#}")),
+            "recovery": "NOT_RUN", "result": "FAILED"})
+        );
+        match cleanup {
+            Ok(()) => held_error,
+            Err(error) => {
+                held_error.wrap_err(format!("asymmetric held-stage cleanup failed: {error:#}"))
+            }
+        }
+    }
+
+    // Signing can query L1-backed EVM state, so finish it before closing the old leader's L1.
+    // The exclusive episode and sender lease prevent reconciliation from releasing the gap.
+    async fn prepare_skew_pipeline_and_gate(
+        &self,
+        gate: &mut Fault,
+        leader: usize,
+        other_backup: usize,
+        successor: usize,
+    ) -> eyre::Result<(Vec<Intent>, Lease)> {
+        let pipeline = gate
+            .while_active(recover_until(Instant::now() + HELD_TIMEOUT, async || {
+                self.prepare_skew_pipeline(leader, other_backup).await
+            }))
+            .await
+            .wrap_err("prepare and journal pipeline with old-leader L1 open")?;
+        gate.reconfigure(1 << leader, 1 << successor)
+            .await
+            .wrap_err("close old-leader L1 after journaling pipeline")?;
+        Ok(pipeline)
+    }
+
     // The lease spans signing and the intentional gap. No global reconciliation is allowed
     // until the fault is released: it would broadcast the withheld durable head as well.
     async fn prepare_skew_pipeline(
@@ -225,7 +304,12 @@ impl Context {
         leader: usize,
         other_backup: usize,
     ) -> eyre::Result<Option<(Vec<Intent>, Lease)>> {
-        let Some((sender, _, lease)) = self.lease_zone_sender(&self.zones[leader]).await? else {
+        println!("skew preparation: lease funded sender via balanceOf on node {leader}");
+        let Some((sender, _, lease)) = self
+            .lease_zone_sender(&self.zones[leader])
+            .await
+            .wrap_err("skew preparation: lease funded sender via balanceOf")?
+        else {
             return Ok(None);
         };
         let recipients: Vec<_> = self
@@ -257,6 +341,9 @@ impl Context {
                         .ok_or_eyre("skew nonce overflow")?,
                 );
             }
+            println!(
+                "skew preparation: chainId/nonce/fill/sign/journal position {position} via node {node}"
+            );
             let intent = self
                 .prepare_intent(
                     &sender,
@@ -265,7 +352,7 @@ impl Context {
                     request,
                     Effect::Transfer { to, amount: 1 },
                 )
-                .await?;
+                .await.wrap_err_with(|| format!("skew preparation: chainId/nonce/fill/sign/journal position {position} via node {node}"))?;
             if let Some(prior) = intents.last() {
                 eyre::ensure!(
                     Some(intent.nonce) == prior.nonce.checked_add(1),
@@ -400,6 +487,8 @@ mod tests {
     use std::{
         cell::Cell,
         collections::{BTreeMap, HashSet},
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::{
         io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
@@ -443,8 +532,42 @@ mod tests {
         (intent, transaction)
     }
 
+    #[derive(Clone, Copy)]
+    enum PipelineCase {
+        Recover,
+        HeldError,
+        CleanupTimeout,
+        HealError,
+        OldOrder,
+    }
+
     #[tokio::test]
     async fn hot_pipeline_journals_head_first_and_replays_exact_bytes_only_after_release() {
+        pipeline_fixture(PipelineCase::Recover).await;
+    }
+
+    #[tokio::test]
+    async fn held_error_heals_and_recovers_exact_bytes_without_erasing_original_failure() {
+        pipeline_fixture(PipelineCase::HeldError).await;
+    }
+
+    #[tokio::test]
+    async fn held_error_cleanup_deadline_preserves_failure_and_pending_intents() {
+        pipeline_fixture(PipelineCase::CleanupTimeout).await;
+    }
+
+    #[tokio::test]
+    async fn held_error_does_not_reconcile_until_healing_is_acknowledged() {
+        pipeline_fixture(PipelineCase::HealError).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "old-leader L1 closed before durable pipeline was complete")]
+    async fn pipeline_fixture_rejects_the_old_gate_before_preparation_order() {
+        pipeline_fixture(PipelineCase::OldOrder).await;
+    }
+
+    async fn pipeline_fixture(case: PipelineCase) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let urls: Vec<alloy::transports::http::reqwest::Url> = (0..4)
             .map(|node| {
@@ -472,11 +595,30 @@ mod tests {
         for _ in 0..3 {
             ctx.ledger.new_account().unwrap();
         }
+        super::super::proxy::initial_statuses(dir.path());
         let healing = Cell::new(false);
+        let both_gates = Cell::new(false);
+        let broadcasts = Cell::new(0);
         let sent_head = Cell::new(false);
         let recovered = Cell::new(0);
         let work = async {
-            let (intents, lease) = ctx.prepare_skew_pipeline(0, 2).await.unwrap().unwrap();
+            let _episode = ctx.ledger.episode_lock(true).await.unwrap();
+            let mut gate = Fault::apply(dir.path(), 0, 2, Duration::from_secs(10))
+                .await
+                .unwrap();
+            if matches!(case, PipelineCase::OldOrder) {
+                gate.reconfigure(1, 2).await.unwrap();
+            }
+            let (intents, lease) = ctx
+                .prepare_skew_pipeline_and_gate(&mut gate, 0, 2, 1)
+                .await
+                .unwrap();
+            assert!(both_gates.get());
+            assert_eq!(
+                broadcasts.get(),
+                0,
+                "preparation must not broadcast head OR tails"
+            );
             assert_eq!(intents.len(), PIPELINE_LENGTH);
             assert_eq!(pending(&ctx.ledger.records().unwrap()).unwrap(), intents);
             let accounts = ctx.ledger.accounts().unwrap();
@@ -525,13 +667,70 @@ mod tests {
                 !sent_head.get(),
                 "pre-transition tail must not release head"
             );
-            healing.set(true);
-            drop(lease);
+            if matches!(case, PipelineCase::Recover) {
+                gate.heal().await.unwrap();
+                drop(lease);
+                assert!(ctx.reconcile_intents().await.unwrap());
+            } else {
+                // A held future returning an error drops its lease before cleanup runs.
+                drop(lease);
+                assert!(
+                    ctx.ledger.try_lease(sender).unwrap().is_none(),
+                    "durable intents retain reservation"
+                );
+                if matches!(case, PipelineCase::HealError) {
+                    let path = dir.path().join("network.json");
+                    let mut request: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    request["id"] = json!([0, 0]);
+                    fs::write(path, serde_json::to_vec(&request).unwrap()).unwrap();
+                }
+                let budget = if matches!(case, PipelineCase::CleanupTimeout) {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(5)
+                };
+                let error = ctx
+                    .cleanup_skew_error(
+                        dir.path(),
+                        Some(&mut gate),
+                        Instant::now() + budget,
+                        eyre::eyre!("injected held-stage failure"),
+                    )
+                    .await;
+                assert_eq!(
+                    error.chain().last().unwrap().to_string(),
+                    "injected held-stage failure"
+                );
+                if matches!(case, PipelineCase::HealError | PipelineCase::CleanupTimeout) {
+                    let message = format!("{error:#}");
+                    assert!(
+                        message.starts_with("asymmetric held-stage cleanup failed:"),
+                        "{message}"
+                    );
+                    if matches!(case, PipelineCase::HealError) {
+                        assert!(
+                            message.contains("refusing to cancel another network lease"),
+                            "{message}"
+                        );
+                        assert!(!healing.get());
+                    } else {
+                        assert!(message.contains("deadline has elapsed"), "{message}");
+                        assert!(healing.get());
+                    }
+                    assert!(
+                        !sent_head.get(),
+                        "failed cleanup must not fabricate recovered receipts"
+                    );
+                    assert_eq!(pending(&ctx.ledger.records().unwrap()).unwrap(), intents);
+                    return;
+                }
+                assert_eq!(error.to_string(), "injected held-stage failure");
+            }
             assert!(
-                ctx.ledger.try_lease(sender).unwrap().is_none(),
-                "durable intents retain reservation"
+                healing.get(),
+                "reconciliation must follow acknowledged heal"
             );
-            assert!(ctx.reconcile_intents().await.unwrap());
             assert!(sent_head.get());
             assert_eq!(recovered.get(), PIPELINE_LENGTH);
             assert!(ctx.ledger.try_lease(sender).unwrap().is_some());
@@ -591,7 +790,23 @@ mod tests {
                         }
                     })
                     .collect();
-                let result = match request["method"].as_str().unwrap() {
+                let method = request["method"].as_str().unwrap();
+                if matches!(
+                    method,
+                    "eth_call"
+                        | "eth_chainId"
+                        | "eth_getTransactionCount"
+                        | "eth_gasPrice"
+                        | "eth_maxPriorityFeePerGas"
+                        | "eth_feeHistory"
+                        | "eth_getBlockByNumber"
+                ) {
+                    assert!(
+                        !both_gates.get(),
+                        "preparation RPC ran with old-leader L1 gated"
+                    );
+                }
+                let result = match method {
                     "eth_call" => json!(Bytes::from(
                         U256::from(crate::MIN_SENDER_BALANCE).abi_encode()
                     )),
@@ -607,6 +822,11 @@ mod tests {
                         json!(block)
                     }
                     "eth_sendRawTransaction" => {
+                        assert!(
+                            both_gates.get() || healing.get(),
+                            "broadcast before both gates"
+                        );
+                        broadcasts.set(broadcasts.get() + 1);
                         let intent = intents
                             .iter()
                             .find(|intent| json!(intent.raw) == request["params"][0])
@@ -642,8 +862,15 @@ mod tests {
                             block_timestamp: None,
                         })
                     }
+                    "eth_getLogs" => {
+                        assert!(healing.get(), "handoff reconciliation before release");
+                        json!([])
+                    }
                     "eth_getTransactionReceipt" => {
                         assert!(healing.get());
+                        if matches!(case, PipelineCase::CleanupTimeout) {
+                            std::future::pending::<()>().await;
+                        }
                         let intent = intents
                             .iter()
                             .find(|intent| json!(intent.tx) == request["params"][0])
@@ -672,8 +899,57 @@ mod tests {
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
         };
+        let controllers = async {
+            loop {
+                let request = match fs::read(dir.path().join("network.json")) {
+                    Ok(bytes) => Some(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("read fixture request: {error}"),
+                };
+                if let Some(request) = request {
+                    let cancelled = request["cancelled"].as_bool().unwrap();
+                    let l1_mask = request["l1_mask"].as_u64().unwrap();
+                    let p2p_mask = request["p2p_mask"].as_u64().unwrap();
+                    if !cancelled && l1_mask != 0 {
+                        assert_eq!(
+                            pending(&ctx.ledger.records().unwrap()).unwrap().len(),
+                            PIPELINE_LENGTH,
+                            "old-leader L1 closed before durable pipeline was complete"
+                        );
+                        assert_eq!(p2p_mask, 2, "successor replication gate must stay held");
+                        both_gates.set(true);
+                    }
+                    if cancelled {
+                        healing.set(true);
+                        both_gates.set(false);
+                    }
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    for index in 0..3 {
+                        let status = json!({"boot":[10,20], "id":request["id"],
+                            "phase": if cancelled { "cancelled" } else { "active" },
+                            "deadline_ms":request["deadline_ms"],
+                            "l1_mask":if cancelled { 0 } else { l1_mask },
+                            "p2p_mask":if cancelled { 0 } else { p2p_mask },
+                            "updated_ms":now, "connections":0});
+                        fs::write(
+                            dir.path().join(format!("proxy-{index}.json")),
+                            serde_json::to_vec(&status).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
         timeout(Duration::from_secs(10), async {
-            tokio::select! { () = work => {}, () = server => panic!("RPC fixture stopped") }
+            tokio::select! {
+                () = work => {},
+                () = server => panic!("RPC fixture stopped"),
+                () = controllers => panic!("proxy fixture stopped"),
+            }
         })
         .await
         .unwrap();
