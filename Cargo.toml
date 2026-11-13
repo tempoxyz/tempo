@@ -451,6 +451,22 @@ reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth-core", rev
 reth-rpc-traits = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
 
+# commonware v2026.10.1 release candidate (commonwarexyz/monorepo#5709)
+commonware-actor = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-stream = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "81da82b0e27a4905595ebc5b46f24f71106a9584" }
+
 # evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
 # rejects a patch from the same source.
 [patch."https://github.com/alloy-rs/evm2"]
