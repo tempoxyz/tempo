@@ -1,4 +1,5 @@
 use alloy_consensus::BlockHeader as _;
+use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
@@ -7,7 +8,7 @@ use commonware_consensus::{
 use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -54,6 +55,21 @@ where
         &config.scheme_provider,
     )?;
 
+    // Marshal resumes from the floor, so bound the floor's epoch like the DKG
+    // manager does: an execution layer that lags the floor must not hide it.
+    let floor_epoch = config
+        .epoch_strategy
+        .containing(config.last_finalized_height.next())
+        .expect("strategy valid for all heights and epochs")
+        .epoch();
+    crate::startup::ensure_outcome_within_tip_epoch(floor_epoch, tip.map(|(_, tip)| tip))
+        .wrap_err_with(|| {
+            format!(
+                "the finalized floor at height `{}`",
+                config.last_finalized_height
+            )
+        })?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -62,23 +78,37 @@ where
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let last_finalized_number = config.execution_provider.finalized_block_number()?;
+    let mut last_finalized_number = config.execution_provider.finalized_block_number()?;
+    // The execution layer can be finalized past the consensus tip, such as after
+    // restoring a newer execution snapshot. Start no later than the tip epoch's
+    // last block so the outcome stays within the epoch after the tip's.
+    if let Some((_, tip)) = tip {
+        let tip_epoch_last = config
+            .epoch_strategy
+            .last(tip.proposal.round.epoch())
+            .expect("strategy valid for all heights and epochs");
+        last_finalized_number = last_finalized_number.min(tip_epoch_last.get());
+    }
 
     let epoch_info = config
         .epoch_strategy
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
-        epoch_info.last()
-    } else if let Some(previous) = epoch_info.epoch().previous() {
-        config
-            .epoch_strategy
-            .last(previous)
-            .expect("strategy valid for all heights and epochs")
-    } else {
-        Height::zero()
-    };
+    let (startup_execution_boundary, boundary_outcome_epoch) =
+        if epoch_info.last().get() == last_finalized_number {
+            (epoch_info.last(), epoch_info.epoch().next())
+        } else if let Some(previous) = epoch_info.epoch().previous() {
+            (
+                config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy valid for all heights and epochs"),
+                epoch_info.epoch(),
+            )
+        } else {
+            (Height::zero(), Epoch::zero())
+        };
 
     let boundary_header = config
         .execution_provider
@@ -91,6 +121,20 @@ where
                 from the execution layer"
             )
         })?;
+
+    let claimed_epoch =
+        OnchainDkgOutcome::read(&mut commonware_codec::Copying(boundary_header.extra_data().as_ref()))
+            .wrap_err_with(|| {
+                format!(
+                    "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+                )
+            })?
+            .epoch();
+    ensure!(
+        claimed_epoch == boundary_outcome_epoch,
+        "the last boundary (`{startup_execution_boundary}`) contains an outcome for epoch \
+         `{claimed_epoch}`, expected epoch `{boundary_outcome_epoch}`",
+    );
 
     let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
         .with_scheme_provider(config.scheme_provider.clone());
@@ -214,11 +258,26 @@ where
                 return Ok(());
             };
 
+            let extra_data = boundary_block.inner().header().extra_data();
+            let claimed_epoch =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err_with(|| {
+                        format!(
+                            "the boundary block at height `{last_consensus_boundary}` \
+                            contained no or a malformed DKG outcome"
+                        )
+                    })?
+                    .epoch();
+            ensure!(
+                claimed_epoch == previous.next(),
+                "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
+                 epoch `{claimed_epoch}`, expected the next epoch `{}`",
+                previous.next(),
+            );
+
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.inner().header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(extra_data.as_ref())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
