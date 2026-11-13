@@ -3,12 +3,13 @@
 mod dispatch;
 
 use alloy_primitives::{Address, IntoLogData, U256};
+use tempo_contracts::precompiles::TIP20Error;
 use tempo_precompiles::{
     account_keychain::AccountKeychain,
     error::Result,
     storage::{Handler, StorageCtx},
     tip20::{TIP20Event, TIP20Token},
-    tip403_registry::AuthRole,
+    tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_precompiles_macros::contract;
 pub use zone_primitives::constants::ZONE_FEE_MANAGER_ADDRESS;
@@ -32,6 +33,11 @@ impl ZoneFeeManager {
     }
 
     /// Debits the maximum fee into protocol-private escrow for post-transaction settlement.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — the token's TIP-403 policy rejects the payer or beneficiary or, from
+    ///   T15, the beneficiary's TIP-1028 receive policy rejects the payer or the token
+    /// - `ContractPaused` — the fee token is paused
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -45,6 +51,15 @@ impl ZoneFeeManager {
             (beneficiary, AuthRole::recipient()),
         ])?;
         token.check_not_paused()?;
+        // Zones cannot hold blocked receipts, so a fee the beneficiary's receive policy rejects
+        // is refused up front rather than settled directly.
+        if self.storage.spec().is_t15()
+            && TIP403Registry::new()
+                .validate_receive_policy(fee_token, fee_payer, beneficiary)?
+                .is_some()
+        {
+            return Err(TIP20Error::policy_forbids().into());
+        }
         token.check_and_update_spending_limit(fee_payer, max_amount)?;
 
         token.decrement_balance(fee_payer, max_amount)?;
@@ -90,14 +105,16 @@ mod tests {
     use alloy_sol_types::SolError;
     use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
+    use tempo_contracts::precompiles::UnknownFunctionSelector;
     use tempo_precompiles::{
-        Precompile as _, TIP_FEE_MANAGER_ADDRESS,
+        Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::ITIP20,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip20::{self, ITIP20},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
 
     #[test]
@@ -210,6 +227,241 @@ mod tests {
             assert!(matches!(
                 manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary,),
                 Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                balance
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: ZONE_FEE_MANAGER_ADDRESS,
+                })?,
+                U256::ZERO
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn rejects_fee_blocked_by_beneficiary_receive_policy() -> eyre::Result<()> {
+        for hardfork in [TempoHardfork::T14, TempoHardfork::T15] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let admin = Address::random();
+                let payer = Address::random();
+                let beneficiary = Address::random();
+                let balance = U256::from(10_000);
+                let max_fee = U256::from(5_000);
+                let token = TIP20Setup::create("USD", "USD", admin)
+                    .with_issuer(admin)
+                    .with_mint(payer, balance)
+                    .apply()?;
+                TIP403Registry::new().set_receive_policy(
+                    beneficiary,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAuthority: Address::ZERO,
+                    },
+                )?;
+
+                let mut manager = ZoneFeeManager::new();
+                manager.initialize(token.address())?;
+                let result =
+                    manager.collect_fee_pre_tx(payer, token.address(), max_fee, beneficiary);
+
+                if hardfork.is_t15() {
+                    assert!(matches!(
+                        result,
+                        Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+                    ));
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                        balance
+                    );
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall {
+                            account: ZONE_FEE_MANAGER_ADDRESS,
+                        })?,
+                        U256::ZERO
+                    );
+                } else {
+                    assert_eq!(result?, token.address());
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall {
+                            account: ZONE_FEE_MANAGER_ADDRESS,
+                        })?,
+                        max_fee
+                    );
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settles_fee_when_beneficiary_receive_policy_allows_payer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::random();
+            let payer = Address::random();
+            let beneficiary = Address::random();
+            let token = TIP20Setup::create("USD", "USD", admin)
+                .with_issuer(admin)
+                .with_mint(payer, U256::from(10_000))
+                .apply()?;
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let senders = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    accounts: vec![payer],
+                },
+            )?;
+            registry.set_receive_policy(
+                beneficiary,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: senders,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            let mut manager = ZoneFeeManager::new();
+            manager.initialize(token.address())?;
+            manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary)?;
+            assert_eq!(
+                manager.collect_fee_post_tx(
+                    payer,
+                    U256::from(3_000),
+                    U256::from(2_000),
+                    token.address(),
+                    beneficiary,
+                )?,
+                U256::from(3_000)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: beneficiary
+                })?,
+                U256::from(3_000)
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: RECEIVE_POLICY_GUARD_ADDRESS,
+                })?,
+                U256::ZERO
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn fee_rejected_when_beneficiary_token_filter_excludes_fee_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::random();
+            let payer = Address::random();
+            let beneficiary = Address::random();
+            let balance = U256::from(10_000);
+            let token = TIP20Setup::create("USD", "USD", admin)
+                .with_issuer(admin)
+                .with_mint(payer, balance)
+                .apply()?;
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let tokens = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    accounts: vec![Address::random()],
+                },
+            )?;
+            registry.set_receive_policy(
+                beneficiary,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: tokens,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            let mut manager = ZoneFeeManager::new();
+            manager.initialize(token.address())?;
+            assert!(matches!(
+                manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary),
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                balance
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: ZONE_FEE_MANAGER_ADDRESS,
+                })?,
+                U256::ZERO
+            );
+            let fee_tokens = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    accounts: vec![token.address()],
+                },
+            )?;
+            registry.set_receive_policy(
+                beneficiary,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: fee_tokens,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+            assert_eq!(
+                manager.collect_fee_pre_tx(
+                    payer,
+                    token.address(),
+                    U256::from(5_000),
+                    beneficiary
+                )?,
+                token.address()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn paused_fee_token_rejected_before_receive_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::random();
+            let payer = Address::random();
+            let beneficiary = Address::random();
+            let balance = U256::from(10_000);
+            let token = TIP20Setup::create("USD", "USD", admin)
+                .with_issuer(admin)
+                .with_mint(payer, balance)
+                .apply()?;
+            TIP403Registry::new().set_receive_policy(
+                beneficiary,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+            StorageCtx.sstore(token.address(), tip20::slots::PAUSED, U256::ONE)?;
+
+            let mut manager = ZoneFeeManager::new();
+            manager.initialize(token.address())?;
+            assert!(matches!(
+                manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary),
+                Err(TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)))
             ));
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
