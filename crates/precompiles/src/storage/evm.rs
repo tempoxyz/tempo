@@ -10,7 +10,7 @@ use crate::{
 use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
 use bitflags::bitflags;
 use evm2::{
-    Evm, EvmFeatures, EvmTypes, ExecutionError, Version,
+    Evm, EvmFeatures, EvmTypes, ExecutionError, HostError, Version,
     bytecode::Bytecode,
     evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
     interpreter::{GasTracker, Host, MessageExt, MessageKind, gas},
@@ -686,25 +686,6 @@ where
         // The callee's storage accesses are not recorded as storage actions.
         self.actions.mark_unreplayable();
 
-        // As `CALL` does, charge the account access and run the code an EIP-7702 delegation
-        // points at.
-        let mut code = self.with_loaded_account(target, |_, code| code)?;
-        let mut code_address = target;
-        if self.version.feature(EvmFeatures::EIP7702)
-            && let Some(delegate) = code.eip7702_address()
-        {
-            code = self.with_loaded_account(delegate, |_, code| code)?;
-            code_address = delegate;
-        }
-
-        // EIP-150: forward at most all but one 64th of the remaining gas.
-        let gas_limit = gas_limit.min(
-            self.version
-                .gas_params
-                .call_stipend_reduction(self.gas_tracker.remaining()),
-        );
-        self.deduct_gas(gas_limit)?;
-
         let mut message = MessageExt {
             kind: if is_static {
                 MessageKind::StaticCall
@@ -714,34 +695,30 @@ where
             // The EVM runs no frame past its call depth limit, so this cannot overflow.
             depth: frame.depth + 1,
             gas_limit,
-            reservoir: self.gas_tracker.reservoir(),
             destination: target,
             call_target: target,
             caller: frame.address,
             input: input.into(),
-            value: U256::ZERO,
-            code,
-            code_address,
             caller_is_static: self.is_static,
-            salt: B256::ZERO,
-            ext: Default::default(),
-            _non_exhaustive: (),
+            ..Default::default()
         };
         frame.nested_calls.set(frame.nested_calls.get() + 1);
         let running = RunningNestedCall(frame.nested_calls);
-        let result = self.evm.execute_message(&mut message);
+        // Charges and forwards gas as `CALL` does, and rolls back a failed callee.
+        let result = self.evm.execute_call(&mut self.gas_tracker, &mut message);
         drop(running);
         let result = result.map_err(|error| match error {
-            ExecutionError::Database(error) => TempoPrecompileError::Database(error),
-            ExecutionError::Fatal(error) => TempoPrecompileError::Fatal(error.to_string()),
+            HostError::Halt(stop) if stop.is_fatal() => {
+                TempoPrecompileError::Fatal(format!("nested call stopped fatally: {stop:?}"))
+            }
+            HostError::Halt(_) => TempoPrecompileError::OutOfGas,
+            HostError::Execution(ExecutionError::Database(error)) => {
+                TempoPrecompileError::Database(error)
+            }
+            HostError::Execution(ExecutionError::Fatal(error)) => {
+                TempoPrecompileError::Fatal(error.to_string())
+            }
         })?;
-        if result.stop.is_fatal() {
-            return Err(TempoPrecompileError::Fatal(
-                "nested call returned a fatal stop without an error".to_string(),
-            ));
-        }
-        // The EVM already rolled a failed callee back and settled its gas.
-        self.gas_tracker.merge_child_gas(result.gas, result.stop);
         if !result.is_success() {
             return Ok(CallOutcome::Failure(result.output));
         }
