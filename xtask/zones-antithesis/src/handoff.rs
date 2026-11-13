@@ -657,9 +657,17 @@ fn handoff_hashes(records: &[Record]) -> eyre::Result<Option<BTreeSet<B256>>> {
         .then_some(hashes))
 }
 
-// These exact invalid-params responses precede signing in zone::rpc::set_leader. Internal
-// errors (including confirmation timeout/revert), transport errors and lost replies do not.
+// The HTTP client disables redirects and automatic retries, so a connection failure cannot
+// follow an earlier submission. Lost replies and post-connect timeouts remain unknown.
 fn relay_refused_before_submission(error: &alloy::transports::TransportError) -> bool {
+    if let alloy::transports::TransportError::Transport(error) = error
+        && let Some(error) = error.as_custom()
+        && let Some(error) = error.downcast_ref::<alloy::transports::http::reqwest::Error>()
+        && error.is_connect()
+    {
+        return true;
+    }
+    // These exact invalid-params responses precede signing in zone::rpc::set_leader.
     error.as_error_resp().is_some_and(|response| {
         response.code == -32602 && matches!(response.message.as_ref(),
             "zone_setLeader requires multi-sequencer mode"
@@ -746,6 +754,130 @@ mod tests {
         sol_types::SolValue as _,
         transports::mock::Asserter,
     };
+    use clap::Parser as _;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpListener,
+    };
+
+    #[derive(Clone, Copy, Debug)]
+    enum RelayTransport {
+        Refused,
+        LostReply,
+        Timeout,
+        Redirect,
+    }
+
+    async fn relay_transport_fixture(mode: RelayTransport) -> (bool, bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let zone_json = dir.path().join("zone.json");
+        std::fs::write(
+            &zone_json,
+            json!({"portal": Address::repeat_byte(9)}).to_string(),
+        )
+        .unwrap();
+        let args = crate::Antithesis::parse_from([
+            "workload",
+            "--state-dir",
+            dir.path().to_str().unwrap(),
+            "--zone-json",
+            zone_json.to_str().unwrap(),
+            "--l1-rpc-url",
+            &url,
+            "--zone-rpc-urls",
+            &url,
+            "rotate-leader",
+        ]);
+        let ctx = Context::init(&args).await.unwrap();
+        let server = if matches!(mode, RelayTransport::Refused) {
+            drop(listener);
+            None
+        } else {
+            Some(tokio::spawn(async move {
+                let (mut socket, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut request = Vec::new();
+                tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    while !request.ends_with(b"}") {
+                        assert!(request.len() < 8192);
+                        assert!(socket.read_buf(&mut request).await.unwrap() > 0);
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(String::from_utf8_lossy(&request).contains("zone_setLeader"));
+                match mode {
+                    RelayTransport::Timeout => {
+                        tokio::time::sleep(crate::RPC_TIMEOUT + std::time::Duration::from_secs(1))
+                            .await
+                    }
+                    RelayTransport::Redirect => {
+                        // A prior endpoint saw the request. Following this redirect to a refused
+                        // connection must never turn that ambiguous outcome into NotSubmitted.
+                        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                        let destination = closed.local_addr().unwrap();
+                        drop(closed);
+                        socket.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{destination}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                    }
+                    RelayTransport::LostReply => {}
+                    RelayTransport::Refused => unreachable!(),
+                }
+            }))
+        };
+        let mut request = relay_request();
+        ctx.ledger
+            .append(&Record::HandoffRequest(request.clone()))
+            .unwrap();
+        let response = ctx.zones[0]
+            .raw_request::<_, SetLeaderResponse>("zone_setLeader".into(), [request.target])
+            .await;
+        let error = response.as_ref().unwrap_err();
+        let definitive = relay_refused_before_submission(error);
+        assert!(
+            request
+                .record_relay_response(&ctx.ledger, response)
+                .is_err()
+        );
+        let drained = handoff_hashes(&ctx.ledger.records().unwrap())
+            .unwrap()
+            .is_some();
+        if let Some(server) = server {
+            server.await.unwrap();
+        }
+        (definitive, drained)
+    }
+
+    #[tokio::test]
+    async fn relay_connect_refusal_does_not_poison_future_episodes() {
+        assert_eq!(
+            relay_transport_fixture(RelayTransport::Refused).await,
+            (true, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_lost_reply_and_redirect_remain_unknown() {
+        for mode in [RelayTransport::LostReply, RelayTransport::Redirect] {
+            assert_eq!(
+                relay_transport_fixture(mode).await,
+                (false, false),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_post_connect_timeout_remains_unknown() {
+        assert_eq!(
+            relay_transport_fixture(RelayTransport::Timeout).await,
+            (false, false)
+        );
+    }
 
     #[derive(Debug, Clone, Copy)]
     enum TermFault {

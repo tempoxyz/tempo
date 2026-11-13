@@ -5,6 +5,7 @@
 # - provision: creates the zone on L1 with three sequencers (2-of-3 settlement) and writes
 #   genesis, keys and the manifest to the shared volume, then exits
 # - zone-0..2: the sequencer quorum; zone-0 is the initial leader
+# - proxy-0..2: transparent bounded L1/P2P gates, outside Antithesis fault targets
 # - zone-rpc: RPC follower outside the quorum that runs the solvency checker
 # - workload: waits until the zone replicates, then signals that setup is complete; the test
 #   commands in /opt/antithesis/test run here and keep their ledger in /state
@@ -31,6 +32,13 @@ x-zone: &zone
   depends_on:
     provision:
       condition: service_completed_successfully
+
+x-proxy: &proxy
+  image: ${ZONES_IMAGE:-tempo-zones-antithesis:latest}
+  entrypoint: ["/usr/local/bin/tempo-zones-antithesis"]
+  init: true
+  volumes:
+    - fault-control:/fault-control
 
 services:
   l1:
@@ -108,6 +116,36 @@ services:
       zones:
         ipv4_address: 10.20.0.5
         mac_address: 02:42:0a:14:00:05
+
+  proxy-0:
+    <<: *proxy
+    container_name: proxy-0
+    hostname: proxy-0
+    command: ["fault-proxy", "--index", "0"]
+    networks:
+      zones:
+        ipv4_address: 10.20.0.41
+        mac_address: 02:42:0a:14:00:29
+
+  proxy-1:
+    <<: *proxy
+    container_name: proxy-1
+    hostname: proxy-1
+    command: ["fault-proxy", "--index", "1"]
+    networks:
+      zones:
+        ipv4_address: 10.20.0.42
+        mac_address: 02:42:0a:14:00:2a
+
+  proxy-2:
+    <<: *proxy
+    container_name: proxy-2
+    hostname: proxy-2
+    command: ["fault-proxy", "--index", "2"]
+    networks:
+      zones:
+        ipv4_address: 10.20.0.43
+        mac_address: 02:42:0a:14:00:2b
 
   zone-0:
     <<: *zone

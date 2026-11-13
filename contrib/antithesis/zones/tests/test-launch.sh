@@ -28,7 +28,8 @@ for network in false true; do
     else
         grep -qx 'custom.disable_network_faults=true' "$ARGS_FILE"
     fi
-    grep -Fqx '^(l1|provision|workload|zone-rpc)$' "$ARGS_FILE"
+    grep -Fqx '^(l1|provision|workload|zone-rpc|proxy-[0-2])$' "$ARGS_FILE"
+    grep -Fqx 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc|proxy-[0-2])$' "$ARGS_FILE"
     if grep -Eq 'antithesis.duration|--duration|fault.tolerance' "$ARGS_FILE"; then
         echo 'unexpected duration or fault_tolerance parameter' >&2
         exit 1

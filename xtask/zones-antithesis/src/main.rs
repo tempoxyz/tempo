@@ -37,11 +37,14 @@ use ledger::{Account, Lease, Ledger, Record};
 
 mod campaign;
 mod checks;
+mod effects;
 mod handoff;
 mod intents;
 mod ledger;
 mod outage;
+mod proxy;
 mod recovery;
+mod skew;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -162,13 +165,24 @@ enum Command {
         #[arg(long, value_enum)]
         case: Option<campaign::Case>,
     },
-    /// Releases intentional process holds left by an interrupted serial command.
+    /// Hands leadership across asymmetric L1/P2P views with an observed pending payment pipeline.
+    AsymmetricHandoff,
+    /// Runs one transparent test-only L1/P2P gate without connecting to zone RPC.
+    FaultProxy {
+        /// Controlled sequencer index (0, 1, or 2).
+        #[arg(long)]
+        index: usize,
+    },
+    /// Releases intentional process and network holds left by an interrupted serial command.
     ReleaseOutages,
 }
 
 impl Antithesis {
     async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
+        if let Command::FaultProxy { index } = self.command {
+            return proxy::run(index, &self.fault_control_dir).await;
+        }
         let ctx = Context::init(&self).await?;
         // Terminal commands can follow SIGKILL: Drop did not run, so release holds first.
         // The same lock excludes an in-flight outage and leadership changes until checks finish.
@@ -180,8 +194,21 @@ impl Antithesis {
                 | Command::ReleaseOutages
         ) {
             let lock = ctx.ledger.episode_lock(true).await?;
+            proxy::release_network_faults(&self.fault_control_dir).await?;
             ctx.release_outages(&self.fault_control_dir).await?;
             Some(lock)
+        } else if matches!(
+            self.command,
+            Command::Seed
+                | Command::Deposit
+                | Command::Transfer
+                | Command::Withdraw
+                | Command::Fanout
+        ) {
+            // Also protect direct CLI callers: ordinary reconciliation must not fill the nonce
+            // gap deliberately held by an exclusive asymmetric episode. Payment drivers can
+            // still run concurrently with one another.
+            Some(ctx.ledger.episode_lock(false).await?)
         } else {
             None
         };
@@ -214,6 +241,10 @@ impl Antithesis {
             Command::HandoffCampaign { case } => {
                 return ctx.handoff_campaign(&self.fault_control_dir, case).await;
             }
+            Command::AsymmetricHandoff => {
+                return ctx.asymmetric_handoff(&self.fault_control_dir).await;
+            }
+            Command::FaultProxy { .. } => unreachable!("fault proxy dispatched before RPC setup"),
             Command::ReleaseOutages => return Ok(()),
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
@@ -255,7 +286,13 @@ impl Context {
             .as_str()
             .ok_or_eyre("zone.json has no portal")?
             .parse()?;
-        let http = reqwest::Client::builder().timeout(RPC_TIMEOUT).build()?;
+        // A relay connect failure is definitive only when no earlier attempt or redirect
+        // could have submitted it. Explicit replay stays in the durable intent journal.
+        let http = reqwest::Client::builder()
+            .timeout(RPC_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()?;
         let connect = |url: &reqwest::Url| {
             ProviderBuilder::new()
                 .connect_reqwest(http.clone(), url.clone())
@@ -1009,6 +1046,18 @@ mod cli_tests {
 
     #[test]
     fn controlled_campaign_commands_parse() {
+        assert!(matches!(
+            Antithesis::try_parse_from(["zones", "asymmetric-handoff"])
+                .unwrap()
+                .command,
+            Command::AsymmetricHandoff
+        ));
+        assert!(matches!(
+            Antithesis::try_parse_from(["zones", "fault-proxy", "--index", "2"])
+                .unwrap()
+                .command,
+            Command::FaultProxy { index: 2 }
+        ));
         assert!(matches!(
             Antithesis::try_parse_from(["zones", "quorum-loss-recovery"])
                 .unwrap()

@@ -80,6 +80,7 @@ impl Context {
         let mut executed = false;
         let result = timeout(EPISODE_TIMEOUT, async {
                 let _lock = self.ledger.episode_lock(true).await?;
+                super::proxy::release_network_faults(dir).await?;
                 self.release_outages(dir).await?;
                 eyre::ensure!(
                     self.zones.len() == 4,
@@ -304,6 +305,7 @@ impl Context {
         // Component bounds total 1235 seconds; the 1200-second aggregate cap still takes precedence.
         let result = timeout(EPISODE_TIMEOUT, async {
         let _lock = self.ledger.episode_lock(true).await?;
+        super::proxy::release_network_faults(dir).await?;
         self.release_outages(dir).await?;
         eyre::ensure!(
             self.zones.len() == 4,
@@ -1914,6 +1916,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         };
+        crate::proxy::initial_statuses(dir.path());
         let result = timeout(Duration::from_secs(400), async {
             tokio::select! {
                 result = ctx.single_sequencer_outage(dir.path(), Some(Case::Leader)) => result,
@@ -2117,6 +2120,7 @@ mod tests {
                 http: Default::default(),
                 portal: Address::repeat_byte(9),
             };
+            crate::proxy::initial_statuses(dir.path());
             let start = Instant::now();
             if quorum {
                 ctx.quorum_loss_recovery(dir.path()).await.unwrap();
@@ -2559,6 +2563,7 @@ mod tests {
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
         };
+        crate::proxy::initial_statuses(dir.path());
         let result = timeout(EPISODE_TIMEOUT + Duration::from_secs(400), async {
             tokio::select! {
                 result = ctx.quorum_loss_recovery(dir.path()) => result,

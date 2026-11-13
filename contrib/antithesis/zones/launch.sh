@@ -38,8 +38,8 @@ args=(
     launch --launcher custom_faults --config-image "$image"
     --test-name "$name" --performance-tier standard
     --max-compute-hours "$hours" --setup-timeout 5m
-    --fault-exclusions '^(l1|provision|workload|zone-rpc)$'
-    --param 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc)$'
+    --fault-exclusions '^(l1|provision|workload|zone-rpc|proxy-[0-2])$'
+    --param 'custom.exclude_from_network_faults=^(l1|provision|workload|zone-rpc|proxy-[0-2])$'
     --param "custom.disable_network_faults=$disable_network"
     --param custom.include_for_node_throttle=
     --param custom.include_all_for_node_throttle=false

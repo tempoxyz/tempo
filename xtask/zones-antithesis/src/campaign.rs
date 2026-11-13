@@ -67,6 +67,7 @@ impl Context {
         let mut executed = false;
         let result = timeout(EPISODE_TIMEOUT, async {
             let _lock = self.ledger.episode_lock(true).await?;
+            super::proxy::release_network_faults(dir).await?;
             self.release_outages(dir).await?;
             let drained = recover_until(Instant::now() + PRECONDITION_TIMEOUT, async || {
                 let ready = self.handoffs_drained().await?;
@@ -299,6 +300,7 @@ mod tests {
             ctx.ledger
                 .append(&crate::Record::HandoffRequest(unknown.clone()))
                 .unwrap();
+            crate::proxy::initial_statuses(dir.path());
             let (result, ()) = tokio::join!(ctx.handoff_campaign(dir.path(), Some(case)), async {
                 for node in 0..3 {
                     let request = request(dir.path(), node).await;
@@ -327,12 +329,24 @@ mod tests {
     async fn campaign_supervisor_failure_is_an_error_not_successful_skip() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = context(dir.path());
-        let result = ctx
-            .handoff_campaign(&dir.path().join("missing"), Some(Case::LaggingSuccessor))
-            .await;
+        // Network release succeeds; a non-file request destination fails supervisor control.
+        crate::proxy::initial_statuses(dir.path());
+        fs::create_dir(dir.path().join("zone-0.request")).unwrap();
+        let error = ctx
+            .handoff_campaign(dir.path(), Some(Case::LaggingSuccessor))
+            .await
+            .unwrap_err();
         assert_eq!(
-            format!("{:#}", result.unwrap_err()),
-            "Intentional sequencer holds are released: failed creating sequencer control request: No such file or directory (os error 2)"
+            error.to_string(),
+            "Intentional sequencer holds are released"
+        );
+        assert_eq!(
+            error.chain().nth(1).unwrap().to_string(),
+            "failed publishing sequencer control request"
+        );
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::IsADirectory
         );
     }
 

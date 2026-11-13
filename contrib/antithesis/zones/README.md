@@ -3,7 +3,7 @@
 A multi-sequencer zone in Docker Compose, for fault-injection testing of the L1 and zone nodes built with
 `--features fuzz` (SDK assertions enabled). `docker-compose.yaml` describes the topology.
 
-The Dockerfile builds every binary with Antithesis [coverage instrumentation](https://antithesis.com/docs/reference/sdk/rust/instrumentation/)
+The Dockerfile builds the nodes and provisioners with Antithesis [coverage instrumentation](https://antithesis.com/docs/reference/sdk/rust/instrumentation/)
 (`--features antithesis-coverage` and its sancov `RUSTFLAGS`, in the `antithesis` profile: no LTO, one codegen unit)
 and links them into `/symbols`. Coverage guides the exploration, and Antithesis only pauses threads in
 instrumented processes. Outside Antithesis the shim finds no `libvoidstar` and does nothing.
@@ -25,7 +25,8 @@ docker compose -f contrib/antithesis/zones/docker-compose.yaml up
 ```
 
 `ZONES_IMAGE` overrides the image the L1, provisioner and zone nodes run, and `WORKLOAD_IMAGE` the
-`workload` container's.
+`workload` container's. The three transparent fault proxies use the uninstrumented workload
+binary included in `ZONES_IMAGE`; they do not report node coverage.
 
 ## Antithesis registry
 
@@ -59,10 +60,11 @@ images it is given, so they must be in the image rather than copied in when a co
 | `serial_driver_single_sequencer_outage` | In a quiet window, checks availability during a non-leader crash or recovery after a crashed leader restarts, then catch-up and renewed quorum participation; leader recovery includes an explicit portal handoff |
 | `serial_driver_quorum_loss_recovery` | Holds both followers down, proves a newly executed canary cannot settle at 1-of-3, then restores one follower and requires its fresh quorum participation |
 | `serial_driver_handoff_campaign` | Rotates to a stopped, lagging successor, optionally returns A→B→A before B can activate, then requires fresh final-term settlement and exact predecessor preservation |
+| `serial_driver_asymmetric_handoff` | Gates the old leader's L1 connection and the successor's P2P traffic, proves signed transactions remain pending across the Portal handoff, then heals and requires fresh settlement |
 | `serial_driver_recovery` | Pauses faults for 600 seconds, then proves a fresh canary settles on finalized L1 and all nodes preserve its receipt and the prior settled prefix within 300 seconds |
 | `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor; reconciles persistent handoff history |
-| `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid, and all nodes converge |
-| `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
+| `eventually_settled` | After faults stop, resolves every durable signed intent first, then every confirmed deposit is credited or refunded and every confirmed withdrawal is paid or returned, and all nodes converge |
+| `finally_ledger` | The same, then compares independently expected principal effects from signed intents with exact bridge/token event multisets, and checks every workload account's balance against Transfer logs |
 
 Half of all recipients are accounts nobody has used before, so the L1 and zone state tries keep
 growing during a run. Account keys are hashes of their index, counting from 1000, and are
@@ -75,9 +77,10 @@ never replaces the nonce or creates a second payment. Unknown intents cannot be 
 `eventually_settled`, even when a replay is rejected by one node: another node may already have
 accepted the bytes. If the workload signs an invalid transaction that cannot be included,
 diagnose and fix its generation rather than silently removing it from the inclusion check.
-The terminal checks and serial recovery probe require quiescent payment
-writers, which their Antithesis scheduling supplies; direct local invocations must also stop
-parallel payment drivers. Leadership requests and observed updates survive driver cancellation;
+Terminal checks and serial episodes take an exclusive episode lock; payment drivers take a
+shared lock before reconciliation, retaining their normal concurrency while excluding controlled
+episodes. Antithesis scheduling also supplies a quiet window. Direct local invocations must stop
+continuously launched writers so terminal checks can acquire the lock. Leadership requests and observed updates survive driver cancellation;
 consistency and recovery check their history and activation boundaries.
 
 ### Mid-run recovery
@@ -121,7 +124,7 @@ before submitting: CLI validation alone does not prove a hard spending cap. Insp
 settings and actual usage, and do not reuse an earlier run's approval.
 
 Only `zone-0`, `zone-1` and `zone-2` are eligible for container termination. Tempo `l1`, the
-provisioner, the workload and the RPC-only follower are excluded. Network faults, node hangs,
+provisioner, the workload, the RPC-only follower and all three fault proxies are excluded. Network faults, node hangs,
 node throttling, clock jitter and CPU modulation are disabled in this focused profile.
 Add `--network-faults` for the leader/quorum campaign: sequencer network faults and
 container termination are then enabled together, with the same excluded services. Quiet
@@ -143,8 +146,7 @@ not a container restart: container/network namespace and supervisor remain alive
 probe, the launcher independently exercises real zone-container termination.
 
 The shared `/fault-control` volume carries only commands and generation-matched acknowledgements;
-it is not evidence of replication, recovery or settlement. Only the workload and three sequencer
-containers mount it. No Docker socket or production RPC control endpoint is exposed. The
+it is not evidence of replication, recovery or settlement. Only the workload, three sequencer containers and three test-only proxy containers mount it. No Docker socket or production RPC control endpoint is exposed. The
 supervisor exits on an unexpected child failure rather than hiding crashes in a restart loop.
 An abandoned intentional hold expires after 180 seconds; an early expiry cannot pass an outage
 assertion. Terminal checks release outstanding holds after a cancelled driver.
@@ -154,7 +156,8 @@ finalized receipts, including reverted transactions and signed admin intents who
 before recording a handoff request. Tempo relay receipts use their own transaction type;
 receipt checks accept that type without relaxing canonical-block or finality validation. A
 relay's reverted-transaction error preserves its transaction ID for that same receipt barrier.
-A lost reply, client timeout or confirmation timeout without a transaction ID cannot be proved
+A connection refusal before any HTTP submission is a definitive rejection; automatic HTTP retries
+and redirects are disabled so this classification cannot hide an earlier send. A lost reply, client timeout or confirmation timeout without a transaction ID cannot be proved
 quiescent: every later episode on that timeline remains inconclusive before any kill, without
 reporting availability or recovery success. Neither an unrelated same-target event nor equal
 pending/finalized nonce observations prove that a delayed submission cannot still arrive.
@@ -252,3 +255,60 @@ faults. They do not inject a crash at an exact persistence instruction or implem
 forced recovery when a predecessor prefix never existed. Do not interpret them as proof of
 those scenarios or as automatic leader election. Use a baseline containing the T14 checkpoint
 metering fix and fresh genesis/state; historical pre-T14 gas behavior is deliberately unchanged.
+
+
+## Asymmetric handoff with pending traffic
+
+`asymmetric-handoff` combines two different views of the same transition without killing either
+sequencer. It holds the exclusive episode lock so rotation and terminal reconciliation cannot
+silently release the deliberately withheld transaction. Run it after `seed`:
+
+```bash
+docker compose -f contrib/antithesis/zones/docker-compose.yaml exec -T workload tempo-zones-antithesis asymmetric-handoff
+```
+
+1. With A leading, block B's P2P traffic and settle a new predecessor tail through A+C.
+2. Also block A's L1 connection. Journal four consecutive transactions from a reused funded
+   account, retain nonce `n`, and submit `n+1..n+3` through different ingress nodes. The nonce
+   gap prevents execution; exact hash/sender/nonce RPC observations must show pending entries
+   both before and after the journaled A→B Portal transition finalizes.
+3. Read the nodes themselves: A must still observe the old leadership epoch and apply an
+   L1 anchor older than the transition, while B must observe the new epoch but lack the predecessor tail. Proxy acknowledgements alone do not prove either
+   condition, and the finalized Portal event does not claim B has activated.
+4. Heal both gates, release the account lease and reconcile the identical signed transactions,
+   including nonce `n`. Within one recovery deadline, require all-node receipt agreement,
+   preservation of the settled predecessor prefix, and a fresh final-term canary settled on L1.
+
+The proxies pause real TCP traffic on existing and new connections; they never synthesize node
+responses. P2P gates cover both the source and destination sequencer. Bytes already queued in
+OS/network buffers can arrive after a gate acknowledgement, hence the separate node-state
+witnesses. Test nodes bypass the P2P source-IP check because the proxy rewrites that IP;
+cryptographic peer authentication remains enabled. Use **fresh shared volumes** so provisioning
+writes the proxy addresses into the peer manifest.
+
+Controls use unique generations, per-proxy boot identities, fresh acknowledgements and absolute
+expiry plus an independent 180-second monotonic watchdog. Normal exit/cancellation releases the
+gates; terminal checks and subsequent controlled episodes also release abandoned holds. Early
+expiry, stale acknowledgements or a restarted proxy cannot prove a held condition. Unobserved
+pending traffic is explicitly inconclusive, not a passing asymmetric episode; recovery is still
+required. The template requests a 1,800-second platform quiet window and has a 1,500-second process
+backstop, while the Rust episode and each held/recovery phase have shorter deadlines.
+
+## Independent principal-effect checks
+
+`finally_ledger` retains the balance-versus-Transfer-log check and adds a different oracle:
+expected payment principal comes from the durable signed intent, not from summing the same logs
+being tested. It compares complete multisets, retaining duplicate events rather than overwriting
+them in a map. Checks cover deposit credit versus refund exclusivity, transfer recipient/amount,
+withdrawal payouts or returns, and the corresponding mint/burn/portal token movements. Withdrawal
+sender tags and deposit queue IDs identify obligations; indistinguishable refund events are
+checked as per-sender multisets, not falsely attributed to individual identical payments.
+
+Gas charges use the receipt's fee token and payer, with the amount derived from gas used and
+price; bridge fees use explicit protocol events. Fee-token selection, gas execution and escrow
+storage are not independently verified. Reverted or unknown intents
+are not required to have successful payment effects. Canonical-but-unsettled receipt hashes are
+not assumed immutable. Terminal checks require quiescent drivers and reconcile first; the new
+oracle is bounded by both a history-size limit and a 300-second deadline and never samples away
+extra history. Unit mutations exercise missing, duplicate and wrong-value effects as well as
+valid fees, bounces and refunds.
