@@ -2,7 +2,7 @@
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::{
     fs::{File, OpenOptions},
-    io::Write as _,
+    io::{Seek as _, SeekFrom, Write as _},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
@@ -1062,15 +1062,13 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        create_signing_key_file(&output, force)
-            .map_err(Report::new)
-            .and_then(|f| match passphrase {
-                Some(passphrase) => signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new),
-                None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
-            })
-            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
+        write_signing_key_file(&output, force, |f| match passphrase {
+            Some(passphrase) => signing_key
+                .write_encrypted(f, passphrase)
+                .map_err(Report::new),
+            None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
+        })
+        .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
         eprintln!(
             "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
@@ -1130,30 +1128,60 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
     }
 }
 
-/// Opens `path` for writing a signing key, readable and writable only by its owner on Unix.
+/// Writes a signing key to `path` with `write`, readable and writable only by its owner on Unix.
 ///
 /// Fails if `path` exists unless `force` is set. With `force`, an existing regular file is
-/// replaced by a new one owned by the caller. If it can't be removed (a bind mount, or a directory
-/// the caller can't write), it is overwritten in place instead, as is the target of a symlink:
-/// its permissions are restricted and it is then truncated. Pipes and devices such as
-/// `/dev/stdout` are written as they are.
-fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
+/// atomically replaced by a new file owned by the caller, so the old key stays in place if writing
+/// fails and descriptors opened on the old file can't read the new key. Where the file can't be
+/// replaced (a bind mount, or a directory the caller can't write) it is overwritten in place, as
+/// are other targets; see [`create_signing_key_file`].
+fn write_signing_key_file(
+    path: &Path,
+    force: bool,
+    write: impl FnOnce(&mut File) -> eyre::Result<()>,
+) -> eyre::Result<()> {
     if force && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
-        // Replacing the file keeps descriptors opened while it had looser permissions from reading
-        // the new key.
-        match std::fs::remove_file(path) {
-            Err(err)
-                if !matches!(
-                    err.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ResourceBusy
-                ) =>
-            {
-                return Err(err);
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        // The staged file is created with mode `0o600` on Unix.
+        match tempfile::NamedTempFile::new_in(dir) {
+            Ok(mut staged) => {
+                write(staged.as_file_mut())?;
+                return match staged.persist(path) {
+                    Ok(_) => Ok(()),
+                    Err(err) if is_unreplaceable(&err.error) => {
+                        let mut staged = err.file;
+                        staged.seek(SeekFrom::Start(0))?;
+                        std::io::copy(&mut staged, &mut create_signing_key_file(path, true)?)?;
+                        Ok(())
+                    }
+                    Err(err) => Err(err.error.into()),
+                };
             }
-            _ => {}
+            Err(err) if is_unreplaceable(&err) => {}
+            Err(err) => return Err(err.into()),
         }
     }
+    write(&mut create_signing_key_file(path, force)?)
+}
 
+/// Whether `err` means a file can't be replaced by renaming, but may still be overwritten in place.
+fn is_unreplaceable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ResourceBusy
+    )
+}
+
+/// Opens `path` for writing a signing key in place, readable and writable only by its owner on
+/// Unix.
+///
+/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file (or the
+/// target of a symlink) has its permissions restricted and is then truncated; pipes and devices
+/// such as `/dev/stdout` are opened as they are.
+fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .write(true)
@@ -1217,19 +1245,17 @@ impl EncryptSigningKey {
             )
         })?;
 
-        create_signing_key_file(&output, force)
-            .map_err(Report::new)
-            .and_then(|f| {
-                signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new)
-            })
-            .wrap_err_with(|| {
-                format!(
-                    "failed writing encrypted signing key to `{}`",
-                    output.display()
-                )
-            })?;
+        write_signing_key_file(&output, force, |f| {
+            signing_key
+                .write_encrypted(f, passphrase)
+                .map_err(Report::new)
+        })
+        .wrap_err_with(|| {
+            format!(
+                "failed writing encrypted signing key to `{}`",
+                output.display()
+            )
+        })?;
 
         eprintln!("wrote encrypted signing key to: {}", output.display());
         Ok(())
@@ -1779,21 +1805,52 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn create_signing_key_file_force_hides_new_key_from_held_descriptors() {
+    fn write_signing_key_file_force_replaces_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("signing.key");
         std::fs::write(&path, b"old key").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut held = File::open(&path).unwrap();
 
-        create_signing_key_file(&path, true)
-            .unwrap()
-            .write_all(b"new key")
-            .unwrap();
+        write_signing_key_file(&path, true, |f| Ok(f.write_all(b"new key")?)).unwrap();
 
         let mut held_contents = String::new();
         std::io::Read::read_to_string(&mut held, &mut held_contents).unwrap();
         assert_eq!(held_contents, "old key");
         assert_eq!(std::fs::read(&path).unwrap(), b"new key");
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn write_signing_key_file_force_keeps_existing_file_on_write_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"old key").unwrap();
+
+        let err = write_signing_key_file(&path, true, |_| Err(eyre!("write failed"))).unwrap_err();
+
+        assert_eq!(err.to_string(), "write failed");
+        assert_eq!(std::fs::read(&path).unwrap(), b"old key");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_signing_key_file_force_writes_symlink_target_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("signing.key");
+        let link = dir.path().join("link.key");
+        std::fs::write(&target, b"old key").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_signing_key_file(&link, true, |f| Ok(f.write_all(b"new key")?)).unwrap();
+
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new key");
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
