@@ -762,11 +762,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 valid_before: Some(NonZeroU64::new(100).unwrap()),
-                calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x42)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
                 ..Default::default()
             };
             let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -1044,11 +1040,7 @@ mod tests {
         let tx_env = aa_env(
             TempoTransaction {
                 calls: vec![
-                    Call {
-                        to: TxKind::Call(first_address),
-                        value: U256::ZERO,
-                        input: first_input.clone(),
-                    },
+                    Call::new(first_address, first_input.clone()),
                     Call {
                         to: TxKind::Call(second_address),
                         value: U256::from(100),
@@ -1099,11 +1091,7 @@ mod tests {
         let tx_env = aa_env(
             TempoTransaction {
                 calls: vec![
-                    Call {
-                        to: TxKind::Call(first),
-                        value: U256::ZERO,
-                        input: first_input.clone(),
-                    },
+                    Call::new(first, first_input.clone()),
                     Call {
                         to: TxKind::Call(second),
                         value: U256::from(50),
@@ -1143,11 +1131,7 @@ mod tests {
             let tx = aa_env(
                 TempoTransaction {
                     calls: (0..num_calls)
-                        .map(|_| Call {
-                            to: TxKind::Call(Address::ZERO),
-                            value: U256::ZERO,
-                            input: Bytes::new(),
-                        })
+                        .map(|_| Call::new(Address::ZERO, Bytes::new()))
                         .collect(),
                     ..Default::default()
                 },

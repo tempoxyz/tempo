@@ -2266,11 +2266,7 @@ mod tests {
 
         let tx = TempoTransaction {
             chain_id: 1,
-            calls: vec![Call {
-                to: Address::ZERO.into(),
-                input: Default::default(),
-                value: Default::default(),
-            }],
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
             gas_limit: 21000,
             nonce_key: U256::from_be_bytes(nonce_bytes),
             max_fee_per_gas: 1,

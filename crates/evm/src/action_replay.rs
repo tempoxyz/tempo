@@ -804,6 +804,78 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_replay_leaves_block_state_unchanged() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let address = Address::repeat_byte(0x42);
+        let (slot, other) = (U256::from(1), U256::from(2));
+        let mut executor = executor_with_storage(&chainspec, address, slot, U256::from(10));
+        executor.evm_mut().overlay_db_mut().insert_account_storage(
+            &address,
+            &other,
+            &U256::from(7),
+        );
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let replay = |actions| StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                ..Default::default()
+            },
+            accounts: vec![],
+            actions,
+            expiring_nonce: None,
+        };
+
+        // The write replays, then a read recorded against older state conflicts.
+        let err = executor
+            .execute_transaction_with_actions(
+                tx.clone().with_signer(sender),
+                replay(vec![
+                    StorageAction::Sstore(address, slot, U256::from(10), U256::from(20)),
+                    StorageAction::Sload(address, other, U256::from(5)),
+                ]),
+                |_| panic!("a conflicting replay must not produce a result"),
+            )
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
+        );
+
+        // The builder executes the transaction again on the same executor, which must still
+        // see the value from before the conflicting replay.
+        executor
+            .execute_transaction_with_actions(
+                tx.with_signer(sender),
+                replay(vec![StorageAction::Sstore(
+                    address,
+                    slot,
+                    U256::from(10),
+                    U256::from(30),
+                )]),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            executor
+                .evm_mut()
+                .overlay_db_mut()
+                .get_storage(&address, &slot)
+                .unwrap(),
+            U256::from(30)
+        );
+    }
+
+    #[test]
     fn account_read_replays_only_when_code_unchanged() {
         let chainspec = test_chainspec();
         let target = Address::repeat_byte(0x22);

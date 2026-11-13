@@ -226,7 +226,7 @@ fn test_2d_authorization_refund_for_absent_caller() {
                     authorization,
                     TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
                 )],
-                calls: vec![call(Bytes::new())],
+                calls: vec![Call::new(Address::ZERO, Bytes::new())],
                 ..Default::default()
             };
             let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
@@ -303,18 +303,13 @@ fn test_aa_create_protocol_nonce_overflow(spec: TempoHardfork) {
                         alloy_primitives::bytes!("602a60005260206000f3"),
                     )),
                 );
-                let mut calls = vec![Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
+                let mut calls = vec![Call::new(
+                    TxKind::Create,
                     // Deploy a single STOP byte.
-                    input: alloy_primitives::bytes!("600060005360016000f3"),
-                }];
+                    alloy_primitives::bytes!("600060005360016000f3"),
+                )];
                 if with_followup_call {
-                    calls.push(Call {
-                        to: TxKind::Call(target),
-                        value: U256::ZERO,
-                        input: Bytes::new(),
-                    });
+                    calls.push(Call::new(target, Bytes::new()));
                 }
                 let tx = TempoTransaction {
                     chain_id: 1,
@@ -395,11 +390,7 @@ fn test_genesis_2d_create_gas_revalidation() {
                 nonce_key: U256::ONE,
                 gas_limit,
                 fee_token: Some(PATH_USD_ADDRESS),
-                calls: vec![Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(TxKind::Create, Bytes::new())],
                 ..Default::default()
             },
         );
@@ -448,7 +439,7 @@ fn test_genesis_intrinsic_overflow_settlement() {
             max_priority_fee_per_gas: gas_price,
             max_fee_per_gas: gas_price,
             fee_token: Some(PATH_USD_ADDRESS),
-            calls: vec![call(Bytes::new())],
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
             ..Default::default()
         },
     );
@@ -565,11 +556,7 @@ fn nonce_database_failures_reach_handler_and_validation() {
                     valid_before: Some(20.try_into().unwrap()),
                     gas_limit: 1_000_000,
                     fee_token: Some(PATH_USD_ADDRESS),
-                    calls: vec![Call {
-                        to: TxKind::Call(Address::ZERO),
-                        value: U256::ZERO,
-                        input: Bytes::new(),
-                    }],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     ..Default::default()
                 },
                 secp256k1_signature(),

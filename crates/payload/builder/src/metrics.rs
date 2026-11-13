@@ -46,6 +46,9 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) parallel_transactions_executed: Histogram,
     /// Number of pool transactions committed through parallel storage-action replay in the last payload.
     pub(crate) parallel_transactions_executed_last: Gauge,
+    /// Number of replayed pool transactions whose replay conflicted with the block state and
+    /// were executed normally instead.
+    pub(crate) parallel_replay_fallbacks: Histogram,
     /// Number of pool transaction execution attempts rejected as invalid.
     pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
     /// Ratio of yielded pool transactions that were included in the payload.
