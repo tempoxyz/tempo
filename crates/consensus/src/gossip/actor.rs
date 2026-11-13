@@ -296,9 +296,10 @@ where
             self.metrics.dropped_replay.inc();
             return;
         }
-        state.observe(round);
 
         if round <= self.latest_verified_round {
+            // The peer already holds this certificate, so there is nothing to relay back.
+            state.observe(round);
             self.metrics.dropped_stale.inc();
             return;
         }
@@ -334,6 +335,11 @@ where
                 true
             }
         };
+
+        // Only an admitted certificate counts as seen. A certificate dropped because the
+        // slot is locked was never verified, so the peer may offer it again once the slot
+        // settles.
+        state.observe(round);
 
         if inserted {
             self.update_slot_metrics();
