@@ -148,66 +148,85 @@ mod tests {
     }
 
     #[test]
-    fn test_chaum_pedersen_valid_proof() {
+    fn test_chaum_pedersen_verify() {
         let mut rng = OsRng;
         let priv_seq = Scalar::random(&mut rng);
         let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-
         let eph_priv = Scalar::random(&mut rng);
         let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-
         let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
 
-        // Generate proof
         let k = Scalar::random(&mut rng);
         let r1 = (ProjectivePoint::GENERATOR * k).to_affine();
         let r2 = (ProjectivePoint::from(eph_pub) * k).to_affine();
-
         let c = challenge_hash(&eph_pub, &pub_seq, &shared_secret, &r1, &r2);
         let s = k + c * priv_seq;
+        // A proof whose R1/R2 recompute to the identity.
+        let degenerate_c = Scalar::random(&mut rng);
 
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
+        // (x, parity) of the ephemeral pubkey, shared secret and sequencer pubkey.
+        let points = [eph_pub, shared_secret, pub_seq].map(|point| {
+            let encoded = point.to_encoded_point(true);
+            let x: [u8; 32] = encoded.x().unwrap().as_slice().try_into().unwrap();
+            (x, encoded.as_bytes()[0])
+        });
+        let flip_parity = |index: usize| {
+            let mut flipped = points;
+            flipped[index].1 = if points[index].1 == 0x02 { 0x03 } else { 0x02 };
+            flipped
+        };
+        let valid_proof = proof(s.to_repr().into(), c.to_repr().into());
 
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s.to_repr().into(), c.to_repr().into()),
-        );
-
-        assert!(valid, "valid Chaum-Pedersen proof should verify");
-    }
-
-    #[test]
-    fn test_chaum_pedersen_invalid_proof() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof([0xAAu8; 32], [0xBBu8; 32]),
-        );
-
-        assert!(!valid, "invalid proof should not verify");
+        for (label, [(eph_x, eph_parity), (ss_x, ss_parity), (ps_x, ps_parity)], proof, expected) in [
+            ("valid proof", points, valid_proof.clone(), true),
+            (
+                "invalid proof",
+                points,
+                proof([0xAAu8; 32], [0xBBu8; 32]),
+                false,
+            ),
+            (
+                "tampered s",
+                points,
+                proof((s + Scalar::ONE).to_repr().into(), c.to_repr().into()),
+                false,
+            ),
+            (
+                "tampered c",
+                points,
+                proof(s.to_repr().into(), (c + Scalar::ONE).to_repr().into()),
+                false,
+            ),
+            (
+                "wrong ephemeral pubkey parity",
+                flip_parity(0),
+                valid_proof.clone(),
+                false,
+            ),
+            (
+                "wrong shared secret parity",
+                flip_parity(1),
+                valid_proof,
+                false,
+            ),
+            (
+                "degenerate proof with identity R1/R2",
+                points,
+                proof(
+                    (degenerate_c * priv_seq).to_repr().into(),
+                    degenerate_c.to_repr().into(),
+                ),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                verify(
+                    &eph_x, eph_parity, &ss_x, ss_parity, &ps_x, ps_parity, &proof
+                ),
+                expected,
+                "{label}"
+            );
+        }
     }
 
     #[test]
@@ -219,171 +238,5 @@ mod tests {
         assert!(recover_point(&x, 0x00).is_none());
         assert!(recover_point(&x, 0x04).is_none());
         assert!(recover_point(&x, 0xFF).is_none());
-    }
-
-    #[test]
-    fn test_chaum_pedersen_tampered_s() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-        let k = Scalar::random(&mut rng);
-        let r1 = (ProjectivePoint::GENERATOR * k).to_affine();
-        let r2 = (ProjectivePoint::from(eph_pub) * k).to_affine();
-        let c = challenge_hash(&eph_pub, &pub_seq, &shared_secret, &r1, &r2);
-        let s = k + c * priv_seq;
-
-        let s_tampered = s + Scalar::ONE;
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s_tampered.to_repr().into(), c.to_repr().into()),
-        );
-
-        assert!(!valid, "tampered s should not verify");
-    }
-
-    #[test]
-    fn test_chaum_pedersen_tampered_c() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-        let k = Scalar::random(&mut rng);
-        let r1 = (ProjectivePoint::GENERATOR * k).to_affine();
-        let r2 = (ProjectivePoint::from(eph_pub) * k).to_affine();
-        let c = challenge_hash(&eph_pub, &pub_seq, &shared_secret, &r1, &r2);
-        let s = k + c * priv_seq;
-
-        let c_tampered = c + Scalar::ONE;
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s.to_repr().into(), c_tampered.to_repr().into()),
-        );
-
-        assert!(!valid, "tampered c should not verify");
-    }
-
-    #[test]
-    fn test_chaum_pedersen_wrong_shared_secret_parity() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-        let k = Scalar::random(&mut rng);
-        let r1 = (ProjectivePoint::GENERATOR * k).to_affine();
-        let r2 = (ProjectivePoint::from(eph_pub) * k).to_affine();
-        let c = challenge_hash(&eph_pub, &pub_seq, &shared_secret, &r1, &r2);
-        let s = k + c * priv_seq;
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let ss_parity = ss_enc.as_bytes()[0];
-        let flipped_ss_parity = if ss_parity == 0x02 { 0x03 } else { 0x02 };
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            flipped_ss_parity,
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s.to_repr().into(), c.to_repr().into()),
-        );
-
-        assert!(!valid, "wrong shared secret parity should not verify");
-    }
-
-    #[test]
-    fn test_chaum_pedersen_wrong_ephemeral_parity() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-        let k = Scalar::random(&mut rng);
-        let r1 = (ProjectivePoint::GENERATOR * k).to_affine();
-        let r2 = (ProjectivePoint::from(eph_pub) * k).to_affine();
-        let c = challenge_hash(&eph_pub, &pub_seq, &shared_secret, &r1, &r2);
-        let s = k + c * priv_seq;
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let eph_parity = eph_enc.as_bytes()[0];
-        let flipped_eph_parity = if eph_parity == 0x02 { 0x03 } else { 0x02 };
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            flipped_eph_parity,
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s.to_repr().into(), c.to_repr().into()),
-        );
-
-        assert!(!valid, "wrong ephemeral pubkey parity should not verify");
-    }
-
-    #[test]
-    fn test_chaum_pedersen_identity_r1_r2() {
-        let mut rng = OsRng;
-        let priv_seq = Scalar::random(&mut rng);
-        let pub_seq = (ProjectivePoint::GENERATOR * priv_seq).to_affine();
-        let eph_priv = Scalar::random(&mut rng);
-        let eph_pub = (ProjectivePoint::GENERATOR * eph_priv).to_affine();
-        let shared_secret = (ProjectivePoint::from(eph_pub) * priv_seq).to_affine();
-
-        let c = Scalar::random(&mut rng);
-        let s = c * priv_seq;
-
-        let eph_enc = eph_pub.to_encoded_point(true);
-        let ss_enc = shared_secret.to_encoded_point(true);
-        let ps_enc = pub_seq.to_encoded_point(true);
-
-        let valid = verify(
-            eph_enc.x().unwrap().as_slice().try_into().unwrap(),
-            eph_enc.as_bytes()[0],
-            ss_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ss_enc.as_bytes()[0],
-            ps_enc.x().unwrap().as_slice().try_into().unwrap(),
-            ps_enc.as_bytes()[0],
-            &proof(s.to_repr().into(), c.to_repr().into()),
-        );
-
-        assert!(
-            !valid,
-            "degenerate proof with identity R1/R2 should not verify"
-        );
     }
 }
