@@ -101,6 +101,13 @@ pub struct TempoPoolMaintenanceMetrics {
 
     /// Number of transactions re-validated due to quote token updates.
     pub quote_token_revalidated: Counter,
+
+    /// Number of removed transactions waiting to be revalidated and re-added.
+    pub revalidation_queue_size: Gauge,
+
+    /// Number of removed transactions dropped instead of revalidated because the revalidation
+    /// queue was full.
+    pub revalidation_dropped: Counter,
 }
 
 /// Transaction pool admission metrics.
