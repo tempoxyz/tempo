@@ -1193,7 +1193,7 @@ mod tests {
             let principal =
                 path_payments(&[(intent.sender, Address::repeat_byte(3), U256::from(10))]);
             check_transfer(&intent, true, &fees, &principal).unwrap();
-            let mut extra = principal.clone();
+            let mut extra = principal;
             extra.extend(token_payments(receipt.logs()));
             assert_eq!(
                 check_transfer(&intent, true, &fees, &extra)
@@ -1446,7 +1446,7 @@ mod tests {
         check_bridge(&cohort(), &[], std::slice::from_ref(&withdrawal), &observed).unwrap();
         observed.payouts.get_mut(&withdrawal.tag).unwrap()[0].2 = true;
         assert_eq!(
-            check_bridge(&cohort(), &[], &[withdrawal.clone()], &observed)
+            check_bridge(&cohort(), &[], std::slice::from_ref(&withdrawal), &observed)
                 .unwrap_err()
                 .to_string(),
             format!("withdrawal both paid and bounced: {}", withdrawal.tag)
