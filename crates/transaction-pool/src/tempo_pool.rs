@@ -1215,9 +1215,14 @@ where
         on_chain_nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // Only the protocol nonce (nonce_key=0) is followed
-        self.aa_2d_pool
-            .read()
-            .lane_transactions_from(AASequenceId::new(sender, U256::ZERO), on_chain_nonce)
+        let seq_id = AASequenceId::new(sender, U256::ZERO);
+        let pool = self.aa_2d_pool.read();
+        // The caller's state can be behind a block the pool applied. The walk then starts at
+        // the lane's executable head.
+        let on_chain_nonce = pool
+            .lane_head_nonce(&seq_id)
+            .map_or(on_chain_nonce, |head| head.max(on_chain_nonce));
+        pool.lane_transactions_from(seq_id, on_chain_nonce)
             .zip(on_chain_nonce..=u64::MAX)
             .take_while(|(tx, nonce)| tx.nonce() == *nonce)
             .last()
@@ -2097,6 +2102,21 @@ mod tests {
                 "on-chain nonce {on_chain_nonce}"
             );
         }
+
+        // A caller whose state is behind a block the pool applied gets the lane's executable
+        // transactions.
+        let info = AccountInfo {
+            nonce: 2,
+            ..Default::default()
+        };
+        let account =
+            BundleAccount::new(None, Some(info), Default::default(), AccountStatus::Changed);
+        pool.notify_aa_pool_on_state_updates(&AddressMap::from_iter([(sender, account)]));
+        assert_eq!(
+            pool.get_highest_consecutive_transaction_by_sender(sender, 1)
+                .map(|tx| tx.nonce()),
+            Some(3)
+        );
     }
 
     #[test]

@@ -709,6 +709,14 @@ impl AA2dPool {
             .map(|(_, tx)| &tx.inner.transaction)
     }
 
+    /// Returns the nonce of the lane's executable head: the lane's on-chain nonce as of the last
+    /// state update, while the transaction with that nonce is pooled.
+    pub(crate) fn lane_head_nonce(&self, seq_id: &AASequenceId) -> Option<u64> {
+        self.independent_transactions
+            .get(seq_id)
+            .map(|tx| tx.transaction.nonce())
+    }
+
     /// Returns an iterator over all transaction hashes in this pool
     pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash.keys().copied()
