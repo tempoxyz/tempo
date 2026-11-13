@@ -1140,31 +1140,63 @@ fn write_signing_key_file(
     force: bool,
     write: impl FnOnce(&mut File) -> eyre::Result<()>,
 ) -> eyre::Result<()> {
-    if force && std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
-        let dir = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
-        };
-        // The staged file is created with mode `0o600` on Unix.
-        match tempfile::NamedTempFile::new_in(dir) {
-            Ok(mut staged) => {
-                write(staged.as_file_mut())?;
-                return match staged.persist(path) {
-                    Ok(_) => Ok(()),
-                    Err(err) if is_unreplaceable(&err.error) => {
-                        let mut staged = err.file;
-                        staged.seek(SeekFrom::Start(0))?;
-                        std::io::copy(&mut staged, &mut create_signing_key_file(path, true)?)?;
-                        Ok(())
-                    }
-                    Err(err) => Err(err.error.into()),
-                };
-            }
-            Err(err) if is_unreplaceable(&err) => {}
-            Err(err) => return Err(err.into()),
-        }
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    if !force || !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        return write_signing_key_file_in_place(path, dir, force, write);
     }
-    write(&mut create_signing_key_file(path, force)?)
+
+    // The staged file is created with mode `0o600` on Unix.
+    let mut staged = match tempfile::NamedTempFile::new_in(dir) {
+        Ok(staged) => staged,
+        Err(err) if is_unreplaceable(&err) => {
+            return write_signing_key_file_in_place(path, dir, true, write);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    write(staged.as_file_mut())?;
+    // Without syncing first, a crash after the rename can leave an empty key at `path`.
+    staged.as_file().sync_all()?;
+    match staged.persist(path) {
+        Ok(_) => sync_dir(dir),
+        Err(err) if is_unreplaceable(&err.error) => {
+            let mut staged = err.file;
+            write_signing_key_file_in_place(path, dir, true, |file| {
+                staged.seek(SeekFrom::Start(0))?;
+                std::io::copy(&mut staged, file)?;
+                Ok(())
+            })
+        }
+        Err(err) => Err(err.error.into()),
+    }
+}
+
+/// Writes a signing key to `path` in place with `write` (see [`create_signing_key_file`]) and, if
+/// it is a regular file, syncs it and its directory `dir` to disk.
+fn write_signing_key_file_in_place(
+    path: &Path,
+    dir: &Path,
+    force: bool,
+    write: impl FnOnce(&mut File) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let mut file = create_signing_key_file(path, force)?;
+    write(&mut file)?;
+    // Pipes and devices such as `/dev/stdout` can't be synced.
+    if file.metadata()?.is_file() {
+        file.sync_all()?;
+        sync_dir(dir)?;
+    }
+    Ok(())
+}
+
+/// Syncs directory `dir` so that files created or renamed in it survive a crash. Does nothing
+/// outside Unix, where directories can't be opened as files.
+fn sync_dir(dir: &Path) -> eyre::Result<()> {
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// Whether `err` means a file can't be replaced by renaming, but may still be overwritten in place.
