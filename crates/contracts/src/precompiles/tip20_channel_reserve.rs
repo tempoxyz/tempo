@@ -143,10 +143,6 @@ crate::sol! {
         /// Returns the number of reusable channel storage credits owned by `payer`.
         function storageCredits(address payer) external view returns (uint64 credits);
 
-        /// Returns the voucher signer's configuration commitment saved when the channel opened,
-        /// or zero if the signer had none at open or the channel doesn't exist (TIP-1166).
-        function getSignerSnapshot(bytes32 channelId) external view returns (bytes32 commitment);
-
         /// Emitted after a channel is opened and funded.
         event ChannelOpened(
             bytes32 indexed channelId,
@@ -196,8 +192,9 @@ crate::sol! {
             uint96 refundedToPayer
         );
 
-        /// Emitted by `open` when the voucher signer has a nonzero configuration commitment,
-        /// which the channel's vouchers are checked against for its lifetime (TIP-1166).
+        /// Emitted by `open` when the voucher signer has a nonzero configuration commitment, which
+        /// the channel's salt holds and its vouchers are checked against for its lifetime
+        /// (TIP-1166).
         event SignerSnapshotCached(
             bytes32 indexed channelId,
             address indexed signer,
@@ -243,6 +240,9 @@ crate::sol! {
         /// A nonzero top-up found the voucher signer's configuration changed since the channel
         /// opened (TIP-1166).
         error SignerConfigChanged(address signer);
+        /// `open` was given a salt other than the voucher signer's configuration commitment
+        /// (TIP-1166).
+        error SaltNotSignerCommitment(address signer, bytes32 commitment);
     }
 }
 
