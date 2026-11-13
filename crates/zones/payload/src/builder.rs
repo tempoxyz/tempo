@@ -283,11 +283,12 @@ where
                 );
                 (
                     context.start(prepared),
-                    Some(
-                        context.lookahead(self.pool.best_transactions_with_attributes(
+                    Some(context.lookahead(
+                        self.pool.best_transactions_with_attributes(
                             BestTransactionsAttributes::new(base_fee, None),
-                        )),
-                    ),
+                        ),
+                        block_gas_limit,
+                    )),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
@@ -928,7 +929,7 @@ pub fn build_advance_tempo_headers_tx(
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Header, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Address, B256, U256, address};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
     use reth_tasks::cancel::CancelOnDrop;
@@ -937,11 +938,14 @@ mod tests {
         error::InvalidPoolTransactionError,
         identifier::{SenderId, TransactionId},
     };
-    use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use std::{collections::VecDeque, num::NonZeroU64, sync::Arc, time::Instant};
     use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
-        TempoAddressExt as _, TempoHeader, TempoTxEnvelope,
-        transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+        TempoAddressExt as _, TempoHeader, TempoTransaction, TempoTxEnvelope,
+        transaction::{
+            Call,
+            envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+        },
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -1095,6 +1099,7 @@ mod tests {
                 queue: txs.iter().cloned().collect(),
                 oversized_marked: 0,
             },
+            u64::MAX,
             Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
         );
         assert_eq!(
@@ -1111,6 +1116,56 @@ mod tests {
             InvalidPoolTransactionError::OversizedData { size: 1, limit: 0 },
         );
         assert!(lookahead.next().is_none());
+    }
+
+    /// The lookahead simulates only what fits its gas, and an invalid expiring-nonce transaction
+    /// keeps the sender's other expiring-nonce transactions.
+    #[test]
+    fn pool_lookahead_caps_simulated_gas_and_keeps_expiring_nonce_transactions() {
+        let expiring = |gas_limit| {
+            let tx = TempoTransaction {
+                gas_limit,
+                calls: vec![Call {
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                nonce_key: U256::MAX,
+                valid_before: NonZeroU64::new(100),
+                ..Default::default()
+            };
+            let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+            Arc::new(ValidPoolTransaction {
+                transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                    envelope,
+                    Address::repeat_byte(1),
+                )),
+                transaction_id: TransactionId::new(SenderId::from(0u64), 0),
+                propagate: false,
+                timestamp: Instant::now(),
+                origin: TransactionOrigin::External,
+                authority_ids: None,
+            })
+        };
+        let (large, small) = (expiring(10), expiring(1));
+        let (simulated, simulations) = std::sync::mpsc::channel();
+        let mut lookahead = PoolLookahead::new(
+            MockBestTransactions {
+                queue: [large.clone(), small.clone()].into(),
+                oversized_marked: 0,
+            },
+            5,
+            Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
+        );
+        assert_eq!(
+            simulations.try_iter().collect::<Vec<_>>(),
+            vec![*small.hash()]
+        );
+
+        let first = lookahead.next().unwrap();
+        assert_eq!(first.hash(), large.hash());
+        lookahead.mark_invalid(&first, InvalidPoolTransactionError::ExceedsGasLimit(10, 5));
+        assert_eq!(lookahead.next().unwrap().hash(), small.hash());
     }
 
     /// Feed the pool loop far more large transactions than fit in the size budget, and assert it

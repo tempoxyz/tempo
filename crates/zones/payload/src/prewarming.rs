@@ -119,14 +119,17 @@ where
     }
 
     /// Wraps the builder's pool iterator so each transaction is simulated before the builder takes
-    /// it. Dropping the returned iterator cancels its queued simulations.
+    /// it, while their gas limits fit in `gas`. Dropping the returned iterator cancels its queued
+    /// simulations.
     pub(crate) fn lookahead<I: BestTransactions<Item = BestTransaction>>(
         self: &Arc<Self>,
         inner: I,
+        gas: u64,
     ) -> PoolLookahead<I> {
         let (context, prewarming) = (self.clone(), Prewarming::default());
         PoolLookahead::new(
             inner,
+            gas,
             Box::new(move |transaction| {
                 context.spawn(&prewarming.0, Simulation::Pool(transaction.clone()))
             }),
@@ -207,19 +210,26 @@ impl Drop for Prewarming {
 }
 
 /// Pool transactions in the inner iterator's order, each simulated up to [`POOL_LOOKAHEAD`]
-/// transactions before it is yielded.
+/// transactions before it is yielded while their gas limits fit in the block's gas.
 pub(crate) struct PoolLookahead<I> {
     inner: I,
     /// Taken from `inner` and already simulated, in order.
     buffer: VecDeque<BestTransaction>,
+    /// Gas left for simulations.
+    gas: u64,
     simulate: Box<dyn FnMut(&BestTransaction) + Send>,
 }
 
 impl<I: BestTransactions<Item = BestTransaction>> PoolLookahead<I> {
-    pub(crate) fn new(inner: I, simulate: Box<dyn FnMut(&BestTransaction) + Send>) -> Self {
+    pub(crate) fn new(
+        inner: I,
+        gas: u64,
+        simulate: Box<dyn FnMut(&BestTransaction) + Send>,
+    ) -> Self {
         let mut lookahead = Self {
             inner,
             buffer: VecDeque::with_capacity(POOL_LOOKAHEAD),
+            gas,
             simulate,
         };
         lookahead.fill();
@@ -231,7 +241,10 @@ impl<I: BestTransactions<Item = BestTransaction>> PoolLookahead<I> {
         while self.buffer.len() < POOL_LOOKAHEAD
             && let Some(transaction) = self.inner.next()
         {
-            (self.simulate)(&transaction);
+            if let Some(gas) = self.gas.checked_sub(transaction.gas_limit()) {
+                self.gas = gas;
+                (self.simulate)(&transaction);
+            }
             self.buffer.push_back(transaction);
         }
     }
@@ -249,11 +262,15 @@ impl<I: BestTransactions<Item = BestTransaction>> Iterator for PoolLookahead<I> 
 impl<I: BestTransactions<Item = BestTransaction>> BestTransactions for PoolLookahead<I> {
     fn mark_invalid(&mut self, invalid: &Self::Item, kind: InvalidPoolTransactionError) {
         // `inner` skips the rest of the invalid transaction's nonce lane, where non-AA
-        // transactions share nonce key 0. Drop that lane's transactions already taken from it too.
-        let lane =
-            |tx: &BestTransaction| (tx.sender(), tx.transaction.nonce_key().unwrap_or_default());
-        let invalid_lane = lane(invalid);
-        self.buffer.retain(|tx| lane(tx) != invalid_lane);
+        // transactions share nonce key 0, except for expiring-nonce transactions, which are
+        // independent. Drop that lane's transactions already taken from it too.
+        if !invalid.transaction.is_expiring_nonce() {
+            let lane = |tx: &BestTransaction| {
+                (tx.sender(), tx.transaction.nonce_key().unwrap_or_default())
+            };
+            let invalid_lane = lane(invalid);
+            self.buffer.retain(|tx| lane(tx) != invalid_lane);
+        }
         self.inner.mark_invalid(invalid, kind);
     }
 
