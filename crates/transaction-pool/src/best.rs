@@ -1,11 +1,17 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{
-    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    ordering::TempoTipOrdering,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
-use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
+use alloy_primitives::{
+    Address, U256,
+    map::{AddressMap, HashMap},
+};
+use evm2::evm::{
+    AccountChangeRef, AccountExtension, StateChangeSink, StateChangeSource, StorageChange,
+};
 use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -15,14 +21,36 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_evm::TempoEvmTypes;
 use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_primitives::account::encode_config_commitment;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
-struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
+/// Collects the changes of an executed transaction that `StateAwareBestTransactions` checks
+/// later candidates against.
+struct BlockChangesSink<'a> {
+    decreased_balances: &'a mut HashMap<(Address, U256), U256>,
+    changed_commitments: &'a mut AddressMap<AccountExtension>,
+}
 
-impl StateChangeSink for DecreasedBalancesSink<'_> {
+impl StateChangeSink for BlockChangesSink<'_> {
     type Error = core::convert::Infallible;
+
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        let current = change
+            .current
+            .map(|info| info.extension.clone())
+            .unwrap_or_default();
+        if change
+            .original
+            .map(|info| info.extension.as_ref())
+            .unwrap_or_default()
+            != current.as_ref()
+        {
+            self.changed_commitments.insert(change.address, current);
+        }
+        Ok(())
+    }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         if !is_tip20_prefix(change.address) {
@@ -30,8 +58,12 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         }
 
         if change.current < change.original {
-            self.0.insert((change.address, change.key), change.current);
-        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
+            self.decreased_balances
+                .insert((change.address, change.key), change.current);
+        } else if let Some(balance) = self
+            .decreased_balances
+            .get_mut(&(change.address, change.key))
+        {
             *balance = change.current;
         }
         Ok(())
@@ -44,7 +76,7 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
         value: U256,
     ) -> Result<(), Self::Error> {
         if is_tip20_prefix(address)
-            && let Some(balance) = self.0.get_mut(&(address, key))
+            && let Some(balance) = self.decreased_balances.get_mut(&(address, key))
         {
             *balance = value;
         }
@@ -176,6 +208,13 @@ pub struct StateAwareBestTransactions<I> {
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
+    /// Accounts whose configuration commitment changed earlier in the block, with their encoded
+    /// commitment after the change.
+    ///
+    /// A candidate naming one as an authority was validated against the old commitment. Unless
+    /// its signatures for that account match the new commitment, it is skipped for this block
+    /// instead of executed, and pool maintenance revalidates it once the block commits.
+    changed_commitments: AddressMap<AccountExtension>,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
 }
@@ -193,6 +232,7 @@ where
         Self {
             inner,
             decreased_balances: HashMap::default(),
+            changed_commitments: AddressMap::default(),
             fallback_fee_tokens,
         }
     }
@@ -203,7 +243,10 @@ where
         result
             .result()
             .pending_state
-            .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
+            .visit(&mut BlockChangesSink {
+                decreased_balances: &mut self.decreased_balances,
+                changed_commitments: &mut self.changed_commitments,
+            })
             .unwrap();
     }
 
@@ -239,6 +282,20 @@ where
         loop {
             let tx = self.inner.next()?;
             let best_tx = tx.best_transaction();
+
+            if best_tx.transaction.has_authority_where(|account| {
+                self.changed_commitments
+                    .get(account)
+                    .is_some_and(|commitment| !signs_for_commitment(best_tx, account, commitment))
+            }) {
+                self.inner.mark_invalid(
+                    &tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::AuthorityCommitmentChanged,
+                    )),
+                );
+                continue;
+            }
 
             let Some(key) = best_tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
@@ -293,6 +350,28 @@ impl StateAwarePoolTransaction for BestTransaction {
     }
 }
 
+/// Whether `tx` signs for `account` only with configurations whose commitment is `commitment`,
+/// so the commitment change that produced it leaves the transaction valid. This covers an
+/// account's first registration of the configuration its address derives from.
+fn signs_for_commitment(
+    tx: &BestTransaction,
+    account: &Address,
+    commitment: &AccountExtension,
+) -> bool {
+    let mut signatures = tx
+        .transaction
+        .inner()
+        .as_aa()
+        .into_iter()
+        .flat_map(|aa| aa.configurable_account_signatures())
+        .filter(|signature| signature.account() == *account)
+        .peekable();
+    signatures.peek().is_some()
+        && signatures.all(|signature| {
+            encode_config_commitment(signature.config_commitment()).as_ref() == commitment.as_ref()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,9 +380,11 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, B256, Signature, map::AddressSet};
+    use alloy_signer_local::PrivateKeySigner;
+    use evm2::evm::{AccountInfo, PendingState};
     use futures::executor::block_on;
-    use reth_primitives_traits::transaction::error::InvalidTransactionError;
+    use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
     use reth_transaction_pool::{
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
@@ -311,6 +392,13 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_evm::ResolvedFeeToken;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            PrimitiveSignature, TempoSignature,
+        },
+    };
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -673,5 +761,133 @@ mod tests {
             TempoHardfork::T12.fallback_fee_tokens(),
             &[path_usd]
         ));
+    }
+
+    #[test]
+    fn test_block_changes_sink_collects_changed_commitments() {
+        let info = |commitment: Option<B256>| AccountInfo {
+            extension: commitment
+                .map(encode_config_commitment)
+                .unwrap_or_default()
+                .into(),
+            ..Default::default()
+        };
+        let registered = Address::random();
+        let rotated = Address::random();
+        let funded = Address::random();
+        let mut state = PendingState::default();
+        state.insert_account(
+            registered,
+            Some(info(None)),
+            Some(info(Some(B256::random()))),
+        );
+        state.insert_account(
+            rotated,
+            Some(info(Some(B256::random()))),
+            Some(info(Some(B256::random()))),
+        );
+        // A balance change alone leaves the commitment as it was.
+        state.insert_account(
+            funded,
+            Some(info(None)),
+            Some(AccountInfo {
+                balance: U256::ONE,
+                ..info(None)
+            }),
+        );
+
+        let mut decreased_balances = HashMap::default();
+        let mut changed_commitments = AddressMap::default();
+        state
+            .visit(&mut BlockChangesSink {
+                decreased_balances: &mut decreased_balances,
+                changed_commitments: &mut changed_commitments,
+            })
+            .unwrap();
+
+        assert_eq!(
+            changed_commitments.keys().copied().collect::<AddressSet>(),
+            AddressSet::from_iter([registered, rotated])
+        );
+        assert_eq!(
+            changed_commitments[&rotated].as_ref(),
+            state.account_info(&rotated).unwrap().extension.as_ref()
+        );
+    }
+
+    #[test]
+    fn test_state_aware_skips_transactions_of_changed_authorities() {
+        let user = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let sender = Address::random();
+        let unrelated = protocol_tx(0, 1);
+        let keychain = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user)
+                .max_priority_fee(3)
+                .max_fee(u128::from(TEMPO_T1_BASE_FEE) + 3)
+                .build_keychain(user, &access_key),
+            TransactionOrigin::External,
+        ));
+        let from_sender = protocol_tx_for_sender(sender, 0, 2);
+        let descendant = protocol_tx_for_sender(sender, 1, 2);
+        let mut best = StateAwareBestTransactions::new(
+            protocol_best_transactions(vec![unrelated.clone(), keychain, from_sender, descendant]),
+            TempoHardfork::T13.fallback_fee_tokens(),
+        );
+        let commitment = AccountExtension::from(encode_config_commitment(B256::random()));
+        best.changed_commitments = AddressMap::from_iter([
+            (access_key.address(), commitment.clone()),
+            (sender, commitment),
+        ]);
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*unrelated.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn test_state_aware_keeps_transactions_signed_for_the_new_commitment() {
+        let account = Address::random();
+        let config = ConfigurableAccountConfig {
+            salt: B256::random(),
+            version: 0,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: Address::random(),
+                weight: 1,
+            }],
+        };
+        let signature = ConfigurableAccountSignature::try_new(
+            account,
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+        )
+        .unwrap();
+        let registered = encode_config_commitment(signature.config_commitment());
+        let body = TxBuilder::aa(account)
+            .build()
+            .inner()
+            .as_aa()
+            .unwrap()
+            .tx()
+            .clone();
+        let envelope =
+            TempoTxEnvelope::from(body.into_signed(TempoSignature::ConfigurableAccount(signature)));
+        let tx = Arc::new(wrap_valid_tx(
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, account)),
+            TransactionOrigin::External,
+        ));
+
+        let yields = |commitment: AccountExtension| {
+            let mut best = StateAwareBestTransactions::new(
+                protocol_best_transactions(vec![tx.clone()]),
+                TempoHardfork::T13.fallback_fee_tokens(),
+            );
+            best.changed_commitments = AddressMap::from_iter([(account, commitment)]);
+            best.next().is_some()
+        };
+
+        // First registration of the signed configuration leaves the transaction valid.
+        assert!(yields(registered.into()));
+        assert!(!yields(encode_config_commitment(B256::random()).into()));
     }
 }

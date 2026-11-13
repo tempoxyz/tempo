@@ -10,8 +10,7 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
-    map::{AddressMap, AddressSet},
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
@@ -558,11 +557,14 @@ impl TempoPooledTransaction {
             .then_some(authorization.key_id)
     }
 
-    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// Whether `is_affected` holds for an authority of this transaction: the sender (unless an
+    /// access key signs for it), the key authorization signer, a separate fee payer, the access
     /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
     /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
-    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+    pub(crate) fn has_authority_where(
+        &self,
+        mut is_affected: impl FnMut(&Address) -> bool,
+    ) -> bool {
         let [sender, authorities @ ..] = self.authorities();
         let signed_by_access_key = self
             .inner()
@@ -573,7 +575,7 @@ impl TempoPooledTransaction {
             .into_iter()
             .chain(authorities.into_iter().flatten())
             .chain(self.primitive_granted_key())
-            .any(|authority| accounts.contains(&authority))
+            .any(|authority| is_affected(&authority))
     }
 
     /// The accounts whose state changes can invalidate this transaction and that signed it or
@@ -685,6 +687,14 @@ pub enum TempoPoolTransactionError {
     /// for. The transaction may be valid and can be submitted again.
     #[error("Chain state changed during every validation attempt, please resubmit")]
     StateChangedDuringValidation,
+
+    /// The configuration commitment of one of the transaction's authorities changed.
+    ///
+    /// Thrown by the payload builder after the transaction is already in the pool, when an
+    /// earlier transaction in the block being built changed a commitment the transaction was
+    /// validated against. It is skipped for that block and revalidated once the block commits.
+    #[error("Transaction authority configuration changed earlier in the block")]
+    AuthorityCommitmentChanged,
 
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
@@ -886,6 +896,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             ),
             Self::ExceedsNonPaymentLimit
             | Self::StateChangedDuringValidation
+            | Self::AuthorityCommitmentChanged
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1663,6 +1674,7 @@ mod tests {
     }
 
     #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]
+    #[test_case(TempoPoolTransactionError::AuthorityCommitmentChanged => false)]
     #[test_case(TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore { valid_before: 100, min_allowed: 200 }) => false)]
     #[test_case(TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter { valid_after: 200, max_allowed: 100 }) => false)]
     #[test_case(TempoPoolTransactionError::Keychain("test error") => false)]
@@ -2010,12 +2022,12 @@ mod tests {
         };
 
         let primitive = grant(SignatureType::Secp256k1);
-        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
-        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        assert!(primitive.has_authority_where(|account| *account == key_id));
+        assert!(!primitive.has_authority_where(|account| *account == Address::random()));
         // Only the grantor signs the grant, so its key ID isn't charged against pool limits.
         assert!(!primitive.authorities().contains(&Some(key_id)));
         // A configurable grant's validity doesn't depend on its key ID's commitment value.
         let configurable = grant(SignatureType::ConfigurableAccount);
-        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!configurable.has_authority_where(|account| *account == key_id));
     }
 }
