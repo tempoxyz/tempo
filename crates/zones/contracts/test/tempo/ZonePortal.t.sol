@@ -5793,50 +5793,22 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(bob), bobBalanceBefore + amount);
     }
 
-    function test_depositBounceBack_virtualRecipient_parksRefundForMaster() public {
-        vm.fee(0);
-        uint128 amount = 250e6;
-        address master = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
-        bytes32 salt = bytes32(uint256(0xabf52baf));
-
-        vm.prank(master);
-        bytes4 masterId = StdPrecompiles.ADDRESS_REGISTRY.registerVirtualMaster(salt);
+    /// @notice A virtual address can't be a refund recipient, since it can never claim a refund.
+    function test_deposit_revertsForVirtualRefundRecipient() public {
         address virtualRecipient = address(
-            bytes20(abi.encodePacked(masterId, bytes10(0xfdfdfdfdfdfdfdfdfdfd), bytes6(uint48(1))))
+            bytes20(
+                abi.encodePacked(
+                    bytes4(0x58e21090), bytes10(0xfdfdfdfdfdfdfdfdfdfd), bytes6(uint48(1))
+                )
+            )
         );
+        assertTrue(StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(virtualRecipient));
 
-        vm.startPrank(admin);
-        portal.setAllowedAccount(virtualRecipient, true);
-        portal.setAllowedAccount(master, true);
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), virtualRecipient);
         vm.stopPrank();
-
-        _fundCallbackWithdrawal(amount);
-
-        Withdrawal memory withdrawal = _withdrawal(
-            address(pathUSD), alice, virtualRecipient, amount, bytes32(0), 0, address(0), ""
-        );
-        _enqueueWithdrawal(withdrawal);
-
-        vm.prank(master);
-        registry.setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
-
-        uint256 masterBalanceBefore = pathUSD.balanceOf(master);
-
-        vm.expectEmit(true, false, false, true, address(portal));
-        emit IZonePortal.DepositBounceBackPending(master, address(pathUSD), amount, 0);
-        portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
-
-        assertEq(pathUSD.balanceOf(master), masterBalanceBefore);
-        assertEq(portal.refunds(address(pathUSD), virtualRecipient), 0);
-        assertEq(portal.refunds(address(pathUSD), master), amount);
-
-        vm.prank(master);
-        registry.setReceivePolicy(ALLOW_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, address(0));
-        vm.prank(master);
-        assertEq(portal.claimRefund(address(pathUSD)), amount);
-
-        assertEq(portal.refunds(address(pathUSD), master), 0);
-        assertEq(pathUSD.balanceOf(master), masterBalanceBefore + amount);
     }
 
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.

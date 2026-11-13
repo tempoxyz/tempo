@@ -1012,6 +1012,10 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
+        // Refunds are claimed by msg.sender, which can never be a virtual address.
+        if (StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)) {
+            revert InvalidBouncebackRecipient();
+        }
         // Enforced gateways may deposit callback returns without also being allowed accounts.
         _requireAllowedDepositor(msg.sender);
         _requireAllowed(tempoRefundRecipient);
@@ -1244,15 +1248,8 @@ contract ZonePortal is IZonePortal {
         if (success) {
             emit DepositBounceBack(withdrawal.to, _token, refundAmount, collectedFee);
         } else {
-            // claimRefund keys by msg.sender: park a virtual recipient's refund under its master.
-            address refundOwner = withdrawal.to;
-            try StdPrecompiles.ADDRESS_REGISTRY.resolveRecipient(refundOwner) returns (
-                address resolved
-            ) {
-                refundOwner = resolved;
-            } catch { }
-            refunds[_token][refundOwner] += refundAmount;
-            emit DepositBounceBackPending(refundOwner, _token, refundAmount, collectedFee);
+            refunds[_token][withdrawal.to] += refundAmount;
+            emit DepositBounceBackPending(withdrawal.to, _token, refundAmount, collectedFee);
         }
     }
 
