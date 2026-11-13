@@ -47,6 +47,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
 };
+use zone_rpc::filter::APPROVAL_TOPIC;
 
 fn corrupt_token_hex(token: &str) -> String {
     let mut bytes = hex::decode(token).expect("token hex should decode");
@@ -1526,7 +1527,7 @@ async fn test_log_queries_apply_requested_topics() -> eyre::Result<()> {
         .connect_http(ctx.zone.http_url().clone());
     let token = ContractTip20::new(PATH_USD_ADDRESS, &provider);
     let first = token
-        .approve(spender_a, U256::from(1u64))
+        .approve(spender_a, U256::ONE)
         .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
@@ -1550,7 +1551,7 @@ async fn test_log_queries_apply_requested_topics() -> eyre::Result<()> {
         .unwrap()
         .max(second.block_number.unwrap());
 
-    let approval = zone_rpc::filter::APPROVAL_TOPIC.to_string();
+    let approval = APPROVAL_TOPIC.to_string();
     let filter = |spender: Address| {
         json!({
             "fromBlock": format!("{from:#x}"),

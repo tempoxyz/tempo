@@ -7,8 +7,9 @@
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
 use alloy_primitives::{Address, B256};
-use alloy_rpc_types_eth::{Filter, FilterSet, Log};
+use alloy_rpc_types_eth::{Filter, FilterSet, Log, Topic};
 use alloy_sol_types::SolEvent;
+use core::mem;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
 
@@ -152,11 +153,7 @@ impl LogOrderingRedactor {
 /// Filters logs to only those the caller is allowed to see, renumbering the
 /// `log_index` via [`LogOrderingRedactor`].
 pub fn filter_logs(logs: Vec<Log>, caller: &Address) -> Vec<Log> {
-    let mut redactor = LogOrderingRedactor::default();
-    logs.into_iter()
-        .filter(|log| is_log_visible(log, caller))
-        .map(|log| redactor.redact(log))
-        .collect()
+    filter_requested_logs(logs, caller, &RequestedTopics::default())
 }
 
 /// Filters a receipt's logs for its sender and recomputes `logsBloom`.
@@ -230,20 +227,19 @@ pub fn scope_filter(filter: &mut Filter) {
 #[derive(Debug, Clone, Default)]
 pub struct RequestedTopics {
     address: FilterSet<Address>,
-    topics: [FilterSet<B256>; 4],
+    topics: [Topic; 4],
 }
 
 impl RequestedTopics {
     /// Returns `true` if the log matches the requested emitters and every requested topic
     /// position.
     pub fn matches(&self, log: &Log) -> bool {
-        let topics = log.topics();
         self.address.matches(&log.address())
             && self
                 .topics
                 .iter()
                 .enumerate()
-                .all(|(i, wanted)| match topics.get(i) {
+                .all(|(i, wanted)| match log.topics().get(i) {
                     Some(topic) => wanted.matches(topic),
                     None => wanted.is_empty(),
                 })
@@ -281,7 +277,7 @@ pub fn scope_filter_for_caller(
     let mut allowed_addresses = zone_tokens.to_vec();
     allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
     let requested = RequestedTopics {
-        address: core::mem::replace(&mut filter.address, FilterSet::from(allowed_addresses)),
+        address: mem::replace(&mut filter.address, FilterSet::from(allowed_addresses)),
         topics: filter.topics.clone(),
     };
     let caller_word = caller.into_word();

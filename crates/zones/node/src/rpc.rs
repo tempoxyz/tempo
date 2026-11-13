@@ -92,6 +92,7 @@ use zone_precompiles::is_zone_precompile;
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
+    filter::{RequestedTopics, filter_requested_logs, is_log_visible, scope_filter_for_caller},
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
@@ -1020,7 +1021,7 @@ pub struct ZoneRpc<Api: EthApiTypes> {
 /// applied to the backend's caller-scoped results.
 struct FilterOwner {
     caller: Address,
-    requested: Arc<zone_rpc::filter::RequestedTopics>,
+    requested: Arc<RequestedTopics>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -1092,7 +1093,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         &self,
         id: &FilterId,
         auth: &AuthContext,
-    ) -> Result<Arc<zone_rpc::filter::RequestedTopics>, JsonRpcError> {
+    ) -> Result<Arc<RequestedTopics>, JsonRpcError> {
         let requested = {
             let owners = self.filter_owners.lock().await;
             match owners.get(id) {
@@ -1470,12 +1471,11 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested =
-                zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
+            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let logs = EthFilterApiServer::logs(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
-            let filtered = zone_rpc::filter::filter_requested_logs(logs, &auth.caller, &requested);
+            let filtered = filter_requested_logs(logs, &auth.caller, &requested);
             to_raw(&filtered)
         })
     }
@@ -1484,8 +1484,7 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested =
-                zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
+            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1510,7 +1509,7 @@ where
                 .await
                 .map_err(map_eth_filter_error)?;
 
-            let filtered = zone_rpc::filter::filter_requested_logs(logs, &auth.caller, &requested);
+            let filtered = filter_requested_logs(logs, &auth.caller, &requested);
             to_raw(&filtered)
         })
     }
@@ -1527,8 +1526,7 @@ where
 
             match changes {
                 FilterChanges::Logs(logs) => {
-                    let filtered =
-                        zone_rpc::filter::filter_requested_logs(logs, &auth.caller, &requested);
+                    let filtered = filter_requested_logs(logs, &auth.caller, &requested);
                     to_raw(&FilterChanges::<
                         alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
                     >::Logs(filtered))
@@ -1626,8 +1624,7 @@ where
 
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested =
-                zone_rpc::filter::scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
+            let requested = scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
 
             let stream = provider
                 .canonical_state_stream()
@@ -1673,7 +1670,7 @@ where
             let mut log_redactor = zone_rpc::filter::LogOrderingRedactor::default();
             let stream = stream.filter_map(move |log| {
                 std::future::ready(
-                    (requested.matches(&log) && zone_rpc::filter::is_log_visible(&log, &caller))
+                    (requested.matches(&log) && is_log_visible(&log, &caller))
                         .then(|| to_raw(&log_redactor.redact(log))),
                 )
             });
