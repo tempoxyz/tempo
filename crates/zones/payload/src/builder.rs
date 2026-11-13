@@ -202,7 +202,6 @@ where
         };
         validate_l1_continuity(state_provider.as_ref(), imported_headers)?;
         let final_imported = imported_headers.last().expect("validated nonempty import");
-        let checkpoint_only = tempo_import.is_checkpoint_only();
         let follows_checkpoint_blocks = tempo_import.follows_checkpoint_blocks();
         let total_deposits = tempo_import.total_deposits();
         let enabled_tokens = tempo_import.enabled_tokens();
@@ -271,7 +270,7 @@ where
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
         let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
-        let (prewarming, pool_prewarming) = match tempo_import {
+        let (prewarming, pool_transactions) = match tempo_import {
             TempoImport::Full(prepared) => {
                 let context = PrewarmingExecutionContext::new(
                     self.task_executor.clone(),
@@ -282,21 +281,13 @@ where
                     chain_id,
                     prepared.header.number(),
                 );
-                // Subscribe before the snapshot so no arrival falls between them.
-                let arrivals = self.pool.new_pending_pool_transactions_listener();
-                let mut size = 0usize;
-                let transactions = self
-                    .pool
-                    .best_transactions_with_attributes(BestTransactionsAttributes::new(
-                        base_fee, None,
-                    ))
-                    .take_while(|tx| {
-                        size = size.saturating_add(tx.transaction.encoded_length());
-                        size <= pool_tx_size_budget
-                    });
                 (
                     context.start(prepared),
-                    context.start_pool(transactions, arrivals),
+                    Some(
+                        context.lookahead(self.pool.best_transactions_with_attributes(
+                            BestTransactionsAttributes::new(base_fee, None),
+                        )),
+                    ),
                 )
             }
             TempoImport::CheckpointOnly(_) => Default::default(),
@@ -324,15 +315,12 @@ where
             })?;
         drop(prewarming);
 
-        if !checkpoint_only {
+        if let Some(pool_transactions) = pool_transactions {
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
-            let raw_best_txs = self
-                .pool
-                .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
             // Zones resolve fee tokens without a fallback list.
-            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
+            let mut best_txs = StateAwareBestTransactions::new(pool_transactions, &[]);
             let mut unlisted = Vec::new();
             let outcome = execute_pool_transactions(
                 |tx, best_txs| {
@@ -348,8 +336,8 @@ where
                 self.transfer_allowlist.as_deref(),
                 &mut unlisted,
             );
-            // Later arrivals can no longer reach this block.
-            drop(pool_prewarming);
+            // Stop prewarming transactions that can no longer reach this block.
+            drop(best_txs);
             if !unlisted.is_empty() {
                 // Otherwise every later build would check and skip them again. Removal locks the
                 // pool, so it runs off the build path; a build that starts first skips them again.
@@ -960,6 +948,7 @@ mod tests {
     use crate::{
         TransferAllowlist,
         abi::{self, DepositType, IZoneInbox},
+        prewarming::PoolLookahead,
     };
     use zone_l1::PreparedL1Block;
 
@@ -1091,6 +1080,37 @@ mod tests {
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
+    }
+
+    /// The lookahead simulates transactions before yielding them in order, and drops buffered
+    /// transactions from an invalid transaction's lane.
+    #[test]
+    fn pool_lookahead_simulates_ahead_and_drops_invalid_lanes() {
+        let txs: Vec<_> = (0..3)
+            .map(|nonce| pool_tx_with_calldata(0, nonce))
+            .collect();
+        let (simulated, simulations) = std::sync::mpsc::channel();
+        let mut lookahead = PoolLookahead::new(
+            MockBestTransactions {
+                queue: txs.iter().cloned().collect(),
+                oversized_marked: 0,
+            },
+            Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
+        );
+        assert_eq!(
+            simulations.try_iter().collect::<Vec<_>>(),
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        );
+
+        let first = lookahead.next().unwrap();
+        assert_eq!(first.hash(), txs[0].hash());
+        assert_eq!(lookahead.next().unwrap().hash(), txs[1].hash());
+        // The last transaction shares the sender, so it leaves the buffer with the invalid one.
+        lookahead.mark_invalid(
+            &first,
+            InvalidPoolTransactionError::OversizedData { size: 1, limit: 0 },
+        );
+        assert!(lookahead.next().is_none());
     }
 
     /// Feed the pool loop far more large transactions than fit in the size budget, and assert it
