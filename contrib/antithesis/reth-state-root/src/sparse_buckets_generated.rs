@@ -57355,7 +57355,7 @@ static ARMS: [fn(&Observation); ARM_COUNT] = [
     coverage_invalid_proof,
 ];
 #[cfg(test)]
-const ARM_NAMES: [&str; ARM_COUNT] = [
+static ARM_NAMES: [&str; ARM_COUNT] = [
     "local_0_0_0",
     "local_0_0_1",
     "local_0_0_2",

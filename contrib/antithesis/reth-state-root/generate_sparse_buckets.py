@@ -31,7 +31,7 @@ def generate():
         lines.append(f'coverage_arm!(coverage_{name}, {index});')
     lines.append('static ARMS: [fn(&Observation); ARM_COUNT] = [')
     lines.extend(f'    coverage_{name},' for name, _ in all_arms)
-    lines.extend(['];', '#[cfg(test)]', 'const ARM_NAMES: [&str; ARM_COUNT] = ['])
+    lines.extend(['];', '#[cfg(test)]', 'static ARM_NAMES: [&str; ARM_COUNT] = ['])
     lines.extend(f'    "{name}",' for name, _ in all_arms)
     lines.append('];')
     return '\n'.join(lines) + '\n'
