@@ -163,6 +163,9 @@ impl Precompile for Reservations {
                     repayCredit(call) => mutate(call, msg_sender, |sender, c| {
                         self.repay_credit(sender, c)
                     }),
+                    chargeInterest(call) => mutate(call, msg_sender, |sender, c| {
+                        self.charge_interest(sender, c)
+                    }),
                     openDispute(call) => mutate(call, msg_sender, |sender, c| {
                         self.open_dispute(sender, c)
                     }),

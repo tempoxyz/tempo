@@ -1555,6 +1555,39 @@ impl Reservations {
         self.repay_line(owner, call.lender, call.line, repaid)
     }
 
+    /// Adds interest to what `call.owner` owes on the lender's line. The undrawn limit shrinks by
+    /// it, so the lender's lien shrinks to match and the freed part returns to its balance.
+    fn charge_interest(
+        &mut self,
+        lender: Address,
+        call: IReservations::chargeInterestCall,
+    ) -> Result<()> {
+        let amount = amount_u96(call.amount)?;
+        let mut line = self.lines[lender][call.line].read()?;
+        if line.token.is_zero() {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let mut credit = self.credits[call.owner][lender][call.line].read()?;
+        if credit.limit.is_zero() && credit.owed.is_zero() {
+            return Err(ReservationsError::credit_not_offered().into());
+        }
+        let before = credit.lien();
+        credit.owed = credit
+            .owed
+            .checked_add(amount)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.credits[call.owner][lender][call.line].write(credit)?;
+        let lowered = before.saturating_sub(credit.lien());
+        let freed = self.shrink_lien(lender, call.line, &mut line, lowered)?;
+        return_to_balance(line.token, lender, freed)?;
+        self.emit_event(ReservationsEvent::interest_charged(
+            call.owner,
+            lender,
+            call.line,
+            call.amount,
+        ))
+    }
+
     fn credit_of(
         &self,
         owner: Address,
@@ -5914,6 +5947,55 @@ mod tests {
             assert_eq!(f.credit(lender, line)?, (500, 0, 0));
             assert_eq!(f.balance(f.owner)?, U256::from(150));
             assert_eq!(f.reservation_of(lender)?, (500, 500));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_interest_adds_to_owed_and_lowers_the_lien() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            f.capture(id, 200)?;
+            assert_eq!(f.reservations.get_line(lender, line)?.lien, 300);
+            let charge = |f: &mut Fixture, sender: Address, owner: Address, amount: u128| {
+                f.reservations.charge_interest(
+                    sender,
+                    IReservations::chargeInterestCall {
+                        line,
+                        owner,
+                        amount,
+                    },
+                )
+            };
+            let owner = f.owner;
+            // Only the line's lender charges, and only an owner it granted credit.
+            assert_eq!(
+                charge(&mut f, owner, owner, 4).unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+            assert_eq!(
+                charge(&mut f, lender, Address::random(), 4).unwrap_err(),
+                ReservationsError::credit_not_offered().into()
+            );
+            assert_eq!(
+                charge(&mut f, lender, owner, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            f.reservations.clear_emitted_events();
+            charge(&mut f, lender, owner, 4)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 296),
+                ReservationsEvent::interest_charged(owner, lender, line, 4),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (500, 204, 0));
+            // Repaying the interest restores the undrawn limit and the lien.
+            f.mint(owner, 204)?;
+            f.repay_credit(lender, line, 204)?;
+            assert_eq!(f.credit(lender, line)?, (500, 0, 0));
+            assert_eq!(f.reservations.get_line(lender, line)?.lien, 500);
             Ok(())
         })
     }

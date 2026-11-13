@@ -94,6 +94,9 @@ crate::sol! {
         /// Repays up to `amount` of what the caller owes on `lender`'s line `line` from its
         /// available balance.
         function repayCredit(address lender, bytes32 line, uint128 amount) external;
+        /// Adds `amount` of interest to what `owner` owes on the caller's line `line`. Called by
+        /// the lender; interest counts against the limit like a draw and lowers the lien to match.
+        function chargeInterest(bytes32 line, address owner, uint128 amount) external;
         /// Opens a dispute of `amount`, at most what `owner`'s record `id` captured and has not
         /// refunded, with the cardholder's evidence hash. Called by the record's payee.
         function openDispute(address owner, bytes32 id, uint128 amount, bytes32 evidence) external;
@@ -155,6 +158,7 @@ crate::sol! {
         event CreditHeld(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
         event CreditDrawn(address indexed owner, bytes32 indexed id, address indexed lender, bytes32 line, uint128 amount);
         event CreditRepaid(address indexed owner, address indexed lender, bytes32 line, uint128 amount);
+        event InterestCharged(address indexed owner, address indexed lender, bytes32 line, uint128 amount);
         event DisputeOpened(address indexed owner, bytes32 indexed id, uint128 amount, bytes32 evidence);
         /// A step's state, the provisional credit it gave and its evidence hash, zero for none.
         event DisputeStepped(address indexed owner, bytes32 indexed id, uint8 state, uint128 provisional, bytes32 evidence, bool merchantEvidence);
