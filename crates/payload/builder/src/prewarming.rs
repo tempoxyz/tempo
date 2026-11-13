@@ -212,7 +212,7 @@ impl BestTransactionsPrewarming {
                     return None;
                 }
 
-                let actions = evm.ext().actions.take()?;
+                let actions = evm.ext().actions.take_replay()?;
                 let expiring_nonce = tx
                     .transaction
                     .is_expiring_nonce()
@@ -1189,6 +1189,37 @@ mod tests {
             let replay = successful.replay.expect("successful prewarm replay");
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
+        });
+    }
+
+    #[test]
+    fn unreplayable_actions_yield_no_replay_for_their_transaction_only() {
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block.basefee = U256::ZERO;
+
+        let pool = WorkerStatefulPool::new(Arc::new(WorkerPool::new(1, "prewarm-replay-test")));
+        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+
+        pool.install_fn(|| {
+            // Model a transaction whose precompile makes a nested call: none does yet.
+            pool.get_or_init(
+                || context.evm_for_ctx(),
+                |evm| {
+                    let evm = evm.as_mut().expect("prewarm EVM");
+                    evm.ext().actions.mark_unreplayable();
+                },
+            );
+
+            // Only that transaction is left without a replay.
+            for replayed in [false, true] {
+                let prewarmed = BestTransactionsPrewarming::prewarm_transaction(
+                    &pool,
+                    context.clone(),
+                    test_payment_tx(Address::random(), 500_000),
+                    None,
+                );
+                assert_eq!(prewarmed.replay.is_some(), replayed);
+            }
         });
     }
 

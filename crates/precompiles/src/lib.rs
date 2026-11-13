@@ -46,7 +46,7 @@ use crate::{
     storage::{
         StorageCtx,
         actions::StorageActions,
-        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt, Frame},
     },
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
@@ -59,7 +59,10 @@ use crate::{
     zone_factory::ZoneFactory,
     zone_verifier::ZoneVerifier,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
@@ -173,6 +176,9 @@ pub struct TempoPrecompiles<T: EvmTypesHost> {
     spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// Count of the running nested calls ([`StorageCtx::call`]), limited to
+    /// [`MAX_NESTED_CALLS`](storage::evm::MAX_NESTED_CALLS).
+    nested_calls: Rc<Cell<u16>>,
 }
 
 impl<T: EvmTypesHost> TempoPrecompiles<T> {
@@ -193,6 +199,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             spec,
             actions,
             non_creditable_slots,
+            nested_calls: Rc::default(),
         }
     }
 
@@ -238,6 +245,33 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
+    }
+
+    /// Runs `precompile` in a storage context over the call frame of `message`. Takes `&self`
+    /// because a nested call ([`StorageCtx::call`]) re-enters the provider while this runs.
+    fn execute_in_frame(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+        precompile: impl FnOnce(&[u8]) -> PrecompileResult,
+    ) -> PrecompileResult
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
+        let input = evm.message_input(message).to_vec();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+            .with_actions(self.actions.clone())
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(Frame {
+                address: message.call_target,
+                depth: message.depth,
+                nested_calls: self.nested_calls.clone(),
+            });
+        StorageCtx::enter(&mut storage, || precompile(&input))
     }
 }
 
@@ -291,14 +325,8 @@ where
             )));
         }
 
-        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = evm.message_input(message).to_vec();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
-            .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
-        Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &input, message.caller)
+        Some(self.execute_in_frame(evm, message, gas, |input| {
+            self.call_tempo(message.call_target, input, message.caller)
         }))
     }
 }
@@ -323,20 +351,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::storage::{
+        CallOutcome, StorageCtx, evm::MAX_NESTED_CALLS, hashmap::HashMapStorageProvider,
+    };
     use alloy::{
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
     };
     use evm2::{
-        BaseEvmConfigSelector, ExecutionConfig,
+        BaseEvmConfigSelector, ExecutionConfig, Inspector,
         bytecode::Bytecode,
         evm::{
             AccountInfo, InMemoryDB,
             precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
         },
+        interpreter::{Interpreter, MessageResult},
+        precompiles::Precompile,
         registry::TxRegistry,
     };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
@@ -552,6 +585,120 @@ mod tests {
                 "view function should succeed in static context"
             );
         }
+    }
+
+    /// Checks that each callee runs one deeper than the factory's frame with the factory as its
+    /// caller, and records the nested calls running during it.
+    struct CallRecorder(Rc<RefCell<Vec<u16>>>, Rc<Cell<u16>>);
+
+    impl Inspector<TestTypes> for CallRecorder {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
+            assert_eq!((message.depth, message.caller), (6, TIP20_FACTORY_ADDRESS));
+            self.0.borrow_mut().push(self.1.get());
+            None
+        }
+    }
+
+    /// Runs `precompile` as a call to the TIP-20 factory at depth 5, in the frame the dispatcher
+    /// sets up.
+    fn execute_in_frame(
+        evm: &mut Evm<'_, TestTypes>,
+        precompiles: &TempoPrecompiles<TestTypes>,
+        gas_limit: u64,
+        precompile: impl FnOnce(StorageCtx) -> Result<()>,
+    ) -> (PrecompileResult, GasTracker) {
+        let message = Message::<TestTypes> {
+            call_target: TIP20_FACTORY_ADDRESS,
+            depth: 5,
+            ..Default::default()
+        };
+        let mut gas = GasTracker::new(gas_limit);
+        let result = precompiles.execute_in_frame(evm, &message, &mut gas, |_| {
+            precompile(StorageCtx).encode_precompile_result(|()| Bytes::new())
+        });
+        (result, gas)
+    }
+
+    /// A nested call re-enters the Tempo precompiles, unless [`MAX_NESTED_CALLS`] are running.
+    #[test]
+    fn test_nested_call_reenters_tempo_precompile_up_to_limit() {
+        let spec = TempoHardfork::T2;
+        let mut evm = test_evm(spec, true);
+        evm.set_precompiles(test_tempo_precompiles(spec));
+        let precompiles = test_tempo_precompiles(spec);
+        let calls = Rc::default();
+        let recorder = CallRecorder(Rc::clone(&calls), precompiles.nested_calls.clone());
+        evm.set_inspector(recorder);
+        let calldata = ITIP20::balanceOfCall {
+            account: Address::ZERO,
+        }
+        .abi_encode();
+
+        for running in [MAX_NESTED_CALLS - 1, MAX_NESTED_CALLS] {
+            precompiles.nested_calls.set(running);
+            // The callee enters its own storage context while the factory's stays borrowed.
+            let result = execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
+                let balance =
+                    storage.call(PATH_USD_ADDRESS, calldata.clone().into(), 500_000, true)?;
+                assert_eq!(
+                    balance,
+                    CallOutcome::Success(U256::ZERO.to_be_bytes_vec().into())
+                );
+                Ok(())
+            })
+            .0;
+            if running < MAX_NESTED_CALLS {
+                assert!(result.is_ok());
+            } else {
+                // A refused call reverts the precompile call.
+                assert!(matches!(result, Err(PrecompileError::Revert(data)) if data.is_empty()));
+            }
+            assert_eq!(precompiles.nested_calls.get(), running);
+        }
+        // Only the first callee ran, and counted as running.
+        assert_eq!(calls.take(), [MAX_NESTED_CALLS]);
+    }
+
+    /// A callee's fatal error fails the precompile call fatally, and a callee that fails fatally
+    /// or panics no longer counts as running.
+    #[test]
+    fn test_nested_call_propagates_fatal_callee_error() {
+        let spec = TempoHardfork::T2;
+        let (callee, panicking) = (Address::repeat_byte(0xfa), Address::repeat_byte(0xfb));
+        let mut fatal = BasePrecompiles::<TestTypes>::base(SpecId::OSAKA);
+        fatal.as_map_mut().insert(Precompile::new(
+            callee,
+            PrecompileId::custom("fatal"),
+            |_, _, _| Err("fatal".into()),
+        ));
+        fatal.as_map_mut().insert(Precompile::new(
+            panicking,
+            PrecompileId::custom("panic"),
+            |_, _, _| panic!("callee panics"),
+        ));
+        let mut evm = test_evm(spec, false);
+        evm.set_precompiles(fatal);
+
+        let precompiles = test_tempo_precompiles(spec);
+        let mut call = |callee| {
+            catch_unwind(AssertUnwindSafe(|| {
+                execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
+                    storage
+                        .call(callee, Bytes::new(), 500_000, false)
+                        .map(|_| ())
+                })
+                .0
+            }))
+        };
+        assert!(matches!(call(callee), Ok(Err(PrecompileError::Fatal(_)))));
+        assert_eq!(precompiles.nested_calls.get(), 0);
+        let panic = call(panicking).unwrap_err();
+        assert_eq!(panic.downcast_ref(), Some(&"callee panics"));
+        assert_eq!(precompiles.nested_calls.get(), 0);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly

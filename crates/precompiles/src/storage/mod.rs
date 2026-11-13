@@ -195,6 +195,21 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::NestedCallUnavailable)
+    }
+
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
     /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
@@ -278,6 +293,16 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+}
+
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data.
+    Success(Bytes),
+    /// The callee reverted with this data or halted, and was rolled back.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.

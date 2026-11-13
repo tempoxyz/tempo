@@ -144,6 +144,11 @@ pub enum TempoPrecompileError {
     /// A commitment write is zero, predates T14, or occurs in a read-only context.
     #[error("Invalid account commitment write")]
     InvalidConfigCommitmentWrite,
+
+    /// A nested call was made without a precompile call frame, inside a checkpoint, or with
+    /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS) of them running.
+    #[error("Nested call unavailable")]
+    NestedCallUnavailable,
 }
 
 impl From<LoadError> for TempoPrecompileError {
@@ -182,6 +187,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
+            | TempoPrecompileError::NestedCallUnavailable
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
@@ -254,7 +260,8 @@ impl TempoPrecompileError {
             | Self::Database(_)
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
-            | Self::InvalidConfigCommitmentWrite => [0, 0, 0, 0],
+            | Self::InvalidConfigCommitmentWrite
+            | Self::NestedCallUnavailable => [0, 0, 0, 0],
         }
         .into()
     }
@@ -268,7 +275,8 @@ impl TempoPrecompileError {
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::Panic(_)
-            | Self::StorageDeltaUnderflow(_) => true,
+            | Self::StorageDeltaUnderflow(_)
+            | Self::NestedCallUnavailable => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -356,7 +364,7 @@ impl TempoPrecompileError {
             Self::Fatal(msg) => {
                 return Err(msg.into());
             }
-            Self::InvalidConfigCommitmentWrite => Bytes::new(),
+            Self::InvalidConfigCommitmentWrite | Self::NestedCallUnavailable => Bytes::new(),
         };
         Err(PrecompileError::Revert(bytes))
     }
@@ -529,6 +537,16 @@ mod tests {
         assert!(matches!(
             HandlerError::from(TempoPrecompileError::OutOfGas),
             HandlerError::External(_)
+        ));
+    }
+
+    #[test]
+    fn nested_call_unavailable_reverts_without_data_and_is_not_swallowed() {
+        let error = TempoPrecompileError::NestedCallUnavailable;
+        assert!(error.is_system_error());
+        assert!(matches!(
+            error.into_precompile_result(),
+            Err(PrecompileError::Revert(data)) if data.is_empty()
         ));
     }
 
