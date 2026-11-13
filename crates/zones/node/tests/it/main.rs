@@ -1,3 +1,4 @@
+mod base_fee;
 mod configurable_account;
 mod configurable_account_e2e;
 mod demo_asset_swap;

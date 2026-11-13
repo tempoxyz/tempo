@@ -38,6 +38,7 @@ mod tests {
         for (before, after) in [
             (TempoHardfork::T12, TempoHardfork::T13),
             (TempoHardfork::T13, TempoHardfork::T14),
+            (TempoHardfork::T14, TempoHardfork::T15),
         ] {
             let mut genesis = DEV.inner.genesis.clone();
             genesis.config.chain_id = zone_chain_id(1_337, 1).unwrap();
