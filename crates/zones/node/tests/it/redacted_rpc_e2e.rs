@@ -1501,3 +1501,103 @@ async fn test_zone_get_encryption_key_reads_latest_l1_key() -> eyre::Result<()> 
 
     Ok(())
 }
+
+/// Requested counterparty topics still narrow a caller's own logs over `eth_getLogs` and
+/// installed filters.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_log_queries_apply_requested_topics() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut ctx = start_zone_with_redacted_rpc().await?;
+    let owner = l1_dev_signer();
+    let spender_a = PrivateKeySigner::random().address();
+    let spender_b = PrivateKeySigner::random().address();
+
+    ctx.inject_deposit(
+        PATH_USD_ADDRESS,
+        owner.address(),
+        owner.address(),
+        1_000_000,
+    )
+    .await?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(owner.clone())
+        .connect_http(ctx.zone.http_url().clone());
+    let token = ContractTip20::new(PATH_USD_ADDRESS, &provider);
+    let first = token
+        .approve(spender_a, U256::from(1u64))
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
+        .gas(TIP20_TX_GAS)
+        .send()
+        .await?;
+    let second = token
+        .approve(spender_b, U256::from(2u64))
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
+        .gas(TIP20_TX_GAS)
+        .send()
+        .await?;
+    ctx.fixture.inject_empty_block(ctx.zone.deposit_queue());
+    let first = first.get_receipt().await?;
+    let second = second.get_receipt().await?;
+    assert!(first.status() && second.status());
+    let from = first
+        .block_number
+        .unwrap()
+        .min(second.block_number.unwrap());
+    let to = first
+        .block_number
+        .unwrap()
+        .max(second.block_number.unwrap());
+
+    let approval = zone_rpc::filter::APPROVAL_TOPIC.to_string();
+    let filter = |spender: Address| {
+        json!({
+            "fromBlock": format!("{from:#x}"),
+            "toBlock": format!("{to:#x}"),
+            "topics": [approval.clone(), address_topic(owner.address()), address_topic(spender)],
+        })
+    };
+
+    for (spender, expected_tx) in [
+        (spender_a, first.transaction_hash),
+        (spender_b, second.transaction_hash),
+    ] {
+        let logs = ctx
+            .call_as_user("eth_getLogs", json!([filter(spender)]), &owner)
+            .await?;
+        let logs = logs["result"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            logs.len(),
+            1,
+            "eth_getLogs should return only the requested approval"
+        );
+        assert_eq!(logs[0]["transactionHash"], expected_tx.to_string());
+
+        let id = ctx
+            .call_as_user("eth_newFilter", json!([filter(spender)]), &owner)
+            .await?["result"]
+            .clone();
+        let logs = ctx
+            .call_as_user("eth_getFilterLogs", json!([id]), &owner)
+            .await?;
+        let logs = logs["result"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            logs.len(),
+            1,
+            "eth_getFilterLogs should return only the requested approval"
+        );
+        assert_eq!(logs[0]["transactionHash"], expected_tx.to_string());
+    }
+
+    let none = ctx
+        .call_as_user(
+            "eth_getLogs",
+            json!([filter(PrivateKeySigner::random().address())]),
+            &owner,
+        )
+        .await?;
+    assert_eq!(none["result"], json!([]));
+
+    Ok(())
+}

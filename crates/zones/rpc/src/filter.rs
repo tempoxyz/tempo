@@ -48,6 +48,14 @@ const TWO_PARTY_TOPICS: [B256; 4] = [
     TRANSFER_WITH_MEMO_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
 ];
+/// Events whose topic1 can hold the caller.
+const CALLER_IN_TOPIC1_TOPICS: [B256; 5] = [
+    TRANSFER_TOPIC,
+    APPROVAL_TOPIC,
+    TRANSFER_WITH_MEMO_TOPIC,
+    MINT_TOPIC,
+    BURN_TOPIC,
+];
 const CALLER_SCOPED_FILTER_ERROR: &str =
     "private log filter must include authenticated caller in topic1 or topic2";
 
@@ -217,33 +225,44 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Topic constraints a caller asked for, held back from the backend query and applied only to
-/// logs the caller is allowed to see.
+/// The emitters and topics a caller asked for, held back from the backend query and applied to
+/// the logs it returns.
 #[derive(Debug, Clone, Default)]
 pub struct RequestedTopics {
+    address: FilterSet<Address>,
     topics: [FilterSet<B256>; 4],
 }
 
 impl RequestedTopics {
-    /// Returns `true` if the log matches every requested topic position.
+    /// Returns `true` if the log matches the requested emitters and every requested topic
+    /// position.
     pub fn matches(&self, log: &Log) -> bool {
         let topics = log.topics();
-        self.topics.iter().enumerate().all(|(i, wanted)| {
-            wanted.is_empty() || topics.get(i).is_some_and(|topic| wanted.contains(topic))
-        })
+        self.address.matches(&log.address())
+            && self
+                .topics
+                .iter()
+                .enumerate()
+                .all(|(i, wanted)| match topics.get(i) {
+                    Some(topic) => wanted.matches(topic),
+                    None => wanted.is_empty(),
+                })
     }
 }
 
 /// Scopes a user-supplied filter to whitelisted event topics and the authenticated caller's own
 /// indexed topic before backend log retrieval.
 ///
-/// The backend filter keeps only server-derived constraints (whitelisted topic0, enabled token
-/// addresses and the caller's position), so the backend's work, including its per-block bloom
-/// checks, never depends on other values the caller picked. Those are returned as
-/// [`RequestedTopics`] and must be applied after visibility filtering.
+/// The backend filter carries only server-derived values: every enabled zone token and the
+/// receive-policy guard, every whitelisted topic0 for the caller's position, and the caller's
+/// own word. Its work, including its per-block bloom checks, therefore never depends on a value
+/// the caller picked. The caller's own selection is returned as [`RequestedTopics`] and must
+/// be applied to the backend's logs before [`LogOrderingRedactor`] renumbers them, as
+/// [`filter_requested_logs`] does.
 pub fn scope_filter_for_caller(
     filter: &mut Filter,
     caller: &Address,
+    zone_tokens: &[Address],
 ) -> Result<RequestedTopics, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
@@ -259,42 +278,33 @@ pub fn scope_filter_for_caller(
         return Ok(RequestedTopics::default());
     }
 
+    let mut allowed_addresses = zone_tokens.to_vec();
+    allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
     let requested = RequestedTopics {
+        address: core::mem::replace(&mut filter.address, FilterSet::from(allowed_addresses)),
         topics: filter.topics.clone(),
     };
     let caller_word = caller.into_word();
-    if filter.topics[1].contains(&caller_word) {
-        let topic0 = filter.topics[0]
-            .iter()
-            .copied()
-            .filter(|topic| *topic != TRANSFER_BLOCKED_TOPIC)
-            .collect::<Vec<_>>();
-        if !topic0.is_empty() {
-            filter.topics = [
-                FilterSet::from(topic0),
-                FilterSet::from(caller_word),
-                FilterSet::default(),
-                FilterSet::default(),
-            ];
-            return Ok(requested);
-        }
+    let wants = |events: &[B256]| requested.topics[0].iter().any(|t| events.contains(t));
+
+    if requested.topics[1].contains(&caller_word) && wants(&CALLER_IN_TOPIC1_TOPICS) {
+        filter.topics = [
+            FilterSet::from(CALLER_IN_TOPIC1_TOPICS.to_vec()),
+            FilterSet::from(caller_word),
+            FilterSet::default(),
+            FilterSet::default(),
+        ];
+        return Ok(requested);
     }
 
-    if filter.topics[2].contains(&caller_word) {
-        let topic0 = filter.topics[0]
-            .iter()
-            .copied()
-            .filter(|topic| TWO_PARTY_TOPICS.contains(topic))
-            .collect::<Vec<_>>();
-        if !topic0.is_empty() {
-            filter.topics = [
-                FilterSet::from(topic0),
-                FilterSet::default(),
-                FilterSet::from(caller_word),
-                FilterSet::default(),
-            ];
-            return Ok(requested);
-        }
+    if requested.topics[2].contains(&caller_word) && wants(&TWO_PARTY_TOPICS) {
+        filter.topics = [
+            FilterSet::from(TWO_PARTY_TOPICS.to_vec()),
+            FilterSet::default(),
+            FilterSet::from(caller_word),
+            FilterSet::default(),
+        ];
+        return Ok(requested);
     }
 
     Err(JsonRpcError::invalid_params(CALLER_SCOPED_FILTER_ERROR))
@@ -307,12 +317,11 @@ pub fn filter_requested_logs(
     caller: &Address,
     requested: &RequestedTopics,
 ) -> Vec<Log> {
-    filter_logs(
-        logs.into_iter()
-            .filter(|log| requested.matches(log))
-            .collect(),
-        caller,
-    )
+    let mut redactor = LogOrderingRedactor::default();
+    logs.into_iter()
+        .filter(|log| requested.matches(log) && is_log_visible(log, caller))
+        .map(|log| redactor.redact(log))
+        .collect()
 }
 
 #[cfg(test)]
@@ -866,7 +875,7 @@ mod tests {
         filter.topics[2] = FilterSet::from(other_topic);
         filter.topics[3] = FilterSet::from(other_topic);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        scope_filter_for_caller(&mut filter, &caller, &[]).unwrap();
 
         assert_eq!(filter.address, FilterSet::from(Address::ZERO));
         assert_eq!(filter.topics[0], FilterSet::from(B256::ZERO));
@@ -874,11 +883,93 @@ mod tests {
     }
 
     #[test]
+    fn scope_filter_for_caller_sends_server_set_to_backend() {
+        let caller = Address::with_last_byte(1);
+        let token_a = Address::with_last_byte(0xa);
+        let token_b = Address::with_last_byte(0xb);
+        let mut filter = Filter::default().address(token_a);
+        filter.topics[0] = FilterSet::from(BURN_TOPIC);
+        filter.topics[1] = FilterSet::from(caller.into_word());
+
+        let requested = scope_filter_for_caller(&mut filter, &caller, &[token_a, token_b]).unwrap();
+
+        assert_eq!(
+            filter.address,
+            FilterSet::from(vec![token_a, token_b, RECEIVE_POLICY_GUARD_ADDRESS])
+        );
+        assert_eq!(
+            filter.topics[0],
+            FilterSet::from(CALLER_IN_TOPIC1_TOPICS.to_vec())
+        );
+        assert!(requested.matches(&make_log(token_a, vec![BURN_TOPIC, caller.into_word()])));
+        assert!(!requested.matches(&make_log(token_b, vec![BURN_TOPIC, caller.into_word()])));
+        assert!(!requested.matches(&make_log(token_a, vec![MINT_TOPIC, caller.into_word()])));
+    }
+
+    #[test]
+    fn filter_requested_logs_applies_requested_topics_before_renumbering() {
+        let token = Address::with_last_byte(9);
+        let caller = Address::with_last_byte(1);
+        let caller_topic = caller.into_word();
+        let wanted = Address::with_last_byte(2).into_word();
+        let other = Address::with_last_byte(3).into_word();
+        let memo = B256::with_last_byte(0x77);
+        let tx = B256::with_last_byte(0xaa);
+
+        let mut filter = Filter::default();
+        filter.topics[1] = FilterSet::from(caller_topic);
+        filter.topics[2] = FilterSet::from(vec![wanted, B256::with_last_byte(0x55)]);
+        let requested = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap();
+
+        let logs = vec![
+            make_log_in_tx(token, vec![TRANSFER_TOPIC, caller_topic, other], tx, 4),
+            make_log_in_tx(token, vec![TRANSFER_TOPIC, caller_topic, wanted], tx, 5),
+            // Shorter than the requested position: must not match.
+            make_log_in_tx(token, vec![MINT_TOPIC, caller_topic], tx, 6),
+            make_log_in_tx(
+                token,
+                vec![TRANSFER_WITH_MEMO_TOPIC, caller_topic, wanted, memo],
+                tx,
+                7,
+            ),
+        ];
+
+        let result = filter_requested_logs(logs, &caller, &requested);
+        let got: Vec<_> = result
+            .iter()
+            .map(|log| (*log.topic0().unwrap(), log.log_index))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (TRANSFER_TOPIC, Some(0)),
+                (TRANSFER_WITH_MEMO_TOPIC, Some(1))
+            ]
+        );
+
+        // A memo in topic3 is held back from the backend and applied afterwards.
+        let mut filter = Filter::default();
+        filter.topics[1] = FilterSet::from(caller_topic);
+        filter.topics[3] = FilterSet::from(memo);
+        let requested = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap();
+        assert!(filter.topics[3].is_empty());
+        assert!(requested.matches(&make_log(
+            token,
+            vec![TRANSFER_WITH_MEMO_TOPIC, caller_topic, wanted, memo]
+        )));
+        assert!(!requested.matches(&make_log(
+            token,
+            vec![TRANSFER_WITH_MEMO_TOPIC, caller_topic, wanted, B256::ZERO]
+        )));
+        assert!(!requested.matches(&make_log(token, vec![TRANSFER_TOPIC, caller_topic, wanted])));
+    }
+
+    #[test]
     fn scope_filter_for_caller_rejects_broad_filter() {
         let caller = Address::with_last_byte(1);
         let mut filter = Filter::default();
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let err = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
@@ -894,7 +985,7 @@ mod tests {
         filter.topics[1] = FilterSet::from(vec![caller_topic, other_topic]);
         filter.topics[2] = FilterSet::from(other_topic);
 
-        let requested = scope_filter_for_caller(&mut filter, &caller).unwrap();
+        let requested = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap();
 
         assert!(!filter.topics[0].contains(&TRANSFER_BLOCKED_TOPIC));
         assert_eq!(filter.topics[0].len(), WHITELISTED_TOPICS.len() - 1);
@@ -926,12 +1017,9 @@ mod tests {
         filter.topics[1] = FilterSet::from(other_topic);
         filter.topics[2] = FilterSet::from(vec![caller_topic, other.into_word()]);
 
-        let requested = scope_filter_for_caller(&mut filter, &caller).unwrap();
+        let requested = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap();
 
-        assert_eq!(
-            filter.topics[0],
-            FilterSet::from(vec![TRANSFER_TOPIC, TRANSFER_BLOCKED_TOPIC])
-        );
+        assert_eq!(filter.topics[0], FilterSet::from(TWO_PARTY_TOPICS.to_vec()));
         assert!(filter.topics[1].is_empty());
         assert_eq!(filter.topics[2], FilterSet::from(caller_topic));
         assert!(filter.topics[3].is_empty());
@@ -958,7 +1046,7 @@ mod tests {
         filter.topics[1] = FilterSet::from(a.into_word());
         filter.topics[2] = FilterSet::from(b.into_word());
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let err = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
@@ -971,7 +1059,7 @@ mod tests {
         filter.topics[0] = FilterSet::from(MINT_TOPIC);
         filter.topics[2] = FilterSet::from(caller.into_word());
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let err = scope_filter_for_caller(&mut filter, &caller, &[]).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);

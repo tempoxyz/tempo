@@ -1020,7 +1020,7 @@ pub struct ZoneRpc<Api: EthApiTypes> {
 /// applied to the backend's caller-scoped results.
 struct FilterOwner {
     caller: Address,
-    requested: zone_rpc::filter::RequestedTopics,
+    requested: Arc<zone_rpc::filter::RequestedTopics>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -1092,11 +1092,11 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         &self,
         id: &FilterId,
         auth: &AuthContext,
-    ) -> Result<zone_rpc::filter::RequestedTopics, JsonRpcError> {
+    ) -> Result<Arc<zone_rpc::filter::RequestedTopics>, JsonRpcError> {
         let requested = {
             let owners = self.filter_owners.lock().await;
             match owners.get(id) {
-                Some(owner) if owner.caller == auth.caller => owner.requested.clone(),
+                Some(owner) if owner.caller == auth.caller => Arc::clone(&owner.requested),
                 _ => return Err(filter_not_found_error()),
             }
         };
@@ -1470,7 +1470,8 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            let requested =
+                zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let logs = EthFilterApiServer::logs(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1483,7 +1484,8 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            let requested =
+                zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1491,7 +1493,7 @@ where
                 id.clone(),
                 FilterOwner {
                     caller: auth.caller,
-                    requested,
+                    requested: Arc::new(requested),
                 },
             );
             to_raw(&id)
@@ -1624,7 +1626,8 @@ where
 
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = zone_rpc::filter::scope_filter_for_caller(&mut filter, &caller)?;
+            let requested =
+                zone_rpc::filter::scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
 
             let stream = provider
                 .canonical_state_stream()
