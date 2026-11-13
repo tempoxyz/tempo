@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-REVISION = "4f58052785aed2f716faa2126ed57c3790cc0233"
+REVISION = "e98909e08a020c062a94011990a5c484754ac437"
 SOURCE = Path("crates/trie/sparse/src/arena/mod.rs")
 PRISTINE = "dfa6c2118863f6517f5bcc8783cb16e0a7f24a2269742108dd6fd6950fe48c0d"
 PATCHED = "905d4879325b89c14a05995811a0410b1f57ca92b299fdacb7af0705ebd4aa6d"
