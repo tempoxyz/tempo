@@ -100,7 +100,7 @@ class SparseBucketTests(unittest.TestCase):
                 'assert_eq!(entry_hits(index), before+2); } }\n'
                 + CALLBACKS))
             binary = root / 'harness'
-            subprocess.run(['rustc', '--edition=2024', '-Copt-level=3', '-Clto=off',
+            subprocess.run(['rustc', '--edition=2024', '-Dunreachable-pub', '-Copt-level=3', '-Clto=off',
                             '-Cpasses=sancov-module', '-Cllvm-args=-sanitizer-coverage-level=3',
                             '-Cllvm-args=-sanitizer-coverage-trace-pc-guard',
                             '-Cllvm-args=-sanitizer-coverage-pc-table',

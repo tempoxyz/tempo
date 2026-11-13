@@ -94,7 +94,7 @@ fn local_index(observation: &Observation, target: u8) -> usize {
 /// Masks describe its local revealed logical parent. A blinded root has no parent and
 /// passes zero masks/depth/target; it hits a separate bounded control, not the local bank.
 #[unsafe(no_mangle)]
-pub extern "C" fn antithesis_sparse_proof_target(
+pub(crate) extern "C" fn antithesis_sparse_proof_target(
     branch_path_len: usize,
     has_parent: bool,
     target: u8,
