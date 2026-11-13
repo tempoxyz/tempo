@@ -4042,11 +4042,10 @@ mod tests {
                 input: TransactionInput::new(Bytes::from_static(&[0x01, 0x02, 0x03, 0x04])),
                 ..Default::default()
             },
-            calls: vec![Call {
-                to: TARGET.parse::<Address>().unwrap().into(),
-                value: U256::ZERO,
-                input: Bytes::from_static(&[0xaa, 0xbb, 0xcc, 0xdd]),
-            }],
+            calls: vec![Call::new(
+                TARGET.parse::<Address>().unwrap(),
+                Bytes::from_static(&[0xaa, 0xbb, 0xcc, 0xdd]),
+            )],
             ..Default::default()
         };
 

@@ -179,25 +179,17 @@ async fn test_batch_submission_after_extended_l1_gap() -> eyre::Result<()> {
     );
 
     // Poll until L1 reaches the target — at 10ms/block this takes ~160 seconds.
-    let poll_start = std::time::Instant::now();
-    loop {
-        let current = l1.provider().get_block_number().await?;
-        if current >= target_block {
-            tracing::info!(
-                current,
-                target_block,
-                elapsed_secs = poll_start.elapsed().as_secs(),
-                "L1 advanced past EIP-2935 window"
-            );
-            break;
-        }
-        if poll_start.elapsed() > STEPPING_TIMEOUT {
-            return Err(eyre::eyre!(
-                "Timed out waiting for L1 to reach block {target_block} (current: {current})"
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    let current = poll_until(
+        STEPPING_TIMEOUT,
+        Duration::from_millis(500),
+        "L1 to reach the extended ancestry target block",
+        || async {
+            let current = l1.provider().get_block_number().await?;
+            Ok((current >= target_block).then_some(current))
+        },
+    )
+    .await?;
+    tracing::info!(current, target_block, "L1 advanced past EIP-2935 window");
 
     // --- Step 4: Start zone node connected to L1, anchored at the portal genesis ---
     let zone = ZoneTestNode::start_from_l1_genesis_block(

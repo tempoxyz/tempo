@@ -477,7 +477,7 @@ fn test_self_sponsored_fee_payer_rejected_post_t2() {
                 fee_token: Some(invalid_token),
                 fee_payer_signature: Some(Signature::test_signature()),
                 gas_limit: 1_000_000,
-                calls: vec![call(Bytes::new())],
+                calls: vec![Call::new(Address::ZERO, Bytes::new())],
                 ..Default::default()
             },
             secp256k1_signature(),
@@ -523,7 +523,7 @@ fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
         gas_limit,
         max_fee_per_gas: gas_price,
         max_priority_fee_per_gas: gas_price,
-        calls: vec![call(Bytes::new())],
+        calls: vec![Call::new(Address::ZERO, Bytes::new())],
         ..Default::default()
     };
     tx.fee_payer_signature = Some(
@@ -627,14 +627,6 @@ fn test_get_fee_token() {
     assert_eq!(tx_fee_token, fee_token);
 }
 
-fn call(input: Bytes) -> Call {
-    Call {
-        to: TxKind::Call(Address::ZERO),
-        value: U256::ZERO,
-        input,
-    }
-}
-
 fn key_authorization(num_limits: usize) -> SignedKeyAuthorization {
     let mut authorization =
         KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::ZERO);
@@ -668,16 +660,9 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
     let to = Address::random();
 
-    // Single call for AA
-    let call = Call {
-        to: TxKind::Call(to),
-        value: U256::ZERO,
-        input: calldata.clone(),
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(to, calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -713,21 +698,9 @@ fn test_aa_gas_multiple_calls_overhead() {
     let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
     let calls = vec![
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        },
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        },
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        },
+        Call::new(Address::random(), calldata.clone()),
+        Call::new(Address::random(), calldata.clone()),
+        Call::new(Address::random(), calldata.clone()),
     ];
 
     let aa_env = aa_env(
@@ -791,11 +764,7 @@ fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Ve
         max_priority_fee_per_gas: gas_price,
         calls: targets
             .iter()
-            .map(|&to| Call {
-                to: TxKind::Call(if to.is_zero() { caller } else { to }),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            })
+            .map(|&to| Call::new(if to.is_zero() { caller } else { to }, Bytes::new()))
             .collect(),
         access_list: access_list
             .into_iter()
@@ -873,15 +842,9 @@ fn test_aa_gas_p256_signature() {
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![1, 2]);
 
-    let call = Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: calldata.clone(),
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -923,15 +886,9 @@ fn test_aa_gas_create_call() {
     let spec = SpecId::CANCUN; // Post-Shanghai
     let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
-    let call = Call {
-        to: TxKind::Create,
-        value: U256::ZERO,
-        input: initcode.clone(),
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(TxKind::Create, initcode.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -1000,15 +957,9 @@ fn test_aa_gas_access_list() {
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![]);
 
-    let call = Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: calldata.clone(),
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -1091,15 +1042,9 @@ fn test_aa_gas_floor_gas_prague() {
     let spec = SpecId::PRAGUE;
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
-    let call = Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: calldata.clone(),
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata.clone())],
             key_authorization: None,
             ..Default::default()
         },
@@ -1553,11 +1498,7 @@ fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_
 fn test_key_authorization_gas_in_batch() {
     let calldata = Bytes::from(vec![1, 2, 3]);
 
-    let call = Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: calldata,
-    };
+    let call = Call::new(Address::random(), calldata);
 
     // Create key authorization with 2 limits
     let key_auth: SignedKeyAuthorization =
@@ -1643,7 +1584,7 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
                 TempoTransaction {
                     nonce,
                     nonce_key,
-                    calls: vec![call(Bytes::new())],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     ..Default::default()
                 },
                 secp256k1_signature(),
@@ -1718,7 +1659,7 @@ fn test_2d_nonce_gas_limit_validation() {
                     nonce,
                     nonce_key: U256::ONE,
                     gas_limit,
-                    calls: vec![call(Bytes::new())],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     ..Default::default()
                 },
                 secp256k1_signature(),
@@ -1832,11 +1773,7 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
                 alloy_primitives::Signature::test_signature(),
             ),
         ));
-    let calls = vec![Call {
-        to: TxKind::Call(target),
-        value: U256::ZERO,
-        input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
-    }];
+    let calls = vec![Call::new(target, Bytes::from_static(&CALL_SCOPE_SELECTOR))];
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
@@ -1954,11 +1891,7 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
                 alloy_primitives::Signature::test_signature(),
             ),
         ));
-    let calls = vec![Call {
-        to: TxKind::Call(target),
-        value: U256::ZERO,
-        input: Bytes::from_static(&DENIED_SELECTOR),
-    }];
+    let calls = vec![Call::new(target, Bytes::from_static(&DENIED_SELECTOR))];
     let mut evm = test_evm(TempoHardfork::T3);
 
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
@@ -2211,11 +2144,7 @@ fn test_multicall_gas_refund_accounting() {
         insert_stop_code(&mut evm, target);
     }
     let calls = targets
-        .map(|target| Call {
-            to: TxKind::Call(target),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        })
+        .map(|target| Call::new(target, Bytes::new()))
         .to_vec();
 
     let result = execute_batch(
@@ -2266,22 +2195,14 @@ fn make_aa_env(calls: Vec<Call>) -> TempoTxEnv {
 
 /// Helper to create a single-call AA transaction with given calldata.
 fn make_single_call_env(calldata: Bytes) -> TempoTxEnv {
-    make_aa_env(vec![Call {
-        to: TxKind::Call(Address::ZERO),
-        value: U256::ZERO,
-        input: calldata,
-    }])
+    make_aa_env(vec![Call::new(Address::ZERO, calldata)])
 }
 
 /// Helper to create an AA transaction with N empty calls.
 fn make_multi_call_env(num_calls: usize) -> TempoTxEnv {
     make_aa_env(
         (0..num_calls)
-            .map(|_| Call {
-                to: TxKind::Call(Address::ZERO),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            })
+            .map(|_| Call::new(Address::ZERO, Bytes::new()))
             .collect(),
     )
 }
@@ -2496,11 +2417,7 @@ proptest! {
         let env = aa_env(
             TempoTransaction {
                 calls: (0..num_calls)
-                    .map(|index| Call {
-                        to: TxKind::Call(Address::with_last_byte(index as u8)),
-                        value: U256::ZERO,
-                        input: Bytes::from(vec![index as u8; index + 1]),
-                    })
+                    .map(|index| Call::new(Address::with_last_byte(index as u8), vec![index as u8; index + 1]))
                     .collect(),
                 ..Default::default()
             },
@@ -2663,11 +2580,7 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
                 gas_limit: 1_000_000,
                 nonce,
                 nonce_key,
-                calls: vec![Call {
-                    to: TxKind::Call(TEST_TARGET),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(TEST_TARGET, Bytes::new())],
                 ..Default::default()
             },
             secp256k1_signature(),
@@ -2732,11 +2645,7 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
                 gas_limit: 1_000_000,
                 nonce,
                 nonce_key,
-                calls: vec![Call {
-                    to: TxKind::Call(TEST_TARGET),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(TEST_TARGET, Bytes::new())],
                 ..Default::default()
             },
             secp256k1_signature(),
@@ -2846,7 +2755,7 @@ mod keychain {
                     chain_id: 1,
                     fee_token: Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
                     gas_limit: 1_000_000,
-                    calls: vec![call(Bytes::new())],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     key_authorization: key_auth,
                     ..Default::default()
                 },
@@ -3250,7 +3159,7 @@ mod keychain {
                         chain_id: 1,
                         fee_token: Some(DEFAULT_FEE_TOKEN),
                         gas_limit: 2_000_000,
-                        calls: vec![call(Bytes::new())],
+                        calls: vec![Call::new(Address::ZERO, Bytes::new())],
                         key_authorization: Some(signed),
                         ..Default::default()
                     };
@@ -3555,7 +3464,7 @@ mod keychain {
                     max_priority_fee_per_gas: 1_000_000_000_000,
                     max_fee_per_gas: 1_000_000_000_000,
                     gas_limit,
-                    calls: vec![call(Bytes::new())],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     key_authorization: Some(signed),
                     ..Default::default()
                 },
@@ -3639,11 +3548,10 @@ mod keychain {
                 TempoTransaction {
                     chain_id: 1,
                     gas_limit: 1_000_000,
-                    calls: vec![Call {
-                        to: TxKind::Call(tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS),
-                        value: U256::ZERO,
-                        input: getTransactionKeyCall {}.abi_encode().into(),
-                    }],
+                    calls: vec![Call::new(
+                        tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS,
+                        getTransactionKeyCall {}.abi_encode(),
+                    )],
                     key_authorization: Some(signed),
                     ..Default::default()
                 },
@@ -3712,7 +3620,7 @@ mod keychain {
             chain_id: 1,
             fee_token: Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
             gas_limit: 1_000_000,
-            calls: vec![call(Bytes::new())],
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
             ..Default::default()
         }
         .signature_hash();
@@ -3852,7 +3760,7 @@ mod keychain {
                 max_priority_fee_per_gas: gas_price,
                 max_fee_per_gas: gas_price,
                 gas_limit,
-                calls: vec![call(Bytes::new())],
+                calls: vec![Call::new(Address::ZERO, Bytes::new())],
                 key_authorization: Some(signed),
                 ..Default::default()
             };
@@ -3937,7 +3845,7 @@ mod keychain {
                     max_priority_fee_per_gas: gas_price,
                     max_fee_per_gas: gas_price,
                     gas_limit,
-                    calls: vec![call(Bytes::new())],
+                    calls: vec![Call::new(Address::ZERO, Bytes::new())],
                     key_authorization: Some(signed),
                     ..Default::default()
                 },
@@ -4072,15 +3980,9 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
 fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
-    let call = Call {
-        to: TxKind::Create,
-        value: U256::ZERO,
-        input: initcode,
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(TxKind::Create, initcode)],
             key_authorization: None,
             ..Default::default()
         },
@@ -4104,15 +4006,9 @@ fn test_state_gas_aa_create_tx_zero_initial_state_gas() {
 fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     let calldata = Bytes::from(vec![1, 2, 3]);
 
-    let call = Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: calldata,
-    };
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![call],
+            calls: vec![Call::new(Address::random(), calldata)],
             key_authorization: None,
             ..Default::default()
         },
@@ -4203,22 +4099,12 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     let calldata = Bytes::from(vec![1, 2, 3]);
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
-    let calls = vec![
-        Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata,
-        },
-        Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: initcode,
-        },
-    ];
-
     let aa_env = aa_env(
         TempoTransaction {
-            calls,
+            calls: vec![
+                Call::new(Address::random(), calldata),
+                Call::new(TxKind::Create, initcode),
+            ],
             key_authorization: None,
             ..Default::default()
         },
@@ -4243,16 +4129,8 @@ fn test_state_gas_aa_multiple_create_calls() {
     let initcode = Bytes::from(vec![0x60, 0x80]);
 
     let calls = vec![
-        Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: initcode.clone(),
-        },
-        Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: initcode,
-        },
+        Call::new(TxKind::Create, initcode.clone()),
+        Call::new(TxKind::Create, initcode),
     ];
 
     let aa_env = aa_env(
@@ -4281,11 +4159,7 @@ fn test_state_gas_aa_multiple_create_calls() {
 fn test_state_gas_aa_auth_list_nonce_zero() {
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Bytes::from(vec![1, 2, 3]),
-            }],
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3])],
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
                     chain_id: U256::ONE,
@@ -4339,11 +4213,6 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
 /// TIP-1016: An AA nonce-zero caller adds account state gas on T4.
 #[test]
 fn test_state_gas_aa_nonce_zero_new_account() {
-    let calls = vec![Call {
-        to: TxKind::Call(Address::random()),
-        value: U256::ZERO,
-        input: Bytes::from(vec![1, 2, 3]),
-    }];
     let evm = test_evm_with_amsterdam(TempoHardfork::T4, true);
     let (_, state, _) = intrinsic_with_amsterdam(
         TempoHardfork::T4,
@@ -4351,7 +4220,7 @@ fn test_state_gas_aa_nonce_zero_new_account() {
         TempoTransaction {
             nonce: 0,
             nonce_key: U256::ONE,
-            calls,
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3])],
             ..Default::default()
         },
         secp256k1_signature(),
@@ -4377,11 +4246,7 @@ fn test_state_gas_auth_list_zero_on_t1() {
 
     let aa_env = aa_env(
         TempoTransaction {
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Bytes::from(vec![1, 2, 3]),
-            }],
+            calls: vec![Call::new(Address::random(), vec![1, 2, 3])],
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
                     chain_id: U256::ONE,
@@ -4565,16 +4430,8 @@ fn test_state_gas_batch_create_accounting() {
             initial_state_gas,
         );
         let calls = vec![
-            Call {
-                to: TxKind::Create,
-                value: U256::ZERO,
-                input: Bytes::from(vec![0x60, 0x80]),
-            },
-            Call {
-                to: TxKind::Call(target),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            },
+            Call::new(TxKind::Create, vec![0x60, 0x80]),
+            Call::new(target, Bytes::new()),
         ];
 
         let result = execute_batch(

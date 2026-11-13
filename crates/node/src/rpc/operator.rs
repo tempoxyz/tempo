@@ -27,7 +27,6 @@ impl<N, ChainSpec, Pool> TempoOperatorRpc<N, ChainSpec, Pool> {
     }
 }
 
-#[async_trait::async_trait]
 impl<N, ChainSpec, Pool> TempoOperatorApiServer for TempoOperatorRpc<N, ChainSpec, Pool>
 where
     N: NetworkInfo + Peers + 'static,

@@ -265,16 +265,8 @@ mod tests {
         let later_target = Address::with_last_byte(5);
         let transaction = TxBuilder::aa(sender)
             .calls(vec![
-                Call {
-                    to: TxKind::Call(first_target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(later_target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(first_target, Bytes::new()),
+                Call::new(later_target, Bytes::new()),
             ])
             .build();
         let filter = AddressFilter::new([later_target]);
@@ -423,16 +415,8 @@ mod tests {
     fn ignores_unlisted_addresses_and_create_calls() {
         let transaction = TxBuilder::aa(Address::with_last_byte(6))
             .calls(vec![
-                Call {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(Address::with_last_byte(7)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(TxKind::Create, Bytes::new()),
+                Call::new(Address::with_last_byte(7), Bytes::new()),
             ])
             .build();
         let filter = AddressFilter::new([Address::with_last_byte(8)]);

@@ -492,11 +492,7 @@ mod tests {
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::AA(
             TempoTransaction {
-                calls: vec![Call {
-                    to: Address::ZERO.into(),
-                    value: U256::ZERO,
-                    input,
-                }],
+                calls: vec![Call::new(Address::ZERO, input)],
                 ..Default::default()
             }
             .into_signed(Signature::test_signature().into()),
