@@ -24,15 +24,7 @@ use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
-use tempo_evm::consensus::validate_body_against_header;
-
-/// The most transactions a block read from the network or storage may carry.
-///
-/// Counted before decoding because a transaction encoded in about 10 bytes decodes to about 1 KiB,
-/// so a block within [`MAX_RLP_BLOCK_SIZE`] could otherwise decode to hundreds of MiB. Every
-/// transaction costs at least 21,000 gas, so this admits every block up to a gas limit of about
-/// 1.37 billion; the genesis gas limit is 500 million.
-const MAX_BLOCK_TRANSACTIONS: usize = 65_536;
+use tempo_evm::consensus::{MAX_BLOCK_TRANSACTIONS, validate_body_against_header};
 
 /// Consensus block shared through commonware.
 ///
@@ -203,7 +195,24 @@ impl Read for Block {
         let execution_block_encoded_size = header.length_with_payload();
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
-        let transaction_count = count_transactions(&bytes).map_err(|rlp_err| {
+        // Count transactions from their RLP headers alone before decoding them, since decoding
+        // expands small transactions about a hundredfold.
+        let transaction_count = (|| {
+            let mut block = bytes.as_ref();
+            let mut fields = alloy_rlp::Header::decode_bytes(&mut block, true)?;
+            alloy_rlp::Header::decode_bytes(&mut fields, true)?;
+            let mut transactions = alloy_rlp::Header::decode_bytes(&mut fields, true)?;
+            let mut count = 0;
+            while !transactions.is_empty() && count <= MAX_BLOCK_TRANSACTIONS {
+                // Legacy transactions are RLP lists and typed transactions RLP strings.
+                let header = alloy_rlp::Header::decode(&mut transactions)?;
+                // `Header::decode` checked that the payload fits in `transactions`.
+                transactions = &transactions[header.payload_length..];
+                count += 1;
+            }
+            Ok::<_, alloy_rlp::Error>(count)
+        })()
+        .map_err(|rlp_err| {
             commonware_codec::Error::Wrapped("reading RLP transaction list", rlp_err.into())
         })?;
         if transaction_count > MAX_BLOCK_TRANSACTIONS {
@@ -312,23 +321,6 @@ pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
     Round::new(Epoch::new(context.epoch), View::new(context.view))
 }
 
-/// Counts the transactions of an RLP-encoded execution block from their RLP headers alone,
-/// stopping once the count exceeds [`MAX_BLOCK_TRANSACTIONS`].
-fn count_transactions(mut block: &[u8]) -> alloy_rlp::Result<usize> {
-    let mut fields = alloy_rlp::Header::decode_bytes(&mut block, true)?;
-    alloy_rlp::Header::decode_bytes(&mut fields, true)?;
-    let mut transactions = alloy_rlp::Header::decode_bytes(&mut fields, true)?;
-    let mut count = 0;
-    while !transactions.is_empty() && count <= MAX_BLOCK_TRANSACTIONS {
-        // Legacy transactions are RLP lists and typed transactions RLP strings.
-        let header = alloy_rlp::Header::decode(&mut transactions)?;
-        // `Header::decode` checked that the payload fits in `transactions`.
-        transactions = &transactions[header.payload_length..];
-        count += 1;
-    }
-    Ok(count)
-}
-
 /// Error returned when validating an execution-layer consensus block.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -343,6 +335,7 @@ mod tests {
     use alloy_primitives::{B256, Signature, bytes, keccak256};
     use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
+    use tempo_evm::consensus::TempoConsensusError;
     use tempo_primitives::{Block as TempoBlock, TempoHeader, TempoTxEnvelope};
 
     use super::*;
@@ -477,6 +470,60 @@ mod tests {
                     "Block",
                     "more transactions than MAX_BLOCK_TRANSACTIONS"
                 )
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_rejects_malformed_transaction_list() {
+        let mut encoded = encoded_block_with_legacy_transactions(0);
+        // The block ends with its empty transaction, ommer and withdrawal lists. Turning the
+        // transaction list into an empty string keeps every length valid.
+        let transactions_at = encoded.len() - 3;
+        assert_eq!(encoded[transactions_at..], [alloy_rlp::EMPTY_LIST_CODE; 3]);
+        encoded[transactions_at] = alloy_rlp::EMPTY_STRING_CODE;
+
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Wrapped("reading RLP transaction list", _)
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn constructor_rejects_block_with_more_than_max_block_transactions() {
+        let transaction =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
+        let transactions = vec![transaction; MAX_BLOCK_TRANSACTIONS + 1];
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: calculate_transaction_root(&transactions),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions,
+                ..Default::default()
+            },
+        });
+
+        let err = Block::try_from_execution_block(execution_block).unwrap_err();
+
+        assert!(
+            matches!(
+                err.0.downcast_other_ref::<TempoConsensusError>(),
+                Some(TempoConsensusError::TooManyTransactions {
+                    count,
+                    max: MAX_BLOCK_TRANSACTIONS,
+                }) if *count == MAX_BLOCK_TRANSACTIONS + 1
             ),
             "unexpected error: {err:?}"
         );

@@ -22,6 +22,14 @@ use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
+/// The most transactions a Tempo block may carry.
+///
+/// Bounds the memory of decoding a block: a transaction encoded in about 10 bytes decodes to about
+/// 1 KiB, so a block within [`MAX_RLP_BLOCK_SIZE`](reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE)
+/// could otherwise decode to hundreds of MiB. Every transaction costs at least 21,000 gas, so this
+/// only limits blocks whose gas limit exceeds about 1.37 billion.
+pub const MAX_BLOCK_TRANSACTIONS: usize = 65_536;
+
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
@@ -30,6 +38,13 @@ pub fn validate_body_against_header(
     body: &BlockBody,
     header: &TempoHeader,
 ) -> Result<(), ConsensusError> {
+    if body.transactions.len() > MAX_BLOCK_TRANSACTIONS {
+        return Err(TempoConsensusError::TooManyTransactions {
+            count: body.transactions.len(),
+            max: MAX_BLOCK_TRANSACTIONS,
+        }
+        .into());
+    }
     reth_consensus_common::validation::validate_body_against_header(body, header)
 }
 
