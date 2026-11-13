@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+# Isolate a controlled process crash from unrelated platform/container faults.
+# The command owns cleanup; terminal commands also release holds after cancellation.
+if [ -n "${ANTITHESIS_STOP_FAULTS:-}" ]; then
+    "$ANTITHESIS_STOP_FAULTS" 1800
+fi
+exec timeout --signal=TERM --kill-after=10s 1500s tempo-zones-antithesis single-sequencer-outage

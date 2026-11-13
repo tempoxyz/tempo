@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+# The platform restores killed containers and network connectivity, but startup takes time.
+# Fault injection resumes automatically after this quiet window.
+if [ -n "${ANTITHESIS_STOP_FAULTS:-}" ]; then
+    "$ANTITHESIS_STOP_FAULTS" 600
+fi
+exec tempo-zones-antithesis recovery-probe
