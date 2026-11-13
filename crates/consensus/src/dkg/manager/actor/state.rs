@@ -278,13 +278,14 @@ where
         if self
             .cache
             .get(&epoch)
-            .is_some_and(|events| events.finalized.contains_key(&height))
+            .and_then(|events| events.finalized.as_ref())
+            .is_some_and(|latest| height <= latest.height)
         {
             info!(
                 %height,
                 %digest,
                 %parent,
-                "finalized block was already found in cache; dropping",
+                "finalized block is not above the latest one in cache; dropping",
             );
             return;
         }
@@ -299,15 +300,11 @@ where
         )
         .await;
 
-        let cache = self.cache.entry(epoch).or_default();
-        cache.finalized.insert(
+        self.cache.entry(epoch).or_default().finalized = Some(FinalizedBlockInfo {
             height,
-            FinalizedBlockInfo {
-                height,
-                digest,
-                parent,
-            },
-        );
+            digest,
+            parent,
+        });
     }
 
     pub(super) fn cache_dkg_outcome(
@@ -477,7 +474,8 @@ where
     ) -> Option<(&Height, &FinalizedBlockInfo)> {
         self.cache
             .get(epoch)
-            .and_then(|cache| cache.finalized.last_key_value())
+            .and_then(|cache| cache.finalized.as_ref())
+            .map(|info| (&info.height, info))
     }
 
     pub(super) fn get_notarized_reduced_block(
@@ -757,7 +755,9 @@ struct Events {
     acks: BTreeMap<PublicKey, PlayerAck<PublicKey>>,
     dealings: BTreeMap<PublicKey, (DealerPubMsg<MinSig>, DealerPrivMsg)>,
     logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
-    finalized: BTreeMap<Height, FinalizedBlockInfo>,
+    /// The highest finalized block of the epoch. Only the latest is kept so
+    /// that memory does not grow with the epoch length.
+    finalized: Option<FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, ShareState)>,
@@ -788,14 +788,17 @@ impl Events {
                 parent,
                 height,
             } => {
-                self.finalized.insert(
-                    height,
-                    FinalizedBlockInfo {
+                if self
+                    .finalized
+                    .as_ref()
+                    .is_none_or(|latest| latest.height < height)
+                {
+                    self.finalized = Some(FinalizedBlockInfo {
                         height,
                         digest,
                         parent,
-                    },
-                );
+                    });
+                }
             }
         }
     }
@@ -1495,6 +1498,52 @@ mod tests {
                     .shares_to_distribute()
                     .all(|(recipient, _, _)| recipient != player_key.public_key())
             );
+        });
+    }
+
+    #[test]
+    fn finalized_cache_keeps_only_latest_header() {
+        deterministic::Runner::default().start(|mut context| async move {
+            let state = make_test_state(&mut context, 0);
+            let header = |number, gas_limit| TempoHeader {
+                inner: alloy_consensus::Header {
+                    number,
+                    gas_limit,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let latest = header(11, 0);
+            let mut storage = builder()
+                .partition_prefix("finalized_cache_keeps_only_latest_header")
+                .init_unverified(context.child("initial"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            // A different header at the latest height and an older height are dropped.
+            for header in [header(10, 0), latest.clone(), header(11, 1), header(9, 0)] {
+                storage.append_finalized_header(state.epoch, header).await;
+            }
+            let (height, info) = storage
+                .get_latest_finalized_block_for_epoch(&state.epoch)
+                .unwrap();
+            assert_eq!(*height, Height::new(11));
+            assert_eq!(info.digest, Digest(latest.hash_slow()));
+            drop(storage);
+
+            let storage = builder()
+                .partition_prefix("finalized_cache_keeps_only_latest_header")
+                .init_unverified(context.child("reopened"))
+                .await
+                .unwrap()
+                .init_verified(state.clone())
+                .await;
+            let (height, info) = storage
+                .get_latest_finalized_block_for_epoch(&state.epoch)
+                .unwrap();
+            assert_eq!(*height, Height::new(11));
+            assert_eq!(info.digest, Digest(latest.hash_slow()));
         });
     }
 
