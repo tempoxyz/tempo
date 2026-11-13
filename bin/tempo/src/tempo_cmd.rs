@@ -1068,7 +1068,12 @@ impl GenerateSigningKey {
                 .map_err(Report::new),
             None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
         })
-        .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
+        .wrap_err_with(|| {
+            format!(
+                "failed writing signing key to `{}` (public key: {public_key})",
+                output.display()
+            )
+        })?;
         eprintln!(
             "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
@@ -1193,9 +1198,18 @@ fn write_signing_key_file_in_place(
 
 /// Syncs directory `dir` so that files created or renamed in it survive a crash. Does nothing
 /// outside Unix, where directories can't be opened as files.
+///
+/// Called after the key is already in place, so the error says so.
 fn sync_dir(dir: &Path) -> eyre::Result<()> {
     #[cfg(unix)]
-    File::open(dir)?.sync_all()?;
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .wrap_err_with(|| {
+            format!(
+                "the signing key was written, but syncing its directory `{}` to disk failed",
+                dir.display()
+            )
+        })?;
     Ok(())
 }
 
