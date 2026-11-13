@@ -1132,24 +1132,27 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
 
 /// Opens `path` for writing a signing key, readable and writable only by its owner on Unix.
 ///
-/// Fails if `path` exists unless `force` is set, in which case the file is truncated and its
-/// permissions are restricted before anything is written.
+/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file has its
+/// permissions restricted and is then truncated; other targets such as `/dev/stdout` are opened
+/// as they are.
 fn create_signing_key_file(path: &Path, force: bool) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .write(true)
         .create_new(!force)
         .create(force)
-        .truncate(force);
+        .truncate(false);
     #[cfg(unix)]
     options.mode(0o600);
 
     let file = options.open(path)?;
 
-    // `mode` only applies when the file is created, so an overwritten file keeps its permissions.
-    #[cfg(unix)]
-    if force {
+    // `mode` only applies when the file is created. Restricting before truncating keeps the old
+    // contents if the caller may write the file but not change its mode.
+    if force && file.metadata()?.is_file() {
+        #[cfg(unix)]
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
     }
 
     Ok(file)
@@ -1754,6 +1757,17 @@ mod tests {
         let metadata = path.metadata().unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         assert_eq!(metadata.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_keeps_mode_of_non_regular_file() {
+        let path = Path::new("/dev/null");
+        let mode = path.metadata().unwrap().permissions().mode();
+
+        create_signing_key_file(path, true).unwrap();
+
+        assert_eq!(path.metadata().unwrap().permissions().mode(), mode);
     }
 
     #[test]
