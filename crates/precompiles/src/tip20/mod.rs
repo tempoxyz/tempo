@@ -2782,7 +2782,7 @@ pub(crate) mod tests {
                 .apply()?
                 .address;
 
-            for (label, token, new_quote_token) in [
+            for (case, token, new_quote_token) in [
                 ("non-TIP20 address", usd_token, non_tip20),
                 (
                     "undeployed TIP20-pattern address",
@@ -2804,7 +2804,7 @@ pub(crate) mod tests {
                         },
                     ),
                     Err(TIP20Error::invalid_quote_token().into()),
-                    "{label}"
+                    "{case}"
                 );
             }
 
@@ -2955,11 +2955,11 @@ pub(crate) mod tests {
             );
             assert_eq!(result, Err(RolesAuthError::unauthorized().into()));
 
-            // 257 bytes — one over the limit. Use a syntactically valid URI
+            // One byte over the limit. Use a syntactically valid URI
             // so we exercise the length check, not the URI/scheme check.
             let prefix = "https://example.com/";
-            let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
-            assert_eq!(too_long.len(), 257);
+            let max = TIP20Token::MAX_LOGO_URI_BYTES;
+            let too_long = format!("{prefix}{}", "a".repeat(max + 1 - prefix.len()));
             let result = token.set_logo_uri(
                 admin,
                 ITIP20::setLogoURICall {
@@ -2986,9 +2986,7 @@ pub(crate) mod tests {
                 newLogoURI: uri,
             })]);
 
-            // 256 bytes — at the limit, should succeed
-            let at_limit = format!("{prefix}{}", "a".repeat(256 - prefix.len()));
-            assert_eq!(at_limit.len(), 256);
+            let at_limit = format!("{prefix}{}", "a".repeat(max - prefix.len()));
             token.set_logo_uri(
                 admin,
                 ITIP20::setLogoURICall {
@@ -4634,7 +4632,7 @@ pub(crate) mod tests {
 
                 token.pause(admin, ITIP20::pauseCall {})?;
 
-                for (label, result) in [
+                for (case, result) in [
                     ("mint", token.mint(admin, ITIP20::mintCall { to, amount })),
                     (
                         "mintWithMemo",
@@ -4651,10 +4649,10 @@ pub(crate) mod tests {
                     ),
                 ] {
                     if hardfork.is_t3() {
-                        assert_eq!(result, Err(TIP20Error::contract_paused().into()), "{label}");
+                        assert_eq!(result, Err(TIP20Error::contract_paused().into()), "{case}");
                     } else {
                         // T2: pause not enforced
-                        assert!(result.is_ok(), "{label}: {result:?}");
+                        assert!(result.is_ok(), "{case}: {result:?}");
                     }
                 }
                 if !hardfork.is_t3() {

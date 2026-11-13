@@ -177,7 +177,7 @@ mod tests {
         };
         let valid_proof = proof(s.to_repr().into(), c.to_repr().into());
 
-        for (label, [(eph_x, eph_parity), (ss_x, ss_parity), (ps_x, ps_parity)], proof, expected) in [
+        for (case, [(eph_x, eph_parity), (ss_x, ss_parity), (ps_x, ps_parity)], proof, expected) in [
             ("valid proof", points, valid_proof.clone(), true),
             (
                 "invalid proof",
@@ -224,7 +224,7 @@ mod tests {
                     &eph_x, eph_parity, &ss_x, ss_parity, &ps_x, ps_parity, &proof
                 ),
                 expected,
-                "{label}"
+                "{case}"
             );
         }
     }

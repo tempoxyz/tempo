@@ -123,7 +123,8 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     );
 
     // `None` restarts without a withdrawal; each later cycle withdraws after the restart.
-    for withdrawal in [None, Some(200_000u128), Some(300_000), Some(400_000)] {
+    let withdrawals = [None, Some(200_000u128), Some(300_000), Some(400_000)];
+    for withdrawal in withdrawals {
         let hash_before = portal_block_hash(&l1, portal_address).await?;
         let batches_before = batch_submitted_count(&l1, portal_address).await?;
 
@@ -169,15 +170,15 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     let total_batches = batch_submitted_count(&l1, portal_address).await?;
     assert!(
         total_batches >= 3,
-        "should have at least 3 batches across 3 restart cycles (got {total_batches})"
+        "should have at least 3 batches across the restart cycles (got {total_batches})"
     );
 
-    // L2 balance decreased by total withdrawals (200k + 300k + 400k = 900k)
+    let total_withdrawn: u128 = withdrawals.into_iter().flatten().sum();
     let l2_balance = zone
         .balance_of(ZONE_TOKEN_ADDRESS, account.address())
         .await?;
     assert!(
-        l2_balance <= U256::from(deposit_amount - 900_000u128),
+        l2_balance <= U256::from(deposit_amount - total_withdrawn),
         "L2 balance should reflect all withdrawals (got {l2_balance})"
     );
 

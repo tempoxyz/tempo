@@ -79,7 +79,7 @@ mod tests {
     fn test_aes_gcm_decrypt_charges_gas() {
         let zone_aad = b"zone-inbox-v1".as_slice();
         let large_aad = [0xA5; 128];
-        // (label, plaintext, encryption AAD, decryption AAD, expected valid)
+        // (case, plaintext, encryption AAD, decryption AAD, expected valid)
         type Case<'a> = (&'a str, &'a [u8], &'a [u8], &'a [u8], bool);
         let cases: [Case<'_>; 6] = [
             ("roundtrip without aad", b"hello world test", &[], &[], true),
@@ -89,7 +89,7 @@ mod tests {
             ("wrong aad", b"secret data", b"correct", b"wrong", false),
             ("missing aad", b"secret data", zone_aad, &[], false),
         ];
-        for (label, plaintext, encrypt_aad, decrypt_aad, expected_valid) in cases {
+        for (case, plaintext, encrypt_aad, decrypt_aad, expected_valid) in cases {
             let (key, nonce, ciphertext, tag) = encrypt(plaintext, encrypt_aad);
             let expected_gas = AES_GCM_BASE_GAS
                 + AES_GCM_PER_BYTE_GAS * (ciphertext.len() + decrypt_aad.len()) as u64;
@@ -103,9 +103,9 @@ mod tests {
                 decrypt(&key, &nonce, &ciphertext, decrypt_aad, &tag)
             });
 
-            assert_eq!(valid, expected_valid, "{label}");
-            assert_eq!(decrypted, expected_plaintext, "{label}");
-            assert_eq!(storage.gas_used() - gas_before, expected_gas, "{label}");
+            assert_eq!(valid, expected_valid, "{case}");
+            assert_eq!(decrypted, expected_plaintext, "{case}");
+            assert_eq!(storage.gas_used() - gas_before, expected_gas, "{case}");
         }
     }
 
@@ -115,14 +115,14 @@ mod tests {
         let mut flipped_ciphertext = ciphertext.clone();
         flipped_ciphertext[0] ^= 0x01;
 
-        for (label, ciphertext, tag) in [
+        for (case, ciphertext, tag) in [
             ("bad tag", &ciphertext, [0xFFu8; 16]),
             ("flipped ciphertext bit", &flipped_ciphertext, tag),
         ] {
             assert_eq!(
                 decrypt(&key, &nonce, ciphertext, &[], &tag),
                 (Vec::new(), false),
-                "{label}"
+                "{case}"
             );
         }
     }
