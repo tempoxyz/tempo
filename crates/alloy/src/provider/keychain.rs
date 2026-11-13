@@ -1,6 +1,6 @@
 use core::fmt;
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::SolCall;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -396,17 +396,13 @@ pub fn remove_allowed_calls(key_id: Address, target: Address) -> Call {
 }
 
 fn account_keychain_call(call: impl SolCall) -> Call {
-    Call {
-        to: TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS),
-        value: U256::ZERO,
-        input: Bytes::from(call.abi_encode()),
-    }
+    Call::new(ACCOUNT_KEYCHAIN_ADDRESS, call.abi_encode())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, uint};
+    use alloy_primitives::{TxKind, address, uint};
     use tempo_contracts::precompiles::IAccountKeychain::{
         CallScope as AbiCallScope, SelectorRule as AbiSelectorRule,
         SignatureType as AbiSignatureType, removeAllowedCallsCall, revokeKeyCall,

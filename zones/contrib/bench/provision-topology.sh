@@ -990,6 +990,8 @@ provision_up() {
     # The pinned Reth revision predates the retained-branch pruning fix. Its
     # default sparse-trie pruning can make a multi-transaction Zone payload
     # disagree with the root obtained during final validation.
+    # Bench presets send many transactions per sender; keep them clear of the
+    # Zone's 64-transaction per-sender default.
     start_process zone "$ZONE_BIN" "${ZONES_BENCH_ZONE_CPUS:-8-13,24-29}" "$log_dir/zone.log" \
         "$ZONE_BIN" node \
         --chain "$zone_genesis" --datadir "$zone_db" \
@@ -1008,6 +1010,7 @@ provision_up() {
         --log.file.directory "$log_dir/zone" \
         --ipcdisable \
         --engine.disable-sparse-trie-cache-pruning \
+        --txpool.max-account-slots 150000 \
         --sequencer \
         "${prover_args[@]}" \
         --sequencer-key-file <(printf '%s\n' "$sequencer_key")

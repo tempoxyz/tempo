@@ -354,7 +354,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{storage::StorageCtx, test_util::with_storage};
     use alloy::{
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
@@ -849,8 +849,7 @@ mod tests {
         }
 
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 dispatch!(
                     calldata,
                     |call| match call {

@@ -251,7 +251,7 @@ mod tests {
         address_registry::AddressRegistry,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
+        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, with_storage},
         tip20::{BURN_BLOCKED_ROLE, ITIP20},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
@@ -714,9 +714,7 @@ mod tests {
 
     #[test]
     fn test_receipt_rejects_bad_encoding() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T6, || {
             let guard = ReceivePolicyGuard::new();
             let result = guard.balance_of(vec![0xde, 0xad, 0xbe, 0xef].into());
             assert!(matches!(
