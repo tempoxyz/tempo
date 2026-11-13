@@ -176,6 +176,7 @@ impl Precompile for Reservations {
                         self.resolve_dispute(sender, c)
                     }),
                     lien(call) => mutate(call, msg_sender, |sender, c| self.lien(sender, c)),
+                    pledge(call) => mutate(call, msg_sender, |sender, c| self.pledge(sender, c)),
                     releaseLien(call) => mutate(call, msg_sender, |sender, c| {
                         self.release_lien(sender, c.id)
                     }),

@@ -23,7 +23,7 @@
 //!
 //! A holder of a token's `LIEN_ROLE` can lien an owner's available balance of that token: a
 //! reservation with no expiry that only it releases, which captures, line draws and debt
-//! repayments never take.
+//! repayments never take. An owner can also pledge its own balance as a lien for any authority.
 
 pub mod dispatch;
 
@@ -1367,37 +1367,57 @@ impl Reservations {
         }
         // A lien on a virtual address applies to its master, whose balance holds the funds.
         let owner = resolve_payee(call.owner)?;
-        if !self.liens[authority][call.id].token.read()?.is_zero() {
+        self.place_lien(&mut token, owner, authority, call.id, amount)
+    }
+
+    /// Liens `call.amount` of the owner's own available balance for `call.authority`, such as a
+    /// lender taking it as collateral. The owner's consent stands in for `LIEN_ROLE`, so it signs
+    /// with its root key; the lien is then the authority's like any other, which only it releases.
+    fn pledge(&mut self, owner: Address, call: IReservations::pledgeCall) -> Result<()> {
+        let amount = amount_u96(call.amount)?;
+        let authority = resolve_counterparty_as_root(owner, call.authority, call.token)?;
+        let mut token = TIP20Token::from_address(call.token)?;
+        self.place_lien(&mut token, owner, authority, call.id, amount)
+    }
+
+    /// Moves `amount` of `owner`'s available balance into a lien `authority` keeps under `id`.
+    fn place_lien(
+        &mut self,
+        token: &mut TIP20Token,
+        owner: Address,
+        authority: Address,
+        id: B256,
+        amount: U96,
+    ) -> Result<()> {
+        let address = token.address();
+        let value: u128 = amount.to();
+        if !self.liens[authority][id].token.read()?.is_zero() {
             return Err(ReservationsError::lien_exists().into());
         }
-        if call.amount > available(&token, owner)? {
+        if value > available(token, owner)? {
             return Err(ReservationsError::insufficient_available().into());
         }
-        let mut position = self.positions[owner][call.token].read()?;
-        let mut shortfall = self.shortfalls[owner][call.token].read()?;
+        let mut position = self.positions[owner][address].read()?;
+        let mut shortfall = self.shortfalls[owner][address].read()?;
         position.reserved = position
             .reserved
-            .checked_add(call.amount)
+            .checked_add(value)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         shortfall.liened = shortfall
             .liened
             .checked_add(amount)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
-        token.decrement_balance(owner, U256::from(call.amount))?;
-        self.positions[owner][call.token].write(position)?;
-        self.shortfalls[owner][call.token].write(shortfall)?;
-        self.liens[authority][call.id].write(Lien {
+        token.decrement_balance(owner, U256::from(value))?;
+        self.positions[owner][address].write(position)?;
+        self.shortfalls[owner][address].write(shortfall)?;
+        self.liens[authority][id].write(Lien {
             owner,
             amount,
-            token: call.token,
+            token: address,
             burn_epoch: shortfall.epoch,
         })?;
         self.emit_event(ReservationsEvent::liened(
-            owner,
-            authority,
-            call.token,
-            call.id,
-            call.amount,
+            owner, authority, address, id, value,
         ))
     }
 
@@ -7412,6 +7432,154 @@ mod tests {
             f.lien(authority, later, 150)?;
             f.reservations.release_lien(authority, later)?;
             assert_eq!(f.available()?, 200);
+            Ok(())
+        })
+    }
+
+    impl Fixture {
+        fn pledge(&mut self, authority: Address, id: B256, amount: u128) -> Result<()> {
+            self.reservations.pledge(
+                self.owner,
+                IReservations::pledgeCall {
+                    authority,
+                    token: self.token.address(),
+                    id,
+                    amount,
+                },
+            )
+        }
+    }
+
+    #[test]
+    fn test_pledge_liens_the_owners_balance_until_its_authority_releases() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            // The owner's consent stands in for the role: the authority needs none.
+            let lender = Address::random();
+            let id = B256::random();
+            f.pledge(lender, id, 60)?;
+
+            assert_eq!(f.balance(f.owner)?, U256::from(100));
+            assert_eq!(f.reserved()?, 60);
+            assert_eq!(f.available()?, 40);
+            assert_eq!(f.liened()?, 60);
+            assert_eq!(
+                f.reservations.lien_of(lender, id)?,
+                IReservations::lienOfReturn {
+                    owner: f.owner,
+                    token: f.token.address(),
+                    amount: 60,
+                }
+            );
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::liened(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    60,
+                )]);
+            assert_eq!(
+                f.hold(B256::random(), 41).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            assert_eq!(
+                f.pledge(Address::random(), B256::random(), 41).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            // Pledges share the authority's lien ids, whoever placed the lien under one.
+            assert_eq!(
+                f.pledge(lender, id, 1).unwrap_err(),
+                ReservationsError::lien_exists().into()
+            );
+            let authority = f.lien_authority()?;
+            f.lien(authority, id, 10)?;
+            assert_eq!(
+                f.pledge(authority, id, 1).unwrap_err(),
+                ReservationsError::lien_exists().into()
+            );
+
+            // The owner cannot take its pledge back; only the authority releases it.
+            assert_eq!(
+                f.reservations.release_lien(f.owner, id).unwrap_err(),
+                ReservationsError::lien_not_found().into()
+            );
+            f.reservations.clear_emitted_events();
+            f.reservations.release_lien(lender, id)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_released(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    60,
+                )]);
+            assert_eq!(f.reserved()?, 10);
+            assert_eq!(f.available()?, 90);
+            assert_eq!(f.liened()?, 10);
+            assert!(f.reservations.lien_of(lender, id)?.token.is_zero());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pledge_needs_the_owners_root_key_and_another_authority() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let lender = Address::random();
+            let id = B256::random();
+            for amount in [0, 1u128 << 96] {
+                assert_eq!(
+                    f.pledge(lender, id, amount).unwrap_err(),
+                    ReservationsError::invalid_amount().into()
+                );
+            }
+            for authority in [Address::ZERO, f.owner] {
+                assert_eq!(
+                    f.pledge(authority, id, 10).unwrap_err(),
+                    ReservationsError::unauthorized().into()
+                );
+            }
+            assert_eq!(
+                f.reservations
+                    .pledge(
+                        f.owner,
+                        IReservations::pledgeCall {
+                            authority: lender,
+                            token: Address::random(),
+                            id,
+                            amount: 10,
+                        },
+                    )
+                    .unwrap_err(),
+                TIP20Error::invalid_token().into()
+            );
+
+            // An access key of the owner cannot pledge, whatever its scope.
+            let key = Address::random();
+            let mut keychain = authorize_key_for(
+                f.owner,
+                key,
+                f.token.address(),
+                1_000,
+                &[IReservations::pledgeCall::SELECTOR],
+            )?;
+            assert_eq!(
+                f.pledge(lender, id, 10).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            keychain.set_tx_origin(Address::random())?;
+
+            // A pledge to a virtual address is its master's lien.
+            AddressRegistry::new()
+                .register_virtual_master_unchecked(MasterId::repeat_byte(3), lender)?;
+            f.pledge(
+                Address::new_virtual(MasterId::repeat_byte(3), UserTag::ZERO),
+                id,
+                10,
+            )?;
+            assert_eq!(f.reservations.lien_of(lender, id)?.owner, f.owner);
+            assert_eq!(f.available()?, 90);
             Ok(())
         })
     }

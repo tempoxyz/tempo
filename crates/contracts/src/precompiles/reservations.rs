@@ -114,6 +114,9 @@ crate::sol! {
         /// Reserves `amount` of `owner`'s available `token` balance with no expiry under `id`, which
         /// the caller chooses. Called by a holder of the token's `LIEN_ROLE`, with its root key.
         function lien(address owner, address token, bytes32 id, uint128 amount) external;
+        /// Reserves `amount` of the caller's own available `token` balance with no expiry as
+        /// `authority`'s lien `id`, which only `authority` releases. Root key only.
+        function pledge(address authority, address token, bytes32 id, uint128 amount) external;
         /// Ends the caller's lien `id`, returning what it still reserves to the owner's available balance.
         function releaseLien(bytes32 id) external;
 
