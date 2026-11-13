@@ -28,14 +28,16 @@ use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
+use reth_consensus_common::validation::validate_header_extra_data;
 use reth_primitives_traits::BlockBody as _;
 use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_evm::consensus::TEMPO_MAXIMUM_EXTRA_DATA_SIZE;
 use tempo_payload_types::{
     Estimator, EstimatorSnapshot, ProposalKey, ProposalTiming, TempoPayloadAttributes,
     ValidationLatencyWorkload,
 };
-use tempo_primitives::TempoConsensusContext;
+use tempo_primitives::{TempoConsensusContext, TempoHeader};
 use tempo_telemetry_util::display_duration;
 use tracing::{Level, debug, info, instrument, warn};
 
@@ -353,17 +355,12 @@ impl Inner {
         );
 
         if self.is_boundary(block.height()) {
-            let mut extra_data = commonware_codec::Copying(block.header().extra_data().as_ref());
-            // From T15, the outcome must take up all of the extra data.
-            let proposed_outcome = if self.is_t15(block.header().timestamp()) {
-                OnchainDkgOutcome::decode(extra_data)
-            } else {
-                OnchainDkgOutcome::read(&mut extra_data)
-            }
-            .wrap_err(
-                "failed decoding extra data header as DKG ceremony \
-                    outcome; cannot verify end of epoch block",
-            )?;
+            let proposed_outcome =
+                read_boundary_outcome(block.header(), self.is_t15(block.header().timestamp()))
+                    .wrap_err(
+                        "failed decoding extra data header as DKG ceremony \
+                        outcome; cannot verify end of epoch block",
+                    )?;
             return Ok(Some(proposed_outcome));
         }
 
@@ -655,6 +652,19 @@ impl Reporter for Inner {
     }
 }
 
+/// Decodes the DKG outcome in a boundary block's `extra_data` after checking its size.
+/// (+T15) With `strict`, the outcome must take up all of the extra data.
+fn read_boundary_outcome(header: &TempoHeader, strict: bool) -> eyre::Result<OnchainDkgOutcome> {
+    validate_header_extra_data(header, TEMPO_MAXIMUM_EXTRA_DATA_SIZE)?;
+    let mut extra_data = commonware_codec::Copying(header.extra_data().as_ref());
+    let outcome = if strict {
+        OnchainDkgOutcome::decode(extra_data)?
+    } else {
+        OnchainDkgOutcome::read(&mut extra_data)?
+    };
+    Ok(outcome)
+}
+
 /// Waits for a validated block's timestamp without making a validity decision.
 async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
     while runtime.current().epoch_millis() < timestamp {
@@ -785,6 +795,27 @@ fn deferred_ceremony_output(
 mod tests {
     use super::*;
     use commonware_runtime::{Runner as _, deterministic};
+    use reth_consensus::ConsensusError;
+
+    #[test_case::test_case(false ; "pre-T15")]
+    #[test_case::test_case(true ; "T15")]
+    fn boundary_outcome_rejects_oversized_extra_data(strict: bool) {
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                extra_data: vec![0; TEMPO_MAXIMUM_EXTRA_DATA_SIZE + 1].into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = read_boundary_outcome(&header, strict).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref(),
+                Some(ConsensusError::ExtraDataExceedsMax { .. })
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
 
     #[test]
     fn future_header_waits_for_local_clock_before_certification() {
