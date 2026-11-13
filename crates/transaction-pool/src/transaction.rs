@@ -1486,16 +1486,8 @@ mod tests {
 
         let aa = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: input.clone(),
-                },
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input,
-                },
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
             ])
             .build();
         let envelope_size = aa.inner().inner().size();
@@ -1863,11 +1855,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()

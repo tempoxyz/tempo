@@ -2654,7 +2654,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, sponsor, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Signature, U256};
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
@@ -5295,11 +5295,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .max_priority_fee(2_000_000_000)
                 .max_fee(40_000_000_000)
-                .calls(vec![Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0; 1024]),
-                }])
+                .calls(vec![Call::new(Address::random(), vec![0; 1024])])
                 .build(),
             TransactionOrigin::Local,
         );
@@ -7373,11 +7369,7 @@ mod tests {
         let sender = Address::random();
         let call_to = Address::random();
         let fee_token = Address::random();
-        let calls = vec![Call {
-            to: TxKind::Call(call_to),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }];
+        let calls = vec![Call::new(call_to, Bytes::new())];
 
         let build_tx = |fee_payer_signature: Signature| {
             let tx = TempoTransaction {
@@ -7457,18 +7449,13 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let fee_token = Address::random();
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }];
 
         let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
             gas_limit: 1_000_000,
-            calls,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::MAX,
             nonce: 0,
             fee_token: Some(fee_token),

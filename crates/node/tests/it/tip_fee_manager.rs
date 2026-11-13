@@ -342,11 +342,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: Address::ZERO.into(),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
             ..Default::default()
         };
 
@@ -413,11 +409,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: Address::ZERO.into(),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         // Placeholder so `skip_fee_token = true` when computing signature_hash
         fee_payer_signature: Some(Signature::new(
             Default::default(),

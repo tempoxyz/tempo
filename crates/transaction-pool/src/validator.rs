@@ -1265,16 +1265,8 @@ mod tests {
         let checked_address = Address::with_last_byte(0x42);
         let transaction = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::with_last_byte(0x41)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
-                Call {
-                    to: TxKind::Call(checked_address),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                },
+                Call::new(Address::with_last_byte(0x41), Bytes::new()),
+                Call::new(checked_address, Bytes::new()),
             ])
             .build();
         let validator = setup_validator(&transaction, 1)
@@ -1515,18 +1507,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_fee_payer_signature_rejected() {
-        let calls: Vec<Call> = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Default::default(),
-        }];
-
         let tx = TempoTransaction {
             chain_id: MODERATO.chain_id(),
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -1569,11 +1555,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
@@ -1743,11 +1725,7 @@ mod tests {
         // Helper to create AA tx with given gas limit
         let create_aa_tx = |gas_limit: u64| {
             let calls: Vec<Call> = (0..10)
-                .map(|i| Call {
-                    to: TxKind::Call(Address::repeat_byte(i as u8)),
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::from(vec![0x00; 100]),
-                })
+                .map(|i| Call::new(Address::repeat_byte(i as u8), vec![0x00; 100]))
                 .collect();
 
             let tx = TempoTransaction {
@@ -1824,18 +1802,13 @@ mod tests {
         // Helper to create AA transaction
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, is_create: bool| {
             let calls: Vec<TxCall> = if is_create {
-                vec![TxCall {
-                    to: TxKind::Create,
-                    value: U256::ZERO,
-                    input: alloy_primitives::Bytes::from(vec![0x60, 0x00, 0x60, 0x00, 0xF3]),
-                }]
+                vec![TxCall::new(
+                    TxKind::Create,
+                    vec![0x60, 0x00, 0x60, 0x00, 0xF3],
+                )]
             } else {
                 (0..10)
-                    .map(|i| TxCall {
-                        to: TxKind::Call(Address::repeat_byte(i as u8)),
-                        value: U256::ZERO,
-                        input: alloy_primitives::Bytes::from(vec![0x00; 100]),
-                    })
+                    .map(|i| TxCall::new(Address::repeat_byte(i as u8), vec![0x00; 100]))
                     .collect()
             };
 
@@ -1957,18 +1930,15 @@ mod tests {
 
         // Helper to create expiring nonce AA tx with given gas limit
         let create_expiring_nonce_tx = |gas_limit: u64| {
-            let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::repeat_byte(1u8)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
-            }];
-
             let tx = TempoTransaction {
                 chain_id: 1,
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit,
-                calls,
+                calls: vec![Call::new(
+                    Address::repeat_byte(1u8),
+                    vec![0xd0, 0x9d, 0xe0, 0x8a], // increment()
+                )],
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
                 nonce: 0,
                 valid_before: Some(core::num::NonZeroU64::new(current_time + 25).unwrap()), // Valid for 25 seconds
@@ -2021,18 +1991,15 @@ mod tests {
 
         // Helper to create AA tx with a specific nonce_key and nonce
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, nonce: u64| {
-            let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::repeat_byte(1u8)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
-            }];
-
             let tx = TempoTransaction {
                 chain_id: MODERATO.chain_id(),
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit,
-                calls,
+                calls: vec![Call::new(
+                    Address::repeat_byte(1u8),
+                    vec![0xd0, 0x9d, 0xe0, 0x8a], // increment()
+                )],
                 nonce_key,
                 nonce,
                 fee_token: Some(Address::with_last_byte(2)),
@@ -2486,11 +2453,10 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::with_last_byte(1)),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(
+                Address::with_last_byte(1),
+                alloy_primitives::Bytes::new(),
+            )],
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(Address::with_last_byte(2)),
@@ -2609,16 +2575,10 @@ mod tests {
 
         // Create an AA transaction with a CREATE call as the second call
         let calls = vec![
-            Call {
-                to: TxKind::Call(Address::random()), // First call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Create, // Second call is a CREATE - should be rejected
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a regular call
+            Call::new(Address::random(), Bytes::new()),
+            // Second call is a CREATE - should be rejected
+            Call::new(TxKind::Create, Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2659,16 +2619,10 @@ mod tests {
 
         // Create an AA transaction with a CREATE call as the first call
         let calls = vec![
-            Call {
-                to: TxKind::Create, // First call is a CREATE - should be accepted
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()), // Second call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a CREATE - should be accepted
+            Call::new(TxKind::Create, Bytes::new()),
+            // Second call is a regular call
+            Call::new(Address::random(), Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2707,21 +2661,12 @@ mod tests {
 
         // calls = [CREATE, CALL, CREATE] -> should reject with CreateCallNotFirst
         let calls = vec![
-            Call {
-                to: TxKind::Create, // First call is a CREATE - ok
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()), // Second call is a regular call
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-            Call {
-                to: TxKind::Create, // Third call is a CREATE - should be rejected
-                value: U256::ZERO,
-                input: Default::default(),
-            },
+            // First call is a CREATE - ok
+            Call::new(TxKind::Create, Bytes::new()),
+            // Second call is a regular call
+            Call::new(Address::random(), Bytes::new()),
+            // Third call is a CREATE - should be rejected
+            Call::new(TxKind::Create, Bytes::new()),
         ];
 
         let transaction = TxBuilder::aa(Address::random())
@@ -2762,11 +2707,10 @@ mod tests {
             .as_secs();
 
         // Create an AA transaction with a CREATE call and a non-empty authorization list
-        let calls = vec![Call {
-            to: TxKind::Create, // CREATE call
-            value: U256::ZERO,
-            input: Default::default(),
-        }];
+        let calls = vec![
+            // CREATE call
+            Call::new(TxKind::Create, Bytes::new()),
+        ];
 
         // Create a single authorization entry
         let auth = Authorization {
@@ -2995,11 +2939,7 @@ mod tests {
             .as_secs();
 
         let calls: Vec<Call> = (0..MAX_AA_CALLS)
-            .map(|_| Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            })
+            .map(|_| Call::new(Address::random(), Bytes::new()))
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
@@ -3032,11 +2972,7 @@ mod tests {
             .as_secs();
 
         let calls: Vec<Call> = (0..MAX_AA_CALLS + 1)
-            .map(|_| Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            })
+            .map(|_| Call::new(Address::random(), Bytes::new()))
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
@@ -3071,16 +3007,13 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: vec![0u8; MAX_CALL_INPUT_SIZE].into(),
-        }];
-
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
-            .calls(calls)
+            .calls(vec![Call::new(
+                Address::random(),
+                vec![0u8; MAX_CALL_INPUT_SIZE],
+            )])
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3106,16 +3039,13 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: vec![0u8; MAX_CALL_INPUT_SIZE + 1].into(),
-        }];
-
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
-            .calls(calls)
+            .calls(vec![Call::new(
+                Address::random(),
+                vec![0u8; MAX_CALL_INPUT_SIZE + 1],
+            )])
             .build();
         let validator = setup_validator(&transaction, current_time);
 
@@ -3412,11 +3342,7 @@ mod tests {
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 20_000_000_000,
                 gas_limit: 1_000_000,
-                calls: vec![Call {
-                    to: TxKind::Call(target),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(target, Bytes::new())],
                 nonce_key: U256::ZERO,
                 nonce: 0,
                 fee_token: Some(PATH_USD_ADDRESS),

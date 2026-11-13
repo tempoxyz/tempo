@@ -226,10 +226,6 @@ pub async fn wait_for_height_with_interval(
     .await;
 }
 
-pub async fn wait_for_participants(context: &Context, target: u64) {
-    wait_for_participants_with_interval(context, target, DEFAULT_POLL_INTERVAL).await;
-}
-
 pub async fn wait_for_participants_with_interval(
     context: &Context,
     target: u64,

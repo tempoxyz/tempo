@@ -12,7 +12,7 @@ use commonware_cryptography::{
 use commonware_p2p::simulated::Oracle;
 use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
-use reth_db::{Database, DatabaseEnv, open_db_read_only};
+use reth_db::{Database, DatabaseEnv};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_ethereum::{
     consensus::noop::NoopConsensus,
@@ -540,39 +540,6 @@ where
         &self,
     ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
         self.execution().provider.clone()
-    }
-
-    /// Get a blockchain provider for when the execution node is down.
-    ///
-    /// This provider MUST BE DROPPED before starting the node again.
-    pub fn execution_provider_offline(
-        &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
-        // Open a read-only provider to the database
-        // Note: MDBX allows multiple readers, so this is safe even if another process
-        // has the database open for reading
-        let database = open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
-            .expect("failed to open execution node database")
-            .with_metrics();
-
-        let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
-                .expect("failed to open static files");
-
-        let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
-            .build()
-            .unwrap();
-
-        let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
-            database,
-            Arc::new(execution_runtime::chainspec()),
-            static_file_provider,
-            rocksdb,
-            reth_ethereum::tasks::Runtime::test(),
-        )
-        .expect("failed to create provider factory");
-
-        BlockchainProvider::new(provider_factory).expect("failed to create blockchain provider")
     }
 
     /// Simulates a crash by unwinding the execution layer database by `n` blocks.
