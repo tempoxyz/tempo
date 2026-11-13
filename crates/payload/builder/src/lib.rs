@@ -668,6 +668,7 @@ where
                         "Replay conflicts with block state, executing transaction"
                     );
                     parallel_replay_fallbacks += 1;
+                    self.metrics.parallel_replay_fallbacks.increment(1);
                     None
                 }
                 Some(result) => {
@@ -968,9 +969,6 @@ where
         self.metrics
             .parallel_transactions_executed_last
             .set(parallel_transactions_executed as f64);
-        self.metrics
-            .parallel_replay_fallbacks
-            .record(parallel_replay_fallbacks as f64);
         self.metrics
             .invalid_pool_transaction_execution_attempts
             .record(invalid_pool_transaction_execution_attempts as f64);

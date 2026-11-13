@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue};
-use metrics::Gauge;
+use metrics::{Counter, Gauge};
 use reth_errors::ProviderResult;
 use reth_metrics::{Metrics, metrics::Histogram};
 use reth_primitives_traits::{Account, Bytecode};
@@ -48,7 +48,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) parallel_transactions_executed_last: Gauge,
     /// Number of replayed pool transactions whose replay conflicted with the block state and
     /// were executed normally instead.
-    pub(crate) parallel_replay_fallbacks: Histogram,
+    pub(crate) parallel_replay_fallbacks: Counter,
     /// Number of pool transaction execution attempts rejected as invalid.
     pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
     /// Ratio of yielded pool transactions that were included in the payload.
