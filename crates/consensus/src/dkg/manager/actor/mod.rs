@@ -1466,18 +1466,11 @@ where
         )
         .await?;
 
-        // `verify_finalized_tip` skips a tip older than the trusted identity, so
-        // start no later than the tip's next epoch: reaching the identity epoch
-        // then requires crossing every boundary up to it.
-        if let Some((_, tip)) = &self.config.finalized_tip {
-            let tip_epoch = tip.proposal.round.epoch();
-            ensure!(
-                onchain_outcome.epoch() <= tip_epoch.next(),
-                "boundary outcome at height `{latest_boundary}` is for epoch `{}`, \
-                 past the epoch after the finalized tip's epoch `{tip_epoch}`",
-                onchain_outcome.epoch,
-            );
-        }
+        crate::startup::ensure_outcome_within_tip_epoch(
+            onchain_outcome.epoch(),
+            self.config.finalized_tip.as_ref().map(|(_, tip)| tip),
+        )
+        .wrap_err_with(|| format!("boundary outcome at height `{latest_boundary}`"))?;
 
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches

@@ -7,7 +7,7 @@ use commonware_consensus::{
 use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
+use eyre::{OptionExt as _, Report, WrapErr as _};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -62,7 +62,17 @@ where
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let last_finalized_number = config.execution_provider.finalized_block_number()?;
+    let mut last_finalized_number = config.execution_provider.finalized_block_number()?;
+    // The execution layer can be finalized past the consensus tip, such as after
+    // restoring a newer execution snapshot. Start no later than the tip epoch's
+    // last block so the outcome stays within the epoch after the tip's.
+    if let Some((_, tip)) = tip {
+        let tip_epoch_last = config
+            .epoch_strategy
+            .last(tip.proposal.round.epoch())
+            .expect("strategy valid for all heights and epochs");
+        last_finalized_number = last_finalized_number.min(tip_epoch_last.get());
+    }
 
     let epoch_info = config
         .epoch_strategy
@@ -101,18 +111,8 @@ where
                 "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
             )
         })?;
-    // `verify_finalized_tip` skips a tip older than the trusted identity, so
-    // start no later than the tip's next epoch: reaching the identity epoch
-    // then requires crossing every boundary up to it.
-    if let Some((_, tip)) = tip {
-        let tip_epoch = tip.proposal.round.epoch();
-        ensure!(
-            outcome.epoch() <= tip_epoch.next(),
-            "the last boundary (`{startup_execution_boundary}`) outcome is for epoch `{}`, \
-             past the epoch after the finalized tip's epoch `{tip_epoch}`",
-            outcome.epoch,
-        );
-    }
+    crate::startup::ensure_outcome_within_tip_epoch(outcome.epoch(), tip.map(|(_, tip)| tip))
+        .wrap_err_with(|| format!("the last boundary (`{startup_execution_boundary}`)"))?;
 
     let actor = Driver {
         context: ContextCell::new(context),

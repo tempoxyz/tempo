@@ -1679,3 +1679,89 @@ fn non_finalized_events_are_ignored() {
         assert!(marshal.hints().is_empty());
     });
 }
+
+#[test_traced]
+fn startup_bounds_the_execution_boundary_by_the_tip_epoch() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let tip_epoch_last = strategy.last(Epoch::new(1)).unwrap();
+        let tip_height = Height::new(EPOCH_LENGTH.get() + 1);
+        let current = dkg_fixture(&mut context, Epoch::new(1));
+        let next = dkg_fixture(&mut context, Epoch::new(2));
+        let provider = StubExecutionProvider::default();
+        // The execution layer is finalized two epochs past the tip's epoch.
+        provider.set_finalized(3 * EPOCH_LENGTH.get() + 1);
+        provider.add_header(&make_block(tip_epoch_last.get(), Some(&next.outcome)));
+        let result = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider.clone(),
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *current.outcome.network_identity(),
+                },
+                last_finalized_height: tip_height,
+                finalized_tip: Some((
+                    tip_height,
+                    make_finalization(
+                        &make_block(tip_height.get(), None),
+                        Epoch::new(1),
+                        &current.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: strategy,
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "{:?}", result.err());
+        assert_eq!(provider.header_reads(), vec![tip_epoch_last.get()]);
+    });
+}
+
+#[test_traced]
+fn startup_rejects_a_boundary_outcome_past_the_epoch_after_the_tip() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let tip_epoch_last = strategy.last(Epoch::new(1)).unwrap();
+        let tip_height = Height::new(EPOCH_LENGTH.get() + 1);
+        let current = dkg_fixture(&mut context, Epoch::new(1));
+        let future = dkg_fixture(&mut context, Epoch::new(5));
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(tip_epoch_last.get());
+        provider.add_header(&make_block(tip_epoch_last.get(), Some(&future.outcome)));
+        let error = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider,
+                scheme_provider: SchemeProvider::new(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *current.outcome.network_identity(),
+                },
+                last_finalized_height: tip_height,
+                finalized_tip: Some((
+                    tip_height,
+                    make_finalization(
+                        &make_block(tip_height.get(), None),
+                        Epoch::new(1),
+                        &current.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: strategy,
+            },
+        )
+        .await
+        .err()
+        .expect("an outcome past the tip's next epoch must fail startup");
+        assert!(
+            format!("{error:#}").contains("past the epoch after the finalized tip's epoch `1`"),
+            "{error:#}"
+        );
+    });
+}
