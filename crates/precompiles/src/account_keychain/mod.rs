@@ -2475,7 +2475,6 @@ mod tests {
         let token = Address::random();
         let other = Address::random();
         StorageCtx::enter(&mut storage, || {
-            // Initialize the keychain
             let mut keychain = AccountKeychain::initialized()?;
 
             // First, authorize a key with main key (transaction_key = 0) to set up the test

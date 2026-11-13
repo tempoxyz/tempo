@@ -104,13 +104,11 @@ impl Precompile for StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::with_storage;
-
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, with_storage},
     };
     use alloy::{
         primitives::{Address, U256},

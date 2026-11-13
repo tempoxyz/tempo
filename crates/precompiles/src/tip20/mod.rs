@@ -3749,7 +3749,6 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::path_usd(admin).apply()?;
 
-            // Initialize the TIP403 registry
             let mut registry = TIP403Registry::initialized()?;
 
             // Test special policies 0 and 1 (should always work)
