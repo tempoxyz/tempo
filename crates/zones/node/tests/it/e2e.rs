@@ -27,10 +27,11 @@ use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 
 use crate::utils::{
-    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, PolicySeed, TIP20_TX_GAS, WITHDRAWAL_TX_GAS,
-    ZoneTestNode, approve_outbox, leader_p2p_config, local_dev_zone_account, poll_until,
-    seed_fixture_for_zone, seed_raw_tip403_policy, seed_raw_tip403_token_policy, signer_at,
-    start_chain_id_rpc, start_local_p2p_cluster, start_local_zone_with_fixture,
+    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, PolicySeed, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneL1,
+    ZoneLaunch, ZoneTestNode, approve_outbox, leader_p2p_config, local_dev_zone_account,
+    next_unique_chain_id, poll_until, seed_fixture_for_zone, seed_raw_tip403_policy,
+    seed_raw_tip403_token_policy, signer_at, start_chain_id_rpc, start_local_p2p_cluster,
+    start_local_zone_with_fixture,
 };
 
 const CONTRACT_CREATION_TX_GAS: u64 = 1_000_000;
@@ -420,7 +421,16 @@ async fn test_p2p_listener_failure_stops_node() -> eyre::Result<()> {
     let occupied_listener = TcpListener::bind("127.0.0.1:0")?;
     let p2p_config = leader_p2p_config(occupied_listener.local_addr()?)?;
     let l1_rpc_url = start_chain_id_rpc(1337).await?;
-    match ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await {
+    match ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Rpc {
+            url: l1_rpc_url.to_string(),
+            chain_id: next_unique_chain_id(),
+        },
+        p2p: Some(p2p_config),
+        ..Default::default()
+    })
+    .await
+    {
         Ok(mut zone) => {
             let _exit = tokio::time::timeout(DEFAULT_TIMEOUT, zone.wait_for_node_exit())
                 .await
@@ -642,8 +652,20 @@ async fn test_two_zones_independent_deposits() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Start two zones with different chain IDs
-    let zone1 = ZoneTestNode::start_local_with_chain_id(zone_chain_id(1_337, 1)?).await?;
-    let zone2 = ZoneTestNode::start_local_with_chain_id(zone_chain_id(1_337, 2)?).await?;
+    let zone1 = ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Stub {
+            chain_id: zone_chain_id(1_337, 1)?,
+        },
+        ..Default::default()
+    })
+    .await?;
+    let zone2 = ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Stub {
+            chain_id: zone_chain_id(1_337, 2)?,
+        },
+        ..Default::default()
+    })
+    .await?;
 
     // Shared L1 fixture — same header timeline for both zones
     let mut fixture = L1Fixture::new();

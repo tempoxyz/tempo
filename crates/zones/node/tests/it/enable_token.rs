@@ -238,7 +238,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 5: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
 
     // --- Step 6: Enable AlphaUSD on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the

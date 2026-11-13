@@ -6,8 +6,8 @@
 //! ancestry path instead of the simpler direct-mode case.
 
 use crate::utils::{
-    L1TestNode, ZoneTestNode, fetch_submit_batch_call, poll_until, spawn_sequencer,
-    spawn_sequencer_with_config,
+    L1TestNode, ZoneGenesis, ZoneLaunch, ZoneTestNode, fetch_submit_batch_call, poll_until,
+    spawn_sequencer, spawn_sequencer_with_config,
 };
 use alloy::providers::Provider;
 use alloy_eips::eip2935::HISTORY_SERVE_WINDOW;
@@ -51,7 +51,7 @@ async fn test_current_tip_batch_submission_lands_in_successor_block() -> eyre::R
     .await?;
     let portal_address = l1.deploy_zone().await?;
     let portal = ZonePortal::new(portal_address, l1.provider());
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
 
     let genesis_anchor = l1.provider().get_block_number().await?;
     for offset in 1..=CURRENT_TIP_BATCH_INTERVAL {
@@ -190,12 +190,10 @@ async fn test_batch_submission_after_extended_l1_gap() -> eyre::Result<()> {
     tracing::info!(current, target_block, "L1 advanced past EIP-2935 window");
 
     // --- Step 4: Start zone node connected to L1, anchored at the portal genesis ---
-    let zone = ZoneTestNode::start_from_l1_genesis_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        genesis_block,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(genesis_block.into()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
 
     // --- Step 5: Wait for the zone to replay to the first out-of-window boundary ---
@@ -298,12 +296,10 @@ async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyr
     )
     .await?;
 
-    let zone = ZoneTestNode::start_from_l1_genesis_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        genesis_block,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(genesis_block.into()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
 
     // Wait for the actual finalized boundaries. Checkpoint-only catch-up blocks can advance across

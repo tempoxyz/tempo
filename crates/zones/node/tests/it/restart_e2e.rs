@@ -8,7 +8,7 @@
 //! - Multiple restart cycles don't corrupt state
 
 use crate::utils::{
-    L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer,
+    L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneLaunch, ZoneTestNode, batch_count, spawn_sequencer,
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -95,7 +95,7 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
@@ -199,7 +199,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
@@ -316,12 +316,10 @@ async fn test_finalized_withdrawal_survives_sequencer_restart() -> eyre::Result<
     let portal_address = l1.deploy_zone().await?;
     // Use a long withdrawal batch interval so this live L1 restart test knows
     // finalization was triggered by the withdrawal rather than an empty-batch boundary.
-    let zone = ZoneTestNode::start_from_l1_with_withdrawal_batch_interval(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        10_000,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        withdrawal_batch_interval_blocks: 10_000,
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 

@@ -1,8 +1,8 @@
 //! Demo Flow 3: Cross-Zone Transfer
 
 use crate::utils::{
-    L1_TIMEOUT, L1TestNode, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
-    spawn_sequencer,
+    L1_TIMEOUT, L1TestNode, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneLaunch,
+    ZoneTestNode, spawn_sequencer,
 };
 use alloy::primitives::U256;
 use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
@@ -71,19 +71,15 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     let router = l1.deploy_router(factory).await?;
 
     // --- Step 3: Start both zone nodes ---
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![encryption_key_a],
-    )
+    let zone_a = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![encryption_key_a],
+        ..ZoneLaunch::from_l1(&l1, portal_a)
+    })
     .await?;
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![encryption_key_b],
-    )
+    let zone_b = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![encryption_key_b],
+        ..ZoneLaunch::from_l1(&l1, portal_b)
+    })
     .await?;
 
     zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;

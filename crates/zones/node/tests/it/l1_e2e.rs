@@ -5,12 +5,12 @@
 //! subscriber naturally receives blocks and deposits — no synthetic injection.
 
 use crate::utils::{
-    DEFAULT_POLL, L1_TIMEOUT, L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs,
-    STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
-    assert_same_block, deposit_allowlist_admin, fetch_submit_batch_call, poll_until,
-    seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
-    spawn_sequencer_with_config, start_real_p2p_cluster, start_real_p2p_cluster_with_active_nodes,
-    start_real_p2p_cluster_with_deposit_allowlist, wait_all_at,
+    AllowlistSetup, ClusterConfig, DEFAULT_POLL, L1_TIMEOUT, L1TestNode, PolicySeed,
+    RouterCallbackArgs, RouterDepositArgs, STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount,
+    ZoneCreationConfig, ZoneGenesis, ZoneLaunch, ZoneTestNode, assert_same_block,
+    deposit_allowlist_admin, fetch_submit_batch_call, poll_until, seed_raw_tip403_policy,
+    seed_raw_tip403_token_policy, spawn_sequencer, spawn_sequencer_with_config,
+    start_real_p2p_cluster, wait_all_at,
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
@@ -92,7 +92,7 @@ async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
 
     let factory = l1.native_zone_factory().await?;
     let portal_address = l1.create_zone(factory).await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let router = l1
@@ -170,12 +170,10 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
     // the constructor's initial TokenEnabled event.
     let anchor_block_number = l1.provider().get_block_number().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1_at_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        anchor_block_number,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(anchor_block_number.into()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
 
     // Wait for the zone to advance past block 0 (genesis anchor)
@@ -217,7 +215,7 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
 async fn test_three_node_quorum_settles_real_batch_boundary() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let cluster = start_real_p2p_cluster(4).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig::default()).await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     eyre::ensure!(
         portal.sequencerThreshold().call().await? == 2,
@@ -275,7 +273,11 @@ async fn test_two_online_sequencers_submit_two_signature_certificate() -> eyre::
     reth_tracing::init_test_tracing();
 
     // The manifest and Portal retain all three registered members, but node C never starts.
-    let cluster = start_real_p2p_cluster_with_active_nodes(4, 2).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        active_nodes: 2,
+        ..Default::default()
+    })
+    .await?;
     eyre::ensure!(
         cluster.nodes.len() == 2 && cluster.attestation_signers.len() == 3,
         "fixture did not retain a three-member set with exactly two online nodes"
@@ -352,7 +354,11 @@ async fn test_divergent_follower_does_not_create_quorum() -> eyre::Result<()> {
     const DIVERGENT_ANCHOR_WINDOW: u64 = 64;
 
     // Leave enough Zone blocks to install the divergent state before the configured boundary.
-    let cluster = start_real_p2p_cluster(DIVERGENT_BOUNDARY).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        withdrawal_batch_interval_blocks: DIVERGENT_BOUNDARY,
+        ..Default::default()
+    })
+    .await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     // A newly started subscriber initializes its cache from the zone's L1 genesis anchor, not
     // from block zero. Its first non-contiguous coverage update resets the cache, which used to
@@ -475,12 +481,10 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
     let latest_l1_block = l1.provider().get_block_number().await?;
     assert!(latest_l1_block > provisioned.anchor_block_number);
 
-    let zone = ZoneTestNode::start_from_l1_at_block(
-        l1.http_url(),
-        l1.ws_url(),
-        provisioned.portal,
-        provisioned.anchor_block_number,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(provisioned.anchor_block_number.into()),
+        ..ZoneLaunch::from_l1(&l1, provisioned.portal)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(latest_l1_block, L1_TIMEOUT)
         .await?;
@@ -518,7 +522,7 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let signers = (FIRST_ACCOUNT_INDEX..FIRST_ACCOUNT_INDEX + ACCOUNT_COUNT)
@@ -717,7 +721,7 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
     let encryption_key = k256::SecretKey::from(l1.dev_signer().credential());
     l1.set_sequencer_encryption_key(portal_address, &encryption_key)
         .await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let portal = ZonePortal::new(portal_address, l1.provider());
@@ -853,7 +857,7 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone.assert_access_enforced(true).await?;
 
@@ -942,7 +946,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
     let l1 = L1TestNode::start().await?;
     let factory = l1.native_zone_factory().await?;
     let portal_address = l1.create_zone(factory).await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone.assert_access_enforced(true).await?;
     zone.assert_gateway_open(false).await?;
@@ -1036,7 +1040,7 @@ async fn test_queued_plain_withdrawal_bounces_after_recipient_revocation() -> ey
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
@@ -1217,19 +1221,15 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
         .await?;
 
     // --- Step 3: Start both zone nodes ---
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![k256::SecretKey::from(seq_a_signer.credential())],
-    )
+    let zone_a = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![k256::SecretKey::from(seq_a_signer.credential())],
+        ..ZoneLaunch::from_l1(&l1, portal_a)
+    })
     .await?;
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![k256::SecretKey::from(seq_b_signer.credential())],
-    )
+    let zone_b = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![k256::SecretKey::from(seq_b_signer.credential())],
+        ..ZoneLaunch::from_l1(&l1, portal_b)
+    })
     .await?;
 
     zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
@@ -1369,20 +1369,16 @@ async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
         "recipient should be blacklisted on L1"
     );
 
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![k256::SecretKey::from(seq_a_signer.credential())],
-    )
+    let zone_a = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![k256::SecretKey::from(seq_a_signer.credential())],
+        ..ZoneLaunch::from_l1(&l1, portal_a)
+    })
     .await?;
     let encryption_key = k256::SecretKey::from(seq_b_signer.credential());
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![encryption_key],
-    )
+    let zone_b = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![encryption_key],
+        ..ZoneLaunch::from_l1(&l1, portal_b)
+    })
     .await?;
 
     zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
@@ -1745,7 +1741,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 4: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
 
     // --- Step 5: Enable ZoneUSD on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
@@ -1889,7 +1885,7 @@ async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 2: Start zone with the key provisioned by deploy_zone ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
 
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
@@ -1943,7 +1939,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let recipient_signer = l1.signer_at(2);
@@ -2119,7 +2115,7 @@ async fn test_global_pause_snapshot_stops_startup_until_resume() -> eyre::Result
     let pause_receipt = portal.pause().mined().await?;
     eyre::ensure!(pause_receipt.status(), "global pause transaction failed");
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     eyre::ensure!(
         zone.l1_block_tracker().portal_paused(),
         "startup did not initialize the finalized portal pause snapshot"
@@ -2189,7 +2185,7 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     );
 
     // --- Start zone and verify it advances past the policy blocks ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let membership_block = l1
@@ -2236,7 +2232,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
     l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
         .await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // Keep the recipient authorized on Tempo so the portal accepts and escrows
@@ -2357,12 +2353,10 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
         },
     )?;
 
-    let zone = ZoneTestNode::start_from_l1_with_deposit_allowlist(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        allowlist.clone(),
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        deposit_allowlist: Some(allowlist.clone()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
@@ -2521,9 +2515,16 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     let first_signer = crate::utils::signer_at(3);
     let second_signer = crate::utils::signer_at(4);
     let (first, second) = (first_signer.address(), second_signer.address());
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[first], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
-    let (admin, zone_chain_id) = (deposit_allowlist_admin(), fixture.zone_chain_id);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![first],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
+    let (admin, zone_chain_id) = (deposit_allowlist_admin(), cluster.zone_chain_id);
 
     // The relay fails until the RPC node has connected to every sequencer.
     let listed = poll_until(
@@ -2652,11 +2653,19 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
     reth_tracing::init_test_tracing();
 
     let added = crate::utils::signer_at(4).address();
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 2, &[], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        active_nodes: 2,
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let write = sign_set(
         &deposit_allowlist_admin(),
-        fixture.zone_chain_id,
+        cluster.zone_chain_id,
         &[added],
         true,
         1,
@@ -2740,8 +2749,15 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         crate::utils::signer_at(4).address(),
         crate::utils::signer_at(5).address(),
     );
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![alice, bob],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
     let opt_in_block = l1
@@ -2812,7 +2828,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         rpc,
         &sign_set(
             &deposit_allowlist_admin(),
-            fixture.zone_chain_id,
+            cluster.zone_chain_id,
             &[bob],
             false,
             1,
@@ -2904,8 +2920,15 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
     let alice_signer = crate::utils::signer_at(3);
     let (alice, bob) = (alice_signer.address(), crate::utils::signer_at(4).address());
     // Without the admin the RPC node relays no writes but still mirrors the sequencers' list.
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], false).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![alice, bob],
+            rpc_relays_writes: false,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
     let opt_in_block = l1
@@ -2952,7 +2975,7 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
         .tx_hash();
     let remove_bob = sign_set(
         &deposit_allowlist_admin(),
-        fixture.zone_chain_id,
+        cluster.zone_chain_id,
         &[bob],
         false,
         1,
@@ -3016,12 +3039,10 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     l1.set_sequencer_encryption_key(portal_address, &current_key)
         .await?;
 
-    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        vec![old_key.clone()],
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![old_key.clone()],
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
@@ -3160,7 +3181,7 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     );
 
     // --- Step 3: Start zone with sequencer key ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // --- Step 4: Make an encrypted deposit targeting the blacklisted recipient ---
@@ -3273,7 +3294,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     }
 
     // --- Step 3: Start zone connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // Opt the zone into transfers so the rejection below comes from the sender blacklist.

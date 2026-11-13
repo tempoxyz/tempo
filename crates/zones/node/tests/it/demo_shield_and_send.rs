@@ -35,7 +35,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 3: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // --- Step 4: Alice deposits 1 pathUSD (shield) ---

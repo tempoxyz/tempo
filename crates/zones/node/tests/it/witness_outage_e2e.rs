@@ -9,8 +9,8 @@ use alloy_consensus::BlockHeader as _;
 use tempo_contracts::zones::ZonePortal;
 
 use crate::utils::{
-    RealP2pCluster, ZoneAccount, assert_same_block, poll_until,
-    start_real_p2p_cluster_without_l1_proofs, wait_all_at,
+    ClusterConfig, RealP2pCluster, ZoneAccount, assert_same_block, poll_until,
+    start_real_p2p_cluster, wait_all_at,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -20,7 +20,12 @@ const DEPOSIT: u128 = 1_000_000;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pre_t15_zone_produces_and_settles_without_witnesses() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let cluster = start_real_p2p_cluster_without_l1_proofs(4).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        settlement_proving: true,
+        without_l1_proofs: true,
+        ..Default::default()
+    })
+    .await?;
     let leader = &cluster.nodes[0];
 
     // A successful witness is persisted before its block becomes canonical, so a block without

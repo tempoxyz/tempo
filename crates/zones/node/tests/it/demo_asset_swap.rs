@@ -47,7 +47,7 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
 
     // --- Step 3: Deploy zone and start zone node ---
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
 
     // --- Step 4: Enable both tokens on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the

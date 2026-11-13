@@ -466,7 +466,7 @@ impl EarnZoneFixture {
                 .await?;
         }
 
-        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
+        let zone = ZoneTestNode::start_from_l1(&l1, portal).await?;
         setup.finish().await?;
 
         let fees = FeeConfig {
