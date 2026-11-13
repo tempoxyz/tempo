@@ -102,8 +102,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
-    /// Minimum fee cap accepted by this chain's pool.
-    minimum_fee_cap: u128,
+    /// Hardfork from which fee caps below [`TEMPO_T7_BASE_FEE_FLOOR`] are rejected.
+    fee_floor_fork: TempoHardfork,
     /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -156,7 +156,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
-            minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
+            fee_floor_fork: TempoHardfork::Genesis,
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -172,12 +172,12 @@ where
         self
     }
 
-    /// Sets the minimum fee cap for chains with a custom protocol fee policy.
+    /// Sets the hardfork from which fee caps below [`TEMPO_T7_BASE_FEE_FLOOR`] are rejected.
     ///
-    /// Tempo defaults to the T7 fee floor. Zero-base-fee chains such as Zones can opt into
-    /// accepting zero-fee transactions without disabling any other admission checks.
-    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u128) -> Self {
-        self.minimum_fee_cap = minimum_fee_cap;
+    /// Tempo enforces the floor from genesis. Zones have a zero base fee until `fork`, so they
+    /// admit any fee cap while the tip is on an earlier hardfork.
+    pub const fn with_fee_floor_from(mut self, fork: TempoHardfork) -> Self {
+        self.fee_floor_fork = fork;
         self
     }
 
@@ -497,10 +497,12 @@ where
 
         // Fees below the chain's configured floor can never become executable; fees below
         // the current dynamic base fee can wait for block selection.
-        if transaction.max_fee_per_gas() < self.minimum_fee_cap {
+        if spec >= self.fee_floor_fork
+            && transaction.max_fee_per_gas() < u128::from(TEMPO_T7_BASE_FEE_FLOOR)
+        {
             let error = HandlerError::FeeCapLessThanBaseFee {
                 max_fee_per_gas: U256::from(transaction.max_fee_per_gas()),
-                base_fee: U256::from(self.minimum_fee_cap),
+                base_fee: U256::from(TEMPO_T7_BASE_FEE_FLOOR),
             };
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -2320,7 +2322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_zero_fee_cap_with_custom_floor() {
+    async fn test_zero_fee_cap_admitted_before_fee_floor_fork() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2335,15 +2337,46 @@ mod tests {
                 .max_priority_fee(0)
                 .build_eip1559(),
         ] {
-            let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
+            let validator =
+                setup_validator(&transaction, current_time).with_fee_floor_from(TempoHardfork::T15);
+            assert!(!validator.active_hardfork().is_t15());
             let outcome = validator
                 .validate_transaction(TransactionOrigin::External, transaction)
                 .await;
             assert!(
                 outcome.is_valid(),
-                "zero fee cap should be admitted with a zero floor: {outcome:?}"
+                "zero fee cap should be admitted before the floor fork: {outcome:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_fee_cap_below_floor_rejected_from_fee_floor_fork() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let transaction = TxBuilder::aa(Address::random())
+            .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
+            .max_priority_fee(0)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+        let active = validator.active_hardfork();
+        let outcome = validator
+            .with_fee_floor_from(active)
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Invalid(_, ref err)
+                    if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::Evm(
+                            HandlerError::FeeCapLessThanBaseFee { .. }
+                        )))
+            ),
+            "expected floor rejection, got {outcome:?}"
+        );
     }
 
     #[tokio::test]
