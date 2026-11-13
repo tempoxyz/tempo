@@ -360,9 +360,11 @@ where
     /// Notably, this does not persist the dealer logs to disk! On restart, it
     /// is expected that the actor reads the dealer logs from the marshal actor
     /// and forwards them one-by-one to the state cache.
-    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block) {
+    ///
+    /// With `strict` (from T15), a dealer log with trailing bytes is ignored.
+    pub(super) fn cache_notarized_block(&mut self, round: &Round, block: &Block, strict: bool) {
         let cache = self.cache.entry(round.epoch).or_default();
-        let log = ReducedBlock::from_block_for_round(block, round);
+        let log = ReducedBlock::from_block_for_round(block, round, strict);
         cache.notarized_blocks.insert(log.digest, log);
     }
 
@@ -1188,37 +1190,26 @@ pub(super) struct ReducedBlock {
 }
 
 impl ReducedBlock {
-    pub(super) fn from_block_for_round(block: &Block, round: &Round) -> Self {
+    pub(super) fn from_block_for_round(block: &Block, round: &Round, strict: bool) -> Self {
         let log = if block.header().extra_data().is_empty() {
             None
         } else {
-            dkg::SignedDealerLog::<MinSig, PublicKey>::read_cfg(
-                &mut commonware_codec::Copying(block.header().extra_data().as_ref()),
-                &NZU32!(round.players.len() as u32),
-            )
-            .inspect(|_| {
-                info!(
-                    height = %block.height(),
-                    digest = %block.digest(),
-                    "found dealer log in block"
-                )
-            })
-            .inspect_err(|error| {
-                warn!(
-                    %error,
-                    "block header extraData had data, but it could not be read as \
-                    a signed dealer log",
-                )
-            })
-            .ok()
-            .and_then(|log| match log.check(&round.info) {
-                Some((dealer, log)) => Some((dealer, log)),
-                None => {
-                    // TODO(janis): some more fidelity here would be nice.
-                    warn!("log failed check against current round");
-                    None
-                }
-            })
+            super::read_dealer_log(block.header().extra_data().as_ref(), round, strict)
+                .inspect(|_| {
+                    info!(
+                        height = %block.height(),
+                        digest = %block.digest(),
+                        "found dealer log in block"
+                    )
+                })
+                .inspect_err(|error| {
+                    warn!(
+                        %error,
+                        "block header extraData had data, but it was not a valid \
+                        signed dealer log for the current round",
+                    )
+                })
+                .ok()
         };
         let context = block.context();
         Self {

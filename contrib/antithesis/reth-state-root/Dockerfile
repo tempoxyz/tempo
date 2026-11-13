@@ -32,7 +32,7 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     --mount=type=cache,id=antithesis-reth-state-root-sccache,target=/sccache,sharing=private \
     --mount=type=cache,id=antithesis-reth-state-root-target,target=/work/target,sharing=private \
     touch contrib/antithesis/reth-state-root/src/main.rs contrib/antithesis/trie-shapes/src/lib.rs \
-      contrib/antithesis/trie-shapes/src/bin/reth-state-root-commands.rs \
+      contrib/antithesis/trie-shapes/src/bin/reth-state-root-commands/main.rs \
     && cargo build --locked --profile antithesis -p reth-state-root-antithesis \
       --features reth-state-root-antithesis/fuzz --bin reth-state-root-antithesis \
       --target x86_64-unknown-linux-gnu \

@@ -18,8 +18,8 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
     shadow_prover::RpcFollowerShadowProver,
@@ -221,8 +221,6 @@ pub enum ZoneProverConfig {
         /// Remote provers routed by the live L1 hardfork. When absent, execute the SPF in
         /// this process.
         prover_addresses: Option<ProverAddresses>,
-        /// Independently approved enclave measurements for local, observational verification.
-        proof_verifier: Option<zone_prover::ShadowProofVerifier>,
     },
 }
 
@@ -237,13 +235,6 @@ impl ZoneProverConfig {
             Self::Shadow {
                 prover_addresses, ..
             } => prover_addresses.as_ref(),
-        }
-    }
-
-    const fn proof_verifier(&self) -> Option<&zone_prover::ShadowProofVerifier> {
-        match self {
-            Self::Settlement(_) => None,
-            Self::Shadow { proof_verifier, .. } => proof_verifier.as_ref(),
         }
     }
 }
@@ -830,6 +821,12 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
+        let get_code_l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            self.l1_state_cache.clone(),
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
@@ -881,6 +878,14 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
+                // Only on transports that serve the eth namespace, like the methods they replace.
+                container.modules.add_or_replace_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Eth,
+                    operator_get_code_module(
+                        container.registry.eth_api().clone(),
+                        get_code_l1_state,
+                    )?,
+                )?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
@@ -926,7 +931,6 @@ where
                 chain_spec: evm_chain_spec,
                 debug_api,
                 prover_addresses: prover_config.prover_addresses().cloned(),
-                proof_verifier: prover_config.proof_verifier().cloned(),
             };
             match prover_config {
                 ZoneProverConfig::Settlement(_) => {
@@ -2091,7 +2095,7 @@ where
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_authority: pool_config.max_account_slots,
             ..Default::default()
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);

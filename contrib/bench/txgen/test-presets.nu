@@ -114,6 +114,14 @@ for name in $serial_names {
     assert equal $template.expiring_nonce false
 }
 assert equal ($serial.templates.zone_deposit_0.expiring_nonce) true
+assert equal ($serial.setup.steps | where id == settlement | first | get deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-public-mix-preset (txgen-resolve-bench-spec zone-earn-serial).spec_path 1000 4 2 1337 --out-dir $serial_dir))
+    assert equal ($lagged.setup.steps | where id == settlement | first | get deploy.constructor_args) [2]
+}
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "0"} {
+    assert ((try { txgen-zone-anchor-offset; false } catch { true }))
+}
 rm -rf $serial_dir
 # Card settlement keeps 18 unsponsored shard senders that forward redemptions.
 let card_dir = (mktemp -d)
@@ -144,6 +152,8 @@ let neobank_weights = (txgen-workload-metadata-args neobank-generic $neobank_pat
 assert equal ($neobank_weights | columns | sort) [access_key_create access_key_rotate account_first_receive card_refund card_settlement card_spend cash_out dex_swap keychain_agent_spend keychain_merchant_pull payroll_existing payroll_new public_transfer public_transfer_memo reward_distribution vault_deposit vault_withdraw zone_deposit zone_withdraw]
 assert equal ($neobank_weights.cash_out * 3) ($neobank_weights.account_first_receive * 10)
 assert equal ($neobank.setup.steps | where id == authorize_keychain_users | length) 1
+# Keys are authorized once prepare_user has minted every user's pathUSD for the fee.
+assert ("prepare_user_39" in ($neobank.setup.steps | where id == authorize_keychain_users | first | get depends_on))
 assert equal ($neobank.templates.payroll_existing.calls | length) 32
 assert (($neobank.templates.reward_distribution.gas_limit) <= $TXGEN_HELPER_TX_GAS_LIMIT_CAP)
 assert equal ($neobank.setup.steps | where id =~ "^dex_wall_" | length) 6
@@ -241,8 +251,11 @@ for instance in $instances {
 }
 assert equal ($multi_weights | columns | where { |key| $key starts-with "payroll-earn/" } | sort) [payroll-earn/cash_out payroll-earn/payroll_existing payroll-earn/payroll_new payroll-earn/public_transfer payroll-earn/reward_distribution payroll-earn/vault_deposit payroll-earn/vault_withdraw payroll-earn/zone_deposit]
 # Only instances with delegated-key spend get keychain setup, over their own slice.
-let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map({id, pool: .keychain_authorize_pool.accounts.pool, keys: .keychain_authorize_pool.access_keys.range})' $multi_path | from json)
+let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map({id, pool: .keychain_authorize_pool.accounts.pool, keys: .keychain_authorize_pool.access_keys.range, depends_on})' $multi_path | from json)
 assert equal ($keychain | get id) [authorize_keychain_full authorize_keychain_card_heavy]
+# Each waits for the prepare_user that funds its slice's last user (one ordered nonce lane).
+assert equal ($keychain.1.depends_on) [$"prepare_user_($multi.accounts.users_card_heavy.range.1 - 1)"]
+assert ($keychain | get depends_on | flatten | all { |id| $id in ($multi.setup.steps | get id) })
 assert equal ($keychain.1.keys) ($multi.accounts.users_card_heavy.range | each { |user| $user + $TXGEN_HELPER_KEYCHAIN_ACCESS_KEYS_START })
 assert equal ($multi.setup.steps | where id =~ "^dex_wall_" | length) 6
 assert equal (txgen-prepare-public-mix-preset $multi_path 1000 40 6 1337) $multi_path
@@ -489,6 +502,11 @@ with-env {TXGEN_ZONE_TO_ZONE_ACCESS: open, TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
 with-env {TXGEN_ZONE_TO_ZONE_SHARE: "60"} {
     let closed_mix = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
     assert equal ($closed_mix.templates.zone_withdraw_0.calls.0.args.2) {var: setup.settlement.sender}
+}
+assert equal ($z2z.setup.steps.0.deploy.constructor_args) [1]
+with-env {TXGEN_ZONE_ANCHOR_OFFSET: "2"} {
+    let lagged = (open (txgen-prepare-zone-to-zone-preset $z2z_spec 100 2 2 --out-dir $z2z_dir))
+    assert equal ($lagged.setup.steps.0.deploy.constructor_args) [2]
 }
 with-env {TXGEN_ZONE_TO_ZONE_ACCESS: gated} {
     assert ((try { txgen-zone-to-zone-config; false } catch { true }))

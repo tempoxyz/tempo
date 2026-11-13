@@ -95,4 +95,41 @@ pub struct TempoPoolMaintenanceMetrics {
 
     /// Number of transactions evicted due to invalidation events.
     pub transactions_invalidated: Counter,
+
+    /// Number of removed transactions waiting to be revalidated and re-added.
+    pub revalidation_queue_size: Gauge,
+
+    /// Number of removed transactions dropped instead of revalidated because the revalidation
+    /// queue was full.
+    pub revalidation_dropped: Counter,
+}
+
+/// Transaction pool admission metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.admission")]
+pub(crate) struct AdmissionMetrics {
+    /// Transactions validated again before insertion because a canonical update landed while
+    /// they validated.
+    pub(crate) revalidated: Counter,
+
+    /// Valid transactions rejected because a canonical update landed during every validation
+    /// attempt.
+    pub(crate) rejected: Counter,
+
+    /// Transactions in one admission batch.
+    pub(crate) batch_size: Histogram,
+
+    /// Time one validation of an admission batch takes in seconds, from handing it to the
+    /// validation tasks to inserting its last outcome. Includes the wait for a free task, which
+    /// [`ValidationMetrics::batch_duration_seconds`] leaves out.
+    pub(crate) validation_duration_seconds: Histogram,
+}
+
+/// Transaction validator metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.validation")]
+pub(crate) struct ValidationMetrics {
+    /// Time a validation task spends on one batch in seconds: opening the tip's state, again
+    /// whenever the admission epoch advances, and validating every transaction in the batch.
+    pub(crate) batch_duration_seconds: Histogram,
 }
