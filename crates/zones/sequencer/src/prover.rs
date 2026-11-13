@@ -52,7 +52,9 @@ use zone_spf::{
 
 use crate::{
     BatchAnchor, BatchData, PreparedBatch, ProverAddresses, ZoneSequencerProvider,
-    metrics::ProverMetrics, proofs::ProofCollectorHandle, prover_config::active_l1_hardfork,
+    metrics::{ProverMetrics, ProverOutcomeMetrics},
+    proofs::ProofCollectorHandle,
+    prover_config::active_l1_hardfork,
     settlement::BatchSubmitError,
 };
 
@@ -276,7 +278,7 @@ fn spawn_prover<P: ZoneSequencerProvider>(
                 // Jobs are processed in order, and failed ones are not retried.
                 proofs.mark_shadow_proven(job.to);
             }
-            metrics
+            ProverOutcomeMetrics::new_for(result.is_ok())
                 .validation_duration_seconds
                 .record(started.elapsed().as_secs_f64());
             let response = match result {
@@ -740,7 +742,7 @@ async fn verify_remotely(
     };
     let started = Instant::now();
     let stream = remote.connect().await;
-    metrics
+    ProverOutcomeMetrics::new_for(stream.is_ok())
         .spf_remote_connect_duration_seconds
         .record(started.elapsed().as_secs_f64());
     let stream = stream.wrap_err_with(|| format!("connect to remote prover at {address}"))?;
