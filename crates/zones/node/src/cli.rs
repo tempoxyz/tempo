@@ -721,15 +721,16 @@ pub struct ZoneArgs {
     )]
     pub prover_attestation_policy: Option<PathBuf>,
 
-    /// Bounce deposits whose L1 sender is not on the allowlist persisted at
-    /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
-    /// credits every deposit. Requires `--deposits.allowlist.admin`.
+    /// Bounce deposits whose L1 sender or zone recipient is not on the allowlist persisted at
+    /// `<datadir>/deposit-allowlist.json`, and reject Zone TIP-20 transfers unless both parties
+    /// are on it. Until the admin first writes the list, the sequencer credits every deposit and
+    /// admits every transfer. Requires `--deposits.allowlist.admin`.
     #[arg(long = "deposits.allowlist", env = "DEPOSITS_ALLOWLIST")]
     pub deposit_allowlist: bool,
 
     /// Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes. On a sequencer it
     /// applies with `--deposits.allowlist`; on an rpc_only node it enables relaying those writes
-    /// to the sequencers.
+    /// to the sequencers. Every rpc_only node rejects transfers the current leader's list forbids.
     #[arg(
         long = "deposits.allowlist.admin",
         env = "DEPOSITS_ALLOWLIST_ADMIN",
@@ -786,7 +787,9 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
+    use alloy_primitives::address;
     use clap::Parser as _;
+    use reth_evm::ConfigureEvm as _;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -799,8 +802,6 @@ mod tests {
 
     #[test]
     fn re_execute_parses_without_portal_address() {
-        use reth_chainspec::EthChainSpec as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         let mut genesis = parent.genesis().clone();
         genesis.config.chain_id =
@@ -897,9 +898,6 @@ mod tests {
 
     #[tokio::test]
     async fn cli_evm_derives_portal_from_chain_spec() {
-        use reth_chainspec::EthChainSpec as _;
-        use reth_evm::ConfigureEvm as _;
-
         let parent = tempo_chainspec::spec::MODERATO.clone();
         for (zone_id, expected) in [
             (
@@ -1272,9 +1270,7 @@ mod tests {
     #[test]
     fn deposit_allowlist_is_enforced_only_when_enabled() {
         let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let admin: Address = "0x00000000000000000000000000000000000000ad"
-            .parse()
-            .unwrap();
+        let admin = address!("0x00000000000000000000000000000000000000ad");
         let admin_arg = admin.to_string();
         let parse = |extra: &[&str]| {
             ZoneArgsParser::try_parse_from(common.iter().chain(extra))

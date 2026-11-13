@@ -24,7 +24,6 @@ use crate::utils::{
 ///
 /// TIP-20 transfers use the default anchored `transferPolicyId` of 1 (allow all).
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
 async fn test_tip20_transfer_on_zone() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -56,7 +55,7 @@ async fn test_tip20_transfer_on_zone() -> eyre::Result<()> {
 
     // T6+ transfers also consult the recipient's address-level receive policy on L1.
     // Seed the anchor before pool validation; the next execution block inherits this baseline.
-    fixture.seed_no_receive_policy(bob)?;
+    fixture.seed_transfer_recipient(bob)?;
 
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
     let pending = tip20

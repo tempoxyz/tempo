@@ -4,9 +4,14 @@ use std::{future::Future, pin::Pin};
 
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use alloy_rpc_types_debug::ExecutionWitness;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, value::RawValue};
 use tempo_primitives::TempoHeader;
+
+/// Maximum byte length of a string request ID.
+///
+/// The ID is echoed in every response, so it is bounded at parse time.
+const MAX_REQUEST_ID_LEN: usize = 128;
 
 /// Shorthand for the boxed future returned by [`ZoneRpcApi`](crate::handlers::ZoneRpcApi) methods.
 ///
@@ -47,7 +52,8 @@ pub struct JsonRpcRequest {
     pub method: String,
     /// The parameters (raw JSON).
     pub params: Option<Box<serde_json::value::RawValue>>,
-    /// The request ID.
+    /// The request ID: a string of at most `MAX_REQUEST_ID_LEN` bytes, a number, or null.
+    #[serde(deserialize_with = "deserialize_request_id")]
     pub id: Value,
 }
 
@@ -492,4 +498,16 @@ pub fn to_raw<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, JsonRpcEr
 /// Shorthand for wrapping any `Display` error into a [`JsonRpcError::internal`].
 pub fn internal(e: impl std::fmt::Display) -> JsonRpcError {
     JsonRpcError::internal(e.to_string())
+}
+
+/// Deserializes a request ID, accepting only a short string, a number, or null.
+fn deserialize_request_id<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    let id = Value::deserialize(deserializer)?;
+    match &id {
+        Value::Null | Value::Number(_) => Ok(id),
+        Value::String(value) if value.len() <= MAX_REQUEST_ID_LEN => Ok(id),
+        _ => Err(de::Error::custom(format_args!(
+            "request id must be null, a number, or a string of at most {MAX_REQUEST_ID_LEN} bytes"
+        ))),
+    }
 }

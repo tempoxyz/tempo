@@ -178,6 +178,8 @@ impl Sealable for TempoHeader {
 mod tests {
     use super::*;
     use alloy_rlp::{Decodable as _, EMPTY_STRING_CODE, Header as RlpHeader};
+    use proptest::prelude::*;
+    use proptest_arbitrary_interop::arb;
 
     fn append_explicit_none_to_rlp_list(encoded: &[u8]) -> Vec<u8> {
         let mut payload = encoded;
@@ -350,5 +352,28 @@ mod tests {
             ..Default::default()
         };
         assert_ne!(header.hash_slow(), header2.hash_slow());
+    }
+
+    #[cfg(feature = "serde")]
+    proptest! {
+        #[test]
+        fn header_serde_roundtrip_preserves_hash(header in arb::<TempoHeader>()) {
+            let json = serde_json::to_string(&header).unwrap();
+            let decoded: TempoHeader = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(decoded.hash_slow(), header.hash_slow());
+            prop_assert_eq!(decoded, header);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn header_serde_omits_missing_consensus_context() {
+        let header = TempoHeader::default();
+        let json = serde_json::to_value(&header).unwrap();
+        assert!(json.get("consensusContext").is_none());
+        assert_eq!(json["mainBlockGeneralGasLimit"], "0x0");
+
+        let decoded: TempoHeader = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.hash_slow(), header.hash_slow());
     }
 }

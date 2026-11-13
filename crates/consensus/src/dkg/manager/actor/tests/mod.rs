@@ -3,9 +3,13 @@
 mod harness;
 mod startup;
 
+use commonware_cryptography::Digested;
 use std::time::Duration;
 
-use commonware_consensus::types::{Epoch, Height, Round as ConsensusRound, View};
+use commonware_consensus::{
+    Reporter as _,
+    types::{Epoch, Height, Round as ConsensusRound, View},
+};
 use commonware_cryptography::{
     bls12381::primitives::{
         group::{Private, Share},
@@ -14,8 +18,11 @@ use commonware_cryptography::{
     ed25519::PrivateKey,
 };
 use commonware_macros::test_traced;
-use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
-use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
+use commonware_runtime::{
+    Runner as _, Supervisor as _,
+    deterministic::{FaultConfig, Runner},
+};
+use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _, probability};
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoConsensusContext;
@@ -47,9 +54,6 @@ fn boundary_outcome(
 
 #[test]
 fn network_storage_failures_panic_and_allow_recovery() {
-    use commonware_runtime::deterministic::FaultConfig;
-    use commonware_utils::probability;
-
     // Exercise both failure while appending to a new journal section and
     // failure while syncing an appended dealing.
     for fail_open in [true, false] {
@@ -413,10 +417,6 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 
 #[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
-    use commonware_consensus::Reporter as _;
-    use commonware_runtime::deterministic::FaultConfig;
-    use commonware_utils::probability;
-
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
     for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
@@ -474,7 +474,7 @@ fn local_share_storage_failures_panic_and_allow_recovery() {
                 harness
                     .mailbox()
                     .clone()
-                    .report(Update::Block(Arc::new(block(header(Height::new(10)))), ack))
+                    .report(Update::Block(block(header(Height::new(10))).into(), ack))
                     .accepted()
             );
             let mut harness = context
@@ -597,6 +597,36 @@ fn startup_discards_stale_state_on_startup() {
             harness.execution.reads(),
             vec![Height::new(19); 3],
             "healing should replace stale state from the latest boundary"
+        );
+    });
+}
+
+#[test]
+fn startup_rejects_boundary_outcome_for_another_epoch() {
+    Runner::default().start(|mut context| async move {
+        // Height 19 ends epoch 1, so its outcome must be for epoch 2.
+        let (future_state, _, _) = dkg_state(&mut context, Epoch::new(5), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "startup_rejects_outcome_epoch")
+            .epoch_length(10)
+            .finalized_floor(Height::new(19))
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(19), &future_state));
+
+        harness.start().await;
+        harness.wait_for_exit().await;
+
+        assert!(harness.epoch_manager.events().is_empty());
+        let storage = state::builder()
+            .partition_prefix("startup_rejects_outcome_epoch")
+            .init_unverified(context.child("reopened"))
+            .await
+            .unwrap();
+        assert!(
+            storage.state().is_none(),
+            "the outcome must not be persisted"
         );
     });
 }
@@ -1155,7 +1185,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
                 let (dealer, log) = signed.clone().check(&info).unwrap();
                 logs.record(dealer, log);
             }
-            let output = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let output = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
             (signed, output)
         };
         let (new_logs, new_output) = reference(dkg::Reveal::V1);
@@ -1205,7 +1235,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         assert!(selected_logs.next().is_none());
         let actual = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(previous.clone())))
             .await
             .unwrap();
 
@@ -1225,7 +1255,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         harness.start().await;
         let restarted = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(previous.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(previous.clone())))
             .await
             .unwrap();
         assert_eq!(restarted, actual);
@@ -1891,9 +1921,9 @@ fn duplicate_outcome_requests_keep_all_live_waiters() {
         parent.inner.parent_hash = finalized.hash_slow();
         let parent = block(parent);
         let mailbox = harness.mailbox().clone();
-        let mut first = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
-        let mut second = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
-        let canceled = mailbox.subscribe_dkg_ceremony(Arc::new(parent.clone()));
+        let mut first = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
+        let mut second = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
+        let canceled = mailbox.subscribe_dkg_ceremony(Digested::from(parent.clone()));
         assert!(!harness.has_dealer_log(state.epoch).await);
         drop(canceled);
         assert!(futures::poll!(&mut first).is_pending());
@@ -1925,7 +1955,7 @@ fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
             let (dealer, log) = signed.clone().check(round.info()).unwrap();
             logs.record(dealer, log);
         }
-        let expected = observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+        let expected = observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
 
         let mut harness = Harness::builder(context.child("test"), "concluded_ceremony")
             .initial_state(state.clone())
@@ -1982,18 +2012,93 @@ fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
         assert!(
             harness
                 .mailbox()
-                .verify_dealer_log(state.epoch.next(), vec![u8::MAX].into())
+                .verify_dealer_log(state.epoch.next(), 0, vec![u8::MAX].into())
                 .await
                 .is_err()
         );
         assert!(
             harness
                 .mailbox()
-                .verify_dealer_log(state.epoch, vec![u8::MAX].into())
+                .verify_dealer_log(state.epoch, 0, vec![u8::MAX].into())
                 .await
                 .unwrap()
                 .is_none()
         );
+    });
+}
+
+#[test]
+fn dealer_logs_with_trailing_bytes_are_invalid_from_t15() {
+    assert_dealer_logs_with_trailing_bytes(true);
+}
+
+#[test]
+fn dealer_logs_with_trailing_bytes_are_valid_before_t15() {
+    assert_dealer_logs_with_trailing_bytes(false);
+}
+
+/// Checks a dealer log with a trailing byte against the application's
+/// verification and the ceremony that reads finalized blocks.
+fn assert_dealer_logs_with_trailing_bytes(t15: bool) {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let dealers = keys
+            .iter()
+            .map(|key| (key.clone(), None))
+            .collect::<Vec<_>>();
+        let signed_logs = signed_dealer_logs(
+            round.info(),
+            &dealers,
+            &keys,
+            |index| StdRng::seed_from_u64(index as u64),
+            |_, _| false,
+        );
+        let (trailing_dealer, _) = signed_logs[0].clone().check(round.info()).unwrap();
+        let mut trailing = signed_logs[0].encode().to_vec();
+        trailing.push(0);
+
+        let mut harness = Harness::builder(context.child("test"), "trailing_dealer_logs")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        if !t15 {
+            // Drops every fork after T12, T15 among them.
+            harness.execution.set_t12_activation(Some(0));
+        }
+        harness.start().await;
+
+        let verdict = harness
+            .mailbox()
+            .verify_dealer_log(state.epoch, 0, trailing.clone().into())
+            .await
+            .unwrap();
+        assert_eq!(verdict, (!t15).then_some(trailing_dealer));
+
+        for (offset, signed) in signed_logs.iter().enumerate() {
+            let mut log_header = header(Height::new(15 + offset as u64));
+            log_header.inner.extra_data = if offset == 0 {
+                trailing.clone().into()
+            } else {
+                signed.encode().into()
+            };
+            harness.report_finalized_header(log_header).await;
+        }
+        // The ceremony concludes before the end of the epoch only with the logs
+        // of all dealers. From T15, it lacks the log with the trailing byte.
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(18)),
+            Height::new(18),
+            1,
+        );
+        let concluded = context
+            .timeout(
+                Duration::from_secs(1),
+                harness.mailbox().subscribe_dkg_ceremony(parent),
+            )
+            .await;
+        assert_eq!(concluded.is_ok(), !t15);
     });
 }
 
@@ -2033,7 +2138,7 @@ fn outcome_request_fills_gap_from_notarized_ancestry() {
 
         let output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(tip.clone())))
             .await
             .unwrap();
 
@@ -2076,7 +2181,7 @@ fn outcome_request_waits_for_blocks_without_stalling_actor() {
         harness.start().await;
         let mut response = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(tip.clone())));
+            .subscribe_dkg_ceremony(Digested::from(block(tip.clone())));
 
         // Both the starting block and its ancestors can arrive after the
         // request. Waiting for either must leave the actor responsive.
@@ -2147,7 +2252,7 @@ fn outcome_walk_fetches_blocks_after_its_requests_go_away() {
         }
         harness.start().await;
 
-        let parent = Arc::new(block(tip));
+        let parent = Digested::from(block(tip));
         let request = harness.mailbox().subscribe_dkg_ceremony(parent.clone());
         let marshal = harness.marshal.clone();
         let wait_ctx = context.child("wait_for_subscription");
@@ -2217,7 +2322,7 @@ fn outcome_request_drops_ancestry_with_wrong_parent_height() {
                 Duration::from_secs(1),
                 harness
                     .mailbox()
-                    .subscribe_dkg_ceremony(Arc::new(block(tip.clone()))),
+                    .subscribe_dkg_ceremony(Digested::from(block(tip.clone()))),
             )
             .await
             .expect("a mismatched ancestor must close the outcome subscription");
@@ -2288,7 +2393,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let first_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(first_tip.clone())))
             .await
             .unwrap();
 
@@ -2320,7 +2425,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         let second_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(second_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(second_tip.clone())))
             .await
             .unwrap();
 
@@ -2346,7 +2451,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         // DKG Outcomes are cached, thus we can request the outcome without re-reading state
         let cached_first_output = harness
             .mailbox()
-            .subscribe_dkg_ceremony(Arc::new(block(first_tip.clone())))
+            .subscribe_dkg_ceremony(Digested::from(block(first_tip.clone())))
             .await
             .unwrap();
 

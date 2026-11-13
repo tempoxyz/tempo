@@ -7,26 +7,41 @@
 //! The actor is configured via [`Config`] passed to the [`init`] function.
 //!
 //! Other parts of the system interact with the actor through its [`Mailbox`],
-//! which implements [`AddressableManager`], [`commonware_p2p::Provider`], and
-//! [`commonware_consensus::Reporter`] to receive
+//! which implements [`commonware_p2p::Provider`] (forwarded to the P2P actor)
+//! and [`commonware_consensus::Reporter`] to receive
 //! [`commonware_consensus::marshal::Update`] from the marshal actor.
 //!
 //! # How peers are determined
 //!
-//! The set of peers is the union of two subsets:
+//! Peers are read from two pieces of finalized state:
 //!
-//! 1. Those entries in the Validator Config contract that have a field
-//!    `active == true`.
-//! 2. The dealers and players as per the last DKG outcome.
+//! - the DKG outcome in the header of the latest epoch boundary block at or
+//!   below the highest finalized height;
+//! - the Validator Config V2 contract at the highest finalized height.
 //!
-//! Because DKG ceremonies can fail, it happens that the DKG outcome contains
-//! validators that contain `active == false` in the contract. Therefore, the
-//! actor reads all entries in the contract to look up the egress and ingress
-//! addresses of the validators (active and inactive), before constructing an
-//! overall peer set `{dealers, players, active validators}` together with
-//! addresses.
+//! The highest finalized height is the execution layer's finalized block,
+//! capped by the latest finalized tip consensus has observed.
+//!
+//! The peer set is split into two tiers:
+//!
+//! 1. **Primary**: the players of the DKG outcome.
+//! 2. **Secondary**: the next players of the DKG outcome and the contract's
+//!    active validators, minus those already primary.
+//!
+//! Addresses for all peers are resolved against the contract. DKG peers that
+//! are no longer active are looked up by public key; every DKG peer must have
+//! a well-formed entry in the contract.
+//!
+//! # When peers are updated
+//!
+//! [`init`] registers the first peer set from execution state, before marshal
+//! or the executor start, because DKG may need these peers to recover the tip.
+//! After that, peers are re-read on every finalized block or tip reported by
+//! marshal and every 30 seconds otherwise. A new peer set is tracked under the
+//! finalized height it was read at when its membership changes; when only
+//! addresses change, the existing set's addresses are overwritten.
 
-use std::sync::Arc;
+use std::{num::NonZeroU32, sync::Arc};
 
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
@@ -58,6 +73,9 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
     pub(crate) finalized_tip: (Height, Digest),
+    /// The P2P network's maximum peer set size. The network panics on larger
+    /// peer sets; a warning is logged past 2/3 of it.
+    pub(crate) max_peers: NonZeroU32,
 }
 
 /// Initializes the actor and registers its first peers from available execution

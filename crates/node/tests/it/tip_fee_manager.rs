@@ -16,8 +16,11 @@ use tempo_alloy::rpc::{TempoTransactionReceipt, TempoTransactionRequest};
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
+    OUSD_ADDRESS,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::slots,
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -25,16 +28,13 @@ use tempo_primitives::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::OUSD_ADDRESS;
-    use tempo_precompiles::tip20::slots;
-
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
             tempo_chainspec::hardfork::TempoHardfork::T13,
         ))?;
         // Give OUSD the existing test token's funded accounts and roles.
         let mut ousd = genesis["alloc"][format!("{PATH_USD_ADDRESS:#x}")].clone();
-        ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] =
+        ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] =
             format!("{:#066x}", U256::from_be_slice(PATH_USD_ADDRESS.as_slice())).into();
         genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
         let setup = TestNodeBuilder::new()
@@ -342,11 +342,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: Address::ZERO.into(),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
             ..Default::default()
         };
 
@@ -413,11 +409,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: Address::ZERO.into(),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         // Placeholder so `skip_fee_token = true` when computing signature_hash
         fee_payer_signature: Some(Signature::new(
             Default::default(),
