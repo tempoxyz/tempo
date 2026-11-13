@@ -52,9 +52,7 @@ use zone_spf::{
 
 use crate::{
     BatchAnchor, BatchData, PreparedBatch, ProverAddresses, ZoneSequencerProvider,
-    metrics::{ProverMetrics, ProverOutcomeMetrics},
-    proofs::ProofCollectorHandle,
-    prover_config::active_l1_hardfork,
+    metrics::ProverMetrics, proofs::ProofCollectorHandle, prover_config::active_l1_hardfork,
     settlement::BatchSubmitError,
 };
 
@@ -278,9 +276,12 @@ fn spawn_prover<P: ZoneSequencerProvider>(
                 // Jobs are processed in order, and failed ones are not retried.
                 proofs.mark_shadow_proven(job.to);
             }
-            ProverOutcomeMetrics::new_for(result.is_ok())
-                .validation_duration_seconds
-                .record(started.elapsed().as_secs_f64());
+            let validation_duration_seconds = if result.is_ok() {
+                &metrics.validation_duration_seconds_success
+            } else {
+                &metrics.validation_duration_seconds_failure
+            };
+            validation_duration_seconds.record(started.elapsed().as_secs_f64());
             let response = match result {
                 Ok((stats, proof_bundle)) => {
                     metrics.validation_success_total.increment(1);
@@ -742,9 +743,12 @@ async fn verify_remotely(
     };
     let started = Instant::now();
     let stream = remote.connect().await;
-    ProverOutcomeMetrics::new_for(stream.is_ok())
-        .spf_remote_connect_duration_seconds
-        .record(started.elapsed().as_secs_f64());
+    let connect_duration_seconds = if stream.is_ok() {
+        &metrics.spf_remote_connect_duration_seconds_success
+    } else {
+        &metrics.spf_remote_connect_duration_seconds_failure
+    };
+    connect_duration_seconds.record(started.elapsed().as_secs_f64());
     let stream = stream.wrap_err_with(|| format!("connect to remote prover at {address}"))?;
 
     let first_read_at = Arc::new(OnceLock::new());

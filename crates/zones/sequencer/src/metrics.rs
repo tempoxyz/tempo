@@ -26,6 +26,14 @@ pub(crate) struct ProverMetrics {
     /// Time a finalized batch candidate spends waiting for the prover worker.
     pub(crate) queue_duration_seconds: Histogram,
 
+    /// End-to-end latency of a prover validation attempt in seconds.
+    #[metric(rename = "validation_duration_seconds", labels = [("outcome", "success")])]
+    pub(crate) validation_duration_seconds_success: Histogram,
+
+    /// End-to-end latency of a prover validation attempt in seconds.
+    #[metric(rename = "validation_duration_seconds", labels = [("outcome", "failure")])]
+    pub(crate) validation_duration_seconds_failure: Histogram,
+
     /// Time spent loading and decoding canonical Zone blocks.
     pub(crate) zone_inputs_duration_seconds: Histogram,
 
@@ -37,6 +45,14 @@ pub(crate) struct ProverMetrics {
 
     /// Time spent verifying a generated batch witness locally or remotely.
     pub(crate) spf_execution_duration_seconds: Histogram,
+
+    /// Time spent establishing, or failing to establish, a TCP connection to the remote prover.
+    #[metric(rename = "spf_remote_connect_duration_seconds", labels = [("outcome", "success")])]
+    pub(crate) spf_remote_connect_duration_seconds_success: Histogram,
+
+    /// Time spent establishing, or failing to establish, a TCP connection to the remote prover.
+    #[metric(rename = "spf_remote_connect_duration_seconds", labels = [("outcome", "failure")])]
+    pub(crate) spf_remote_connect_duration_seconds_failure: Histogram,
 
     /// Time spent serializing and sending a request to the remote prover.
     pub(crate) spf_remote_request_send_duration_seconds: Histogram,
@@ -109,26 +125,6 @@ pub(crate) struct ProverMetrics {
 
     /// Number of Tempo state trie nodes in the latest successfully validated batch witness.
     pub(crate) tempo_state_nodes_last: Gauge,
-}
-
-/// Prover latencies labeled with the `outcome` of the measured step, `success` or
-/// `failure`, so failed attempts such as connect timeouts don't skew successful ones.
-#[derive(Metrics, Clone)]
-#[metrics(scope = "tempo_zone_prover")]
-pub(crate) struct ProverOutcomeMetrics {
-    /// End-to-end latency of a prover validation attempt in seconds.
-    pub(crate) validation_duration_seconds: Histogram,
-
-    /// Time spent establishing, or failing to establish, a TCP connection to the remote prover.
-    pub(crate) spf_remote_connect_duration_seconds: Histogram,
-}
-
-impl ProverOutcomeMetrics {
-    /// Returns the handles labeled `outcome="success"` when `success` is true, else
-    /// `outcome="failure"`.
-    pub(crate) fn new_for(success: bool) -> Self {
-        Self::new_with_labels(&[("outcome", if success { "success" } else { "failure" })])
-    }
 }
 
 /// Metrics emitted by the withdrawal processor.
