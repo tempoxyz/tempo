@@ -1018,8 +1018,12 @@ where
                 bail!("received a dealing from a non-dealer");
             }
             Some(Message::ACK_TAG) if round.players().position(&from).is_none() => {
-                info!("ignoring ACK from a non-player");
-                return Ok(());
+                commonware_p2p::block!(
+                    self.config.blocker,
+                    from.clone(),
+                    "DKG ACK from a non-player"
+                );
+                bail!("received an ACK from a non-player");
             }
             _ => {}
         }

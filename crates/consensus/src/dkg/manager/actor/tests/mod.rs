@@ -450,8 +450,11 @@ fn messages_from_nonparticipants_are_rejected_before_decoding() {
                 vec![Message::ACK_TAG, u8::MAX].into(),
             )
             .await;
-        result.unwrap();
-        assert!(harness.blocker.peers().is_empty());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received an ACK from a non-player"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone()]);
 
         let result = actor
             .handle_network_msg(
@@ -468,7 +471,7 @@ fn messages_from_nonparticipants_are_rejected_before_decoding() {
             result.unwrap_err().to_string(),
             "received a dealing from a non-dealer"
         );
-        assert_eq!(harness.blocker.peers(), vec![outsider]);
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone(), outsider]);
     });
 }
 
