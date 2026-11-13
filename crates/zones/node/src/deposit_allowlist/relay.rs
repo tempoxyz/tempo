@@ -1006,6 +1006,7 @@ mod tests {
                 .map(|(index, id)| AllowlistGroup {
                     id: id.clone(),
                     members: if index == 0 { members.to_vec() } else { vec![] },
+                    depositors: vec![],
                     transfers: true,
                 })
                 .collect::<Vec<_>>()

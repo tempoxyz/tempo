@@ -8,13 +8,15 @@
 //! and the L1 routers each group may use. Users keep the same address on L1 and the Zone, so the
 //! same groups decide every movement of funds:
 //!
-//! - **Deposits:** the decrypted recipient must be in a group that also holds the L1 sender or
-//!   lists the sender as one of its routers.
+//! - **Deposits:** the decrypted recipient must be in a group that also holds the L1 sender, lists
+//!   it as a depositor, or is served by it as a router. Depositors, such as a shared on-ramp, fund
+//!   a group's members without joining it, so one listed in several groups gains no Zone
+//!   transfers between them.
 //! - **Transfers:** the sender, the recipient and any spender must share a group whose
 //!   `transfers` flag is set (see [`TransferAllowlist`]).
 //! - **Withdrawals to a router:** the withdrawer must be in one of the router's groups, so only
-//!   those groups can reach the router's vault. Withdrawals to any other address stay open, so
-//!   removing an account never traps its funds.
+//!   those groups can reach the router's vault. Plain withdrawals to any other address stay open,
+//!   so removing an account never traps its funds.
 //!
 //! The checks run only where blocks are built, so they need no hardfork. RPC-only nodes keep an
 //! [`AllowlistMirror`] of the leader's list so they can reject such transfers on submission
@@ -23,10 +25,16 @@
 //! The single list of earlier releases is the group [`DEFAULT_GROUP`], which allows transfers.
 //! `zoneAdmin_setDepositAllowed` and `zoneAdmin_replaceDepositAllowlist` edit only that group, so a
 //! Zone that never writes other groups behaves as before. `zoneAdmin_replaceDepositAllowlistGroups`
-//! replaces every group and router at once.
+//! replaces every group and router at once. Once the list holds other groups or any router, the
+//! sequencer rejects the default-group methods, so a stray call cannot add a transfer-enabled
+//! group to a shared Zone.
 //!
 //! A sequencer with no persisted list is uninitialized and credits every deposit until its first
 //! write, so enabling the allowlist does not bounce deposits before the admin fills the list.
+//! A shared Zone runs it fail-closed instead (`--deposits.allowlist.fail-closed`): an
+//! uninitialized list bounces every deposit and rejects every transfer, and a withdrawal that calls
+//! back into an L1 contract needs that contract listed as a router, so an Earn router nobody
+//! registered yet is closed rather than open to every account.
 //! Each sequencer keeps its own file, which consensus does not replicate; the operator runbook in
 //! `zones/docs/ZONES.md` covers enabling the allowlist and adding or restoring sequencers.
 
@@ -103,6 +111,11 @@ sol! {
         /// Non-empty and at most 32 bytes, unique within the policy.
         string id;
         address[] members;
+        /// L1 senders, such as a shared on-ramp, whose deposits may credit members. Unlike
+        /// members they gain no Zone transfers, so one listed in several groups cannot move funds
+        /// between them.
+        #[serde(default)]
+        address[] depositors;
         /// Whether members may send Zone transfers to each other.
         bool transfers;
     }
@@ -263,6 +276,10 @@ pub enum DepositAllowlistError {
     DuplicateRouter { router: Address },
     #[error("router {router} names unknown group {id:?}")]
     UnknownGroup { router: Address, id: String },
+    #[error(
+        "the allowlist has groups or routers beyond the default group; write it with zoneAdmin_replaceDepositAllowlistGroups"
+    )]
+    Grouped,
     #[error("failed to persist the allowlist: {0}")]
     Persist(String),
     #[error("deposit allowlist is not enabled on this sequencer")]
@@ -302,10 +319,13 @@ pub(crate) struct Policy {
 }
 
 impl Policy {
-    /// Entries counted against [`MAX_DEPOSIT_ALLOWLIST_LEN`]: every membership and every group a
-    /// router serves.
+    /// Entries counted against [`MAX_DEPOSIT_ALLOWLIST_LEN`]: every membership, every depositor of
+    /// a group and every group a router serves.
     fn len(&self) -> usize {
-        let members = self.groups.values().map(|group| group.members.len());
+        let members = self
+            .groups
+            .values()
+            .map(|group| group.members.len() + group.depositors.len());
         let routes = self.routers.values().map(BTreeSet::len);
         members.chain(routes).sum()
     }
@@ -341,18 +361,27 @@ impl Policy {
             .entry(DEFAULT_GROUP.to_owned())
             .or_insert_with(|| Group {
                 members: BTreeSet::new(),
+                depositors: BTreeSet::new(),
                 transfers: true,
             })
     }
 
+    /// Whether the policy holds anything the default-group methods cannot express: another group
+    /// or a router. Those methods are then rejected.
+    fn is_grouped(&self) -> bool {
+        !self.routers.is_empty() || self.groups.keys().any(|id| id != DEFAULT_GROUP)
+    }
+
     /// Whether a deposit from L1 `sender` may credit zone `recipient`: some group holds the
-    /// recipient and either holds the sender or is served by it as a router. A deposit whose
-    /// recipient did not decrypt (`None`) refunds anyway, so it needs only a sender that is a
-    /// member or router of some group.
+    /// recipient and holds the sender, lists it as a depositor, or is served by it as a router. A
+    /// deposit whose recipient did not decrypt (`None`) refunds anyway, so it needs only a sender
+    /// that is a member, depositor or router of some group.
     fn admits_deposit(&self, sender: Address, recipient: Option<Address>) -> bool {
         let routes = self.routers.get(&sender);
         let reaches = |(id, group): &(&String, &Group)| {
-            group.members.contains(&sender) || routes.is_some_and(|routes| routes.contains(*id))
+            group.members.contains(&sender)
+                || group.depositors.contains(&sender)
+                || routes.is_some_and(|routes| routes.contains(*id))
         };
         match recipient {
             Some(recipient) => self
@@ -366,8 +395,9 @@ impl Policy {
 
     /// Whether every one of `movements` is allowed. A transfer needs one group with transfers
     /// allowed that holds both parties and any spender. A withdrawal to a router needs the
-    /// withdrawer in one of the router's groups; one to any other address is always allowed.
-    fn admits(&self, movements: &[Movement]) -> bool {
+    /// withdrawer in one of the router's groups. A plain withdrawal to any other address is always
+    /// allowed; one that calls back into an unlisted address is allowed unless `fail_closed`.
+    fn admits(&self, movements: &[Movement], fail_closed: bool) -> bool {
         movements.iter().all(|movement| match *movement {
             Movement::Transfer { spender, from, to } => self.groups.values().any(|group| {
                 group.transfers
@@ -375,13 +405,18 @@ impl Policy {
                     && group.members.contains(&to)
                     && spender.is_none_or(|spender| group.members.contains(&spender))
             }),
-            Movement::Withdrawal { sender, to } => self.routers.get(&to).is_none_or(|routes| {
-                routes.iter().any(|id| {
+            Movement::Withdrawal {
+                sender,
+                to,
+                callback,
+            } => match self.routers.get(&to) {
+                Some(routes) => routes.iter().any(|id| {
                     self.groups
                         .get(id)
                         .is_some_and(|group| group.members.contains(&sender))
-                })
-            }),
+                }),
+                None => !(fail_closed && callback),
+            },
         })
     }
 }
@@ -404,6 +439,7 @@ impl TryFrom<AllowlistPolicy> for Policy {
                 Entry::Vacant(entry) => {
                     entry.insert(Group {
                         members: group.members.into_iter().collect(),
+                        depositors: group.depositors.into_iter().collect(),
                         transfers: group.transfers,
                     });
                 }
@@ -441,6 +477,7 @@ impl From<Policy> for AllowlistPolicy {
                 .map(|(id, group)| AllowlistGroup {
                     id,
                     members: group.members.into_iter().collect(),
+                    depositors: group.depositors.into_iter().collect(),
                     transfers: group.transfers,
                 })
                 .collect(),
@@ -456,10 +493,12 @@ impl From<Policy> for AllowlistPolicy {
     }
 }
 
-/// A group's members and whether they may transfer to each other.
+/// A group's members, the L1 senders that may fund them, and whether members may transfer to
+/// each other.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Group {
     members: BTreeSet<Address>,
+    depositors: BTreeSet<Address>,
     transfers: bool,
 }
 
@@ -525,7 +564,8 @@ fn log_status(status: DepositAllowlistStatus, message: &'static str) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DepositAllowlistStatus {
-    /// Whether the list has been written; an uninitialized sequencer credits every deposit.
+    /// Whether the list has been written; an uninitialized sequencer credits every deposit unless
+    /// it runs fail-closed.
     pub(crate) initialized: bool,
     /// Nonce of the last applied signed write; 0 before the first one.
     pub(crate) nonce: u64,
@@ -574,6 +614,9 @@ struct Inner {
     admin: DepositAllowlistAdmin,
     /// Current state, `None` until the first write; the engine reads it on every block build.
     state: RwLock<Option<State>>,
+    /// Treat an uninitialized list as empty and reject withdrawals that call back into an
+    /// address the list does not name as a router.
+    fail_closed: bool,
     /// Serializes writers so updates persist and apply in order without holding `state` across
     /// disk I/O.
     write_lock: Mutex<()>,
@@ -581,7 +624,13 @@ struct Inner {
 
 impl DepositAllowlist {
     /// Load the persisted list from `path`, starting uninitialized when it does not exist yet.
-    pub fn load(path: PathBuf, admin: DepositAllowlistAdmin) -> eyre::Result<Self> {
+    /// With `fail_closed`, an uninitialized list admits nothing, and a withdrawal that calls back
+    /// into an L1 address needs that address listed as a router.
+    pub fn load(
+        path: PathBuf,
+        admin: DepositAllowlistAdmin,
+        fail_closed: bool,
+    ) -> eyre::Result<Self> {
         // Only a missing path means uninitialized. Any other I/O error, or a dangling symlink,
         // fails startup rather than crediting every deposit.
         let state = match std::fs::symlink_metadata(&path) {
@@ -594,7 +643,13 @@ impl DepositAllowlist {
             Ok(_) => Some(read_state(&path)?),
         };
         log_status(status_of(state.as_ref()), "Loaded deposit allowlist");
-        if state.is_none() {
+        if state.is_none() && fail_closed {
+            warn!(
+                target: "zone::allowlist",
+                path = %path.display(),
+                "Deposit allowlist is uninitialized and fail-closed: this sequencer bounces every deposit and rejects every transfer while it leads, until the admin writes the list"
+            );
+        } else if state.is_none() {
             warn!(
                 target: "zone::allowlist",
                 path = %path.display(),
@@ -618,6 +673,7 @@ impl DepositAllowlist {
                 path,
                 admin,
                 state: RwLock::new(state),
+                fail_closed,
                 write_lock: Mutex::new(()),
             }),
         })
@@ -640,19 +696,26 @@ impl DepositAllowlist {
 
     /// Add or remove `addresses` in the default group, persisting the result before it takes
     /// effect. Fails while the list is uninitialized, because a partial first write would stop
-    /// crediting everyone else.
+    /// crediting everyone else, and once the list holds other groups or routers.
     pub fn set(&self, addresses: &[Address], allowed: bool) -> Result<(), DepositAllowlistError> {
         self.update(|state| {
             let mut next = state.ok_or(DepositAllowlistError::Uninitialized)?.clone();
+            if next.policy.is_grouped() {
+                return Err(DepositAllowlistError::Grouped);
+            }
             apply_set(&mut next.policy.default_group().members, addresses, allowed);
             Ok(Some(next))
         })
     }
 
     /// Replace the members of the default group, persisting the result before it takes effect.
+    /// Fails once the list holds other groups or routers.
     pub fn replace(&self, addresses: Vec<Address>) -> Result<(), DepositAllowlistError> {
         self.update(|state| {
             let mut next = state.cloned().unwrap_or_default();
+            if next.policy.is_grouped() {
+                return Err(DepositAllowlistError::Grouped);
+            }
             next.policy.default_group().members = addresses.into_iter().collect();
             Ok(Some(next))
         })
@@ -660,7 +723,8 @@ impl DepositAllowlist {
 
     /// Apply `write` if the admin signed it, its deadline has not passed, and its nonce exceeds
     /// the last applied one. A retry of the last applied write succeeds without reapplying it.
-    /// Only a replacement can initialize the list.
+    /// Only a replacement can initialize the list, and the default-group writes fail once the list
+    /// holds other groups or routers.
     pub(crate) fn apply_signed(&self, write: SignedWrite) -> Result<(), DepositAllowlistError> {
         let hash = self.inner.admin.authorize(&write)?;
         self.update(|state| {
@@ -678,6 +742,9 @@ impl DepositAllowlist {
                 return Err(DepositAllowlistError::Uninitialized);
             }
             let mut policy = state.map(|state| state.policy.clone()).unwrap_or_default();
+            if policy.is_grouped() && !matches!(write.write, Write::ReplaceGroups { .. }) {
+                return Err(DepositAllowlistError::Grouped);
+            }
             match write.write {
                 Write::Set { addresses, allowed } => {
                     apply_set(&mut policy.default_group().members, &addresses, allowed);
@@ -703,8 +770,8 @@ impl DepositAllowlist {
     }
 
     /// Replace the decryption data of every deposit the list does not admit: one whose recipient
-    /// shares no group with its L1 sender and no group the sender serves as a router. An
-    /// uninitialized list admits every deposit.
+    /// shares no group with its L1 sender and no group the sender serves as a depositor or router.
+    /// An uninitialized list admits every deposit, or none when it is fail-closed.
     ///
     /// `senders` holds the L1 sender of each user deposit in queue order; `prepare_many` emits
     /// exactly one entry in `recipients` and `decryptions` per user deposit in the same order.
@@ -724,12 +791,15 @@ impl DepositAllowlist {
             decryptions.len()
         );
         let state = self.inner.state.read();
-        let Some(state) = state.as_ref() else {
-            return Ok(0);
+        let empty = Policy::default();
+        let policy = match state.as_ref() {
+            Some(state) => &state.policy,
+            None if self.inner.fail_closed => &empty,
+            None => return Ok(0),
         };
         let mut rejected = 0;
         for ((sender, recipient), decryption) in senders.iter().zip(recipients).zip(decryptions) {
-            if !state.policy.admits_deposit(*sender, *recipient) {
+            if !policy.admits_deposit(*sender, *recipient) {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
             }
@@ -759,11 +829,11 @@ impl DepositAllowlist {
 
 impl TransferAllowlist for DepositAllowlist {
     fn admits(&self, movements: &[Movement]) -> bool {
-        self.inner
-            .state
-            .read()
-            .as_ref()
-            .is_none_or(|state| state.policy.admits(movements))
+        let fail_closed = self.inner.fail_closed;
+        match self.inner.state.read().as_ref() {
+            Some(state) => state.policy.admits(movements, fail_closed),
+            None => !fail_closed || Policy::default().admits(movements, true),
+        }
     }
 }
 
@@ -771,7 +841,9 @@ impl TransferAllowlist for DepositAllowlist {
 /// refreshed by the relay's `mirror_leader` task.
 ///
 /// It admits every transfer until the leader reports a written list, and again once it no longer
-/// holds one; the leader still enforces its own list. Cloning shares the same copy.
+/// holds one; the leader still enforces its own list. A fail-closed copy also rejects withdrawals
+/// that call back into an address the list does not name as a router. Cloning shares the same
+/// copy.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AllowlistMirror {
     inner: Arc<MirrorInner>,
@@ -783,6 +855,8 @@ struct MirrorInner {
     list: RwLock<Option<MirroredList>>,
     /// Wakes the refresh task early, after this node relays a write.
     refresh: Notify,
+    /// Apply the fail-closed rules to the leader's list, matching a fail-closed leader.
+    fail_closed: bool,
 }
 
 #[derive(Debug)]
@@ -793,6 +867,16 @@ struct MirroredList {
 }
 
 impl AllowlistMirror {
+    /// An empty copy that applies the fail-closed rules once it holds the leader's list.
+    pub(crate) fn new(fail_closed: bool) -> Self {
+        Self {
+            inner: Arc::new(MirrorInner {
+                fail_closed,
+                ..Default::default()
+            }),
+        }
+    }
+
     /// The version of the copy, `None` while the leader has no written list or none is known.
     pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
         self.inner.list.read().as_ref().map(|list| list.status)
@@ -834,7 +918,7 @@ impl TransferAllowlist for AllowlistMirror {
             .list
             .read()
             .as_ref()
-            .is_none_or(|list| list.policy.admits(movements))
+            .is_none_or(|list| list.policy.admits(movements, self.inner.fail_closed))
     }
 }
 
@@ -1054,6 +1138,7 @@ mod tests {
     const DAVE: Address = address!("0x0000000000000000000000000000000000000da7");
     const GATEWAY: Address = address!("0x0000000000000000000000000000000000000ca7");
     const ROUTER: Address = address!("0x00000000000000000000000000000000000c0de0");
+    const ONRAMP: Address = address!("0x000000000000000000000000000000000000f00d");
     const ZONE_CHAIN_ID: u64 = 421_700_003;
 
     fn admin_signer() -> PrivateKeySigner {
@@ -1068,7 +1153,11 @@ mod tests {
     }
 
     fn load(path: PathBuf) -> DepositAllowlist {
-        DepositAllowlist::load(path, admin()).unwrap()
+        DepositAllowlist::load(path, admin(), false).unwrap()
+    }
+
+    fn load_fail_closed(path: PathBuf) -> DepositAllowlist {
+        DepositAllowlist::load(path, admin(), true).unwrap()
     }
 
     /// Members of the default group.
@@ -1094,7 +1183,29 @@ mod tests {
         AllowlistGroup {
             id: id.to_owned(),
             members: members.to_vec(),
+            depositors: vec![],
             transfers,
+        }
+    }
+
+    fn funded_by(mut group: AllowlistGroup, depositors: &[Address]) -> AllowlistGroup {
+        group.depositors = depositors.to_vec();
+        group
+    }
+
+    fn withdraw(sender: Address, to: Address) -> Movement {
+        Movement::Withdrawal {
+            sender,
+            to,
+            callback: false,
+        }
+    }
+
+    fn withdraw_with_callback(sender: Address, to: Address) -> Movement {
+        Movement::Withdrawal {
+            sender,
+            to,
+            callback: true,
         }
     }
 
@@ -1106,12 +1217,13 @@ mod tests {
     }
 
     /// Two tenants: `custodial` (ALICE, BOB and GATEWAY, transfers allowed) and `embedded`
-    /// (CAROL and GATEWAY, no transfers), with ROUTER serving only `custodial`.
+    /// (CAROL and GATEWAY, no transfers), both funded by the depositor ONRAMP, with ROUTER serving
+    /// only `custodial`.
     fn tenants() -> AllowlistPolicy {
         AllowlistPolicy {
             groups: vec![
-                group("custodial", &[ALICE, BOB, GATEWAY], true),
-                group("embedded", &[CAROL, GATEWAY], false),
+                funded_by(group("custodial", &[ALICE, BOB, GATEWAY], true), &[ONRAMP]),
+                funded_by(group("embedded", &[CAROL, GATEWAY], false), &[ONRAMP]),
             ],
             routers: vec![router(ROUTER, &["custodial"])],
         }
@@ -1255,7 +1367,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("moved.json"), &path).unwrap();
 
         // Starting uninitialized here would credit every deposit.
-        let err = DepositAllowlist::load(path, admin()).unwrap_err();
+        let err = DepositAllowlist::load(path, admin(), false).unwrap_err();
         assert!(format!("{err:#}").contains("failed to open"), "{err:#}");
     }
 
@@ -1547,12 +1659,18 @@ mod tests {
             // A router credits only the groups it serves.
             (ROUTER, Some(ALICE), true),
             (ROUTER, Some(CAROL), false),
+            // A depositor credits the members of every group that lists it, and nobody else.
+            (ONRAMP, Some(ALICE), true),
+            (ONRAMP, Some(CAROL), true),
+            (ONRAMP, Some(DAVE), false),
+            (ONRAMP, Some(ONRAMP), false),
             // Unlisted parties.
             (DAVE, Some(ALICE), false),
             (ALICE, Some(DAVE), false),
             // An undecrypted recipient refunds anyway, so only the sender is checked.
             (ROUTER, None, true),
             (CAROL, None, true),
+            (ONRAMP, None, true),
             (DAVE, None, false),
         ];
         let senders = cases.map(|(sender, _, _)| sender);
@@ -1586,6 +1704,9 @@ mod tests {
         assert!(!allowlist.admits(&[transfer(CAROL, GATEWAY)]));
         assert!(!allowlist.admits(&[transfer(ALICE, CAROL)]));
         assert!(!allowlist.admits(&[transfer(ALICE, DAVE)]));
+        // A depositor of both groups is no member of either, so it cannot carry funds between them.
+        assert!(!allowlist.admits(&[transfer(ALICE, ONRAMP)]));
+        assert!(!allowlist.admits(&[transfer(ONRAMP, CAROL)]));
         // The spender must be in the same group as both parties.
         let spend = |spender| Movement::Transfer {
             spender: Some(spender),
@@ -1602,47 +1723,147 @@ mod tests {
     fn only_a_routers_groups_may_withdraw_to_it() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = grouped(dir.path());
-        let withdraw = |sender, to| Movement::Withdrawal { sender, to };
 
-        assert!(allowlist.admits(&[withdraw(ALICE, ROUTER)]));
-        assert!(!allowlist.admits(&[withdraw(CAROL, ROUTER)]));
-        assert!(!allowlist.admits(&[withdraw(DAVE, ROUTER)]));
-        // Withdrawals to any other address stay open, even for unlisted accounts.
-        assert!(allowlist.admits(&[withdraw(CAROL, CAROL)]));
-        assert!(allowlist.admits(&[withdraw(DAVE, ALICE)]));
+        for withdraw in [withdraw, withdraw_with_callback] {
+            assert!(allowlist.admits(&[withdraw(ALICE, ROUTER)]));
+            assert!(!allowlist.admits(&[withdraw(CAROL, ROUTER)]));
+            assert!(!allowlist.admits(&[withdraw(DAVE, ROUTER)]));
+            // Withdrawals to any other address stay open, even for unlisted accounts, unless the
+            // list is fail-closed.
+            assert!(allowlist.admits(&[withdraw(CAROL, CAROL)]));
+            assert!(allowlist.admits(&[withdraw(DAVE, ALICE)]));
+        }
     }
 
     #[test]
-    fn default_group_writes_keep_the_other_groups() {
+    fn a_fail_closed_list_admits_nothing_until_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load_fail_closed(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        assert!(!allowlist.status().initialized);
+
+        let mut decryptions = vec![valid_decryption(); 2];
+        assert_eq!(
+            allowlist
+                .reject_unlisted(&[ALICE, BOB], &[Some(ALICE), None], &mut decryptions)
+                .unwrap(),
+            2
+        );
+        assert_eq!(decryptions, vec![FAILED_DECRYPTION; 2]);
+        assert!(!allowlist.admits(&[transfer(ALICE, BOB)]));
+        // Plain withdrawals stay open, so funds credited earlier can always leave.
+        assert!(allowlist.admits(&[withdraw(ALICE, ALICE)]));
+        assert!(!allowlist.admits(&[withdraw_with_callback(ALICE, ROUTER)]));
+
+        allowlist
+            .apply_signed(sign(Write::ReplaceGroups { policy: tenants() }, 1))
+            .unwrap();
+        let mut decryptions = vec![valid_decryption()];
+        assert_eq!(
+            allowlist
+                .reject_unlisted(&[ALICE], &[Some(BOB)], &mut decryptions)
+                .unwrap(),
+            0
+        );
+        assert!(allowlist.admits(&[transfer(ALICE, BOB)]));
+    }
+
+    #[test]
+    fn a_fail_closed_list_closes_callbacks_into_unlisted_routers() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = load_fail_closed(dir.path().join(DEPOSIT_ALLOWLIST_FILE_NAME));
+        allowlist
+            .apply_signed(sign(Write::ReplaceGroups { policy: tenants() }, 1))
+            .unwrap();
+        // DAVE stands for a router nobody registered yet.
+        assert!(!allowlist.admits(&[withdraw_with_callback(ALICE, DAVE)]));
+        assert!(allowlist.admits(&[withdraw_with_callback(ALICE, ROUTER)]));
+        assert!(!allowlist.admits(&[withdraw_with_callback(CAROL, ROUTER)]));
+        // A plain withdrawal calls nothing, so it may go anywhere.
+        assert!(allowlist.admits(&[withdraw(ALICE, DAVE)]));
+
+        // The same list without fail-closed leaves the unlisted router open.
+        let open = grouped(tempfile::tempdir().unwrap().path());
+        assert!(open.admits(&[withdraw_with_callback(ALICE, DAVE)]));
+
+        // An RPC-only node's fail-closed copy screens submissions the same way.
+        let mirror = AllowlistMirror::new(true);
+        mirror.replace(allowlist.snapshot());
+        assert!(!mirror.admits(&[withdraw_with_callback(ALICE, DAVE)]));
+        assert!(mirror.admits(&[withdraw_with_callback(ALICE, ROUTER)]));
+        let lenient = AllowlistMirror::default();
+        lenient.replace(allowlist.snapshot());
+        assert!(lenient.admits(&[withdraw_with_callback(ALICE, DAVE)]));
+    }
+
+    #[test]
+    fn default_group_writes_are_rejected_once_the_list_has_groups() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = grouped(dir.path());
+        let before = allowlist.status();
 
-        allowlist.apply_signed(sign(set(&[DAVE], true), 2)).unwrap();
-        allowlist
-            .apply_signed(sign(
+        assert_eq!(
+            allowlist.apply_signed(sign(set(&[DAVE], true), 2)),
+            Err(DepositAllowlistError::Grouped)
+        );
+        assert_eq!(
+            allowlist.apply_signed(sign(
                 Write::Replace {
-                    addresses: vec![DAVE, BOB],
+                    addresses: vec![DAVE],
                 },
                 3,
+            )),
+            Err(DepositAllowlistError::Grouped)
+        );
+        assert_eq!(
+            allowlist.set(&[DAVE], true),
+            Err(DepositAllowlistError::Grouped)
+        );
+        assert_eq!(
+            allowlist.replace(vec![DAVE]),
+            Err(DepositAllowlistError::Grouped)
+        );
+        // Nothing changed, and DAVE did not land in a transfer-enabled default group.
+        assert_eq!(allowlist.status(), before);
+        assert!(!allowlist.admits(&[transfer(DAVE, DAVE)]));
+
+        // A router alone also makes the list grouped.
+        allowlist
+            .apply_signed(sign(
+                Write::ReplaceGroups {
+                    policy: AllowlistPolicy {
+                        groups: vec![group(DEFAULT_GROUP, &[ALICE], false)],
+                        routers: vec![router(ROUTER, &[DEFAULT_GROUP])],
+                    },
+                },
+                4,
             ))
             .unwrap();
-
-        let policy = allowlist.snapshot().policy;
         assert_eq!(
-            policy.groups[DEFAULT_GROUP],
+            allowlist.apply_signed(sign(set(&[DAVE], true), 5)),
+            Err(DepositAllowlistError::Grouped)
+        );
+
+        // With only the default group, the default-group writes keep working and keep its flag.
+        allowlist
+            .apply_signed(sign(
+                Write::ReplaceGroups {
+                    policy: AllowlistPolicy {
+                        groups: vec![group(DEFAULT_GROUP, &[ALICE], false)],
+                        routers: vec![],
+                    },
+                },
+                6,
+            ))
+            .unwrap();
+        allowlist.apply_signed(sign(set(&[DAVE], true), 7)).unwrap();
+        assert_eq!(
+            allowlist.snapshot().policy.groups[DEFAULT_GROUP],
             Group {
-                members: BTreeSet::from([BOB, DAVE]),
-                transfers: true,
+                members: BTreeSet::from([ALICE, DAVE]),
+                depositors: BTreeSet::new(),
+                transfers: false,
             }
         );
-        let mut expected = Policy::try_from(tenants()).unwrap();
-        expected.groups.remove(DEFAULT_GROUP);
-        let mut rest = policy;
-        rest.groups.remove(DEFAULT_GROUP);
-        assert_eq!(rest, expected);
-        // BOB's groups do not combine: transfers need one group holding both parties.
-        assert!(allowlist.admits(&[transfer(BOB, DAVE)]));
-        assert!(!allowlist.admits(&[transfer(ALICE, DAVE)]));
     }
 
     #[test]
@@ -1766,8 +1987,14 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         let shuffled = AllowlistPolicy {
             groups: vec![
-                group("embedded", &[GATEWAY, CAROL, CAROL], false),
-                group("custodial", &[GATEWAY, BOB, ALICE], true),
+                funded_by(
+                    group("embedded", &[GATEWAY, CAROL, CAROL], false),
+                    &[ONRAMP],
+                ),
+                funded_by(
+                    group("custodial", &[GATEWAY, BOB, ALICE], true),
+                    &[ONRAMP, ONRAMP],
+                ),
             ],
             routers: vec![router(ROUTER, &["custodial"])],
         };
@@ -1778,7 +2005,7 @@ mod tests {
 
         let expected = grouped(first.path()).status();
         assert_eq!(allowlist.status(), expected);
-        assert_eq!(expected.count, 6);
+        assert_eq!(expected.count, 8);
         assert_eq!(
             expected.list_hash,
             AllowlistPolicy::from(Policy::try_from(tenants()).unwrap()).eip712_hash_struct()

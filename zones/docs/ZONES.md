@@ -335,7 +335,7 @@ that should bounce.
 
 | File state | Behavior while leading |
 |------------|------------------------|
-| Missing (uninitialized) | Credits every deposit and admits every transfer. The node logs a warning at startup. |
+| Missing (uninitialized) | Credits every deposit and admits every transfer. The node logs a warning at startup. With `--deposits.allowlist.fail-closed`, bounces every deposit and rejects every transfer instead. |
 | Present | Credits, admits and routes only what its [groups](#groups-and-routers) allow. A list with no members bounces every deposit. |
 | Unreadable, or over the [limits](#groups-and-routers) | The node fails to start. |
 
@@ -352,18 +352,23 @@ write; earlier releases cannot read the grouped file.
 The list is a set of named groups, such as one per tenant of a shared zone, plus the L1 routers
 each group may use, such as a vault's Earn router:
 
-- **Deposits:** the decrypted zone recipient must be in a group that also holds the L1 sender, or
-  that the sender serves as a router. An address in several groups, such as a shared on-ramp,
-  funds each of them.
+- **Deposits:** the decrypted zone recipient must be in a group that also holds the L1 sender,
+  lists it in `depositors`, or is served by it as a router. List a shared on-ramp or gateway as a
+  depositor of each group it funds, not as a member: depositors gain no zone transfers, so one
+  listed in several groups cannot carry funds between them, while a member of two groups that
+  allow transfers can.
 - **Transfers:** the sender, the recipient and any `transferFrom` spender must all be in one group
   whose `transfers` flag is set. Membership in two groups never combines.
 - **Withdrawals to a router:** the withdrawer must be in one of the router's groups. A zone Earn
   deposit or redemption is a withdrawal to the router, so this keeps a vault to the groups it
-  serves. Withdrawals to any other address are not checked.
+  serves. Plain withdrawals to any other address are not checked. With
+  `--deposits.allowlist.fail-closed`, a withdrawal that calls back into an L1 address (a nonzero
+  `gasLimit`) needs that address listed as a router, so a router nobody registered yet is closed
+  rather than open to every account.
 
 | Limit | Value |
 |-------|-------|
-| Entries: every group membership plus every group a router serves | 80,000 |
+| Entries: every group membership and depositor, plus every group a router serves | 80,000 |
 | Groups | 256 |
 | Routers | 256 |
 | Group ID | 1 to 32 bytes, unique |
@@ -371,6 +376,17 @@ each group may use, such as a vault's Earn router:
 `zoneAdmin_setDepositAllowed` and `zoneAdmin_replaceDepositAllowlist` edit only the `default`
 group, created with transfers allowed, so a zone that never writes other groups behaves like a
 single list. `zoneAdmin_replaceDepositAllowlistGroups` replaces every group and router at once.
+Once the list holds a group other than `default` or any router, sequencers reject the two
+default-group methods, so a stray call cannot add a transfer-enabled group to a shared zone.
+Send every write to such a zone as a full `zoneAdmin_replaceDepositAllowlistGroups`.
+
+#### Shared zones
+
+Run a zone shared by several organizations fail-closed: start its sequencers with
+`--deposits.allowlist.fail-closed` as well, and its RPC followers with it too so they screen
+submissions the same way. A sequencer that comes up without its file then refuses deposits and
+transfers until the admin writes the list, instead of opening the zone, and Earn routers stay
+closed until the list names them.
 
 #### Transfers between group members
 
@@ -400,7 +416,8 @@ only every 30 seconds while the leader has no written list. It holds no file. Th
 follows the leader wherever its list goes, including to an older list after a leader change or to
 none once the leader runs without `--deposits.allowlist`, and keeps its last list while the leader
 does not answer. While it holds no written list it admits every transfer, and the leader still
-enforces its own list.
+enforces its own list. A follower started with `--deposits.allowlist.fail-closed` also rejects
+withdrawals that call back into an address its copy does not list as a router.
 
 Removing an account from the list does not trap its funds. Fees and transfers to the outbox are
 exempt, so it can still withdraw. A withdrawal's `zoneFallbackRecipient` is credited on the zone if
@@ -420,8 +437,8 @@ Limits:
 
 | Node | Flags |
 |------|-------|
-| Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>` |
-| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS>` |
+| Sequencer | `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>`, plus `--deposits.allowlist.fail-closed` on a shared zone |
+| RPC follower (relay writes) | `--deposits.allowlist.admin <ADDRESS>`, plus `--deposits.allowlist.fail-closed` on a shared zone |
 
 Without `--deposits.allowlist`, a sequencer credits every deposit, admits every transfer, and
 ignores the file.
@@ -431,7 +448,7 @@ The methods are served over HTTP JSON-RPC:
 |--------|-------------|
 | `zoneAdmin_setDepositAllowed(addresses, allowed, nonce, deadline, signature)` | Add (`allowed = true`) or remove members of the `default` group |
 | `zoneAdmin_replaceDepositAllowlist(addresses, nonce, deadline, signature)` | Replace the members of the `default` group, keeping every other group and router |
-| `zoneAdmin_replaceDepositAllowlistGroups(policy, nonce, deadline, signature)` | Replace every group and router. `policy` is `{groups: [{id, members, transfers}], routers: [{router, groups}]}`. |
+| `zoneAdmin_replaceDepositAllowlistGroups(policy, nonce, deadline, signature)` | Replace every group and router. `policy` is `{groups: [{id, members, depositors, transfers}], routers: [{router, groups}]}`; `depositors` may be left out when empty. |
 | `zoneAdmin_getDepositAllowlist()` | `{initialized, nonce, listHash, count, policy}`, with `policy` in canonical order. Through a relay, fails if the sequencers differ. |
 | `zoneAdmin_getDepositAllowlistStatus()` | `{sequencer, initialized, nonce, listHash, count}` for each sequencer through a relay; a sequencer reports only itself, without `sequencer` |
 
@@ -441,7 +458,7 @@ Writes carry an EIP-712 signature from the admin address. The domain is
 `ReplaceDepositAllowlist(address[] addresses,uint64 nonce,uint64 deadline)` and
 `ReplaceDepositAllowlistGroups(AllowlistPolicy policy,uint64 nonce,uint64 deadline)`, where
 `AllowlistPolicy(AllowlistGroup[] groups,AllowlistRouter[] routers)`,
-`AllowlistGroup(string id,address[] members,bool transfers)` and
+`AllowlistGroup(string id,address[] members,address[] depositors,bool transfers)` and
 `AllowlistRouter(address router,string[] groups)`. Each nonce must
 exceed the last applied nonce; gaps are allowed, so Unix milliseconds work. The deadline is in
 Unix seconds, at most 10 minutes ahead.
@@ -466,8 +483,11 @@ same `initialized`, `nonce`, and `listHash` hold the same list.
    the peer that uses it.
 3. Restart the sequencers with `--deposits.allowlist --deposits.allowlist.admin <ADDRESS>`, and
    the relaying RPC followers with `--deposits.allowlist.admin <ADDRESS>`. The lists are
-   uninitialized, so the sequencers keep crediting every deposit.
-4. Send a signed `zoneAdmin_replaceDepositAllowlist` with the full list.
+   uninitialized, so the sequencers keep crediting every deposit. On a shared zone, add
+   `--deposits.allowlist.fail-closed` to both: the sequencers then refuse deposits and transfers
+   until step 4, which is safe while access mode still gates deposits.
+4. Send a signed `zoneAdmin_replaceDepositAllowlist` with the full list, or
+   `zoneAdmin_replaceDepositAllowlistGroups` on a zone with groups.
 5. Call `zoneAdmin_getDepositAllowlistStatus` and confirm that every sequencer reports
    `initialized: true` with the same `nonce` and `listHash`.
 6. Turn access mode off with `just set-access-mode false`. From here on, the allowlist alone
@@ -475,7 +495,8 @@ same `initialized`, `nonce`, and `listHash` hold the same list.
 
 #### Adding, replacing, or restoring a sequencer
 
-Once access mode is off, an uninitialized sequencer credits every deposit while it leads, and
+Once access mode is off, an uninitialized sequencer credits every deposit while it leads (or, when
+fail-closed, bounces every deposit and rejects every transfer), and
 a sequencer restored with an old file enforces an old list. Nothing monitors for this, so treat
 the file as part of every sequencer change: if a sequencer fails irreparably and its datadir is
 replaced, bring `deposit-allowlist.json` over with it. Before such a sequencer joins the leader
@@ -987,12 +1008,12 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `--zone.id` | (deprecated) | Optional compatibility check against the zone ID encoded in the genesis chain ID. |
 | `--sequencer` | false | Enable sequencer mode for block production and withdrawal batch submission |
 | `--sequencer-key-file` | (required for sequencing) | Owner-readable file or FIFO containing the sequencer private key |
-| `--sequencer.enable-prover` | false | Run detached SPF validation; supported by sequencers and `rpc_only` P2P followers |
+| `--sequencer.enable-prover` | false | Require Nitro-attested SPF validation before settlement; requires a sequencer and is rejected on `rpc_only` P2P followers |
 | `--sequencer.prover-address` | (optional) | Repeatable `HARDFORK=HOST:PORT` assignment selected by the live L1 fork; missing forks stop proving and the readiness gauge flags current/next-72-hour gaps |
 | `--sequencer.prover-attestation-policy` | (optional) | JSON PCR0–2 allowlist shared by all endpoints, overriding the PCRs compiled into the binary for each assigned fork; authenticates the transport and controls evidence freshness without changing L1 verifier policy |
-| `--shadow-prover.pcrs` | (optional) | Pin PCR0,PCR1,PCR2 (three comma-separated, nonzero 48-byte hex measurements) to authenticate remote Nitro proofs on an RPC follower |
 | `--deposits.allowlist` | false | Enforce the allowlist groups in `<datadir>/deposit-allowlist.json` on deposits, zone transfers and withdrawals to routers; see [Sequencer deposit allowlist](#sequencer-deposit-allowlist) |
 | `--deposits.allowlist.admin` | (required with `--deposits.allowlist`) | Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes; on an `rpc_only` follower, enables relaying them to the sequencers |
+| `--deposits.allowlist.fail-closed` | false | For shared zones: an uninitialized list bounces every deposit and rejects every transfer, and withdrawals that call back into an L1 address need it listed as a router; on an `rpc_only` follower, screens submissions the same way |
 | `--deposit-decryption-keys-file` | (optional) | File containing additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `--zone.batch-interval-blocks` | 120 | Zone blocks between empty withdrawal batch boundaries / L1 submissions (~1 minute at Tempo's 500 ms block time) |
 | `--zone.poll-interval-secs` | 1 | Fallback interval for reconciling the canonical Zone head when no native notification arrives |
@@ -1010,12 +1031,12 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `L1_RPC_URL` | Yes | Certified Tempo follower WebSocket RPC URL (`wss://...`) |
 | `SEQUENCER_KEY` | For short-lived tooling | Sequencer private key for `just create-zone` and xtasks; not accepted by the node |
 | `SEQUENCER_KEY_FILE` | For sequencing | Owner-readable file or FIFO containing the sequencer private key |
-| `SEQUENCER_ENABLE_PROVER` | No | Enable detached SPF validation, including on an `rpc_only` P2P follower |
+| `SEQUENCER_ENABLE_PROVER` | No | Require Nitro-attested SPF validation before settlement; sequencers only |
 | `SEQUENCER_PROVER_ADDRESS` | No | Comma-separated `HARDFORK=HOST:PORT` assignments; see the [prover upgrade runbook](../bin/prover/enclave/README.md#upgrading-across-an-l1-hardfork) |
 | `SEQUENCER_PROVER_ATTESTATION_POLICY` | No | JSON PCR0–2 allowlist and evidence-freshness policy path overriding the compiled-in PCRs for the configured endpoints |
-| `SHADOW_PROVER_PCRS` | No | Three comma-separated 48-byte enclave measurements for local shadow verification |
 | `DEPOSITS_ALLOWLIST` | No | Same as `--deposits.allowlist` |
 | `DEPOSITS_ALLOWLIST_ADMIN` | With `DEPOSITS_ALLOWLIST` | Same as `--deposits.allowlist.admin` |
+| `DEPOSITS_ALLOWLIST_FAIL_CLOSED` | No | Same as `--deposits.allowlist.fail-closed` |
 | `DEPOSIT_DECRYPTION_KEYS_FILE` | During encryption-key rotation | Additional historical or pre-provisioned deposit decryption keys, one hex key per line |
 | `ADMIN_KEY` | For portal governance | Portal admin private key for `enableToken` / deposit pause controls. `SEQUENCER_KEY` only works for legacy zones where admin == sequencer. |
 | `PRIVATE_KEY` | For transactions | Key for L1 transactions (deposits, approvals) |

@@ -1,7 +1,7 @@
 use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
-    primitives::{Address, Bytes, TxKind, U256},
+    primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::SignerSync,
@@ -102,11 +102,7 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: TxKind::Call(Address::ZERO),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, Bytes::new())],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };

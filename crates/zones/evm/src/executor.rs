@@ -470,6 +470,7 @@ mod tests {
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
         },
     };
+    use test_case::test_case;
     use zone_chainspec::ZoneChainSpec;
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
@@ -882,22 +883,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn subblock_transactions_are_rejected_in_every_block_phase() {
+    #[test_case(ZoneBlockPhase::AwaitingAdvanceTempo)]
+    #[test_case(ZoneBlockPhase::Executing)]
+    #[test_case(ZoneBlockPhase::WithdrawalsFinalized)]
+    fn subblock_transactions_are_rejected_in_every_block_phase(phase: ZoneBlockPhase) {
         let subblock = subblock_tx();
         assert!(subblock.has_sub_block_nonce_key_prefix());
 
-        for phase in [
-            ZoneBlockPhase::AwaitingAdvanceTempo,
-            ZoneBlockPhase::Executing,
-            ZoneBlockPhase::WithdrawalsFinalized,
-        ] {
-            let error = phase.validate_transaction(&subblock).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "subblock transactions are not supported in zone blocks"
-            );
-        }
+        let error = phase.validate_transaction(&subblock).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "subblock transactions are not supported in zone blocks"
+        );
     }
 
     #[test]
@@ -1419,8 +1416,17 @@ mod tests {
         })
     }
 
-    #[test]
-    fn system_calls_activation_selects_history_only() {
+    #[test_case(0, TempoHardfork::T12, true)]
+    #[test_case(0, TempoHardfork::T13, false)]
+    #[test_case(0, TempoHardfork::T13, true)]
+    #[test_case(1, TempoHardfork::T12, true)]
+    #[test_case(1, TempoHardfork::T13, false)]
+    #[test_case(1, TempoHardfork::T13, true)]
+    fn system_calls_activation_selects_history_only(
+        block_number: u64,
+        fork: TempoHardfork,
+        has_code: bool,
+    ) {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
         let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
@@ -1432,100 +1438,88 @@ mod tests {
             BUILDER_DEPOSIT_REQUEST_ADDRESS,
             BUILDER_EXIT_REQUEST_ADDRESS,
         ];
-        for block_number in [0u64, 1] {
-            for (fork, has_code) in [
-                (TempoHardfork::T12, true),
-                (TempoHardfork::T13, false),
-                (TempoHardfork::T13, true),
-            ] {
-                let mut db = InMemoryDB::default();
-                if has_code {
-                    // Every excluded contract writes slot zero if automatically called.
-                    let marker = Bytecode::new_raw(alloy_primitives::bytes!("600160005500"));
-                    for address in excluded {
-                        db.insert_account_info(
-                            &address,
-                            AccountInfo::default().with_code(marker.clone()),
-                        );
-                    }
-                    db.insert_account_info(
-                        &HISTORY_STORAGE_ADDRESS,
-                        AccountInfo::default()
-                            .with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
-                    );
-                }
-                let mut env = TempoEvmEnv {
-                    spec: fork,
-                    ..Default::default()
-                };
-                env.block.number = U256::from(block_number);
-                let evm = config.evm_with_env(&mut db, env);
-                let ctx = TempoBlockExecutionCtx {
-                    inner: EthBlockExecutionCtx {
-                        parent_hash: B256::repeat_byte(0x42),
-                        parent_beacon_block_root: has_code.then_some(B256::ZERO),
-                        ommers: &[],
-                        withdrawals: None,
-                        extra_data: Bytes::new(),
-                        tx_count_hint: None,
-                        slot_number: None,
-                    },
-                    general_gas_limit: 0,
-                    shared_gas_limit: 0,
-                    consensus_context: None,
-                };
-                let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
-                executor.apply_pre_execution_changes().unwrap();
-                // Isolate automatic system calls from the required opening transaction.
-                executor.phase = ZoneBlockPhase::Executing;
-                let receipt = TempoReceipt {
-                    tx_type: TempoTxType::Legacy,
-                    success: true,
-                    cumulative_gas_used: 21_000,
-                    // Malformed Ethereum deposit logs must remain ordinary receipt logs.
-                    logs: if has_code {
-                        vec![]
-                    } else {
-                        vec![Log::new_unchecked(
-                            chain_spec.deposit_contract().unwrap().address,
-                            vec![B256::repeat_byte(0x01)],
-                            Bytes::new(),
-                        )]
-                    },
-                };
-                executor.inner.inner.receipts.push(receipt.clone());
-                executor.inner.inner.cumulative_gas_used = 21_000;
-                executor.inner.inner.blob_gas_used = 131_072;
-                let output = executor.finish().unwrap();
-                db.commit_source(&reth_execution_types::BundleSource(&output.state));
-                let result = output.result;
-                assert_eq!(result.receipts, vec![receipt]);
-                assert!(result.requests.is_empty());
-                assert_eq!(result.gas_used, 21_000);
-                assert_eq!(result.blob_gas_used, 131_072);
-                assert_eq!(
-                    db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
-                        .unwrap(),
-                    if has_code && block_number > 0 {
-                        U256::from_be_bytes([0x42; 32])
-                    } else {
-                        U256::ZERO
-                    },
-                );
-                for address in excluded {
-                    // Zones execute pre-T13 blocks under Osaka, before the builder request
-                    // contracts exist.
-                    let called = !fork.is_t13()
-                        && address != BUILDER_DEPOSIT_REQUEST_ADDRESS
-                        && address != BUILDER_EXIT_REQUEST_ADDRESS
-                        && (address != BEACON_ROOTS_ADDRESS || block_number > 0);
-                    assert_eq!(
-                        db.get_storage(&address, &U256::ZERO).unwrap(),
-                        U256::from(u64::from(called)),
-                        "{address} at {fork:?}, block {block_number}"
-                    );
-                }
+        let mut db = InMemoryDB::default();
+        if has_code {
+            // Every excluded contract writes slot zero if automatically called.
+            let marker = Bytecode::new_raw(alloy_primitives::bytes!("600160005500"));
+            for address in excluded {
+                db.insert_account_info(&address, AccountInfo::default().with_code(marker.clone()));
             }
+            db.insert_account_info(
+                &HISTORY_STORAGE_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+            );
+        }
+        let mut env = TempoEvmEnv {
+            spec: fork,
+            ..Default::default()
+        };
+        env.block.number = U256::from(block_number);
+        let evm = config.evm_with_env(&mut db, env);
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: B256::repeat_byte(0x42),
+                parent_beacon_block_root: has_code.then_some(B256::ZERO),
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: None,
+                slot_number: None,
+            },
+            general_gas_limit: 0,
+            shared_gas_limit: 0,
+            consensus_context: None,
+        };
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        executor.apply_pre_execution_changes().unwrap();
+        // Isolate automatic system calls from the required opening transaction.
+        executor.phase = ZoneBlockPhase::Executing;
+        let receipt = TempoReceipt {
+            tx_type: TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: 21_000,
+            // Malformed Ethereum deposit logs must remain ordinary receipt logs.
+            logs: if has_code {
+                vec![]
+            } else {
+                vec![Log::new_unchecked(
+                    chain_spec.deposit_contract().unwrap().address,
+                    vec![B256::repeat_byte(0x01)],
+                    Bytes::new(),
+                )]
+            },
+        };
+        executor.inner.inner.receipts.push(receipt.clone());
+        executor.inner.inner.cumulative_gas_used = 21_000;
+        executor.inner.inner.blob_gas_used = 131_072;
+        let output = executor.finish().unwrap();
+        db.commit_source(&reth_execution_types::BundleSource(&output.state));
+        let result = output.result;
+        assert_eq!(result.receipts, vec![receipt]);
+        assert!(result.requests.is_empty());
+        assert_eq!(result.gas_used, 21_000);
+        assert_eq!(result.blob_gas_used, 131_072);
+        assert_eq!(
+            db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                .unwrap(),
+            if has_code && block_number > 0 {
+                U256::from_be_bytes([0x42; 32])
+            } else {
+                U256::ZERO
+            },
+        );
+        for address in excluded {
+            // Zones execute pre-T13 blocks under Osaka, before the builder request
+            // contracts exist.
+            let called = !fork.is_t13()
+                && address != BUILDER_DEPOSIT_REQUEST_ADDRESS
+                && address != BUILDER_EXIT_REQUEST_ADDRESS
+                && (address != BEACON_ROOTS_ADDRESS || block_number > 0);
+            assert_eq!(
+                db.get_storage(&address, &U256::ZERO).unwrap(),
+                U256::from(u64::from(called)),
+                "{address} at {fork:?}, block {block_number}"
+            );
         }
     }
 

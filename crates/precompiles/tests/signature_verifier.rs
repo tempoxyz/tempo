@@ -39,6 +39,7 @@ use tempo_primitives::{
 
 use Committed::{Account, Nobody, Signer};
 use common::seed_commitment;
+use test_case::test_case;
 
 mod common;
 
@@ -140,8 +141,7 @@ fn storage_at(
 ) -> HashMapStorageProvider {
     let mut storage = HashMapStorageProvider::new_with_spec(1, T13);
     StorageCtx::enter(&mut storage, || {
-        let mut keychain = AccountKeychain::new();
-        keychain.initialize().unwrap();
+        let mut keychain = AccountKeychain::initialized().unwrap();
         if let Some(Grant {
             stored_type,
             admin: true,
@@ -195,91 +195,55 @@ fn keychain_signature(key: &Key, account: Address) -> Bytes {
     .to_bytes()
 }
 
-#[test]
-fn keychain_verification_by_retired_roots_and_stored_key_types() {
-    /// A keychain signature by a signer of `signer_type` at `spec`, and whether
-    /// `verify_keychain` and `verify_keychain_admin` accept it.
-    struct Case {
-        spec: TempoHardfork,
-        signer_type: SignatureType,
-        /// The grant to the signer; none when the signer is the account's root key.
-        grant: Option<Grant>,
-        committed: Committed,
-        expected: (bool, bool),
-    }
-
-    const fn case(
-        spec: TempoHardfork,
-        signer_type: SignatureType,
-        grant: Option<Grant>,
-        committed: Committed,
-        expected: (bool, bool),
-    ) -> Case {
-        Case {
-            spec,
-            signer_type,
-            grant,
-            committed,
-            expected,
-        }
-    }
-    let cases = [
-        // The root is implicitly admin, but is not an access key.
-        case(T14, Secp256k1, None, Nobody, (false, true)),
-        case(T14, Secp256k1, None, Account, (false, false)),
-        case(T13, Secp256k1, None, Account, (false, true)),
-        // An access key; a commitment on its own address retires it from T14, and T14 turns
-        // admin keys into regular keys (TIP-1137).
-        case(T14, Secp256k1, key(Secp256k1), Nobody, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, false)),
-        case(T14, Secp256k1, key(Secp256k1), Signer, (false, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Signer, (false, false)),
-        case(T13, Secp256k1, key(Secp256k1), Signer, (true, false)),
-        case(T13, Secp256k1, admin_key(Secp256k1), Signer, (true, true)),
-        // A commitment on the granting account does not retire the grantee.
-        case(T14, Secp256k1, key(Secp256k1), Account, (true, false)),
-        case(T14, Secp256k1, admin_key(Secp256k1), Account, (true, false)),
-        // The stored type is compared with the signature type from T14.
-        case(T14, P256, key(P256), Nobody, (true, false)),
-        case(T14, P256, key(Secp256k1), Nobody, (false, false)),
-        case(T13, P256, key(P256), Nobody, (true, false)),
-        case(T13, P256, key(Secp256k1), Nobody, (true, false)),
-    ];
-    for Case {
-        spec,
-        signer_type,
-        grant,
-        committed,
-        expected,
-    } in cases
-    {
-        let signer = Key::random(signer_type);
-        let account = match grant {
-            Some(_) => Address::repeat_byte(0x01),
-            None => signer.address(),
-        };
-        let committed_addresses = match committed {
-            Nobody => vec![],
-            Signer => vec![signer.address()],
-            Account => vec![account],
-        };
-        let name =
-            format!("{spec:?}, {signer_type:?} signer, grant: {grant:?}, committed: {committed:?}");
-        let mut storage = storage_at(spec, account, signer.address(), grant, &committed_addresses);
-        let signature = keychain_signature(&signer, account);
-        let actual = StorageCtx::enter(&mut storage, || {
-            let verifier = SignatureVerifier::new();
-            (
-                verifier
-                    .verify_keychain(account, HASH, &signature)
-                    .expect(&name),
-                verifier
-                    .verify_keychain_admin(account, HASH, &signature)
-                    .expect(&name),
-            )
-        });
-        assert_eq!(actual, expected, "{name}");
-    }
+/// A keychain signature by a signer of `signer_type` at `spec`, and whether `verify_keychain` and
+/// `verify_keychain_admin` accept it. The grant is none when the signer is the account's root key.
+// The root is implicitly admin, but is not an access key.
+#[test_case(T14, Secp256k1, None, Nobody => (false, true))]
+#[test_case(T14, Secp256k1, None, Account => (false, false))]
+#[test_case(T13, Secp256k1, None, Account => (false, true))]
+// An access key; a commitment on its own address retires it from T14, and T14 turns
+// admin keys into regular keys (TIP-1137).
+#[test_case(T14, Secp256k1, key(Secp256k1), Nobody => (true, false))]
+#[test_case(T14, Secp256k1, admin_key(Secp256k1), Nobody => (true, false))]
+#[test_case(T14, Secp256k1, key(Secp256k1), Signer => (false, false))]
+#[test_case(T14, Secp256k1, admin_key(Secp256k1), Signer => (false, false))]
+#[test_case(T13, Secp256k1, key(Secp256k1), Signer => (true, false))]
+#[test_case(T13, Secp256k1, admin_key(Secp256k1), Signer => (true, true))]
+// A commitment on the granting account does not retire the grantee.
+#[test_case(T14, Secp256k1, key(Secp256k1), Account => (true, false))]
+#[test_case(T14, Secp256k1, admin_key(Secp256k1), Account => (true, false))]
+// The stored type is compared with the signature type from T14.
+#[test_case(T14, P256, key(P256), Nobody => (true, false))]
+#[test_case(T14, P256, key(Secp256k1), Nobody => (false, false))]
+#[test_case(T13, P256, key(P256), Nobody => (true, false))]
+#[test_case(T13, P256, key(Secp256k1), Nobody => (true, false))]
+fn keychain_verification_by_retired_roots_and_stored_key_types(
+    spec: TempoHardfork,
+    signer_type: SignatureType,
+    grant: Option<Grant>,
+    committed: Committed,
+) -> (bool, bool) {
+    let signer = Key::random(signer_type);
+    let account = match grant {
+        Some(_) => Address::repeat_byte(0x01),
+        None => signer.address(),
+    };
+    let committed_addresses = match committed {
+        Nobody => vec![],
+        Signer => vec![signer.address()],
+        Account => vec![account],
+    };
+    let mut storage = storage_at(spec, account, signer.address(), grant, &committed_addresses);
+    let signature = keychain_signature(&signer, account);
+    StorageCtx::enter(&mut storage, || {
+        let verifier = SignatureVerifier::new();
+        (
+            verifier.verify_keychain(account, HASH, &signature).unwrap(),
+            verifier
+                .verify_keychain_admin(account, HASH, &signature)
+                .unwrap(),
+        )
+    })
 }
 
 #[test]
@@ -300,46 +264,21 @@ fn keychain_signature_must_embed_the_verified_account() {
     });
 }
 
-#[test]
-fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
+#[test_case(T14, false => true)]
+#[test_case(T14, true => false)]
+#[test_case(T13, true => true)]
+fn implicit_root_admin_status_ends_with_the_commitment_from_t14(
+    spec: TempoHardfork,
+    committed: bool,
+) -> bool {
     let account = Address::repeat_byte(0x01);
-    struct Case {
-        spec: TempoHardfork,
-        committed: Vec<Address>,
-        admin: bool,
-    }
-    for Case {
-        spec,
-        committed,
-        admin,
-    } in [
-        Case {
-            spec: T14,
-            committed: vec![],
-            admin: true,
-        },
-        Case {
-            spec: T14,
-            committed: vec![account],
-            admin: false,
-        },
-        Case {
-            spec: T13,
-            committed: vec![account],
-            admin: true,
-        },
-    ] {
-        let mut storage = storage_at(spec, account, Address::repeat_byte(0x03), None, &committed);
-        StorageCtx::enter(&mut storage, || {
-            assert_eq!(
-                AccountKeychain::new()
-                    .is_admin_key(account, account)
-                    .unwrap(),
-                admin,
-                "{spec:?}, committed: {committed:?}"
-            );
-        });
-    }
+    let committed = if committed { vec![account] } else { vec![] };
+    let mut storage = storage_at(spec, account, Address::repeat_byte(0x03), None, &committed);
+    StorageCtx::enter(&mut storage, || {
+        AccountKeychain::new()
+            .is_admin_key(account, account)
+            .unwrap()
+    })
 }
 
 #[test]

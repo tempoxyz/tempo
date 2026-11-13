@@ -6,7 +6,7 @@ use crate::storage::{
 };
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;
-use tempo_precompiles::error;
+use tempo_precompiles::{error, test_util::with_storage};
 use tempo_precompiles_macros::{Storable, contract};
 
 mod arrays;

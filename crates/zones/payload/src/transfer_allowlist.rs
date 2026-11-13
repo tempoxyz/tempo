@@ -35,8 +35,13 @@ pub enum Movement {
         from: Address,
         to: Address,
     },
-    /// A withdrawal by `sender` to `to` on Tempo.
-    Withdrawal { sender: Address, to: Address },
+    /// A withdrawal by `sender` to `to` on Tempo, which calls back into `to` when `callback` is
+    /// set (a nonzero gas limit) and only transfers to it otherwise.
+    Withdrawal {
+        sender: Address,
+        to: Address,
+        callback: bool,
+    },
 }
 
 /// Zone fund movements that blocks this node builds may include.
@@ -117,6 +122,8 @@ fn push_movements(
         movements.push(Movement::Withdrawal {
             sender,
             to: call.to,
+            // The portal calls `to` back exactly when the gas limit is nonzero.
+            callback: call.gasLimit != 0,
         });
         // The fallback is credited if the withdrawal bounces back from L1. Naming oneself is
         // always allowed, so an unlisted account can still withdraw.
@@ -169,7 +176,7 @@ mod tests {
                     .into_iter()
                     .chain([from, to])
                     .all(|address| self.0.contains(&address)),
-                Movement::Withdrawal { sender, to } => to != ROUTER || self.0.contains(&sender),
+                Movement::Withdrawal { sender, to, .. } => to != ROUTER || self.0.contains(&sender),
             })
         }
     }
@@ -211,6 +218,10 @@ mod tests {
     }
 
     fn withdraw_to(to: Address, fallback_recipient: Address) -> Call {
+        withdraw_with_gas_limit(to, fallback_recipient, 0)
+    }
+
+    fn withdraw_with_gas_limit(to: Address, fallback_recipient: Address, gas_limit: u64) -> Call {
         call(
             ZONE_OUTBOX_ADDRESS,
             IZoneOutbox::requestWithdrawalCall {
@@ -218,7 +229,7 @@ mod tests {
                 to,
                 amount: 1,
                 memo: Default::default(),
-                gasLimit: 0,
+                gasLimit: gas_limit,
                 zoneFallbackRecipient: fallback_recipient,
                 data: Bytes::new(),
                 revealTo: Bytes::new(),
@@ -327,6 +338,37 @@ mod tests {
             CAROL,
             vec![withdraw_to(BOB, CAROL), withdraw_to(ROUTER, CAROL)]
         ));
+    }
+
+    /// Admits every movement and records it.
+    #[derive(Debug, Default)]
+    struct Recorder(std::sync::Mutex<Vec<Movement>>);
+
+    impl TransferAllowlist for Recorder {
+        fn admits(&self, movements: &[Movement]) -> bool {
+            self.0.lock().unwrap().extend_from_slice(movements);
+            true
+        }
+    }
+
+    #[test]
+    fn a_withdrawal_calls_back_exactly_when_its_gas_limit_is_nonzero() {
+        for (gas_limit, callback) in [(0, false), (1, true), (u64::MAX, true)] {
+            let recorder = Recorder::default();
+            let transaction = aa_transaction(
+                ALICE,
+                vec![withdraw_with_gas_limit(ROUTER, ALICE, gas_limit)],
+            );
+            validate_transfer_calls(&recorder, &transaction).unwrap();
+            assert_eq!(
+                *recorder.0.lock().unwrap(),
+                vec![Movement::Withdrawal {
+                    sender: ALICE,
+                    to: ROUTER,
+                    callback,
+                }]
+            );
+        }
     }
 
     #[test]
