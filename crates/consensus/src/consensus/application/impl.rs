@@ -648,12 +648,8 @@ impl Reporter for Inner {
     }
 }
 
-/// Decodes the DKG outcome in a boundary block's `extra_data`. With `strict`
-/// (from T15), the outcome must take up all of the extra data.
-///
-/// Extra data over [`TEMPO_MAXIMUM_EXTRA_DATA_SIZE`] is rejected before decoding:
-/// execution rejects such a header anyway, and decoding checks every
-/// coefficient of the public polynomial.
+/// Decodes the DKG outcome in a boundary block's `extra_data` after checking its size.
+/// (+T15) With `strict`, the outcome must take up all of the extra data.
 fn read_boundary_outcome(header: &TempoHeader, strict: bool) -> eyre::Result<OnchainDkgOutcome> {
     validate_header_extra_data(header, TEMPO_MAXIMUM_EXTRA_DATA_SIZE)?;
     let mut extra_data = commonware_codec::Copying(header.extra_data().as_ref());
@@ -800,29 +796,24 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic};
     use reth_consensus::ConsensusError;
 
-    #[test]
-    fn boundary_outcome_rejects_extra_data_over_maximum_size() {
-        // A well-formed outcome that is too large for a header.
-        let extra_data = OnchainDkgOutcome::dealt(1, 100).encode();
-        assert!(extra_data.len() > TEMPO_MAXIMUM_EXTRA_DATA_SIZE);
+    #[test_case::test_case(false ; "pre-T15")]
+    #[test_case::test_case(true ; "T15")]
+    fn boundary_outcome_rejects_oversized_extra_data(strict: bool) {
         let header = TempoHeader {
             inner: alloy_consensus::Header {
-                extra_data: Bytes::from(extra_data.to_vec()),
+                extra_data: vec![0; TEMPO_MAXIMUM_EXTRA_DATA_SIZE + 1].into(),
                 ..Default::default()
             },
             ..Default::default()
         };
-
-        for strict in [false, true] {
-            let err = read_boundary_outcome(&header, strict).unwrap_err();
-            assert!(
-                matches!(
-                    err.downcast_ref::<ConsensusError>(),
-                    Some(ConsensusError::ExtraDataExceedsMax { len }) if *len == header.extra_data().len()
-                ),
-                "unexpected error: {err:?}"
-            );
-        }
+        let err = read_boundary_outcome(&header, strict).unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref(),
+                Some(ConsensusError::ExtraDataExceedsMax { .. })
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
