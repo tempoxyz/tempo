@@ -1050,6 +1050,7 @@ mod tests {
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::test_utils::actors;
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -2216,29 +2217,23 @@ mod tests {
             ("[2001:db8::1]:8000", "2001:db8::1", "2001:db8::2"),
         ] {
             let mut storage = HashMapStorageProvider::new(1);
-            let owner = Address::random();
+            let [owner, v1, v2] = actors();
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut vc = ValidatorConfigV2::new();
                 vc.initialize(owner)?;
 
                 vc.storage.set_block_number(200);
-                vc.add_validator(
-                    owner,
-                    make_valid_add_call(Address::random(), ingress, egress, Address::random()),
-                )?;
+                vc.add_validator(owner, make_valid_add_call(v1, ingress, egress, v1))?;
 
                 vc.storage.set_block_number(201);
-                let result = vc.add_validator(
-                    owner,
-                    make_valid_add_call(
-                        Address::random(),
-                        ingress,
-                        other_egress,
-                        Address::random(),
-                    ),
-                );
+                let result =
+                    vc.add_validator(owner, make_valid_add_call(v2, ingress, other_egress, v2));
 
-                assert!(result.is_err(), "{ingress}");
+                assert_eq!(
+                    result,
+                    Err(ValidatorConfigV2Error::ingress_already_exists(ingress.to_string()).into()),
+                    "{ingress}"
+                );
                 Ok(())
             })?;
         }
@@ -2252,8 +2247,7 @@ mod tests {
             ("[2001:db8::1]:8000", "2001:db8::1"),
         ] {
             let mut storage = HashMapStorageProvider::new(1);
-            let owner = Address::random();
-            let v1 = Address::random();
+            let [owner, v1, v2] = actors();
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut vc = ValidatorConfigV2::new();
                 vc.initialize(owner)?;
@@ -2269,10 +2263,7 @@ mod tests {
 
                 // Should allow IP reuse after deactivation
                 vc.storage.set_block_number(400);
-                vc.add_validator(
-                    owner,
-                    make_valid_add_call(Address::random(), ingress, egress, Address::random()),
-                )?;
+                vc.add_validator(owner, make_valid_add_call(v2, ingress, egress, v2))?;
 
                 Ok(())
             })?;
@@ -2710,8 +2701,7 @@ mod tests {
             ("egress only", "192.168.1.1:8000", "10.0.0.1"),
         ] {
             let mut storage = HashMapStorageProvider::new(1);
-            let owner = Address::random();
-            let validator = Address::random();
+            let [owner, validator] = actors();
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut vc = ValidatorConfigV2::new();
                 vc.initialize(owner)?;

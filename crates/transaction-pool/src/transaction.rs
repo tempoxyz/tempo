@@ -870,7 +870,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -1486,16 +1485,8 @@ mod tests {
 
         let aa = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: input.clone(),
-                },
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input,
-                },
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
             ])
             .build();
         let envelope_size = aa.inner().inner().size();
@@ -1747,6 +1738,14 @@ mod tests {
                 },
                 false,
             ),
+            // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+            (
+                TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow {
+                    got: 21_000,
+                    required: 271_000,
+                }),
+                false,
+            ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
                 TempoPoolTransactionError::Evm(HandlerError::external(
@@ -1863,11 +1862,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()

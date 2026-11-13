@@ -5,7 +5,7 @@ use std::{future::Future, time::Duration};
 use alloy::{
     eips::Encodable2718,
     network::ReceiptResponse,
-    primitives::{Address, B256, TxKind, U256, address, keccak256},
+    primitives::{Address, B256, U256, address, keccak256},
     providers::{Provider, ProviderBuilder},
     rpc::types::Log,
     signers::{SignerSync, local::PrivateKeySigner},
@@ -424,11 +424,10 @@ async fn send_access_key_calls(
         max_fee_per_gas: GAS_PRICE,
         fee_token: Some(PATH_USD_ADDRESS),
         nonce: provider.get_transaction_count(holder).await?,
-        calls: vec![Call {
-            to: TxKind::Call(MULTICALL3_ADDRESS),
-            value: U256::ZERO,
-            input: Multicall3::aggregate3Call { calls }.abi_encode().into(),
-        }],
+        calls: vec![Call::new(
+            MULTICALL3_ADDRESS,
+            Multicall3::aggregate3Call { calls }.abi_encode(),
+        )],
         ..Default::default()
     };
     let signature = key.sign_hash_sync(&KeychainSignature::signing_hash(

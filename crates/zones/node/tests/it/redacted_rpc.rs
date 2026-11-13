@@ -82,55 +82,35 @@ fn parse_unknown_signature_length() {
 }
 
 #[test]
-fn digest_is_deterministic() {
+fn digest_is_deterministic_and_covers_params() {
     let t1 = make_test_token(0, 1, 2, 1000, 1600);
     let t2 = make_test_token(0, 1, 2, 1000, 1600);
-    assert_eq!(t1.digest, t2.digest);
-}
-
-#[test]
-fn digest_changes_with_params() {
-    let t1 = make_test_token(0, 1, 2, 1000, 1600);
     let t3 = make_test_token(0, 1, 3, 1000, 1600);
+    assert_eq!(t1.digest, t2.digest);
     assert_ne!(t1.digest, t3.digest);
 }
 
 // ============ Auth Token Validation ============
 
 #[test]
-fn validate_accepts_valid_token() {
+fn validate_checks_version_zone_id_and_chain_id() {
     let now = now_secs();
-    let token = make_test_token(0, 42, 1337, now, now + 600);
-    assert!(token.validate(42, 1337).is_ok());
-}
-
-#[test]
-fn validate_rejects_wrong_version() {
-    let now = now_secs();
-    let token = make_test_token(1, 42, 1337, now, now + 600);
-    assert!(token.validate(42, 1337).is_err());
-}
-
-#[test]
-fn validate_rejects_zone_id_mismatch() {
-    let now = now_secs();
-    let token = make_test_token(0, 42, 1337, now, now + 600);
-    assert!(token.validate(99, 1337).is_err());
-}
-
-#[test]
-fn validate_accepts_unscoped_zone_id() {
-    let now = now_secs();
-    let token = make_test_token(0, 0, 1337, now, now + 600);
-    assert!(token.validate(42, 1337).is_ok());
-    assert!(token.validate(99, 1337).is_ok());
-}
-
-#[test]
-fn validate_rejects_chain_id_mismatch() {
-    let now = now_secs();
-    let token = make_test_token(0, 42, 1337, now, now + 600);
-    assert!(token.validate(42, 9999).is_err());
+    // (case, token version, token zone id, validated zone id, validated chain id, accepted)
+    for (case, version, token_zone_id, zone_id, chain_id, accepted) in [
+        ("valid token", 0, 42, 42, 1337, true),
+        ("wrong version", 1, 42, 42, 1337, false),
+        ("zone id mismatch", 0, 42, 99, 1337, false),
+        ("unscoped zone id", 0, 0, 42, 1337, true),
+        ("unscoped zone id on another zone", 0, 0, 99, 1337, true),
+        ("chain id mismatch", 0, 42, 42, 9999, false),
+    ] {
+        let token = make_test_token(version, token_zone_id, 1337, now, now + 600);
+        assert_eq!(
+            token.validate(zone_id, chain_id).is_ok(),
+            accepted,
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -194,49 +174,37 @@ fn tempo_signature_roundtrip_webauthn_from_token_bytes() {
 }
 
 #[test]
-fn tempo_signature_roundtrip_keychain_v1_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut OsRng);
-    let root_account = Address::repeat_byte(0x44);
-    let now = now_secs();
-    let (fields, digest) = build_token_fields(1, 2, now, now + 600);
-    let (signature, expected_key_id) =
-        sign_keychain_signature(digest, &signing_key, root_account, 0x03)
-            .expect("keychain signing should succeed");
-    let blob = build_signed_token_blob(signature, &fields);
-    let token = AuthorizationToken::parse(&blob).unwrap();
-    let parsed = TempoSignature::from_bytes(&token.signature).unwrap();
+fn tempo_signature_roundtrip_keychain_from_token_bytes() {
+    for (case, root_account, version) in [
+        ("keychain v1", Address::repeat_byte(0x44), 0x03),
+        ("keychain v2", Address::repeat_byte(0x55), 0x04),
+    ] {
+        let signing_key = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(1, 2, now, now + 600);
+        let (signature, expected_key_id) =
+            sign_keychain_signature(digest, &signing_key, root_account, version)
+                .expect("keychain signing should succeed");
+        let blob = build_signed_token_blob(signature, &fields);
+        let token = AuthorizationToken::parse(&blob).unwrap();
+        let parsed = TempoSignature::from_bytes(&token.signature).unwrap();
 
-    assert_eq!(parsed.recover_signer(&token.digest).unwrap(), root_account);
-    match parsed {
-        TempoSignature::Keychain(keychain) => {
-            assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
-        }
-        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
-            panic!("expected keychain signature")
-        }
-    }
-}
-
-#[test]
-fn tempo_signature_roundtrip_keychain_v2_from_token_bytes() {
-    let signing_key = P256SigningKey::random(&mut OsRng);
-    let root_account = Address::repeat_byte(0x55);
-    let now = now_secs();
-    let (fields, digest) = build_token_fields(1, 2, now, now + 600);
-    let (signature, expected_key_id) =
-        sign_keychain_signature(digest, &signing_key, root_account, 0x04)
-            .expect("keychain signing should succeed");
-    let blob = build_signed_token_blob(signature, &fields);
-    let token = AuthorizationToken::parse(&blob).unwrap();
-    let parsed = TempoSignature::from_bytes(&token.signature).unwrap();
-
-    assert_eq!(parsed.recover_signer(&token.digest).unwrap(), root_account);
-    match parsed {
-        TempoSignature::Keychain(keychain) => {
-            assert_eq!(keychain.key_id(&token.digest).unwrap(), expected_key_id);
-        }
-        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
-            panic!("expected keychain signature")
+        assert_eq!(
+            parsed.recover_signer(&token.digest).unwrap(),
+            root_account,
+            "{case}"
+        );
+        match parsed {
+            TempoSignature::Keychain(keychain) => {
+                assert_eq!(
+                    keychain.key_id(&token.digest).unwrap(),
+                    expected_key_id,
+                    "{case}"
+                );
+            }
+            TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+                panic!("{case}: expected keychain signature")
+            }
         }
     }
 }

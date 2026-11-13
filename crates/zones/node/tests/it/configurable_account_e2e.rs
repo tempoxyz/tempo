@@ -46,13 +46,13 @@ use crate::{
     },
     hardfork_settlement_e2e::batch_witness,
     utils::{
-        DEFAULT_POLL, L1TestNode, RedactedRpcL1TestCtx, WITHDRAWAL_TX_GAS, ZoneAccount,
-        ZoneTestNode, build_token_with_signature, now_secs, poll_until, signer_at, spawn_sequencer,
-        start_real_p2p_cluster, start_zone_with_redacted_rpc_l1,
+        DEFAULT_POLL, L1_TIMEOUT, L1TestNode, RedactedRpcL1TestCtx, WITHDRAWAL_TX_GAS, ZoneAccount,
+        ZoneTestNode, assert_same_block, build_token_with_signature, now_secs, poll_until,
+        signer_at, spawn_sequencer, start_real_p2p_cluster, start_zone_with_redacted_rpc_l1,
+        wait_all_at,
     },
 };
 
-const L1_TIMEOUT: Duration = Duration::from_secs(30);
 /// pathUSD each account holds on Tempo for its own fees.
 const TEMPO_FUNDING: u128 = 100_000_000;
 /// Test key index of the EOA whose access key the old authority is, and whose fees it sponsors.
@@ -712,8 +712,8 @@ async fn test_followers_replay_a_tempo_change() -> eyre::Result<()> {
         let height = receipt
             .block_number()
             .ok_or_eyre("receipt without a block number")?;
-        cluster.wait_all_at(height, L1_TIMEOUT).await?;
-        cluster.assert_same_block(height).await?;
+        wait_all_at(&cluster.nodes, height, L1_TIMEOUT).await?;
+        assert_same_block(&cluster.nodes, height).await?;
         for chain in followers {
             let replayed = chain
                 .provider

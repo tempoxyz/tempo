@@ -1653,7 +1653,7 @@ mod tests {
         tt_2d_pool::AA2dPoolConfig,
     };
     use alloy_consensus::Header;
-    use alloy_primitives::{Signature, TxKind, U256, address, uint};
+    use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use futures::{FutureExt, StreamExt};
@@ -2805,14 +2805,15 @@ mod tests {
         assert_eq!(pooled.inner().fee_token(), None);
         pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
+        let policy_id = 7;
         let mut blacklist = crate::maintain::TempoPoolUpdates::new();
-        blacklist.blacklist_additions.push((7, sender));
+        blacklist.blacklist_additions.push((policy_id, sender));
         let mut whitelist = crate::maintain::TempoPoolUpdates::new();
-        whitelist.whitelist_removals.push((9, sender));
+        whitelist.whitelist_removals.push((policy_id, sender));
 
-        for (case, policy_id, updates) in [
-            ("blacklist addition", 7, blacklist),
-            ("whitelist removal", 9, whitelist),
+        for (case, updates) in [
+            ("blacklist addition", blacklist),
+            ("whitelist removal", whitelist),
         ] {
             let provider = create_provider_with_tip();
             provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
@@ -3539,11 +3540,7 @@ mod tests {
         let replacement = lane_tx
             .max_fee(40_000_000_000)
             .max_priority_fee(2_000_000_000)
-            .calls(vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: vec![0; 256].into(),
-            }])
+            .calls(vec![Call::new(Address::random(), vec![0; 256])])
             .build();
         let (replacement, result) = add_aa_2d(&pool, replacement);
         assert!(matches!(

@@ -452,7 +452,7 @@ mod tests {
     use super::*;
     use alloy_eips::Encodable2718;
     use alloy_json_rpc::{Id, Request, Response, ResponsePayload, SerializedRequest};
-    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+    use alloy_primitives::{Address, Bytes, hex};
     use alloy_signer::SignerSync;
     use serde_json::value::RawValue;
     use std::{
@@ -621,11 +621,7 @@ mod tests {
             max_priority_fee_per_gas: 1,
             max_fee_per_gas: 1,
             gas_limit: 21_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x11)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x11), Bytes::new())],
             nonce,
             fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
