@@ -289,6 +289,13 @@ impl SigningShare {
             .map_err(SigningShareErrorKind::Write)?;
         file.persist(path)
             .map_err(|err| SigningShareErrorKind::Write(err.error))?;
+
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        std::fs::File::open(dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(SigningShareErrorKind::Write)?;
+
         Ok(())
     }
 }
