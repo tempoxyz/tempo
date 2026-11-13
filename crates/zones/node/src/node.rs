@@ -18,11 +18,10 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
-    shadow_prover::RpcFollowerShadowProver,
 };
 use alloy_chains::Chain;
 use alloy_consensus::{BlockHeader as _, TxReceipt as _};
@@ -112,7 +111,7 @@ use zone_sequencer::{
     BatchAnchorConfig, ProofCollectorConfig, ProofCollectorHandle, ProverAddresses,
     SettlementManager, SettlementProver, SettlementProverConfig, WithdrawalBatchLimits,
     ZoneSequencerConfig, attestation::AttestationDomain, create_proof_collector,
-    spawn_settlement_prover, spawn_shadow_prover, spawn_zone_sequencer,
+    spawn_settlement_prover, spawn_zone_sequencer,
 };
 
 fn validate_zone_chain_id(parent_chain_id: u64, zone_id: u32, chain_id: u64) -> eyre::Result<()> {
@@ -210,44 +209,6 @@ pub struct ZoneSequencerAddOnsConfig {
     pub deposit_allowlist: Option<DepositAllowlist>,
 }
 
-/// How this node validates Zone batches with the SPF.
-#[derive(Debug, Clone)]
-pub enum ZoneProverConfig {
-    /// Require SPF validation and a Nitro NSM attestation from the prover assigned to the live
-    /// L1 hardfork before settlement. Requires a sequencer and implies proof persistence.
-    Settlement(ProverAddresses),
-    /// Observationally validate finalized L1 submissions. Requires an rpc_only P2P follower.
-    Shadow {
-        /// Remote provers routed by the live L1 hardfork. When absent, execute the SPF in
-        /// this process.
-        prover_addresses: Option<ProverAddresses>,
-        /// Independently approved enclave measurements for local, observational verification.
-        proof_verifier: Option<zone_prover::ShadowProofVerifier>,
-    },
-}
-
-impl ZoneProverConfig {
-    const fn is_shadow(&self) -> bool {
-        matches!(self, Self::Shadow { .. })
-    }
-
-    const fn prover_addresses(&self) -> Option<&ProverAddresses> {
-        match self {
-            Self::Settlement(addresses) => Some(addresses),
-            Self::Shadow {
-                prover_addresses, ..
-            } => prover_addresses.as_ref(),
-        }
-    }
-
-    const fn proof_verifier(&self) -> Option<&zone_prover::ShadowProofVerifier> {
-        match self {
-            Self::Settlement(_) => None,
-            Self::Shadow { proof_verifier, .. } => proof_verifier.as_ref(),
-        }
-    }
-}
-
 /// Configuration for the Zone redacted RPC server extension.
 #[derive(Debug, Clone, Default)]
 pub struct ZoneRedactedRpcConfig {
@@ -287,8 +248,8 @@ pub struct ZoneNode {
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
     sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-    /// Optional SPF validation config.
-    prover_config: Option<ZoneProverConfig>,
+    /// Remote provers whose attested proofs gate settlement. `None` disables SPF validation.
+    prover_addresses: Option<ProverAddresses>,
     /// Optional static Zone P2P networking config.
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
@@ -341,7 +302,7 @@ impl ZoneNode {
             withdrawal_reveal_encryptor: None,
             redacted_rpc_config: ZoneRedactedRpcConfig::default(),
             sequencer_config: None,
-            prover_config: None,
+            prover_addresses: None,
             p2p_config: None,
             deposit_allowlist_admin: None,
             allowlist_mirror: AllowlistMirror::default(),
@@ -381,9 +342,10 @@ impl ZoneNode {
         self
     }
 
-    /// Enable SPF validation, either gating settlement or shadowing finalized submissions.
-    pub fn with_prover(mut self, config: ZoneProverConfig) -> Self {
-        self.prover_config = Some(config);
+    /// Require SPF validation and a Nitro NSM attestation from the prover assigned to the live
+    /// L1 hardfork before settlement. Requires a sequencer and implies proof persistence.
+    pub fn with_prover(mut self, prover_addresses: ProverAddresses) -> Self {
+        self.prover_addresses = Some(prover_addresses);
         self
     }
 
@@ -514,8 +476,8 @@ where
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Sequencer configuration.
     sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-    /// SPF validation configuration.
-    prover_config: Option<ZoneProverConfig>,
+    /// Remote provers whose attested proofs gate settlement.
+    prover_addresses: Option<ProverAddresses>,
     /// Static Zone P2P networking configuration.
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
@@ -551,7 +513,7 @@ where
         portal_address: Address,
         redacted_rpc_config: ZoneRedactedRpcConfig,
         sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-        prover_config: Option<ZoneProverConfig>,
+        prover_addresses: Option<ProverAddresses>,
         p2p_config: Option<P2pConfig>,
         deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
         allowlist_mirror: AllowlistMirror,
@@ -575,7 +537,7 @@ where
             portal_address,
             redacted_rpc_config,
             sequencer_config,
-            prover_config,
+            prover_addresses,
             p2p_config,
             deposit_allowlist_admin,
             allowlist_mirror,
@@ -679,19 +641,6 @@ where
             validate_zone_chain_id(l1_chain_id, portal_zone_id, chain_id)?;
         }
 
-        let mut finalized_batch_submission_sender = None;
-        let mut finalized_batch_submissions = None;
-        if self
-            .prover_config
-            .as_ref()
-            .is_some_and(ZoneProverConfig::is_shadow)
-        {
-            let (sender, receiver) =
-                tokio::sync::mpsc::channel(zone_sequencer::SHADOW_PROVER_QUEUE_CAPACITY);
-            finalized_batch_submission_sender = Some(sender);
-            finalized_batch_submissions = Some(receiver);
-        }
-
         self.resolve_and_seed_tokens(&l1_provider, tempo_block_number)
             .await?;
         if let Some(keys) = self.encryption_keys.clone() {
@@ -775,7 +724,6 @@ where
             self.l1_state_cache.clone(),
             self.l1_block_tracker.clone(),
             leadership_sink,
-            finalized_batch_submission_sender,
             self.encryption_keys.clone(),
         );
         task_executor.spawn_critical_task("l1-block-subscriber", Box::pin(l1_subscriber.run()));
@@ -830,6 +778,12 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
+        let get_code_l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            self.l1_state_cache.clone(),
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
@@ -881,6 +835,14 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
+                // Only on transports that serve the eth namespace, like the methods they replace.
+                container.modules.add_or_replace_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Eth,
+                    operator_get_code_module(
+                        container.registry.eth_api().clone(),
+                        get_code_l1_state,
+                    )?,
+                )?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
@@ -898,71 +860,41 @@ where
         // One proof collector and prover per node, shared by every leader generation.
         let mut proof_collector = None;
         let mut settlement_prover = None;
-        if let Some(prover_config) = self.prover_config.as_ref() {
+        if let Some(prover_addresses) = self.prover_addresses.clone() {
             let debug_api = Arc::new(NodeZoneDebugApi::new(
                 handle.eth_handlers().api.clone(),
                 l1_provider.clone(),
             ));
             let proof_collector_config = ProofCollectorConfig {
                 directory: datadir.join("proofs"),
-                debug_api: debug_api.clone(),
+                debug_api,
                 portal_address: self.portal_address,
                 l1_provider: l1_provider.clone(),
-                retain_for_shadow_proving: matches!(prover_config, ZoneProverConfig::Shadow { .. }),
             };
             let (collector, collector_task) =
                 create_proof_collector(proof_collector_config, provider.clone()).await?;
             task_executor.spawn_critical_task("zone-proof-collector", collector_task);
 
-            if let Some(addresses) = prover_config.prover_addresses().cloned() {
-                let chain_spec = evm_chain_spec.clone();
-                task_executor.spawn_critical_task("prover-upgrade-readiness", async move {
-                    addresses.monitor_upgrade_readiness(chain_spec).await;
-                });
-            }
+            let addresses = prover_addresses.clone();
+            let chain_spec = evm_chain_spec.clone();
+            task_executor.spawn_critical_task("prover-upgrade-readiness", async move {
+                addresses.monitor_upgrade_readiness(chain_spec).await;
+            });
             let spf_config = SettlementProverConfig {
                 parent_chain_id: l1_chain_id,
                 zone_id: genesis_zone_id,
                 chain_spec: evm_chain_spec,
-                debug_api,
-                prover_addresses: prover_config.prover_addresses().cloned(),
-                proof_verifier: prover_config.proof_verifier().cloned(),
+                prover_addresses,
             };
-            match prover_config {
-                ZoneProverConfig::Settlement(_) => {
-                    // Repair a pre-existing canonical tail before admitting new blocks or
-                    // starting settlement.
-                    collector.collect_canonical_tail(&provider).await?;
-                    settlement_prover = Some(spawn_settlement_prover(
-                        spf_config,
-                        collector.clone(),
-                        provider.clone(),
-                        l1_provider.clone(),
-                    ));
-                }
-                ZoneProverConfig::Shadow { .. } => {
-                    let prover = spawn_shadow_prover(
-                        spf_config,
-                        Some(collector.clone()),
-                        provider.clone(),
-                        l1_provider.clone(),
-                    );
-                    task_executor.spawn_critical_task(
-                        "rpc-follower-shadow-prover",
-                        RpcFollowerShadowProver::new(
-                            self.portal_address,
-                            provider.clone(),
-                            l1_provider.clone(),
-                            prover,
-                        )
-                        .run(
-                            finalized_batch_submissions
-                                .take()
-                                .expect("shadow proving wires finalized submissions"),
-                        ),
-                    );
-                }
-            }
+            // Repair a pre-existing canonical tail before admitting new blocks or starting
+            // settlement.
+            collector.collect_canonical_tail(&provider).await?;
+            settlement_prover = Some(spawn_settlement_prover(
+                spf_config,
+                collector.clone(),
+                provider.clone(),
+                l1_provider.clone(),
+            ));
             proof_collector = Some(collector);
         }
 
@@ -1841,7 +1773,7 @@ where
             self.portal_address,
             self.redacted_rpc_config.clone(),
             self.sequencer_config.clone(),
-            self.prover_config.clone(),
+            self.prover_addresses.clone(),
             self.p2p_config.clone(),
             self.deposit_allowlist_admin,
             self.allowlist_mirror.clone(),
@@ -2091,7 +2023,7 @@ where
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_authority: pool_config.max_account_slots,
             ..Default::default()
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);

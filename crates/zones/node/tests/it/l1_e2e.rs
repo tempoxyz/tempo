@@ -5,11 +5,12 @@
 //! subscriber naturally receives blocks and deposits — no synthetic injection.
 
 use crate::utils::{
-    L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs, STABLECOIN_DEX_ADDRESS,
-    WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode, deposit_allowlist_admin,
-    fetch_submit_batch_call, poll_until, seed_raw_tip403_policy, seed_raw_tip403_token_policy,
-    spawn_sequencer, spawn_sequencer_with_config, start_real_p2p_cluster,
-    start_real_p2p_cluster_with_active_nodes, start_real_p2p_cluster_with_deposit_allowlist,
+    DEFAULT_POLL, L1_TIMEOUT, L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs,
+    STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
+    assert_same_block, deposit_allowlist_admin, fetch_submit_batch_call, poll_until,
+    seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
+    spawn_sequencer_with_config, start_real_p2p_cluster, start_real_p2p_cluster_with_active_nodes,
+    start_real_p2p_cluster_with_deposit_allowlist, wait_all_at,
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
@@ -22,6 +23,7 @@ use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use std::{collections::HashMap, time::Duration};
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::{
     precompiles::{ITIP20, ITIP403Registry, ITIP403Registry::PolicyType},
     zones::{
@@ -36,9 +38,6 @@ use zone_node::{
 };
 use zone_precompiles::ecies;
 
-/// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
-const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ROUTER_SWAP_TICK: i16 = 0;
 const ROUTER_SWAP_AMOUNT: u128 = 100_000_000;
 const ROUTER_DEX_LIQUIDITY: u128 = 300_000_000;
@@ -158,12 +157,13 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
 
     // Verify L1 is producing blocks
     let l1_block_0 = l1.provider().get_block_number().await?;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let l1_block_1 = l1.provider().get_block_number().await?;
-    assert!(
-        l1_block_1 > l1_block_0,
-        "L1 should be producing blocks in dev mode"
-    );
+    poll_until(
+        L1_TIMEOUT,
+        DEFAULT_POLL,
+        "L1 should be producing blocks in dev mode",
+        || async { Ok((l1.provider().get_block_number().await? > l1_block_0).then_some(())) },
+    )
+    .await?;
 
     // Match the normal provision flow by anchoring immediately before the portal deployment.
     // Startup must leave the registry empty at this anchor and let subscriber backfill process
@@ -262,8 +262,8 @@ async fn test_three_node_quorum_settles_real_batch_boundary() -> eyre::Result<()
         portal.withdrawalBatchIndex().call().await? >= 1,
         "real batch boundary did not advance the withdrawal batch index"
     );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
+    wait_all_at(&cluster.nodes, submitted_height, L1_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, submitted_height).await?;
 
     Ok(())
 }
@@ -333,8 +333,8 @@ async fn test_two_online_sequencers_submit_two_signature_certificate() -> eyre::
         submitted_height > 0,
         "batch submission did not advance the settled zone height"
     );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
+    wait_all_at(&cluster.nodes, submitted_height, L1_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, submitted_height).await?;
 
     Ok(())
 }
@@ -965,9 +965,7 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
         let provider = l1.provider_with_signer(l1.user_signer());
         ITIP20::new(PATH_USD_ADDRESS, &provider)
             .approve(portal_address, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         let portal = ZonePortal::new(portal_address, &provider);
         let (key_index, encrypted) = l1
@@ -2141,7 +2139,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
     )
     .await?;
 
-    let pause_receipt = portal.pause().send().await?.get_receipt().await?;
+    let pause_receipt = portal.pause().mined().await?;
     eyre::ensure!(pause_receipt.status(), "global pause transaction failed");
     eyre::ensure!(portal.paused().call().await?, "portal should be paused");
     let pause_block = pause_receipt
@@ -2210,12 +2208,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
     let token = l1
         .create_tip20("PausedUSD", "pUSD", B256::with_last_byte(0x7f))
         .await?;
-    let governance_receipt = portal
-        .enableToken(token)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let governance_receipt = portal.enableToken(token).mined().await?;
     eyre::ensure!(
         governance_receipt.status(),
         "enableToken failed while paused"
@@ -2239,7 +2232,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
     assert_eq!(zone_provider.get_block_number().await?, frozen_head);
     assert_eq!(zone.tempo_block_number().await?, frozen_anchor);
 
-    let resume_receipt = portal.resume().send().await?.get_receipt().await?;
+    let resume_receipt = portal.resume().mined().await?;
     eyre::ensure!(resume_receipt.status(), "global resume transaction failed");
     eyre::ensure!(!portal.paused().call().await?, "portal should be resumed");
     let resume_block = resume_receipt
@@ -2283,7 +2276,7 @@ async fn test_global_pause_snapshot_stops_startup_until_resume() -> eyre::Result
     let portal_address = l1.deploy_zone().await?;
     let admin_provider = l1.admin_provider();
     let portal = ZonePortal::new(portal_address, &admin_provider);
-    let pause_receipt = portal.pause().send().await?.get_receipt().await?;
+    let pause_receipt = portal.pause().mined().await?;
     eyre::ensure!(pause_receipt.status(), "global pause transaction failed");
 
     let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
@@ -2293,7 +2286,7 @@ async fn test_global_pause_snapshot_stops_startup_until_resume() -> eyre::Result
     );
     let frozen_head = wait_for_stable_zone_head(&zone).await?;
 
-    let resume_receipt = portal.resume().send().await?.get_receipt().await?;
+    let resume_receipt = portal.resume().mined().await?;
     eyre::ensure!(resume_receipt.status(), "global resume transaction failed");
     let resume_block = resume_receipt
         .block_number
@@ -2435,9 +2428,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
     let provider = l1.provider_with_signer(depositor.clone());
     ITIP20::new(PATH_USD_ADDRESS, &provider)
         .approve(portal_address, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     let refund_balance_before = l1
         .balance_of(PATH_USD_ADDRESS, tempo_refund_recipient)
@@ -2461,9 +2452,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
             encrypted,
             tempo_refund_recipient,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(
         receipt.status(),
@@ -3211,9 +3200,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
         .await?;
     ITIP20::new(PATH_USD_ADDRESS, &provider)
         .approve(portal_address, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let current_recipient = l1.signer_at(2).address();
@@ -3242,9 +3229,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
             },
             depositor.address(),
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(current_receipt.status(), "current-key deposit was rejected");
 
@@ -3276,9 +3261,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
             },
             depositor.address(),
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(
         historical_receipt.status(),
@@ -3355,9 +3338,7 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
 
         ITIP20::new(PATH_USD_ADDRESS, depositor.l1_provider())
             .approve(portal_address, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let (key_index, encrypted) = l1
@@ -3377,9 +3358,7 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
                 encrypted,
                 depositor.address(),
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
     }
@@ -3472,9 +3451,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
         let admin_provider = l1.admin_provider();
         ITIP20::new(PATH_USD_ADDRESS, &admin_provider)
             .approve(portal_address, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let portal = ZonePortal::new(portal_address, &admin_provider);
@@ -3489,9 +3466,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
                 encrypted,
                 alice,
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
     }
@@ -3576,9 +3551,7 @@ async fn test_deposit_to_blacklisted_recipient_is_accepted_on_l1() -> eyre::Resu
     // Approve the portal to spend pathUSD
     ITIP20::new(PATH_USD_ADDRESS, &depositor_provider)
         .approve(portal_address, U256::MAX)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // The portal cannot inspect the encrypted recipient, so this is accepted on L1.
@@ -3594,9 +3567,7 @@ async fn test_deposit_to_blacklisted_recipient_is_accepted_on_l1() -> eyre::Resu
             encrypted,
             depositor,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     assert!(

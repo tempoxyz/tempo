@@ -61,20 +61,6 @@ impl ZoneVerifier {
         self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, APPROVED_PCRS.at(hardfork))
     }
 
-    /// Verify locally with independently approved PCR0, PCR1 and PCR2 measurements.
-    ///
-    /// This Rust-only observer entry point uses the AWS root and requires a `StorageCtx`
-    /// supplying the trusted parent-chain ID, current timestamp and gas budget. It does not
-    /// activate T13 or change the measurements used by the on-chain entry point.
-    pub fn verify_with_pcrs(
-        &self,
-        portal: Address,
-        call: IZoneVerifier::verifyCall,
-        approved_pcrs: [[u8; 48]; 3],
-    ) -> Result<bool> {
-        self.verify_with_policy(portal, call, AWS_NITRO_ROOT_DER, Some(approved_pcrs))
-    }
-
     fn verify_with_policy(
         &self,
         portal: Address,
@@ -230,7 +216,10 @@ pub enum PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::with_storage,
+    };
     use alloy::{
         primitives::{Bytes, b256},
         sol_types::SolCall,
@@ -392,8 +381,7 @@ mod tests {
 
     #[test]
     fn no_proof_requires_canonical_portal_and_empty_proof() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             let verifier = ZoneVerifier::new();
             let mut candidate = call();
             candidate.verifierConfig = Bytes::from_static(MODE_NO_PROOF);
@@ -461,12 +449,6 @@ mod tests {
                         &root,
                         APPROVED_PCRS.at(TempoHardfork::T12)
                     )
-                    .unwrap()
-            );
-            // The public observer API must still reject a synthetic, non-AWS trust root.
-            assert!(
-                !verifier
-                    .verify_with_pcrs(portal, call.clone(), pcrs)
                     .unwrap()
             );
             assert!(!verifier.verify(portal, call).unwrap());

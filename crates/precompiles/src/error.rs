@@ -574,10 +574,10 @@ mod tests {
         );
 
         let decoded = result.unwrap();
-        assert!(matches!(
+        assert_eq!(
             decoded.error,
-            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderDoesNotExist(_))
-        ));
+            StablecoinDEXError::order_does_not_exist().into()
+        );
     }
 
     #[test]

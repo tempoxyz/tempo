@@ -1,7 +1,7 @@
 use alloy::{
     consensus::BlockHeader,
     network::ReceiptResponse,
-    primitives::{Address, U256, address},
+    primitives::{Address, Bytes, U256, address},
     providers::{Provider, ProviderBuilder},
     signers::SignerSync,
 };
@@ -264,11 +264,7 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
         gas_limit: 1_000_000,
         max_fee_per_gas: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
         fee_token: Some(PATH_USD_ADDRESS),
-        calls: vec![Call {
-            to: Address::ZERO.into(),
-            value: U256::ZERO,
-            input: Default::default(),
-        }],
+        calls: vec![Call::new(Address::ZERO, Bytes::new())],
         ..Default::default()
     };
     let signature = account.signer().sign_hash_sync(&aa_tx.signature_hash())?;

@@ -48,7 +48,7 @@ use tempo_validator_config::ValidatorConfig;
 
 #[cfg(feature = "corpus")]
 use crate::corpus;
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, payload_bench, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -86,6 +86,9 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Benchmark the payload builder alone on an existing database and a real transaction pool.
+    PayloadBench(Box<payload_bench::PayloadBench>),
 
     /// Historical execution corpus: capture an archive range once, replay it without a DB.
     #[cfg(feature = "corpus")]
@@ -147,6 +150,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::PayloadBench(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
@@ -2320,10 +2328,10 @@ mod tests {
             let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
-                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .register_method("eth_chainId", |_, _| "0xa5bf")
                 .unwrap();
             module
-                .register_method("eth_call", move |params, requests, _| {
+                .register_method("eth_call", move |params, requests| {
                     let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
                     let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
                         IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
@@ -2337,7 +2345,7 @@ mod tests {
             for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
                 let submissions = submissions.clone();
                 module
-                    .register_method(method, move |_, _, _| {
+                    .register_method(method, move |_, _| {
                         submissions.lock().unwrap().push(method);
                         Ok::<_, ErrorObjectOwned>(B256::ZERO)
                     })
