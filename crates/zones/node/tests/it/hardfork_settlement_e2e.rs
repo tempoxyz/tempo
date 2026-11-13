@@ -44,7 +44,10 @@ use crate::utils::{
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 30;
+    // Leave time for the T12 setup below, measured at under 12s on a loaded host. The zone's L1
+    // link is paused from then until activation, which stays under 20s so outstanding HTTP
+    // requests remain within their normal timeout.
+    let activation = now_secs() + 20;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();
@@ -128,11 +131,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         U256::ZERO
     );
 
-    // Limit the pause so outstanding HTTP requests remain within their normal timeout.
-    tokio::time::sleep(Duration::from_secs(
-        activation.saturating_sub(now_secs() + 20),
-    ))
-    .await;
     proxy.pause_upstream_to_client(true);
     let l1_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(l1.dev_signer())
