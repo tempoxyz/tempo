@@ -24,7 +24,9 @@ use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
-use tempo_evm::consensus::{MAX_BLOCK_TRANSACTIONS, validate_body_against_header};
+use tempo_evm::consensus::{
+    MAX_BLOCK_TRANSACTIONS, TempoConsensusError, validate_body_against_header,
+};
 
 /// Consensus block shared through commonware.
 ///
@@ -45,7 +47,8 @@ pub(crate) struct Block {
 
 impl Block {
     /// Creates a block after validating its body, rejecting BAL header commitments, and rejecting
-    /// blocks whose RLP encoding exceeds [`MAX_RLP_BLOCK_SIZE`].
+    /// blocks with more than [`MAX_BLOCK_TRANSACTIONS`] transactions or whose RLP encoding exceeds
+    /// [`MAX_RLP_BLOCK_SIZE`].
     pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
@@ -64,6 +67,16 @@ impl Block {
     {
         let execution_block = execution_block.into();
         validate_body_against_header(execution_block.body(), execution_block.header())?;
+        let transaction_count = execution_block.body().transactions.len();
+        if transaction_count > MAX_BLOCK_TRANSACTIONS {
+            return Err(
+                ConsensusError::from(TempoConsensusError::TooManyTransactions {
+                    count: transaction_count,
+                    max: MAX_BLOCK_TRANSACTIONS,
+                })
+                .into(),
+            );
+        }
         if execution_block.block_access_list_hash().is_some() {
             return Err(ConsensusError::BlockAccessListHashUnexpected.into());
         }
@@ -335,7 +348,6 @@ mod tests {
     use alloy_primitives::{B256, Signature, bytes, keccak256};
     use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
-    use tempo_evm::consensus::TempoConsensusError;
     use tempo_primitives::{Block as TempoBlock, TempoHeader, TempoTxEnvelope};
 
     use super::*;
