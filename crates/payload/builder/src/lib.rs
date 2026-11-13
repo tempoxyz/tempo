@@ -669,6 +669,7 @@ where
                         ..
                     }) => {
                         invalid_pool_transaction_execution_attempts += 1;
+                        tracing::trace!(target: "replay_dbg", tx_hash = ?tx.hash(), sender = ?tx.sender(), nonce_key = ?tx.transaction.nonce_key_ref(), nonce = tx.nonce(), %error, "DBG sequential invalid tx");
 
                         if error.is_nonce_too_low() {
                             // if the nonce is too low, we can skip this transaction
@@ -711,6 +712,7 @@ where
                             StorageActionReplayError::from_internal_block_execution_error(&err)
                         {
                             invalid_pool_transaction_execution_attempts += 1;
+                            tracing::trace!(target: "replay_dbg", tx_hash = ?tx.hash(), sender = ?tx.sender(), ?err, "DBG replay invalid");
                             best_txs.mark_invalid(
                                 &pool_tx,
                                 InvalidPoolTransactionError::Consensus(

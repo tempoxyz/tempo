@@ -97,7 +97,7 @@ impl TempoBlockExecutor<'_> {
 
         let spec = self.evm().config_spec_id();
         for read in accounts {
-            if AccountRead::new(
+            let dbg_now = AccountRead::new(
                 read.address,
                 self.inner
                     .evm_mut()
@@ -106,8 +106,10 @@ impl TempoBlockExecutor<'_> {
                     .map_err(map_database_error)?
                     .as_ref(),
                 spec,
-            )? != *read
+            )?;
+            if dbg_now != *read
             {
+                tracing::trace!(target: "replay_dbg", line = 111, ?dbg_now, ?read, "DBG conflict");
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
         }
@@ -140,6 +142,7 @@ impl TempoBlockExecutor<'_> {
                         self.replay_state
                             .sload_current_or(db, address, key, sload_value)?;
                     if (balance >= required) != sufficient {
+                        tracing::trace!(target: "replay_dbg", line = 143, "DBG conflict");
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
@@ -198,6 +201,7 @@ impl TempoBlockExecutor<'_> {
                     )?;
                     let pool = Pool::decode_from_slot(pool_slot);
                     if pool.has_enough_reserve_validator_token(amount_out) != has_enough_liquidity {
+                        tracing::trace!(target: "replay_dbg", line = 201, "DBG conflict");
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
@@ -210,6 +214,7 @@ impl TempoBlockExecutor<'_> {
                         }
                     };
                     if *current != before {
+                        tracing::trace!(target: "replay_dbg", line = 213, "DBG conflict");
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                     *current = after;
@@ -276,6 +281,7 @@ impl TempoBlockExecutor<'_> {
         if expiring_nonce.valid_before <= block_timestamp
             || expiring_nonce.valid_before > block_timestamp.saturating_add(max_expiry_secs)
         {
+            tracing::trace!(target: "replay_dbg", line = 279, "DBG conflict");
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
@@ -290,6 +296,7 @@ impl TempoBlockExecutor<'_> {
             .get_storage(&NONCE_PRECOMPILE_ADDRESS, &seen_slot)
             .map_err(map_database_error)?;
         if !seen_expiry.is_zero() && seen_expiry > now {
+            tracing::trace!(target: "replay_dbg", line = 293, "DBG conflict");
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
@@ -306,6 +313,7 @@ impl TempoBlockExecutor<'_> {
                 .get_storage(&NONCE_PRECOMPILE_ADDRESS, &old_seen_slot)
                 .map_err(map_database_error)?;
             if !old_expiry.is_zero() && old_expiry > now {
+                tracing::trace!(target: "replay_dbg", line = 309, "DBG conflict");
                 return Err(StorageActionReplayError::ActionConflict.into());
             }
             self.replay_state.record_sstore(
@@ -585,6 +593,8 @@ impl StorageActionReplayState {
         match self.tx_changes.entry(address).or_default().entry(slot) {
             Entry::Occupied(change) => {
                 if change.get().current != expected {
+                    tracing::trace!(target: "replay_dbg", ?address, ?slot, ?expected, current = ?change.get().current, "DBG sload_exact occupied");
+                    tracing::trace!(target: "replay_dbg", line = 588, "DBG conflict");
                     return Err(StorageActionReplayError::ActionConflict.into());
                 }
                 Ok(change.get().current)
@@ -597,6 +607,8 @@ impl StorageActionReplayState {
                     // and we can just use the expected value.
                     .unwrap_or(expected);
                 if current != expected {
+                    tracing::trace!(target: "replay_dbg", ?address, ?slot, ?expected, ?current, "DBG sload_exact cached");
+                    tracing::trace!(target: "replay_dbg", line = 600, "DBG conflict");
                     return Err(StorageActionReplayError::ActionConflict.into());
                 }
 
