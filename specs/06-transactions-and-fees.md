@@ -778,7 +778,7 @@ A transaction's receipt has exactly four consensus fields ([02-encoding.md](02-e
 | 5 | logs of the calls | successful batch only |
 | 6 | `Transfer(address indexed from = fee payer, address indexed to = FEE_MANAGER, uint256 amount = actual)` (the fee token) | unless `actual == 0` and `refund_amount == 0` (§7.4) |
 
-For types 0, 1, 2 and 4 the logs are the execution's logs (successful execution only) followed by the fee `Transfer` log (row 6). Fee pre-collection, the refund, the fee AMM conversion, expiring-nonce bookkeeping, EIP-7702 delegation and storage-credit settlement emit no logs.
+For types 0, 1, 2 and 4 the logs are the execution's logs (successful execution only) followed by the fee `Transfer` log (row 6); fee pre-collection emits no log for these transaction types. For every transaction type, the refund, the fee AMM conversion, expiring-nonce bookkeeping, EIP-7702 delegation and storage-credit settlement emit no logs.
 
 ## 10. Consensus rules versus transaction-pool policy
 

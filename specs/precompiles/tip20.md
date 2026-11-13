@@ -965,7 +965,7 @@ Before T5 the caller is not checked (the fee manager was its only caller). Calle
 
 ### 9.2 Fee hooks
 
-Called by the fee manager around transaction execution ([fee-manager.md](fee-manager.md) defines when, in which gas context, and with which amounts).
+Called by the fee manager around transaction execution ([fee-manager.md §7.1](fee-manager.md#71-invocation-contract) defines when, in which gas context, and with which amounts). The post hook is not invoked when both `actual_spending` and `refund` are zero; when invoked, it always emits the fee-token `Transfer`.
 
 ```python
 def transfer_fee_pre_tx(frm, amount):
@@ -975,10 +975,10 @@ def transfer_fee_pre_tx(frm, amount):
     if rr != 0: opted_in_supply -= amount
     decrement_balance(frm, amount)                                # InsufficientBalance(c, amount, token)
     increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)
-    # no event
+    # no TIP-20 Transfer; the spending-limit check above may emit AccessKeySpend at AccountKeychain
 
 def transfer_fee_post_tx(to, refund, actual_spending):
-    LOG(Transfer(to, TIP_FEE_MANAGER_ADDRESS, actual_spending))   # always, even if actual_spending == 0, even when paused
+    LOG(Transfer(to, TIP_FEE_MANAGER_ADDRESS, actual_spending))   # on every invocation, even if actual_spending == 0 or paused
     if refund == 0: return
     if is_active(T1C): AccountKeychain.refund_spending_limit(to, T.address, refund)
     rr = update_rewards(to)                                       # 0 from T8

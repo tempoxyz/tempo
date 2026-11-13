@@ -404,7 +404,7 @@ def collectFeePreTx(fee_payer, user_token, max_amount, beneficiary):
     reserve_fee_liquidity(user_token, validator_token, max_amount, route) # Section 7.4
 ```
 
-`tip20_transfer_fee_pre_tx` ([tip20.md](tip20.md)) raises `ContractPaused` if the token is paused, debits the access key's spending limit when the transaction is keychain-signed by the fee payer (`SpendingLimitExceeded`), updates the payer's reward accounting, debits `max_amount` from the payer (`InsufficientBalance`) and credits it to `FEE_MANAGER`. It emits no log.
+`tip20_transfer_fee_pre_tx` ([tip20.md](tip20.md)) raises `ContractPaused` if the token is paused, debits the access key's spending limit when the transaction is keychain-signed by the fee payer (`SpendingLimitExceeded`), updates the payer's reward accounting, debits `max_amount` from the payer (`InsufficientBalance`) and credits it to `FEE_MANAGER`. It emits no TIP-20 `Transfer` log. From T3, its spending-limit debit emits `AccessKeySpend` at `ACCOUNT_KEYCHAIN` for an existing limited access key in a sender-paid type `0x76` transaction ([06-transactions-and-fees.md §8](../06-transactions-and-fees.md#8-access-key-spending-limits-on-fees)).
 
 Before T8 the pre hook requires the fee payer to be an authorized sender **and** `FEE_MANAGER` to be an authorized recipient under the fee token's transfer policy; from T8 only the fee payer is checked (TIP-1042).
 
@@ -519,7 +519,7 @@ Consequences that MUST hold:
 - The swap path is the one the pre hook chose: the intermediate comes from transient storage, not from a fresh `quoteToken()` read, so a quote-token change during the transaction does not change routing.
 - The validator token is read again from storage. It cannot have changed during the transaction: only `validatorTokens[beneficiary]` is read, and `setValidatorToken` rejects the beneficiary as caller.
 - A fee swap does not use `has_enough_reserve_validator_token` (an empty pool with `amount_out == 0` is accepted) and does not read the reservation.
-- The only log the hooks add is the fee-token `Transfer` above (reward accounting and the spending-limit refund emit nothing); it is appended after the transaction's execution logs and is kept when execution reverted. The pre hook adds no log.
+- From T3, the pre hook emits the `AccessKeySpend` described in §7.2 through the AccountKeychain spending-limit debit. When invoked under §7.1's call rules, the post hook emits the fee-token `Transfer` above, after the transaction's execution logs. Both logs survive an execution revert; an invalid transaction is rejected instead. Reward accounting, the spending-limit refund and the fee AMM conversion emit nothing. For same-transaction key authorization, the spending-limit debit and its log occur after the key is written, outside these hooks; the complete receipt order is in [06-transactions-and-fees.md §9](../06-transactions-and-fees.md#9-receipts).
 
 ## 8. TIP-1060 storage-credit interaction (from T7)
 

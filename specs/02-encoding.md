@@ -81,7 +81,7 @@ def decode_2718(buf):
     return legacy_decode(buf)                    # buf[0] >= 0xc0: RLP list
 ```
 
-Inside a block body ([§3](#3-block-and-body)), transactions use the **network form**. A legacy transaction is the RLP list itself. A typed transaction is canonically `rlp_string(type_byte || payload)`, an RLP byte string whose content is the 2718 encoding. Decoders MUST also accept a typed transaction written **unwrapped** in the list, as the bare bytes `type_byte || payload` with no string header. This legacy acceptance comes from the decoder treating a first byte `< 0x80` as a one-byte string header. Both forms decode to the same transaction. Encoders MUST emit the wrapped form, and every length, hash and root in this chapter is computed from the wrapped (canonical) form.
+Inside a block body ([§3](#3-block-and-body)), transactions use the **network form**. A legacy transaction is the RLP list itself. A typed transaction is canonically `rlp_string(type_byte || payload)`, an RLP byte string whose content is the 2718 encoding. Decoders MUST also accept a typed transaction written **unwrapped** in the list, as the bare bytes `type_byte || payload` with no string header. Acceptance of the unwrapped form comes from the decoder treating a first byte `< 0x80` as a one-byte string header. Both forms decode to the same transaction. Encoders MUST emit the wrapped form, and every length, hash and root in this chapter is computed from the wrapped (canonical) form.
 
 ```python
 def network_decode_tx(list_payload):
@@ -91,13 +91,14 @@ def network_decode_tx(list_payload):
     if first < 0x80:
         ty = list_payload.read_u8()                        # unwrapped form
         return typed_decode(ty, list_payload)              # consumes the typed payload
-    s_len = list_payload.read_rlp_string_header()          # wrapped form
-    if s_len == 0 or s_len > list_payload.remaining(): raise DecodeError
+    s_len = list_payload.read_rlp_string_header()          # remaining() now excludes this header
+    if s_len > list_payload.remaining(): raise DecodeError
+    if list_payload.remaining() == 0: raise DecodeError   # missing type byte
     ty = list_payload.read_u8()
     return typed_decode(ty, list_payload)                  # consumes the typed payload
 ```
 
-If its canonical string header declares at most the bytes left in the list, a wrapped typed transaction decodes. The payload length does not matter, and the next item starts right after the typed payload. Both reference encoders write the exact length, so only another encoder writes a body in which the two lengths differ.
+Received network encodings are accepted more permissively than the canonical encoder emits them. A wrapped typed transaction decodes if its canonical string header declares at most the bytes left in the list and a supported type byte and valid typed payload follow. The declared string length may be zero; it does not bound the typed decoder. The next item starts right after the typed payload, not after the declared string length. For example, `0x80 || 0x76 || valid_rlp_fields` decodes as a Tempo transaction, but `0x80` at the end of the list is invalid because no type byte follows. Encoders MUST still emit the exact-length wrapped form, and hashes and roots use that canonical form.
 
 ### 1.5 Constants
 

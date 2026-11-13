@@ -472,7 +472,10 @@ def ceremony_output(E: int, P: Block) -> Output:
     return result.output if result.ok else S.output  # a failed ceremony carries the input output forward
 ```
 
-Log collection and selection are [dkg.md §9](commonware/dkg.md#9-log-collection-and-selection) and `observe` is [dkg.md §10](commonware/dkg.md#10-computing-the-output). A validator that is a player computes its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) on the same logs. That gives the same output as `observe`. If its local player state cannot produce a share, it continues as an observer and has no share in `E+1`. On failure, the previous output and the previous share (if any) carry forward.
+Log collection and selection are [dkg.md §9](commonware/dkg.md#9-log-collection-and-selection) and `observe` is [dkg.md §10](commonware/dkg.md#10-computing-the-output).
+
+- If `observe` fails, the ceremony has failed: epoch `E`'s output (`S(E).output`) and this validator's share for `E` (if any) carry forward unchanged, regardless of whether the validator is a player in the failed or following ceremony.
+- If `observe` succeeds, a validator in `S(E).players` computes its share as in [dkg.md §12](commonware/dkg.md#12-player-share-derivation) on the same logs. Successful derivation gives the same output as `observe`. If its local player state cannot produce a share, or it was not a player, it continues as an observer and has no share in `E+1`. A local derivation failure does not fail the ceremony or carry the previous share forward.
 
 Implementation note: an implementation MAY take logs from finalized blocks first (the earliest finalized log per dealer), then walks the notarized blocks from `P` down to the latest finalized block for dealers that have no finalized log yet. Because the finalized blocks are ancestors of `P`, this equals the rule above.
 
@@ -551,7 +554,7 @@ After finalization (Simplex finalize votes), a validator delivers finalized bloc
 For a validator in epoch `E`, the transition happens when the finalized block `last(E)` is processed, in height order with every other finalized block. It does not wait for a block of epoch `E+1`. The steps run in this order:
 
 1. Epoch `E`'s instance finalizes the boundary block `last(E)`, possibly as a re-proposal in a later view. Marshal delivers it once every lower height is processed.
-2. The DKG component reads `outcome(E+1)` from the `extra_data` of `last(E)`. It sets the share to the one this node concluded for that parent, or none if its local output differs from `outcome(E+1).output` or it was not a player. It durably persists the new state `S(E+1)` (§9.1) before step 3.
+2. The DKG component reads `outcome(E+1)` from the `extra_data` of `last(E)`. It uses the share determined by §11.1 for that parent: the previous share (if any) on ceremony failure, even if this node was not a player; otherwise the newly derived share, or none if it was not a player or local derivation failed. In either case, it uses no share if its locally computed output differs from `outcome(E+1).output`. It durably persists the new state `S(E+1)` (§9.1) before step 3.
 3. **Exit `E`.** The validator stops epoch `E`'s Simplex instance and ceremony. This deregisters `E`'s subchannels on the vote, certificate, resolver and DKG channels (08-p2p-and-sync.md §3.2). It deletes the verification key of epoch `E−2`, if any, and keeps those of `E−1` and `E`.
 4. **Enter `E+1`.** It installs epoch `E+1`'s key and starts its instance (§5.3) with `floor = hash(last(E))`, participants `outcome(E+1).output.players`, the elector version from `header(last(E)).timestamp`, and its share if it has one. This registers `E+1`'s vote, certificate and resolver subchannels. It then starts the ceremony of epoch `E+1` with `info(E+1)`, which registers `E+1`'s DKG subchannel.
 
