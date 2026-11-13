@@ -3,7 +3,7 @@
 use alloy::{
     consensus::BlockHeader as _,
     network::ReceiptResponse as _,
-    primitives::{Address, TxKind, U256},
+    primitives::{Address, B256, Bytes, TxKind, U256},
     providers::Provider as _,
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
@@ -11,6 +11,7 @@ use alloy::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rpc_types_eth::{BlockNumberOrTag, FeeHistory};
 use alloy_signer::SignerSync as _;
+use alloy_sol_types::SolCall as _;
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -18,7 +19,11 @@ use tempo_chainspec::{
         TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, tempo_t7_next_block_base_fee,
     },
 };
-use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal::Role as PortalRole},
+};
+use tempo_precompiles::{PATH_USD_ADDRESS, storage::StorageKey as _, zone_factory::portal};
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
@@ -31,7 +36,8 @@ use zone_node::rpc::auth::{AuthContext, AuthSigner};
 use zone_precompiles::ZONE_FEE_MANAGER_ADDRESS;
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, ZoneTestNode, start_local_zone_with_fixture_and_withdrawal_batch_interval,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneTestNode,
+    start_local_zone_with_fixture_and_withdrawal_batch_interval,
 };
 
 const ZONE_ID: u32 = 1;
@@ -52,27 +58,30 @@ async fn redacted_rpc(
     .await
 }
 
-fn sponsored_transaction(
+/// Signs a pathUSD-fee Tempo transaction from `sender`, sponsored by `fee_payer` when given.
+fn signed_transaction(
     sender: &PrivateKeySigner,
-    fee_payer: &PrivateKeySigner,
+    fee_payer: Option<&PrivateKeySigner>,
     chain_id: u64,
+    nonce: u64,
+    gas_limit: u64,
+    call: Call,
 ) -> eyre::Result<TempoTxEnvelope> {
     let mut transaction = TempoTransaction {
         chain_id,
         max_fee_per_gas: u128::from(TEMPO_T7_BASE_FEE_CAP),
         max_priority_fee_per_gas: PRIORITY_FEE,
-        gas_limit: 500_000,
-        calls: vec![Call {
-            to: TxKind::Call(sender.address()),
-            value: U256::ZERO,
-            input: Default::default(),
-        }],
+        gas_limit,
+        calls: vec![call],
         fee_token: Some(PATH_USD_ADDRESS),
+        nonce,
         ..Default::default()
     };
 
-    let fee_payer_hash = transaction.fee_payer_signature_hash(sender.address());
-    transaction.fee_payer_signature = Some(fee_payer.sign_hash_sync(&fee_payer_hash)?);
+    if let Some(fee_payer) = fee_payer {
+        let fee_payer_hash = transaction.fee_payer_signature_hash(sender.address());
+        transaction.fee_payer_signature = Some(fee_payer.sign_hash_sync(&fee_payer_hash)?);
+    }
     let sender_signature = sender.sign_hash_sync(&transaction.signature_hash())?;
     let signed = AASigned::new_unhashed(
         transaction,
@@ -244,7 +253,18 @@ async fn sponsored_transaction_settles_nonzero_base_fee() -> eyre::Result<()> {
         .balance_of(PATH_USD_ADDRESS, ZONE_FEE_MANAGER_ADDRESS)
         .await?;
 
-    let transaction = sponsored_transaction(&sender, &fee_payer, provider.get_chain_id().await?)?;
+    let transaction = signed_transaction(
+        &sender,
+        Some(&fee_payer),
+        provider.get_chain_id().await?,
+        0,
+        500_000,
+        Call {
+            to: TxKind::Call(sender.address()),
+            value: U256::ZERO,
+            input: Default::default(),
+        },
+    )?;
     let pending = provider
         .send_raw_transaction(&transaction.encoded_2718())
         .await?;
@@ -330,6 +350,164 @@ async fn sponsored_transaction_settles_nonzero_base_fee() -> eyre::Result<()> {
             .await?,
         escrow_before,
         "unused maximum-fee escrow must be refunded"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sponsored_withdrawal_charges_fee_payer_at_t15() -> eyre::Result<()> {
+    const SEED_BLOCKS: u64 = 10;
+    const TEMPO_GAS_RATE: u128 = 1;
+    const WITHDRAWAL_AMOUNT: u128 = 250_000;
+
+    let (zone, mut fixture) = start_local_zone_with_fixture_and_withdrawal_batch_interval(
+        ZONE_ID,
+        SEED_BLOCKS,
+        2,
+        t15_genesis()?,
+    )
+    .await?;
+    let sender = PrivateKeySigner::random();
+    let fee_payer = PrivateKeySigner::random();
+    let sequencer = PrivateKeySigner::random();
+
+    // Local fixtures seed no sequencer, so grant one the Portal role to set a nonzero
+    // withdrawal fee.
+    {
+        let mut cache = zone.l1_state_cache().lock();
+        let role_slot = sequencer.address().mapping_slot(portal::slots::ROLE);
+        for block in 0..=SEED_BLOCKS {
+            cache.set(
+                Address::ZERO,
+                role_slot.into(),
+                block,
+                B256::with_last_byte(u8::from(PortalRole::Sequencer)),
+            );
+        }
+    }
+
+    let deposits = [sender.address(), fee_payer.address(), sequencer.address()]
+        .map(|account| fixture.make_deposit(PATH_USD_ADDRESS, account, account, FEE_BALANCE));
+    fixture.inject_deposits(zone.deposit_queue(), deposits.into());
+    zone.wait_for_balance(
+        PATH_USD_ADDRESS,
+        sequencer.address(),
+        U256::from(FEE_BALANCE),
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+
+    let provider = zone.provider();
+    let chain_id = provider.get_chain_id().await?;
+    let approve_outbox = Call {
+        to: TxKind::Call(PATH_USD_ADDRESS),
+        value: U256::ZERO,
+        input: ITIP20::approveCall {
+            spender: ZONE_OUTBOX_ADDRESS,
+            amount: U256::MAX,
+        }
+        .abi_encode()
+        .into(),
+    };
+    let set_gas_rate = Call {
+        to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+        value: U256::ZERO,
+        input: IZoneOutbox::setTempoGasRateCall {
+            _tempoGasRate: TEMPO_GAS_RATE,
+        }
+        .abi_encode()
+        .into(),
+    };
+    let mut setup = Vec::new();
+    // Outbox calls read Tempo state, so they need more gas than a TIP-20 call.
+    for (signer, gas_limit, call) in [
+        (&sequencer, WITHDRAWAL_TX_GAS, set_gas_rate),
+        (&sender, TIP20_TX_GAS, approve_outbox.clone()),
+        (&fee_payer, TIP20_TX_GAS, approve_outbox),
+    ] {
+        let transaction = signed_transaction(signer, None, chain_id, 0, gas_limit, call)?;
+        setup.push(
+            provider
+                .send_raw_transaction(&transaction.encoded_2718())
+                .await?,
+        );
+    }
+    fixture.inject_empty_block(zone.deposit_queue());
+    for pending in setup {
+        assert!(
+            pending.get_receipt().await?.status(),
+            "setup transaction must succeed"
+        );
+    }
+
+    let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &provider);
+    let withdrawal_fee = outbox.calculateWithdrawalFee(0).call().await?;
+    assert!(withdrawal_fee > 0, "the withdrawal fee must be nonzero");
+    let sender_before = zone.balance_of(PATH_USD_ADDRESS, sender.address()).await?;
+    let fee_payer_before = zone
+        .balance_of(PATH_USD_ADDRESS, fee_payer.address())
+        .await?;
+
+    let withdrawal = signed_transaction(
+        &sender,
+        Some(&fee_payer),
+        chain_id,
+        1,
+        WITHDRAWAL_TX_GAS,
+        Call {
+            to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+            value: U256::ZERO,
+            input: IZoneOutbox::requestWithdrawalCall {
+                token: PATH_USD_ADDRESS,
+                to: sender.address(),
+                amount: WITHDRAWAL_AMOUNT,
+                memo: B256::ZERO,
+                gasLimit: 0,
+                zoneFallbackRecipient: sender.address(),
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode()
+            .into(),
+        },
+    )?;
+    let pending = provider
+        .send_raw_transaction(&withdrawal.encoded_2718())
+        .await?;
+    fixture.inject_empty_block(zone.deposit_queue());
+    let receipt = pending.get_receipt().await?;
+    assert!(receipt.status(), "sponsored withdrawal must succeed");
+    assert!(
+        receipt.effective_gas_price > 0,
+        "T15 withdrawal must pay a nonzero base fee"
+    );
+
+    let block = receipt
+        .block_number()
+        .expect("mined withdrawal block number");
+    let requested = outbox
+        .WithdrawalRequested_filter()
+        .select(block)
+        .query()
+        .await?;
+    assert_eq!(requested.len(), 1);
+    let (requested, _) = &requested[0];
+    assert_eq!(requested.sender, sender.address());
+    assert_eq!(requested.amount, WITHDRAWAL_AMOUNT);
+    assert_eq!(requested.fee, withdrawal_fee);
+
+    let gas_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
+    assert_eq!(
+        zone.balance_of(PATH_USD_ADDRESS, sender.address()).await?,
+        sender_before - U256::from(WITHDRAWAL_AMOUNT),
+        "the sponsored sender must pay only the withdrawal amount"
+    );
+    assert_eq!(
+        zone.balance_of(PATH_USD_ADDRESS, fee_payer.address())
+            .await?,
+        fee_payer_before - gas_fee - U256::from(withdrawal_fee),
+        "the fee payer must pay the execution fee and the withdrawal fee"
     );
 
     Ok(())
