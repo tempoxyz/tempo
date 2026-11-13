@@ -79,7 +79,6 @@ alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
-alloy-transport.workspace = true
 evm2.workspace = true
 
 # misc
@@ -126,9 +125,11 @@ reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
+tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
+test-case.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
@@ -203,4 +204,5 @@ test-utils = [
   "zone-chainspec/test-utils",
   "zone-node/test-utils",
   "zone-precompiles/test-utils",
+  "tempo-alloy/test-utils",
 ]

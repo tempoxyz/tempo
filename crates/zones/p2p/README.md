@@ -230,11 +230,8 @@ compromise. Startup rejects that key-file flag on an `rpc_only` node rather than
 This key is independent from the shared `--sequencer-key-file`; reusing that shared key
 would collapse several nodes into one recoverable quorum identity.
 
-Add `--sequencer.enable-prover` to run the detached shadow prover on this follower, and optionally
-`--sequencer.prover-address HARDFORK=HOST:PORT` (repeat per L1 hardfork) to use remote provers. The follower scans finalized
-`submitBatch` transactions, decodes the accepted quorum certificate inputs, and proves the exact
-anchor committed by the transaction after the matching Zone range is canonical locally. This is
-observational: proof success or failure never changes settlement or the follower's RPC service.
+Startup also rejects `--sequencer.enable-prover` on an rpc-follower: settlement proving requires a
+sequencer.
 
 The `--sequencer` flag conflicts with `--sequencer.manifest` because the
 manifest determines whether the node starts the sequencer tasks.
@@ -282,10 +279,15 @@ both the outgoing and incoming leaders retain transactions before the activation
 rpc-follower may originate forwarding, but it does not receive forwarded transactions because it
 is outside the on-chain quorum.
 
-This permits operator RPC to be exposed on followers while keeping the leader's RPC private. Every
-quorum receiver decodes and validates each forwarded transaction through its pool again; follower
-validation is not trusted. Only the active leader selects and orders transactions into blocks.
-Followers periodically retry live pool transactions, recovering from listener overflow and
+This lets rpc-only followers serve operator RPC in front of the quorum, so quorum nodes never have
+to. Operator RPC is never for untrusted callers on any node, because it serves unredacted zone
+state; they use the authenticated redacted RPC (`--redacted-rpc.port`). Every quorum node's
+operator RPC, leader and follower alike, must also stay private and operator-only, because
+`zone_setLeader` relays leader rotation with the node's individual sequencer key.
+
+Every quorum receiver decodes and validates each forwarded transaction through its pool again;
+follower validation is not trusted. Only the active leader selects and orders transactions into
+blocks. Followers periodically retry live pool transactions, recovering from listener overflow and
 temporary leader disconnections.
 
 ## Deposit allowlist relay

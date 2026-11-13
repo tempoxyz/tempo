@@ -1,9 +1,7 @@
-use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode};
+use crate::utils::{L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode};
 use alloy::{primitives::U256, providers::ProviderBuilder};
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::{precompiles::ITIP20, zones::ZONE_TOKEN_ADDRESS};
-
-/// Longer timeout for real L1 tests.
-const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Shield + in-zone send:
 ///
@@ -93,9 +91,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
 
         let receipt = zone_token
             .transfer(bob_address, U256::from(transfer_amount))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L2 transfer from Alice to Bob failed");
     }

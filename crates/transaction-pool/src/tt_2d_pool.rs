@@ -1,4 +1,5 @@
-/// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
+/// Pool for all transactions: user nonces (nonce_key > 0) and the protocol nonce, both tracked on
+/// chain.
 use crate::{
     authority_counts::AuthorityCounts, metrics::AA2dPoolMetrics, ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
@@ -53,6 +54,9 @@ type StateUpdateResult = (
 /// A 2d nonce transaction is pending if it dosn't have a nonce gap for its nonce key, and is queued if its nonce key set has nonce gaps.
 ///
 /// This pool relies on state changes to track the nonces.
+///
+/// A sender's non-AA transactions and its AA transactions with nonce key 0 share one lane, whose
+/// on-chain nonce is the account's protocol nonce.
 ///
 /// # Limitations
 ///
@@ -236,7 +240,7 @@ impl AA2dPool {
         }
     }
 
-    /// Entrypoint for adding a 2d AA transaction.
+    /// Entrypoint for adding a transaction.
     ///
     /// `on_chain_nonce` is expected to be the nonce of the sender at the time of validation.
     /// If transaction is using 2D nonces, this is expected to be the nonce corresponding
@@ -254,10 +258,6 @@ impl AA2dPool {
         on_chain_nonce: u64,
         hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
-        debug_assert!(
-            transaction.transaction.is_aa(),
-            "only AA transactions are supported"
-        );
         // Handle expiring nonce transactions separately - they use expiring nonce hash as unique ID
         // Only treat as expiring nonce if T1 hardfork is active.
         //
@@ -274,10 +274,7 @@ impl AA2dPool {
             ));
         }
 
-        let tx_id = transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("Transaction added to AA2D pool must be an AA transaction");
+        let tx_id = transaction.transaction.lane_transaction_id();
 
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
@@ -302,6 +299,40 @@ impl AA2dPool {
                 *transaction.hash(),
                 PoolErrorKind::SpammerExceededCapacity(transaction.sender()),
             ));
+        }
+
+        // At the per-authority limit, the on-chain nonce of a lane whose transactions wait behind
+        // a gap is still added, which makes them executable, in place of the lane's highest nonce.
+        // That one must free a slot for each authority at the limit, or the transaction is
+        // rejected below. A lane with a nonce at or below the on-chain one still holds
+        // transactions the pool hasn't removed as mined, so it has no gap to fill.
+        let evicted = if tx_id.nonce == on_chain_nonce
+            && let Some((lowest_id, lowest)) = self.by_id.range(tx_id.seq_id.range()).next()
+            && lowest_id.nonce > tx_id.nonce
+            && !lowest.is_pending()
+        {
+            let highest = self.by_id.range(tx_id.seq_id.range()).next_back();
+            let highest = highest.filter(|(_, highest)| {
+                let freed = highest.inner.transaction.transaction.authorities();
+                let mut at_capacity = transaction
+                    .transaction
+                    .authorities()
+                    .into_iter()
+                    .flatten()
+                    .filter(|authority| {
+                        self.txs_by_authority.get(authority) >= self.config.max_txs_per_authority
+                    })
+                    .peekable();
+                at_capacity.peek().is_some()
+                    && at_capacity.all(|authority| freed.contains(&Some(authority)))
+            });
+            let highest = highest.map(|(id, _)| *id);
+            highest.and_then(|id| self.remove_transaction_by_id(&id))
+        } else {
+            None
+        };
+        if evicted.is_some() {
+            self.metrics.inc_removed(1);
         }
 
         // assume the transaction is not pending, will get updated later
@@ -447,11 +478,7 @@ impl AA2dPool {
         self.metrics.inc_inserted();
 
         for promoted_tx in &promoted {
-            let promoted_id = promoted_tx
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("regular 2D transaction");
+            let promoted_id = promoted_tx.transaction.transaction.lane_transaction_id();
             let key = EvictionKey::with_base_fee(promoted_tx, promoted_id, self.base_fee);
             self.queued_eviction_order.remove(&key);
             self.pending_eviction_order.insert(key);
@@ -485,7 +512,7 @@ impl AA2dPool {
                 transaction,
                 replaced: replaced.map(|tx| tx.inner.transaction.clone()),
                 promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
-                discarded: self.discard(),
+                discarded: evicted.into_iter().chain(self.discard()).collect(),
             }));
         }
 
@@ -693,6 +720,26 @@ impl AA2dPool {
             .range(AASequenceId::new(address, nonce_key).range())
             .filter(|(_, tx)| tx.is_pending())
             .map(|(_, tx)| tx.inner.transaction.clone())
+    }
+
+    /// Returns the lane's pending and queued transactions with a nonce of at least `nonce`, in
+    /// nonce order.
+    pub(crate) fn lane_transactions_from(
+        &self,
+        seq_id: AASequenceId,
+        nonce: u64,
+    ) -> impl DoubleEndedIterator<Item = &Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .range(AA2dTransactionId::new(seq_id, nonce)..=*seq_id.range().end())
+            .map(|(_, tx)| &tx.inner.transaction)
+    }
+
+    /// Returns the nonce of the lane's executable head: the lane's on-chain nonce as of the last
+    /// state update, while the transaction with that nonce is pooled.
+    pub(crate) fn lane_head_nonce(&self, seq_id: &AASequenceId) -> Option<u64> {
+        self.independent_transactions
+            .get(seq_id)
+            .map(|tx| tx.transaction.nonce())
     }
 
     /// Returns an iterator over all transaction hashes in this pool
@@ -1022,10 +1069,7 @@ impl AA2dPool {
         }
 
         // Regular 2D nonce transaction
-        let id = tx
-            .transaction
-            .aa_transaction_id()
-            .expect("is AA transaction");
+        let id = tx.transaction.lane_transaction_id();
         self.remove_transaction_by_id(&id)?;
 
         Some((tx, Some(id)))
@@ -1075,11 +1119,9 @@ impl AA2dPool {
         let mut removed = Vec::new();
         for hash in hashes {
             if let Some(tx) = self.remove_transaction_by_hash(hash) {
-                let id = tx.transaction.aa_transaction_id();
+                let id = tx.transaction.lane_transaction_id();
                 removed.push(tx);
-                if let Some(id) = id {
-                    self.remove_descendants(&id, &mut removed);
-                }
+                self.remove_descendants(&id, &mut removed);
             }
         }
         removed
@@ -1101,10 +1143,8 @@ impl AA2dPool {
                 {
                     removed.push(tx);
                 }
-            } else if let Some(tx) = tx
-                .transaction
-                .aa_transaction_id()
-                .and_then(|id| self.remove_transaction_by_id(&id))
+            } else if let Some(tx) =
+                self.remove_transaction_by_id(&tx.transaction.lane_transaction_id())
             {
                 removed.push(tx);
             }
@@ -1540,7 +1580,11 @@ impl AA2dPool {
         }
     }
 
-    /// Processes nonce-precompile storage updates and updates internal state accordingly.
+    /// Processes account nonce and nonce-precompile storage updates and updates internal state
+    /// accordingly.
+    ///
+    /// Returns the promoted transactions, the ones left below their lane's nonce or whose
+    /// expiring nonce was used, and the ones evicted over the subpool limits.
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
@@ -1548,17 +1592,23 @@ impl AA2dPool {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
-        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return (Vec::new(), Vec::new(), Vec::new());
-        };
-
         let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
         let mut included_expiring_nonce_hashes =
             std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
+        // Protocol nonce lanes follow the account nonce, which has no `NonceManager` slot.
+        for (address, account) in state {
+            let seq_id = AASequenceId::new(*address, U256::ZERO);
+            if self.txs_by_lane.contains_key(&seq_id) {
+                let nonce = account.info.as_ref().map_or(0, |info| info.nonce);
+                changes.insert(seq_id, nonce);
+            }
+        }
+
         // Process known nonce slot changes. A slot tracks either a 2D nonce lane or an expiring
         // nonce transaction, so one lookup per changed slot is enough.
-        for (slot, value) in nonce_state.storage.iter() {
+        let nonce_state = state.get(&NONCE_PRECOMPILE_ADDRESS);
+        for (slot, value) in nonce_state.iter().flat_map(|account| &account.storage) {
             match self.slot_to_nonce_entry.get(slot) {
                 Some(NonceSlotEntry::Sequence(seq_id)) => {
                     changes.insert(*seq_id, value.present_value.saturating_to());
@@ -1702,11 +1752,7 @@ impl AA2dPool {
 
         // All independent transactions must exist in by_id
         for (seq_id, independent_tx) in &self.independent_transactions.transactions {
-            let tx_id = independent_tx
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("Independent transaction must have AA transaction ID");
+            let tx_id = independent_tx.transaction.transaction.lane_transaction_id();
 
             // Each independent tx must be present in the eviction order under its
             // current eviction key and mapped back to its own id.
@@ -1748,11 +1794,7 @@ impl AA2dPool {
             let Some(tx) = self.independent_transactions.transactions.get(&id.seq_id) else {
                 panic!("Independent order key {id:?} not in independent transactions");
             };
-            let tx_id = tx
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("Independent transaction must have AA transaction ID");
+            let tx_id = tx.transaction.transaction.lane_transaction_id();
             assert_eq!(
                 &tx_id, id,
                 "Independent order entry maps to {id:?} but stored tx has id {tx_id:?}"
@@ -1795,10 +1837,7 @@ impl AA2dPool {
             }
 
             // Transaction in by_hash should exist in by_id
-            let id = tx
-                .transaction
-                .aa_transaction_id()
-                .expect("Transaction in pool should be AA transaction");
+            let id = tx.transaction.lane_transaction_id();
             assert!(
                 self.by_id.contains_key(&id),
                 "Transaction with hash {hash:?} in by_hash but not in by_id"
@@ -1823,12 +1862,7 @@ impl AA2dPool {
             );
 
             // The transaction should have the correct AA ID
-            let tx_id = tx
-                .inner
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("Transaction in pool should be AA transaction");
+            let tx_id = tx.inner.transaction.transaction.lane_transaction_id();
             assert_eq!(
                 &tx_id, id,
                 "Transaction ID mismatch: expected {id:?}, got {tx_id:?}"
@@ -2007,11 +2041,7 @@ struct IndependentTransactions {
 
 impl IndependentTransactions {
     fn insert(&mut self, tx: AA2dStoredTransaction) {
-        let id = tx
-            .transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("is AA transaction");
+        let id = tx.transaction.transaction.lane_transaction_id();
 
         let key = tx.eviction_key(self.base_fee);
         if let Some(old) = self.transactions.insert(id.seq_id, tx) {
@@ -2132,7 +2162,9 @@ pub struct AA2dPoolConfig {
     /// signer, separate fee payer or access key.
     ///
     /// Bounds how many pooled transactions one account can invalidate with a single state
-    /// change (DoS protection).
+    /// change (DoS protection). At the limit, the on-chain nonce of a lane whose transactions
+    /// wait behind a gap is still added in place of the lane's highest nonce, if that frees a
+    /// slot for each authority at the limit, to allow gap filling.
     pub max_txs_per_authority: usize,
     /// Admission limit for pending plus queued transactions per `(sender, nonce_key)` lane.
     /// The current on-chain nonce is admitted even at capacity to allow gap filling.
@@ -2530,7 +2562,8 @@ impl BestAA2dTransactions {
                         self.expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
-                } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
+                } else {
+                    let id = tx.transaction.transaction.lane_transaction_id();
                     // A live update may replace a transaction that was already in the
                     // snapshot. Overwrite `by_id` first and remove the returned transaction's
                     // ordering key so the same ID can never have two independent entries.
@@ -2565,14 +2598,16 @@ impl BestAA2dTransactions {
             }
         }
     }
+}
 
-    /// Returns the next best transaction with its priority.
-    pub(crate) fn next_tx_and_priority(
-        &mut self,
-    ) -> Option<(
-        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-        Priority<u64>,
-    )> {
+fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
+    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
+}
+
+impl Iterator for BestAA2dTransactions {
+    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
             self.add_new_transactions();
             let best = match self.pop_best()? {
@@ -2599,22 +2634,10 @@ impl BestAA2dTransactions {
                 }
             };
             if self.new_transaction_receiver.is_some() {
-                self.last_priority = Some(best.priority.clone());
+                self.last_priority = Some(best.priority);
             }
-            return Some((best.transaction, best.priority));
+            return Some(best.transaction);
         }
-    }
-}
-
-fn can_pay_base_fee(tx: &PendingTransaction<TxOrdering>, base_fee: u64) -> bool {
-    tx.transaction.transaction.max_fee_per_gas() >= u128::from(base_fee)
-}
-
-impl Iterator for BestAA2dTransactions {
-    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_tx_and_priority().map(|(tx, _)| tx)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -2635,9 +2658,8 @@ impl BestTransactions for BestAA2dTransactions {
             return;
         }
 
-        if let Some(id) = transaction.transaction.aa_transaction_id() {
-            self.invalid.insert(id.seq_id);
-        }
+        self.invalid
+            .insert(transaction.transaction.lane_transaction_id().seq_id);
     }
 
     fn no_updates(&mut self) {
@@ -2708,8 +2730,9 @@ mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, sponsor, wrap_valid_tx};
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Signature, U256};
     use alloy_signer_local::PrivateKeySigner;
+    use evm2::evm::AccountInfo;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
     use reth_trie_common::bundle_state::{AccountStatus, StorageSlot};
@@ -5349,11 +5372,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .max_priority_fee(2_000_000_000)
                 .max_fee(40_000_000_000)
-                .calls(vec![Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0; 1024]),
-                }])
+                .calls(vec![Call::new(Address::random(), vec![0; 1024])])
                 .build(),
             TransactionOrigin::Local,
         );
@@ -6173,6 +6192,92 @@ mod tests {
         )
     }
 
+    #[test]
+    fn per_authority_limit_evicts_highest_nonce_for_on_chain_nonce() {
+        let mut pool = authority_limit_pool(3);
+        let sender = Address::random();
+        let access_key = PrivateKeySigner::random();
+        let fee_payer = PrivateKeySigner::random();
+        let build = |nonce_key, nonce| {
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build_keychain(sender, &access_key)
+        };
+        // The sender and its access key are at the limit with one lane, whose highest nonce the
+        // fee payer does not sponsor. Another sender's transaction takes the fee payer's last slot.
+        let lane = [
+            sponsor(build(U256::ONE, 1), &fee_payer),
+            sponsor(build(U256::ONE, 2), &fee_payer),
+            build(U256::ONE, 3),
+        ];
+        let hashes = lane.each_ref().map(|tx| *tx.hash());
+        for tx in lane {
+            add_expiring(&mut pool, tx).unwrap();
+        }
+        let other = TxBuilder::aa(Address::random())
+            .nonce_key(U256::MAX)
+            .build();
+        add_expiring(&mut pool, sponsor(other, &fee_payer)).unwrap();
+
+        // A future nonce and the on-chain nonce of an empty lane are rejected at the limit, and
+        // so is the on-chain nonce when the lane's highest nonce leaves an authority at the limit.
+        for tx in [
+            build(U256::ONE, 4),
+            build(U256::from(2), 0),
+            sponsor(build(U256::ONE, 0), &fee_payer),
+        ] {
+            let err = add_expiring(&mut pool, tx).unwrap_err();
+            assert!(
+                matches!(err.kind, PoolErrorKind::SpammerExceededCapacity(address) if address == sender),
+                "unexpected error: {:?}",
+                err.kind
+            );
+        }
+        // Nor does a nonce validated past the lane's transactions, which the pool has yet to
+        // remove as mined, evict one of them.
+        let tx = wrap_valid_tx(build(U256::ONE, 4), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 4, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 3));
+
+        let added = add_expiring(&mut pool, build(U256::ONE, 0)).unwrap();
+        let added = added.as_pending().unwrap();
+        let hashes_of = |txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]| {
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        };
+        assert_eq!(hashes_of(&added.promoted), hashes[..2]);
+        assert_eq!(hashes_of(&added.discarded), hashes[2..]);
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
+        for authority in [sender, access_key.address(), fee_payer.address()] {
+            assert_eq!(pool.txs_by_authority.get(&authority), 3);
+        }
+
+        // Once nonce 0 is mined the lane is executable from nonce 1, so a replay of nonce 0 that
+        // was validated before that block fills no gap.
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(AASequenceId::new(sender, U256::ONE), 1);
+        pool.on_nonce_changes(on_chain_ids);
+        let tx = wrap_valid_tx(build(U256::ONE, 3), TransactionOrigin::External);
+        pool.add_transaction(Arc::new(tx), 1, TempoHardfork::T1)
+            .unwrap();
+        let tx = wrap_valid_tx(build(U256::ONE, 0), TransactionOrigin::External);
+        let err = pool
+            .add_transaction(Arc::new(tx), 0, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(
+            err.kind,
+            PoolErrorKind::SpammerExceededCapacity(address) if address == sender
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
+        pool.assert_invariants();
+    }
+
     /// A fee payer sponsoring distinct senders is limited like a sender, and its slots are
     /// freed when a sponsored transaction leaves the pool.
     #[test]
@@ -6770,6 +6875,106 @@ mod tests {
     }
 
     #[test]
+    fn on_state_updates_moves_protocol_nonce_lanes_by_account_nonce() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let other = Address::random();
+        let wrap = |tx| Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
+        // The lane holds AA and non-AA transactions and has a gap at nonce 2.
+        let tx0 = wrap(TxBuilder::aa(sender).build());
+        let tx1 = wrap(TxBuilder::aa(sender).nonce(1).build_eip1559());
+        let tx3 = wrap(TxBuilder::aa(sender).nonce(3).build());
+        let other_2d = wrap(TxBuilder::aa(other).nonce_key(U256::ONE).build());
+        for tx in [&tx0, &tx1, &tx3, &other_2d] {
+            pool.add_transaction(tx.clone(), 0, TempoHardfork::T1)
+                .unwrap();
+        }
+        assert_eq!(pool.pending_and_queued_txn_count(), (3, 1));
+
+        let mut state = AddressMap::default();
+        for address in [sender, other] {
+            let info = AccountInfo {
+                nonce: 3,
+                ..Default::default()
+            };
+            state.insert(
+                address,
+                BundleAccount::new(None, Some(info), Default::default(), AccountStatus::Changed),
+            );
+        }
+
+        let (promoted, removed, discarded) = pool.on_state_updates(&state);
+
+        let hashes = |txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]| {
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        };
+        assert_eq!(hashes(&removed), [*tx0.hash(), *tx1.hash()]);
+        assert_eq!(hashes(&promoted), [*tx3.hash()]);
+        assert!(discarded.is_empty());
+        // The account nonce does not move the other sender's 2D lane.
+        assert!(pool.contains(other_2d.hash()));
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn non_aa_and_aa_transactions_share_the_protocol_nonce_lane() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let wrap = |tx| Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
+        let aa1 = wrap(TxBuilder::aa(sender).nonce(1).build());
+        let eip1559 = wrap(TxBuilder::aa(sender).build_eip1559());
+
+        let added = pool
+            .add_transaction(aa1.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(matches!(added, AddedTransaction::Parked { .. }));
+        // The non-AA transaction fills the gap in front of the AA one.
+        let added = pool
+            .add_transaction(eip1559.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        let AddedTransaction::Pending(added) = added else {
+            panic!("the transaction at the on-chain nonce is pending")
+        };
+        assert_eq!(added.promoted.len(), 1);
+        assert_eq!(added.promoted[0].hash(), aa1.hash());
+        let best: Vec<_> = pool.best_transactions().map(|tx| *tx.hash()).collect();
+        assert_eq!(best, [*eip1559.hash(), *aa1.hash()]);
+
+        // An AA transaction at the same nonce replaces the non-AA one only with a price bump.
+        let underpriced = wrap(TxBuilder::aa(sender).build());
+        let err = pool
+            .add_transaction(underpriced, 0, TempoHardfork::T1)
+            .unwrap_err();
+        assert!(matches!(err.kind, PoolErrorKind::ReplacementUnderpriced));
+        let replacement = wrap(
+            TxBuilder::aa(sender)
+                .max_priority_fee(2_000_000_000)
+                .max_fee(40_000_000_000)
+                .build(),
+        );
+        let added = pool
+            .add_transaction(replacement.clone(), 0, TempoHardfork::T1)
+            .unwrap();
+        assert_eq!(added.replaced().map(|tx| tx.hash()), Some(eip1559.hash()));
+        assert!(!pool.contains(eip1559.hash()));
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+
+        // Invalidating one of them skips the rest of the lane.
+        let mut best = pool.best_transactions();
+        let first = best.next().unwrap();
+        assert_eq!(first.hash(), replacement.hash());
+        best.mark_invalid(
+            &first,
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        assert!(best.next().is_none());
+
+        pool.assert_invariants();
+    }
+
+    #[test]
     fn test_on_state_updates_creates_gap_demotion() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
@@ -7341,11 +7546,7 @@ mod tests {
         let sender = Address::random();
         let call_to = Address::random();
         let fee_token = Address::random();
-        let calls = vec![Call {
-            to: TxKind::Call(call_to),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }];
+        let calls = vec![Call::new(call_to, Bytes::new())];
 
         let build_tx = |fee_payer_signature: Signature| {
             let tx = TempoTransaction {
@@ -7425,18 +7626,13 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let fee_token = Address::random();
-        let calls = vec![Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }];
 
         let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
             gas_limit: 1_000_000,
-            calls,
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::MAX,
             nonce: 0,
             fee_token: Some(fee_token),

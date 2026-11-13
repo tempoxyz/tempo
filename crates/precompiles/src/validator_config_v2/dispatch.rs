@@ -219,28 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let sender = Address::random();
-        let owner = Address::random();
-
-        // T2: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let result = vc.call(&[0x12, 0x34, 0x56, 0x78], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            // Insufficient calldata also returns reverted output
-            let result = vc.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {

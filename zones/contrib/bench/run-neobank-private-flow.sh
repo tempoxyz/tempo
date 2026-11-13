@@ -112,6 +112,8 @@ ZONES_BENCH_WITHDRAWAL_TX_GAS_LIMIT="${ZONES_BENCH_WITHDRAWAL_TX_GAS_LIMIT:-1000
 ZONES_BENCH_APPROVAL_GAS_LIMIT="${ZONES_BENCH_APPROVAL_GAS_LIMIT:-2000000}"
 ZONES_BENCH_ADMISSION_SEED_AMOUNT="${ZONES_BENCH_ADMISSION_SEED_AMOUNT:-1}"
 ZONES_BENCH_ADMISSION_SEED_TPS="${ZONES_BENCH_ADMISSION_SEED_TPS:-200}"
+# Stays below ZonePortal.MAX_UNPROCESSED_DEPOSITS (230).
+ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT="${ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT:-100}"
 ZONES_BENCH_RECIPIENT_ACCOUNT_START="${ZONES_BENCH_RECIPIENT_ACCOUNT_START:-$ZONES_BENCH_ACCOUNT_START}"
 ZONES_BENCH_RECIPIENT_ACCOUNT_END="${ZONES_BENCH_RECIPIENT_ACCOUNT_END:-$ZONES_BENCH_ACCOUNT_END}"
 if [[ -z "${ZONES_BENCH_RECIPIENT_GENERATOR:-}" ]]; then
@@ -150,6 +152,12 @@ case "$ZONES_BENCH_NEOBANK_PRESET" in
         ;;
     swapped-lifecycle)
         scenario_file=swapped-lifecycle-scenario.yml
+        base_token_label=dlusd
+        expected_base_token="$ZONES_BENCH_DLUSD"
+        leases_per_journey=1
+        ;;
+    cold-accounts)
+        scenario_file=cold-accounts-scenario.yml
         base_token_label=dlusd
         expected_base_token="$ZONES_BENCH_DLUSD"
         leases_per_journey=1
@@ -478,7 +486,8 @@ trap cleanup EXIT INT TERM
 run_setup_scenario() {
     local stage="$1" scenario="$2" count="$3" report="$4" context="${5:-}"
     local starts_per_second="${6:-0}"
-    local concurrency="$ZONES_BENCH_MAX_CONCURRENT"
+    local concurrency="${7:-$ZONES_BENCH_MAX_CONCURRENT}"
+    if (( 10#$concurrency > 10#$ZONES_BENCH_MAX_CONCURRENT )); then concurrency="$ZONES_BENCH_MAX_CONCURRENT"; fi
     if (( 10#$concurrency > 10#$count )); then concurrency="$count"; fi
 
     echo "neobank stage=start run_id=$ZONES_BENCH_RUN_ID preset=$ZONES_BENCH_NEOBANK_PRESET stage=$stage${context:+ $context}"
@@ -495,9 +504,9 @@ run_setup_scenario() {
 # balance of an enabled token. Run one exact encrypted onramp per benchmark
 # account before the untimed outbox approvals. Pace the deposits so a large
 # account pool is not packed into one L1 block and rejected by ZonePortal's
-# per-block deposit cap. This setup scenario uses account leases, so
-# count=accounts touches every account exactly once while respecting the
-# configured max-in-flight cap.
+# per-block deposit cap, and keep deposits in flight below its unprocessed-deposit
+# cap. This setup scenario uses account leases, so count=accounts touches every
+# account exactly once.
 seed_zone_admission_balances() {
     local seed_report="$ZONES_BENCH_OUTPUT/admission-seed-report.json"
     local total=$((10#$ZONES_BENCH_ACCOUNTS))
@@ -505,7 +514,7 @@ seed_zone_admission_balances() {
     run_setup_scenario \
         zone_admission_seed "$admission_seed_scenario" "$total" "$seed_report" \
         "starts_per_second=$ZONES_BENCH_ADMISSION_SEED_TPS" \
-        "$ZONES_BENCH_ADMISSION_SEED_TPS"
+        "$ZONES_BENCH_ADMISSION_SEED_TPS" "$ZONES_BENCH_ADMISSION_SEED_MAX_CONCURRENT"
     echo "Zone admission seed verified: $total/$total exact encrypted deposits processed"
 }
 
@@ -556,9 +565,11 @@ jq -e --argjson expected "$ZONES_BENCH_ACCOUNTS" '
     die "auth map did not derive the expected unique benchmark account pool"
 stage_end auth_token_map
 
-# Approvals are untimed. Deposit-only submits no user Zone transaction.
-# The fixed scenario approves both enabled assets for each leased account.
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+# Approvals are untimed. Deposit-only submits no user Zone transaction, and
+# cold-accounts calls no Zone contract. The fixed scenario approves both enabled
+# assets for each leased account.
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "cold-accounts" ]]; then
     run_setup_scenario \
         zone_approvals "$zone_approval_scenario" "$ZONES_BENCH_ACCOUNTS" \
         "$ZONES_BENCH_OUTPUT/zone-approvals-report.json" \
@@ -570,7 +581,8 @@ fi
 # Zone account. This keeps the EarnVault and engine nonempty, so the benchmark runs
 # steady-state deposit and redemption paths instead of empty-pool transitions.
 earn_warmup_amount="$ZONES_BENCH_WITHDRAWAL_AMOUNT"
-if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" ]]; then
+if [[ "$ZONES_BENCH_NEOBANK_PRESET" != "encrypted-deposit" &&
+      "$ZONES_BENCH_NEOBANK_PRESET" != "cold-accounts" ]]; then
     readonly earn_warmup_callback_gas_limit=10000000
     earn_warmup_recipient_hash="$(cast keccak "zones-benchmark-earn-warmup:$ZONES_BENCH_SEED")"
     earn_warmup_recipient="0x${earn_warmup_recipient_hash: -40}"

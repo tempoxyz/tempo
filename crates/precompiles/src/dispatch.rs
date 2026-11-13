@@ -248,6 +248,7 @@ mod tests {
         IntoPrecompileResult,
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::with_storage,
     };
     use alloy::{
         primitives::{B256, U256},
@@ -358,8 +359,7 @@ mod tests {
             ITestDispatch::getCall::abi_encode_returns(&U256::from(42)).as_slice()
         );
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T1, || -> eyre::Result<()> {
             let mut target = U256::ZERO;
             let output = typed::mutate(
                 ITestDispatch::setCall {

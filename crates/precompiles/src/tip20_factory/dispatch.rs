@@ -31,7 +31,7 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
     };
     use alloy::{
         primitives::B256,
@@ -45,9 +45,7 @@ mod tests {
     #[test]
     fn tip20_factory_test_selector_coverage() {
         // Use T5 hardfork so T5-gated `createTokenWithLogo` selector is active.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let mut factory = TIP20Factory::new();
 
             let unsupported = check_selector_coverage(
