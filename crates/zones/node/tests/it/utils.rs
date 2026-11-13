@@ -38,6 +38,7 @@ use std::{
 use tempo_alloy::{
     TempoNetwork,
     rpc::{TempoCallBuilderExt, TempoHeaderResponse},
+    test_utils::CallBuilderExt,
 };
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -1699,9 +1700,7 @@ impl L1TestNode {
         let provider = self.dev_provider();
         let receipt = ITIP20::new(PATH_USD_ADDRESS, &provider)
             .transfer(to, U256::from(amount))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "fund_user transfer failed");
         Ok(())
@@ -1942,12 +1941,7 @@ impl L1TestNode {
     pub(crate) async fn create_dex_pair(&self, base_token: Address) -> eyre::Result<()> {
         let provider = self.dev_provider();
         let dex = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, &provider);
-        let receipt = dex
-            .createPair(base_token)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = dex.createPair(base_token).mined().await?;
         eyre::ensure!(receipt.status(), "createPair failed for {base_token}");
         Ok(())
     }
@@ -1967,18 +1961,11 @@ impl L1TestNode {
 
         ITIP20::new(quote_token, &provider)
             .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let dex = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, &provider);
-        let receipt = dex
-            .place(base_token, amount, true, tick)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = dex.place(base_token, amount, true, tick).mined().await?;
         eyre::ensure!(
             receipt.status(),
             "place bid order failed for {base_token} amount {amount} at tick {tick}"
@@ -1996,18 +1983,11 @@ impl L1TestNode {
         let provider = self.dev_provider();
         ITIP20::new(base_token, &provider)
             .approve(STABLECOIN_DEX_ADDRESS, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let dex = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, &provider);
-        let receipt = dex
-            .place(base_token, amount, false, tick)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = dex.place(base_token, amount, false, tick).mined().await?;
         eyre::ensure!(
             receipt.status(),
             "place ask order failed for {base_token} amount {amount} at tick {tick}"
@@ -2254,9 +2234,7 @@ impl L1TestNode {
                 self.dev_address(),
                 salt,
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "createToken failed");
 
@@ -2275,12 +2253,7 @@ impl L1TestNode {
     ) -> eyre::Result<()> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .enableToken(token)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.enableToken(token).mined().await?;
         eyre::ensure!(receipt.status(), "enableToken failed");
         Ok(())
     }
@@ -2294,12 +2267,7 @@ impl L1TestNode {
     ) -> eyre::Result<u64> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .setGateway(gateway, enabled)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.setGateway(gateway, enabled).mined().await?;
         eyre::ensure!(receipt.status(), "setGateway failed");
         let expected_role = if enabled {
             PortalRole::CallbackGateway
@@ -2321,12 +2289,7 @@ impl L1TestNode {
     ) -> eyre::Result<u64> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .setAccessMode(mode)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.setAccessMode(mode).mined().await?;
         eyre::ensure!(receipt.status(), "setAccessMode failed");
         eyre::ensure!(
             portal.isAccessEnforced().call().await? == mode,
@@ -2346,12 +2309,7 @@ impl L1TestNode {
     ) -> eyre::Result<u64> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .setTransfersEnabled(enabled)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.setTransfersEnabled(enabled).mined().await?;
         eyre::ensure!(receipt.status(), "setTransfersEnabled failed");
         eyre::ensure!(
             portal.transfersEnabled().call().await? == enabled,
@@ -2370,12 +2328,7 @@ impl L1TestNode {
     ) -> eyre::Result<u64> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .setGatewayMode(mode)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.setGatewayMode(mode).mined().await?;
         eyre::ensure!(receipt.status(), "setGatewayMode failed");
         eyre::ensure!(
             portal.isGatewayOpen().call().await? != mode,
@@ -2393,12 +2346,7 @@ impl L1TestNode {
     ) -> eyre::Result<u64> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .setAllowedAccount(account, enabled)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.setAllowedAccount(account, enabled).mined().await?;
         eyre::ensure!(receipt.status(), "setAllowedAccount failed");
         let expected_role = if enabled {
             PortalRole::Account
@@ -2420,12 +2368,7 @@ impl L1TestNode {
     ) -> eyre::Result<()> {
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal
-            .pauseDeposits(token)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = portal.pauseDeposits(token).mined().await?;
         eyre::ensure!(receipt.status(), "pauseDeposits failed");
         eyre::ensure!(
             !portal.areDepositsActive(token).call().await?,
@@ -2524,9 +2467,7 @@ impl L1TestNode {
             // A transfer call would otherwise infer `token` as its L1 fee token. Newly created
             // test tokens intentionally have no FeeAMM pool, so pay gas explicitly in pathUSD.
             .fee_token(PATH_USD_ADDRESS)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "fund_user_token transfer failed");
         Ok(())
@@ -2552,18 +2493,14 @@ impl L1TestNode {
         {
             let receipt = roles
                 .grantRole(ISSUER_ROLE, self.dev_address())
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
         }
 
         let receipt = ITIP20::new(token, &provider)
             .mint(to, U256::from(amount))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "mint_tip20 failed");
         Ok(())
@@ -2575,9 +2512,7 @@ impl L1TestNode {
         let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
         let receipt = registry
             .createPolicy(self.dev_address(), ITIP403Registry::PolicyType::BLACKLIST)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "createPolicy (BLACKLIST) failed");
 
@@ -2598,9 +2533,7 @@ impl L1TestNode {
         let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
         let receipt = registry
             .modifyPolicyBlacklist(policy_id, account, true)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "modifyPolicyBlacklist failed");
         Ok(())
@@ -2617,9 +2550,7 @@ impl L1TestNode {
         let provider = self.dev_provider();
         let receipt = ITIP20::new(token, &provider)
             .changeTransferPolicyId(policy_id)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "changeTransferPolicyId failed");
         Ok(())
@@ -2642,9 +2573,7 @@ impl L1TestNode {
                 recipient_policy_id,
                 mint_recipient_policy_id,
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "createCompoundPolicy failed");
 
@@ -3255,9 +3184,7 @@ impl ZoneAccount {
         // Approve portal for this specific token
         ITIP20::new(token, &self.l1_provider)
             .approve(self.portal_address, U256::MAX)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         // Snapshot balance before deposit so we wait for the expected increase
@@ -3267,9 +3194,7 @@ impl ZoneAccount {
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
         let receipt = portal
             .deposit(token, amount, key_index, encrypted, self.address)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
 
@@ -3346,9 +3271,7 @@ impl ZoneAccount {
         if !self.l1_portal_approved {
             let receipt = ITIP20::new(PATH_USD_ADDRESS, &self.l1_provider)
                 .approve(portal_address, U256::MAX)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             eyre::ensure!(receipt.status(), "L1 portal approval failed");
             self.l1_portal_approved = true;
@@ -3357,9 +3280,7 @@ impl ZoneAccount {
         let (key_index, encrypted) = self.prepare_deposit(recipient, memo).await?;
         let receipt = ZonePortal::new(portal_address, &self.l1_provider)
             .deposit(PATH_USD_ADDRESS, amount, key_index, encrypted, self.address)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
         receipt
@@ -3527,9 +3448,7 @@ impl ZoneAccount {
                 args.data,
                 args.reveal_to,
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(
             receipt.status(),
@@ -3551,9 +3470,7 @@ impl ZoneAccount {
         let receipt = ITIP20::new(token, &self.l2_provider)
             .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
             .gas(TIP20_TX_GAS)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L2 outbox approval failed");
         self.l2_outbox_approved_tokens.insert(token);

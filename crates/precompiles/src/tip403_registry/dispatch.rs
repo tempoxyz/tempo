@@ -79,7 +79,9 @@ mod tests {
     use super::*;
     use crate::{
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, revert_bytes},
+        test_util::{
+            TIP20Setup, assert_full_coverage, check_selector_coverage, revert_bytes, with_storage,
+        },
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
     };
     use alloy::{
@@ -358,8 +360,7 @@ mod tests {
         let sender = Address::random();
 
         // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T1, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
 
             let result = registry.call(&[0x12, 0x34, 0x56, 0x78], sender);
@@ -373,8 +374,7 @@ mod tests {
         })?;
 
         // Pre-T1 (T0): insufficient data returns halted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T0, || {
             let result = TIP403Registry::new().call(&[0x12, 0x34], sender);
             assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
 
@@ -418,8 +418,7 @@ mod tests {
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
         // Use T9 to test all selectors, including TIP-1092 token policy lookups.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T9, || {
             let mut registry = TIP403Registry::new();
 
             let unsupported = check_selector_coverage(
@@ -457,8 +456,7 @@ mod tests {
             validate_receive_policy.as_slice(),
             set_receive_policy.as_slice(),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            with_storage(TempoHardfork::T5, || -> eyre::Result<()> {
                 let mut registry = TIP403Registry::new();
                 let result = registry.call(calldata, account);
                 assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok());
@@ -466,8 +464,7 @@ mod tests {
             })?;
         }
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T6, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             for calldata in [
                 receive_policy.as_slice(),
@@ -493,8 +490,7 @@ mod tests {
             .abi_encode(),
         ];
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T8, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             for calldata in &calls {
                 let result = registry.call(calldata, Address::ZERO);
@@ -503,8 +499,7 @@ mod tests {
             Ok(())
         })?;
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T9, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             // The lookup selector is active, but an undeployed token is rejected.
             let result = registry.call(&calls[0], Address::ZERO);

@@ -528,7 +528,7 @@ mod tests {
         },
         storage::{ContractStorage, Handler, StorageCtx, hashmap::HashMapStorageProvider},
         storage_credits::StorageCredits,
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, with_storage},
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
@@ -625,8 +625,7 @@ mod tests {
         fn setup(mut self, spec: TempoHardfork) -> (Self, HashMapStorageProvider) {
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+                let mut exchange = StablecoinDEX::initialized()?;
 
                 let price = stablecoin_dex::orderbook::tick_to_price(self.tick);
                 let quote_amount =
@@ -1536,8 +1535,7 @@ mod tests {
 
     #[test]
     fn test_unknown_order_version_fails() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T8, || {
             let mut exchange = StablecoinDEX::new();
 
             let id = 42;
@@ -1890,8 +1888,7 @@ mod tests {
         remaining_seed: u128,
         mixed_offset: bool,
     ) -> eyre::Result<Vec<IStablecoinDEX::Order>> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T8, || {
             let mut exchange = StablecoinDEX::new();
             let mut expected_ids: Vec<u128> = (1..=order_specs.len() as u128).collect();
 

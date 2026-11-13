@@ -19,10 +19,7 @@ use alloy_rlp::Encodable as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use core::num::NonZeroU64;
 use eyre::WrapErr;
-use p256::{
-    ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
-    elliptic_curve::rand_core::OsRng,
-};
+use p256::ecdsa::signature::hazmat::PrehashSigner;
 use sha2::{Digest, Sha256};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
@@ -399,23 +396,6 @@ pub(super) fn verify_delegation_code(
 }
 
 // ===== Keychain/Access Key Helper Functions =====
-
-/// Helper to generate a P256 access key
-pub(crate) fn generate_p256_access_key() -> (
-    p256::ecdsa::SigningKey,
-    alloy::primitives::B256,
-    alloy::primitives::B256,
-    Address,
-) {
-    let signing_key = SigningKey::random(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
-    let key_addr =
-        tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
-    (signing_key, pub_key_x, pub_key_y, key_addr)
-}
 
 /// Helper to create a key authorization
 pub(crate) fn create_key_authorization(

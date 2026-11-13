@@ -1,7 +1,14 @@
 //! Test utilities for precompile dispatch testing
 
 pub mod abi_conformance;
+#[cfg(any(test, feature = "test-utils"))]
+mod calls;
+#[cfg(feature = "rpc-test-utils")]
+mod rpc;
 pub mod storage_conformance;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use calls::SetupCall;
 
 /// Resolves a contract artifact within a Foundry output directory.
 pub fn foundry_artifact_path(
@@ -107,6 +114,11 @@ pub fn assert_full_coverage(results: impl IntoIterator<Item = Vec<([u8; 4], &'st
 /// Creates a test [`HashMapStorageProvider`] (chain ID 1) paired with a random address.
 pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
+}
+
+/// Runs `f` in a [`StorageCtx`] over a fresh [`HashMapStorageProvider`] (chain ID 1) at `spec`.
+pub fn with_storage<R>(spec: tempo_chainspec::hardfork::TempoHardfork, f: impl FnOnce() -> R) -> R {
+    StorageCtx::enter(&mut HashMapStorageProvider::new_with_spec(1, spec), f)
 }
 
 /// Setup mode - determines how the token is obtained.
