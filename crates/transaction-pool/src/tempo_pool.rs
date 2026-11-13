@@ -621,8 +621,8 @@ where
                     propagate,
                     timestamp: Instant::now(),
                     origin,
-                    // Reth's pool reads these for its EIP-7702 delegation limits, but it holds no
-                    // transactions here, and the 2D pool bounds every account by its own cap.
+                    // Only Reth's pool reads these, for its EIP-7702 delegation limits, and it holds
+                    // no transactions here. The 2D pool doesn't cap authorization authorities.
                     authority_ids: None,
                 };
 
