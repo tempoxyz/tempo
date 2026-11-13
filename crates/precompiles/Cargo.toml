@@ -56,6 +56,7 @@ p256.workspace = true
 p384 = { workspace = true, features = ["serde"] }
 rand_08.workspace = true
 proptest.workspace = true
+test-case.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }

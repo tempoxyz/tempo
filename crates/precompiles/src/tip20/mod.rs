@@ -1777,53 +1777,49 @@ pub(crate) mod tests {
         ReceivePolicyGuardEvent, UnknownFunctionSelector,
     };
     use tempo_primitives::test_utils::{actors, amounts, signers};
+    use test_case::test_case;
 
-    #[test]
-    fn test_mint_authorizes_zone_credits_as_recipients_from_t13() -> eyre::Result<()> {
+    #[test_case(TempoEvmKind::L1, TempoHardfork::T13, AuthRole::MintRecipient)]
+    #[test_case(TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient)]
+    fn test_mint_authorizes_zone_credits_as_recipients_from_t13(
+        kind: TempoEvmKind,
+        spec: TempoHardfork,
+        role: AuthRole,
+    ) -> Result<()> {
         let [addr, admin] = actors();
         let [amount] = amounts();
 
-        for (kind, spec, role) in [
-            (
-                TempoEvmKind::L1,
-                TempoHardfork::T13,
-                AuthRole::MintRecipient,
-            ),
-            (TempoEvmKind::Zone, TempoHardfork::T13, AuthRole::Recipient),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
-            StorageCtx::enter(&mut storage, || -> Result<()> {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
-                    .with_transfer_policy(TIP403Setup::compound(
-                        REJECT_ALL_POLICY_ID,
-                        ALLOW_ALL_POLICY_ID,
-                        REJECT_ALL_POLICY_ID,
-                    ))
-                    .clear_events()
-                    .apply()?;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec).with_kind(kind);
+        StorageCtx::enter(&mut storage, || -> Result<()> {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_transfer_policy(TIP403Setup::compound(
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    REJECT_ALL_POLICY_ID,
+                ))
+                .clear_events()
+                .apply()?;
 
-                let result = token.mint(admin, ITIP20::mintCall { to: addr, amount });
-                let (balance, events) = if role == AuthRole::Recipient {
-                    result?;
-                    (
-                        amount,
-                        vec![
-                            TIP20Event::transfer(Address::ZERO, addr, amount),
-                            TIP20Event::mint(addr, amount),
-                        ],
-                    )
-                } else {
-                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
-                    (U256::ZERO, vec![])
-                };
-                assert_eq!(token.get_balance(addr)?, balance);
-                assert_eq!(token.total_supply()?, balance);
-                token.assert_emitted_events(events);
-                Ok(())
-            })?;
-        }
-        Ok(())
+            let result = token.mint(admin, ITIP20::mintCall { to: addr, amount });
+            let (balance, events) = if role == AuthRole::Recipient {
+                result?;
+                (
+                    amount,
+                    vec![
+                        TIP20Event::transfer(Address::ZERO, addr, amount),
+                        TIP20Event::mint(addr, amount),
+                    ],
+                )
+            } else {
+                assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                (U256::ZERO, vec![])
+            };
+            assert_eq!(token.get_balance(addr)?, balance);
+            assert_eq!(token.total_supply()?, balance);
+            token.assert_emitted_events(events);
+            Ok(())
+        })
     }
 
     #[test]
@@ -2594,69 +2590,67 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn test_transfer_fee_post_tx_refunds_spending_limit() -> eyre::Result<()> {
+    // The refund restores the access key's spending limit from T1C (`is_t1c()` gate).
+    #[test_case(TempoHardfork::T1C, true)]
+    #[test_case(TempoHardfork::T1B, false)]
+    fn test_transfer_fee_post_tx_refunds_spending_limit(
+        spec: TempoHardfork,
+        refunds: bool,
+    ) -> Result<()> {
         let [admin, user, access_key] = actors();
         let max_fee = U256::from(1000);
         let refund_amount = U256::from(300);
         let spending_limit = U256::from(2000);
 
-        // The refund restores the access key's spending limit from T1C (`is_t1c()` gate).
-        for (spec, refunded) in [
-            (TempoHardfork::T1C, refund_amount),
-            (TempoHardfork::T1B, U256::ZERO),
-        ] {
-            with_storage(spec, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
-                    .apply()?;
-                let remaining_limit = getRemainingLimitCall {
-                    account: user,
-                    keyId: access_key,
-                    token: token.address,
-                };
+        with_storage(spec, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, max_fee)
+                .apply()?;
+            let remaining_limit = getRemainingLimitCall {
+                account: user,
+                keyId: access_key,
+                token: token.address,
+            };
 
-                let mut keychain = AccountKeychain::initialized()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.authorize_key(
-                    user,
-                    access_key,
-                    SignatureType::Secp256k1,
-                    KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token: token.address,
-                            amount: spending_limit,
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                    None,
-                )?;
+            let mut keychain = AccountKeychain::initialized()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.authorize_key(
+                user,
+                access_key,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token.address,
+                        amount: spending_limit,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
 
-                // Simulate pre-tx: access key deducts max fee from spending limit
-                keychain.set_transaction_key(access_key)?;
-                keychain.set_tx_origin(user)?;
-                keychain.authorize_transfer(user, token.address, max_fee)?;
-                assert_eq!(
-                    keychain.get_remaining_limit(remaining_limit.clone())?,
-                    spending_limit - max_fee
-                );
+            // Simulate pre-tx: access key deducts max fee from spending limit
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(user)?;
+            keychain.authorize_transfer(user, token.address, max_fee)?;
+            assert_eq!(
+                keychain.get_remaining_limit(remaining_limit.clone())?,
+                spending_limit - max_fee
+            );
 
-                token.transfer_fee_post_tx(user, refund_amount, U256::from(100))?;
+            token.transfer_fee_post_tx(user, refund_amount, U256::from(100))?;
 
-                assert_eq!(
-                    keychain.get_remaining_limit(remaining_limit)?,
-                    spending_limit - max_fee + refunded,
-                    "spending limit should be restored by refund amount from T1C"
-                );
+            assert_eq!(
+                keychain.get_remaining_limit(remaining_limit)?,
+                spending_limit - max_fee + if refunds { refund_amount } else { U256::ZERO },
+                "spending limit should be restored by refund amount from T1C"
+            );
 
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
-        Ok(())
+            Ok::<_, TempoPrecompileError>(())
+        })
     }
 
     #[test]

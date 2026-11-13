@@ -782,9 +782,10 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use alloy_primitives::address;
+    use alloy_primitives::{Address, address};
     use clap::Parser as _;
     use reth_evm::ConfigureEvm as _;
+    use test_case::test_case;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -891,41 +892,28 @@ mod tests {
         );
     }
 
+    #[test_case(11 => address!("5ad000000000000000000000000000000000000b"))]
+    #[test_case(0x0102_0304 => address!("5ad0000000000000000000000000000001020304"))]
     #[tokio::test]
-    async fn cli_evm_derives_portal_from_chain_spec() {
+    async fn cli_evm_derives_portal_from_chain_spec(zone_id: u32) -> Address {
         let parent = tempo_chainspec::spec::MODERATO.clone();
-        for (zone_id, expected) in [
-            (
-                11,
-                alloy_primitives::address!("5ad000000000000000000000000000000000000b"),
-            ),
-            (
-                0x0102_0304,
-                alloy_primitives::address!("5ad0000000000000000000000000000001020304"),
-            ),
-        ] {
-            let mut genesis = parent.genesis().clone();
-            genesis.config.chain_id =
-                zone_primitives::constants::zone_chain_id(parent.chain_id(), zone_id).unwrap();
-            let spec =
-                std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
-            let config =
-                super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
-            let evm = config.evm_with_env(
-                evm2::evm::InMemoryDB::default(),
-                tempo_evm::TempoEvmEnv::default(),
-            );
-            assert_eq!(
-                evm.database_as::<zone_evm::L1OverlayDB<
-                    evm2::evm::Db<evm2::evm::InMemoryDB>,
-                    zone_l1::state::L1StateProvider,
-                >>()
-                .expect("zone database")
-                .l1_state()
-                .portal(),
-                expected
-            );
-        }
+        let mut genesis = parent.genesis().clone();
+        genesis.config.chain_id =
+            zone_primitives::constants::zone_chain_id(parent.chain_id(), zone_id).unwrap();
+        let spec =
+            std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
+        let evm = config.evm_with_env(
+            evm2::evm::InMemoryDB::default(),
+            tempo_evm::TempoEvmEnv::default(),
+        );
+        evm.database_as::<zone_evm::L1OverlayDB<
+            evm2::evm::Db<evm2::evm::InMemoryDB>,
+            zone_l1::state::L1StateProvider,
+        >>()
+        .expect("zone database")
+        .l1_state()
+        .portal()
     }
 
     #[test]

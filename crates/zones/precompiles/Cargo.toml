@@ -52,6 +52,7 @@ rand_08.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 tempo-evm.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+test-case.workspace = true
 
 [features]
 fuzz = ["tempo-precompiles/fuzz"]

@@ -178,6 +178,7 @@ mod tests {
     use super::*;
     use alloc::vec;
     use minicbor::{Decoder, Encoder, data::Tag};
+    use test_case::test_case;
 
     fn payload(indefinite: bool, duplicate_module: bool, include_null_optionals: bool) -> Vec<u8> {
         let mut e = Encoder::new(Vec::new());
@@ -630,20 +631,16 @@ mod tests {
         assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
-    #[test]
-    fn rejects_missing_mandatory_fields() {
-        for name in [
-            "module_id",
-            "digest",
-            "timestamp",
-            "pcrs",
-            "certificate",
-            "cabundle",
-        ] {
-            let mut fields = default_fields();
-            fields.retain(|field| field.name != name);
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
+    #[test_case("module_id")]
+    #[test_case("digest")]
+    #[test_case("timestamp")]
+    #[test_case("pcrs")]
+    #[test_case("certificate")]
+    #[test_case("cabundle")]
+    fn rejects_missing_mandatory_fields(name: &str) {
+        let mut fields = default_fields();
+        fields.retain(|field| field.name != name);
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]

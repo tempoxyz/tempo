@@ -708,6 +708,7 @@ mod tests {
     use alloy_sol_types::{SolCall, SolEvent};
     use reth_ethereum_primitives::Receipt;
     use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
+    use test_case::test_case;
 
     fn collect<T, R>(
         transactions: &[T],
@@ -1073,19 +1074,16 @@ mod tests {
         assert!(duplicate.to_string().contains("duplicate TempoAdvanced"));
     }
 
-    #[test]
-    fn rejects_inconsistent_withdrawal_origins() {
-        for log in [
-            withdrawal_request_log(Address::ZERO, 1),
-            withdrawal_request_log(Address::repeat_byte(1), 0),
-        ] {
-            let error = decode_outbox(&log, 4, B256::ZERO).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("invalid WithdrawalRequested origin")
-            );
-        }
+    #[test_case(Address::ZERO, 1)]
+    #[test_case(Address::repeat_byte(1), 0)]
+    fn rejects_inconsistent_withdrawal_origins(sender: Address, fallback_nonce: u64) {
+        let log = withdrawal_request_log(sender, fallback_nonce);
+        let error = decode_outbox(&log, 4, B256::ZERO).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid WithdrawalRequested origin")
+        );
     }
 
     #[test]
