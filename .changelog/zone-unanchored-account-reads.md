@@ -3,4 +3,4 @@ zone-evm: patch
 zone-precompiles: patch
 ---
 
-Accounts the Zone database loads between transactions are reloaded at the next transaction's Tempo anchor.
+Accounts the Zone database loads outside a transaction carry their Tempo commitment at the checkpoint of the EVM's state.

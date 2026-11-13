@@ -43,7 +43,7 @@ use crate::{
 ///
 /// Permit2's allowance and nonce getters are public, which would expose approvals, and anyone can
 /// make Multicall3 call a TIP-20 token as itself.
-const T15_REMOVED_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
+pub(crate) const T15_REMOVED_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
 
 /// The current transaction-ordering phase of a zone block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

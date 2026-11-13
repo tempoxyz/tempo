@@ -8,8 +8,8 @@ use evm2::{
     DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
     evm::{
-        AccountChangeRef, AccountExtension, AccountInfo, DynDatabase, State, StateChangeSink,
-        StorageChange,
+        AccountChangeRef, AccountExtension, AccountInfo, DynDatabase, HISTORY_STORAGE_ADDRESS,
+        State, StateChangeSink, StorageChange,
     },
 };
 use reth_execution_types::StateUpdate;
@@ -26,7 +26,11 @@ use thiserror::Error;
 use zone_precompiles::{
     TIP403_REGISTRY_ADDRESS, is_zone_precompile,
     storage::{L1State, L1StorageReader},
+    tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
 };
+use zone_primitives::constants::TEMPO_STATE_ADDRESS;
+
+use crate::executor::T15_REMOVED_PREDEPLOYS;
 
 /// Resolves mirrored L1 reads at the active Tempo anchor and forwards all other database
 /// operations to the caller-provided Zone database.
@@ -96,6 +100,26 @@ impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
         u64::try_from(value)
             .map_err(|_| DatabaseError::new(ZoneDbError::AnchorOverflow(value), true))
     }
+
+    /// Returns the checkpoint that anchors reads outside a transaction: the last one a
+    /// transaction entered or left this EVM at or, before any, the backing database's.
+    fn checkpoint(&mut self) -> Result<u64, DatabaseError> {
+        let value = match self.l1.checkpoint() {
+            Some(value) => value,
+            None => self
+                .inner
+                .get_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?,
+        };
+        u64::try_from(value)
+            .map_err(|_| DatabaseError::new(ZoneDbError::AnchorOverflow(value), true))
+    }
+}
+
+/// Whether block pre-execution loads `address` before the block's `advanceTempo`, when no
+/// child checkpoint exists yet. Each holds protocol code on Tempo, so carries no commitment.
+fn loads_before_advance_tempo(address: Address, spec: TempoHardfork) -> bool {
+    address == HISTORY_STORAGE_ADDRESS
+        || (spec.is_t15() && T15_REMOVED_PREDEPLOYS.contains(&address))
 }
 
 /// Rejects net changes to mirrored storage made by the in-flight transaction.
@@ -182,23 +206,23 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
             || info.as_ref().is_some_and(|info| !info.is_empty_code_hash())
             || !valid_account(*address, self.spec)
             || is_zone_precompile(*address, self.spec)
+            || loads_before_advance_tempo(*address, self.spec)
         {
             return Ok(info);
         }
-        // Outside a zone transaction, such as in block-level system calls, accounts load with
-        // their zone-local view. The next transaction evicts them so it reloads them anchored.
-        if self.l1.initial_anchor().is_none() {
-            self.l1.record_unanchored_account(*address, info.clone());
-            return Ok(info);
-        }
 
-        let anchor = self.anchor()?;
         // The EVM already charges this account load; the host-side L1 fetch must not be charged
-        // again.
-        let commitment = self
-            .l1
-            .read_l1_commitment_unmetered(*address, anchor)
-            .map_err(|error| DatabaseError::new(error, true))?;
+        // again. Outside a transaction, such as RPC reads between transactions, accounts load at
+        // the checkpoint of the state this EVM holds.
+        let commitment = if self.l1.initial_anchor().is_some() {
+            let anchor = self.anchor()?;
+            self.l1.read_l1_commitment_unmetered(*address, anchor)
+        } else {
+            let checkpoint = self.checkpoint()?;
+            self.l1
+                .read_l1_commitment_at_checkpoint(*address, checkpoint)
+        }
+        .map_err(|error| DatabaseError::new(error, true))?;
         if commitment.is_zero() {
             return Ok(info);
         }
@@ -665,16 +689,46 @@ mod tests {
         before_t14.l1_state().begin_transaction(U256::from(anchor));
         before_t14.get_account(&account).unwrap();
 
-        // Block-level system calls load accounts outside any zone transaction.
-        let mut outside_transaction = L1OverlayDB::new(
+        // Block pre-execution loads these before advanceTempo, outside any zone transaction.
+        let mut pre_execution = L1OverlayDB::new(
+            test_db(anchor),
+            l1.clone(),
+            Address::ZERO,
+            TempoHardfork::T15,
+        );
+        for address in T15_REMOVED_PREDEPLOYS
+            .into_iter()
+            .chain([HISTORY_STORAGE_ADDRESS])
+        {
+            pre_execution.get_account(&address).unwrap();
+        }
+
+        assert_eq!(l1.commitment_requests(), []);
+    }
+
+    /// Outside a transaction, accounts load at the backing state's checkpoint, which then stays.
+    #[test]
+    fn loads_outside_transactions_resolve_at_the_checkpoint() {
+        let (anchor, account) = (42, Address::repeat_byte(0x11));
+        let l1 = TestL1::default();
+        l1.insert_commitment(account, anchor, B256::repeat_byte(7));
+        let mut db = L1OverlayDB::new(
             test_db(anchor),
             l1.clone(),
             Address::ZERO,
             TempoHardfork::T14,
         );
-        outside_transaction.get_account(&account).unwrap();
 
-        assert_eq!(l1.commitment_requests(), []);
+        let info = db.get_account(&account).unwrap().unwrap();
+        assert_eq!(info.code_hash, CONFIGURABLE_ACCOUNT_CODE_HASH);
+        assert_eq!(l1.commitment_requests(), [(account, anchor)]);
+        assert_eq!(
+            db.l1_state().set_checkpoint(U256::from(anchor + 1)),
+            Err(L1StateError::AnchorConflict {
+                current: anchor,
+                new: anchor + 1
+            })
+        );
     }
 
     #[test]
