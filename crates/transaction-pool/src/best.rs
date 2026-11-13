@@ -206,26 +206,6 @@ where
             .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
             .unwrap();
     }
-
-    /// Returns whether execution may pay the fee with another fallback token.
-    ///
-    /// Untracked balances may have grown during the block, so they count as sufficient.
-    fn may_use_other_fallback_token(
-        &self,
-        tx: &BestTransaction,
-        (token, slot): (Address, U256),
-        fee: U256,
-    ) -> bool {
-        tx.transaction.is_fallback_fee_token()
-            && self.fallback_fee_tokens.iter().any(|&candidate| {
-                // TIP-20 balance slots share a layout.
-                candidate != token
-                    && self
-                        .decreased_balances
-                        .get(&(candidate, slot))
-                        .is_none_or(|&balance| balance >= fee)
-            })
-    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
@@ -248,7 +228,13 @@ where
             let fee = best_tx.transaction.fee_token_cost();
             if let Some(&balance) = self.decreased_balances.get(&key)
                 && balance < fee
-                && !self.may_use_other_fallback_token(best_tx, key, fee)
+                && !may_use_other_fallback_token(
+                    best_tx,
+                    key,
+                    fee,
+                    self.fallback_fee_tokens,
+                    &self.decreased_balances,
+                )
             {
                 self.inner.mark_invalid(
                     &tx,
@@ -280,6 +266,28 @@ where
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.inner.set_skip_blobs(skip_blobs);
     }
+}
+
+/// Returns whether execution may pay `tx`'s `fee` with a fallback token other than `token`.
+///
+/// Only transactions whose fee token was resolved from `fallback_fee_tokens` can switch tokens.
+/// `known_balances` maps `(token, balance_slot)` to a known fee payer balance; untracked
+/// balances may have grown during the block, so they count as sufficient. TIP-20 balance slots
+/// share a layout, so `slot` locates the fee payer's balance in every fallback token.
+pub fn may_use_other_fallback_token(
+    tx: &BestTransaction,
+    (token, slot): (Address, U256),
+    fee: U256,
+    fallback_fee_tokens: &[Address],
+    known_balances: &HashMap<(Address, U256), U256>,
+) -> bool {
+    tx.transaction.is_fallback_fee_token()
+        && fallback_fee_tokens.iter().any(|&candidate| {
+            candidate != token
+                && known_balances
+                    .get(&(candidate, slot))
+                    .is_none_or(|&balance| balance >= fee)
+        })
 }
 
 /// [`StateAwareBestTransactions`] iterator item.
