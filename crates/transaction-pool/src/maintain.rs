@@ -239,7 +239,8 @@ impl TempoPoolUpdates {
                         || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH
                         || topic0 == IReservations::LineReserved::SIGNATURE_HASH
                         || topic0 == IReservations::Liened::SIGNATURE_HASH
-                        || topic0 == IReservations::LienReleased::SIGNATURE_HASH)
+                        || topic0 == IReservations::LienReleased::SIGNATURE_HASH
+                        || topic0 == IReservations::LienReduced::SIGNATURE_HASH)
                     && let [_, owner, _, token] = log.topics()
                 {
                     updates
@@ -1391,6 +1392,7 @@ mod tests {
             let lender = Address::random();
             let liened_owner = Address::random();
             let unliened_owner = Address::random();
+            let reduced_owner = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
                 tx_type: TempoTxType::Legacy,
@@ -1442,6 +1444,14 @@ mod tests {
                         amount: 5,
                     }
                     .into_log_data(),
+                    IReservations::LienReduced {
+                        owner: reduced_owner,
+                        authority: Address::random(),
+                        token,
+                        id,
+                        amount: 6,
+                    }
+                    .into_log_data(),
                 ]
                 .into_iter()
                 .map(|data| {
@@ -1462,7 +1472,8 @@ mod tests {
                     released_owner,
                     lender,
                     liened_owner,
-                    unliened_owner
+                    unliened_owner,
+                    reduced_owner
                 ]))
             );
             assert!(updates.fee_balance_changes.is_empty());

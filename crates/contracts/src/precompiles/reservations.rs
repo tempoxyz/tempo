@@ -115,10 +115,17 @@ crate::sol! {
         /// the caller chooses. Called by a holder of the token's `LIEN_ROLE`, with its root key.
         function lien(address owner, address token, bytes32 id, uint128 amount) external;
         /// Reserves `amount` of the caller's own available `token` balance with no expiry as
-        /// `authority`'s lien `id`, which only `authority` releases. Root key only.
+        /// `authority`'s lien `id`, which only `authority` releases. Root key only. Called again
+        /// for an existing pledge of the caller in `token`, raises it to a larger `amount`.
         function pledge(address authority, address token, bytes32 id, uint128 amount) external;
         /// Ends the caller's lien `id`, returning what it still reserves to the owner's available balance.
         function releaseLien(bytes32 id) external;
+        /// Lowers the caller's lien `id` by `amount`, returning what that frees to the owner's
+        /// available balance; at or above the lien's amount, ends it as `releaseLien` does.
+        function reduceLien(bytes32 id, uint128 amount) external;
+        /// Pays up to `amount` of the caller's lien `id` from the owner to `to` and lowers the lien
+        /// by it, ending it at zero. Root key only; a lien `lien` placed needs `LIEN_ROLE` still.
+        function seizeLien(bytes32 id, address to, uint128 amount) external;
 
         function getHold(address owner, bytes32 id) external view returns (Hold memory);
         function reserved(address owner, address token) external view returns (uint128);
@@ -172,9 +179,15 @@ crate::sol! {
         event DisputeSettled(address indexed owner, bytes32 indexed id, uint128 amount);
         /// Follows `HoldPlaced` for a hold naming a dispute.
         event DisputeHoldPlaced(address indexed owner, bytes32 indexed id, address indexed disputeOwner, bytes32 disputeId);
+        /// Emitted when a lien is placed or a pledge grows, with the lien's amount.
         event Liened(address indexed owner, address indexed authority, address indexed token, bytes32 id, uint128 amount);
         /// `amount` is the lien's amount; after a compliance burn the owner gets back at most what is still reserved.
         event LienReleased(address indexed owner, address indexed authority, address indexed token, bytes32 id, uint128 amount);
+        /// `amount` is what the lien still reserves after `reduceLien` lowered it.
+        event LienReduced(address indexed owner, address indexed authority, address indexed token, bytes32 id, uint128 amount);
+        /// `amount` is what moved from the owner to `to` and `remaining` the lien's amount after, zero
+        /// once it ended.
+        event LienSeized(address indexed owner, address indexed authority, address indexed token, bytes32 id, address to, uint128 amount, uint128 remaining);
 
         error HoldExists();
         error HoldNotFound();

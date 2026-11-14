@@ -180,6 +180,8 @@ impl Precompile for Reservations {
                     releaseLien(call) => mutate(call, msg_sender, |sender, c| {
                         self.release_lien(sender, c.id)
                     }),
+                    reduceLien(call) => mutate(call, msg_sender, |sender, c| self.reduce_lien(sender, c)),
+                    seizeLien(call) => mutate(call, msg_sender, |sender, c| self.seize_lien(sender, c)),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),

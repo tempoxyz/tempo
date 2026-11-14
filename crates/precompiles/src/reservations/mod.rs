@@ -22,8 +22,9 @@
 //! Holds naming an open dispute reserve the merchant side for the dispute's window.
 //!
 //! A holder of a token's `LIEN_ROLE` can lien an owner's available balance of that token: a
-//! reservation with no expiry that only it releases, which captures, line draws and debt
-//! repayments never take. An owner can also pledge its own balance as a lien for any authority.
+//! reservation with no expiry that only it lowers, releases or seizes, which captures, line draws
+//! and debt repayments never take. An owner can also pledge its own balance as a lien for any
+//! authority.
 
 pub mod dispatch;
 
@@ -106,6 +107,9 @@ struct Lien {
     token: Address,
     /// `Shortfall::epoch` when the lien was placed; an earlier epoch means a burn took part of it.
     burn_epoch: u32,
+    /// Whether the owner placed the lien with `pledge`, whose consent stands in for `LIEN_ROLE`
+    /// when the authority seizes it.
+    pledged: bool,
 }
 
 /// How far an owner lets final captures for one payee in one token exceed the hold, in one slot.
@@ -1367,33 +1371,63 @@ impl Reservations {
         }
         // A lien on a virtual address applies to its master, whose balance holds the funds.
         let owner = resolve_payee(call.owner)?;
-        self.place_lien(&mut token, owner, authority, call.id, amount)
+        if !self.liens[authority][call.id].token.read()?.is_zero() {
+            return Err(ReservationsError::lien_exists().into());
+        }
+        let lien = Lien {
+            owner,
+            amount,
+            token: token.address(),
+            burn_epoch: 0,
+            pledged: false,
+        };
+        self.place_lien(&mut token, authority, call.id, lien, amount)
     }
 
     /// Liens `call.amount` of the owner's own available balance for `call.authority`, such as a
     /// lender taking it as collateral. The owner's consent stands in for `LIEN_ROLE`, so it signs
-    /// with its root key; the lien is then the authority's like any other, which only it releases.
+    /// with its root key; the lien is then the authority's like any other, which only it lowers,
+    /// releases or seizes. A larger `call.amount` for the owner's existing pledge under `call.id`
+    /// in the same token raises it by the difference.
     fn pledge(&mut self, owner: Address, call: IReservations::pledgeCall) -> Result<()> {
         let amount = amount_u96(call.amount)?;
         let authority = resolve_counterparty_as_root(owner, call.authority, call.token)?;
         let mut token = TIP20Token::from_address(call.token)?;
-        self.place_lien(&mut token, owner, authority, call.id, amount)
+        let mut lien = self.liens[authority][call.id].read()?;
+        if lien.token.is_zero() {
+            lien = Lien {
+                owner,
+                amount,
+                token: call.token,
+                burn_epoch: 0,
+                pledged: true,
+            };
+            return self.place_lien(&mut token, authority, call.id, lien, amount);
+        }
+        // Only the owner's own pledge grows; the authority alone lowers a lien.
+        if !lien.pledged || lien.owner != owner || lien.token != call.token || amount <= lien.amount
+        {
+            return Err(ReservationsError::lien_exists().into());
+        }
+        let growth = amount - lien.amount;
+        lien.amount = amount;
+        self.place_lien(&mut token, authority, call.id, lien, growth)
     }
 
-    /// Moves `amount` of `owner`'s available balance into a lien `authority` keeps under `id`.
+    /// Moves `growth` of the lien owner's available balance into `authority`'s lien `id` and
+    /// writes `lien`, which already carries its new amount. A new lien takes the owner's current
+    /// burn epoch; a grown one keeps its own, so a burn before the growth still counts against it.
     fn place_lien(
         &mut self,
         token: &mut TIP20Token,
-        owner: Address,
         authority: Address,
         id: B256,
-        amount: U96,
+        mut lien: Lien,
+        growth: U96,
     ) -> Result<()> {
+        let owner = lien.owner;
         let address = token.address();
-        let value: u128 = amount.to();
-        if !self.liens[authority][id].token.read()?.is_zero() {
-            return Err(ReservationsError::lien_exists().into());
-        }
+        let value: u128 = growth.to();
         if value > available(token, owner)? {
             return Err(ReservationsError::insufficient_available().into());
         }
@@ -1405,19 +1439,22 @@ impl Reservations {
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         shortfall.liened = shortfall
             .liened
-            .checked_add(amount)
+            .checked_add(growth)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         token.decrement_balance(owner, U256::from(value))?;
         self.positions[owner][address].write(position)?;
         self.shortfalls[owner][address].write(shortfall)?;
-        self.liens[authority][id].write(Lien {
-            owner,
-            amount,
-            token: address,
-            burn_epoch: shortfall.epoch,
-        })?;
+        // A new lien's growth is its whole amount.
+        if growth == lien.amount {
+            lien.burn_epoch = shortfall.epoch;
+        }
+        self.liens[authority][id].write(lien)?;
         self.emit_event(ReservationsEvent::liened(
-            owner, authority, address, id, value,
+            owner,
+            authority,
+            address,
+            id,
+            lien.amount.to(),
         ))
     }
 
@@ -1425,35 +1462,132 @@ impl Reservations {
     /// balance. Released funds are not a credit, so they repay no debt. Any key of the authority
     /// may release, and so may an authority whose role was revoked since.
     fn release_lien(&mut self, authority: Address, id: B256) -> Result<()> {
+        let lien = self.live_lien(authority, id)?;
+        self.end_lien(authority, id, lien)
+    }
+
+    /// Lowers `authority`'s lien `call.id` by `call.amount` and returns what that frees to the
+    /// owner's available balance, as a partial `releaseLien`; at or above the lien's amount it
+    /// ends the lien as `releaseLien` does. Any key of the authority may lower it.
+    fn reduce_lien(
+        &mut self,
+        authority: Address,
+        call: IReservations::reduceLienCall,
+    ) -> Result<()> {
+        if call.amount == 0 {
+            return Err(ReservationsError::invalid_amount().into());
+        }
+        let mut lien = self.live_lien(authority, call.id)?;
+        let amount = U96::saturating_from(call.amount);
+        if amount >= lien.amount {
+            return self.end_lien(authority, call.id, lien);
+        }
+        let freed = self.lower_lien(authority, call.id, &mut lien, amount)?;
+        return_to_balance(lien.token, lien.owner, freed)?;
+        self.emit_event(ReservationsEvent::lien_reduced(
+            lien.owner,
+            authority,
+            lien.token,
+            call.id,
+            lien.amount.to(),
+        ))
+    }
+
+    /// Pays up to `call.amount` of `authority`'s lien `call.id` from the owner to `call.to` and
+    /// lowers the lien by the part taken, at most its amount, ending it at zero. The authority signs
+    /// with its root key, and holds `LIEN_ROLE` still unless the owner pledged the lien. Funds move
+    /// as a TIP-20 transfer from the owner, so the token's pause, TIP-403 policy and `to`'s receive
+    /// policy apply; after a compliance burn it moves at most what the part taken still reserves.
+    fn seize_lien(&mut self, authority: Address, call: IReservations::seizeLienCall) -> Result<()> {
+        if call.amount == 0 {
+            return Err(ReservationsError::invalid_amount().into());
+        }
+        let mut lien = self.live_lien(authority, call.id)?;
+        let mut token = TIP20Token::from_address(lien.token)?;
+        if AccountKeychain::new()
+            .signing_access_key(authority)?
+            .is_some()
+            || (!lien.pledged && !token.has_role_internal(authority, LIEN_ROLE)?)
+        {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        let to = resolve_payee(call.to)?;
+        token.ensure_transfer_authorized(lien.owner, to)?;
+        let taken = lien.amount.min(U96::saturating_from(call.amount));
+        let moved = self.lower_lien(authority, call.id, &mut lien, taken)?;
+        return_to_balance(lien.token, lien.owner, moved)?;
+        token.reservation_transfer(lien.owner, to, U256::from(moved))?;
+        self.emit_event(ReservationsEvent::lien_seized(
+            lien.owner,
+            authority,
+            lien.token,
+            call.id,
+            to,
+            moved,
+            lien.amount.to(),
+        ))
+    }
+
+    /// Returns `authority`'s lien `id`, or `LienNotFound` when it has none.
+    fn live_lien(&self, authority: Address, id: B256) -> Result<Lien> {
         let lien = self.liens[authority][id].read()?;
         if lien.token.is_zero() {
             return Err(ReservationsError::lien_not_found().into());
         }
-        let mut position = self.positions[lien.owner][lien.token].read()?;
-        let returned = self.unreserve(
-            lien.owner,
-            lien.token,
-            lien.burn_epoch,
-            &mut position,
-            lien.amount.to(),
-        )?;
-        self.positions[lien.owner][lien.token].write(position)?;
-        // Read after `unreserve`, which may have lowered `unbacked` in the same slot.
-        let mut shortfall = self.shortfalls[lien.owner][lien.token].read()?;
-        shortfall.liened = shortfall
-            .liened
-            .checked_sub(lien.amount)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.shortfalls[lien.owner][lien.token].write(shortfall)?;
-        self.liens[authority][id].delete()?;
+        Ok(lien)
+    }
+
+    /// Ends `authority`'s lien `id`, `lien`, returning what it still reserves to the owner's
+    /// available balance, and emits `LienReleased`.
+    fn end_lien(&mut self, authority: Address, id: B256, mut lien: Lien) -> Result<()> {
+        let amount = lien.amount;
+        let returned = self.lower_lien(authority, id, &mut lien, amount)?;
         return_to_balance(lien.token, lien.owner, returned)?;
         self.emit_event(ReservationsEvent::lien_released(
             lien.owner,
             authority,
             lien.token,
             id,
-            lien.amount.to(),
+            amount.to(),
         ))
+    }
+
+    /// Lowers `authority`'s lien `id`, `lien`, by `amount`, at most its amount, writing it back
+    /// or deleting it at zero. Returns the reservation this frees, which the caller pays out or
+    /// returns to the owner's balance; after a compliance burn it can be less than `amount`.
+    fn lower_lien(
+        &mut self,
+        authority: Address,
+        id: B256,
+        lien: &mut Lien,
+        amount: U96,
+    ) -> Result<u128> {
+        let mut position = self.positions[lien.owner][lien.token].read()?;
+        let freed = self.unreserve(
+            lien.owner,
+            lien.token,
+            lien.burn_epoch,
+            &mut position,
+            amount.to(),
+        )?;
+        self.positions[lien.owner][lien.token].write(position)?;
+        // Read after `unreserve`, which may have lowered `unbacked` in the same slot.
+        let mut shortfall = self.shortfalls[lien.owner][lien.token].read()?;
+        shortfall.liened = shortfall
+            .liened
+            .checked_sub(amount)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.shortfalls[lien.owner][lien.token].write(shortfall)?;
+        lien.amount = lien
+            .amount
+            .checked_sub(amount)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        if lien.amount.is_zero() {
+            self.liens[authority][id].delete()?;
+        } else {
+            self.liens[authority][id].write(*lien)?;
+        }
+        Ok(freed)
     }
 
     fn lien_of(&self, authority: Address, id: B256) -> Result<IReservations::lienOfReturn> {
@@ -7580,6 +7714,358 @@ mod tests {
             )?;
             assert_eq!(f.reservations.lien_of(lender, id)?.owner, f.owner);
             assert_eq!(f.available()?, 90);
+            Ok(())
+        })
+    }
+
+    impl Fixture {
+        fn reduce_lien(&mut self, authority: Address, id: B256, amount: u128) -> Result<()> {
+            self.reservations
+                .reduce_lien(authority, IReservations::reduceLienCall { id, amount })
+        }
+
+        fn seize_lien(
+            &mut self,
+            authority: Address,
+            id: B256,
+            to: Address,
+            amount: u128,
+        ) -> Result<()> {
+            self.reservations
+                .seize_lien(authority, IReservations::seizeLienCall { id, to, amount })
+        }
+    }
+
+    #[test]
+    fn test_pledge_again_grows_only_the_owners_own_pledge() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let lender = Address::random();
+            let id = B256::random();
+            f.pledge(lender, id, 30)?;
+            f.reservations.clear_emitted_events();
+            f.pledge(lender, id, 50)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::liened(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    50,
+                )]);
+            assert_eq!(f.reservations.lien_of(lender, id)?.amount, 50);
+            assert_eq!(f.reserved()?, 50);
+            assert_eq!(f.available()?, 50);
+            assert_eq!(f.liened()?, 50);
+
+            // A pledge never shrinks or stays the same through the owner.
+            for amount in [50, 40] {
+                assert_eq!(
+                    f.pledge(lender, id, amount).unwrap_err(),
+                    ReservationsError::lien_exists().into()
+                );
+            }
+            // Growth takes only what is available.
+            assert_eq!(
+                f.pledge(lender, id, 101).unwrap_err(),
+                ReservationsError::insufficient_available().into()
+            );
+            // Another token under the same id is another lien, which the id already names.
+            let other_token = TIP20Setup::create("Other USD", "OUSD", f.admin)
+                .with_issuer(f.admin)
+                .with_mint(f.owner, U256::from(100))
+                .apply()?;
+            assert_eq!(
+                f.reservations
+                    .pledge(
+                        f.owner,
+                        IReservations::pledgeCall {
+                            authority: lender,
+                            token: other_token.address(),
+                            id,
+                            amount: 60,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::lien_exists().into()
+            );
+            // Another owner cannot grow it.
+            let stranger = Address::random();
+            assert_eq!(
+                f.reservations
+                    .pledge(
+                        stranger,
+                        IReservations::pledgeCall {
+                            authority: lender,
+                            token: f.token.address(),
+                            id,
+                            amount: 60,
+                        },
+                    )
+                    .unwrap_err(),
+                ReservationsError::lien_exists().into()
+            );
+            // Nor can the owner grow a lien an authority placed with the role.
+            let authority = f.lien_authority()?;
+            f.lien(authority, id, 10)?;
+            assert_eq!(
+                f.pledge(authority, id, 20).unwrap_err(),
+                ReservationsError::lien_exists().into()
+            );
+            assert_eq!(f.reservations.lien_of(authority, id)?.amount, 10);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_grown_pledge_keeps_its_burn_epoch() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let lender = Address::random();
+            let id = B256::random();
+            f.pledge(lender, id, 600)?;
+            f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+            f.blacklist(vec![f.owner])?;
+            f.token
+                .burn_blocked(f.admin, f.owner, U256::from(800), true)?;
+            f.blacklist(vec![])?;
+            assert_eq!(f.reserved()?, 200);
+            f.mint(f.owner, 100)?;
+            f.pledge(lender, id, 700)?;
+            assert_eq!(f.reserved()?, 300);
+            // The burned part still counts against the lien, so ending it returns only what is left.
+            f.reservations.release_lien(lender, id)?;
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.available()?, 300);
+            assert_eq!(f.liened()?, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_reduce_lien_lowers_it_and_ends_it_at_its_amount() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let authority = f.lien_authority()?;
+            let id = B256::random();
+            f.lien(authority, id, 60)?;
+            assert_eq!(
+                f.reduce_lien(authority, id, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            // Only the placing authority finds its lien, so the owner cannot lower it.
+            assert_eq!(
+                f.reduce_lien(f.owner, id, 10).unwrap_err(),
+                ReservationsError::lien_not_found().into()
+            );
+
+            f.reservations.clear_emitted_events();
+            f.reduce_lien(authority, id, 20)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_reduced(
+                    f.owner,
+                    authority,
+                    f.token.address(),
+                    id,
+                    40,
+                )]);
+            assert_eq!(f.reservations.lien_of(authority, id)?.amount, 40);
+            assert_eq!(f.reserved()?, 40);
+            assert_eq!(f.available()?, 60);
+            assert_eq!(f.liened()?, 40);
+
+            // Lowering by the lien's amount or more ends it as a release does.
+            f.reservations.clear_emitted_events();
+            f.reduce_lien(authority, id, u128::MAX)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_released(
+                    f.owner,
+                    authority,
+                    f.token.address(),
+                    id,
+                    40,
+                )]);
+            assert!(f.reservations.lien_of(authority, id)?.token.is_zero());
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.available()?, 100);
+            assert_eq!(f.liened()?, 0);
+            assert_eq!(
+                f.reduce_lien(authority, id, 1).unwrap_err(),
+                ReservationsError::lien_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_lender_seizes_pledged_collateral() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let lender = Address::random();
+            let id = B256::random();
+            let to = Address::random();
+            f.pledge(lender, id, 60)?;
+            assert_eq!(
+                f.seize_lien(lender, id, to, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            assert_eq!(
+                f.seize_lien(f.owner, id, to, 10).unwrap_err(),
+                ReservationsError::lien_not_found().into()
+            );
+            assert_eq!(
+                f.seize_lien(lender, id, Address::ZERO, 10).unwrap_err(),
+                TIP20Error::invalid_recipient().into()
+            );
+
+            // The pledge stands in for the role: the lender seizes without one.
+            f.reservations.clear_emitted_events();
+            f.seize_lien(lender, id, to, 25)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_seized(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    to,
+                    25,
+                    35,
+                )]);
+            assert_eq!(f.balance(to)?, U256::from(25));
+            assert_eq!(f.balance(f.owner)?, U256::from(75));
+            assert_eq!(f.reserved()?, 35);
+            assert_eq!(f.available()?, 40);
+            assert_eq!(f.liened()?, 35);
+            assert_eq!(f.reservations.lien_of(lender, id)?.amount, 35);
+
+            // An access key of the lender cannot seize, whatever its scope.
+            let key = Address::random();
+            let mut keychain = authorize_key_for(
+                lender,
+                key,
+                f.token.address(),
+                1_000,
+                &[IReservations::seizeLienCall::SELECTOR],
+            )?;
+            assert_eq!(
+                f.seize_lien(lender, id, to, 10).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            keychain.set_tx_origin(Address::random())?;
+
+            // A seizure above the lien takes all of it and ends it; the rest of the balance stays.
+            f.reservations.clear_emitted_events();
+            f.seize_lien(lender, id, to, u128::MAX)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_seized(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    to,
+                    35,
+                    0,
+                )]);
+            assert_eq!(f.balance(to)?, U256::from(60));
+            assert_eq!(f.balance(f.owner)?, U256::from(40));
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.available()?, 40);
+            assert_eq!(f.liened()?, 0);
+            assert!(f.reservations.lien_of(lender, id)?.token.is_zero());
+            assert_eq!(
+                f.seize_lien(lender, id, to, 1).unwrap_err(),
+                ReservationsError::lien_not_found().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_seizing_a_role_lien_needs_the_role_and_obeys_the_token() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let authority = f.lien_authority()?;
+            let id = B256::random();
+            let to = Address::random();
+            f.lien(authority, id, 50)?;
+
+            // The seizure is a transfer from the owner, so the token's policy applies.
+            f.blacklist(vec![to])?;
+            assert_eq!(
+                f.seize_lien(authority, id, to, 10).unwrap_err(),
+                TIP20Error::policy_forbids().into()
+            );
+            f.blacklist(vec![])?;
+            f.seize_lien(authority, id, to, 10)?;
+            assert_eq!(f.balance(to)?, U256::from(10));
+            assert_eq!(f.liened()?, 40);
+
+            // Revoking the role stops seizures of the liens it placed; releasing still works.
+            f.token.revoke_role(
+                f.admin,
+                IRolesAuth::revokeRoleCall {
+                    role: LIEN_ROLE,
+                    account: authority,
+                },
+            )?;
+            assert_eq!(
+                f.seize_lien(authority, id, to, 10).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            f.reduce_lien(authority, id, 15)?;
+            assert_eq!(f.liened()?, 25);
+            f.reservations.release_lien(authority, id)?;
+            assert_eq!(f.available()?, 90);
+
+            // A paused token stops seizures too. The precompile call reverts with the error, so
+            // nothing is asserted after it.
+            let lender = Address::random();
+            let pledged = B256::random();
+            f.pledge(lender, pledged, 10)?;
+            f.token.grant_role_internal(f.admin, PAUSE_ROLE)?;
+            f.token.pause(f.admin, ITIP20::pauseCall {})?;
+            assert_eq!(
+                f.seize_lien(lender, pledged, to, 10).unwrap_err(),
+                TIP20Error::contract_paused().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_seizure_after_a_compliance_burn_moves_what_is_left() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(1_000)?;
+            let lender = Address::random();
+            let id = B256::random();
+            let held = B256::random();
+            let to = Address::random();
+            f.pledge(lender, id, 600)?;
+            f.hold(held, 300)?;
+            f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+            f.blacklist(vec![f.owner])?;
+            f.token
+                .burn_blocked(f.admin, f.owner, U256::from(800), true)?;
+            f.blacklist(vec![])?;
+            f.reservations.release(f.owner, held)?;
+            assert_eq!(f.reserved()?, 200);
+
+            f.reservations.clear_emitted_events();
+            f.seize_lien(lender, id, to, 600)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::lien_seized(
+                    f.owner,
+                    lender,
+                    f.token.address(),
+                    id,
+                    to,
+                    200,
+                    0,
+                )]);
+            assert_eq!(f.balance(to)?, U256::from(200));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.reserved()?, 0);
+            assert_eq!(f.liened()?, 0);
             Ok(())
         })
     }
