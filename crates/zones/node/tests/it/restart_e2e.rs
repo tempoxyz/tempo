@@ -8,8 +8,8 @@
 //! - Multiple restart cycles don't corrupt state
 
 use crate::utils::{
-    L1_TIMEOUT, L1TestNode, Network, ZoneAccount, ZoneCreationConfig, ZoneLaunch, ZoneTestNode,
-    batch_count, spawn_sequencer,
+    L1_TIMEOUT, L1TestNode, Network, ZoneAccount, ZoneLaunch, ZoneTestNode, batch_count,
+    spawn_sequencer,
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -94,12 +94,8 @@ async fn abort_task(handle: tokio::task::JoinHandle<()>) -> eyre::Result<()> {
 async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder()
-        .zone(ZoneCreationConfig::closed(Vec::new()))
-        .accounts(1, 6_000_000)
-        .start()
-        .await?;
-    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
+    let net = Network::builder().accounts(1, 6_000_000).start().await?;
+    let (l1, [zone], [user]) = net.parts();
     let deposit_amount: u128 = 5_000_000;
     zone.deposit(user, deposit_amount).await?;
 
@@ -182,12 +178,8 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
 async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder()
-        .zone(ZoneCreationConfig::closed(Vec::new()))
-        .accounts(1, 4_000_000)
-        .start()
-        .await?;
-    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
+    let net = Network::builder().accounts(1, 4_000_000).start().await?;
+    let (l1, [zone], [user]) = net.parts();
     let mut account = zone.account(user);
     zone.deposit(user, 3_000_000).await?;
 

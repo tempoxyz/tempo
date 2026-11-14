@@ -700,16 +700,12 @@ async fn test_two_zones_independent_deposits() -> eyre::Result<()> {
 
     // Start two zones with different chain IDs
     let zone1 = ZoneTestNode::launch(ZoneLaunch {
-        l1: ZoneL1::Stub {
-            chain_id: zone_chain_id(1_337, 1)?,
-        },
+        l1: ZoneL1::Stub(zone_chain_id(1_337, 1)?),
         ..Default::default()
     })
     .await?;
     let zone2 = ZoneTestNode::launch(ZoneLaunch {
-        l1: ZoneL1::Stub {
-            chain_id: zone_chain_id(1_337, 2)?,
-        },
+        l1: ZoneL1::Stub(zone_chain_id(1_337, 2)?),
         ..Default::default()
     })
     .await?;

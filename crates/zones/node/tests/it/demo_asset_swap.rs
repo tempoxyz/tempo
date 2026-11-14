@@ -1,6 +1,6 @@
 //! Multi-asset zone deposit and withdrawal.
 
-use crate::utils::{L1_TIMEOUT, Network, ZoneCreationConfig};
+use crate::utils::{L1_TIMEOUT, Network};
 use alloy::{
     primitives::{B256, U256},
     providers::Provider,
@@ -13,12 +13,9 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // --- Step 1: Start L1 and a zone ---
-    let net = Network::builder()
-        .zone(ZoneCreationConfig::closed(Vec::new()))
-        .accounts(1, 10_000_000) // pathUSD for gas
-        .start()
-        .await?;
-    let (l1, [zone], [alice]) = (net.l1(), net.zones(), net.accounts());
+    // Alice's pathUSD pays for gas.
+    let net = Network::builder().accounts(1, 10_000_000).start().await?;
+    let (l1, [zone], [alice]) = net.parts();
 
     // --- Step 2: Create two TIP-20 tokens on L1 ---
     let alpha_salt = B256::with_last_byte(100);

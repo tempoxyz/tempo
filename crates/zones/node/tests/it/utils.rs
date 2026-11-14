@@ -1064,10 +1064,10 @@ impl ZoneTestNode {
             deposit_allowlist_relay,
         } = config;
         let tasks = Runtime::test();
-        let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub { .. });
+        let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub(_));
         // `None` for a portal, whose zone ID determines the chain ID below.
         let (l1_ws_url, portal_address, chain_id) = match l1 {
-            ZoneL1::Stub { chain_id } => (
+            ZoneL1::Stub(chain_id) => (
                 spawn_test_l1_rpc(1337).await?,
                 Address::ZERO,
                 Some(chain_id),
@@ -1360,9 +1360,7 @@ impl ZoneLaunch {
 impl Default for ZoneLaunch {
     fn default() -> Self {
         Self {
-            l1: ZoneL1::Stub {
-                chain_id: next_unique_chain_id(),
-            },
+            l1: ZoneL1::Stub(next_unique_chain_id()),
             genesis: ZoneGenesis::Template,
             // A throwaway signer for tests that don't use encrypted deposits.
             sequencer_signer: PrivateKeySigner::from_bytes(&B256::repeat_byte(0x01))
@@ -1379,8 +1377,9 @@ impl Default for ZoneLaunch {
 
 /// The L1 a [`ZoneTestNode`] follows.
 pub(crate) enum ZoneL1 {
-    /// A local RPC stub. The test injects L1 blocks and seeds the L1 state cache itself.
-    Stub { chain_id: u64 },
+    /// A local RPC stub with this chain ID. The test injects L1 blocks and seeds the L1 state
+    /// cache itself.
+    Stub(u64),
     /// A zone without a portal whose L1 subscriber connects to `url`.
     Rpc { url: String, chain_id: u64 },
     /// The portal at `portal_address` on the L1 at `url`, whose zone ID sets the chain ID.
@@ -3200,9 +3199,7 @@ pub(crate) async fn start_local_zone_with_fixture_and_withdrawal_batch_interval(
     genesis: Genesis,
 ) -> eyre::Result<(ZoneTestNode, L1Fixture)> {
     let zone = ZoneTestNode::launch(ZoneLaunch {
-        l1: ZoneL1::Stub {
-            chain_id: zone_chain_id(1_337, zone_id)?,
-        },
+        l1: ZoneL1::Stub(zone_chain_id(1_337, zone_id)?),
         genesis: ZoneGenesis::Custom(genesis),
         withdrawal_batch_interval_blocks,
         ..Default::default()

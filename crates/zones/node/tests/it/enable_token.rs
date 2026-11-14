@@ -14,7 +14,7 @@ use crate::utils::{
 };
 
 // Imports for real-L1 tests
-use crate::utils::{L1_TIMEOUT, Network, ZoneCreationConfig};
+use crate::utils::{L1_TIMEOUT, Network};
 use alloy::primitives::B256;
 use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
@@ -201,11 +201,10 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     // --- Step 1: Start L1 and a zone, funding the user with pathUSD for L2 gas ---
     let pathusd_gas_amount: u128 = 5_000_000; // 5 pathUSD for L2 gas
     let net = Network::builder()
-        .zone(ZoneCreationConfig::closed(Vec::new()))
         .accounts(1, pathusd_gas_amount * 2)
         .start()
         .await?;
-    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
+    let (l1, [zone], [user]) = net.parts();
 
     // --- Step 2: Create AlphaUSD on L1 ---
     // --- Step 3: Mint AlphaUSD to the user ---

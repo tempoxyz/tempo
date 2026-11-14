@@ -27,7 +27,8 @@ pub(crate) struct NetworkBuilder {
 }
 
 impl NetworkBuilder {
-    /// Adds a zone. A closed zone also admits the network's accounts.
+    /// Adds a zone. A closed zone also admits the network's accounts. Without any, the network
+    /// has one closed zone.
     pub fn zone(mut self, config: ZoneCreationConfig) -> Self {
         self.zones.push(config);
         self
@@ -44,7 +45,12 @@ impl NetworkBuilder {
     pub async fn start(self) -> eyre::Result<Network> {
         let l1 = Rc::new(L1TestNode::start().await?);
         let accounts = signers_vec(self.accounts);
-        let sequencers = signers_vec(self.zones.len());
+        let zones = if self.zones.is_empty() {
+            vec![ZoneCreationConfig::closed(Vec::new())]
+        } else {
+            self.zones
+        };
+        let sequencers = signers_vec(zones.len());
         l1.fund_users(
             std::iter::once((l1.admin_address(), GAS_FUNDING))
                 .chain(
@@ -63,8 +69,8 @@ impl NetworkBuilder {
         // Portal creation shares the dev key's nonce, so it stays sequential. Each zone then
         // registers its encryption key with its own sequencer key, concurrently with the others.
         let factory = l1.native_zone_factory().await?;
-        let mut portals = Vec::with_capacity(self.zones.len());
-        for (mut config, sequencer) in self.zones.into_iter().zip(&sequencers) {
+        let mut portals = Vec::with_capacity(zones.len());
+        for (mut config, sequencer) in zones.into_iter().zip(&sequencers) {
             if config.access_mode {
                 config
                     .allowed_accounts
@@ -135,25 +141,22 @@ impl Network {
         }
     }
 
-    /// Returns the L1.
-    pub fn l1(&self) -> &L1TestNode {
-        &self.l1
-    }
-
-    /// Returns the zones, in the order they were added. Panics unless there are `N`.
-    pub fn zones<const N: usize>(&self) -> &[Zone; N] {
-        self.zones
-            .as_slice()
-            .try_into()
-            .expect("network has a different number of zones")
-    }
-
-    /// Returns the funded accounts. Panics unless there are `N`.
-    pub fn accounts<const N: usize>(&self) -> &[PrivateKeySigner; N] {
-        self.accounts
-            .as_slice()
-            .try_into()
-            .expect("network has a different number of accounts")
+    /// Returns the L1, the zones in the order they were added and the funded accounts. Panics
+    /// unless there are `Z` zones and `A` accounts.
+    pub fn parts<const Z: usize, const A: usize>(
+        &self,
+    ) -> (&L1TestNode, &[Zone; Z], &[PrivateKeySigner; A]) {
+        (
+            &self.l1,
+            self.zones
+                .as_slice()
+                .try_into()
+                .expect("network has a different number of zones"),
+            self.accounts
+                .as_slice()
+                .try_into()
+                .expect("network has a different number of accounts"),
+        )
     }
 }
 
