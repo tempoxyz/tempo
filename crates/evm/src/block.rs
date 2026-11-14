@@ -924,6 +924,10 @@ impl ParallelExecution {
     }
 }
 
+/// Blocks with fewer transactions execute sequentially even with parallel execution on: spawning
+/// workers and opening their state providers costs more than they save.
+const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
+
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F
 where
@@ -1080,8 +1084,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         transactions: Vec<T>,
         base: &(dyn evm2::evm::DynDatabaseRef + Sync),
     ) -> Result<(), BlockExecutionError> {
+        let small = transactions.len() < PARALLEL_EXECUTION_MIN_TRANSACTIONS;
         let transactions = transactions.into_iter().map(|tx| tx.into_parts());
-        let Some(config) = self.worker_config else {
+        let Some(config) = self.worker_config.filter(|_| !small) else {
             return self.execute_sequentially(transactions.collect()).map(drop);
         };
         let env = TempoEvmEnv {
