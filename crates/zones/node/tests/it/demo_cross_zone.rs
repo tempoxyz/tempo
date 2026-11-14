@@ -37,9 +37,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
         .accounts(2, 2_000_000)
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone_a, zone_b] = net.zones();
-    let [alice, bob] = net.accounts();
+    let (l1, [zone_a, zone_b], [alice, bob]) = (net.l1(), net.zones(), net.accounts());
     let [refund_burner] = actors();
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;

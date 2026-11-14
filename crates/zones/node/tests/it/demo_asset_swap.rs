@@ -18,9 +18,7 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
         .accounts(1, 10_000_000) // pathUSD for gas
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone] = net.zones();
-    let [alice] = net.accounts();
+    let (l1, [zone], [alice]) = (net.l1(), net.zones(), net.accounts());
 
     // --- Step 2: Create two TIP-20 tokens on L1 ---
     let alpha_salt = B256::with_last_byte(100);

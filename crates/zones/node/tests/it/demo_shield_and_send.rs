@@ -34,9 +34,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
         .accounts(2, 2_000_000)
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone] = net.zones();
-    let [alice, bob] = net.accounts();
+    let (l1, [zone], [alice, bob]) = (net.l1(), net.zones(), net.accounts());
 
     // --- Step 4: Alice deposits 1 pathUSD (shield) ---
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)

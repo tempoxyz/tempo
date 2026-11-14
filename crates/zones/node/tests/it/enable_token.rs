@@ -205,9 +205,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
         .accounts(1, pathusd_gas_amount * 2)
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone] = net.zones();
-    let [user] = net.accounts();
+    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
 
     // --- Step 2: Create AlphaUSD on L1 ---
     // --- Step 3: Mint AlphaUSD to the user ---

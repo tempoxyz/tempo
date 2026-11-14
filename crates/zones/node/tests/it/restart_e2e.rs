@@ -99,9 +99,7 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
         .accounts(1, 6_000_000)
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone] = net.zones();
-    let [user] = net.accounts();
+    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
     let deposit_amount: u128 = 5_000_000;
     zone.deposit(user, deposit_amount).await?;
 
@@ -189,9 +187,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
         .accounts(1, 4_000_000)
         .start()
         .await?;
-    let l1 = net.l1();
-    let [zone] = net.zones();
-    let [user] = net.accounts();
+    let (l1, [zone], [user]) = (net.l1(), net.zones(), net.accounts());
     let mut account = zone.account(user);
     zone.deposit(user, 3_000_000).await?;
 
