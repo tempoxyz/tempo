@@ -20,6 +20,8 @@ pub fn foundry_artifact_path(
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+use crate::account_keychain::{AccountKeychain, KeyRestrictions, SignatureType};
+#[cfg(any(test, feature = "test-utils"))]
 use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
@@ -397,6 +399,63 @@ impl TIP20Setup {
     pub fn expect_tip20_err(self, expected: TIP20Error) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
+    }
+}
+
+/// Sets up `account`'s [`AccountKeychain`] as its transaction sees it, by default as the root key.
+///
+/// ```ignore
+/// let keychain = KeychainSetup::new(user)
+///     .key(access_key, KeyRestrictions::unrestricted().limit(token, amount, 0))
+///     .acting_as(access_key)
+///     .apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub struct KeychainSetup {
+    account: Address,
+    keys: Vec<(Address, KeyRestrictions)>,
+    acting_as: Address,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl KeychainSetup {
+    /// A keychain for `account` with no access keys, used by its root key.
+    pub fn new(account: Address) -> Self {
+        Self {
+            account,
+            keys: Vec::new(),
+            acting_as: Address::ZERO,
+        }
+    }
+
+    /// Authorizes the Secp256k1 access key `key_id` with `restrictions`.
+    pub fn key(mut self, key_id: Address, restrictions: KeyRestrictions) -> Self {
+        self.keys.push((key_id, restrictions));
+        self
+    }
+
+    /// Runs the transaction as access key `key_id` once the keys are authorized.
+    pub fn acting_as(mut self, key_id: Address) -> Self {
+        self.acting_as = key_id;
+        self
+    }
+
+    /// Initializes the keychain and applies the setup in the entered storage context.
+    pub fn apply(self) -> Result<AccountKeychain> {
+        let mut keychain = AccountKeychain::initialized()?;
+        keychain.set_transaction_key(Address::ZERO)?;
+        keychain.set_tx_origin(self.account)?;
+        for (key_id, restrictions) in self.keys {
+            keychain.authorize_key(
+                self.account,
+                key_id,
+                SignatureType::Secp256k1,
+                restrictions,
+                None,
+            )?;
+        }
+        keychain.set_transaction_key(self.acting_as)?;
+        Ok(keychain)
     }
 }
 

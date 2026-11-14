@@ -61,7 +61,6 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
-tempo-alloy.workspace = true
 tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["test-utils"] }
 
@@ -80,7 +79,6 @@ test-utils = [
     "dep:serde",
     "dep:serde_json",
     "tempo-primitives/test-utils",
-    "tempo-alloy/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
 # `TIP20Setup::apply_rpc`. alloy's provider is already a dependency through `rpc`.

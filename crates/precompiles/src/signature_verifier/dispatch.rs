@@ -66,7 +66,10 @@ mod tests {
         Precompile,
         account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
         expect_precompile_revert,
-        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
+        test_util::{
+            KeychainSetup, assert_full_coverage, check_selector_coverage, revert_bytes,
+            with_storage,
+        },
     };
     use alloy::{
         primitives::B256,
@@ -235,21 +238,9 @@ mod tests {
             let account = Address::random();
             let access_key = PrivateKeySigner::random();
 
-            let mut keychain = AccountKeychain::initialized()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                access_key.address(),
-                SignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
+            KeychainSetup::new(account)
+                .key(access_key.address(), KeyRestrictions::unrestricted())
+                .apply()?;
 
             let hash = B256::repeat_byte(0x44);
             let signature = keychain_signature(account, &access_key, hash)?;
@@ -297,21 +288,9 @@ mod tests {
             let account = Address::random();
             let access_key = PrivateKeySigner::random();
 
-            let mut keychain = AccountKeychain::initialized()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                access_key.address(),
-                SignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
+            KeychainSetup::new(account)
+                .key(access_key.address(), KeyRestrictions::unrestricted())
+                .apply()?;
 
             let hash = B256::repeat_byte(0x57);
             let signature = keychain_signature(account, &access_key, hash)?;
@@ -396,21 +375,9 @@ mod tests {
             let account = Address::random();
             let access_key = PrivateKeySigner::random();
 
-            let mut keychain = AccountKeychain::initialized()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
-                account,
-                access_key.address(),
-                SignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
+            KeychainSetup::new(account)
+                .key(access_key.address(), KeyRestrictions::unrestricted())
+                .apply()?;
 
             let hash = B256::repeat_byte(0x77);
             let signature = keychain_signature(account, &access_key, hash)?;
