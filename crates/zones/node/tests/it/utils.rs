@@ -668,22 +668,11 @@ where
     }
 }
 
-/// A self-contained Tempo Zone L2 node for integration testing.
-///
-/// Wraps an in-process reth node configured as a Zone, providing:
-/// - An HTTP RPC endpoint for provider connections
-/// - A [`DepositQueue`] handle for injecting synthetic L1 blocks
-/// - A [`L1StateCache`] for seeding TempoState storage-read data
-///
-/// # Construction
-///
-/// - [`start_local()`](Self::start_local) — standalone node, no real L1, fastest for unit-style e2e
-/// - [`start_from_l1()`](Self::start_from_l1) — connected to a real [`L1TestNode`], genesis patched from L1 header
-/// - [`launch()`](Self::launch) — anything else, configured by a [`ZoneLaunch`]
 type RpcApiFuture =
     Pin<Box<dyn Future<Output = eyre::Result<Arc<dyn zone_node::rpc::ZoneRpcApi>>>>>;
 type RpcApiFactory = dyn Fn(zone_node::rpc::RedactedRpcConfig) -> RpcApiFuture + Send + Sync;
 
+/// An in-process zone node, started by [`Self::launch`] or its `start_*` shortcuts.
 pub(crate) struct ZoneTestNode {
     http_url: url::Url,
     /// Unsigned HTTP provider shared by every [`Self::provider`] call.
@@ -2169,9 +2158,7 @@ impl L1TestNode {
         ))
     }
 
-    /// Create `policy` as the dev account and make it pathUSD's transfer policy on L1.
-    ///
-    /// Returns the new policy's ID.
+    /// Makes `policy`, created by the dev account, pathUSD's L1 transfer policy; returns its ID.
     pub async fn set_path_usd_transfer_policy(&self, policy: TIP403Setup) -> eyre::Result<u64> {
         TIP20Setup::path_usd(self.dev_address())
             .with_transfer_policy(policy)
