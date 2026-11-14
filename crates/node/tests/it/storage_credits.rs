@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
     ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
     account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
+        IAccountKeychainInstance, KeyRestrictions, SignatureType, revokeKeyCall,
     },
     authorizeKeyCall,
 };
