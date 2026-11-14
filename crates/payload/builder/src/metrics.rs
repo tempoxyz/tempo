@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageKey, StorageValue};
-use metrics::Gauge;
+use metrics::{Counter, Gauge};
 use reth_errors::ProviderResult;
 use reth_metrics::{Metrics, metrics::Histogram};
 use reth_primitives_traits::{Account, Bytecode};
@@ -82,6 +82,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payload_finalization_duration_seconds: Histogram,
     /// Wall-clock time spent waiting for the shared sparse trie state root.
     pub(crate) sparse_trie_state_root_wait_duration_seconds: Histogram,
+    /// Number of payloads whose sparse trie state root failed and fell back to the sync state root.
+    pub(crate) sparse_trie_state_root_fallback_total: Counter,
     /// Wall-clock time spent in `builder.finish()`.
     pub(crate) builder_finish_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
