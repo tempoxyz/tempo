@@ -25,6 +25,7 @@ use reth_evm::{BlockExecutor, BlockExecutorFactory, BundleState};
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use std::{
     collections::BTreeMap,
+    io,
     num::{NonZeroU64, NonZeroUsize},
     sync::{Arc, Mutex},
 };
@@ -166,6 +167,8 @@ struct Outcome {
     /// Error of execute_block_transactions, if any.
     error: Option<String>,
     receipts: Vec<TempoReceipt>,
+    /// Receipts streamed to the receipt callback, each once, in block order.
+    streamed: Vec<TempoReceipt>,
     state: BTreeMap<Address, (String, BTreeMap<U256, U256>)>,
     executor_state: ExecutorState,
     /// finish output, or its error.
@@ -201,6 +204,18 @@ fn execute(
     ctx: TempoBlockExecutionCtx<'static>,
     parallel: Option<ParallelExecution>,
 ) -> (Outcome, Option<ParallelExecutionStats>) {
+    execute_until(snapshot, txs, ctx, parallel, None)
+}
+
+/// Executes txs as one block like [`execute`], with the transaction stream yielding an error
+/// instead of the transaction at fail_at.
+fn execute_until(
+    snapshot: &Arc<Snapshot>,
+    txs: &[Recovered<TempoTxEnvelope>],
+    ctx: TempoBlockExecutionCtx<'static>,
+    parallel: Option<ParallelExecution>,
+    fail_at: Option<usize>,
+) -> (Outcome, Option<ParallelExecutionStats>) {
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
     let tx_envs: Vec<_> = txs
         .iter()
@@ -228,11 +243,28 @@ fn execute(
     executor.set_parallel_execution(parallel);
 
     let make_evm = evm_factory(|db| BlockExecutorFactory::evm_with_env(&config, db, env.clone()));
-    let result = executor.execute_block_transactions(
-        tx_envs.into_iter().zip(txs),
+    let mut streamed = Vec::new();
+    let result = executor.execute_transaction_stream(
+        tx_envs.into_iter().zip(txs).enumerate().map(|(index, tx)| {
+            if Some(index) == fail_at {
+                Err(io::Error::other("transaction failed to decode"))
+            } else {
+                Ok(tx)
+            }
+        }),
         &**snapshot,
         make_evm,
         |_, _| {},
+        |index, receipt| {
+            // A batched commit that fails executes the block again, streaming the receipts before
+            // the failure again, unchanged.
+            if let Some(seen) = streamed.get(index) {
+                assert_eq!(seen, receipt, "receipt {index} changed");
+            } else {
+                assert_eq!(index, streamed.len(), "receipt {index} out of order");
+                streamed.push(receipt.clone());
+            }
+        },
     );
     let error = result.as_ref().err().map(|error| error.to_string());
     let receipts = executor.receipts().to_vec();
@@ -245,6 +277,7 @@ fn execute(
     let outcome = Outcome {
         error,
         receipts,
+        streamed,
         state,
         executor_state,
         finish,
@@ -407,6 +440,7 @@ fn parallel_full_ring_reports_sequential_error(commit: ParallelCommit, threads: 
     assert_eq!(stats, None);
     assert_eq!(outcome.error, sequential.error);
     assert_eq!(outcome.receipts, sequential.receipts);
+    assert_eq!(outcome.streamed, sequential.streamed);
     assert_eq!(outcome.executor_state, sequential.executor_state);
     assert_eq!(outcome.state, sequential.state);
     assert_eq!(outcome.finish, sequential.finish);
@@ -429,4 +463,34 @@ fn parallel_executes_tiny_blocks(count: usize, commit: ParallelCommit, threads: 
         stats.expect("parallel execution failed").transactions,
         count
     );
+}
+
+/// The transaction stream ends with an error at transaction 70: the transactions before it commit
+/// and the block reports the error, as executing it one transaction at a time does.
+#[test_matrix([ParallelCommit::InOrder, ParallelCommit::Batched], [1, 4])]
+fn parallel_stream_error_matches_sequential(commit: ParallelCommit, threads: usize) {
+    const FAIL_AT: usize = 70;
+
+    let accounts = Accounts::new();
+    let snapshot = Arc::new(Snapshot(accounts.seed()));
+    let txs = accounts.transactions(TX_COUNT, None);
+    let ctx = || ctx(txs.len(), BLOCK_GAS_LIMIT, 0);
+
+    let (sequential, _) = execute_until(&snapshot, &txs, ctx(), None, Some(FAIL_AT));
+    assert_eq!(
+        sequential.error.as_deref(),
+        Some("transaction failed to decode")
+    );
+    assert_eq!(sequential.receipts.len(), FAIL_AT);
+    assert_eq!(sequential.streamed, sequential.receipts);
+
+    let (outcome, stats) = execute_until(
+        &snapshot,
+        &txs,
+        ctx(),
+        parallel(threads, commit),
+        Some(FAIL_AT),
+    );
+    assert_eq!(stats, None);
+    assert_eq!(outcome, sequential);
 }

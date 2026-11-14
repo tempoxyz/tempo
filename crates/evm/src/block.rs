@@ -1,11 +1,8 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoTxEnv, transaction::ExecutionContext,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, transaction::ExecutionContext,
 };
-use alloy_consensus::{
-    Transaction,
-    transaction::{Recovered, TxHashRef},
-};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
@@ -13,20 +10,25 @@ use alloy_sol_types::SolCall;
 use commonware_codec::{DecodeExt as _, ReadExt};
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
-    block::ethereum::parallel::{ParallelCommit, ParallelExecutionStats},
+    block::ethereum::parallel::{ParallelCommit, ParallelExecutionStats, StreamedTx},
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, CommitChanges, ConfigureEvm as _, ExecutorTx, GasOutput, ReceiptBuilder,
-    ReceiptBuilderCtx, RecoveredTx,
+    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
+    RecoveredTx, SendExecutorTx,
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    borrow::Borrow,
+    convert::Infallible,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -579,17 +581,27 @@ impl<'a> TempoBlockExecutor<'a> {
     /// Validates a system transaction.
     ///
     /// Its position in the block is validated by [`Self::validate_tx`].
+    #[cfg(test)]
     pub(crate) fn validate_system_tx(
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<(), BlockValidationError> {
-        let block = self.evm().block();
-        let block_number = block.number.to_be_bytes::<32>();
+        Self::validate_system_tx_at(self.evm().config_spec_id(), self.evm().block().number, tx)
+    }
+
+    /// Implements [`Self::validate_system_tx`] at hardfork `spec` and block `number`, so it can run
+    /// while the inner executor is borrowed.
+    fn validate_system_tx_at(
+        spec: TempoHardfork,
+        number: U256,
+        tx: &TempoTxEnvelope,
+    ) -> Result<(), BlockValidationError> {
+        let block_number = number.to_be_bytes::<32>();
         let to = tx.to().unwrap_or_default();
 
         // Handle end-of-block system transactions (subblocks signatures only)
         if to.is_zero() {
-            if self.evm().config_spec_id().is_t4() {
+            if spec.is_t4() {
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
 
@@ -633,8 +645,22 @@ impl<'a> TempoBlockExecutor<'a> {
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<bool, BlockValidationError> {
+        Self::validate_tx_pre_execution_at(
+            self.evm().config_spec_id(),
+            self.evm().block().number,
+            tx,
+        )
+    }
+
+    /// Implements [`Self::validate_tx_pre_execution`] at hardfork `spec` and block `number`, so it
+    /// can run while the inner executor is borrowed.
+    fn validate_tx_pre_execution_at(
+        spec: TempoHardfork,
+        number: U256,
+        tx: &TempoTxEnvelope,
+    ) -> Result<bool, BlockValidationError> {
         if tx.is_system_tx() {
-            self.validate_system_tx(tx).map(|()| true)
+            Self::validate_system_tx_at(spec, number, tx).map(|()| true)
         } else if tx.has_sub_block_nonce_key_prefix() {
             Err(BlockValidationError::msg(
                 "subblock transactions are not supported",
@@ -654,7 +680,12 @@ impl<'a> TempoBlockExecutor<'a> {
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        let spec = self.evm().config_spec_id();
+        Self::is_payment_at(self.evm().config_spec_id(), tx)
+    }
+
+    /// Implements [`Self::is_payment`] at hardfork `spec`, so it can run while the inner executor
+    /// is borrowed.
+    fn is_payment_at(spec: TempoHardfork, tx: &TempoTxEnvelope) -> bool {
         if spec.is_t15() {
             tx.is_payment_v3()
         } else if spec.is_t5() {
@@ -780,68 +811,130 @@ impl<'a> TempoBlockExecutor<'a> {
     /// one by one with [`BlockExecutor::execute_transaction`], in parallel when
     /// [`Self::set_parallel_execution`] turned it on.
     ///
-    /// Parallel execution runs evm2's optimistic executor and checks block sections and lane
-    /// budgets as each transaction commits. With [`ParallelCommit::Batched`] and no block access
-    /// list builder, a block that fails to execute in parallel, such as one whose expiring-nonce ring is full, executes again one
-    /// transaction at a time, which reports the exact error sequential execution does.
-    ///
-    /// - `base` is the state the executor's EVM reads beneath its overlay, shared with the workers.
-    /// - `make_evm` builds a worker EVM over the database it is given, with the executor's spec,
-    ///   configuration and block environment.
-    /// - `on_speculative` sees each speculative execution's changes, by transaction index, on a
-    ///   worker thread before they are validated: hints for prefetching, not committed state.
-    ///
-    /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
-    /// the block.
-    pub fn execute_block_transactions<R, B, F, H>(
+    /// See [`Self::execute_transaction_stream`].
+    pub fn execute_block_transactions<T, B, F, H>(
         &mut self,
-        transactions: impl IntoIterator<Item = (Recovered<TempoTxEnv>, R)>,
+        transactions: impl IntoIterator<Item = T, IntoIter: Send>,
         base: &B,
         make_evm: F,
         on_speculative: H,
     ) -> Result<ParallelExecutionStats, BlockExecutionError>
     where
-        R: RecoveredTx<TempoTxEnvelope>,
+        T: SendExecutorTx<Self>,
         B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
     {
-        let transactions = transactions.into_iter().collect::<Vec<_>>();
+        self.execute_transaction_stream(
+            transactions.into_iter().map(Ok::<_, Infallible>),
+            base,
+            make_evm,
+            on_speculative,
+            |_, _| {},
+        )
+    }
+
+    /// Executes and commits the block's `transactions` as they arrive, with exactly the result of
+    /// executing them one by one with [`BlockExecutor::execute_transaction`], in parallel when
+    /// [`Self::set_parallel_execution`] turned it on.
+    ///
+    /// Parallel execution runs evm2's optimistic executor, which iterates `transactions` on its
+    /// own thread and starts each transaction as soon as it arrives. Pre-execution checks run as
+    /// each transaction arrives, and block section and lane budget checks as each commits. With
+    /// [`ParallelCommit::Batched`] and no block access list builder, a block that fails to execute
+    /// in parallel, such as one whose expiring-nonce ring is full, executes again one transaction
+    /// at a time, which reports the exact error sequential execution does.
+    ///
+    /// - An error from `transactions` ends the block as it would executing it one transaction at
+    ///   a time: the transactions before it commit and it is returned.
+    /// - `base` is the state the executor's EVM reads beneath its overlay, shared with the workers.
+    /// - `make_evm` builds a worker EVM over the database it is given, with the executor's spec,
+    ///   configuration and block environment.
+    /// - `on_speculative` sees each speculative execution's changes, by transaction index, on a
+    ///   worker thread before they are validated: hints for prefetching, not committed state.
+    /// - `on_receipt` sees each transaction's receipt, by index and in block order, as soon as it
+    ///   is recorded. When a failed batched commit executes the block again, it sees the receipts
+    ///   of the transactions before the failure again, unchanged.
+    ///
+    /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
+    /// the block.
+    pub fn execute_transaction_stream<T, E, B, F, H, P>(
+        &mut self,
+        transactions: impl Iterator<Item = Result<T, E>> + Send,
+        base: &B,
+        make_evm: F,
+        on_speculative: H,
+        mut on_receipt: P,
+    ) -> Result<ParallelExecutionStats, BlockExecutionError>
+    where
+        T: SendExecutorTx<Self>,
+        E: core::error::Error + Send + Sync + 'static,
+        B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
+        F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
+        H: Fn(usize, TxStateChanges<'_>) + Sync,
+        P: FnMut(usize, &TempoReceipt),
+    {
+        let mut transactions = transactions;
         let Some(parallel) = self.parallel else {
-            return self.execute_sequentially(transactions);
+            return self.execute_sequentially(
+                transactions.map(|tx| tx.map(T::into_send_parts).map_err(stream_error)),
+                &mut on_receipt,
+            );
         };
 
-        // Pre-execution checks and lane classification do not depend on execution.
-        let mut txs = Vec::with_capacity(transactions.len());
-        let mut lanes = Vec::with_capacity(transactions.len());
-        for (tx_env, tx) in &transactions {
-            let mut tx_env = tx_env.clone();
-            // Remove any prewarming-specific context that was added to the tx env.
-            tx_env.inner_mut().set_expiring_nonce_idx(None);
-            let tx = tx.tx();
-            lanes.push(TxLane {
-                tx_hash: *tx.tx_hash(),
-                is_system_tx: self.validate_tx_pre_execution(tx)?,
-                is_payment: self.is_payment(tx),
-                execution_context: tx_env.inner().execution_context(),
-            });
-            txs.push((tx_env, tx));
-        }
-
-        // Check each transaction's section as it commits, over a copy of the section state.
+        let spec = self.evm().config_spec_id();
+        let number = self.evm().block().number;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let mut budgets = self.budgets();
-        let mut committed = Vec::with_capacity(lanes.len());
         self.inner.inner.set_parallel_commit(parallel.commit);
         let restores = self.inner.inner.commits_batched();
-        let result = self.inner.inner.execute_transactions_parallel(
-            txs,
+        // Filled on the thread that iterates `transactions`, as they arrive.
+        let lanes = Mutex::new(Vec::new());
+        // Every transaction taken from `transactions`, to execute again if a batched commit fails.
+        let taken = Mutex::new(Vec::new());
+        // The error that ended `transactions` early, if any.
+        let failure = Mutex::new(None);
+        let stream = transactions.by_ref().map_while(|tx| {
+            let tx = match tx {
+                Ok(tx) => tx,
+                Err(error) => {
+                    *failure.lock().unwrap() = Some(stream_error(error));
+                    return None;
+                }
+            };
+            if restores {
+                taken.lock().unwrap().push(tx.clone());
+            }
+            let (mut tx_env, recovered) = tx.into_send_parts();
+            // Remove any prewarming-specific context that was added to the tx env.
+            tx_env.inner_mut().set_expiring_nonce_idx(None);
+            let tx = recovered.tx();
+            let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
+                Ok(is_system_tx) => is_system_tx,
+                Err(error) => {
+                    *failure.lock().unwrap() = Some(error.into());
+                    return None;
+                }
+            };
+            lanes.lock().unwrap().push(TxLane {
+                tx_hash: *tx.tx_hash(),
+                is_system_tx,
+                is_payment: Self::is_payment_at(spec, tx),
+                execution_context: tx_env.inner().execution_context(),
+            });
+            Some(StreamedTx::new((tx_env, ConsensusTx(recovered))))
+        });
+
+        // Check each transaction's section as it commits, over a copy of the section state.
+        let mut committed = Vec::new();
+        let result = self.inner.inner.execute_transaction_stream(
+            stream,
             base,
             make_evm,
             parallel.threads,
-            None,
             on_speculative,
             |index, result| {
+                let lanes = lanes.lock().unwrap();
                 let lane = &lanes[index];
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
@@ -861,15 +954,31 @@ impl<'a> TempoBlockExecutor<'a> {
                 committed.push((next_section, block_gas_used));
                 Ok(())
             },
+            &mut on_receipt,
         );
+        let failure = failure.into_inner().unwrap();
         if let Err(error) = &result
             && restores
         {
-            // A failed batched commit committed nothing.
+            // A failed batched commit committed nothing: execute the transactions it took again,
+            // then the rest, unless an error ended them.
             debug!(target: "tempo::block", %error, "Parallel execution failed, executing sequentially");
-            return self.execute_sequentially(transactions);
+            let rest = failure
+                .is_none()
+                .then_some(transactions)
+                .into_iter()
+                .flatten();
+            let taken = taken.into_inner().unwrap().into_iter().map(Ok);
+            return self.execute_sequentially(
+                taken
+                    .chain(failure.map(Err))
+                    .chain(rest.map(|tx| tx.map_err(stream_error)))
+                    .map(|tx| tx.map(T::into_send_parts)),
+                &mut on_receipt,
+            );
         }
         // Otherwise the transactions before a failure stay committed: account for them too.
+        let lanes = lanes.into_inner().unwrap();
         for ((next_section, block_gas_used), lane) in committed.into_iter().zip(&lanes) {
             self.record_committed_tx(
                 next_section,
@@ -880,23 +989,29 @@ impl<'a> TempoBlockExecutor<'a> {
         }
         // The expiring-nonce ring pointer moved outside action replay.
         self.invalidate_expiring_nonce_cache();
-        result.map(|output| output.stats)
+        let output = result?;
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(output.stats),
+        }
     }
 
-    /// Executes and commits `transactions` one by one.
-    fn execute_sequentially<R: RecoveredTx<TempoTxEnvelope>>(
+    /// Executes and commits `transactions` one by one, handing each receipt to `on_receipt`.
+    fn execute_sequentially<T: ExecutorTx<Self>>(
         &mut self,
-        transactions: Vec<(Recovered<TempoTxEnv>, R)>,
+        transactions: impl IntoIterator<Item = Result<T, BlockExecutionError>>,
+        on_receipt: &mut (impl FnMut(usize, &TempoReceipt) + ?Sized),
     ) -> Result<ParallelExecutionStats, BlockExecutionError> {
-        let count = transactions.len();
+        let mut stats = ParallelExecutionStats::default();
         for tx in transactions {
-            self.execute_transaction(tx)?;
+            self.execute_transaction(tx?)?;
+            if let Some(receipt) = self.receipts().last() {
+                on_receipt(self.receipts().len() - 1, receipt);
+            }
+            stats.transactions += 1;
+            stats.reexecuted += 1;
         }
-        Ok(ParallelExecutionStats {
-            transactions: count,
-            reexecuted: count,
-            ..Default::default()
-        })
+        Ok(stats)
     }
 
     /// Returns the section and lane budgets [`Self::next_section`] checks against.
@@ -938,6 +1053,20 @@ where
     F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
 {
     f
+}
+
+/// Converts an error `transactions` yielded into the error that ends the block.
+fn stream_error(error: impl core::error::Error + Send + Sync + 'static) -> BlockExecutionError {
+    BlockValidationError::other(error).into()
+}
+
+/// A transaction's recovered accessor as the consensus transaction evm2's executor borrows.
+struct ConsensusTx<R>(R);
+
+impl<R: RecoveredTx<TempoTxEnvelope>> Borrow<TempoTxEnvelope> for ConsensusTx<R> {
+    fn borrow(&self) -> &TempoTxEnvelope {
+        self.0.tx()
+    }
 }
 
 /// What a transaction's section and lane checks need, known before it executes.
@@ -1079,19 +1208,25 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         Ok(())
     }
 
-    fn execute_transactions_parallel<T: ExecutorTx<Self>>(
+    fn execute_transactions_parallel<T, E>(
         &mut self,
-        transactions: Vec<T>,
+        transactions: impl Iterator<Item = Result<T, E>> + Send,
         base: &(dyn evm2::evm::DynDatabaseRef + Sync),
         on_speculative: &(dyn Fn(usize, TxStateChanges<'_>) + Sync),
-    ) -> Result<(), BlockExecutionError> {
-        let len = transactions.len();
-        let transactions = transactions.into_iter().map(|tx| tx.into_parts());
-        let Some(config) = self
-            .worker_config
-            .filter(|config| config.executes_transactions_in_parallel(len))
-        else {
-            return self.execute_sequentially(transactions.collect()).map(drop);
+        on_receipt: &mut dyn FnMut(usize, &Self::Receipt),
+    ) -> Result<(), BlockExecutionError>
+    where
+        T: SendExecutorTx<Self>,
+        E: core::error::Error + Send + Sync + 'static,
+    {
+        // The engine calls this only for blocks the configuration executes in parallel.
+        let Some(config) = self.worker_config else {
+            return self
+                .execute_sequentially(
+                    transactions.map(|tx| tx.map(T::into_send_parts).map_err(stream_error)),
+                    on_receipt,
+                )
+                .map(drop);
         };
         let env = TempoEvmEnv {
             spec: self.evm().config_spec_id(),
@@ -1101,7 +1236,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let make_evm = worker_evm_factory(move |db| {
             reth_evm::BlockExecutorFactory::evm_with_env(config, db, env.clone())
         });
-        self.execute_block_transactions(transactions, base, make_evm, on_speculative)
+        self.execute_transaction_stream(transactions, base, make_evm, on_speculative, on_receipt)
             .map(drop)
     }
 
