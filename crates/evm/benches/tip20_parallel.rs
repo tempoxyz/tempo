@@ -220,7 +220,12 @@ fn with_hot_txs(mut workload: tip20::Workload, every: usize) -> tip20::Workload 
         if idx % every != every - 1 {
             continue;
         }
-        let signer = &signers[idx % signers.len()];
+        // The sponsor cannot pay for its own transactions.
+        let signer = &signers[if idx % signers.len() == 1 {
+            3
+        } else {
+            idx % signers.len()
+        }];
         let mut aa = TempoTransaction {
             chain_id: CHAIN_ID,
             fee_token: Some(PATH_USD_ADDRESS),
