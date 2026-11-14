@@ -27,6 +27,10 @@ pub enum TempoConsensusError {
     /// End-of-block system transactions are in the wrong order.
     #[error("invalid end-of-block system tx order: expected {expected}, got {actual}")]
     InvalidEndOfBlockSystemTxOrder { expected: Address, actual: Address },
+
+    /// Block carries more transactions than [`MAX_BLOCK_TRANSACTIONS`](super::MAX_BLOCK_TRANSACTIONS).
+    #[error("block has {count} transactions, more than the maximum {max}")]
+    TooManyTransactions { count: usize, max: usize },
 }
 
 impl From<TempoConsensusError> for ConsensusError {
