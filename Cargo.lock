@@ -14989,7 +14989,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-vsock-proxy"
-version = "0.5.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "libc",
@@ -15082,7 +15082,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-enclave"
-version = "0.5.0"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-genesis",
@@ -15107,7 +15107,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zone-prover-utils"
-version = "0.5.0"
+version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
