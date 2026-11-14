@@ -27,8 +27,7 @@ pub(crate) struct Network {
 }
 
 impl Network {
-    /// Adds a zone. A closed zone also admits the network's accounts. Without any, the network
-    /// has one closed zone.
+    /// Adds a zone (one closed zone by default). Closed zones admit the network's accounts.
     pub fn zone(mut self, config: ZoneCreationConfig) -> Self {
         self.zones.push(config);
         self
@@ -40,10 +39,7 @@ impl Network {
         self
     }
 
-    /// Starts the L1, funds every key and launches each zone on its own sequencer key.
-    ///
-    /// Returns the L1, the `Z` zones in the order they were added and `A` fresh accounts. Fails
-    /// unless `Z` matches the zones added.
+    /// Starts the L1, `Z` zones and `A` funded accounts. Fails unless `Z` zones were added.
     pub async fn start<const Z: usize, const A: usize>(
         self,
     ) -> eyre::Result<(Rc<L1TestNode>, [Zone; Z], [PrivateKeySigner; A])> {

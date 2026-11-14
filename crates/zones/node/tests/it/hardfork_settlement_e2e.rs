@@ -360,8 +360,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Enables `token` on the portal without waiting for the zone: this L1 mines only on demand, and
-/// the zone is cut off from it for part of the test.
+/// Enables `token` on the portal without waiting for the zone, since this L1 mines on demand.
 async fn enable_token(l1: &L1TestNode, portal: Address, token: Address) -> eyre::Result<()> {
     let receipt = ZonePortal::new(portal, l1.admin_provider())
         .enableToken(token)

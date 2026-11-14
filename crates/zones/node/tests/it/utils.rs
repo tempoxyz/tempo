@@ -829,8 +829,7 @@ impl ZoneTestNode {
         Ok(())
     }
 
-    /// Enables `token` on the zone's portal. The portal has no way to disable a token again; see
-    /// [`Self::pause_deposits`].
+    /// Enables `token` on the zone's portal, permanently; see [`Self::pause_deposits`].
     pub async fn enable_token(&self, token: Address) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::enableTokenCall { token })
             .await
@@ -880,8 +879,7 @@ impl ZoneTestNode {
         }
     }
 
-    /// Sends `call` to the zone's portal as the portal admin and waits until the zone imported
-    /// the L1 block that includes it. Returns that block.
+    /// Sends `call` to the portal as its admin and returns the L1 block once the zone imports it.
     async fn portal_admin_call<C: SolCall + Send + Sync>(&self, call: C) -> eyre::Result<u64> {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .wallet(portal_admin_signer())
@@ -1111,9 +1109,7 @@ impl ZoneTestNode {
         .await
     }
 
-    /// Start a zone node connected to a real L1, with genesis anchored to the L1's latest block.
-    ///
-    /// See [`build_l1_anchored_genesis`] for details on how the genesis is patched.
+    /// Starts a zone following `portal_address` on `l1`, with genesis anchored to the L1 tip.
     pub(crate) async fn start_from_l1(
         l1: &L1TestNode,
         portal_address: Address,
@@ -1121,9 +1117,7 @@ impl ZoneTestNode {
         Self::launch(ZoneLaunch::from_l1(l1, portal_address)).await
     }
 
-    /// Start a self-contained zone node with no real L1 connection.
-    ///
-    /// See [`ZoneL1::Stub`].
+    /// Starts a standalone zone on a [`ZoneL1::Stub`].
     pub(crate) async fn start_local() -> eyre::Result<Self> {
         Self::launch(ZoneLaunch::default()).await
     }
@@ -1455,8 +1449,7 @@ impl Default for ZoneLaunch {
 
 /// The L1 a [`ZoneTestNode`] follows.
 pub(crate) enum ZoneL1 {
-    /// A local RPC stub with this chain ID. The test injects L1 blocks and seeds the L1 state
-    /// cache itself.
+    /// A local RPC stub; the test injects L1 blocks and seeds the L1 state cache itself.
     Stub(u64),
     /// A zone without a portal whose L1 subscriber connects to `url`.
     Rpc { url: String, chain_id: u64 },
