@@ -97,6 +97,14 @@ where
         mut aa_2d_pool: AA2dPool,
     ) -> Self {
         aa_2d_pool.set_base_fee(reth_pool.inner().block_info().pending_basefee);
+        aa_2d_pool.set_tip_timestamp(
+            reth_pool
+                .validator()
+                .validator()
+                .inner
+                .fork_tracker()
+                .tip_timestamp(),
+        );
         Self {
             reth_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
@@ -153,14 +161,23 @@ where
         self.reth_pool.validator().validator().client()
     }
 
-    /// Updates the 2d nonce pool with the given state changes.
+    /// Updates the 2d nonce pool with the given state changes and the new tip's timestamp.
+    ///
+    /// Pool maintenance calls this for every committed chain, including commits too deep for
+    /// [`TransactionPoolExt::on_canonical_state_change`], so the time-locked eviction order never
+    /// runs on a stale tip timestamp.
     ///
     /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
+        tip_timestamp: u64,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined, discarded) = {
+            let mut aa_2d_pool = self.aa_2d_pool.write();
+            aa_2d_pool.set_tip_timestamp(tip_timestamp);
+            aa_2d_pool.on_state_updates(state)
+        };
         // Note: mined transactions are notified via the Reth pool's canonical state updates
         self.reth_pool
             .inner()
@@ -2111,7 +2128,7 @@ mod tests {
         };
         let account =
             BundleAccount::new(None, Some(info), Default::default(), AccountStatus::Changed);
-        pool.notify_aa_pool_on_state_updates(&AddressMap::from_iter([(sender, account)]));
+        pool.notify_aa_pool_on_state_updates(&AddressMap::from_iter([(sender, account)]), 0);
         assert_eq!(
             pool.get_highest_consecutive_transaction_by_sender(sender, 1)
                 .map(|tx| tx.nonce()),
@@ -2188,7 +2205,7 @@ mod tests {
         let account =
             BundleAccount::new(None, Some(info), Default::default(), AccountStatus::Changed);
         let removed =
-            pool.notify_aa_pool_on_state_updates(&AddressMap::from_iter([(sender, account)]));
+            pool.notify_aa_pool_on_state_updates(&AddressMap::from_iter([(sender, account)]), 0);
 
         assert_eq!(tx_hashes(&removed), [below0, below1]);
         assert_eq!(tx_hashes(&pool.pending_transactions()), [promoted]);
@@ -2241,6 +2258,13 @@ mod tests {
             pool.reth_pool.block_info().pending_basefee,
             pending_block_base_fee
         );
+    }
+
+    #[test]
+    fn aa_pool_state_updates_refresh_tip_timestamp() {
+        let pool = create_test_pool(create_provider_with_tip());
+        pool.notify_aa_pool_on_state_updates(&AddressMap::default(), 1_234);
+        assert_eq!(pool.aa_2d_pool.read().tip_timestamp(), 1_234);
     }
 
     #[test]
