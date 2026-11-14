@@ -1,0 +1,241 @@
+#![allow(unused)]
+//! Pure TIP20 execution benchmark.
+//!
+//! By default this generates txgen-style AA TIP20 transfers from the benchmark mnemonic. Set
+//! `TEMPO_TIP20_EXEC_TXS` to a newline-delimited raw 2718 txgen output file to replay exact
+//! txgen transactions against the in-memory fixed-cache execution path.
+
+#[allow(unused)]
+pub(crate)
+mod common;
+
+use alloy_consensus::transaction::{Recovered, SignerRecoverable};
+use alloy_eips::Decodable2718;
+use alloy_primitives::{Address, Bytes, U256};
+use alloy_signer_local::PrivateKeySigner;
+use alloy_sol_types::SolCall;
+use common::{
+    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
+    hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
+};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use evm2::evm::InMemoryDB;
+use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_contracts::precompiles::ITIP20;
+use tempo_evm::TempoEvmConfig;
+use tempo_precompiles::{
+    PATH_USD_ADDRESS,
+    error::TempoPrecompileError,
+    nonce::NonceManager,
+    storage::StorageCtx,
+    test_util::{set_empty_compound_transfer_policy, set_empty_receive_policies},
+    tip_fee_manager::TipFeeManager,
+    tip20::{ISSUER_ROLE, TIP20Token},
+    tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
+};
+use tempo_primitives::TempoTxEnvelope;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+const DEFAULT_TX_COUNT: usize = 4_096;
+const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
+
+#[derive(Clone)]
+pub(crate) struct Workload {
+    pub(crate) transactions: Vec<Recovered<TempoTxEnvelope>>,
+    pub(crate) participants: Vec<Address>,
+    pub(crate) block_timestamp: u64,
+}
+
+pub(crate) fn seed_in_memory_cache_db(
+    participants: &[Address],
+    block_timestamp: u64,
+    with_policies: bool,
+    hardfork: TempoHardfork,
+) -> InMemoryDB {
+    let mut evm = bench_evm(InMemoryDB::default(), hardfork, block_timestamp);
+    let admin = participants
+        .first()
+        .copied()
+        .unwrap_or_else(|| Address::repeat_byte(0x01));
+
+    StorageCtx::enter_evm(&mut evm, || {
+        TIP403Registry::new().initialize()?;
+        TIP20Factory::new().initialize()?;
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "pathUSD",
+            "pathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
+
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+        token.grant_role_internal(admin, ISSUER_ROLE)?;
+        for participant in participants {
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: *participant,
+                    amount: U256::from(PARTICIPANT_MINT_AMOUNT),
+                },
+            )?;
+        }
+
+        if with_policies {
+            set_empty_compound_transfer_policy(admin, PATH_USD_ADDRESS)?;
+            set_empty_receive_policies(admin, participants)?;
+        }
+
+        TipFeeManager::new().initialize()?;
+        NonceManager::new().initialize()?;
+        Ok::<(), TempoPrecompileError>(())
+    })
+    .expect("failed to seed TIP20 benchmark state");
+    evm.state_mut().commit_transaction();
+    evm.state_mut().clear_transaction_state();
+
+    seeded_db(&evm)
+}
+
+fn sign_tip20_transfer(
+    signer: &PrivateKeySigner,
+    recipient: Address,
+    amount: U256,
+) -> Recovered<TempoTxEnvelope> {
+    sign_precompile_call(
+        signer,
+        PATH_USD_ADDRESS,
+        Bytes::from(
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode(),
+        ),
+    )
+}
+
+fn generated_workload() -> Workload {
+    let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
+    let mut participants = Vec::with_capacity(signers.len());
+    participants.extend(signers.iter().map(|signer| signer.address()));
+
+    let transactions = (0..DEFAULT_TX_COUNT)
+        .map(|idx| {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            sign_tip20_transfer(signer, recipient, U256::from(idx as u64 + 1))
+        })
+        .collect();
+
+    Workload {
+        transactions,
+        participants,
+        block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
+    }
+}
+
+fn decode_raw_tx_line(line: &str) -> Recovered<TempoTxEnvelope> {
+    let raw = line
+        .trim()
+        .trim_matches('"')
+        .strip_prefix("0x")
+        .unwrap_or(line.trim());
+    let bytes = alloy_primitives::hex::decode(raw).expect("invalid raw transaction hex");
+    TempoTxEnvelope::decode_2718_exact(bytes.as_slice())
+        .expect("invalid 2718 transaction")
+        .try_into_recovered()
+        .expect("raw transaction should recover signer")
+}
+
+fn load_txgen_workload(path: &Path) -> Workload {
+    let raw = fs::read_to_string(path).expect("failed to read txgen transaction stream");
+    let transactions: Vec<_> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(decode_raw_tx_line)
+        .collect();
+    assert!(
+        !transactions.is_empty(),
+        "txgen transaction stream was empty"
+    );
+
+    let mut participants = BTreeSet::new();
+    let mut min_valid_before = None;
+    let mut max_valid_after = None;
+    for tx in &transactions {
+        participants.insert(tx.signer());
+        if let Some(aa) = tx.inner().as_aa() {
+            let aa_tx = aa.tx();
+            min_valid_before = aa_tx
+                .valid_before
+                .map(NonZeroU64::get)
+                .into_iter()
+                .chain(min_valid_before)
+                .min();
+            max_valid_after = aa_tx
+                .valid_after
+                .map(NonZeroU64::get)
+                .into_iter()
+                .chain(max_valid_after)
+                .max();
+
+            for call in &aa_tx.calls {
+                if call.to.to() == Some(&PATH_USD_ADDRESS)
+                    && let Ok(transfer) = ITIP20::transferCall::abi_decode(&call.input)
+                {
+                    participants.insert(transfer.to);
+                }
+            }
+        }
+    }
+
+    let block_timestamp = min_valid_before
+        .map(|ts| ts.saturating_sub(1))
+        .unwrap_or(DEFAULT_BLOCK_TIMESTAMP)
+        .max(max_valid_after.unwrap_or(0));
+
+    Workload {
+        transactions,
+        participants: participants.into_iter().collect(),
+        block_timestamp,
+    }
+}
+
+pub(crate) fn workload() -> Workload {
+    if let Ok(path) = std::env::var("TEMPO_TIP20_EXEC_TXS") {
+        load_txgen_workload(Path::new(&path))
+    } else {
+        generated_workload()
+    }
+}
+
+
+#[inline(never)]
+fn seqcount_measured(config: &TempoEvmConfig, db: common::FixedCacheDb, workload: &Workload, hardfork: tempo_chainspec::hardfork::TempoHardfork) -> u64 {
+    execute_txs(config, db, &workload.transactions, workload.block_timestamp, hardfork).gas_used
+}
+
+fn main() {
+    let iters: usize = std::env::var("SEQ_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let with_policies = std::env::var("SEQ_POLICY").is_ok();
+    let workload = workload();
+    let (_, hardfork) = hardfork_bench_cases()[0];
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(&workload.participants, workload.block_timestamp, with_policies, hardfork)).with_transactions(&workload.transactions);
+    execute_txs(&config, fixture.prewarm_state_db(), &workload.transactions, workload.block_timestamp, hardfork);
+    let start = std::time::Instant::now();
+    let mut gas = 0;
+    for _ in 0..iters {
+        let db = fixture.state_db();
+        gas += black_box(seqcount_measured(&config, db, &workload, hardfork));
+    }
+    println!("iters={iters} gas={gas} elapsed_per_iter={:?}", start.elapsed() / iters as u32);
+}

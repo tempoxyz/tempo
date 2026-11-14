@@ -113,3 +113,7 @@ harness = false
 [[bench]]
 name = "dex_execution"
 harness = false
+
+[[bench]]
+name = "seqcount"
+harness = false
