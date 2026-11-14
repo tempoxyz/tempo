@@ -7,6 +7,7 @@ use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
 use eyre::OptionExt as _;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
@@ -39,6 +40,15 @@ const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
 const L1_OFFLINE: &str = "l1.offline";
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
+
+/// Prefix of the stage-latency histograms (after Reth's `reth_` metric prefix) exported with
+/// [`LATENCY_BUCKETS_SECS`] buckets instead of the recorder's default summaries.
+const LATENCY_HISTOGRAM_PREFIX: &str = "reth_tempo_zone_latency_";
+/// Bucket bounds, in seconds, for the stage-latency histograms. Each stage spans at least one
+/// ~0.5s Tempo block, and retries push the tail into tens of seconds.
+const LATENCY_BUCKETS_SECS: [f64; 13] = [
+    0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 30.0, 60.0,
+];
 
 const ZONE_LOG_FILTER_DIRECTIVES: &str = concat!(
     "tungstenite=warn,",
@@ -182,6 +192,11 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
     };
     validate_l1_access(l1_access, l1_rpc_url.is_some())?;
 
+    // Installed before Reth's default recorder so the stage-latency histograms keep buckets.
+    reth_node_metrics::recorder::try_install_prometheus_recorder_with_builder(
+        latency_prometheus_builder(),
+    )?;
+
     let components = move |spec: Arc<ZoneChainSpec>| {
         let evm_config = cli_evm_config(spec.clone(), l1_rpc_url.clone());
         (evm_config, ZoneConsensus::new(spec))
@@ -189,6 +204,10 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
 
     cli.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
         info!(target: "reth::cli", "Launching Tempo Zone node");
+
+        // Held for the whole closure so every exit path, including startup errors, stops the agent.
+        #[cfg(feature = "pyroscope")]
+        let _pyroscope = PyroscopeGuard(args.pyroscope.start()?);
 
         if args.block_interval_ms.is_some() {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
@@ -269,6 +288,49 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             }
         }
     })
+}
+
+/// Longest node exit waits for the Pyroscope agent to flush and stop.
+#[cfg(feature = "pyroscope")]
+const PYROSCOPE_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Stops a running Pyroscope agent when dropped, waiting at most [`PYROSCOPE_STOP_TIMEOUT`].
+///
+/// Dropping a running agent without `stop()` joins a worker that only exits on the stop signal,
+/// and `stop()` itself can block forever if the final snapshot fails, so the stop runs on its own
+/// thread.
+#[cfg(feature = "pyroscope")]
+struct PyroscopeGuard(
+    Option<pyroscope::PyroscopeAgent<pyroscope::pyroscope::PyroscopeAgentRunning>>,
+);
+
+#[cfg(feature = "pyroscope")]
+impl Drop for PyroscopeGuard {
+    fn drop(&mut self) {
+        let Some(agent) = self.0.take() else { return };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            match agent.stop() {
+                Ok(agent) => agent.shutdown(),
+                Err(error) => warn!(target: "reth::cli", %error, "Failed to stop Pyroscope agent"),
+            }
+            let _ = done_tx.send(());
+        });
+        if done_rx.recv_timeout(PYROSCOPE_STOP_TIMEOUT).is_err() {
+            warn!(target: "reth::cli", "Pyroscope agent did not stop in time; exiting without it");
+        }
+    }
+}
+
+/// Prometheus builder that exports the `tempo_zone_latency_*` histograms with buckets, so
+/// long-window percentiles can be computed from `_bucket` series.
+fn latency_prometheus_builder() -> PrometheusBuilder {
+    PrometheusBuilder::new()
+        .set_buckets_for_metric(
+            Matcher::Prefix(LATENCY_HISTOGRAM_PREFIX.to_owned()),
+            &LATENCY_BUCKETS_SECS,
+        )
+        .expect("latency buckets are non-empty")
 }
 
 /// Rejects block-executing subcommands that would otherwise run without L1 access implicitly.
@@ -732,6 +794,62 @@ pub struct ZoneArgs {
         value_name = "ADDRESS"
     )]
     pub deposit_allowlist_admin: Option<Address>,
+
+    #[command(flatten)]
+    #[cfg(feature = "pyroscope")]
+    pub pyroscope: PyroscopeArgs,
+}
+
+/// Command line arguments for Pyroscope continuous profiling, matching the Tempo node's flags.
+#[cfg(feature = "pyroscope")]
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct PyroscopeArgs {
+    /// Enable Pyroscope continuous profiling
+    #[arg(long = "pyroscope.enabled", default_value_t = false)]
+    pub pyroscope_enabled: bool,
+
+    /// Pyroscope server URL
+    #[arg(long = "pyroscope.server-url", default_value = "http://localhost:4040")]
+    pub server_url: String,
+
+    /// Application name for Pyroscope
+    #[arg(long = "pyroscope.application-name", default_value = "tempo-zone")]
+    pub application_name: String,
+
+    /// Sample rate for profiling (default: 100 Hz)
+    #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
+    pub sample_rate: u32,
+}
+
+#[cfg(feature = "pyroscope")]
+impl PyroscopeArgs {
+    /// Starts the profiling agent when `--pyroscope.enabled` is set. Returns `None` when
+    /// profiling is disabled. The caller shuts the agent down when the node exits.
+    fn start(
+        &self,
+    ) -> eyre::Result<Option<pyroscope::PyroscopeAgent<pyroscope::pyroscope::PyroscopeAgentRunning>>>
+    {
+        if !self.pyroscope_enabled {
+            return Ok(None);
+        }
+        let agent = pyroscope::PyroscopeAgent::builder(&self.server_url, &self.application_name)
+            .backend(pyroscope_pprofrs::pprof_backend(
+                pyroscope_pprofrs::PprofConfig::new()
+                    .sample_rate(self.sample_rate)
+                    .report_thread_id()
+                    .report_thread_name(),
+            ))
+            .build();
+        let agent = eyre::WrapErr::wrap_err(agent, "failed to build Pyroscope agent")?;
+        let agent = eyre::WrapErr::wrap_err(agent.start(), "failed to start Pyroscope agent")?;
+        info!(
+            target: "reth::cli",
+            server_url = %self.server_url,
+            application_name = %self.application_name,
+            "Pyroscope profiling enabled"
+        );
+        Ok(Some(agent))
+    }
 }
 
 fn prepend_log_filter(filter: &mut String, directives: &str) {
@@ -794,6 +912,26 @@ mod tests {
     struct ZoneArgsParser {
         #[command(flatten)]
         zone: ZoneArgs,
+    }
+
+    #[test]
+    fn only_latency_histograms_render_buckets() {
+        let recorder = latency_prometheus_builder().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            metrics::histogram!("reth_tempo_zone_latency_example_seconds").record(0.6);
+            metrics::histogram!("reth_tempo_zone_other_seconds").record(0.6);
+        });
+
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(r#"reth_tempo_zone_latency_example_seconds_bucket{le="0.75"} 1"#),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("reth_tempo_zone_other_seconds_bucket"),
+            "{rendered}"
+        );
     }
 
     #[test]

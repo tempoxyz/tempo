@@ -37,7 +37,7 @@ name = "tempo-zone"
 path = "src/main.rs"
 
 [features]
-default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
+default = ["asm-keccak", "jemalloc", "keccak-cache-global", "otlp"]
 
 # Report Antithesis SDK assertions. Without it the assertions and their details are compiled out.
 fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "zone-node/fuzz"]
@@ -56,3 +56,7 @@ keccak-cache-global = [
 	"reth-node-core/keccak-cache-global",
 	"zone-node/keccak-cache-global",
 ]
+# Export spans to the collector named by --tracing-otlp.
+otlp = ["reth-node-core/otlp", "zone-node/otlp"]
+# Continuous profiling, enabled at runtime with --pyroscope.enabled.
+pyroscope = ["zone-node/pyroscope"]

@@ -194,8 +194,8 @@ fn prepare_deposit(
         debug!(
             target: "zone::engine",
             l1_block = l1_block_number,
+            // The decrypted recipient stays out of logs: debug events also reach exported spans.
             sender = %d.sender,
-            recipient = %dec.to,
             token = %d.token,
             amount = %d.amount,
             "Decrypted deposit"

@@ -1,5 +1,8 @@
 use super::*;
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Instant,
+};
 
 /// Bounded portal work crossed by canonical checkpoint-only Zone blocks.
 ///
@@ -69,6 +72,9 @@ pub(crate) struct PendingDeposits {
     /// `drain` so that reconnecting subscribers know where the queue left off,
     /// even if the engine has already consumed the blocks.
     last_enqueued: Option<NumHash>,
+    /// When each queued L1 block carrying user deposits was enqueued, keyed by block number.
+    /// Entries leave with their block, so the map is bounded by the queue itself.
+    deposits_observed_at: BTreeMap<u64, Instant>,
 }
 
 impl PendingDeposits {
@@ -120,6 +126,14 @@ impl PendingDeposits {
         }
 
         self.last_enqueued = Some(header.num_hash());
+        if events
+            .deposits
+            .iter()
+            .any(|deposit| matches!(deposit, L1Deposit::Deposit(_)))
+        {
+            self.deposits_observed_at
+                .insert(block_number, Instant::now());
+        }
         self.pending.push_back(L1BlockDeposits { header, events });
         Ok(true)
     }
@@ -158,6 +172,14 @@ impl PendingDeposits {
     /// mismatch is an internal consumer-ordering error and leaves the queue
     /// unchanged.
     pub(crate) fn confirm(&mut self, expected: NumHash) -> eyre::Result<L1BlockDeposits> {
+        let block = self.pop_confirmed(expected)?;
+        self.deposits_observed_at.remove(&expected.number);
+        Ok(block)
+    }
+
+    /// Pop the queue front after checking it matches `expected`, keeping its enqueue time for
+    /// the operational confirmations that report it.
+    fn pop_confirmed(&mut self, expected: NumHash) -> eyre::Result<L1BlockDeposits> {
         let front = self
             .pending
             .front()
@@ -234,10 +256,12 @@ impl PendingDeposits {
     }
 
     /// Confirm a full operational import and release all deferred work it consumed.
-    pub(crate) fn confirm_operational(&mut self, expected: NumHash) -> eyre::Result<()> {
-        self.confirm(expected)?;
+    ///
+    /// Returns when each consumed L1 block carrying user deposits was enqueued, oldest first.
+    pub(crate) fn confirm_operational(&mut self, expected: NumHash) -> eyre::Result<Vec<Instant>> {
+        self.pop_confirmed(expected)?;
         self.deferred = None;
-        Ok(())
+        Ok(self.take_deposits_observed_through(expected.number))
     }
 
     /// Confirm every pending L1 block up to and including `expected`.
@@ -257,7 +281,7 @@ impl PendingDeposits {
                 front.hash,
                 expected.hash,
             );
-            self.confirm(front)
+            self.pop_confirmed(front)
                 .expect("front was just read and matches by construction");
         }
 
@@ -268,7 +292,20 @@ impl PendingDeposits {
                 self.deferred = None;
             }
         }
+        self.take_deposits_observed_through(expected.number);
         Ok(())
+    }
+
+    /// Remove and return the enqueue times of deposit-carrying blocks up to and including
+    /// `number`, oldest first.
+    fn take_deposits_observed_through(&mut self, number: u64) -> Vec<Instant> {
+        let later = number
+            .checked_add(1)
+            .map(|next| self.deposits_observed_at.split_off(&next))
+            .unwrap_or_default();
+        std::mem::replace(&mut self.deposits_observed_at, later)
+            .into_values()
+            .collect()
     }
 
     /// Returns the most recently enqueued L1 block (number + hash), if any.
@@ -416,7 +453,9 @@ impl DepositQueue {
     }
 
     /// Confirm a full operational import and release all deferred work it consumed.
-    pub fn confirm_operational(&self, expected: NumHash) -> eyre::Result<()> {
+    ///
+    /// Returns when each consumed L1 block carrying user deposits was enqueued, oldest first.
+    pub fn confirm_operational(&self, expected: NumHash) -> eyre::Result<Vec<Instant>> {
         self.inner.lock().confirm_operational(expected)
     }
 
@@ -441,6 +480,11 @@ impl DepositQueue {
     /// reflects the last block ever enqueued — not just what's still pending.
     pub fn last_enqueued(&self) -> Option<NumHash> {
         self.inner.lock().last_enqueued()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn deposits_observed_len(&self) -> usize {
+        self.inner.lock().deposits_observed_at.len()
     }
 
     #[cfg(test)]
