@@ -26,8 +26,8 @@ use crate::{
     identity::{Ed25519Identity, Secp256k1Identity},
     network::{
         self, ALLOWLIST_CHANNEL, BACKFILL_REQUEST_CHANNEL, BACKFILL_RESPONSE_CHANNEL,
-        BLOCK_CHANNEL, MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE, SETTLEMENT_PROPOSAL_CHANNEL,
-        SETTLEMENT_SIGNATURE_CHANNEL, TRANSACTION_CHANNEL,
+        BLOCK_CHANNEL, MAX_MESSAGE_SIZE, MAX_SETTLEMENT_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE,
+        SETTLEMENT_PROPOSAL_CHANNEL, SETTLEMENT_SIGNATURE_CHANNEL, TRANSACTION_CHANNEL,
     },
     protocol::EncodedBlock,
     routing::{RoutingMembership, RoutingPolicy},
@@ -753,6 +753,25 @@ where
             // Got a settlement proposal at a batch boundary
             result = settlement_proposals.recv() => {
                 let (peer, bytes) = result.wrap_err("settlement proposal channel receive failed")?;
+                let proposal = match into_bounded_payload(bytes, MAX_SETTLEMENT_MESSAGE_SIZE) {
+                    Ok(proposal) => proposal,
+                    Err(size) => {
+                        metrics::counter!(
+                            "zone_p2p_oversized_messages_dropped_total",
+                            "channel" => "settlement_proposal",
+                            "direction" => "inbound",
+                        )
+                        .increment(1);
+                        commonware_p2p::block!(
+                            blocker,
+                            peer,
+                            proposal_size_bytes = size,
+                            max_settlement_size_bytes = MAX_SETTLEMENT_MESSAGE_SIZE,
+                            "Blocking peer for oversized settlement proposal"
+                        );
+                        continue;
+                    }
+                };
                 // The proposer must lead somewhere in the retained schedule — during a scheduled handoff the
                 // outgoing leader still settles pre-boundary batches. The follower rebuilds
                 // the proposal from its own state before signing. An RPC-only member drops the
@@ -767,12 +786,31 @@ where
                     warn!(target: "zone::p2p", %peer, "Ignoring settlement proposal from ineligible peer");
                     continue;
                 }
-                P2pEvent::SettlementProposalReceived { leader: peer, proposal: bytes.into() }
+                P2pEvent::SettlementProposalReceived { leader: peer, proposal }
             }
 
             // Got a response from a follower to the settlement proposal
             result = settlement_signatures.recv() => {
                 let (peer, bytes) = result.wrap_err("settlement signature channel receive failed")?;
+                let signature = match into_bounded_payload(bytes, MAX_SETTLEMENT_MESSAGE_SIZE) {
+                    Ok(signature) => signature,
+                    Err(size) => {
+                        metrics::counter!(
+                            "zone_p2p_oversized_messages_dropped_total",
+                            "channel" => "settlement_signature",
+                            "direction" => "inbound",
+                        )
+                        .increment(1);
+                        commonware_p2p::block!(
+                            blocker,
+                            peer,
+                            signature_size_bytes = size,
+                            max_settlement_size_bytes = MAX_SETTLEMENT_MESSAGE_SIZE,
+                            "Blocking peer for oversized settlement signature"
+                        );
+                        continue;
+                    }
+                };
                 // An RPC-only member has no address registered with `ZonePortal`, so its
                 // signature could never be counted; reject it at the transport instead of
                 // relying on the attestation-address lookup further in.
@@ -786,7 +824,7 @@ where
                     warn!(target: "zone::p2p", %peer, "Ignoring settlement signature from ineligible peer");
                     continue;
                 }
-                P2pEvent::SettlementSignatureReceived { follower: peer, signature: bytes.into() }
+                P2pEvent::SettlementSignatureReceived { follower: peer, signature }
             }
 
             // Got a transaction forwarded by an authenticated manifest peer. Only quorum members
