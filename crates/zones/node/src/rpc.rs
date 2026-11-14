@@ -92,6 +92,7 @@ use zone_precompiles::is_zone_precompile;
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
+    filter::{RequestedTopics, filter_requested_logs, is_log_visible, scope_filter_for_caller},
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
@@ -956,7 +957,7 @@ fn stale_filter_owner_ids(
 
 async fn prune_filter_owners<Api: EthApiTypes + 'static>(
     filter: &EthFilter<Api>,
-    owners: &Mutex<HashMap<FilterId, Address>>,
+    owners: &Mutex<HashMap<FilterId, FilterOwner>>,
 ) {
     let owner_ids = {
         let owners = owners.lock().await;
@@ -1013,7 +1014,14 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     l1_state: L1StateProvider,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
-    filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
+    filter_owners: Arc<Mutex<HashMap<FilterId, FilterOwner>>>,
+}
+
+/// The account that installed a filter, and for log filters the topics it asked for, which are
+/// applied to the backend's caller-scoped results.
+struct FilterOwner {
+    caller: Address,
+    requested: Arc<RequestedTopics>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -1058,7 +1066,8 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         Api: Send + Sync + 'static,
     {
         let filter = self.filter().clone();
-        let owners: Weak<Mutex<HashMap<FilterId, Address>>> = Arc::downgrade(&self.filter_owners);
+        let owners: Weak<Mutex<HashMap<FilterId, FilterOwner>>> =
+            Arc::downgrade(&self.filter_owners);
         tokio::spawn(async move {
             let mut prune_interval = interval(FILTER_OWNER_PRUNE_INTERVAL);
             prune_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1077,23 +1086,23 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
     /// Verify that the filter belongs to the authenticated caller.
     ///
-    /// Returns `Ok(())` if the caller owns the filter or is the sequencer.
+    /// Returns the filter's requested topics if the caller owns the filter.
     /// Returns an error indistinguishable from "filter not found" to avoid
     /// leaking filter existence to non-owners.
     async fn ensure_filter_owner(
         &self,
         id: &FilterId,
         auth: &AuthContext,
-    ) -> Result<(), JsonRpcError> {
-        let owner_matches = {
+    ) -> Result<Arc<RequestedTopics>, JsonRpcError> {
+        let requested = {
             let owners = self.filter_owners.lock().await;
-            matches!(owners.get(id), Some(owner) if *owner == auth.caller)
+            match owners.get(id) {
+                Some(owner) if owner.caller == auth.caller => Arc::clone(&owner.requested),
+                _ => return Err(filter_not_found_error()),
+            }
         };
-        if !owner_matches {
-            return Err(filter_not_found_error());
-        }
         if self.filter_is_active(id).await {
-            Ok(())
+            Ok(requested)
         } else {
             self.filter_owners.lock().await.remove(id);
             Err(filter_not_found_error())
@@ -1462,11 +1471,11 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let logs = EthFilterApiServer::logs(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
-            let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
+            let filtered = filter_requested_logs(logs, &auth.caller, &requested);
             to_raw(&filtered)
         })
     }
@@ -1475,21 +1484,24 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            self.filter_owners.lock().await.insert(
+                id.clone(),
+                FilterOwner {
+                    caller: auth.caller,
+                    requested: Arc::new(requested),
+                },
+            );
             to_raw(&id)
         })
     }
 
     fn get_filter_logs(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            self.ensure_filter_owner(&id, &auth).await?;
+            let requested = self.ensure_filter_owner(&id, &auth).await?;
 
             let logs = self
                 .filter()
@@ -1497,14 +1509,14 @@ where
                 .await
                 .map_err(map_eth_filter_error)?;
 
-            let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
+            let filtered = filter_requested_logs(logs, &auth.caller, &requested);
             to_raw(&filtered)
         })
     }
 
     fn get_filter_changes(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            self.ensure_filter_owner(&id, &auth).await?;
+            let requested = self.ensure_filter_owner(&id, &auth).await?;
 
             let changes = self
                 .filter()
@@ -1514,7 +1526,7 @@ where
 
             match changes {
                 FilterChanges::Logs(logs) => {
-                    let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
+                    let filtered = filter_requested_logs(logs, &auth.caller, &requested);
                     to_raw(&FilterChanges::<
                         alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
                     >::Logs(filtered))
@@ -1538,10 +1550,13 @@ where
             let id = EthFilterApiServer::new_block_filter(&self.eth.filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            self.filter_owners.lock().await.insert(
+                id.clone(),
+                FilterOwner {
+                    caller: auth.caller,
+                    requested: Default::default(),
+                },
+            );
             to_raw(&id)
         })
     }
@@ -1609,7 +1624,7 @@ where
 
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &caller)?;
+            let requested = scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
 
             let stream = provider
                 .canonical_state_stream()
@@ -1655,7 +1670,7 @@ where
             let mut log_redactor = zone_rpc::filter::LogOrderingRedactor::default();
             let stream = stream.filter_map(move |log| {
                 std::future::ready(
-                    zone_rpc::filter::is_log_visible(&log, &caller)
+                    (requested.matches(&log) && is_log_visible(&log, &caller))
                         .then(|| to_raw(&log_redactor.redact(log))),
                 )
             });
