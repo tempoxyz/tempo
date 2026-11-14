@@ -8,13 +8,18 @@
 //! To model a node, set `TEMPO_PAR_HOOK=1` to attach a state hook that forwards every update to a
 //! consumer thread in timed runs too, and `TEMPO_PAR_BASE_NS` to make the first read of each key
 //! from the pre-block state spin for that many nanoseconds, like a cold database read.
+//!
+//! Set `TEMPO_PAR_HOT_EVERY=n` to make every `n`th transaction sponsored by one fee payer and sent to
+//! one shared recipient, like the vault operations of the e2e benchmark's public mix.
 
 #[path = "tip20_execution.rs"]
 #[allow(dead_code)]
 mod tip20;
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_signer::SignerSync;
+use alloy_sol_types::SolCall;
 use evm2::{
     block::{StateUpdate, ethereum::parallel::ParallelCommit},
     bytecode::Bytecode,
@@ -31,9 +36,17 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{ParallelExecution, TempoBlockExecutionCtx, TempoEvm, TempoEvmConfig, TempoTxEnv};
-use tempo_primitives::TempoTxEnvelope;
-use tip20::common::bench_env;
+use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_primitives::{
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+};
+use tip20::common::{
+    CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS, TXGEN_GAS_LIMIT, bench_env, txgen_signers,
+};
+use tracing_subscriber::{filter::Targets, prelude::*};
 
 /// The pre-block state as a shared database for the workers.
 struct Snapshot(Cache, ColdReads);
@@ -247,13 +260,75 @@ where
     f
 }
 
+/// Replaces every `every`th transaction of `workload` with a transfer to one shared recipient
+/// whose fee one sponsor pays: keys that every such transaction reads and writes.
+fn with_hot_txs(mut workload: tip20::Workload, every: usize) -> tip20::Workload {
+    let signers = txgen_signers(workload.participants.len());
+    let sponsor = &signers[1];
+    let recipient = workload.participants[2];
+    for (idx, tx) in workload.transactions.iter_mut().enumerate() {
+        if idx % every != every - 1 {
+            continue;
+        }
+        let signer = &signers[idx % signers.len()];
+        let mut aa = TempoTransaction {
+            chain_id: CHAIN_ID,
+            fee_token: Some(PATH_USD_ADDRESS),
+            max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
+            max_fee_per_gas: TXGEN_FEE_PER_GAS,
+            gas_limit: TXGEN_GAS_LIMIT,
+            calls: vec![Call::new(
+                PATH_USD_ADDRESS,
+                Bytes::from(
+                    ITIP20::transferCall {
+                        to: recipient,
+                        amount: U256::from(idx as u64 + 1),
+                    }
+                    .abi_encode(),
+                ),
+            )],
+            access_list: Default::default(),
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            fee_payer_signature: None,
+            valid_before: Some(std::num::NonZeroU64::new(DEFAULT_BLOCK_TIMESTAMP + 10).unwrap()),
+            valid_after: None,
+            key_authorization: None,
+            tempo_authorization_list: Vec::new(),
+        };
+        let fee_payer_signature = sponsor
+            .sign_hash_sync(&aa.fee_payer_signature_hash(signer.address()))
+            .expect("failed to sign fee payer");
+        aa.fee_payer_signature = Some(fee_payer_signature);
+        let signature = signer
+            .sign_hash_sync(&aa.signature_hash())
+            .expect("failed to sign transaction");
+        *tx = TempoTxEnvelope::from(aa.into_signed(signature.into()))
+            .try_into_recovered()
+            .expect("sponsored transaction should recover");
+    }
+    workload
+}
+
 fn median(mut samples: Vec<Duration>) -> Duration {
     samples.sort();
     samples[samples.len() / 2]
 }
 
 fn main() {
-    let workload = tip20::workload();
+    if std::env::var_os("TEMPO_PAR_DIAG").is_some() {
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer())
+            .with(Targets::new().with_target("tempo::parallel", tracing::Level::DEBUG))
+            .init();
+    }
+    let mut workload = tip20::workload();
+    if let Some(every) = std::env::var("TEMPO_PAR_HOT_EVERY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        workload = with_hot_txs(workload, every);
+    }
     let hardfork = tip20::common::latest_known_hardfork();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
     let iters = std::env::var("TEMPO_PAR_ITERS")

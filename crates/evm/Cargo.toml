@@ -69,6 +69,7 @@ alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-g
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
+tracing-subscriber.workspace = true
 base64.workspace = true
 commonware-consensus.workspace = true
 criterion.workspace = true
