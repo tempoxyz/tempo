@@ -28,6 +28,7 @@ use std::{
     convert::Infallible,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -882,6 +883,7 @@ impl<'a> TempoBlockExecutor<'a> {
             );
         };
 
+        let start = Instant::now();
         let spec = self.evm().config_spec_id();
         let number = self.evm().block().number;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
@@ -969,13 +971,15 @@ impl<'a> TempoBlockExecutor<'a> {
                 .into_iter()
                 .flatten();
             let taken = taken.into_inner().unwrap().into_iter().map(Ok);
-            return self.execute_sequentially(
+            let stats = self.execute_sequentially(
                 taken
                     .chain(failure.map(Err))
                     .chain(rest.map(|tx| tx.map_err(stream_error)))
                     .map(|tx| tx.map(T::into_send_parts)),
                 &mut on_receipt,
-            );
+            )?;
+            log_parallel_stats(number, &stats, true, start.elapsed());
+            return Ok(stats);
         }
         // Otherwise the transactions before a failure stay committed: account for them too.
         let lanes = lanes.into_inner().unwrap();
@@ -992,7 +996,10 @@ impl<'a> TempoBlockExecutor<'a> {
         let output = result?;
         match failure {
             Some(error) => Err(error),
-            None => Ok(output.stats),
+            None => {
+                log_parallel_stats(number, &output.stats, false, start.elapsed());
+                Ok(output.stats)
+            }
         }
     }
 
@@ -1053,6 +1060,26 @@ where
     F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
 {
     f
+}
+
+/// Logs the counters of a block executed in parallel, and whether it executed again one
+/// transaction at a time after the parallel commit failed.
+fn log_parallel_stats(
+    number: U256,
+    stats: &ParallelExecutionStats,
+    fallback: bool,
+    elapsed: Duration,
+) {
+    debug!(
+        target: "tempo::parallel",
+        block_number = number.saturating_to::<u64>(),
+        txs = stats.transactions,
+        speculative = stats.speculative,
+        reexecuted = stats.reexecuted,
+        fallback,
+        ?elapsed,
+        "Executed block transactions in parallel"
+    );
 }
 
 /// Converts an error `transactions` yielded into the error that ends the block.
