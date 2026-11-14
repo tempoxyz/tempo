@@ -40,6 +40,9 @@ derive_more = { workspace = true, features = ["from", "try_into"] }
 scoped-tls = "1.0"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+antithesis_sdk = { workspace = true, optional = true }
+eyre = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -53,12 +56,14 @@ p256.workspace = true
 p384 = { workspace = true, features = ["serde"] }
 rand_08.workspace = true
 proptest.workspace = true
+test-case.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
 tempo-alloy.workspace = true
 tempo-evm.workspace = true
+tempo-primitives = { workspace = true, features = ["test-utils"] }
 
 [build-dependencies]
 serde.workspace = true
@@ -67,7 +72,7 @@ thiserror.workspace = true
 
 [features]
 default = ["rpc"]
-fuzz = []
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]
 test-utils = [
     "alloy/getrandom",
     "dep:alloy-json-abi",
@@ -75,8 +80,11 @@ test-utils = [
     "dep:serde",
     "dep:serde_json",
     "tempo-primitives/test-utils",
+    "tempo-alloy/test-utils",
 ]
 rpc = ["tempo-contracts/rpc"]
+# `TIP20Setup::apply_rpc`. alloy's provider is already a dependency through `rpc`.
+rpc-test-utils = ["test-utils", "rpc", "alloy/providers", "dep:eyre", "dep:futures"]
 serde = [
 	"dep:serde",
 	"alloy/serde",

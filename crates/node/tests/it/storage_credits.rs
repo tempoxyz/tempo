@@ -149,15 +149,13 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit,
-        calls: vec![Call {
-            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-            value: U256::ZERO,
-            input: revokeKeyCall {
+        calls: vec![Call::new(
+            ACCOUNT_KEYCHAIN_ADDRESS,
+            revokeKeyCall {
                 keyId: Address::repeat_byte(0xee),
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
@@ -287,15 +285,13 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit,
-        calls: vec![Call {
-            to: STORAGE_CREDITS_ADDRESS.into(),
-            value: U256::ZERO,
-            input: IStorageCredits::balanceOfCall {
+        calls: vec![Call::new(
+            STORAGE_CREDITS_ADDRESS,
+            IStorageCredits::balanceOfCall {
                 account: fee_token_addr,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(fee_token_addr),
         ..Default::default()
     };
@@ -356,15 +352,13 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit,
-        calls: vec![Call {
-            to: STORAGE_CREDITS_ADDRESS.into(),
-            value: U256::ZERO,
-            input: IStorageCredits::balanceOfCall {
+        calls: vec![Call::new(
+            STORAGE_CREDITS_ADDRESS,
+            IStorageCredits::balanceOfCall {
                 account: fee_token_addr,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(fee_token_addr),
         ..Default::default()
     };
@@ -479,16 +473,14 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             max_priority_fee_per_gas: 1_000_000_000_000u128,
             max_fee_per_gas: 1_000_000_000_000u128,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: fee_token_addr.into(),
-                value: U256::ZERO,
-                input: ITIP20::transferCall {
+            calls: vec![Call::new(
+                fee_token_addr,
+                ITIP20::transferCall {
                     to: user_addr,
                     amount: credit_seed_amount,
                 }
-                .abi_encode()
-                .into(),
-            }],
+                .abi_encode(),
+            )],
             fee_token: Some(DEFAULT_FEE_TOKEN),
             ..Default::default()
         },
@@ -517,11 +509,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit: 500_000,
-        calls: vec![Call {
-            to: Address::repeat_byte(0x55).into(),
-            value: U256::ZERO,
-            input: Default::default(),
-        }],
+        calls: vec![Call::new(Address::repeat_byte(0x55), Bytes::new())],
         fee_token: Some(fee_token_addr),
         ..Default::default()
     };
@@ -614,11 +602,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit: 500_000,
-        calls: vec![Call {
-            to: Address::repeat_byte(0x56).into(),
-            value: U256::ZERO,
-            input: Default::default(),
-        }],
+        calls: vec![Call::new(Address::repeat_byte(0x56), Bytes::new())],
         fee_token: Some(*fee_token.address()),
         ..Default::default()
     };
@@ -763,11 +747,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit: 500_000,
-        calls: vec![Call {
-            to: Address::repeat_byte(0x65).into(),
-            value: U256::ZERO,
-            input: Default::default(),
-        }],
+        calls: vec![Call::new(Address::repeat_byte(0x65), Bytes::new())],
         fee_token: Some(fee_token_addr),
         ..Default::default()
     };
@@ -811,16 +791,14 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
             max_priority_fee_per_gas: 1_000_000_000_000u128,
             max_fee_per_gas: 1_000_000_000_000u128,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: fee_token_addr.into(),
-                value: U256::ZERO,
-                input: ITIP20::transferCall {
+            calls: vec![Call::new(
+                fee_token_addr,
+                ITIP20::transferCall {
                     to: user_addr,
                     amount: credit_seed_amount,
                 }
-                .abi_encode()
-                .into(),
-            }],
+                .abi_encode(),
+            )],
             fee_token: Some(DEFAULT_FEE_TOKEN),
             ..Default::default()
         },
@@ -1053,16 +1031,14 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit,
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: ITIP20::transferCall {
+        calls: vec![Call::new(
+            DEFAULT_FEE_TOKEN,
+            ITIP20::transferCall {
                 to: recipient,
                 amount: transfer_amount,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
@@ -1159,16 +1135,14 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit,
-        calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
-            value: U256::ZERO,
-            input: ITIP20::transferCall {
+        calls: vec![Call::new(
+            DEFAULT_FEE_TOKEN,
+            ITIP20::transferCall {
                 to: recipient,
                 amount: transfer_amount,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
@@ -1246,16 +1220,14 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
         max_priority_fee_per_gas: gas_price,
         max_fee_per_gas: gas_price,
         gas_limit: 500_000,
-        calls: vec![Call {
-            to: (*token.address()).into(),
-            value: U256::ZERO,
-            input: ITIP20::transferCall {
+        calls: vec![Call::new(
+            *token.address(),
+            ITIP20::transferCall {
                 to: recipient,
                 amount,
             }
-            .abi_encode()
-            .into(),
-        }],
+            .abi_encode(),
+        )],
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };

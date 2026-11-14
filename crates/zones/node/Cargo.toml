@@ -1,7 +1,7 @@
 [package]
 name = "zone-node"
 description = "Tempo Zone node assembly"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -53,13 +53,13 @@ reth-rpc-api.workspace = true
 reth-rpc-builder.workspace = true
 reth-rpc-eth-api.workspace = true
 reth-rpc-eth-types.workspace = true
+reth-rpc-server-types.workspace = true
 reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-tracing = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 reth-cli-runner = { workspace = true, optional = true }
-reth-rpc-server-types = { workspace = true, optional = true }
 reth-cli-commands = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
 reth-trie = { workspace = true, optional = true }
@@ -79,7 +79,6 @@ alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
-alloy-transport.workspace = true
 evm2.workspace = true
 
 # misc
@@ -88,6 +87,7 @@ minicbor-serde.workspace = true
 clap = { workspace = true, optional = true }
 eyre.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
+backon.workspace = true
 futures.workspace = true
 jsonrpsee.workspace = true
 k256.workspace = true
@@ -125,9 +125,11 @@ reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
+tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
+test-case.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
@@ -160,7 +162,6 @@ cli = [
   "dep:sha2",
   "dep:tempo-state-bloat",
   "dep:reth-cli-runner",
-  "dep:reth-rpc-server-types",
   "dep:clap",
   "dep:reth-ethereum",
   "dep:reth-tracing",
@@ -203,4 +204,5 @@ test-utils = [
   "zone-chainspec/test-utils",
   "zone-node/test-utils",
   "zone-precompiles/test-utils",
+  "tempo-alloy/test-utils",
 ]

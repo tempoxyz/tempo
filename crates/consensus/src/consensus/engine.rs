@@ -2,7 +2,11 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    num::{NonZeroU32, NonZeroUsize},
+    sync::Arc,
+    time::Duration,
+};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -15,25 +19,26 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
+use commonware_parallel::Sequential;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    Clock, ContextCell, Handle, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
+use commonware_utils::NZDuration;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    VerificationMode, alias, config,
+    VerificationMode, alias,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    network::limit_channel,
     peer_manager, storage,
 };
 
-use super::{ProposalBudget, block::Block};
+use super::block::Block;
 
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
@@ -64,8 +69,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub share: Option<Share>,
 
     pub mailbox_size: NonZeroUsize,
+    pub max_peers: NonZeroU32,
     pub deque_size: usize,
-    pub max_message_size: u32,
     pub verification_mode: VerificationMode,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
@@ -79,13 +84,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Header-stamp pacing allowance after reserving network propagation time.
-    ///
-    /// Preparation precedes this window but reduces its allowance when the planned
-    /// deadline would exceed one target interval after proposal entry. Required
-    /// payload work may overrun the allowance; this is not a build timeout.
-    pub proposal_budget: ProposalBudget,
-    /// Proposal budget estimator that records local validation feedback.
+    /// Proposal pacing with learned network reservations and shared execution feedback.
+    /// Allowances pace returns, not time out required payload work.
     pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
@@ -120,8 +120,7 @@ where
             + Spawner
             + Storage
             + Metrics
-            + Network
-            + BufferPooler,
+            + Network,
     {
         let execution_node = self
             .execution_node
@@ -146,8 +145,7 @@ where
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
-        let page_cache_ref = CacheRef::from_pooler(
-            &context,
+        let page_cache_ref = CacheRef::new(
             storage::BUFFER_POOL_PAGE_SIZE,
             storage::BUFFER_POOL_CAPACITY,
         );
@@ -173,13 +171,16 @@ where
             .and_then(NonZeroUsize::new)
             .ok_or_eyre("execution layer persistence settings yield no valid marshal ack depth")?;
 
+        // Boxed because marshal's init future is deeply nested: inlining it into
+        // callers such as tempo-e2e's `TestingNode::start_inner` makes computing
+        // their layout exceed rustc's default query depth (recursion limit 128).
         let alias::marshal::Initialized {
             actor: marshal,
             mailbox: marshal_mailbox,
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
-        } = alias::marshal::init(
+        } = Box::pin(alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
             execution_node.clone(),
@@ -195,7 +196,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
-        )
+        ))
         .await
         .wrap_err("failed to initialize marshal")?;
 
@@ -219,6 +220,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
+                max_peers: self.max_peers,
             },
         )
         .wrap_err("failed initializing peer manager")?;
@@ -232,6 +234,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                strategy: Sequential,
             },
         );
 
@@ -243,8 +246,8 @@ where
             peer_provider: peer_manager_mailbox.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            timeout: Duration::from_secs(2),
-            fetch_retry_timeout: Duration::from_millis(100),
+            fetch_timeout: NZDuration!(Duration::from_secs(2)),
+            fetch_retry_delay: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
         };
@@ -288,7 +291,6 @@ where
                 network_identity: self.network_identity,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,
-                mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
@@ -308,7 +310,6 @@ where
                 node: execution_node.clone(),
                 executed_state: self.executed_state.clone(),
             },
-            proposal_budget: self.proposal_budget,
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
@@ -341,7 +342,6 @@ where
 
         Ok(Engine {
             context: ContextCell::new(context),
-            max_message_size: self.max_message_size,
 
             broadcast,
             broadcast_mailbox,
@@ -370,24 +370,16 @@ where
 
 pub struct Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey>,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
-    max_message_size: u32,
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
+    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
@@ -426,15 +418,8 @@ where
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
 where
-    TContext: BufferPooler
-        + Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Network
-        + Spawner
-        + Storage,
+    TContext:
+        Clock + governor::clock::Clock + Rng + CryptoRng + Metrics + Network + Spawner + Storage,
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
@@ -505,43 +490,6 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
-        let context = &*self.context;
-        let votes_channel = limit_channel(
-            context,
-            votes_channel,
-            config::VOTES_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let certificates_channel = limit_channel(
-            context,
-            certificates_channel,
-            config::CERTIFICATES_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let resolver_channel = limit_channel(
-            context,
-            resolver_channel,
-            config::RESOLVER_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let broadcast_channel = limit_channel(
-            context,
-            broadcast_channel,
-            config::BROADCASTER_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let marshal_channel = limit_channel(
-            context,
-            marshal_channel,
-            config::MARSHAL_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let dkg_channel = limit_channel(
-            context,
-            dkg_channel,
-            config::DKG_CHANNEL_IDENT,
-            self.max_message_size,
-        );
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -559,7 +507,7 @@ where
                 self.dkg_manager_mailbox,
                 Reporters::from((
                     self.peer_manager_mailbox,
-                    Reporters::<_, crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
                         self.feed_mailbox,
                         self.gossip_mailbox,
                     )),

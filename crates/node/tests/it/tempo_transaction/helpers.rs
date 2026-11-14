@@ -15,8 +15,12 @@ use alloy::{
     transports::{RpcError, TransportErrorKind},
 };
 use alloy_primitives::TxKind;
+use alloy_rlp::Encodable as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use core::num::NonZeroU64;
 use eyre::WrapErr;
+use p256::ecdsa::signature::hazmat::PrehashSigner;
+use sha2::{Digest, Sha256};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -25,7 +29,7 @@ use tempo_primitives::{
     SignatureType, TempoTransaction,
     transaction::{
         CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
-        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit, calc_gas_balance_spending,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -84,13 +88,6 @@ mod legacy_compat {
     use serde::de::DeserializeOwned;
     use tempo_node::rpc::TempoTransactionRequest;
 
-    fn should_retry_with_selector_arrays(err: &RpcError<TransportErrorKind>) -> bool {
-        let err_str = err.to_string().to_lowercase();
-        err_str.contains("invalid params")
-            && err_str.contains("expected an array of length 4")
-            && err_str.contains("invalid type: string")
-    }
-
     pub(super) fn request_value_with_selector_arrays(
         mut request: serde_json::Value,
     ) -> serde_json::Value {
@@ -142,23 +139,31 @@ mod legacy_compat {
     where
         T: DeserializeOwned + std::fmt::Debug + Send + Sync + Unpin + 'static,
     {
-        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
-
-        match provider
-            .raw_request::<_, T>(method.into(), [request_value.clone()])
+        // Serialize per attempt so the common, non-retried path doesn't deep-clone the JSON.
+        let err = match provider
+            .raw_request::<_, T>(
+                method.into(),
+                [serde_json::to_value(request).map_err(RpcError::local_usage)?],
+            )
             .await
         {
-            Ok(response) => Ok(response),
-            Err(err) if should_retry_with_selector_arrays(&err) => {
-                provider
-                    .raw_request::<_, T>(
-                        method.into(),
-                        [request_value_with_selector_arrays(request_value)],
-                    )
-                    .await
-            }
-            Err(err) => Err(err),
+            Ok(response) => return Ok(response),
+            Err(err) => err,
+        };
+        let err_str = err.to_string().to_lowercase();
+        if !(err_str.contains("invalid params")
+            && err_str.contains("expected an array of length 4")
+            && err_str.contains("invalid type: string"))
+        {
+            return Err(err);
         }
+        let request_value = serde_json::to_value(request).map_err(RpcError::local_usage)?;
+        provider
+            .raw_request::<_, T>(
+                method.into(),
+                [request_value_with_selector_arrays(request_value)],
+            )
+            .await
     }
 }
 
@@ -197,11 +202,7 @@ pub(super) async fn fund_address_with(
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
-        calls: vec![Call {
-            to: fee_token.into(),
-            value: U256::ZERO,
-            input: transfer_calldata.into(),
-        }],
+        calls: vec![Call::new(fee_token, transfer_calldata)],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
         fee_token: Some(fee_token),
@@ -344,7 +345,6 @@ pub(crate) fn create_signed_key_authorization(
 pub(super) fn compute_authorization_signature_hash(
     auth: &alloy_eips::eip7702::Authorization,
 ) -> B256 {
-    use alloy_rlp::Encodable as _;
     let mut sig_buf = Vec::new();
     sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
     auth.encode(&mut sig_buf);
@@ -396,25 +396,6 @@ pub(super) fn verify_delegation_code(
 }
 
 // ===== Keychain/Access Key Helper Functions =====
-
-/// Helper to generate a P256 access key
-pub(crate) fn generate_p256_access_key() -> (
-    p256::ecdsa::SigningKey,
-    alloy::primitives::B256,
-    alloy::primitives::B256,
-    Address,
-) {
-    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
-
-    let signing_key = SigningKey::random(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let encoded_point = verifying_key.to_encoded_point(false);
-    let pub_key_x = alloy::primitives::B256::from_slice(encoded_point.x().unwrap().as_ref());
-    let pub_key_y = alloy::primitives::B256::from_slice(encoded_point.y().unwrap().as_ref());
-    let key_addr =
-        tempo_primitives::transaction::tt_signature::derive_p256_address(&pub_key_x, &pub_key_y);
-    (signing_key, pub_key_x, pub_key_y, key_addr)
-}
 
 /// Helper to create a key authorization
 pub(crate) fn create_key_authorization(
@@ -519,9 +500,6 @@ pub(super) fn sign_p256_primitive(
     pub_key_x: B256,
     pub_key_y: B256,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let pre_hashed = Sha256::digest(sig_hash);
     let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
@@ -602,9 +580,6 @@ pub(super) fn sign_webauthn_primitive(
     pub_key_y: B256,
     origin: &str,
 ) -> eyre::Result<PrimitiveSignature> {
-    use p256::ecdsa::signature::hazmat::PrehashSigner;
-    use sha2::{Digest, Sha256};
-
     let (authenticator_data, client_data_json) = create_webauthn_data(sig_hash, origin);
 
     let client_data_hash = Sha256::digest(client_data_json.as_bytes());
@@ -651,22 +626,15 @@ pub(crate) fn sign_aa_tx_with_webauthn_access_key(
 
 /// Helper to create a TIP20 transfer call for a given token
 pub(super) fn create_transfer_call(token: Address, to: Address, amount: U256) -> Call {
-    Call {
-        to: token.into(),
-        value: U256::ZERO,
-        input: transferCall { to, amount }.abi_encode().into(),
-    }
+    Call::new(token, transferCall { to, amount }.abi_encode())
 }
 
 /// Helper to create a TIP20 balanceOf call (useful as a benign call for key authorization txs)
 pub(super) fn create_balance_of_call(account: Address) -> Call {
-    use alloy::sol_types::SolCall;
-
-    Call {
-        to: DEFAULT_FEE_TOKEN.into(),
-        value: U256::ZERO,
-        input: ITIP20::balanceOfCall { account }.abi_encode().into(),
-    }
+    Call::new(
+        DEFAULT_FEE_TOKEN,
+        ITIP20::balanceOfCall { account }.abi_encode(),
+    )
 }
 
 /// Helper to create a mock P256 signature for key authorization
@@ -704,8 +672,6 @@ pub(crate) fn create_mock_webauthn_sig(pub_key_x: B256, pub_key_y: B256) -> Temp
 pub(crate) fn create_default_token_limit(
     funded: U256,
 ) -> Vec<tempo_primitives::transaction::TokenLimit> {
-    use tempo_primitives::transaction::TokenLimit;
-
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: funded / U256::from(2),
@@ -750,11 +716,7 @@ pub(super) fn create_expiring_nonce_tx(
     let mut tx = create_basic_aa_tx(
         chain_id,
         0,
-        vec![Call {
-            to: recipient.into(),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        vec![Call::new(recipient, Bytes::new())],
         2_000_000,
     );
     tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
@@ -787,8 +749,6 @@ pub(crate) fn sign_aa_tx_p256(
 
 /// Helper to create WebAuthn authenticator data and client data JSON
 pub(super) fn create_webauthn_data(sig_hash: B256, origin: &str) -> (Vec<u8>, String) {
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-
     // Create minimal authenticator data
     let mut authenticator_data = vec![0u8; 37];
     authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
@@ -839,7 +799,12 @@ pub(crate) async fn configure_fee_payer_context(
     // Callers fund the fee payer right before this.
     let balance_before =
         settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
-    add_fee_payer_access_gas(tx);
+    // From T14 a fee payer signature costs one cold account access: the sponsor's account is read
+    // to check that its root key is still active. Callers that take their gas limit from the RPC
+    // send [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead (see
+    // [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
+    // that set the limit by hand. Before T14 the extra limit only goes unused.
+    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -923,17 +888,6 @@ pub(crate) async fn assert_batch_recipient_balances(
     Ok(())
 }
 
-/// Raises the gas limit of a transaction that a fee payer is about to sign.
-///
-/// From T14 a fee payer signature costs one cold account access: the sponsor's account is read to
-/// check that its root key is still active. Callers that take their gas limit from the RPC send
-/// [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead
-/// (see [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
-/// that set the limit by hand. Before T14 the extra limit only goes unused.
-fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
-    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
-}
-
 pub(crate) fn sign_fee_payer(
     tx: &mut TempoTransaction,
     signer_addr: Address,
@@ -952,8 +906,6 @@ pub(crate) async fn assert_fee_payer_spent(
     fee_payer: FeePayerContext,
     receipt: &serde_json::Value,
 ) -> eyre::Result<()> {
-    use tempo_primitives::transaction::calc_gas_balance_spending;
-
     let gas_used = parse_hex_u64(receipt, "gasUsed")?
         .ok_or_else(|| eyre::eyre!("Receipt missing 'gasUsed'"))?;
     let effective_gas_price = parse_hex_u128(receipt, "effectiveGasPrice")?
@@ -1003,38 +955,32 @@ pub(crate) fn create_send_calls(
     if batch_calls {
         let recipient_2 = recipient_2.expect("batch calls require two recipients");
         vec![
-            Call {
-                to: fee_token.into(),
-                value: U256::ZERO,
-                input: transferCall {
+            Call::new(
+                fee_token,
+                transferCall {
                     to: recipient_1,
                     amount: transfer_amount,
                 }
-                .abi_encode()
-                .into(),
-            },
-            Call {
-                to: fee_token.into(),
-                value: U256::ZERO,
-                input: transferCall {
+                .abi_encode(),
+            ),
+            Call::new(
+                fee_token,
+                transferCall {
                     to: recipient_2,
                     amount: transfer_amount,
                 }
-                .abi_encode()
-                .into(),
-            },
+                .abi_encode(),
+            ),
         ]
     } else {
-        vec![Call {
-            to: fee_token.into(),
-            value: U256::ZERO,
-            input: transferCall {
+        vec![Call::new(
+            fee_token,
+            transferCall {
                 to: recipient_1,
                 amount: transfer_amount,
             }
-            .abi_encode()
-            .into(),
-        }]
+            .abi_encode(),
+        )]
     }
 }
 
@@ -1223,11 +1169,7 @@ pub(crate) fn build_fill_request_context(
             nonce: test_case.explicit_nonce,
             ..Default::default()
         },
-        calls: vec![Call {
-            to: TxKind::Call(recipient),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        }],
+        calls: vec![Call::new(recipient, Bytes::new())],
         key_type: Some(key_type_to_signature_type(test_case.key_type)),
         key_data: None,
         key_authorization: test_case.key_authorization.clone(),

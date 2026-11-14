@@ -2,13 +2,21 @@ use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
+use commonware_codec::DecodeExt as _;
+use commonware_cryptography::{
+    bls12381::{dkg::feldman_desmedt::Output, primitives::variant::MinSig},
+    ed25519::PublicKey,
+};
+use commonware_utils::ordered;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
     evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
     registry::{HandlerError, HandlerResult},
 };
+use std::net::{IpAddr, SocketAddr};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{
@@ -16,9 +24,52 @@ use tempo_precompiles::{
         StorageActions, StorageCtx, account_config_commitment,
     },
     tip20::{ITIP20, TIP20Token},
-    validator_config_v2::{ValidatorConfigV2, ValidatorConfigV2Error},
+    validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2, ValidatorConfigV2Error},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
+
+/// The part of `ValidatorConfigV2` in the pre-state of a boundary block that sets the next DKG
+/// ceremony.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DkgCeremonyConfig {
+    /// The active validators, who are the players of the next ceremony.
+    pub active_validators: Vec<IValidatorConfigV2::Validator>,
+    /// The epoch of the next full DKG ceremony.
+    pub next_full_dkg_epoch: u64,
+}
+
+impl DkgCeremonyConfig {
+    /// Returns the DKG outcome that the boundary block before `epoch` carries for the ceremony
+    /// `output`.
+    ///
+    /// The players of the ceremony in `epoch` are the active validators. Like consensus
+    /// (`read_active_peers` in tempo-consensus), this skips validators whose public key or
+    /// endpoints do not decode, and counts each public key once.
+    pub fn boundary_outcome(
+        self,
+        epoch: u64,
+        output: Output<MinSig, PublicKey>,
+    ) -> OnchainDkgOutcome {
+        let next_players = ordered::Set::from_iter_dedup(
+            self.active_validators
+                .into_iter()
+                .filter(|validator| {
+                    validator.ingress.parse::<SocketAddr>().is_ok()
+                        && validator.egress.parse::<IpAddr>().is_ok()
+                })
+                .filter_map(|validator| {
+                    PublicKey::decode(commonware_codec::Copying(validator.publicKey.as_slice()))
+                        .ok()
+                }),
+        );
+        OnchainDkgOutcome {
+            epoch,
+            output,
+            next_players,
+            is_next_full_dkg: self.next_full_dkg_epoch == epoch,
+        }
+    }
+}
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
@@ -254,6 +305,35 @@ pub trait TempoStateAccess<M = ()> {
                 )) => Ok(None),
                 Err(err) => Err(err),
             }
+        })
+    }
+
+    /// Returns the configuration of the DKG ceremony that the boundary block `block_number`
+    /// starts, from `ValidatorConfigV2` in its pre-state.
+    ///
+    /// Returns `None` when V2 is not initialized as of the parent block. Such boundaries took
+    /// their players from ValidatorConfig V1, so their outcomes are not derived from V2.
+    ///
+    /// Reads bypass the journal, so this must be called before any changes of the boundary block
+    /// are committed to see the parent state.
+    fn dkg_ceremony_config(
+        &mut self,
+        spec: TempoHardfork,
+        block_number: u64,
+    ) -> TempoResult<Option<DkgCeremonyConfig>>
+    where
+        Self: Sized,
+    {
+        let parent_number = block_number.saturating_sub(1);
+        self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+            let config = ValidatorConfigV2::default();
+            if !config.is_initialized()? || config.get_initialized_at_height()? > parent_number {
+                return Ok(None);
+            }
+            Ok(Some(DkgCeremonyConfig {
+                active_validators: config.get_active_validators()?,
+                next_full_dkg_epoch: config.get_next_network_identity_rotation_epoch()?,
+            }))
         })
     }
 }
@@ -505,7 +585,7 @@ where
 mod tests {
     use super::*;
     use crate::{FeeTokenResolver, TempoBlockEnv, TempoEvmExt, TempoFeeManager, build_tempo_evm};
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Signature, address, uint};
     use evm2::{
         evm::{Bal, BalContext, InMemoryDB, bal::BalError, precompile::NoPrecompiles},
@@ -523,19 +603,20 @@ mod tests {
     use tempo_primitives::{
         AASigned, TempoSignature, TempoTransaction, transaction::tt_signature::PrimitiveSignature,
     };
+    use test_case::test_case;
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     gas_limit: 21_000,
                     to,
                     input,
                     ..Default::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             caller,
         )
         .into()
@@ -796,47 +877,25 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_is_tip20_usd() -> eyre::Result<()> {
+    // Short string encoding: left-aligned data + length*2 in LSB
+    // "USD" = 0x555344, len=3, LSB=6 -> true
+    #[test_case(uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256) => true; "USD")]
+    // "EUR" = 0x455552, len=3, LSB=6 -> false (wrong content)
+    #[test_case(uint!(0x4555520000000000000000000000000000000000000000000000000000000006_U256) => false; "EUR")]
+    // "US" = 0x5553, len=2, LSB=4 -> false (wrong length)
+    #[test_case(uint!(0x5553000000000000000000000000000000000000000000000000000000000004_U256) => false; "US")]
+    // empty -> false
+    #[test_case(U256::ZERO => false; "empty")]
+    fn test_is_tip20_usd(currency_value: U256) -> bool {
         let fee_token = PATH_USD_ADDRESS;
-
-        // Short string encoding: left-aligned data + length*2 in LSB
-        let cases: &[(U256, bool, &str)] = &[
-            // "USD" = 0x555344, len=3, LSB=6 -> true
-            (
-                uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
-                true,
-                "USD",
-            ),
-            // "EUR" = 0x455552, len=3, LSB=6 -> false (wrong content)
-            (
-                uint!(0x4555520000000000000000000000000000000000000000000000000000000006_U256),
-                false,
-                "EUR",
-            ),
-            // "US" = 0x5553, len=2, LSB=4 -> false (wrong length)
-            (
-                uint!(0x5553000000000000000000000000000000000000000000000000000000000004_U256),
-                false,
-                "US",
-            ),
-            // empty -> false
-            (U256::ZERO, false, "empty"),
-        ];
-
-        for (currency_value, expected, label) in cases {
-            let mut db = InMemoryDB::default();
-            db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, currency_value);
-
-            let is_usd = db.is_tip20_usd(
-                TempoHardfork::Genesis,
-                fee_token,
-                StorageActions::disabled(),
-            )?;
-            assert_eq!(is_usd, *expected, "currency '{label}' failed");
-        }
-
-        Ok(())
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, &currency_value);
+        db.is_tip20_usd(
+            TempoHardfork::Genesis,
+            fee_token,
+            StorageActions::disabled(),
+        )
+        .unwrap()
     }
 
     #[test]

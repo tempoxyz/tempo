@@ -1,10 +1,6 @@
 //! Tempo Accounts store persistence of configurable account key authorizations.
 
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fs;
 
 use alloy_network::{NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256};
@@ -24,17 +20,6 @@ use tempo_primitives::{
         TempoTypedTransaction,
     },
 };
-
-fn unique_test_directory() -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "tempo-alloy-accounts-store-{}-{unique}",
-        std::process::id()
-    ))
-}
 
 fn configurable_authorization(
     account: Address,
@@ -62,13 +47,17 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
     let signer = PrivateKeySigner::random();
     let mut authorization = configurable_authorization(account, &signer);
     if scoped {
-        authorization.authorization.allowed_calls = Some(vec![CallScope {
-            target: Address::repeat_byte(4),
-            selector_rules: Vec::new(),
-        }]);
+        authorization = KeyAuthorization {
+            allowed_calls: Some(vec![CallScope {
+                target: Address::repeat_byte(4),
+                selector_rules: Vec::new(),
+            }]),
+            ..authorization.authorization().clone()
+        }
+        .into_signed(authorization.signature().clone());
     }
-    let directory = unique_test_directory();
-    let path = directory.join("store.json");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store.json");
 
     TempoAccountsStore::at(&path)
         .upsert_secp256k1_access_key(account, &signer, &authorization)
@@ -78,10 +67,9 @@ fn configurable_account_authorization_round_trips(scoped: bool) {
         .unwrap()
         .access_keys()
         .unwrap();
-    fs::remove_dir_all(directory).unwrap();
 
     // Stored like every other authorization signature: an object tagged by `type`.
-    let signature = authorization.signature.as_configurable_account().unwrap();
+    let signature = authorization.signature().as_configurable_account().unwrap();
     assert_eq!(
         stored["tempo-cli.store"]["state"]["accessKeys"][0]["keyAuthorization"]["signature"],
         serde_json::json!({ "type": "configurableAccount", "signature": signature }),
@@ -100,14 +88,17 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
     let other = Address::repeat_byte(3);
     let signer = PrivateKeySigner::random();
     let authorization = configurable_authorization(other, &signer);
-    let directory = unique_test_directory();
-    let path = directory.join("store.json");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store.json");
     let store = TempoAccountsStore::at(&path);
 
     // Naming the account does not let another configurable account sign its grant, and a
     // configurable account's grant cannot name another account.
-    let mut named = authorization.clone();
-    named.authorization.account = Some(account);
+    let named = authorization
+        .authorization()
+        .clone()
+        .with_account(account)
+        .into_signed(authorization.signature().clone());
     for (expected, authorization) in [
         (account, &authorization),
         (account, &named),
@@ -204,5 +195,4 @@ async fn configurable_account_authorization_for_another_account_is_rejected() {
         Err(TempoAccountsError::MissingAccessKey { .. })
     ));
     wallet.access_key(other, 4217, usable.address()).unwrap();
-    fs::remove_dir_all(directory).unwrap();
 }

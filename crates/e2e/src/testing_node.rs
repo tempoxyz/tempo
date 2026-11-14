@@ -12,7 +12,7 @@ use commonware_cryptography::{
 use commonware_p2p::simulated::Oracle;
 use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
-use reth_db::{Database, DatabaseEnv, open_db_read_only};
+use reth_db::{Database, DatabaseEnv};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_ethereum::{
     consensus::noop::NoopConsensus,
@@ -39,7 +39,10 @@ use tempo_consensus::{
     feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_node::node::TempoNode;
+use tempo_node::{
+    Estimator, EstimatorConfig, NetworkReservation, estimator::DEFAULT_NETWORK_BUDGET,
+    node::TempoNode,
+};
 use tracing::{debug, instrument};
 
 /// Gossiped certificates verified per second. Matches the production default.
@@ -90,9 +93,9 @@ where
     pub network_identity: tempo_chainspec::NetworkIdentity,
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
-    /// Local proposal work budget used whenever the consensus engine starts.
-    pub proposal_return_budget: Duration,
-    /// Proposal budget estimator shared by this node's consensus and execution layers.
+    /// Proposal budget estimator shared by this node's builder and consensus
+    /// engine whenever they start. Uses a fixed network reservation and the constructor's
+    /// proposal return allowance, reduced when preparation exceeds the reservation.
     pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,
@@ -106,6 +109,10 @@ where
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
     /// Call `start()` to start both consensus and execution.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `proposal_return_budget` is zero.
     // FIXME: replace this by a `Config` to make this more digestible.
     #[expect(clippy::too_many_arguments, reason = "quickly threw this together")]
     pub fn new(
@@ -122,10 +129,17 @@ where
         network_address: SocketAddr,
         chain_address: Address,
     ) -> Self {
-        let estimator = tempo_node::Estimator::new(tempo_node::estimator::Config::default());
-        execution_config.estimator = Some(estimator.clone());
         let public_key = private_key.public_key();
         let partition_prefix = uid.clone();
+        // Pin the network reservation; long preparation can still shorten an allowance.
+        let network_budget = DEFAULT_NETWORK_BUDGET;
+        let estimator = Estimator::new(EstimatorConfig {
+            target_block_time: proposal_return_budget.saturating_add(network_budget),
+            network_budget,
+            network_reservation_policy: NetworkReservation::Fixed,
+            ..EstimatorConfig::default()
+        });
+        execution_config.estimator = Some(estimator.clone());
         let execution_node_datadir = execution_runtime
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
@@ -138,7 +152,6 @@ where
             share,
             network_identity,
             feed_state,
-            proposal_return_budget,
             estimator,
             verification_mode,
             consensus_handle: None,
@@ -192,7 +205,6 @@ where
         self.share = identity_source.share;
         self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
-        self.proposal_return_budget = identity_source.proposal_return_budget;
         self.estimator = identity_source.estimator;
         self.execution_config.estimator = Some(self.estimator.clone());
         self.verification_mode = identity_source.verification_mode;
@@ -334,8 +346,8 @@ where
             signer: self.private_key.clone(),
             share: self.share.clone(),
             mailbox_size: commonware_utils::NZUsize!(1024),
+            max_peers: commonware_utils::NZU32!(128),
             deque_size: 10,
-            max_message_size: crate::MAX_MESSAGE_SIZE,
             verification_mode: self.verification_mode,
             // Simulated time costs wall time under the `external` runtime, so
             // these are tighter than production: every offline leader costs a
@@ -347,10 +359,6 @@ where
             views_to_track: 10,
             // Floor (2s nullify rebroadcast) plus one 1s proposal wait.
             inactive_time_before_leader_skip: Duration::from_secs(3),
-            proposal_budget: consensus::ProposalBudget::new(
-                self.proposal_return_budget + Duration::from_millis(50),
-                Duration::from_millis(50),
-            ),
             estimator: self.estimator.clone(),
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),
@@ -428,6 +436,13 @@ where
 
         // Wait for the consensus handle to actually finish
         let _ = handle.await;
+
+        // The handle resolves in the executor pass that drops the engine's root
+        // future, and that drop is what aborts every actor beneath it, so the
+        // actors (and the storage they hold open) are only dropped in the next
+        // pass. Storage refuses to reopen a blob that is still open, so wait until
+        // that pass has run before anyone reopens the node's partitions.
+        drain_aborted_tasks().await;
 
         debug!(%self.uid, "stopped consensus for testing node");
     }
@@ -527,39 +542,6 @@ where
         self.execution().provider.clone()
     }
 
-    /// Get a blockchain provider for when the execution node is down.
-    ///
-    /// This provider MUST BE DROPPED before starting the node again.
-    pub fn execution_provider_offline(
-        &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
-        // Open a read-only provider to the database
-        // Note: MDBX allows multiple readers, so this is safe even if another process
-        // has the database open for reading
-        let database = open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
-            .expect("failed to open execution node database")
-            .with_metrics();
-
-        let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
-                .expect("failed to open static files");
-
-        let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
-            .build()
-            .unwrap();
-
-        let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
-            database,
-            Arc::new(execution_runtime::chainspec()),
-            static_file_provider,
-            rocksdb,
-            reth_ethereum::tasks::Runtime::test(),
-        )
-        .expect("failed to create provider factory");
-
-        BlockchainProvider::new(provider_factory).expect("failed to create blockchain provider")
-    }
-
     /// Simulates a crash by unwinding the execution layer database by `n` blocks.
     /// This creates a gap between CL (untouched) and EL state, triggering
     /// `backfill_on_start` on the next restart.
@@ -643,5 +625,29 @@ where
 
         debug!(%self.uid, target, "execution layer unwound successfully");
         (current, target)
+    }
+}
+
+/// Returns once the deterministic executor has polled every task that is ready
+/// now, and then every task those polls woke.
+///
+/// The deterministic executor polls the tasks that are ready at the start of a
+/// pass as one shuffled batch, and a task woken during a pass runs in the next
+/// one. Yielding requeues this task behind the current batch, so after the first
+/// yield every aborted task queued alongside this one has been polled and
+/// dropped. The second yield covers tasks those drops abort in turn, such as
+/// [`commonware_runtime::AbortOnDrop`] guards they owned.
+async fn drain_aborted_tasks() {
+    for _ in 0..2 {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return std::task::Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        })
+        .await;
     }
 }

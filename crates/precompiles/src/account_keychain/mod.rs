@@ -233,6 +233,14 @@ impl AccountKeychain {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Registers a new access key with signature type, expiry, and optional per-token spending
     /// limits. Only callable with the account's root key or, on T6+, an admin access key.
     ///
@@ -245,7 +253,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller, has
     ///   incompatible code or is reserved (precompile, TIP-20, virtual or zone portal)
-    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
+    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14, or
+    ///   from T14 a primitive type for a `keyId` with a nonzero configuration commitment
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -322,6 +331,11 @@ impl AccountKeychain {
         // Check if this key was previously revoked - prevents replay attacks
         if existing_key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        // TIP-1111: a migrated delegate only takes ConfigurableAccount grants.
+        if !is_delegate_grant && self.storage.is_retired_root(key_id)? {
+            return Err(AccountKeychainError::invalid_signature_type().into());
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
@@ -1170,7 +1184,7 @@ impl AccountKeychain {
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
     ///
-    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1112) is
+    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1113) is
     /// not, and the keychain never stores it as an admin key, so this returns false for it.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account && !self.storage.is_retired_root(account)? {
@@ -1275,7 +1289,9 @@ impl AccountKeychain {
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
         if let Some(sig_type) = expected_sig_type
-            && !self.accepts_signature_type(&key, key_id, sig_type)?
+            && !Self::accepts_signature_type(&key, sig_type, || {
+                self.storage.is_retired_root(key_id)
+            })?
         {
             return Err(AccountKeychainError::signature_type_mismatch(
                 key.signature_type as u8,
@@ -1633,21 +1649,20 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Returns whether `key`, registered under `key_id`, accepts a signature of `signature_type`
+    /// Returns whether `key` accepts a signature of `signature_type`
     /// (0=Secp256k1, 1=P256, 2=WebAuthn, 3=ConfigurableAccount).
     ///
     /// A signature must have the key's stored type. From T14, a primitive key also accepts a
-    /// configurable account signature when `key_id` has a nonzero configuration commitment: the
+    /// configurable account signature when its key ID has a nonzero configuration commitment: the
     /// primitive delegate migrated to configurable ownership and its owner quorum now holds the
     /// grant. A key stored as `ConfigurableAccount` never accepts a primitive signature.
     ///
-    /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
-    /// primitive and `signature_type` is configurable.
-    fn accepts_signature_type(
-        &self,
+    /// Calls `is_retired_root` only when the key's stored type is primitive and `signature_type`
+    /// is configurable.
+    pub(crate) fn accepts_signature_type(
         key: &AuthorizedKey,
-        key_id: Address,
         signature_type: u8,
+        is_retired_root: impl FnOnce() -> Result<bool>,
     ) -> Result<bool> {
         if key.signature_type as u8 == signature_type {
             return Ok(true);
@@ -1657,7 +1672,7 @@ impl AccountKeychain {
         {
             return Ok(false);
         }
-        self.storage.is_retired_root(key_id)
+        is_retired_root()
     }
 }
 
@@ -1665,13 +1680,15 @@ impl AccountKeychain {
 mod tests {
     use super::*;
     use crate::{
+        Precompile,
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{TIP20Setup, with_storage},
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use test_case::test_case;
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1766,8 +1783,7 @@ mod tests {
 
     #[test]
     fn test_t11_sorted_scope_validation_rejects_duplicates() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T11, || -> eyre::Result<()> {
             let mut keychain = AccountKeychain::new();
             let target = Address::repeat_byte(0x11);
             let recipient = Address::repeat_byte(0x22);
@@ -1828,8 +1844,7 @@ mod tests {
         let admin_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
@@ -1859,8 +1874,7 @@ mod tests {
         let missing_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.keys[account][active_admin_key].write(AuthorizedKey {
                 signature_type: StoredSignatureType::Secp256k1,
@@ -1911,8 +1925,7 @@ mod tests {
         let witness = B256::repeat_byte(0x65);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.authorize_admin_key(
@@ -1952,8 +1965,7 @@ mod tests {
         let child_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
@@ -1978,15 +1990,12 @@ mod tests {
 
     #[test]
     fn test_t14_stored_admin_keys_become_regular_keys() -> eyre::Result<()> {
-        use crate::Precompile;
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         let account = Address::random();
         let admin_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)
         })?;
@@ -2042,6 +2051,37 @@ mod tests {
     }
 
     #[test]
+    fn test_t14_primitive_grant_to_migrated_delegate_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let account = Address::random();
+        let delegate = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::initialized()?;
+            keychain.set_tx_origin(account)?;
+            StorageCtx.set_config_commitment(
+                delegate,
+                B256::repeat_byte(1),
+                ConfigCommitmentWriteGas::Intrinsic,
+            )?;
+
+            let err = authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: delegate,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(err, AccountKeychainError::invalid_signature_type().into());
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_t6_non_admin_key_cannot_authorize_keys() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
@@ -2049,8 +2089,7 @@ mod tests {
         let child_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             authorize_key(
                 &mut keychain,
@@ -2086,8 +2125,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
@@ -2122,8 +2160,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             assert_key_not_found(
@@ -2244,8 +2281,7 @@ mod tests {
         let access_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             authorize_key(
                 &mut keychain,
@@ -2277,8 +2313,7 @@ mod tests {
         let witness = B256::ZERO;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             authorize_key_with_witness(
@@ -2319,8 +2354,7 @@ mod tests {
         let witness = B256::repeat_byte(0x54);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.burn_key_authorization_witness(
@@ -2359,8 +2393,7 @@ mod tests {
         let witness = B256::repeat_byte(0x55);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             authorize_key(
@@ -2443,9 +2476,7 @@ mod tests {
         let token = Address::random();
         let other = Address::random();
         StorageCtx::enter(&mut storage, || {
-            // Initialize the keychain
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // First, authorize a key with main key (transaction_key = 0) to set up the test
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2522,8 +2553,7 @@ mod tests {
         let other = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Mark delegated sender as a contract account to model the confused-deputy path.
             keychain
@@ -2602,8 +2632,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain
                 .storage
@@ -2673,8 +2702,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2730,8 +2758,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Setup under matching tx.origin first.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2785,8 +2812,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2871,8 +2897,7 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2961,8 +2986,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for the operation
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3009,14 +3033,9 @@ mod tests {
                 },
             };
             let result_past = authorize_key(&mut keychain, account, auth_call_past);
-            assert!(
-                matches!(
-                    result_past,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::ExpiryInPast(_)
-                    ))
-                ),
-                "Expected ExpiryInPast error for past expiry, got: {result_past:?}"
+            assert_eq!(
+                result_past,
+                Err(AccountKeychainError::expiry_in_past().into())
             );
 
             Ok(())
@@ -3031,8 +3050,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             let result = authorize_key(
@@ -3055,14 +3073,9 @@ mod tests {
                 },
             );
 
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
+            assert_eq!(
+                result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             assert_eq!(
@@ -3089,8 +3102,7 @@ mod tests {
         let key_id_1 = Address::random();
         let key_id_2 = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3148,8 +3160,7 @@ mod tests {
         let contract = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // authorize access key with 100 token spending limit
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3224,12 +3235,10 @@ mod tests {
 
             // Assert that exceeding remaining limit fails
             let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
-            assert!(matches!(
+            assert_eq!(
                 exceed_result,
-                Err(TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::SpendingLimitExceeded(_)
-                ))
-            ));
+                Err(AccountKeychainError::spending_limit_exceeded().into())
+            );
 
             // Assert that the main key bypasses spending limits, does not affect existing limits
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3265,8 +3274,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Setup: Alice authorizes an access key with a spending limit of 100 tokens
             keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
@@ -3375,8 +3383,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize a key with expiry = 1 (minimal positive value)
@@ -3500,8 +3507,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize with WebAuthn signature type
@@ -3551,8 +3557,7 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize a key with expiry far in the future
@@ -3604,8 +3609,7 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Case 1: Key with enforce_limits = false
@@ -3670,8 +3674,7 @@ mod tests {
         let key_id_valid = Address::random();
         let key_id_never_existed = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Setup: Create and revoke a key
@@ -3766,8 +3769,7 @@ mod tests {
         let key_p256 = Address::random();
         let key_webauthn = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Create keys with each signature type
@@ -3865,8 +3867,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for authorization
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3936,8 +3937,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3990,8 +3990,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(eoa)?;
@@ -4011,8 +4010,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -4077,8 +4075,7 @@ mod tests {
 
         storage.set_timestamp(U256::from(100u64));
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -4138,8 +4135,7 @@ mod tests {
         let token = Address::random();
 
         let key_slot = StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -4193,8 +4189,7 @@ mod tests {
         let original_limit = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -4253,8 +4248,7 @@ mod tests {
         let original_limit = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(eoa)?;
@@ -4317,8 +4311,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
             keychain.keys[eoa][access_key].write(AuthorizedKey {
@@ -4362,8 +4355,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4416,8 +4408,7 @@ mod tests {
         let oversized_limit = U256::from(u128::MAX) + U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4441,14 +4432,9 @@ mod tests {
                 },
             );
 
-            assert!(
-                matches!(
-                    authorize_result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {authorize_result:?}"
+            assert_eq!(
+                authorize_result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             authorize_key(
@@ -4480,14 +4466,9 @@ mod tests {
                 },
             );
 
-            assert!(
-                matches!(
-                    update_result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {update_result:?}"
+            assert_eq!(
+                update_result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             Ok(())
@@ -4502,8 +4483,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4534,14 +4514,9 @@ mod tests {
                 },
             );
 
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected duplicate token limits to be rejected, got: {result:?}"
+            assert_eq!(
+                result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             let stored_key = keychain.keys[account][key_id].read()?;
@@ -4562,8 +4537,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4608,8 +4582,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4653,8 +4626,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             let handler = &mut keychain.spending_limits[limit_key][token];
@@ -4688,8 +4660,7 @@ mod tests {
         let undeployed_tip20 = Address::from(target_bytes);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4745,8 +4716,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
@@ -4823,8 +4793,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4874,8 +4843,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4955,8 +4923,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5006,8 +4973,7 @@ mod tests {
 
         storage.set_timestamp(U256::from(1_000u64));
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5076,8 +5042,7 @@ mod tests {
 
             storage.set_timestamp(U256::from(1_000u64));
             StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5155,8 +5120,7 @@ mod tests {
             let token = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5218,37 +5182,32 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T2, 1)]
+    #[test_case(TempoHardfork::T3, 0)]
+    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3(
+        hardfork: TempoHardfork,
+        expected_sloads: u64,
+    ) -> eyre::Result<()> {
         let (account, token) = (Address::random(), Address::random());
 
-        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                let _ = keychain.initialize();
+        with_storage(hardfork, || {
+            let mut keychain = AccountKeychain::new();
+            let _ = keychain.initialize();
 
-                let sloads_before = StorageCtx.counter_sload();
-                assert_eq!(
-                    keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: Address::ZERO,
-                        token,
-                    })?,
-                    U256::ZERO
-                );
+            let sloads_before = StorageCtx.counter_sload();
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: Address::ZERO,
+                    token,
+                })?,
+                U256::ZERO
+            );
 
-                assert_eq!(
-                    StorageCtx.counter_sload() - sloads_before,
-                    expected_sloads,
-                    "{hardfork:?} should perform the expected number of storage reads for zero key_id"
-                );
+            assert_eq!(StorageCtx.counter_sload() - sloads_before, expected_sloads);
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
@@ -5258,8 +5217,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5304,8 +5262,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5355,8 +5312,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5449,8 +5405,7 @@ mod tests {
         let target = DEFAULT_FEE_TOKEN;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5515,10 +5470,8 @@ mod tests {
             (TempoHardfork::T3, &mut t3_sstores),
             (TempoHardfork::T4, &mut t4_sstores),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+            with_storage(hardfork, || {
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5585,8 +5538,7 @@ mod tests {
         let denied_recipient = Address::repeat_byte(0x33);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
@@ -5622,8 +5574,7 @@ mod tests {
 
             let make_calldata = |selector: [u8; 4], recipient: Address| {
                 let mut data = selector.to_vec();
-                let mut recipient_word = [0u8; 32];
-                recipient_word[12..].copy_from_slice(recipient.as_slice());
+                let recipient_word = recipient.into_word().0;
                 data.extend_from_slice(&recipient_word);
                 data.extend_from_slice(&[0u8; 32]);
                 data
@@ -5668,8 +5619,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 

@@ -15,6 +15,8 @@ use alloy_rpc_types_eth::{
 };
 use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wait::poll_until, wallet::test_signer};
+use std::sync::{Arc, Mutex};
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -84,9 +86,7 @@ async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas(1_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let recipient = Address::random();
@@ -133,9 +133,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas(1_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let recipient = Address::random();
@@ -234,9 +232,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
             .mint(caller, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas(1_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let recipient = Address::random();
@@ -244,9 +240,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
             .transfer(recipient, mint_amount)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas(1_000_000)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
 
         let filter = Filter::new()
@@ -356,9 +350,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let mint_amount = U256::from(u128::MAX);
     user_fee_token
         .mint(user_address, mint_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Setup fee manager to configure different tokens
@@ -379,18 +371,14 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
             liquidity_amount,
             user_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Set different fee tokens for user and validator
     // Note that the validator defaults to the pathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Verify the tokens are set correctly
@@ -446,8 +434,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 /// In phase 2, the test wallet becomes the block producer, reproducing the bug scenario.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()> {
-    use std::sync::{Arc, Mutex};
-
     reth_tracing::init_test_tracing();
 
     let wallet = test_signer(0);
@@ -472,9 +458,7 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
 
     user_fee_token
         .mint(wallet_address, U256::from(u128::MAX))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     fee_amm
@@ -484,9 +468,7 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
             U256::from(u32::MAX),
             wallet_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     fee_amm
@@ -496,23 +478,17 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
             U256::from(u32::MAX),
             wallet_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     fee_manager
         .setUserToken(*user_fee_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     fee_manager
         .setValidatorToken(*validator_custom_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let on_chain_validator_token = fee_manager.validatorTokens(wallet_address).call().await?;
@@ -603,9 +579,7 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
 
     user_fee_token
         .mint(wallet_address, U256::from(u128::MAX))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -616,16 +590,12 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
             U256::from(u32::MAX),
             wallet_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     fee_manager
         .setUserToken(*user_fee_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Gas estimation should succeed because the fix uses TIP_FEE_MANAGER_ADDRESS as

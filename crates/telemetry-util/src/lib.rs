@@ -1,5 +1,13 @@
 //! Utilities to make working with tracing and telemetry easier.
 
+use jiff::{
+    SignedDuration,
+    fmt::{
+        StdFmtWrite,
+        friendly::{Designator, SpanPrinter},
+    },
+};
+
 /// Formats a [`std::time::Duration`] using the [`std::fmt::Display`].
 ///
 /// # Example
@@ -20,13 +28,6 @@ pub fn display_duration(duration: std::time::Duration) -> DisplayDuration {
 pub struct DisplayDuration(std::time::Duration);
 impl std::fmt::Display for DisplayDuration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use jiff::{
-            SignedDuration,
-            fmt::{
-                StdFmtWrite,
-                friendly::{Designator, SpanPrinter},
-            },
-        };
         static PRINTER: SpanPrinter = SpanPrinter::new().designator(Designator::Short);
         match SignedDuration::try_from(self.0) {
             Ok(duration) => PRINTER

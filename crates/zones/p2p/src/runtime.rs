@@ -854,16 +854,19 @@ mod tests {
         Signer as _,
         ed25519::{PrivateKey, PublicKey},
     };
-    use commonware_runtime::IoBuf;
+    use commonware_p2p::{AddressableManager as _, Receiver as _, Recipients, Sender as _};
+    use commonware_runtime::{IoBuf, Runner as _, Spawner as _};
 
     use super::{
         P2pCommand, P2pConfig, P2pEvent, P2pReceivers, into_bounded_payload, run_receivers,
         spawn_p2p, validate_ip_check_configuration,
     };
     use crate::{
-        P2pNetworkId, ZoneManifest,
+        EncodedBlock, P2pNetworkId, ZoneManifest,
+        capabilities::{ANNOUNCEMENT_INTERVAL, ANNOUNCEMENT_TTL, LOCAL_CAPABILITIES_VERSION},
         identity::{Ed25519Identity, Secp256k1Identity},
-        network::MAX_TRANSACTION_MESSAGE_SIZE,
+        network::{self, MAX_TRANSACTION_MESSAGE_SIZE},
+        protocol::{DecodeError, RequestFrame, ResponseFrame},
         routing::RoutingMembership,
     };
 
@@ -881,6 +884,10 @@ mod tests {
                 .recv()
                 .await
                 .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn capacity(&self) -> std::num::NonZeroUsize {
+            std::num::NonZeroUsize::new(1024).unwrap()
         }
     }
 
@@ -1131,16 +1138,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn witness_transport_requires_peer_announcements() {
-        use commonware_p2p::{AddressableManager as _, Receiver as _, Recipients, Sender as _};
-        use commonware_runtime::{Runner as _, Spawner as _};
-
-        use crate::{
-            EncodedBlock,
-            capabilities::{ANNOUNCEMENT_INTERVAL, ANNOUNCEMENT_TTL, LOCAL_CAPABILITIES_VERSION},
-            network,
-            protocol::{DecodeError, RequestFrame, ResponseFrame},
-        };
-
         enum Command {
             Advertise(bool),
             Request(RequestFrame),
@@ -2128,7 +2125,10 @@ mod tests {
             .allowlist
             .client
             .clone();
-        let relayed = tokio::spawn(async move { rpc_client.request(b"request".to_vec()).await });
+        let relayed = {
+            let rpc_client = rpc_client.clone();
+            tokio::spawn(async move { rpc_client.request(None, b"request".to_vec()).await })
+        };
         for &(index, _) in &quorum {
             let requests = &mut handles[index].parts.as_mut().unwrap().allowlist.requests;
             let request = tokio::time::timeout(Duration::from_secs(15), requests.recv())
@@ -2172,6 +2172,54 @@ mod tests {
             "a resent allowlist request reached the leader's node twice"
         );
 
+        // A request for one member reaches only that member.
+        let relayed = {
+            let leader_peer = leader_peer.clone();
+            tokio::spawn(
+                async move { rpc_client.request(Some(leader_peer), b"one".to_vec()).await },
+            )
+        };
+        let request = tokio::time::timeout(
+            Duration::from_secs(15),
+            handles[LEADER]
+                .parts
+                .as_mut()
+                .unwrap()
+                .allowlist
+                .requests
+                .recv(),
+        )
+        .await
+        .expect("leader did not receive the allowlist request")
+        .expect("allowlist request channel closed");
+        assert_eq!(request.payload, b"one");
+        request.respond(b"leader".to_vec()).await;
+        let responses = tokio::time::timeout(Duration::from_secs(15), relayed)
+            .await
+            .expect("allowlist request did not finish")
+            .unwrap()
+            .expect("allowlist request failed");
+        assert_eq!(
+            responses,
+            crate::AllowlistResponses {
+                answers: vec![(leader_peer.clone(), b"leader".to_vec())],
+                unanswered: vec![],
+            }
+        );
+        for index in [QUORUM_FOLLOWER, QUORUM_FOLLOWER_B] {
+            assert!(
+                handles[index]
+                    .parts
+                    .as_mut()
+                    .unwrap()
+                    .allowlist
+                    .requests
+                    .try_recv()
+                    .is_err(),
+                "node-{index} received a request addressed to the leader"
+            );
+        }
+
         // Quorum members cannot relay allowlist requests.
         let quorum_client = handles[QUORUM_FOLLOWER]
             .parts
@@ -2181,8 +2229,138 @@ mod tests {
             .client
             .clone();
         assert_eq!(
-            quorum_client.request(b"forged".to_vec()).await,
+            quorum_client.request(None, b"forged".to_vec()).await,
             Err(crate::AllowlistRequestError::NotRelayer)
+        );
+
+        for handle in handles {
+            tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+                .await
+                .expect("P2P runtime did not stop")
+                .expect("P2P runtime failed");
+        }
+    }
+
+    /// A leader-only request refused by the local rate limiter must not widen to other peers.
+    ///
+    /// The leader completes every page at once, so each follow-up request reaches the per-peer
+    /// limiter while the leader is idle. A refusal must wait for the next retry instead of asking
+    /// the backup quorum follower.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rate_limited_leader_request_does_not_widen_to_backup() {
+        let addresses = [
+            available_address(),
+            available_address(),
+            available_address(),
+        ];
+        let identities = [61_u64, 62, 63].map(ed25519_identity);
+        let mut input = format!(
+            "leader_ed25519_public_key = \"{}\"\n",
+            const_hex::encode_prefixed(identities[0].ed25519_public_key().as_ref())
+        );
+        for (index, (identity, address)) in identities.iter().zip(addresses).enumerate() {
+            input.push_str(&format!(
+                "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\n",
+                const_hex::encode_prefixed(identity.ed25519_public_key().as_ref()),
+                secp256k1_identity(index as u64 + 61).address(),
+            ));
+        }
+        let manifest = Arc::new(ZoneManifest::parse(&input).unwrap());
+
+        let mut handles = [0_usize, 1, 2]
+            .map(|index| {
+                spawn_p2p(
+                    P2pConfig {
+                        zone_id: 9,
+                        manifest: manifest.clone(),
+                        ed25519_identity: ed25519_identity(index as u64 + 61),
+                        secp256k1_identity: Some(secp256k1_identity(index as u64 + 61)),
+                        listen: addresses[index],
+                        bypass_ip_check: false,
+                        storage_directory: None,
+                        leadership: crate::LeadershipSchedule::seeded(
+                            manifest.bootstrap_leadership(),
+                        ),
+                    },
+                    P2pNetworkId::new(1, Address::repeat_byte(0x11)),
+                )
+                .unwrap()
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let [leader, requester, backup] = &mut handles[..] else {
+            unreachable!("three handles were spawned");
+        };
+        let leader = &mut leader.parts.as_mut().unwrap().backfill;
+        let requester = &mut requester.parts.as_mut().unwrap().backfill;
+        let backup = &mut backup.parts.as_mut().unwrap().backfill;
+        let requester_commands = requester.commands.clone();
+
+        // Each node answers immediately, so no reservation stays outstanding between retries.
+        let complete = |ports: &crate::BackfillPorts, request: crate::BackfillRequest| {
+            ports
+                .commands
+                .try_send(crate::BackfillCommand::Complete {
+                    peer: request.peer,
+                    request_id: request.request_id,
+                    tip: test_tip(100),
+                })
+                .unwrap();
+        };
+
+        // Wait until the leader serves a request, so the leader is connected before measuring.
+        // Requests sent before the peers connect can fall back to the backup legitimately; their
+        // ids are at most the warm-up id, so only later ids count as widening.
+        let mut retry = tokio::time::interval(Duration::from_millis(100));
+        let warm_up_id = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                tokio::select! {
+                    _ = retry.tick() => requester_commands
+                        .send(crate::BackfillCommand::Request { start: 1 })
+                        .await
+                        .unwrap(),
+                    Some(request) = leader.requests.recv() => {
+                        let request_id = request.request_id;
+                        complete(leader, request);
+                        return request_id;
+                    }
+                    Some(request) = backup.requests.recv() => complete(backup, request),
+                    Some(_) = requester.responses.recv() => {}
+                }
+            }
+        })
+        .await
+        .expect("the leader never served a backfill request");
+
+        // Retrying every 100 ms against a 1/s leader quota makes most leader-only sends refused.
+        let mut served_by_leader = 0;
+        let window = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(window);
+        loop {
+            tokio::select! {
+                _ = &mut window => break,
+                _ = retry.tick() => requester_commands
+                    .send(crate::BackfillCommand::Request { start: 1 })
+                    .await
+                    .unwrap(),
+                Some(request) = leader.requests.recv() => {
+                    served_by_leader += 1;
+                    complete(leader, request);
+                }
+                Some(request) = backup.requests.recv() => {
+                    assert!(
+                        request.request_id <= warm_up_id,
+                        "rate-limited leader request widened to the backup: {request:?}"
+                    );
+                    complete(backup, request);
+                }
+                Some(_) = requester.responses.recv() => {}
+            }
+        }
+        assert!(
+            served_by_leader >= 2,
+            "the leader was not asked again after refusals"
         );
 
         for handle in handles {

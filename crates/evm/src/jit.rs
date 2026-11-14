@@ -33,7 +33,7 @@ mod tests {
         TempoBlockEnv, TempoEvmConfig, TempoEvmEnv, TempoEvmFactory, TempoTxEnv,
         test_utils::test_chainspec,
     };
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use evm2::{
         TxResultWithState,
@@ -44,6 +44,7 @@ mod tests {
     use reth_evm::ConfigureEvm;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::{TempoBlockExt, TempoTxEnvelope};
+    use test_case::test_case;
 
     const CALLER: Address = Address::repeat_byte(0x11);
     const CONTRACT: Address = Address::repeat_byte(0x22);
@@ -96,15 +97,15 @@ mod tests {
             .with_jit_support();
         let mut evm = ConfigureEvm::evm_with_env(&config, db, env);
         let tx = TempoTxEnv::from(Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TempoTxEnvelope::Legacy(
                 TxLegacy {
                     chain_id: Some(1),
                     gas_limit: 1_000_000,
                     to: TxKind::Call(CONTRACT),
                     ..TxLegacy::default()
-                },
-                Signature::test_signature(),
-            )),
+                }
+                .into_signed(Signature::test_signature()),
+            ),
             CALLER,
         ));
         evm.transact(&Recovered::new_unchecked(tx, CALLER))
@@ -168,22 +169,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn millis_timestamp_stays_interpreted() {
+    #[test_case(TempoHardfork::T1B => (InstrStop::Return, U256::from(1_000_123)))]
+    #[test_case(TempoHardfork::T7 => (InstrStop::OpcodeNotFound, U256::ZERO))]
+    fn millis_timestamp_stays_interpreted(spec: TempoHardfork) -> (InstrStop, U256) {
         let code = returning_top(&[0x4f]);
-        for (spec, stop, output) in [
-            (TempoHardfork::T1B, InstrStop::Return, U256::from(1_000_123)),
-            (TempoHardfork::T7, InstrStop::OpcodeNotFound, U256::ZERO),
-        ] {
-            let interpreted = run(spec, InMemoryDB::default(), code.clone(), None);
-            let backend = backend(spec);
-            let result = run(spec, InMemoryDB::default(), code.clone(), Some(&backend));
-            assert_eq!(result, interpreted);
-            let result = result.unwrap().result;
-            assert_eq!(result.stop, stop);
-            assert_eq!(U256::from_be_slice(&result.output), output);
-            assert_eq!(backend.stats().lookup_hits, 0);
-        }
+        let interpreted = run(spec, InMemoryDB::default(), code.clone(), None);
+        let backend = backend(spec);
+        let result = run(spec, InMemoryDB::default(), code, Some(&backend));
+        assert_eq!(result, interpreted);
+        assert_eq!(backend.stats().lookup_hits, 0);
+        let result = result.unwrap().result;
+        (result.stop, U256::from_be_slice(&result.output))
     }
 
     #[test]

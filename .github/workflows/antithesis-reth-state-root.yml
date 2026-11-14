@@ -1,0 +1,120 @@
+name: Antithesis Reth State Root Images
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # The workload shares Cargo resolution with every root workspace member.
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "bin/**"
+      - "crates/**"
+      - "xtask/**"
+      - "mainnet-network-identity.json"
+      - "testnet-network-identity.json"
+      - "contrib/antithesis/reth-state-root/**"
+      - "contrib/antithesis/trie-shapes/**"
+      - ".github/workflows/antithesis-reth-state-root.yml"
+  workflow_dispatch:
+
+# Do not cancel a publication between the workload push and its paired config push.
+concurrency:
+  group: antithesis-reth-state-root-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository
+
+jobs:
+  build-and-push:
+    name: Build and push Antithesis trie images
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          branch=$(printf '%s' "$REF_NAME" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-60)
+          tag="${branch}-${SHA:0:9}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "tag=$tag"
+            echo "branch=$branch"
+            echo "image_tags=$REGISTRY/tempo-reth-state-root-antithesis:$tag,$REGISTRY/tempo-reth-state-root-antithesis:$branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Build and push workload image
+        id: image
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: contrib/antithesis/reth-state-root/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.image_tags }}
+
+      - name: Prepare digest-paired configuration
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          # Fail closed rather than publish a config that silently uses a moving tag.
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          dir="$RUNNER_TEMP/antithesis-reth-state-root-config"
+          mkdir -p "$dir"
+          cp contrib/antithesis/reth-state-root/docker-compose.yaml contrib/antithesis/reth-state-root/Dockerfile.config "$dir/"
+          # Digest only: Antithesis turns a tag@digest reference into a file name, which a long
+          # branch tag pushes past the 255-byte limit, and the workload image is silently dropped.
+          printf 'RETH_STATE_ROOT_IMAGE=%s/tempo-reth-state-root-antithesis@%s\n' "$REGISTRY" "$DIGEST" > "$dir/.env"
+
+      - name: Build and push config image
+        id: config
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: ${{ runner.temp }}/antithesis-reth-state-root-config
+          file: ${{ runner.temp }}/antithesis-reth-state-root-config/Dockerfile.config
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/tempo-reth-state-root-antithesis-config:${{ steps.tags.outputs.tag }}
+            ${{ env.REGISTRY }}/tempo-reth-state-root-antithesis-config:${{ steps.tags.outputs.branch }}
+
+      - name: Record immutable image pair
+        env:
+          TAG: ${{ steps.tags.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          CONFIG_DIGEST: ${{ steps.config.outputs.digest }}
+        run: |
+          [[ "$CONFIG_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          {
+            echo '### Antithesis reth state root image pair'
+            echo ''
+            echo "Tag: \`$TAG\`"
+            echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis@$IMAGE_DIGEST\`"
+            echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config@$CONFIG_DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"

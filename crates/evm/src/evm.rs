@@ -1,6 +1,11 @@
 use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
 use evm2::evm::precompile::PrecompileProvider;
+use reth_evm::precompile_cache::{
+    CachedPrecompileProvider, PrecompileCacheMap, PrecompileCachePolicy,
+};
 use std::sync::Arc;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::TempoPrecompiles;
 
 /// Tempo's EVM is EVM2 with the Tempo type family.
 pub type TempoEvm<'a> = evm2::Evm<'a, TempoEvmTypes>;
@@ -16,7 +21,8 @@ pub type PrecompilesBuilder =
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
-    precompiles_builder: PrecompilesBuilder,
+    /// Builds the precompiles in place of the built-in [`TempoPrecompiles`], if set.
+    precompiles_builder: Option<PrecompilesBuilder>,
     #[cfg(feature = "jit")]
     jit: Option<(crate::jit::JitBackend, crate::jit::JitMetrics)>,
     #[cfg(feature = "jit")]
@@ -25,13 +31,14 @@ pub struct TempoEvmFactory {
 
 impl Default for TempoEvmFactory {
     fn default() -> Self {
-        Self::new_with_precompiles(|env, ext| {
-            Box::new(tempo_precompiles::TempoPrecompiles::new(
-                env.spec,
-                ext.actions.clone(),
-                ext.non_creditable_slots.clone(),
-            ))
-        })
+        Self {
+            fee_manager: Arc::new(TempoFeeManager::new()),
+            precompiles_builder: None,
+            #[cfg(feature = "jit")]
+            jit: None,
+            #[cfg(feature = "jit")]
+            jit_support: false,
+        }
     }
 }
 
@@ -39,12 +46,8 @@ impl TempoEvmFactory {
     /// Creates a factory with precompiles built from its environment and shared accounting state.
     pub fn new_with_precompiles(builder: PrecompilesBuilder) -> Self {
         Self {
-            fee_manager: Arc::new(TempoFeeManager::new()),
-            precompiles_builder: builder,
-            #[cfg(feature = "jit")]
-            jit: None,
-            #[cfg(feature = "jit")]
-            jit_support: false,
+            precompiles_builder: Some(builder),
+            ..Default::default()
         }
     }
 
@@ -53,7 +56,45 @@ impl TempoEvmFactory {
         env: &TempoEvmEnv,
         ext: &TempoEvmExt,
     ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
-        (self.precompiles_builder)(env, ext)
+        match self.precompiles_builder {
+            Some(builder) => builder(env, ext),
+            None => Box::new(TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            )),
+        }
+    }
+
+    /// Builds precompiles whose Ethereum precompile results are cached in `cache_map`.
+    ///
+    /// Tempo's own precompiles are never cached. Precompiles from a custom builder are not cached
+    /// either, since it may install stateful precompiles at Ethereum precompile addresses.
+    pub(crate) fn cached_precompiles(
+        &self,
+        env: &TempoEvmEnv,
+        ext: &TempoEvmExt,
+        cache_map: PrecompileCacheMap<TempoHardfork>,
+        metrics_enabled: bool,
+    ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
+        if self.precompiles_builder.is_some() {
+            return self.precompiles(env, ext);
+        }
+        // The base table holds only Ethereum precompiles, whose results depend only on their
+        // input and the hardfork.
+        let base = CachedPrecompileProvider::new(
+            TempoPrecompiles::base_precompiles(env.spec),
+            cache_map,
+            env.spec,
+            PrecompileCachePolicy::All,
+            metrics_enabled,
+        );
+        Box::new(TempoPrecompiles::with_base(
+            base,
+            env.spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+        ))
     }
 
     /// Uses a custom protocol fee implementation for subsequently created EVMs.
@@ -183,7 +224,7 @@ mod runtime_tests {
         *,
     };
     use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv};
-    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -195,8 +236,10 @@ mod runtime_tests {
             StorageChange, SystemTx,
         },
         interpreter::{InstrStop, op as opcode},
+        version::GasId,
     };
     use indexmap::IndexMap;
+    use reth_evm::BlockExecutorFactory;
     use std::collections::BTreeMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::{
@@ -234,7 +277,7 @@ mod runtime_tests {
     };
     use tempo_primitives::{
         AASigned, TempoAddressExt, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature},
+        transaction::{Call, KeychainSignature, PrimitiveSignature, TempoSignature, envelope},
     };
 
     fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
@@ -273,10 +316,7 @@ mod runtime_tests {
             input,
             ..Default::default()
         };
-        let tx = Signed::new_unhashed(
-            tx,
-            tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-        );
+        let tx = tx.into_signed(envelope::TEMPO_SYSTEM_TX_SIGNATURE);
         Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), Address::ZERO).into()
     }
 
@@ -979,6 +1019,7 @@ mod runtime_tests {
                         action.address(),
                     );
                 }
+                StorageAction::ConfigCommitment(..) => {}
             }
         }
 
@@ -1103,6 +1144,9 @@ mod runtime_tests {
                         labels.address(action.address()),
                         labels.slot(action.address(), slot),
                     )
+                }
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    format!("ConfigCommitment({}, {before}, {after})", labels.address(address))
                 }
             })
             .collect()
@@ -1320,11 +1364,7 @@ mod runtime_tests {
                             max_priority_fee_per_gas: u128::from(gas_price),
                             max_fee_per_gas: u128::from(gas_price),
                             gas_limit,
-                            calls: vec![Call {
-                                to: TxKind::Call(PATH_USD_ADDRESS),
-                                value: U256::ZERO,
-                                input: calldata,
-                            }],
+                            calls: vec![Call::new(PATH_USD_ADDRESS, calldata)],
                             nonce_key,
                             nonce,
                             ..Default::default()
@@ -1547,8 +1587,6 @@ mod runtime_tests {
     /// The factory must preserve the resolved environment's nondefault gas cap.
     #[test]
     fn test_tempo_evm_respects_gas_cap() {
-        use reth_evm::BlockExecutorFactory;
-
         let spec = TempoHardfork::T1A;
         let mut version = *crate::tempo_execution_config(spec, 1).version();
         let cap = spec.tx_gas_limit_cap().unwrap();
@@ -1594,8 +1632,6 @@ mod runtime_tests {
     /// Test that T1 has significantly higher state creation costs.
     #[test]
     fn test_tempo_evm_t1_state_creation_costs() {
-        use evm2::version::GasId;
-
         let evm = configured_evm(TempoHardfork::T1, 0, false, InMemoryDB::default());
         let gas_params = &evm.version().gas_params;
 
@@ -1648,8 +1684,7 @@ mod runtime_tests {
                         .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
+                    let mut keychain = AccountKeychain::initialized()?;
                     keychain.set_tx_origin(holder)?;
                     keychain.authorize_key(
                         holder,
@@ -1710,11 +1745,7 @@ mod runtime_tests {
                 fee_token: Some(PATH_USD_ADDRESS),
                 gas_limit: 1_000_000,
                 nonce: self.nonce,
-                calls: vec![Call {
-                    to: TxKind::Call(MULTICALL3_ADDRESS),
-                    value: U256::ZERO,
-                    input: data,
-                }],
+                calls: vec![Call::new(MULTICALL3_ADDRESS, data)],
                 ..Default::default()
             };
             let signature = self.key.sign_hash_sync(&KeychainSignature::signing_hash(
@@ -1789,7 +1820,7 @@ mod runtime_tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ],
         );
         assert!(logs[1].data.data.is_empty());

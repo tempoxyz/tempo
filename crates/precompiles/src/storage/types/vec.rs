@@ -11,7 +11,10 @@
 //! - Supports both single-slot primitives and multi-slot types (structs, arrays)
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
-use alloy::primitives::{Address, U256};
+use alloy::{
+    primitives,
+    primitives::{Address, U256},
+};
 use std::ops::{Index, IndexMut};
 
 use crate::{
@@ -397,7 +400,7 @@ fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
 #[inline]
 pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
+    primitives::keccak256(len_slot.to_be_bytes::<32>()).into()
 }
 
 /// Clears storage occupied exclusively by `Vec` elements in the index range `[from, to)`.
@@ -1437,29 +1440,6 @@ mod tests {
     }
 
     // TODO(rusowsky): Implement and test multi-slot support
-    // fn test_multi_slot_array() {
-    //     #[derive(Storable)]
-    //     struct MultiSlotStruct {
-    //         field1: U256, // slot 0
-    //         field2: U256, // slot 1
-    //         field3: U256, // slot 2
-    //     }
-
-    //     let (mut storage, address) = setup_storage();
-    //     // MIGRATION TODO: This test needs to be migrated to StorageCtx::enter pattern
-
-    //     let len_slot = U256::from(2700);
-
-    //     let data: Vec<MultiSlotStruct> = vec![MultiSlotStruct {
-    //         field1: U256::ONE,
-    //         field2: U256::from(2),
-    //         field3: U256::from(3),
-    //     }];
-
-    //     data.store(storage, len_slot, 0).unwrap();
-
-    //     let data_start = calc_data_slot(len_slot);
-    // }
 
     // -- VEC HANDLER TESTS --------------------------------------------------------
     // Tests that verify VecHandler API methods

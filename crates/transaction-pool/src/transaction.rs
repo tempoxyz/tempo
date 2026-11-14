@@ -36,7 +36,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
+    transaction::{
+        InvalidValidAfter, InvalidValidBefore, SignatureType, calc_gas_balance_spending,
+    },
 };
 use thiserror::Error;
 
@@ -114,7 +116,7 @@ impl TempoPooledTransaction {
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
                 .saturating_add(value);
         let fee_token_cost = cost - value;
-        let in_memory_size = transaction.size();
+        let in_memory_size = transaction.size() + cached_tx_env_size(&transaction);
         Self {
             inner: EthPooledTransaction {
                 transaction,
@@ -197,8 +199,8 @@ impl TempoPooledTransaction {
         self.is_payment_v3
     }
 
-    /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
+    /// Returns true if this AA transaction's nonce is tracked by the `NonceManager` rather than
+    /// by the account's protocol nonce: `nonce key != 0` (includes expiring nonce txs)
     pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
@@ -241,7 +243,7 @@ impl TempoPooledTransaction {
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let key_id = key_authorization.recover_signer().ok()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             let fee_token = self.effective_fee_token();
@@ -262,12 +264,12 @@ impl TempoPooledTransaction {
             let aa_tx = self.inner().as_aa()?;
             let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
             let account = key_authorization
-                .authorization
+                .authorization()
                 .account
                 .unwrap_or(*self.sender_ref());
             Some(KeyAuthorizationTargetSubject {
                 account,
-                key_id: key_authorization.authorization.key_id,
+                key_id: key_authorization.authorization().key_id,
             })
         })
     }
@@ -279,7 +281,7 @@ impl TempoPooledTransaction {
             .tx()
             .key_authorization
             .as_ref()?
-            .authorization
+            .authorization()
             .witness()?;
         Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
@@ -287,17 +289,19 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the unique identifier for this AA transaction.
-    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
-        let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
+    /// Returns the pool's identifier for this transaction: its sender's nonce lane and its nonce
+    /// in that lane.
+    ///
+    /// Non-AA transactions use the protocol nonce, which is the lane of nonce key 0.
+    pub fn lane_transaction_id(&self) -> AA2dTransactionId {
+        let seq_id = AASequenceId {
             address: self.sender(),
-            nonce_key,
+            nonce_key: self.nonce_key().unwrap_or_default(),
         };
-        Some(AA2dTransactionId {
-            seq_id: sender,
+        AA2dTransactionId {
+            seq_id,
             nonce: self.nonce(),
-        })
+        }
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
@@ -395,6 +399,16 @@ impl TempoPooledTransaction {
             .flatten()
             .min()
             .is_some_and(|expiry| expiry <= cutoff)
+    }
+
+    /// Returns whether the transaction can be included in a block with `timestamp`: its
+    /// `valid_after` has been reached and neither its `valid_before` nor its signing key has
+    /// expired.
+    ///
+    /// Unlike [`Self::is_expired_by`], this also rejects transactions that are not valid yet, so
+    /// it must not drive eviction.
+    pub(crate) fn is_includable_at(&self, timestamp: u64) -> bool {
+        self.inner().ensure_valid_after(timestamp).is_ok() && !self.is_expired_by(timestamp)
     }
 
     /// Caches the effective fee token determined during transaction validation.
@@ -534,14 +548,44 @@ impl TempoPooledTransaction {
         );
     }
 
+    /// The `key_id` of this transaction's inline grant of a configurable-account delegate, or
+    /// `None` without such a grant.
+    ///
+    /// The grant is valid only while that account's code matches its configuration commitment.
+    /// Registration installs the account marker in the same write and the commitment never
+    /// returns to zero, so a change to its code alone requires revalidation.
+    pub(crate) fn configurable_grant_target(&self) -> Option<Address> {
+        let authorization = self.inner().as_aa()?.tx().key_authorization.as_ref()?;
+        (authorization.key_type == SignatureType::ConfigurableAccount)
+            .then_some(authorization.key_id)
+    }
+
     /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
-    /// an access key signs for it), the key authorization signer, a separate fee payer or the
-    /// access key.
+    /// an access key signs for it), the key authorization signer, a separate fee payer, the access
+    /// key, or the key ID a primitive inline key authorization grants (TIP-1111: a migrated key ID
+    /// only takes ConfigurableAccount grants, so its first commitment invalidates the grant).
     pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let [sender, authorities @ ..] = self.authorities();
+        let signed_by_access_key = self
+            .inner()
+            .as_aa()
+            .is_some_and(|tx| tx.signature().is_keychain());
+        sender
+            .filter(|_| !signed_by_access_key)
+            .into_iter()
+            .chain(authorities.into_iter().flatten())
+            .chain(self.primitive_granted_key())
+            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The accounts whose state changes can invalidate this transaction and that signed it or
+    /// chose to back it: the sender, the key authorization signer, a separate fee payer and the
+    /// access key, in that order. The same account can appear in more than one role.
+    pub(crate) fn authorities(&self) -> [Option<Address>; 4] {
+        let sender = Some(*self.sender_ref());
         let Some(tx) = self.inner().as_aa() else {
-            return accounts.contains(self.sender_ref());
+            return [sender, None, None, None];
         };
-        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
         // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
             .tx()
@@ -554,9 +598,20 @@ impl TempoPooledTransaction {
             .and_then(|_| self.fee_payer().ok());
         let access_key = self.keychain_subject().map(|subject| subject.key_id);
         [sender, grant_signer, fee_payer, access_key]
-            .into_iter()
-            .flatten()
-            .any(|authority| accounts.contains(&authority))
+    }
+
+    /// The key ID a primitive inline key authorization grants, or `None` without one.
+    ///
+    /// Its state can invalidate the grant (TIP-1111), but only the grantor signs the grant, so
+    /// it is not one of [`Self::authorities`] and doesn't count toward per-authority limits.
+    pub(crate) fn primitive_granted_key(&self) -> Option<Address> {
+        self.inner()
+            .as_aa()?
+            .tx()
+            .key_authorization
+            .as_ref()
+            .filter(|authorization| authorization.key_type != SignatureType::ConfigurableAccount)
+            .map(|authorization| authorization.key_id)
     }
 }
 
@@ -597,7 +652,7 @@ fn warm_payment_keccak_slots<'a>(
         if let Some(addr) = payment.to() {
             let slot = addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
             warmed(slot);
-            warmed(U256::from_be_bytes(keccak256(slot.to_be_bytes::<32>()).0));
+            warmed(keccak256(slot.to_be_bytes::<32>()).into());
         }
 
         // Allowance slots for transferFrom variants: allowances[from][sender]
@@ -624,6 +679,14 @@ pub enum TempoPoolTransactionError {
         "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
     )]
     ExceedsNonPaymentLimit,
+
+    /// Canonical updates kept changing the pool while the transaction validated.
+    ///
+    /// Thrown during pool admission when a canonical update landed during every validation
+    /// attempt, so none validated the transaction against the state the pool is maintained
+    /// for. The transaction may be valid and can be submitted again.
+    #[error("Chain state changed during every validation attempt, please resubmit")]
+    StateChangedDuringValidation,
 
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
@@ -758,7 +821,8 @@ pub enum TempoPoolTransactionError {
     /// The access key used by a keychain transaction expires too soon.
     ///
     /// Thrown after EVM validation when the effective access-key expiry is less
-    /// than or equal to the latest tip timestamp plus the pool's propagation buffer.
+    /// than or equal to the latest tip timestamp plus the pool's propagation buffer,
+    /// or to the transaction's `valid_after`.
     #[error("Access key expired: expiry {expiry} <= min allowed {min_allowed}")]
     AccessKeyExpired {
         /// The effective access-key expiry timestamp returned by EVM validation.
@@ -808,7 +872,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -824,6 +887,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1208,11 +1272,29 @@ impl KeyAuthorizationTargetSubject {
     }
 }
 
+/// Returns an estimate of the memory held by the [`TempoTxEnv`] cached for `transaction`.
+///
+/// The env is a second copy of the transaction that shares only its calldata [`Bytes`] (AA call
+/// inputs) with the envelope, so it is counted as the envelope minus that calldata. This is
+/// derived from the envelope at construction because the env is filled lazily and the pools
+/// subtract the same size they added on insert.
+fn cached_tx_env_size(transaction: &TempoTxEnvelope) -> usize {
+    let shared_calldata = match transaction {
+        TempoTxEnvelope::AA(tx) => tx.tx().calls.iter().map(|call| call.input.len()).sum(),
+        TempoTxEnvelope::Legacy(_)
+        | TempoTxEnvelope::Eip2930(_)
+        | TempoTxEnvelope::Eip1559(_)
+        | TempoTxEnvelope::Eip7702(_) => transaction.input().len(),
+    };
+    transaction.size().saturating_sub(shared_calldata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -1222,10 +1304,80 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
+    use test_case::test_case;
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
+
+    fn large_access_list() -> AccessList {
+        (0..64u8)
+            .map(|i| AccessListItem {
+                address: Address::with_last_byte(i),
+                storage_keys: (0..32u8).map(B256::with_last_byte).collect(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
+
+    fn configurable_account_signature(
+        owners: u8,
+        approvals: usize,
+    ) -> ConfigurableAccountSignature {
+        let config = ConfigurableAccountConfig {
+            salt: B256::with_last_byte(1),
+            version: 0,
+            threshold: 1,
+            owners: (1..=owners)
+                .map(|owner| ConfigurableAccountOwner {
+                    owner: Address::with_last_byte(owner),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        ConfigurableAccountSignature::try_new(
+            Address::with_last_byte(0xaa),
+            config,
+            vec![PrimitiveSignature::Secp256k1(Signature::test_signature()); approvals],
+        )
+        .unwrap()
+    }
+
+    /// Re-signs the body of a pooled AA transaction with `signature`.
+    fn resign_aa(
+        pooled: &TempoPooledTransaction,
+        signature: TempoSignature,
+    ) -> TempoPooledTransaction {
+        let body = pooled.inner().inner().as_aa().unwrap().tx().clone();
+        let envelope = TempoTxEnvelope::from(body.into_signed(signature));
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, pooled.sender()))
+    }
+
+    /// Heap counted on top of the envelope size.
+    fn cached_env_overhead(pooled: &TempoPooledTransaction) -> usize {
+        pooled.size() - pooled.inner().inner().size()
+    }
+
+    fn eip1559_pooled(access_list: AccessList, input: Bytes) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(Address::with_last_byte(2)),
+            gas_limit: 21000,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            Address::with_last_byte(1),
+        ))
+    }
 
     fn signed_aa_envelope(tx: TempoTransaction) -> (TempoTxEnvelope, Address) {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
@@ -1241,10 +1393,9 @@ mod tests {
     ) -> (TempoPooledTransaction, TempoTxEnvelope, Address, usize) {
         // Recovery verifies a configurable grant quorum, which arbitrary approvals never reach.
         tx.key_authorization
-            .take_if(|auth| auth.signature.is_configurable_account());
+            .take_if(|auth| auth.signature().is_configurable_account());
         let (envelope, sender) = signed_aa_envelope(tx);
-        let mut raw = Vec::with_capacity(envelope.encode_2718_len());
-        envelope.encode_2718(&mut raw);
+        let raw = envelope.encoded_2718();
         let encoded_length = raw.len();
         let pooled = <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(&raw)
             .expect("raw transaction recovery failed");
@@ -1267,6 +1418,80 @@ mod tests {
         assert!(fresh.cached_tx_env().is_some());
         assert_eq!(fresh.key_expiry(), None);
         assert_eq!(fresh.resolved_fee_token(), None);
+    }
+
+    #[test]
+    fn size_counts_cached_tx_env_access_list() {
+        let eip1559 = eip1559_pooled(large_access_list(), Bytes::new());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size);
+
+        let aa = TxBuilder::aa(Address::random())
+            .access_list(large_access_list())
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size);
+    }
+
+    #[test]
+    fn size_counts_configurable_account_signature_heap() {
+        let minimal = TxBuilder::aa(Address::random()).build();
+        let overhead =
+            |signature: TempoSignature| cached_env_overhead(&resign_aa(&minimal, signature));
+        let small = configurable_account_signature(1, 1);
+        let large = configurable_account_signature(5, 3);
+        // Extra owners and approvals are owned vectors that the env copies.
+        let extra_heap =
+            4 * size_of::<ConfigurableAccountOwner>() + 2 * size_of::<PrimitiveSignature>();
+
+        let configurable = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::ConfigurableAccount(signature.clone()))
+        };
+        assert!(configurable(&large) >= configurable(&small) + extra_heap);
+
+        let keychain = |signature: &ConfigurableAccountSignature| {
+            overhead(TempoSignature::Keychain(KeychainSignature::new(
+                Address::random(),
+                signature.clone(),
+            )))
+        };
+        assert!(keychain(&large) >= keychain(&small) + extra_heap);
+    }
+
+    #[test_case(eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])))]
+    #[test_case(TxBuilder::aa(Address::random()).access_list(large_access_list()).build())]
+    fn size_is_stable_across_tx_env_caching(transaction: TempoPooledTransaction) {
+        let size = transaction.size();
+        assert!(transaction.cached_tx_env().is_none());
+        let _ = transaction.tx_env();
+        assert!(transaction.cached_tx_env().is_some());
+        assert_eq!(transaction.size(), size);
+        assert_eq!(transaction.with_discarded_caches().size(), size);
+    }
+
+    #[test]
+    fn size_does_not_double_count_shared_calldata() {
+        let input = Bytes::from(vec![7u8; 100_000]);
+        let eip1559 = eip1559_pooled(AccessList::default(), input.clone());
+        let envelope_size = eip1559.inner().inner().size();
+        assert_eq!(eip1559.size(), 2 * envelope_size - input.len());
+        // The env holds the same buffer as the envelope, which is why it is not counted.
+        let env_input = &eip1559.tx_env().as_eip1559().unwrap().input;
+        assert_eq!(env_input.as_ptr(), eip1559.input().as_ptr());
+
+        let aa = TxBuilder::aa(Address::random())
+            .calls(vec![
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
+            ])
+            .build();
+        let envelope_size = aa.inner().inner().size();
+        assert_eq!(aa.size(), 2 * envelope_size - 2 * 100_000);
+        let calls = &aa.tx_env().as_aa().unwrap().inner().tx().calls;
+        let envelope_calls = &aa.inner().inner().as_aa().unwrap().tx().calls;
+        for (call, envelope_call) in calls.iter().zip(envelope_calls) {
+            assert_eq!(call.input.as_ptr(), envelope_call.input.as_ptr());
+        }
     }
 
     #[test]
@@ -1364,9 +1589,10 @@ mod tests {
             "Non-AA tx should have no nonce key slot"
         );
         assert!(!tx.is_aa_2d(), "Non-AA tx should not be AA 2D");
-        assert!(
-            tx.aa_transaction_id().is_none(),
-            "Non-AA tx should have no AA transaction ID"
+        assert_eq!(
+            tx.lane_transaction_id().seq_id.nonce_key,
+            U256::ZERO,
+            "Non-AA tx should use the protocol nonce lane"
         );
     }
 
@@ -1384,10 +1610,8 @@ mod tests {
         );
         assert!(!tx.is_aa_2d(), "AA tx with nonce_key=0 should NOT be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, U256::ZERO);
         assert_eq!(aa_id.nonce, nonce);
@@ -1411,10 +1635,8 @@ mod tests {
         );
         assert!(tx.is_aa_2d(), "AA tx with nonce_key > 0 should be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, nonce_key);
         assert_eq!(aa_id.nonce, nonce);
@@ -1439,127 +1661,34 @@ mod tests {
         assert_eq!(slot1, slot2);
     }
 
-    #[test]
-    fn test_is_bad_transaction() {
-        let cases: &[(TempoPoolTransactionError, bool)] = &[
-            (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
-            (
-                TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
-                    valid_before: 100,
-                    min_allowed: 200,
-                }),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter {
-                    valid_after: 200,
-                    max_allowed: 100,
-                }),
-                false,
-            ),
-            (TempoPoolTransactionError::Keychain("test error"), false),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotTip20 {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: Address::repeat_byte(0x20),
-                        currency: "EUR".to_string(),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenPaused {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AccessKeyExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::KeyAuthorizationExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AddressCheck {
-                    address: Address::repeat_byte(0x20),
-                },
-                false,
-            ),
-            (TempoPoolTransactionError::SubblockNonceKey, true),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::CallsValidation("calls error"),
-                )),
-                true,
-            ),
-        ];
-
-        for (err, expected) in cases {
-            assert_eq!(
-                err.is_bad_transaction(),
-                *expected,
-                "Unexpected is_bad_transaction() for: {err}"
-            );
-        }
+    #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore { valid_before: 100, min_allowed: 200 }) => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter { valid_after: 200, max_allowed: 100 }) => false)]
+    #[test_case(TempoPoolTransactionError::Keychain("test error") => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::NonceManagerError("nonce error".to_string()))) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotTip20 { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address: Address::repeat_byte(0x20), currency: "EUR".to_string() })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenPaused { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::AccessKeyExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::KeyAuthorizationExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
+    // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
+    #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::CallsValidation("calls error"))) => true)]
+    fn test_is_bad_transaction(err: TempoPoolTransactionError) -> bool {
+        err.is_bad_transaction()
     }
 
-    #[test]
-    fn test_requires_nonce_check() {
-        let cases: &[(TempoPooledTransaction, bool, &str)] = &[
-            (
-                TxBuilder::eip1559(Address::random())
-                    .gas_limit(21000)
-                    .build_eip1559(),
-                true,
-                "Non-AA should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random()).build(),
-                true,
-                "AA with nonce_key=0 should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random())
-                    .nonce_key(U256::ONE)
-                    .build(),
-                false,
-                "AA with nonce_key > 0 should NOT require nonce check",
-            ),
-        ];
-
-        for (tx, expected, msg) in cases {
-            assert_eq!(tx.requires_nonce_check(), *expected, "{msg}");
-        }
+    #[test_case(TxBuilder::eip1559(Address::random()).gas_limit(21000).build_eip1559() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).build() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).nonce_key(U256::ONE).build() => false)]
+    fn test_requires_nonce_check(tx: TempoPooledTransaction) -> bool {
+        tx.requires_nonce_check()
     }
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
-        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
-
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
             .build_eip1559();
@@ -1627,11 +1756,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()
@@ -1863,5 +1988,33 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn primitive_granted_key_is_an_authority() {
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let key_id = Address::random();
+        let grant = |key_type| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, key_type, key_id).with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            TxBuilder::aa(sender)
+                .key_authorization(
+                    authorization.into_signed(PrimitiveSignature::Secp256k1(signature)),
+                )
+                .build()
+        };
+
+        let primitive = grant(SignatureType::Secp256k1);
+        assert!(primitive.has_authority_in(&AddressSet::from_iter([key_id])));
+        assert!(!primitive.has_authority_in(&AddressSet::from_iter([Address::random()])));
+        // Only the grantor signs the grant, so its key ID isn't charged against pool limits.
+        assert!(!primitive.authorities().contains(&Some(key_id)));
+        // A configurable grant's validity doesn't depend on its key ID's commitment value.
+        let configurable = grant(SignatureType::ConfigurableAccount);
+        assert!(!configurable.has_authority_in(&AddressSet::from_iter([key_id])));
     }
 }

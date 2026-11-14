@@ -1,12 +1,13 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoHardfork, TempoTxResult};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, U256,
+    Address, B256, KECCAK256_EMPTY, U256,
     map::{AddressMap, U256Map, hash_map::Entry},
 };
 use evm2::{
-    TxResult,
-    evm::{CacheDB, DynDatabase, PendingState},
+    TxResult, TxResultWithState,
+    bytecode::Bytecode,
+    evm::{AccountInfo, CacheDB, DynDatabase, PendingState},
 };
 use reth_evm::{
     BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
@@ -14,10 +15,12 @@ use reth_evm::{
 };
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS,
+    configurable_account::CONFIGURABLE_ACCOUNT_CODE,
     nonce::NonceManager,
-    storage::StorageAction,
+    storage::{StorageAction, account_config_commitment},
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
+use tempo_primitives::account::encode_config_commitment;
 
 impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
@@ -34,6 +37,7 @@ impl TempoBlockExecutor<'_> {
 
         let StorageActionReplay {
             result,
+            accounts,
             mut actions,
             expiring_nonce,
         } = replay;
@@ -44,12 +48,10 @@ impl TempoBlockExecutor<'_> {
             return Err(StorageActionReplayError::TransactionExecutionFailed.into());
         }
 
-        let is_system_tx = self
-            .validate_tx_pre_execution(original)
-            .map_err(BlockExecutionError::from)?;
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
 
         let state = self
-            .replay_actions(actions.drain(..), expiring_nonce)
+            .replay_actions(&accounts, actions.drain(..), expiring_nonce)
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
             })?;
@@ -66,8 +68,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        )
-        .map_err(BlockExecutionError::from)?;
+        )?;
 
         let result = TempoTxResult::new_precomputed(
             original,
@@ -87,17 +88,37 @@ impl TempoBlockExecutor<'_> {
 
     fn replay_actions(
         &mut self,
+        accounts: &[AccountRead],
         actions: impl IntoIterator<Item = StorageAction>,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<PendingState, BlockExecutionError> {
         let block_timestamp = self.evm().block().timestamp.to::<u64>();
         let is_expiring_nonce = expiring_nonce.is_some();
 
+        let spec = self.evm().config_spec_id();
+        for read in accounts {
+            if AccountRead::new(
+                read.address,
+                self.inner
+                    .evm_mut()
+                    .overlay_db_mut()
+                    .get_account(&read.address)
+                    .map_err(map_database_error)?
+                    .as_ref(),
+                spec,
+            )? != *read
+            {
+                return Err(StorageActionReplayError::ActionConflict.into());
+            }
+        }
+
         if let Some(expiring_nonce) = expiring_nonce {
             self.apply_expiring_nonce_replay(expiring_nonce, block_timestamp)?;
         }
 
         let db = self.inner.evm_mut().overlay_db_mut();
+        // Config commitments per account, as (before the tx, current).
+        let mut commitments = AddressMap::<(B256, B256)>::default();
         for action in actions {
             // Expiring nonces are handled above
             if is_expiring_nonce && action.address() == NONCE_PRECOMPILE_ADDRESS {
@@ -180,6 +201,19 @@ impl TempoBlockExecutor<'_> {
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
+                StorageAction::ConfigCommitment(address, before, after) => {
+                    let (_, current) = match commitments.entry(address) {
+                        Entry::Occupied(entry) => entry.into_mut(),
+                        Entry::Vacant(entry) => {
+                            let initial = Self::config_commitment(db, address, spec)?;
+                            entry.insert((initial, initial))
+                        }
+                    };
+                    if *current != before {
+                        return Err(StorageActionReplayError::ActionConflict.into());
+                    }
+                    *current = after;
+                }
             }
         }
 
@@ -201,7 +235,34 @@ impl TempoBlockExecutor<'_> {
             }
         }
 
+        // Mirrors set_config_commitment: the first commitment also installs the marker code.
+        for (address, (initial, commitment)) in commitments {
+            if initial == commitment {
+                continue;
+            }
+            let original = db.get_account(&address).map_err(map_database_error)?;
+            let mut current = original.clone().unwrap_or_default();
+            if initial.is_zero() {
+                current = current.with_code(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
+            }
+            current.extension = encode_config_commitment(commitment).into();
+            state.insert_account(address, original, Some(current));
+        }
+
         Ok(state)
+    }
+
+    fn config_commitment<DB: DynDatabase>(
+        db: &mut CacheDB<DB>,
+        address: Address,
+        spec: TempoHardfork,
+    ) -> Result<B256, BlockExecutionError> {
+        db.get_account(&address)
+            .map_err(map_database_error)?
+            .map_or(Ok(B256::ZERO), |info| {
+                account_config_commitment(&info, spec)
+            })
+            .map_err(BlockExecutionError::other)
     }
 
     fn apply_expiring_nonce_replay(
@@ -259,7 +320,7 @@ impl TempoBlockExecutor<'_> {
             NONCE_PRECOMPILE_ADDRESS,
             ring_slot,
             old_hash,
-            U256::from_be_slice(expiring_nonce.hash.as_slice()),
+            expiring_nonce.hash.into(),
         );
         self.replay_state.record_sstore(
             NONCE_PRECOMPILE_ADDRESS,
@@ -303,10 +364,75 @@ pub struct StorageActionReplayOutcome {
 pub struct StorageActionReplay {
     /// Precomputed transaction execution result that can be reused if actions are applied without conflicts.
     pub result: TxResult<TempoEvmTypes>,
+    /// Accounts the execution loaded, as of the start of the transaction. Replay conflicts when
+    /// one of them differs in the block state.
+    pub accounts: Vec<AccountRead>,
     /// Actions to replay in order to get to the state after the transaction execution.
     pub actions: Vec<StorageAction>,
     /// Semantic replay data for expiring nonce transactions.
     pub expiring_nonce: Option<ExpiringNonceReplay>,
+}
+
+impl StorageActionReplay {
+    /// Builds the replay of a prewarmed execution, capturing every account it loaded.
+    ///
+    /// Fails when a loaded account's extension is malformed under `spec`.
+    pub fn new(
+        executed: TxResultWithState<TempoEvmTypes>,
+        actions: Vec<StorageAction>,
+        expiring_nonce: Option<ExpiringNonceReplay>,
+        spec: TempoHardfork,
+    ) -> Result<Self, BlockExecutionError> {
+        let accounts = executed
+            .pending_state
+            .account_changes()
+            .map(|changes| AccountRead::new(changes.address, changes.original, spec))
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            result: executed.result,
+            accounts,
+            actions,
+            expiring_nonce,
+        })
+    }
+}
+
+/// Transaction-start view of an account that a prewarmed transaction loaded.
+///
+/// Holds what replay compares with the block state. Nonce and balance are not compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountRead {
+    address: Address,
+    code_hash: B256,
+    /// TIP-1108 config commitment, zero when the account has none.
+    commitment: B256,
+    /// Whether the account is absent or empty.
+    empty: bool,
+}
+
+impl AccountRead {
+    /// Reads `info`, where `None` is an absent account.
+    fn new(
+        address: Address,
+        info: Option<&AccountInfo>,
+        spec: TempoHardfork,
+    ) -> Result<Self, BlockExecutionError> {
+        let Some(info) = info else {
+            return Ok(Self {
+                address,
+                code_hash: KECCAK256_EMPTY,
+                commitment: B256::ZERO,
+                empty: true,
+            });
+        };
+        Ok(Self {
+            address,
+            code_hash: info.code_hash,
+            commitment: account_config_commitment(info, spec)
+                .map_err(BlockExecutionError::other)?,
+            empty: info.is_empty(),
+        })
+    }
 }
 
 /// Replay data for expiring nonce transactions.
@@ -584,8 +710,12 @@ mod tests {
         build_tempo_evm,
         test_utils::{TestExecutorBuilder, test_chainspec},
     };
-    use alloy_consensus::{Signed, TxEip1559, transaction::Recovered};
-    use evm2::evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles};
+    use alloy_consensus::{
+        SignableTransaction, Signed, TxEip1559, TxLegacy, transaction::Recovered,
+    };
+    use alloy_primitives::{Signature, TxKind};
+    use evm2::evm::{InMemoryDB, precompile::NoPrecompiles};
+    use reth_primitives_traits::SignedTransaction;
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
     use tempo_precompiles::{
@@ -630,6 +760,145 @@ mod tests {
     }
 
     #[test]
+    fn config_commitment_replays_only_when_unchanged() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let current = B256::repeat_byte(0x77);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        for recorded in [B256::ZERO, current] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T14)
+                .build(InMemoryDB::default(), &chainspec);
+            let info = AccountInfo {
+                extension: encode_config_commitment(current).into(),
+                ..Default::default()
+            };
+            executor
+                .evm_mut()
+                .overlay_db_mut()
+                .insert_account_info(&sender, info);
+            let replay = StorageActionReplay {
+                result: TxResult::<TempoEvmTypes> {
+                    status: true,
+                    ..Default::default()
+                },
+                accounts: vec![],
+                actions: vec![StorageAction::ConfigCommitment(sender, recorded, recorded)],
+                expiring_nonce: None,
+            };
+            let result = executor.execute_transaction_with_actions(
+                tx.clone().with_signer(sender),
+                replay,
+                |_| {},
+            );
+            let reason = result
+                .as_ref()
+                .err()
+                .and_then(StorageActionReplayError::from_block_execution_error);
+            assert_eq!(
+                reason == Some(StorageActionReplayError::ActionConflict),
+                recorded != current,
+                "{recorded}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_read_replays_only_when_code_unchanged() {
+        let chainspec = test_chainspec();
+        let target = Address::repeat_byte(0x22);
+        let spec = TempoHardfork::T14;
+        for delegated in [false, true] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .build(InMemoryDB::default(), &chainspec);
+            // Prewarming read the target before it had code.
+            let mut executed = TxResultWithState::<TempoEvmTypes>::default();
+            executed.pending_state.insert_account(target, None, None);
+            let replay = StorageActionReplay::new(executed, vec![], None, spec).unwrap();
+            if delegated {
+                // An earlier tx in the block delegated the target with EIP-7702.
+                executor.evm_mut().overlay_db_mut().insert_account_info(
+                    &target,
+                    AccountInfo::default()
+                        .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x33))),
+                );
+            }
+            let result = executor.replay_actions(&replay.accounts, [], None);
+            if delegated {
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
+            } else {
+                assert!(result.unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn config_commitment_write_replays_registration() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let commitment = B256::repeat_byte(0x77);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 21_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .build(InMemoryDB::default(), &chainspec);
+        executor
+            .evm_mut()
+            .overlay_db_mut()
+            .insert_account_info(&sender, AccountInfo::default());
+        let replay = StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                ..Default::default()
+            },
+            accounts: vec![],
+            actions: vec![
+                StorageAction::ConfigCommitment(sender, B256::ZERO, commitment),
+                StorageAction::ConfigCommitment(sender, commitment, commitment),
+            ],
+            expiring_nonce: None,
+        };
+        executor
+            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+            .unwrap();
+        let info = executor
+            .evm_mut()
+            .overlay_db_mut()
+            .get_account(&sender)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            account_config_commitment(&info, TempoHardfork::T14).unwrap(),
+            commitment
+        );
+        assert_eq!(
+            info.code_hash,
+            Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE).hash_slow()
+        );
+    }
+
+    #[test]
     fn fee_token_balance_check_replays_only_when_affordability_is_unchanged() {
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
@@ -659,7 +928,7 @@ mod tests {
                     U256::from(10),
                 ));
             }
-            let result = executor.replay_actions(actions, None);
+            let result = executor.replay_actions(&[], actions, None);
             if succeeds {
                 let state = result.unwrap();
                 let value = state
@@ -689,6 +958,7 @@ mod tests {
         let chainspec = test_chainspec();
         let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(80));
         let result = executor.replay_actions(
+            &[],
             [
                 StorageAction::FeeTokenBalanceCheck(
                     token,
@@ -954,7 +1224,7 @@ mod tests {
         let slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
         let chainspec = test_chainspec();
         let mut executor = executor_with_storage(&chainspec, PATH_USD_ADDRESS, slot, balance);
-        let error = executor.replay_actions(actions, None).unwrap_err();
+        let error = executor.replay_actions(&[], actions, None).unwrap_err();
         assert_eq!(
             StorageActionReplayError::from_block_execution_error(&error),
             Some(StorageActionReplayError::ActionConflict)

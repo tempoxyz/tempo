@@ -19,6 +19,7 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::{TempoBlockEnv, TempoBlockExt, account::encode_config_commitment};
+use test_case::test_case;
 
 struct TestTypes;
 
@@ -26,7 +27,7 @@ impl EvmTypesHost for TestTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = ();
-    type EvmExt = ();
+    type EvmExt = tempo_evm::TempoEvmExt;
     type MessageExt = ();
     type MessageResultExt = ();
     type TxEnvExt = ();
@@ -306,78 +307,57 @@ fn evm_static_write_is_rejected_uncharged() {
     assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), B256::ZERO);
 }
 
-/// A commitment write to an account holding `previous`, with its expected regular and state gas.
-struct WriteCase {
-    previous: B256,
-    cost: u64,
-    state_gas: u64,
-}
-
-#[test]
-fn evm_write_gas_boundary() {
+#[test_case(B256::ZERO)]
+#[test_case(INITIAL)]
+fn evm_write_gas_boundary(previous: B256) {
     let spec = TempoHardfork::T14;
     let params = gas_params(spec, false);
     let registration = 2 * params.get(GasId::NewAccountCost);
-    for WriteCase {
-        previous,
-        cost,
-        state_gas,
-    } in [
-        WriteCase {
-            previous: B256::ZERO,
-            cost: registration,
-            state_gas: 2 * params.new_account_state_gas(),
-        },
-        WriteCase {
-            previous: INITIAL,
-            cost: 5_000,
-            state_gas: 0,
-        },
-    ] {
-        for shortfall in [1, 0] {
-            let mut evm = new_evm(spec, false);
-            {
-                let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-                if !previous.is_zero() {
-                    storage
-                        .set_config_commitment(
-                            ACCOUNT,
-                            previous,
-                            ConfigCommitmentWriteGas::Intrinsic,
-                        )
-                        .unwrap();
-                }
-                // Pay for the prerequisite account read separately from the write budget.
-                assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), previous);
-            }
-            let reservoir = 100_000;
-            let mut gas_tracker =
-                GasTracker::new_with_execution_gas_and_reservoir(cost - shortfall, reservoir);
-            {
-                let mut storage =
-                    EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, false);
-                let result = storage.set_config_commitment(
-                    ACCOUNT,
-                    ROTATED,
-                    ConfigCommitmentWriteGas::Precompile,
-                );
-                if shortfall == 0 {
-                    result.unwrap();
-                    assert_eq!(storage.gas_used(), cost);
-                    assert_eq!(storage.state_gas_used(), state_gas);
-                    assert_eq!(storage.reservoir(), reservoir - state_gas);
-                } else {
-                    assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
-                }
-                assert_eq!(storage.state_gas_spilled(), 0);
-                assert_eq!(storage.gas_refunded(), 0);
-            }
+    // The expected regular and state gas of a commitment write to an account holding `previous`.
+    let (cost, state_gas) = if previous.is_zero() {
+        (registration, 2 * params.new_account_state_gas())
+    } else {
+        (5_000, 0)
+    };
+    for shortfall in [1, 0] {
+        let mut evm = new_evm(spec, false);
+        {
             let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
-            assert_eq!(
-                storage.config_commitment(ACCOUNT).unwrap(),
-                if shortfall == 0 { ROTATED } else { previous }
-            );
+            if !previous.is_zero() {
+                storage
+                    .set_config_commitment(ACCOUNT, previous, ConfigCommitmentWriteGas::Intrinsic)
+                    .unwrap();
+            }
+            // Pay for the prerequisite account read separately from the write budget.
+            assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), previous);
         }
+        let reservoir = 100_000;
+        let mut gas_tracker =
+            GasTracker::new_with_execution_gas_and_reservoir(cost - shortfall, reservoir);
+        {
+            let mut storage =
+                EvmPrecompileStorageProvider::new(&mut evm, &mut gas_tracker, spec, false);
+            let result = storage.set_config_commitment(
+                ACCOUNT,
+                ROTATED,
+                ConfigCommitmentWriteGas::Precompile,
+            );
+            if shortfall == 0 {
+                result.unwrap();
+                assert_eq!(storage.gas_used(), cost);
+                assert_eq!(storage.state_gas_used(), state_gas);
+                assert_eq!(storage.reservoir(), reservoir - state_gas);
+            } else {
+                assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+            }
+            assert_eq!(storage.state_gas_spilled(), 0);
+            assert_eq!(storage.gas_refunded(), 0);
+        }
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+        assert_eq!(
+            storage.config_commitment(ACCOUNT).unwrap(),
+            if shortfall == 0 { ROTATED } else { previous }
+        );
     }
 }
 

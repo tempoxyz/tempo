@@ -33,8 +33,9 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     input_cost,
     storage::{
-        PrecompileStorageProvider, StorageCtx, actions::StorageActions,
-        evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
     storage_credits::NonCreditableSlots,
 };
@@ -59,6 +60,11 @@ impl ZonePrecompileEnv {
             actions,
             non_creditable_slots,
         }
+    }
+
+    /// The hardfork the Zone EVM runs at.
+    pub(crate) const fn spec(&self) -> TempoHardfork {
+        self.spec
     }
 }
 
@@ -102,6 +108,7 @@ pub(crate) fn execute_precompile<T>(
 ) -> PrecompileResult
 where
     T: EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     if message.destination != message.call_target {
         return Err(PrecompileError::Revert(
@@ -109,7 +116,7 @@ where
         ));
     }
 
-    let (data, caller) = (message.input.as_ref(), message.caller);
+    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };
@@ -122,6 +129,9 @@ where
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
+    // Preserve input borrowed from caller memory before storage borrows the EVM.
+    let input = data.to_vec();
+    let data = input.as_slice();
     let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
     let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
     let storage_gas = if fixed_gas.is_some() {
@@ -227,7 +237,7 @@ mod tests {
         let message = Message::<TempoEvmTypes> {
             gas_limit: gas,
             caller,
-            input: Bytes::copy_from_slice(data),
+            input: Bytes::copy_from_slice(data).into(),
             destination: target,
             call_target: target,
             code_address: target,

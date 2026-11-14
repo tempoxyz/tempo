@@ -244,7 +244,7 @@ pub fn apply_dump(
             storage.get(&slot).is_none_or(|value| value.is_zero()),
             "dump conflicts with genesis slot {slot} for token {address}"
         );
-        storage.insert(slot, B256::from(value.to_be_bytes::<32>()));
+        storage.insert(slot, B256::from(value));
         *tokens.entry(address).or_default() += 1;
         Ok(())
     })?;
@@ -269,9 +269,10 @@ fn directory_bytes(path: &Path) -> eyre::Result<u64> {
 mod tests {
     use super::*;
     use alloy_genesis::GenesisAccount;
-    use alloy_primitives::{Bytes, U256, address};
+    use alloy_primitives::{Bytes, address};
     use clap::Parser;
     use tempo_state_bloat::GenerateStateBloat;
+    use test_case::test_case;
 
     const TOKEN: Address = address!("20c0000000000000000000000000000000000009");
 
@@ -292,7 +293,7 @@ mod tests {
             dump.extend_from_slice(&(entries.len() as u64).to_be_bytes());
             for (slot, value) in *entries {
                 dump.extend_from_slice(B256::with_last_byte(*slot).as_slice());
-                dump.extend_from_slice(&U256::from(*value).to_be_bytes::<32>());
+                dump.extend_from_slice(B256::with_last_byte(*value).as_slice());
             }
         }
         dump
@@ -418,11 +419,16 @@ mod tests {
         );
     }
 
-    /// Extra CLI args, pathUSD dump entries, expected error, and paths left in the directory.
-    type Case<'a> = (&'a [&'a str], &'a [(u8, u8)], &'a str, &'a [&'a str]);
-
+    // `create_dir_all` leaves the datadir's parent; every reserved output is removed.
+    #[test_case(&[], &[(1, 0)], "zero dump values are not supported", &["dump.bin", "genesis.json", "parent"])]
+    #[test_case(&["--datadir.static-files", "{dir}/static"], &[(1, 1)], "state bloat requires static files and RocksDB inside the datadir", &["dump.bin", "genesis.json"])]
     #[tokio::test(flavor = "multi_thread")]
-    async fn failed_import_leaves_only_preexisting_paths() {
+    async fn failed_import_leaves_only_preexisting_paths(
+        extra: &[&str],
+        entries_in_dump: &[(u8, u8)],
+        expected: &str,
+        remaining: &[&str],
+    ) {
         let entries = |dir: &Path| {
             let mut names: Vec<_> = fs::read_dir(dir)
                 .unwrap()
@@ -431,36 +437,19 @@ mod tests {
             names.sort();
             names
         };
-        let cases: [Case<'_>; 2] = [
-            // `create_dir_all` leaves the datadir's parent; every reserved output is removed.
-            (
-                &[],
-                &[(1, 0)],
-                "zero dump values are not supported",
-                &["dump.bin", "genesis.json", "parent"],
-            ),
-            (
-                &["--datadir.static-files", "{dir}/static"],
-                &[(1, 1)],
-                "state bloat requires static files and RocksDB inside the datadir",
-                &["dump.bin", "genesis.json"],
-            ),
-        ];
-        for (extra, entries_in_dump, expected, remaining) in cases {
-            let directory = tempfile::tempdir().unwrap();
-            fs::write(
-                directory.path().join("dump.bin"),
-                dump(&[(PATH_USD_ADDRESS, entries_in_dump)]),
-            )
-            .unwrap();
-            let dir = directory.path().to_str().unwrap();
-            let extra: Vec<_> = extra.iter().map(|arg| arg.replace("{dir}", dir)).collect();
-            let error = init(directory.path(), &extra).await.unwrap_err();
-            assert_eq!(error.to_string(), expected);
-            assert_eq!(entries(directory.path()), remaining);
-            if remaining.contains(&"parent") {
-                assert!(entries(&directory.path().join("parent")).is_empty());
-            }
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("dump.bin"),
+            dump(&[(PATH_USD_ADDRESS, entries_in_dump)]),
+        )
+        .unwrap();
+        let dir = directory.path().to_str().unwrap();
+        let extra: Vec<_> = extra.iter().map(|arg| arg.replace("{dir}", dir)).collect();
+        let error = init(directory.path(), &extra).await.unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(entries(directory.path()), remaining);
+        if remaining.contains(&"parent") {
+            assert!(entries(&directory.path().join("parent")).is_empty());
         }
     }
 }

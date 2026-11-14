@@ -6,13 +6,15 @@
 use std::{net::SocketAddr, time::Duration};
 
 use crate::{Setup, metrics::wait_for_height, setup_validators};
+use alloy_provider::RootProvider;
+use alloy_rpc_client::{RpcClient, WsConnect};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Runner as _,
     deterministic::{self, Runner},
 };
 use futures::channel::oneshot;
-use jsonrpsee::{http_client::HttpClientBuilder, ws_client::WsClientBuilder};
+use tempo_alloy::TempoNetwork;
 use tempo_node::rpc::consensus::{Event, Query, TempoConsensusApiClient};
 
 /// Test that subscribing to consensus events works and that finalization
@@ -54,17 +56,20 @@ async fn consensus_subscribe_and_query_finalization() {
     let (http_addr, ws_addr) = addr_rx.await.unwrap();
     let ws_url = format!("ws://{ws_addr}");
     let http_url = format!("http://{http_addr}");
-    let ws_client = WsClientBuilder::default().build(&ws_url).await.unwrap();
+    let ws_client = RootProvider::<TempoNetwork>::new(
+        RpcClient::connect_pubsub(WsConnect::new(ws_url))
+            .await
+            .unwrap(),
+    );
     let mut subscription = ws_client.subscribe_events().await.unwrap();
 
-    let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
+    let http_client = RootProvider::<TempoNetwork>::new_http(http_url.parse().unwrap());
 
     let finalized_height = initial_height;
 
     let block = loop {
-        let event = tokio::time::timeout(Duration::from_secs(10), subscription.next())
+        let event = tokio::time::timeout(Duration::from_secs(10), subscription.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
 

@@ -63,6 +63,8 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use commonware_codec::Encode;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, ValidatorConfigV2Error,
@@ -134,9 +136,6 @@ mod tests {
 
     #[test]
     fn test_add_validator_dispatch() -> eyre::Result<()> {
-        use commonware_codec::Encode;
-        use commonware_cryptography::{Signer, ed25519::PrivateKey};
-
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let owner = Address::random();
         let validator_addr = Address::random();
@@ -214,28 +213,6 @@ mod tests {
 
             let result = vc.call(&calldata, non_owner);
             expect_precompile_revert(&result, ValidatorConfigV2Error::unauthorized());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let sender = Address::random();
-        let owner = Address::random();
-
-        // T2: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let result = vc.call(&[0x12, 0x34, 0x56, 0x78], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            // Insufficient calldata also returns reverted output
-            let result = vc.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })

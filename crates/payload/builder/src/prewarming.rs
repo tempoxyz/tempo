@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_consensus::transaction::Recovered;
@@ -15,7 +18,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
-use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
+use tempo_transaction_pool::{AASequenceId, StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
@@ -28,6 +31,9 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    /// Lanes passed to [`BestTransactions::mark_invalid`]. Buffered transactions on them are
+    /// skipped in [`Iterator::next`] instead of re-scanning the buffer on every invalidation.
+    invalidated: InvalidatedLanes,
 }
 
 impl BestTransactionsPrewarming {
@@ -46,6 +52,7 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            invalidated: InvalidatedLanes::default(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -103,8 +110,8 @@ impl BestTransactionsPrewarming {
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                // Only parallel jobs send their result. A sender held by every job would make
-                // the drain on invalidation wait for all in-flight and queued prewarms.
+                // Only parallel jobs send their result; in sequential mode the transaction is
+                // forwarded below before its prewarm job runs.
                 let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
 
                 if !parallel {
@@ -134,21 +141,8 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Advance => {
                         advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid {
-                        invalid,
-                        old_rx,
-                        new_tx,
-                    } => {
+                    BestTransactionsCommand::Invalid(invalid) => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                        ctx.transactions_tx = new_tx;
-
-                        for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.tx)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
-                            }
-                        }
                     }
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
@@ -160,9 +154,6 @@ impl BestTransactionsPrewarming {
                         ctx.prewarm.stop();
                         drop(drain_rx);
                         return;
-                    }
-                    BestTransactionsCommand::InvalidExpiringNonce(invalid) => {
-                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                     }
                 }
             }
@@ -241,15 +232,31 @@ impl BestTransactionsPrewarming {
                     "Generated replay for transaction"
                 );
 
-                Some(Box::new(StorageActionReplay {
-                    result: result.result,
-                    actions,
-                    expiring_nonce,
-                }))
+                let spec = evm.config_spec_id();
+                match StorageActionReplay::new(result, actions, expiring_nonce, spec) {
+                    Ok(replay) => Some(Box::new(replay)),
+                    Err(err) => {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to generate replay for transaction"
+                        );
+                        None
+                    }
+                }
             },
         );
 
         PrewarmedTransaction { tx, replay }
+    }
+
+    /// Returns the next already-received transaction that is not on an invalidated lane.
+    fn next_buffered(&mut self) -> Option<PrewarmedTransaction> {
+        let invalidated = &self.invalidated;
+        self.transactions_rx
+            .try_iter()
+            .flatten()
+            .find(|tx| !invalidated.contains(&tx.tx))
     }
 }
 
@@ -269,21 +276,26 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Empty replies describe earlier source polls. Drain them before deciding
-        // whether a ready transaction exists, preserving the order of actual txs.
-        if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
-            return Some(tx);
+        loop {
+            // Empty replies describe earlier source polls. Drain them before deciding
+            // whether a ready transaction exists, preserving the order of actual txs.
+            if let Some(tx) = self.next_buffered() {
+                return Some(tx);
+            }
+            self.commands_tx
+                .send(BestTransactionsCommand::Advance)
+                .ok()?;
+            // An eager advance can also reply empty while this receive is waiting.
+            // Check for buffered transactions before reporting empty to the builder,
+            // but do not wait for more replies: it must still check its build budget.
+            match self.transactions_rx.recv().ok()? {
+                // The source yielded a transaction on an invalidated lane before it saw the
+                // invalidation; poll again for one the builder can use.
+                Some(tx) if self.invalidated.contains(&tx.tx) => continue,
+                Some(tx) => return Some(tx),
+                None => return self.next_buffered(),
+            }
         }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        // An eager advance can also reply empty while this receive is waiting.
-        // Check for buffered transactions before reporting empty to the builder,
-        // but do not wait for more replies: it must still check its build budget.
-        self.transactions_rx
-            .recv()
-            .ok()?
-            .or_else(|| self.transactions_rx.try_iter().flatten().next())
     }
 }
 
@@ -294,20 +306,12 @@ impl BestTransactions for BestTransactionsPrewarming {
             kind,
         };
         // Expiring nonces have no dependent transactions to remove from the buffer.
-        if transaction.tx.transaction.is_expiring_nonce() {
-            let _ = self
-                .commands_tx
-                .send(BestTransactionsCommand::InvalidExpiringNonce(invalid));
-            return;
+        if !transaction.tx.transaction.is_expiring_nonce() {
+            self.invalidated.insert(&transaction.tx);
         }
-
-        let (new_tx, new_rx) = mpsc::channel();
-        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
-        let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
-            invalid,
-            old_rx,
-            new_tx,
-        });
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::Invalid(invalid));
     }
 
     fn no_updates(&mut self) {
@@ -453,18 +457,13 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
-    Invalid {
-        invalid: InvalidTransaction,
-        old_rx: Receiver<Option<PrewarmedTransaction>>,
-        new_tx: Sender<Option<PrewarmedTransaction>>,
-    },
+    Invalid(InvalidTransaction),
     NoUpdates,
     SkipBlobs(bool),
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
     },
-    InvalidExpiringNonce(InvalidTransaction),
 }
 
 /// Invalid transaction encountered during execution.
@@ -474,26 +473,24 @@ struct InvalidTransaction {
     kind: InvalidPoolTransactionError,
 }
 
-/// Returns whether the candidate transaction is invalidated by the given invalid transaction.
-fn is_invalidated_buffered_transaction(
-    invalid: &BestTransaction,
-    candidate: &BestTransaction,
-) -> bool {
-    // Skip invalidation for expiring nonce transactions - they are independent
-    // and should not block other expiring nonce txs from the same sender
-    if invalid.transaction.is_expiring_nonce() {
-        return false;
+/// Nonce lanes invalidated during a payload build.
+///
+/// Invalidating a transaction blocks every later transaction of its `(sender, nonce_key)` lane.
+/// A sender's non-AA transactions share the lane of nonce key 0.
+#[derive(Debug, Default)]
+struct InvalidatedLanes {
+    sequences: HashSet<AASequenceId>,
+}
+
+impl InvalidatedLanes {
+    fn insert(&mut self, invalid: &BestTransaction) {
+        self.sequences
+            .insert(*invalid.transaction.lane_transaction_id().seq_id());
     }
 
-    if invalid.transaction.is_aa_2d() {
-        candidate
-            .transaction
-            .aa_transaction_id()
-            .zip(invalid.transaction.aa_transaction_id())
-            .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
-    } else {
-        !candidate.transaction.is_aa_2d()
-            && candidate.transaction.sender() == invalid.transaction.sender()
+    fn contains(&self, candidate: &BestTransaction) -> bool {
+        self.sequences
+            .contains(candidate.transaction.lane_transaction_id().seq_id())
     }
 }
 
@@ -512,7 +509,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, Header, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
@@ -532,7 +529,11 @@ mod tests {
     };
     use tempo_chainspec::TempoChainSpec;
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
-    use tempo_precompiles::storage::actions::StorageAction;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{StorageCtx, StorageKey, actions::StorageAction},
+        tip20::{ITIP20, TIP20Token, tip20_slots},
+    };
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
     };
@@ -584,8 +585,11 @@ mod tests {
     impl BestTransactions for TestBestTransactions {
         fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
             self.log.lock().unwrap().invalid += 1;
-            self.txs
-                .retain(|tx| !is_invalidated_buffered_transaction(transaction, tx));
+            if !transaction.transaction.is_expiring_nonce() {
+                let mut invalidated = InvalidatedLanes::default();
+                invalidated.insert(transaction);
+                self.txs.retain(|tx| !invalidated.contains(tx));
+            }
         }
 
         fn no_updates(&mut self) {
@@ -611,8 +615,7 @@ mod tests {
             value: U256::ZERO,
             input: Bytes::new(),
         };
-        let envelope =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let envelope = TempoTxEnvelope::Legacy(tx.into_signed(Signature::test_signature()));
         let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
         Arc::new(ValidPoolTransaction {
             transaction_id: TransactionId::new(0u64.into(), nonce),
@@ -644,11 +647,7 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(token),
             gas_limit,
-            calls: vec![Call {
-                to: TxKind::Call(token),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(token, input)],
             nonce_key,
             valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
             ..Default::default()
@@ -866,6 +865,7 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                invalidated: InvalidatedLanes::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
@@ -899,6 +899,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
         };
 
         let next = prewarming.next();
@@ -925,6 +926,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
         };
 
         assert!(prewarming.next().is_none());
@@ -952,6 +954,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
         };
 
         assert_eq!(
@@ -1058,12 +1061,6 @@ mod tests {
 
     #[test]
     fn parallel_prewarm_records_native_transfer_balance_changes() {
-        use tempo_precompiles::{
-            PATH_USD_ADDRESS,
-            storage::{StorageCtx, StorageKey},
-            tip20::{ITIP20, TIP20Token, tip20_slots},
-        };
-
         let mut context = prewarming_context(TaskExecutor::test(), true);
         context.evm_env.block.basefee = U256::ZERO;
         let mut evm = context.evm_for_ctx().expect("prewarm EVM");
@@ -1083,16 +1080,12 @@ mod tests {
         // transfer(address,uint256), matching a payment transaction eligible for replay.
         let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
         input.extend_from_slice(&recipient.into_word().0);
-        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        input.extend_from_slice(B256::with_last_byte(100).as_slice());
         let tx = TempoTransaction {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(PATH_USD_ADDRESS, input)],
             nonce_key: U256::ONE,
             ..Default::default()
         };
@@ -1188,6 +1181,105 @@ mod tests {
     }
 
     #[test]
+    fn mark_invalid_skips_buffered_transactions_on_invalidated_lanes() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let other = Address::random();
+        let invalid_regular = test_tx(sender, 0);
+        let invalid_2d = test_payment_tx_with_nonce_key(sender, 500_000, U256::from(1));
+        let buffered = [
+            // Same sender as the invalid regular transaction.
+            test_tx(sender, 1),
+            // Same `(sender, nonce_key)` sequence as the invalid 2D transaction.
+            test_payment_tx_with_nonce_key(sender, 500_000, U256::from(1)),
+            // Other sequence of the same sender.
+            test_payment_tx_with_nonce_key(sender, 500_000, U256::from(2)),
+            test_tx(other, 0),
+        ];
+        for tx in &buffered {
+            transactions_tx
+                .send(Some(PrewarmedTransaction::without_replay(tx.clone())))
+                .unwrap();
+        }
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
+        };
+
+        for invalid in [&invalid_regular, &invalid_2d] {
+            prewarming.mark_invalid(
+                &PrewarmedTransaction::without_replay(invalid.clone()),
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+            let BestTransactionsCommand::Invalid(forwarded) = commands_rx.try_recv().unwrap()
+            else {
+                panic!("invalidation must be forwarded to the source");
+            };
+            assert_eq!(forwarded.tx.hash(), invalid.hash());
+        }
+
+        assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[2].hash());
+        assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
+        // Both transactions were already buffered, so no source poll was needed.
+        assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn invalidated_lanes_join_non_aa_and_protocol_nonce_aa() {
+        let sender = Address::random();
+        let non_aa = test_tx(sender, 0);
+        let protocol_nonce_aa = test_payment_tx_with_nonce_key(sender, 500_000, U256::ZERO);
+        let other_lane = test_payment_tx_with_nonce_key(sender, 500_000, U256::ONE);
+
+        for invalid in [&non_aa, &protocol_nonce_aa] {
+            let mut invalidated = InvalidatedLanes::default();
+            invalidated.insert(invalid);
+            assert!(invalidated.contains(&test_tx(sender, 1)));
+            assert!(invalidated.contains(&protocol_nonce_aa));
+            assert!(!invalidated.contains(&other_lane));
+            assert!(!invalidated.contains(&test_tx(Address::random(), 0)));
+        }
+    }
+
+    #[test]
+    fn next_skips_invalidated_transactions_that_arrive_after_mark_invalid() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, _commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let invalid = test_tx(sender, 0);
+        let late_same_sender = test_tx(sender, 1);
+        let other = test_tx(Address::random(), 0);
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
+        };
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(invalid),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+
+        // Deliver only after `next` has found the buffer empty and is waiting on the
+        // coordinator, so the invalidated transaction is the one it receives.
+        let delivered = [late_same_sender, other.clone()];
+        let producer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            for tx in delivered {
+                transactions_tx
+                    .send(Some(PrewarmedTransaction::without_replay(tx)))
+                    .unwrap();
+            }
+        });
+
+        assert_eq!(prewarming.next().unwrap().tx.hash(), other.hash());
+        producer.join().unwrap();
+    }
+
+    #[test]
     fn expiring_nonce_invalidation_keeps_the_existing_buffer() {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
@@ -1207,6 +1299,7 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must
@@ -1230,10 +1323,8 @@ mod tests {
         let delivered = prewarming.transactions_rx.try_recv().unwrap().unwrap();
         assert_eq!(delivered.tx.hash(), buffered[0].hash());
         for _ in 0..3 {
-            let BestTransactionsCommand::InvalidExpiringNonce(invalid) =
-                commands_rx.try_recv().unwrap()
-            else {
-                panic!("expiring nonce invalidation must not replace the buffer");
+            let BestTransactionsCommand::Invalid(invalid) = commands_rx.try_recv().unwrap() else {
+                panic!("expiring nonce invalidation must be forwarded to the source");
             };
             assert_eq!(invalid.tx.hash(), rejected.hash());
             assert!(matches!(

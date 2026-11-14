@@ -8,20 +8,31 @@
 
 use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
+use std::sync::LazyLock;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{Tx, account, all, dex, fee_amm, tip20};
+use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
 
-use reader::Reader;
+/// Whether invariants are checked: unless the process sets `TEMPO_FUZZ_INVARIANTS=0`, as callers that only
+/// need coverage, such as a corpus minimizer, do.
+pub(crate) static ENABLED: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("TEMPO_FUZZ_INVARIANTS").is_none_or(|value| value != "0"));
 
+use reader::Reader;
+pub(crate) use views::ViewCache;
+
+mod configurable_account;
 mod reader;
 mod views;
+
+pub(crate) use configurable_account::authority;
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
@@ -32,6 +43,7 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
+    pub(crate) spec: TempoHardfork,
 }
 
 impl StepEffects<'_> {
@@ -54,7 +66,7 @@ impl StepEffects<'_> {
             post,
             changes,
             logs: self.logs.to_vec(),
-            tx: Some(self.tx),
+            tx: Some(self.tx.clone()),
         }
     }
 }
@@ -74,7 +86,8 @@ pub(crate) fn logged_addresses<'a>(
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
 /// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
 /// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it.
+/// checks also run on its ledger before the step against its ledger after it. Views are answered
+/// from `view_cache`, the calls the block's earlier steps made that this step left as they were.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
@@ -84,10 +97,17 @@ pub(crate) fn check(
     selected: impl Fn(&Address) -> bool,
     holders: &[Address],
     effects: Option<StepEffects<'_>>,
+    view_cache: &ViewCache,
     failures: &mut Vec<InvariantFailure>,
     report: &mut Report,
 ) {
+    if !*ENABLED {
+        return;
+    }
     let missed = db.pre.missed();
+    if let Some(effects) = &effects {
+        view_cache.advance(effects.net);
+    }
     let mut accounts: Vec<Address> = db
         .cache
         .borrow()
@@ -119,6 +139,7 @@ pub(crate) fn check(
         evm_config,
         env: &env,
         effects: effects.as_ref(),
+        view_cache,
     };
     let mut step = Report::default();
     step.register_any(all());
@@ -157,7 +178,7 @@ pub(crate) fn check(
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
         // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
-        let mut views = views::EvmViews::new(db.view(), evm_config, env.clone(), &db.pre);
+        let mut views = reader.views(db.view(), false);
         let next = invariants_core::view(
             &mut views,
             STABLECOIN_DEX_ADDRESS,
@@ -174,22 +195,7 @@ pub(crate) fn check(
         reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
     if let Some(effects) = &effects {
-        // A transaction changes a commitment only by changing its account, so the accounts it
-        // changed and its sender are all it can have moved.
-        let mut changed: Vec<Address> = effects
-            .net
-            .addresses()
-            .copied()
-            .chain([effects.tx.sender])
-            .collect();
-        changed.sort_unstable();
-        changed.dedup();
-        let at = account::At {
-            precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
-            accounts: &changed,
-        };
-        let precompile = CONFIGURABLE_ACCOUNT_ADDRESS;
-        reader.check::<account::Commitments>(&mut step, at, precompile, account::VIEW);
+        configurable_account::check(&reader, db, effects, &mut step);
     }
 
     failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {

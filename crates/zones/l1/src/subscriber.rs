@@ -7,7 +7,11 @@ use crate::{
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::stream;
 use std::{collections::HashSet, ops::RangeInclusive};
-use tempo_contracts::precompiles::{ITIP20::TransferPolicyUpdate, TIP403_REGISTRY_ADDRESS};
+use tempo_contracts::precompiles::{
+    CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount,
+    ITIP20::{PauseStateUpdate, TransferPolicyUpdate},
+    TIP403_REGISTRY_ADDRESS,
+};
 use tempo_primitives::is_tip20_prefix;
 
 use std::collections::BTreeMap;
@@ -55,80 +59,6 @@ pub struct AuthenticatedPortalLogs {
     pub timestamp_millis: u64,
     /// Portal logs in canonical receipt and log order.
     pub logs: Vec<alloy_primitives::Log>,
-}
-
-/// One `BatchSubmitted` event from a receipt-verified finalized Tempo block.
-#[derive(Debug, Clone)]
-pub struct FinalizedBatchSubmission {
-    /// Finalized Tempo block containing the accepted submission.
-    pub block: NumHash,
-    /// Receipt-trie position of the transaction containing the accepted submission.
-    pub transaction_index: u64,
-    /// Receipt-local log position used to distinguish multiple submissions in one transaction.
-    pub log_index: u64,
-    /// Event emitted after the Portal accepted the submission.
-    pub event: crate::abi::BatchSubmitted,
-    /// Whether the accepted submission uses the pre-T13 ABI without a token cursor.
-    pub is_legacy: bool,
-}
-
-/// Extract `BatchSubmitted` events using receipt ordering rather than RPC metadata.
-///
-/// Callers must verify `receipts` against the supplied block's receipt root first.
-pub fn extract_finalized_batch_submissions(
-    block: NumHash,
-    portal_address: Address,
-    receipts: &[tempo_alloy::rpc::TempoTransactionReceipt],
-) -> Vec<FinalizedBatchSubmission> {
-    let mut submissions = Vec::new();
-    for (transaction_index, receipt) in receipts.iter().enumerate() {
-        for (log_index, log) in receipt.logs().iter().enumerate() {
-            if log.address() != portal_address {
-                continue;
-            }
-            let (event, is_legacy) =
-                if log.topic0() == Some(&crate::abi::BatchSubmitted::SIGNATURE_HASH) {
-                    (
-                        crate::abi::BatchSubmitted::decode_log(&log.inner).map(|event| event.data),
-                        false,
-                    )
-                } else if log.topic0() == Some(&crate::abi::LegacyBatchSubmitted::SIGNATURE_HASH) {
-                    (
-                        crate::abi::LegacyBatchSubmitted::decode_log(&log.inner).map(|event| {
-                            let event = event.data;
-                            crate::abi::BatchSubmitted {
-                                withdrawalBatchIndex: event.withdrawalBatchIndex,
-                                withdrawalQueueIndex: event.withdrawalQueueIndex,
-                                nextProcessedDepositQueueHash: event.nextProcessedDepositQueueHash,
-                                nextBlockHash: event.nextBlockHash,
-                                withdrawalQueueHash: event.withdrawalQueueHash,
-                                lastProcessedDepositNumber: event.lastProcessedDepositNumber,
-                                lastProcessedEnabledTokenCount: 0,
-                            }
-                        }),
-                        true,
-                    )
-                } else {
-                    continue;
-                };
-            match event {
-                Ok(event) => submissions.push(FinalizedBatchSubmission {
-                    block,
-                    transaction_index: transaction_index as u64,
-                    log_index: log_index as u64,
-                    event,
-                    is_legacy,
-                }),
-                Err(err) => warn!(
-                    target: "zone::l1::subscriber",
-                    block_number = block.number,
-                    error = ?err,
-                    "Could not decode finalized batch submission for observer"
-                ),
-            }
-        }
-    }
-    submissions
 }
 
 /// Number of consumed Tempo blocks whose authenticated Portal logs remain available to
@@ -557,7 +487,6 @@ type L1ProcessedEvents = (
     L1PortalEvents,
     HashSet<Address>,
     Option<Vec<alloy_primitives::Log>>,
-    Vec<FinalizedBatchSubmission>,
 );
 
 fn cache_invalidation_address(address: Address, topic0: Option<&B256>) -> Option<Address> {
@@ -566,9 +495,28 @@ fn cache_invalidation_address(address: Address, topic0: Option<&B256>) -> Option
     .then_some(TIP403_REGISTRY_ADDRESS)
 }
 
-fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Address> {
-    use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
+/// Returns the account whose cached TIP-1108 commitment a configurable-account precompile log
+/// changes: initial registrations and owner updates (both `ConfigurableAccountConfigUpdated`) and
+/// migrations.
+fn config_commitment_invalidation_account(log: &alloy_rpc_types_eth::Log) -> Option<Address> {
+    let [topic0, account, ..] = log.topics() else {
+        return None;
+    };
+    (log.address() == CONFIGURABLE_ACCOUNT_ADDRESS
+        && (*topic0 == IConfigurableAccount::ConfigurableAccountConfigUpdated::SIGNATURE_HASH
+            || *topic0 == IConfigurableAccount::AccountUpgraded::SIGNATURE_HASH))
+        .then(|| Address::from_word(*account))
+}
 
+/// Returns whether `address` is a TIP-20 token whose L1 pause flag changed in this log.
+///
+/// Zone execution reads the token's `paused` slot from L1, and the forward cache carries it to later
+/// blocks unless the token's address is invalidated.
+fn is_tip20_pause_update(address: Address, topic0: Option<&B256>) -> bool {
+    is_tip20_prefix(address) && topic0 == Some(&PauseStateUpdate::SIGNATURE_HASH)
+}
+
+fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Address> {
     (topic0 == Some(&TokenEnabled::SIGNATURE_HASH)).then_some(TIP403_REGISTRY_ADDRESS)
 }
 
@@ -617,9 +565,6 @@ pub struct L1Subscriber<P> {
     pub(crate) block_tracker: L1BlockTracker,
     /// Optional sink for leadership transitions.
     pub(crate) leadership_sink: Option<Arc<dyn LeadershipSink>>,
-    /// Optional observational channel for finalized accepted batch submissions.
-    pub(crate) finalized_batch_submissions:
-        Option<tokio::sync::mpsc::Sender<FinalizedBatchSubmission>>,
     /// Private encryption keys bound by finalized Portal rotation events.
     pub(crate) encryption_keys: Option<EncryptionKeyRing>,
     /// L1 subscriber metrics for connection health, backfill, and event ingestion.
@@ -671,7 +616,6 @@ where
         l1_state_cache: L1StateCache,
         block_tracker: L1BlockTracker,
         leadership_sink: Option<Arc<dyn LeadershipSink>>,
-        finalized_batch_submissions: Option<tokio::sync::mpsc::Sender<FinalizedBatchSubmission>>,
         encryption_keys: Option<EncryptionKeyRing>,
     ) -> Self {
         Self {
@@ -682,7 +626,6 @@ where
             l1_state_cache,
             block_tracker,
             leadership_sink,
-            finalized_batch_submissions,
             encryption_keys,
             subscriber_metrics: Default::default(),
         }
@@ -895,7 +838,7 @@ where
 
         while let Some((sealed, processed_events)) = blocks.try_next().await? {
             let block_number = sealed.number();
-            let (events, invalidated, portal_logs, finalized_batches) = processed_events;
+            let (events, invalidated, portal_logs) = processed_events;
             self.record_seen_block(block_number, to.saturating_sub(block_number));
 
             let anchor = sealed.num_hash();
@@ -960,35 +903,6 @@ where
             } else {
                 self.block_tracker
                     .record_with_portal_events(anchor, events.clone())?;
-            }
-            // The shadow prover observer is best-effort: a slow prover must never hold up L1
-            // ingestion, which follower block import depends on.
-            if let Some(sender) = &self.finalized_batch_submissions {
-                for submission in finalized_batches {
-                    match sender.try_send(submission) {
-                        Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(submission)) => {
-                            self.subscriber_metrics
-                                .finalized_batch_submissions_dropped
-                                .increment(1);
-                            warn!(
-                                block_number,
-                                transaction_index = submission.transaction_index,
-                                log_index = submission.log_index,
-                                "Finalized batch observer is full; dropping submission"
-                            );
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            return Err(L1SubscriberError::Fatal {
-                                block_number,
-                                stage: "finalized batch observer delivery",
-                                source: eyre::eyre!(
-                                    "finalized batch submission observer is unavailable"
-                                ),
-                            });
-                        }
-                    }
-                }
             }
             // Publish derived L1 state only after the header has been admitted to every
             // configured retention sink and the contiguous observation tracker.
@@ -1059,12 +973,22 @@ where
                         .inspect_err(|_| {
                             fetch_failures.increment(1);
                         })?;
-                    let block_hash = header_resp.hash();
+                    // Use the recomputed hash, not the one reported by the RPC.
+                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
+                    if sealed.number() != block_number {
+                        fetch_failures.increment(1);
+                        return Err(eyre::eyre!(
+                            "L1 header number mismatch: requested {block_number}, got {}",
+                            sealed.number()
+                        )
+                        .into());
+                    }
+                    let block = NumHash::new(block_number, sealed.hash());
                     let receipts = fetch_and_verify_receipts_for_header(
                         provider,
-                        NumHash::new(block_number, block_hash),
-                        header_resp.receipts_root(),
-                        header_resp.logs_bloom(),
+                        block,
+                        sealed.receipts_root(),
+                        sealed.logs_bloom(),
                     )
                     .await
                     .inspect_err(|_| {
@@ -1072,7 +996,7 @@ where
                     })?;
                     // Abort before enqueueing work or advancing caches if a portal log fails to decode.
                     let processed_events = self
-                        .extract_events(NumHash::new(block_number, block_hash), &receipts)
+                        .extract_events(block, &receipts)
                         .inspect_err(|_| {
                             subscriber_metrics.decode_fence_failures.increment(1);
                         })
@@ -1083,12 +1007,11 @@ where
                     let elapsed = start.elapsed();
                     debug!(
                         block_number,
-                        %block_hash,
+                        block_hash = %block.hash,
                         elapsed_ms = elapsed.as_millis() as u64,
                         receipts = receipts.len(),
                         "Fetched, validated, and decoded L1 block data"
                     );
-                    let sealed = SealedHeader::seal_slow(header_resp.inner.inner);
                     Ok::<_, L1SubscriberError>((sealed, processed_events))
                 }
             })
@@ -1153,7 +1076,7 @@ where
 
         let mut blocks = self.fetch_l1_blocks(l1_provider, from..=checkpoint.number);
         let mut deferred: Option<DeferredPortalWork> = None;
-        while let Some((header, (events, _, _, _))) = blocks.try_next().await? {
+        while let Some((header, (events, _, _))) = blocks.try_next().await? {
             let block = L1BlockDeposits { header, events };
             if let Some(deferred) = &mut deferred {
                 deferred.push(block);
@@ -1191,11 +1114,6 @@ where
         let mut portal_events = L1PortalEvents::default();
         let mut invalidated = HashSet::new();
         let mut portal_logs = self.config.retain_portal_evidence.then(Vec::new);
-        let finalized_batches = if self.finalized_batch_submissions.is_some() {
-            extract_finalized_batch_submissions(block, portal_address, receipts)
-        } else {
-            Vec::new()
-        };
 
         for receipt in receipts {
             let retain_receipt_logs = portal_logs.is_some() && receipt.status();
@@ -1217,6 +1135,10 @@ where
                         })?;
                 } else if let Some(address) = cache_invalidation_address(address, log.topic0()) {
                     invalidated.extend([address, log.address()]);
+                } else if is_tip20_pause_update(address, log.topic0()) {
+                    invalidated.insert(address);
+                } else if let Some(account) = config_commitment_invalidation_account(log) {
+                    invalidated.insert(account);
                 }
             }
         }
@@ -1226,7 +1148,7 @@ where
             invalidated.extend([event.token, TIP403_REGISTRY_ADDRESS]);
         }
         self.record_portal_event_metrics(&portal_events);
-        Ok((portal_events, invalidated, portal_logs, finalized_batches))
+        Ok((portal_events, invalidated, portal_logs))
     }
 
     fn record_seen_block(&self, block_number: u64, lag_blocks: u64) {
@@ -1357,7 +1279,8 @@ pub fn verify_receipts_against_header(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_primitives::{IntoLogData, address};
+    use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountEvent};
 
     #[test]
     fn token_policy_updates_invalidate_the_registry() {
@@ -1367,6 +1290,61 @@ mod tests {
             cache_invalidation_address(token, Some(&TransferPolicyUpdate::SIGNATURE_HASH)),
             Some(TIP403_REGISTRY_ADDRESS)
         );
+    }
+
+    #[test]
+    fn token_pause_updates_invalidate_only_the_token() {
+        let token = address!("20C0000000000000000000000000000000000999");
+        let pause = Some(&PauseStateUpdate::SIGNATURE_HASH);
+
+        assert!(is_tip20_pause_update(token, pause));
+        assert_eq!(cache_invalidation_address(token, pause), None);
+        assert!(!is_tip20_pause_update(
+            token,
+            Some(&TransferPolicyUpdate::SIGNATURE_HASH)
+        ));
+        assert!(!is_tip20_pause_update(Address::repeat_byte(0x11), pause));
+    }
+
+    #[test]
+    fn configurable_account_logs_invalidate_their_account() {
+        let account = Address::repeat_byte(0x11);
+        let rpc_log = |address, event: ConfigurableAccountEvent| alloy_rpc_types_eth::Log {
+            inner: alloy_primitives::Log {
+                address,
+                data: event.into_log_data(),
+            },
+            ..Default::default()
+        };
+        let events = [
+            ConfigurableAccountEvent::configurable_account_config_updated(
+                account,
+                B256::ZERO,
+                1,
+                1,
+                vec![],
+            ),
+            ConfigurableAccountEvent::account_upgraded(
+                account,
+                B256::repeat_byte(1),
+                B256::ZERO,
+                1,
+                vec![],
+            ),
+        ];
+        for event in events {
+            assert_eq!(
+                config_commitment_invalidation_account(&rpc_log(
+                    CONFIGURABLE_ACCOUNT_ADDRESS,
+                    event.clone()
+                )),
+                Some(account)
+            );
+            assert_eq!(
+                config_commitment_invalidation_account(&rpc_log(Address::ZERO, event)),
+                None
+            );
+        }
     }
 
     #[test]

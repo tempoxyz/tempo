@@ -2,8 +2,8 @@
 
 use std::num::NonZeroU32;
 
-use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
+use bytes::BufMut;
+use commonware_codec::{Buf, EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
 #[cfg(feature = "commonware-consensus")]
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -19,6 +19,9 @@ use commonware_cryptography::{
 use commonware_utils::{NZU32, ordered};
 
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
+
+/// The output of a DKG ceremony, as [`OnchainDkgOutcome::output`] carries it.
+pub type CeremonyOutput = Output<MinSig, PublicKey>;
 
 /// The outcome of a DKG ceremony as it is written to the chain.
 ///
@@ -160,7 +163,7 @@ mod tests {
             assert_eq!(&bytes[prefix.len()..], payload);
             assert_eq!(bytes.len(), on_chain.encode_size());
             assert_eq!(
-                OnchainDkgOutcome::read(&mut bytes.as_ref()).unwrap(),
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(bytes.as_ref())).unwrap(),
                 on_chain
             );
         }

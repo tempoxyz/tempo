@@ -536,7 +536,7 @@ jobs:
             PR_NUMBER=$(gh pr view reth-auto-bump --json number --jq '.number')
           fi
 
-          BENCH_COMMAND="derek bench preset=tip20"
+          BENCH_COMMAND="derek bench preset=tip20 slack"
           EXISTING_BENCH_COMMENT=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --paginate \
             --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
@@ -568,9 +568,35 @@ jobs:
               echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
               exit 1
             fi
-            echo "Polling CI checks..."
+            # Checks must belong to the commit just pushed: right after a push, the PR can still
+            # report the previous head's checks, whose stale failures would send Amp a problem it
+            # already fixed (and then give up when Amp finds nothing to change).
+            # Once the head has matched, later pushes (e.g. a maintainer's manual fix) are followed
+            # like before, since gh pr checks always reports the PR's current head.
+            EXPECTED_SHA=$(git rev-parse HEAD)
+            echo "Polling CI checks for $EXPECTED_SHA..."
+            HEAD_WAIT_START=$SECONDS
+            HEAD_MATCHED=false
+            while [ "$HEAD_MATCHED" != "true" ]; do
+              PR_HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+              if [ "$PR_HEAD_SHA" = "$EXPECTED_SHA" ]; then
+                HEAD_MATCHED=true
+              elif [ $(( SECONDS - HEAD_WAIT_START )) -ge 600 ]; then
+                echo "::error::PR head is still ${PR_HEAD_SHA:-unknown}, expected $EXPECTED_SHA after 10m"
+                exit 1
+              else
+                echo "Waiting for the PR head to become $EXPECTED_SHA (now ${PR_HEAD_SHA:-unknown})..."
+                sleep 15
+              fi
+            done
+
+            # The stuck-CI timer starts once CI can run on the pushed commit.
             WAIT_START=$SECONDS
+            # Gate checks that every CI run reports; until all of them appear, CI hasn't fully
+            # started and an empty pending list doesn't mean it passed.
+            EXPECTED_CHECKS='["lint success","specs success","test success"]'
             while true; do
+
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
               # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
               if ! echo "$STATUS" | jq empty 2>/dev/null; then
@@ -588,12 +614,25 @@ jobs:
 
               # External reviews run after this loop posts their commands, so they must not
               # block the pre-audit CI gate. Failed reviews are still handled above.
-              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | length')
+              # Tempo Network E2E runs on Argo and can take longer than CI_TIMEOUT_MINUTES,
+              # so it is not waited on: only a failure reported before the other checks
+              # finish is handled above, and a later E2E failure is left to reviewers.
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
+              MISSING=$(echo "$STATUS" | jq -r --argjson expected "$EXPECTED_CHECKS" '$expected - map(.name) | join(", ")')
+              if [ "$PENDING" = "0" ] 2>/dev/null && [ -n "$MISSING" ]; then
+                if [ $(( (SECONDS - WAIT_START) / 60 )) -ge "$CI_TIMEOUT_MINUTES" ]; then
+                  echo "::error::Gate checks never reported after ${CI_TIMEOUT_MINUTES}m: $MISSING"
+                  exit 1
+                fi
+                echo "Waiting for gate checks to report: $MISSING"
+                sleep 60
+                continue
+              fi
               if [ "$PENDING" = "0" ] 2>/dev/null; then
                 echo "All CI checks passed!"
                 PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
 
-                BENCH_COMMAND="derek bench preset=tip20"
+                BENCH_COMMAND="derek bench preset=tip20 slack"
                 EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
                   --paginate \
                   --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
@@ -615,7 +654,7 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
                 HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
@@ -654,6 +693,9 @@ jobs:
                 elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
                   echo "Amp made no changes for stuck jobs — giving up"
                   exit 1
+                else
+                  # Amp committed itself; make sure the commit CI is polled for is pushed
+                  git push origin "HEAD:$PR_BRANCH"
                 fi
                 # Restart the outer loop to wait for new CI run
                 continue 2
@@ -703,105 +745,122 @@ jobs:
             elif [ "$(git rev-parse HEAD)" = "$PRE_SHA" ]; then
               echo "Amp made no changes but CI is still failing — giving up"
               exit 1
+            else
+              # Amp committed itself; make sure the commit CI is polled for is pushed
+              git push origin "HEAD:$PR_BRANCH"
             fi
           done
 
-      # ── Slack notification ─────────────────────────────────────
-      - name: Notify Slack on failure
-        if: failure()
+      # ── incident.io alert ──────────────────────────────────────
+      # Pages reth on-call through incident.io's Reth CI source (which posts to
+      # #eng-reth-alerts) when the update fails, and resolves the same alert on the
+      # next successful bump. Fails loudly if a failure cannot be sent.
+      - name: Update incident.io alert
+        if: ${{ !cancelled() && github.repository == 'tempoxyz/tempo' && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ secrets.DEREK_UPDATE_RETH_TOKEN }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
-          SLACK_CHANNEL: C09KA1JNJ02 # eng-reth-alerts
-          OLD_REV_IN: ${{ steps.update.outputs.old_rev }}
-          NEW_REV_IN: ${{ steps.update.outputs.new_rev }}
-          BUMPED_IN: ${{ steps.update.outputs.bumped }}
-          CLIPPY_PASSED_IN: ${{ steps.check-loop.outputs.clippy_passed }}
-          TEST_PASSED_IN: ${{ steps.test-loop.outputs.test_passed }}
+          INCIDENT_IO_URL: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
+          INCIDENT_IO_TOKEN: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+          OLD_REV: ${{ steps.update.outputs.old_rev }}
+          NEW_REV: ${{ steps.update.outputs.new_rev }}
+          BUMPED: ${{ steps.update.outputs.bumped }}
+          CLIPPY_PASSED: ${{ steps.check-loop.outputs.clippy_passed }}
+          TEST_PASSED: ${{ steps.test-loop.outputs.test_passed }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          PR_BRANCH="reth-auto-bump"
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          OLD_REV="${OLD_REV_IN}"
-          NEW_REV="${NEW_REV_IN}"
-          BUMPED="${BUMPED_IN}"
-          CLIPPY_PASSED="${CLIPPY_PASSED_IN}"
-          TEST_PASSED="${TEST_PASSED_IN}"
-
-          PR_NUMBER=""
-          PR_URL=""
-          PR_INFO=$(gh pr list --head "$PR_BRANCH" --base main --state open --json number,url --jq '.[0] | select(.) | [.number, .url] | @tsv' 2>/dev/null || true)
-          if [ -n "$PR_INFO" ]; then
-            IFS=$'\t' read -r PR_NUMBER PR_URL <<< "$PR_INFO"
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATUS="resolved"
+            TITLE="Reth update recovered"
+            OUTCOME="succeeded"
+          else
+            STATUS="firing"
+            TITLE="Reth update failed"
+            OUTCOME="failed"
           fi
 
-          MENTION="<!subteam^S0C0784UDQF|oncall-reth>"
-          EMOJI="❌"
-          STATUS="failed"
-          COLOR="#e01e5a"
-
-          # Build detail lines
-          DETAILS=""
-          if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
-            DETAILS="${DETAILS}\n• <https://github.com/paradigmxyz/reth/commit/${OLD_REV}|${OLD_REV:0:7}> → <https://github.com/paradigmxyz/reth/commit/${NEW_REV}|${NEW_REV:0:7}> (<https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}|diff>)"
-          fi
-
-          if [ "$CLIPPY_PASSED" = "false" ]; then
-            DETAILS="${DETAILS}\n• ⚠️ Clippy: unresolved errors"
-          fi
-
-          if [ "$TEST_PASSED" = "false" ]; then
-            DETAILS="${DETAILS}\n• ⚠️ Tests: unresolved errors"
-          fi
-
-          if [ -n "$PR_URL" ]; then
-            DETAILS="${DETAILS}\n• <${PR_URL}|PR #${PR_NUMBER}>"
-          fi
-
-          DETAILS="${DETAILS}\n• <${RUN_URL}|Workflow>"
-
-          # Use the existing notification bot to target eng-reth-alerts directly.
-          if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
-            echo "::warning::SLACK_BOT_TOKEN is not set; skipping Slack notification"
+          # A run with no new reth rev re-verifies nothing, so it must not resolve
+          # an alert raised by an earlier failed bump.
+          if [ "$STATUS" = "resolved" ] && [ "$BUMPED" != "true" ]; then
+            echo "No reth bump this run; leaving the incident.io alert unchanged"
             exit 0
           fi
 
-          DETAILS_TEXT=$(printf '%b' "$DETAILS")
+          if [ -z "$INCIDENT_IO_URL" ] || [ -z "$INCIDENT_IO_TOKEN" ]; then
+            if [ "$STATUS" = "firing" ]; then
+              echo "::error::INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; cannot alert reth on-call about this failure"
+              exit 1
+            fi
+            echo "::notice::INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; skipping incident.io alert"
+            exit 0
+          fi
+
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          PR_URL=$(gh pr list --head reth-auto-bump --base main --state open --json url --jq '.[0].url // empty' 2>/dev/null || true)
+
+          DETAILS=""
+          if [ "$BUMPED" = "true" ] && [ -n "$OLD_REV" ] && [ -n "$NEW_REV" ]; then
+            DETAILS+="Reth: https://github.com/paradigmxyz/reth/compare/${OLD_REV}...${NEW_REV}"$'\n'
+          fi
+          if [ "$CLIPPY_PASSED" = "false" ]; then
+            DETAILS+="Clippy: unresolved errors"$'\n'
+          fi
+          if [ "$TEST_PASSED" = "false" ]; then
+            DETAILS+="Tests: unresolved errors"$'\n'
+          fi
+          if [ -n "$PR_URL" ]; then
+            DETAILS+="PR: ${PR_URL}"$'\n'
+          fi
+          DESCRIPTION=$(printf 'The reth dependency update (update-reth.yml) %s.\n%sRun: %s' \
+            "$OUTCOME" "$DETAILS" "$RUN_URL")
 
           PAYLOAD=$(jq -n \
-            --arg channel "$SLACK_CHANNEL" \
-            --arg emoji "$EMOJI" \
+            --arg title "$TITLE" \
+            --arg description "$DESCRIPTION" \
             --arg status "$STATUS" \
-            --arg mention "$MENTION" \
-            --arg details "$DETAILS_TEXT" \
-            --arg color "$COLOR" \
+            --arg run_url "$RUN_URL" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg mode "$GITHUB_EVENT_NAME" \
+            --arg old_rev "$OLD_REV" \
+            --arg new_rev "$NEW_REV" \
+            --arg pr_url "$PR_URL" \
+            --arg sha "$SHA" \
+            --arg branch "$BRANCH" \
+            --arg run_id "$GITHUB_RUN_ID" \
             '{
-              channel: $channel,
-              text: "Reth update failed",
-              unfurl_links: false,
-              unfurl_media: false,
-              attachments: [{
-                color: $color,
-                blocks: [
-                  {
-                    type: "section",
-                    text: {
-                      type: "mrkdwn",
-                      text: ($emoji + " *Reth update " + $status + "*" + (if $mention == "" then "" else "\n" + $mention end) + $details)
-                    }
-                  }
-                ]
-              }]
+              title: $title,
+              description: $description,
+              status: $status,
+              deduplication_key: "tempo:update-reth",
+              source_url: $run_url,
+              metadata: {
+                team: "reth",
+                repository: $repository,
+                workflow: "update-reth.yml",
+                mode: $mode,
+                old_rev: $old_rev,
+                new_rev: $new_rev,
+                pr_url: $pr_url,
+                sha: $sha,
+                branch: $branch,
+                run_id: $run_id,
+                run_url: $run_url
+              }
             }')
 
-          RESPONSE=$(curl -sf -X POST \
-            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -H 'Content-type: application/json' \
-            --data "$PAYLOAD" \
-            https://slack.com/api/chat.postMessage) || {
-              echo "::warning::Failed to post Slack notification"
+          # A failed resolve must not fail an otherwise green update; a failed page must.
+          if ! curl -fsS --retry 3 --retry-all-errors --max-time 30 \
+            -X POST "$INCIDENT_IO_URL" \
+            -H "Authorization: Bearer $INCIDENT_IO_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD"; then
+            if [ "$STATUS" = "resolved" ]; then
+              echo "::warning::Failed to send the incident.io resolved event"
               exit 0
-            }
-          if ! jq -e '.ok == true' <<< "$RESPONSE" >/dev/null; then
-            ERROR=$(jq -r '.error // "unknown_error"' <<< "$RESPONSE")
-            echo "::warning::Slack rejected notification: $ERROR"
+            fi
+            echo "::error::Failed to send the incident.io firing event"
+            exit 1
           fi
+          echo
+          echo "Sent incident.io $STATUS event for tempo:update-reth"

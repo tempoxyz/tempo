@@ -43,7 +43,11 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileStorageProvider},
+    storage::{
+        StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
+    },
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
@@ -55,7 +59,7 @@ use crate::{
     zone_factory::ZoneFactory,
     zone_verifier::ZoneVerifier,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
@@ -163,12 +167,15 @@ sol! {
 }
 
 /// Tempo's built-in and protocol precompiles for EVM2.
+///
+/// The Ethereum precompiles run through `B`, the plain table by default.
 #[derive(Debug)]
-pub struct TempoPrecompiles<T: EvmTypesHost> {
-    base: BasePrecompiles<T>,
+pub struct TempoPrecompiles<T: EvmTypesHost, B = BasePrecompiles<T>> {
+    base: B,
     spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    types: PhantomData<fn() -> T>,
 }
 
 impl<T: EvmTypesHost> TempoPrecompiles<T> {
@@ -178,17 +185,44 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        Self::with_base(
+            Self::base_precompiles(spec),
+            spec,
+            actions,
+            non_creditable_slots,
+        )
+    }
+
+    /// Returns the Ethereum precompiles of a Tempo hardfork.
+    pub fn base_precompiles(spec: TempoHardfork) -> BasePrecompiles<T> {
         // Tempo used Prague's built-ins before T1C and follows its configured EVM fork after it.
         let base_spec = if spec.is_t1c() {
             spec.into()
         } else {
             SpecId::PRAGUE
         };
+        BasePrecompiles::base(base_spec)
+    }
+}
+
+impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
+    /// Creates the precompile provider for a Tempo hardfork whose Ethereum precompiles run through
+    /// `base`.
+    ///
+    /// `base` must run [`TempoPrecompiles::base_precompiles`] of `spec`, for example behind a
+    /// cache.
+    pub fn with_base(
+        base: B,
+        spec: TempoHardfork,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    ) -> Self {
         Self {
-            base: BasePrecompiles::base(base_spec),
+            base,
             spec,
             actions,
             non_creditable_slots,
+            types: PhantomData,
         }
     }
 
@@ -237,9 +271,11 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
     }
 }
 
-impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
+impl<T, B> PrecompileProvider<T> for TempoPrecompiles<T, B>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
+    B: PrecompileProvider<T>,
 {
     fn move_precompiles(
         &mut self,
@@ -287,11 +323,13 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
+        let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());
         Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &message.input, message.caller)
+            self.call_tempo(message.call_target, &input, message.caller)
         }))
     }
 }
@@ -316,7 +354,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{storage::StorageCtx, test_util::with_storage};
     use alloy::{
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
@@ -332,6 +370,7 @@ mod tests {
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use test_case::test_case;
 
     struct TestTypes;
 
@@ -420,7 +459,7 @@ mod tests {
             destination,
             call_target: code_address,
             code_address,
-            input: calldata,
+            input: calldata.into(),
             caller,
             ..Default::default()
         };
@@ -444,7 +483,7 @@ mod tests {
             call_target: PATH_USD_ADDRESS,
             code_address: delegate,
             code: Bytecode::new_eip7702(delegate),
-            input: Bytes::new(),
+            input: Bytes::new().into(),
             ..Default::default()
         };
         assert!(precompiles.contains(&message.call_target));
@@ -811,8 +850,7 @@ mod tests {
         }
 
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 dispatch!(
                     calldata,
                     |call| match call {
@@ -1030,26 +1068,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_zone_verifier_registered_at_t13_only() {
+    #[test_case(TempoHardfork::T10 => false)]
+    #[test_case(TempoHardfork::T11 => false)]
+    #[test_case(TempoHardfork::T12 => false)]
+    #[test_case(TempoHardfork::T13 => true)]
+    fn test_zone_verifier_registered_at_t13_only(spec: TempoHardfork) -> bool {
         let activation = SYSTEM_PRECOMPILES
             .iter()
             .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
             .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
         assert_eq!(activation, TempoHardfork::T13);
 
-        for (spec, active) in [
-            (TempoHardfork::T10, false),
-            (TempoHardfork::T11, false),
-            (TempoHardfork::T12, false),
-            (TempoHardfork::T13, true),
-        ] {
-            assert_eq!(
-                test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS),
-                active,
-                "unexpected native ZoneVerifier activation at {spec:?}"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS)
     }
 
     #[test]
@@ -1065,35 +1095,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_p256verify_availability_across_t1c_boundary() {
-        let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
+    // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
+    #[test_case(TempoHardfork::Genesis => false)]
+    #[test_case(TempoHardfork::T0 => false)]
+    #[test_case(TempoHardfork::T1 => false)]
+    #[test_case(TempoHardfork::T1A => false)]
+    #[test_case(TempoHardfork::T1B => false)]
+    // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
+    #[test_case(TempoHardfork::T1C => true)]
+    #[test_case(TempoHardfork::T2 => true)]
+    fn test_p256verify_availability_across_t1c_boundary(spec: TempoHardfork) -> bool {
+        // P256VERIFY lives at address 0x100 (256), added in Osaka
+        let p256_addr = Address::from_word(U256::from(256).into());
 
-            test_tempo_precompiles(spec).contains(&p256_addr)
-        };
-
-        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
-        for spec in [
-            TempoHardfork::Genesis,
-            TempoHardfork::T0,
-            TempoHardfork::T1,
-            TempoHardfork::T1A,
-            TempoHardfork::T1B,
-        ] {
-            assert!(
-                !has_p256(spec),
-                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
-            );
-        }
-
-        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
-            assert!(
-                has_p256(spec),
-                "P256VERIFY should be available at {spec:?} (T1C+)"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&p256_addr)
     }
 }

@@ -76,6 +76,12 @@ jobs:
           filters: |
             prover:
               - 'crates/**'
+              # The fuzzer and corpus crates are never linked into these images.
+              - '!crates/corpus/**'
+              - '!crates/fuzz-harness/**'
+              - '!crates/fuzz-types/**'
+              - '!crates/invariants/**'
+              - '!crates/nitro-attestation/fuzz/**'
               - 'bin/prover/**'
               - 'zones/docker/**'
               - 'zones/scripts/**'

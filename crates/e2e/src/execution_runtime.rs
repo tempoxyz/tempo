@@ -70,6 +70,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     t12_time: Option<u64>,
     t14_time: Option<u64>,
+    t15_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -80,6 +81,7 @@ impl Builder {
         Self {
             t12_time: None,
             t14_time: None,
+            t15_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
@@ -116,10 +118,15 @@ impl Builder {
         Self { t14_time, ..self }
     }
 
+    pub fn with_t15_time(self, t15_time: Option<u64>) -> Self {
+        Self { t15_time, ..self }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             t12_time,
             t14_time,
+            t15_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -169,6 +176,14 @@ impl Builder {
                 .config
                 .extra_fields
                 .insert_value("t14Time".to_string(), t14_time)
+                .unwrap();
+        }
+
+        if let Some(t15_time) = t15_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t15Time".to_string(), t15_time)
                 .unwrap();
         }
 
@@ -362,7 +377,7 @@ impl ExecutionRuntime {
     }
 
     /// Constructs a new execution runtime to launch execution nodes.
-    pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
+    pub fn with_chain_spec(mut chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
@@ -581,6 +596,15 @@ impl ExecutionRuntime {
                                 "receiver must hold the return channel until the node is returned",
                             );
                         }
+                        Message::SetT15Time(t15_time) => {
+                            let mut genesis = chain_spec.genesis().clone();
+                            genesis
+                                .config
+                                .extra_fields
+                                .insert_value("t15Time".to_string(), t15_time)
+                                .unwrap();
+                            chain_spec = TempoChainSpec::from_genesis(genesis);
+                        }
                         Message::RunAsync(fut) => {
                             fut.await;
                         }
@@ -734,6 +758,15 @@ impl ExecutionRuntime {
             .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    /// Moves T15 activation to `t15_time` for execution nodes spawned after this
+    /// call. Running nodes keep the chainspec they were launched with, so restart
+    /// every node to switch the whole network.
+    pub fn set_t15_time(&self, t15_time: u64) -> eyre::Result<()> {
+        self.to_runtime
+            .send(Message::SetT15Time(t15_time))
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))
     }
 
     /// Run an async task on the execution runtime's tokio runtime.
@@ -1041,6 +1074,7 @@ enum Message {
         rocksdb: Option<RocksDBProvider>,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
+    SetT15Time(u64),
     RunAsync(BoxFuture<'static, ()>),
     Stop,
 }

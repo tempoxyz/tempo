@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec", "serde"] }
 
 reth-ethereum-engine-primitives.workspace = true
@@ -36,6 +37,12 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+antithesis_sdk = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = true, optional = true }
+
 [dev-dependencies]
 tempo-primitives = { workspace = true, features = ["arbitrary", "reth-codec", "serde", "test-utils"] }
 serde_json.workspace = true
+
+[features]
+fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]

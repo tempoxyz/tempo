@@ -32,7 +32,8 @@ use tempo_primitives::{
 
 mod common;
 
-use common::{PrecompileOutput, PrecompileStatus};
+use common::{PrecompileOutput, PrecompileStatus, seed_commitment};
+use test_case::{test_case, test_matrix};
 
 const OWNER: Address = Address::repeat_byte(0x22);
 const EOA: Address = Address::repeat_byte(0x33);
@@ -126,12 +127,6 @@ fn upgrade(
 fn seed_authority(origin: Address, directly_authorized: Address, eligibility: UpgradeEligibility) {
     ConfigurableAccount::new()
         .set_authority(origin, directly_authorized, eligibility)
-        .unwrap();
-}
-
-fn seed_commitment(account: Address, commitment: B256) {
-    StorageCtx
-        .set_config_commitment(account, commitment, ConfigCommitmentWriteGas::Intrinsic)
         .unwrap();
 }
 
@@ -248,7 +243,7 @@ fn rotation_requires_registered_current_leaf_and_direct_authority() {
             update(account, &current, 1, &owners),
             ConfigurableAccountError::unauthorized_configurable_account_caller(),
         );
-        seed_authority(account, account, UpgradeEligibility::NotSoleCall);
+        seed_authority(account, account, UpgradeEligibility::HasAuthorizationList);
         assert_reverts(
             update(account, &current, 1, &owners),
             ConfigurableAccountError::invalid_config(),
@@ -317,7 +312,7 @@ fn update_config_requires_the_sender_as_direct_authority() {
             );
         }
         // The direct authority alone decides: the origin is not consulted.
-        seed_authority(EOA, account, UpgradeEligibility::NotSoleCall);
+        seed_authority(EOA, account, UpgradeEligibility::HasAuthorizationList);
         returns::<IConfigurableAccount::updateConfigCall>(update(account, &current, 1, &owners));
     });
 }
@@ -328,7 +323,7 @@ fn update_config_rejects_invalid_current_and_next_configs() {
     StorageCtx::enter(&mut storage, || {
         let owners = weighted_owners(&[(OWNER, 1)]);
         let account = derive(B256::ZERO, 1, &owners);
-        seed_authority(account, account, UpgradeEligibility::NotSoleCall);
+        seed_authority(account, account, UpgradeEligibility::HasAuthorizationList);
         let initial = config(B256::ZERO, 0, 1, &owners).commitment().unwrap();
         seed_commitment(account, initial);
 
@@ -401,85 +396,39 @@ fn update_config_rejects_invalid_current_and_next_configs() {
     });
 }
 
-#[test]
-fn config_error_precedence_through_abi() {
+// Each row breaks two rules; the error of the earlier check wins.
+#[test_case(0, &[], ConfigurableAccountError::invalid_configurable_account_owner())]
+#[test_case(0, &[(0, 0); 49], ConfigurableAccountError::too_many_owners())]
+#[test_case(0, &[(0, 0)], ConfigurableAccountError::invalid_threshold())]
+#[test_case(1, &[(0x11, 0), (0, 1)], ConfigurableAccountError::invalid_configurable_account_owner())]
+#[test_case(1, &[(0x11, 1), (0x11, 1), (0x22, 0)], ConfigurableAccountError::invalid_weight())]
+#[test_case(1, &[(0x22, 1), (0x11, 1), (0x22, 1)], ConfigurableAccountError::duplicate_owner())]
+#[test_case(1, &[(0x22, 128), (0x11, 128)], ConfigurableAccountError::invalid_owner_order())]
+fn config_error_precedence_through_abi(
+    threshold: u8,
+    owners: &[(u8, u8)],
+    expected: ConfigurableAccountError,
+) {
     let mut storage = t14_storage();
     StorageCtx::enter(&mut storage, || {
-        struct Case {
-            name: &'static str,
-            threshold: u8,
-            owners: Vec<(u8, u8)>,
-            expected: ConfigurableAccountError,
-        }
-        for Case {
-            name: case,
-            threshold,
-            owners,
-            expected,
-        } in [
-            Case {
-                name: "empty before threshold",
-                threshold: 0,
-                owners: vec![],
-                expected: ConfigurableAccountError::invalid_configurable_account_owner(),
-            },
-            Case {
-                name: "count before threshold",
-                threshold: 0,
-                owners: vec![(0, 0); 49],
-                expected: ConfigurableAccountError::too_many_owners(),
-            },
-            Case {
-                name: "threshold before address",
-                threshold: 0,
-                owners: vec![(0, 0)],
-                expected: ConfigurableAccountError::invalid_threshold(),
-            },
-            Case {
-                name: "address before weight",
-                threshold: 1,
-                owners: vec![(0x11, 0), (0, 1)],
-                expected: ConfigurableAccountError::invalid_configurable_account_owner(),
-            },
-            Case {
-                name: "weight before duplicate",
-                threshold: 1,
-                owners: vec![(0x11, 1), (0x11, 1), (0x22, 0)],
-                expected: ConfigurableAccountError::invalid_weight(),
-            },
-            Case {
-                name: "nonadjacent duplicate before order",
-                threshold: 1,
-                owners: vec![(0x22, 1), (0x11, 1), (0x22, 1)],
-                expected: ConfigurableAccountError::duplicate_owner(),
-            },
-            Case {
-                name: "order before total weight",
-                threshold: 1,
-                owners: vec![(0x22, 128), (0x11, 128)],
-                expected: ConfigurableAccountError::invalid_owner_order(),
-            },
-        ] {
-            let call = IConfigurableAccount::deriveAccountCall {
+        let owners = owners
+            .iter()
+            .map(
+                |&(owner, weight)| IConfigurableAccount::ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(owner),
+                    weight,
+                },
+            )
+            .collect();
+        let output = call(
+            Address::ZERO,
+            IConfigurableAccount::deriveAccountCall {
                 salt: B256::ZERO,
                 threshold,
-                owners: owners
-                    .into_iter()
-                    .map(
-                        |(owner, weight)| IConfigurableAccount::ConfigurableAccountOwner {
-                            owner: Address::repeat_byte(owner),
-                            weight,
-                        },
-                    )
-                    .collect(),
-            };
-            let result = PrecompileOutput::new(
-                ConfigurableAccount::new().call(&call.abi_encode(), Address::ZERO),
-                0,
-            );
-            assert_eq!(result.status, PrecompileStatus::Revert, "{case}");
-            assert_eq!(result.bytes, expected.abi_encode(), "{case}");
-        }
+                owners,
+            },
+        );
+        assert_reverts(output, expected);
     });
 }
 
@@ -527,13 +476,13 @@ fn upgrade_account_checks_eligibility_code_and_commitment_in_order() {
         // An unseeded context rejects every migration.
         assert_reverts(
             upgrade(EOA, 1, &owners),
-            ConfigurableAccountError::upgrade_must_be_only_call(),
+            ConfigurableAccountError::upgrade_must_be_direct_call(),
         );
         for (sender, eligibility, expected) in [
             (
                 with_code,
-                UpgradeEligibility::NotSoleCall,
-                ConfigurableAccountError::upgrade_must_be_only_call(),
+                UpgradeEligibility::HasAuthorizationList,
+                ConfigurableAccountError::upgrade_must_be_direct_call(),
             ),
             (
                 with_code,
@@ -563,7 +512,7 @@ fn upgrade_account_checks_eligibility_code_and_commitment_in_order() {
             seed_authority(OWNER, EOA, eligibility);
             assert_reverts(
                 upgrade(EOA, 1, &owners),
-                ConfigurableAccountError::upgrade_must_be_only_call(),
+                ConfigurableAccountError::upgrade_must_be_direct_call(),
             );
         }
 
@@ -644,60 +593,38 @@ fn upgrade_account_installs_a_version_one_commitment() {
 
 /// Registered parents keep grant authority with the protocol marker; incompatible code is rejected.
 /// Uncommitted parents retain their existing grant behavior.
-#[test]
-fn committed_parent_requires_protocol_marker_to_authorize_keys() {
+#[test_matrix([false, true], [Bytes::new(), CONFIGURABLE_ACCOUNT_CODE, Bytes::from_static(&[0x00]), Bytes::from_iter([0xef, 0x01, 0x00].into_iter().chain(Address::repeat_byte(0x33)))])]
+fn committed_parent_requires_protocol_marker_to_authorize_keys(committed: bool, code: Bytes) {
     let parent = Address::repeat_byte(0x11);
     let key = Address::repeat_byte(0x22);
-    let codes = [
-        ("unchanged", Bytes::new()),
-        ("marker", CONFIGURABLE_ACCOUNT_CODE),
-        ("bytecode", Bytes::from_static(&[0x00])),
-        (
-            "delegation",
-            Bytes::from_iter(
-                [0xef, 0x01, 0x00]
-                    .into_iter()
-                    .chain(Address::repeat_byte(0x33)),
-            ),
-        ),
-    ];
-    for committed in [false, true] {
-        for (kind, code) in &codes {
-            let mut storage = t14_storage();
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize().unwrap();
-                keychain.set_tx_origin(parent).unwrap();
-                if committed {
-                    seed_commitment(parent, B256::repeat_byte(1));
-                }
-                if !code.is_empty() {
-                    StorageCtx.set_code(parent, code.clone()).unwrap();
-                }
-                let result = keychain.authorize_key(
-                    parent,
-                    key,
-                    SignatureType::Secp256k1,
-                    KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                    None,
-                );
-                let expected =
-                    if committed && !code.is_empty() && *code != CONFIGURABLE_ACCOUNT_CODE {
-                        Err(AccountKeychainError::invalid_key_id().into())
-                    } else {
-                        Ok(())
-                    };
-                assert_eq!(
-                    result, expected,
-                    "committed={committed}, parent code: {kind}"
-                );
-            });
+    let mut storage = t14_storage();
+    StorageCtx::enter(&mut storage, || {
+        let mut keychain = AccountKeychain::initialized().unwrap();
+        keychain.set_tx_origin(parent).unwrap();
+        if committed {
+            seed_commitment(parent, B256::repeat_byte(1));
         }
-    }
+        if !code.is_empty() {
+            StorageCtx.set_code(parent, code.clone()).unwrap();
+        }
+        let result = keychain.authorize_key(
+            parent,
+            key,
+            SignatureType::Secp256k1,
+            KeyRestrictions {
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+                allowAnyCalls: true,
+                allowedCalls: vec![],
+            },
+            None,
+        );
+        let expected = if committed && !code.is_empty() && code != CONFIGURABLE_ACCOUNT_CODE {
+            Err(AccountKeychainError::invalid_key_id().into())
+        } else {
+            Ok(())
+        };
+        assert_eq!(result, expected);
+    });
 }

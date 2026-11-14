@@ -25,12 +25,12 @@ mod transaction;
 pub mod transaction_error;
 
 pub use action_replay::{
-    ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
-    StorageActionReplayState,
+    AccountRead, ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError,
+    StorageActionReplayOutcome, StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
-pub use common::{TempoStateAccess, TempoTx};
+pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
@@ -52,9 +52,16 @@ use std::{borrow::Cow, sync::Arc};
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, U256};
-use evm2::{ExecutionConfig, env::BlockEnv, evm::DynDatabase};
+use evm2::{
+    ExecutionConfig,
+    env::BlockEnv,
+    evm::{Database, Db, DynDatabase, precompile::PrecompileProvider},
+};
 use reth_chainspec::EthChainSpec;
-use reth_evm::{BlockExecutorFactory, ConfigureEvm, EvmEnvFor, SenderRecoveryCache};
+use reth_evm::{
+    BlockExecutorFactory, ConfigureEvm, EvmEnvFor, EvmFor, SenderRecoveryCache, SpecFor,
+    precompile_cache::PrecompileCacheMap,
+};
 use reth_evm_ethereum::{EthBlockExecutionCtx, EthEvmEnv};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_chainspec::{
@@ -148,6 +155,31 @@ impl TempoEvmConfig {
         }
         TempoEvmEnv::new_with_version(tempo_spec, block, version)
     }
+
+    fn build_evm<'a, DB>(
+        &self,
+        db: DB,
+        env: TempoEvmEnv,
+        ext: TempoEvmExt,
+        precompiles: Box<dyn PrecompileProvider<TempoEvmTypes>>,
+    ) -> TempoEvm<'a>
+    where
+        DB: DynDatabase + 'a,
+    {
+        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
+        let mut evm = evm2::Evm::new_with_execution_config_and_ext(
+            ExecutionConfig::for_spec_and_version(env.spec, env.version),
+            env.spec,
+            env.block,
+            tempo_tx_registry(env.spec.into()),
+            db,
+            precompiles,
+            ext,
+        );
+        #[cfg(feature = "jit")]
+        self.evm_factory.configure_jit(&mut evm);
+        evm
+    }
 }
 
 impl BlockExecutorFactory for TempoEvmConfig {
@@ -181,19 +213,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
         let precompiles = self.evm_factory.precompiles(&env, &ext);
-        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
-        let mut evm = evm2::Evm::new_with_execution_config_and_ext(
-            ExecutionConfig::for_spec_and_version(env.spec, env.version),
-            env.spec,
-            env.block,
-            tempo_tx_registry(env.spec.into()),
-            db,
-            precompiles,
-            ext,
-        );
-        #[cfg(feature = "jit")]
-        self.evm_factory.configure_jit(&mut evm);
-        evm
+        self.build_evm(db, env, ext, precompiles)
     }
 }
 
@@ -216,6 +236,23 @@ impl ConfigureEvm for TempoEvmConfig {
     fn with_jit_support_enabled(mut self, enabled: bool) -> Self {
         self.evm_factory.set_jit_support(enabled);
         self
+    }
+
+    fn evm_with_precompile_cache<'a, DB>(
+        &self,
+        db: DB,
+        evm_env: EvmEnvFor<Self>,
+        cache_map: PrecompileCacheMap<SpecFor<Self>>,
+        metrics_enabled: bool,
+    ) -> EvmFor<'a, Self>
+    where
+        DB: Database + 'a,
+    {
+        let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
+        let precompiles =
+            self.evm_factory
+                .cached_precompiles(&evm_env, &ext, cache_map, metrics_enabled);
+        self.build_evm(Db::new(db), evm_env, ext, precompiles)
     }
 
     #[cfg(feature = "jit")]
@@ -360,11 +397,15 @@ impl ConfigureEvm for TempoEvmConfig {
 mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
-    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
-    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use evm2::evm::{EmptyDB, precompile::NoPrecompiles};
+    use reth_evm::{
+        ConfigureEvm, NextBlockEnvAttributes, precompile_cache::CachedPrecompileProvider,
+    };
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_precompiles::TempoPrecompiles;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -433,8 +474,6 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_evm_env_t1_gas_cap() {
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T1 activated at timestamp 0
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
@@ -556,18 +595,18 @@ mod tests {
         metadata.encode(&mut input);
         input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
 
-        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+        let system_tx = TempoTxEnvelope::Legacy(
             TxLegacy {
                 chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
-                to: TxKind::Call(alloy_primitives::Address::ZERO),
+                to: TxKind::Call(Address::ZERO),
                 value: U256::ZERO,
                 input: input.freeze().into(),
-            },
-            TEMPO_SYSTEM_TX_SIGNATURE,
-        ));
+            }
+            .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        );
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -604,8 +643,6 @@ mod tests {
 
     #[test]
     fn test_context_for_block_t4_without_metadata() {
-        use tempo_chainspec::spec::DEV;
-
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec);
 
@@ -684,5 +721,44 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+    }
+
+    #[test]
+    fn test_engine_evm_caches_only_ethereum_precompiles() {
+        let evm_config = TempoEvmConfig::new(test_chainspec());
+        let evm_env = evm_config.evm_env(&TempoHeader::default()).unwrap();
+
+        let evm = evm_config.evm_with_precompile_cache(
+            EmptyDB::default(),
+            evm_env.clone(),
+            PrecompileCacheMap::default(),
+            false,
+        );
+        let precompiles = evm
+            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
+            .unwrap();
+        assert!(
+            precompiles
+                .downcast_ref::<TempoPrecompiles<
+                    TempoEvmTypes,
+                    CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
+                >>()
+                .is_some()
+        );
+
+        let evm_config =
+            evm_config.with_evm_factory(TempoEvmFactory::new_with_precompiles(|_, _| {
+                Box::new(NoPrecompiles::default())
+            }));
+        let evm = evm_config.evm_with_precompile_cache(
+            EmptyDB::default(),
+            evm_env,
+            PrecompileCacheMap::default(),
+            false,
+        );
+        let precompiles = evm
+            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
+            .unwrap();
+        assert!(precompiles.downcast_ref::<NoPrecompiles>().is_some());
     }
 }

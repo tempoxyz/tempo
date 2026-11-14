@@ -8,6 +8,7 @@ use std::{
 };
 
 use alloy::hex::ToHexExt;
+use alloy_consensus::BlockHeader;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -47,7 +48,7 @@ use tempo_validator_config::ValidatorConfig;
 
 #[cfg(feature = "corpus")]
 use crate::corpus;
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, payload_bench, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -85,6 +86,9 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Benchmark the payload builder alone on an existing database and a real transaction pool.
+    PayloadBench(Box<payload_bench::PayloadBench>),
 
     /// Historical execution corpus: capture an archive range once, replay it without a DB.
     #[cfg(feature = "corpus")]
@@ -146,6 +150,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::PayloadBench(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
@@ -471,7 +480,7 @@ pub struct ValidatorTransactionArgs {
     wallet: WalletArgs,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -698,7 +707,7 @@ pub struct CreateAddValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -739,7 +748,7 @@ pub struct CreateRotateValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -1224,7 +1233,7 @@ pub struct ValidatorInfo {
     id: ValidatorId,
 
     /// RPC URL to query.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
@@ -1310,8 +1319,6 @@ impl ValidatorInfo {
         let mut in_committee = None;
 
         if !self.no_dkg_information {
-            use alloy_consensus::BlockHeader;
-
             let boundary_height = current_epoch
                 .previous()
                 .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
@@ -1337,10 +1344,11 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let dkg_outcome =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = dkg_outcome.players().position(&key).is_some();
@@ -1417,8 +1425,6 @@ impl Info {
         self,
         connect: impl AsyncFnOnce(&str) -> eyre::Result<P>,
     ) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-
         let rpc_url = match (self.rpc_url.as_deref(), self.chain.as_deref()) {
             (Some(rpc_url), _) => rpc_url,
             (None, Some(chain)) => chain
@@ -1490,8 +1496,9 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let dkg_outcome =
+            OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let next_dkg_result = provider
             .call(
@@ -1562,7 +1569,7 @@ impl Info {
 
         let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let public_key = match PublicKey::decode(key.as_ref()) {
+            let public_key = match PublicKey::decode(commonware_codec::Copying(key.as_ref())) {
                 Ok(key) => key,
                 Err(e) => {
                     let index = validator.index;
@@ -2232,7 +2239,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
+        assert_eq!(
+            requested_url.as_deref(),
+            Some("wss://rpc.mainnet.tempo.xyz")
+        );
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
     }
@@ -2318,10 +2328,10 @@ mod tests {
             let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
-                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .register_method("eth_chainId", |_, _| "0xa5bf")
                 .unwrap();
             module
-                .register_method("eth_call", move |params, requests, _| {
+                .register_method("eth_call", move |params, requests| {
                     let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
                     let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
                         IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
@@ -2335,7 +2345,7 @@ mod tests {
             for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
                 let submissions = submissions.clone();
                 module
-                    .register_method(method, move |_, _, _| {
+                    .register_method(method, move |_, _| {
                         submissions.lock().unwrap().push(method);
                         Ok::<_, ErrorObjectOwned>(B256::ZERO)
                     })

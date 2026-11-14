@@ -219,6 +219,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use reth_trie_common::EMPTY_ROOT_HASH;
     use tempo_primitives::TempoHeader;
+    use test_case::test_case;
     use tokio::io::AsyncWriteExt as _;
     use zone_spf::{
         BatchWitness, PublicInputs, TempoImport, TempoStateWitness, ZoneBlock, ZoneStateWitness,
@@ -237,7 +238,7 @@ mod tests {
         ];
         for count in 0_u32..128 {
             let entries: Vec<Bytes> = (0..count)
-                .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+                .map(|entry| Bytes::from(entry.to_be_bytes()))
                 .collect();
             let definite = minicbor_serde::to_vec(&entries).unwrap();
             let mut indefinite = vec![0x9f];
@@ -290,7 +291,7 @@ mod tests {
     fn value_limit_is_shared_between_pools() {
         const MAXIMUM: usize = 512;
         let entries: Vec<Bytes> = (0_u32..192)
-            .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+            .map(|entry| Bytes::from(entry.to_be_bytes()))
             .collect();
         for ([zone_nodes, bytecodes, tempo_nodes], accepted) in [
             ([entries.clone(), vec![], vec![]], true),
@@ -401,60 +402,54 @@ mod tests {
         assert!(encoded.len() < serde_json::to_vec(&value).unwrap().len());
     }
 
+    #[test_case(&[0, 0, 0, 10], 4, ErrorCode::RequestTooLarge)]
+    #[test_case(&[0, 0, 0, 2, 1], 4, ErrorCode::TruncatedFrame)]
+    #[test_case(&[0, 0, 0, 2, 0x81, 0x40], BYTES_PER_CBOR_VALUE, ErrorCode::RequestTooLarge)]
     #[tokio::test]
-    async fn rejects_oversized_truncated_and_value_heavy_frames() {
-        for (frame, max, expected) in [
-            (&[0, 0, 0, 10][..], 4, ErrorCode::RequestTooLarge),
-            (&[0, 0, 0, 2, 1][..], 4, ErrorCode::TruncatedFrame),
-            (
-                &[0, 0, 0, 2, 0x81, 0x40][..],
-                BYTES_PER_CBOR_VALUE,
-                ErrorCode::RequestTooLarge,
-            ),
-        ] {
-            let (mut writer, reader) = tokio::io::duplex(1024);
-            writer.write_all(frame).await.unwrap();
-            writer.shutdown().await.unwrap();
-            let error = ProverConnection::new(reader, max)
-                .receive::<Vec<Bytes>>()
-                .await
-                .unwrap_err();
-            assert!(matches!(
-                request_error_response(&error),
-                VerifyResponse::Error { code, .. } if code == expected
-            ));
-        }
+    async fn rejects_oversized_truncated_and_value_heavy_frames(
+        frame: &[u8],
+        max: usize,
+        expected: ErrorCode,
+    ) {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        writer.write_all(frame).await.unwrap();
+        writer.shutdown().await.unwrap();
+        let error = ProverConnection::new(reader, max)
+            .receive::<Vec<Bytes>>()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            request_error_response(&error),
+            VerifyResponse::Error { code, .. } if code == expected
+        ));
     }
 
+    #[test_case(&[0xff])]
+    #[test_case(&[0x01, 0x02])]
+    #[test_case(&[0x44, 0x01])]
+    #[test_case(&[0x64, b'a'])]
+    #[test_case(&[0x18])]
     #[tokio::test]
-    async fn malformed_cbor_has_a_stable_error() {
-        for payload in [
-            &[0xff][..],
-            &[0x01, 0x02][..],
-            &[0x44, 0x01][..],
-            &[0x64, b'a'][..],
-            &[0x18][..],
-        ] {
-            let (mut writer, reader) = tokio::io::duplex(1024);
-            writer
-                .write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
-                .await
-                .unwrap();
-            writer.write_all(payload).await.unwrap();
-            let error = ProverConnection::new(reader, 1024)
-                .receive::<u8>()
-                .await
-                .unwrap_err();
-            let response = request_error_response(&error);
-            assert!(matches!(
-                response,
-                VerifyResponse::Error {
-                    request_id: None,
-                    code: ErrorCode::MalformedRequest,
-                    ..
-                }
-            ));
-        }
+    async fn malformed_cbor_has_a_stable_error(payload: &[u8]) {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        writer
+            .write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
+            .await
+            .unwrap();
+        writer.write_all(payload).await.unwrap();
+        let error = ProverConnection::new(reader, 1024)
+            .receive::<u8>()
+            .await
+            .unwrap_err();
+        let response = request_error_response(&error);
+        assert!(matches!(
+            response,
+            VerifyResponse::Error {
+                request_id: None,
+                code: ErrorCode::MalformedRequest,
+                ..
+            }
+        ));
     }
 
     fn empty_witness() -> BatchWitness {

@@ -1098,6 +1098,18 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     Address::from_raw_public_key(&encoded_key)
 }
 
+/// Generates a random P256 signing key, returning it with its public key coordinates and the
+/// address derived from them.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn p256_keypair() -> (p256::ecdsa::SigningKey, B256, B256, Address) {
+    let signing_key = p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let point = signing_key.verifying_key().to_encoded_point(false);
+    let pub_key_x = B256::from_slice(point.x().expect("uncompressed point has x"));
+    let pub_key_y = B256::from_slice(point.y().expect("uncompressed point has y"));
+    let address = derive_p256_address(&pub_key_x, &pub_key_y);
+    (signing_key, pub_key_x, pub_key_y, address)
+}
+
 /// Concatenates byte slices into a fixed-size array without heap allocations.
 fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
     let mut out = [0u8; N];
@@ -1312,7 +1324,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{b256, hex};
+    use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+    use alloy_primitives::hex;
     use alloy_rlp::{Decodable, Encodable};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
@@ -1321,6 +1334,11 @@ mod tests {
     };
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb;
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+    use test_case::test_case;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -1419,8 +1437,7 @@ mod tests {
         let field_bytes = fields.concat();
         let mut cases = Vec::new();
         for parity in [false, true] {
-            let signature =
-                Signature::new(U256::from_be_bytes(r.0), U256::from_be_bytes(s.0), parity);
+            let signature = Signature::new(r.into(), s.into(), parity);
             let mut expected = field_bytes[..64].to_vec();
             expected.push(27 + u8::from(parity));
             cases.push((PrimitiveSignature::Secp256k1(signature), expected));
@@ -1776,54 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_p256_address_derivation() {
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Should be deterministic
-        assert_eq!(addr1, addr2);
-
-        // Should not be zero address
-        assert_ne!(addr1, Address::ZERO);
-    }
-
-    #[test]
-    fn test_p256_address_derivation_deterministic() {
-        // Test that address derivation is deterministic
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        assert_eq!(addr1, addr2, "Address derivation should be deterministic");
-    }
-
-    #[test]
-    fn test_p256_address_different_keys_different_addresses() {
-        // Different keys should produce different addresses
-        let pub_key_x1 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y1 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let pub_key_x2 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-        let pub_key_y2 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-
-        let addr1 = derive_p256_address(&pub_key_x1, &pub_key_y1);
-        let addr2 = derive_p256_address(&pub_key_x2, &pub_key_y2);
-
-        assert_ne!(
-            addr1, addr2,
-            "Different keys should produce different addresses"
-        );
-    }
-
-    #[test]
     fn test_tempo_signature_from_bytes_secp256k1() {
-        use super::SECP256K1_SIGNATURE_LENGTH;
-
         // Secp256k1 signatures are detected by length (65 bytes), no type identifier
         let sig_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1838,8 +1808,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_from_bytes_p256() {
-        use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
-
         let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
         sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1854,8 +1822,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_from_bytes_webauthn() {
-        use super::SIGNATURE_TYPE_WEBAUTHN;
-
         let mut sig_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig_bytes.extend_from_slice(&[0u8; 200]); // 200 bytes of WebAuthn data
         let result = TempoSignature::from_bytes(&sig_bytes);
@@ -1913,11 +1879,6 @@ mod tests {
 
     #[test]
     fn test_tempo_signature_roundtrip() {
-        use super::{
-            P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256,
-            SIGNATURE_TYPE_WEBAUTHN,
-        };
-
         // Test secp256k1 (no type identifier, detected by 65-byte length)
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
@@ -2177,8 +2138,6 @@ mod tests {
 
     #[test]
     fn test_recover_signer_keychain_v1() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
@@ -2215,8 +2174,6 @@ mod tests {
 
     #[test]
     fn test_recover_signer_keychain_v2() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, access_key_address) = generate_secp256k1_keypair();
         let user_address = Address::repeat_byte(0xDD);
 
@@ -2258,8 +2215,6 @@ mod tests {
 
     #[test]
     fn test_keychain_v2_binds_user_address() {
-        use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-
         let (signing_key, _access_key_address) = generate_secp256k1_keypair();
         let user_a = Address::repeat_byte(0xAA);
         let user_b = Address::repeat_byte(0xBB);
@@ -2402,11 +2357,6 @@ mod tests {
 
     #[test]
     fn test_keychain_signature_hash_differs_for_different_sigs() {
-        use std::{
-            collections::hash_map::DefaultHasher,
-            hash::{Hash, Hasher},
-        };
-
         let sig = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let a = KeychainSignature::new(Address::repeat_byte(0x01), sig.clone());
         let b = KeychainSignature::new(Address::repeat_byte(0x02), sig.clone());
@@ -2520,29 +2470,19 @@ mod tests {
         assert!(decoded_no_version.is_legacy_keychain());
     }
 
-    #[test]
-    fn test_keychain_rlp_roundtrip_preserves_version() {
-        use alloy_rlp::Decodable;
-
+    #[test_case(KeychainSignature::new_v1 => true)]
+    #[test_case(KeychainSignature::new => false)]
+    fn test_keychain_rlp_roundtrip_preserves_version(
+        keychain: fn(Address, PrimitiveSignature) -> KeychainSignature,
+    ) -> bool {
         let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let user = Address::repeat_byte(0xCC);
 
-        for (sig, expect_legacy) in [
-            (
-                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone())),
-                true,
-            ),
-            (
-                TempoSignature::Keychain(KeychainSignature::new(user, inner)),
-                false,
-            ),
-        ] {
-            let mut buf = Vec::new();
-            alloy_rlp::Encodable::encode(&sig, &mut buf);
-            let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
-            assert_eq!(sig, decoded);
-            assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
-        }
+        let sig = TempoSignature::Keychain(keychain(user, inner));
+        let buf = alloy_rlp::encode(&sig);
+        let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(sig, decoded);
+        decoded.is_legacy_keychain()
     }
 }
 

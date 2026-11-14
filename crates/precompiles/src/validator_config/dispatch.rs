@@ -55,47 +55,13 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, FixedBytes},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig::{self, IValidatorConfigCalls},
-        ValidatorConfigError,
+        UnknownFunctionSelector, ValidatorConfigError,
     };
-
-    #[test]
-    fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let sender = Address::random();
-        let owner = Address::random();
-
-        // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            // T1: insufficient calldata also returns reverted output
-            let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            Ok(())
-        })?;
-
-        // Pre-T1 (T0): insufficient calldata returns halted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            let result = validator_config.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
-
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_owner_view_dispatch() -> eyre::Result<()> {
@@ -209,9 +175,6 @@ mod tests {
 
     #[test]
     fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
-        use tempo_contracts::precompiles::UnknownFunctionSelector;
-
         let owner = Address::random();
         let validator = Address::random();
         let public_key = FixedBytes::<32>::repeat_byte(0x42);

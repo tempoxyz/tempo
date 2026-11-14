@@ -9,8 +9,9 @@ use alloy::{
 use alloy_eips::BlockNumberOrTag;
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
-use futures::TryFutureExt;
+use futures::{FutureExt, TryFutureExt, future::join_all};
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::{
     constants::gas::TEMPO_T7_BASE_FEE_FLOOR, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE,
 };
@@ -80,18 +81,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 
     // Mint tokens for testing
     let mint_amount = U256::from(15_000_000);
-    token
-        .mint(caller, mint_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    token2
-        .mint(caller2, mint_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    token.mint(caller, mint_amount).mined().await?;
+    token2.mint(caller2, mint_amount).mined().await?;
 
     // Step 1: Send N blocks worth of non-payment transactions
     // Use multiple accounts sending in parallel for speed
@@ -451,9 +442,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     for wallet in &wallets {
         shared_token
             .mint(wallet.address(), U256::from(1_000_000))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
     }
 
@@ -466,8 +455,6 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 
     // Send transactions concurrently from different accounts
     // This avoids nonce ordering constraints and speeds up the test
-    use futures::{FutureExt, future::join_all};
-
     // Create transaction futures - use boxed futures to allow different async blocks
     let mut tx_futures = vec![];
 
@@ -563,12 +550,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
 
     // Setup a TIP20 token for payment transactions
     let token = crate::utils::setup_test_token(provider.clone(), caller).await?;
-    token
-        .mint(caller, U256::from(1_000_000))
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    token.mint(caller, U256::from(1_000_000)).mined().await?;
 
     // Test that payment transactions can use gas even when non-payment gas is exhausted
     // First, send high-gas non-payment transactions to approach the limit
@@ -641,9 +623,7 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
     token
         .transfer(payer.address(), U256::from(20_000_000u64))
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Apply non-payment gas pressure

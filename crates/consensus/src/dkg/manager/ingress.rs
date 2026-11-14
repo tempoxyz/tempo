@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use commonware_cryptography::Digested;
 
 use alloy_primitives::Bytes;
 use commonware_actor::Feedback;
@@ -8,7 +8,7 @@ use commonware_cryptography::{
         dkg::feldman_desmedt::{Output, SignedDealerLog},
         primitives::variant::MinSig,
     },
-    ed25519::{PrivateKey, PublicKey},
+    ed25519::PublicKey,
 };
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
@@ -38,7 +38,7 @@ impl Mailbox {
     pub(crate) async fn get_dealer_log(
         &self,
         epoch: Epoch,
-    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PrivateKey>>> {
+    ) -> eyre::Result<Option<SignedDealerLog<MinSig, PublicKey>>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(GetDealerLog { epoch, response }))
@@ -60,7 +60,7 @@ impl Mailbox {
     /// down.
     pub(crate) fn subscribe_dkg_ceremony(
         &self,
-        parent: Arc<Block>,
+        parent: Digested<Block>,
     ) -> oneshot::Receiver<Output<MinSig, PublicKey>> {
         let (response, rx) = oneshot::channel();
         // A closed mailbox drops the sender, so the receiver reports cancellation.
@@ -77,10 +77,15 @@ impl Mailbox {
     ///
     /// This method is intended to be called by the application when verifying
     /// the dealing found in a proposal.
+    ///
+    /// `timestamp` is the proposal's, in seconds: from T15, a log with trailing
+    /// bytes is invalid.
+    ///
     /// Returns `None` for an invalid log and an error if verification is unavailable.
     pub(crate) async fn verify_dealer_log(
         &self,
         epoch: Epoch,
+        timestamp: u64,
         bytes: Bytes,
     ) -> eyre::Result<Option<PublicKey>> {
         let (response, rx) = oneshot::channel();
@@ -88,6 +93,7 @@ impl Mailbox {
             .unbounded_send(Message::in_current_span(VerifyDealerLog {
                 bytes,
                 epoch,
+                timestamp,
                 response,
             }))
             .wrap_err("failed sending message to actor")?;
@@ -145,17 +151,19 @@ impl From<SubscribeDkgCeremony> for Command {
 
 pub(super) struct GetDealerLog {
     pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PrivateKey>>>,
+    pub(super) response: oneshot::Sender<Option<SignedDealerLog<MinSig, PublicKey>>>,
 }
 
 pub(super) struct SubscribeDkgCeremony {
-    pub(super) parent: Arc<Block>,
+    pub(super) parent: Digested<Block>,
     pub(super) response: oneshot::Sender<Output<MinSig, PublicKey>>,
 }
 
 pub(super) struct VerifyDealerLog {
     pub(super) bytes: Bytes,
     pub(super) epoch: Epoch,
+    /// The proposal's timestamp, in seconds.
+    pub(super) timestamp: u64,
     pub(super) response: oneshot::Sender<Option<PublicKey>>,
 }
 

@@ -13,7 +13,10 @@ use crate::{
     generate_p2p_key::GenerateP2pKey,
     generate_zone_genesis::GenerateZoneGenesis,
     install_reference_zone_factory::InstallReferenceZoneFactory,
-    portal_access::{EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode},
+    portal_access::{
+        EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode,
+        SetTransfersEnabled,
+    },
     portal_pause::PausePortal,
     set_encryption_key::SetEncryptionKey,
     spam_deposits::SpamDeposits,
@@ -24,6 +27,10 @@ use crate::{
 use clap::Parser as _;
 use eyre::Context;
 use tempo_state_bloat::GenerateStateBloat;
+
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
 
 mod admin;
 mod benchmark_results;
@@ -91,6 +98,10 @@ async fn main() -> eyre::Result<()> {
         }
         Action::SetGateway(args) => args.run().await.wrap_err("failed to update gateway role"),
         Action::SetGatewayMode(args) => args.run().await.wrap_err("failed to set gateway mode"),
+        Action::SetTransfersEnabled(args) => args
+            .run()
+            .await
+            .wrap_err("failed to set zone transfer opt-in"),
         Action::SetEncryptionKey(args) => args.run().await.wrap_err("failed to set encryption key"),
         Action::SpamDeposits(args) => args.run().await.wrap_err("failed to spam deposits"),
         Action::VerifyClosedLoop(args) => {
@@ -139,6 +150,7 @@ enum Action {
     SetAllowedAccount(SetAllowedAccount),
     SetGateway(SetGateway),
     SetGatewayMode(SetGatewayMode),
+    SetTransfersEnabled(SetTransfersEnabled),
     SetEncryptionKey(SetEncryptionKey),
     SpamDeposits(SpamDeposits),
     VerifyClosedLoop(VerifyClosedLoop),
