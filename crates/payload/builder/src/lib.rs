@@ -42,12 +42,12 @@ use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_storage_api::{
-    EvmStateProvider, HashedPostStateProvider, StateProvider as _, StateProviderFactory,
-    StateRootProvider,
+    BlockHashReader as _, EvmStateProvider, HashedPostStateProvider, StateProvider as _,
+    StateProviderFactory, StateRootProvider,
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, BlockInfo, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -58,7 +58,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult,
+    TempoStateAccess, TempoTxResult, transaction_error::FeePaymentError,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -497,6 +497,9 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        // Pool transactions that failed execution, to remove from the pool once the block is
+        // filled, since later builds on the same state would only reject them again.
+        let mut invalid_pool_transactions = Vec::new();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
@@ -688,6 +691,16 @@ where
                             trace!(%error, tx = %tx_debug_repr, "skipping already included expiring nonce transaction");
                             self.metrics.inc_pool_tx_skipped("expiring_nonce_replay");
                         } else {
+                            // Marking it invalid only skips it in this iterator, so every later
+                            // build would retry it. Drop it from the pool after this build
+                            // instead. Pool maintenance evicts the same failures (such as an
+                            // insolvent fee payer or a retired key) once a block lands, so this
+                            // only does it sooner.
+                            if evicts_failed_pool_transaction(
+                                TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+                            ) {
+                                invalid_pool_transactions.push(*tx.hash());
+                            }
                             // if the transaction is invalid, we can skip it and all of its
                             // descendants
                             #[cfg(feature = "fuzz")]
@@ -745,6 +758,33 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+
+        // The pool validated its transactions against its own tip. A failure against a parent
+        // that does not descend from that tip, such as a notarized block that is later
+        // nullified, says nothing about the transaction at the pool's tip, so keep it pooled.
+        if !invalid_pool_transactions.is_empty()
+            && parent_extends_pool_tip(
+                &self.pool.block_info(),
+                parent_header.hash(),
+                parent_header.number(),
+                |number| state_provider.block_hash(number),
+            )?
+        {
+            // Removal takes the pool's write locks, so it runs off the build path. A build that
+            // starts before it finishes skips these transactions again.
+            let pool = self.pool.clone();
+            let metrics = self.metrics.clone();
+            self.executor
+                .spawn_blocking_named("builder-evict-invalid", move || {
+                    let removed = pool.remove_transactions(invalid_pool_transactions).len();
+                    metrics.inc_pool_tx_evicted(removed as u64);
+                    debug!(
+                        target: "payload_builder",
+                        removed,
+                        "removed pool transactions that failed execution"
+                    );
+                });
+        }
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
@@ -1232,9 +1272,124 @@ pub(crate) struct RootsTaskResult {
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Returns `true` if a pool transaction that failed execution with `error` should leave the
+/// pool. A FeeAMM liquidity failure depends on this build's beneficiary and on fee swaps earlier
+/// in the block, while the pool keeps a transaction any recent validator token can accept, so it
+/// stays pooled for other proposers and later blocks.
+fn evicts_failed_pool_transaction(error: Option<&TempoInvalidTransaction>) -> bool {
+    !matches!(
+        error,
+        Some(TempoInvalidTransaction::CollectFeePreTx(
+            FeePaymentError::InsufficientAmmLiquidity { .. }
+        ))
+    )
+}
+
+/// Returns `true` if the build's parent is the pool's tip or descends from it, so a transaction
+/// that fails against the parent's state would also fail once the pool catches up.
+/// `ancestor_hash` returns the hash of the parent's ancestor at a block number.
+fn parent_extends_pool_tip<E>(
+    pool_tip: &BlockInfo,
+    parent_hash: B256,
+    parent_number: u64,
+    ancestor_hash: impl FnOnce(u64) -> Result<Option<B256>, E>,
+) -> Result<bool, E> {
+    if pool_tip.last_seen_block_hash == parent_hash {
+        return Ok(true);
+    }
+    if pool_tip.last_seen_block_number >= parent_number {
+        return Ok(false);
+    }
+    Ok(ancestor_hash(pool_tip.last_seen_block_number)? == Some(pool_tip.last_seen_block_hash))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pool_tip(number: u64, hash: B256) -> BlockInfo {
+        BlockInfo {
+            last_seen_block_number: number,
+            last_seen_block_hash: hash,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_evicts_failed_pool_transaction() {
+        let liquidity =
+            TempoInvalidTransaction::CollectFeePreTx(FeePaymentError::InsufficientAmmLiquidity {
+                user_token: None,
+                validator_token: None,
+                fee: U256::from(1000),
+            });
+        assert!(!evicts_failed_pool_transaction(Some(&liquidity)));
+
+        let evicted = [
+            TempoInvalidTransaction::InvalidFeePayerSignature,
+            TempoInvalidTransaction::InvalidFeeToken(Address::repeat_byte(0x30)),
+            TempoInvalidTransaction::CollectFeePreTx(
+                FeePaymentError::InsufficientFeeTokenBalance {
+                    fee: U256::from(1000),
+                    balance: U256::ZERO,
+                },
+            ),
+        ];
+        for error in evicted {
+            assert!(
+                evicts_failed_pool_transaction(Some(&error)),
+                "{error} should be evicted"
+            );
+        }
+        // Generic EVM validation errors carry no Tempo error.
+        assert!(evicts_failed_pool_transaction(None));
+    }
+
+    #[test]
+    fn test_parent_extends_pool_tip() {
+        let tip_hash = B256::repeat_byte(1);
+        let tip = pool_tip(10, tip_hash);
+        let no_lookup = |_| -> Result<Option<B256>, ()> { panic!("no ancestor lookup expected") };
+
+        // The parent is the pool's tip.
+        assert_eq!(
+            parent_extends_pool_tip(&tip, tip_hash, 10, no_lookup),
+            Ok(true)
+        );
+        // A sibling of the tip, or a parent behind it.
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(2), 10, no_lookup),
+            Ok(false)
+        );
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(2), 9, no_lookup),
+            Ok(false)
+        );
+        // A descendant of the tip.
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(3), 12, |number| {
+                assert_eq!(number, 10);
+                Ok::<_, ()>(Some(tip_hash))
+            }),
+            Ok(true)
+        );
+        // A later block on another fork, or one whose ancestor is unknown.
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(3), 12, |_| {
+                Ok::<_, ()>(Some(B256::repeat_byte(4)))
+            }),
+            Ok(false)
+        );
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(3), 12, |_| Ok::<_, ()>(None)),
+            Ok(false)
+        );
+        // Lookup errors propagate.
+        assert_eq!(
+            parent_extends_pool_tip(&tip, B256::repeat_byte(3), 12, |_| Err("db")),
+            Err("db")
+        );
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
