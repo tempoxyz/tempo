@@ -1,0 +1,74 @@
+# This lockfile is pruned from the root Cargo.lock: every flagged package below is the same
+# version the root lockfile already carries and the scan baselines there. Bump them together.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0400"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0399"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0398"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0397"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0396"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0395"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0391"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+reason = "Transitive via Tempo workspace crates, same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0401"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0402"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0403"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0404"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0405"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0406"
+reason = "zstd-safe 7.3.0 via commonware-storage (commonware-consensus), same version as root Cargo.lock; upgrade with the root lockfile."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 is unmaintained; transitive via Tempo workspace crates with no safe upgrade, same version as root Cargo.lock."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode is unmaintained; transitive via Tempo workspace crates, same version as root Cargo.lock."
