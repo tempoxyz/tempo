@@ -374,12 +374,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Hash only the toolchain Dockerfile and resolved Bake dependency graph.
-          # Unrelated build targets cannot create duplicate toolchain tags.
+          # Hash the toolchain recipes, kernel hardening inputs, and resolved Bake dependency graph.
+          # Unrelated build targets cannot create duplicate toolchain tags. This job builds main's
+          # recipe, so hash only the bootstrap inputs main tracks.
           docker buildx bake -f zones/docker/docker-bake.hcl --print \
             tempo-zone-prover-eif-builder | jq -cS . > "$RUNNER_TEMP/eif-toolchain-recipe.json"
-          recipe_sha=$(cat zones/docker/Dockerfile.prover-eif-builder \
-            "$RUNNER_TEMP/eif-toolchain-recipe.json" | sha256sum | cut -d' ' -f1)
+          recipe_sha=$( {
+            cat zones/docker/Dockerfile.prover-eif-builder
+            git ls-files -z -- zones/docker/Dockerfile.nitro-enclaves-bootstrap zones/docker/nitro |
+              xargs -0 -r cat
+            cat "$RUNNER_TEMP/eif-toolchain-recipe.json"
+          } | sha256sum | cut -d' ' -f1)
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
@@ -730,8 +735,10 @@ jobs:
             echo "hit=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Include the pinned kernel source and CLI recipe in the cache identity.
-          key=$(cat zones/docker/Dockerfile.prover-eif-builder zones/docker/docker-bake.hcl | sha256sum | cut -d' ' -f1)
+          # Include every bootstrap input and the CLI recipe in the cache identity.
+          key=$(cat zones/docker/Dockerfile.prover-eif-builder zones/docker/docker-bake.hcl \
+            zones/docker/Dockerfile.nitro-enclaves-bootstrap zones/docker/nitro/kernel.patch \
+            zones/docker/nitro/zones-hardening-x86_64.config | sha256sum | cut -d' ' -f1)
           ref="$REGISTRY/tempo-zone-prover-eif-builder:inputs-$key"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           if [[ "$REFRESH_BUILDER" != 'true' ]] && docker pull --platform linux/amd64 "$ref"; then
@@ -848,8 +855,19 @@ jobs:
           EIF_BUILDER_IMAGE: ${{ steps.eif_builder.outputs.image }}
           OUT_DIR: target/tempo-zone-prover-eif
         run: |
+          set -Eeuo pipefail
+
           zones/scripts/package-prover-eif.sh
           mv "$OUT_DIR/enclave.eif" "$OUT_DIR/tempo-zone-prover.eif"
+
+          # Record the bootstrap artifacts the EIF builder consumed.
+          docker run --rm \
+            --platform linux/amd64 \
+            --workdir /usr/share/nitro_enclaves/blobs \
+            --entrypoint sha384sum \
+            "$EIF_BUILDER_IMAGE" \
+            bzImage bzImage.config cmdline nsm.ko init linuxkit \
+            > "$OUT_DIR/components.sha384"
 
       - name: Read tempo-zone-prover PCR measurements
         id: prover_measurements
@@ -883,6 +901,7 @@ jobs:
           name: tempo-zone-prover-measurements-${{ steps.shortsha.outputs.shortsha }}${{ inputs.defer_genesis && format('-{0}', github.run_attempt) || '' }}
           path: |
             target/tempo-zone-prover-eif/measurements.json
+            target/tempo-zone-prover-eif/components.sha384
             target/tempo-zone-prover-eif/identity.json
           if-no-files-found: error
 
