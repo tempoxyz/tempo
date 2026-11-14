@@ -689,13 +689,7 @@ impl EarnZoneFixture {
     }
 
     async fn allow_zone_account(&self, account: Address) -> eyre::Result<()> {
-        let block = self
-            .l1
-            .set_allowed_account_on_portal(self.portal, account, true)
-            .await?;
-        self.zone
-            .wait_for_l2_tempo_finalized(block, E2E_TIMEOUT)
-            .await?;
+        self.zone.set_allowed_account(account, true).await?;
         self.zone.assert_allowed_account(account, true).await
     }
 

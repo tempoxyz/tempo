@@ -1433,9 +1433,7 @@ async fn test_zone_get_zone_info_returns_all_enabled_tokens() -> eyre::Result<()
         .apply_rpc(&ctx.l1().dev_provider())
         .await?;
 
-    ctx.l1()
-        .enable_token_on_portal(ctx.portal_address(), alpha_token)
-        .await?;
+    ctx.zone.enable_token(alpha_token).await?;
 
     let zone_info = ctx
         .call_as_user("zone_getZoneInfo", serde_json::json!([]), &user_signer)

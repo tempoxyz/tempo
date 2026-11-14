@@ -1,7 +1,7 @@
 use alloy::genesis::{Genesis, GenesisAccount};
 use alloy_consensus::{Header, Sealable as _};
 use alloy_eips::NumHash;
-use alloy_network::TransactionBuilder as _;
+use alloy_network::{ReceiptResponse as _, TransactionBuilder as _};
 use alloy_primitives::{Address, B256, U256, address, keccak256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, bindings::IMulticall3};
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag, Filter, TransactionRequest};
@@ -10,7 +10,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey as Ed25519PrivateKey};
-use eyre::WrapErr;
+use eyre::{OptionExt as _, WrapErr};
 use futures::future::try_join_all;
 use k256::{ProjectivePoint, Scalar, SecretKey};
 use p256::ecdsa::SigningKey as P256SigningKey;
@@ -121,6 +121,11 @@ pub(crate) fn signer_at(index: u32) -> alloy_signer_local::PrivateKeySigner {
 
 pub(crate) fn l1_dev_signer() -> alloy_signer_local::PrivateKeySigner {
     signer_at(0)
+}
+
+/// Returns the signer every test portal is created with as admin.
+fn portal_admin_signer() -> alloy_signer_local::PrivateKeySigner {
+    signer_at(2)
 }
 
 /// Default timeout for polling loops in e2e tests.
@@ -824,6 +829,79 @@ impl ZoneTestNode {
         Ok(())
     }
 
+    /// Enables `token` on the zone's portal. The portal has no way to disable a token again; see
+    /// [`Self::pause_deposits`].
+    pub async fn enable_token(&self, token: Address) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::enableTokenCall { token })
+            .await
+    }
+
+    /// Registers or deregisters `gateway` as a callback gateway on the zone's portal.
+    pub async fn set_gateway(&self, gateway: Address, allowed: bool) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::setGatewayCall {
+            account: gateway,
+            allowed,
+        })
+        .await
+    }
+
+    /// Sets whether callback withdrawals must target a registered gateway.
+    pub async fn set_gateway_mode(&self, enforced: bool) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::setGatewayModeCall { enforced })
+            .await
+    }
+
+    /// Sets whether only allowed accounts may deposit and receive plain withdrawals.
+    pub async fn set_access_mode(&self, enforced: bool) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::setAccessModeCall { enforced })
+            .await
+    }
+
+    /// Adds `account` to or removes it from the portal's allowed accounts.
+    pub async fn set_allowed_account(&self, account: Address, allowed: bool) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::setAllowedAccountCall { account, allowed })
+            .await
+    }
+
+    /// Enables or disables zone-internal TIP-20 transfers.
+    pub async fn enable_transfers(&self, enabled: bool) -> eyre::Result<u64> {
+        self.portal_admin_call(ZonePortal::setTransfersEnabledCall { enabled })
+            .await
+    }
+
+    /// Pauses or resumes deposits of `token`.
+    pub async fn pause_deposits(&self, token: Address, paused: bool) -> eyre::Result<u64> {
+        if paused {
+            self.portal_admin_call(ZonePortal::pauseDepositsCall { token })
+                .await
+        } else {
+            self.portal_admin_call(ZonePortal::resumeDepositsCall { token })
+                .await
+        }
+    }
+
+    /// Sends `call` to the zone's portal as the portal admin and waits until the zone imported
+    /// the L1 block that includes it. Returns that block.
+    async fn portal_admin_call<C: SolCall + Send + Sync>(&self, call: C) -> eyre::Result<u64> {
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .wallet(portal_admin_signer())
+            .connect_provider(self.l1_provider.clone());
+        let receipt = ZonePortal::new(self.portal_address, provider)
+            .call_builder(&call)
+            .mined()
+            .await?;
+        eyre::ensure!(
+            receipt.status(),
+            "portal admin call {} reverted",
+            C::SIGNATURE
+        );
+        let block = receipt
+            .block_number
+            .ok_or_eyre("portal admin receipt has no block number")?;
+        self.wait_for_tempo_block_number(block, L1_TIMEOUT).await?;
+        Ok(block)
+    }
+
     /// Returns a handle to the deposit queue for injecting synthetic L1 blocks.
     pub(crate) fn deposit_queue(&self) -> &DepositQueue {
         &self.deposit_queue
@@ -1497,7 +1575,7 @@ impl L1TestNode {
     /// pre-funded; [`create_zone`](Self::create_zone) funds it with pathUSD for
     /// gas so it can make admin-only portal calls.
     pub(crate) fn admin_signer(&self) -> alloy_signer_local::PrivateKeySigner {
-        signer_at(2)
+        portal_admin_signer()
     }
 
     /// Returns the address of the ZonePortal admin account.
@@ -2021,138 +2099,6 @@ impl L1TestNode {
         receipt
             .contract_address
             .ok_or_else(|| eyre::eyre!("SwapAndDepositRouter deployment missing contract address"))
-    }
-
-    /// Enable a token on a ZonePortal (must be called by the admin).
-    pub(crate) async fn enable_token_on_portal(
-        &self,
-        portal_address: Address,
-        token: Address,
-    ) -> eyre::Result<()> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.enableToken(token).mined().await?;
-        eyre::ensure!(receipt.status(), "enableToken failed");
-        Ok(())
-    }
-
-    /// Update a portal callback gateway with the default distinct admin signer.
-    pub(crate) async fn set_zone_gateway_on_portal(
-        &self,
-        portal_address: Address,
-        gateway: Address,
-        enabled: bool,
-    ) -> eyre::Result<u64> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.setGateway(gateway, enabled).mined().await?;
-        eyre::ensure!(receipt.status(), "setGateway failed");
-        let expected_role = if enabled {
-            PortalRole::CallbackGateway
-        } else {
-            PortalRole::None
-        };
-        eyre::ensure!(
-            portal.hasRole(gateway, expected_role).call().await?,
-            "L1 ZonePortal gateway role for {gateway} did not equal {expected_role:?}"
-        );
-        Ok(provider.get_block_number().await?)
-    }
-
-    /// Update account allowlist enforcement with the default portal admin.
-    pub(crate) async fn set_access_mode_on_portal(
-        &self,
-        portal_address: Address,
-        mode: bool,
-    ) -> eyre::Result<u64> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.setAccessMode(mode).mined().await?;
-        eyre::ensure!(receipt.status(), "setAccessMode failed");
-        eyre::ensure!(
-            portal.isAccessEnforced().call().await? == mode,
-            "L1 ZonePortal access mode did not update"
-        );
-        Ok(provider.get_block_number().await?)
-    }
-
-    /// Enable or disable zone-internal TIP-20 transfers with the default portal admin.
-    ///
-    /// Returns the L1 block that recorded the change; zone transfers observe it once the zone has
-    /// finalized that Tempo block.
-    pub(crate) async fn set_transfers_enabled_on_portal(
-        &self,
-        portal_address: Address,
-        enabled: bool,
-    ) -> eyre::Result<u64> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.setTransfersEnabled(enabled).mined().await?;
-        eyre::ensure!(receipt.status(), "setTransfersEnabled failed");
-        eyre::ensure!(
-            portal.transfersEnabled().call().await? == enabled,
-            "L1 ZonePortal transfer opt-in did not update"
-        );
-        receipt
-            .block_number
-            .ok_or_else(|| eyre::eyre!("setTransfersEnabled receipt has no block number"))
-    }
-
-    /// Update callback gateway registration enforcement with the default portal admin.
-    pub(crate) async fn set_gateway_mode_on_portal(
-        &self,
-        portal_address: Address,
-        mode: bool,
-    ) -> eyre::Result<u64> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.setGatewayMode(mode).mined().await?;
-        eyre::ensure!(receipt.status(), "setGatewayMode failed");
-        eyre::ensure!(
-            portal.isGatewayOpen().call().await? != mode,
-            "L1 ZonePortal gateway mode did not update"
-        );
-        Ok(provider.get_block_number().await?)
-    }
-
-    /// Update closed-mode account membership with the default distinct admin signer.
-    pub(crate) async fn set_allowed_account_on_portal(
-        &self,
-        portal_address: Address,
-        account: Address,
-        enabled: bool,
-    ) -> eyre::Result<u64> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.setAllowedAccount(account, enabled).mined().await?;
-        eyre::ensure!(receipt.status(), "setAllowedAccount failed");
-        let expected_role = if enabled {
-            PortalRole::Account
-        } else {
-            PortalRole::None
-        };
-        eyre::ensure!(
-            portal.hasRole(account, expected_role).call().await?,
-            "L1 ZonePortal account role for {account} did not equal {expected_role:?}"
-        );
-        Ok(provider.get_block_number().await?)
-    }
-
-    /// Pause deposits for a token on the ZonePortal.
-    pub(crate) async fn pause_deposits_on_portal(
-        &self,
-        portal_address: Address,
-        token: Address,
-    ) -> eyre::Result<()> {
-        let provider = self.admin_provider();
-        let portal = ZonePortal::new(portal_address, &provider);
-        let receipt = portal.pauseDeposits(token).mined().await?;
-        eyre::ensure!(receipt.status(), "pauseDeposits failed");
-        eyre::ensure!(
-            !portal.areDepositsActive(token).call().await?,
-            "deposits should be paused for {token}"
-        );
-        Ok(())
     }
 
     /// Set the sequencer encryption key on the ZonePortal.

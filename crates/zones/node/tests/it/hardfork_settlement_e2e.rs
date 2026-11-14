@@ -11,7 +11,7 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag};
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 use reth_chainspec::EthChainSpec;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, test_utils::CallBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_contracts::{
     precompiles::{ITIP20, IZoneFactory, initial_zone_factory_state},
@@ -95,7 +95,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     let provider = zone.provider();
     let inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, &provider);
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    l1.enable_token_on_portal(portal_address, alpha).await?;
+    enable_token(&l1, portal_address, alpha).await?;
     l1.fund_user(account.address(), 1_000_000).await?;
     account.deposit(100, DEFAULT_TIMEOUT, &zone).await?;
     zone.wait_for_tempo_block_number(l1.provider().get_block_number().await?, DEFAULT_TIMEOUT)
@@ -190,7 +190,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     assert_eq!(portal.withdrawalBatchIndex().call().await?, 2);
 
     // Leave one enablement and one deposit outstanding on T12 while the zone cannot receive L1.
-    l1.enable_token_on_portal(portal_address, beta).await?;
+    enable_token(&l1, portal_address, beta).await?;
     account.submit_deposit(200).await?;
     let last_t12 = l1_provider
         .get_block_by_number(BlockNumberOrTag::Latest)
@@ -355,8 +355,19 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         "settlement cannot replay"
     );
     assert_eq!(portal.withdrawalBatchIndex().call().await?, 3);
-    l1.enable_token_on_portal(portal_address, gamma).await?;
+    enable_token(&l1, portal_address, gamma).await?;
     assert_eq!(portal.enabledTokenCount().call().await?, U256::from(4));
+    Ok(())
+}
+
+/// Enables `token` on the portal without waiting for the zone: this L1 mines only on demand, and
+/// the zone is cut off from it for part of the test.
+async fn enable_token(l1: &L1TestNode, portal: Address, token: Address) -> eyre::Result<()> {
+    let receipt = ZonePortal::new(portal, l1.admin_provider())
+        .enableToken(token)
+        .mined()
+        .await?;
+    eyre::ensure!(receipt.status(), "enableToken reverted");
     Ok(())
 }
 

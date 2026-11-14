@@ -16,7 +16,6 @@ use crate::utils::{
 // Imports for real-L1 tests
 use crate::utils::{L1_TIMEOUT, Network};
 use alloy::primitives::B256;
-use alloy_provider::Provider;
 use tempo_alloy::rpc::TempoCallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::ITIP20;
@@ -218,13 +217,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled event from a live block (events in blocks <= genesis are not
     // backfilled).
-    l1.enable_token_on_portal(zone.portal_address(), l1_alpha_usd)
-        .await?;
-    let enable_block = l1.provider().get_block_number().await?;
-
-    // --- Step 5: Wait for the zone to finalize past the enableToken block ---
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(l1_alpha_usd).await?;
 
     // --- Step 6: Deposit pathUSD (gas) then AlphaUSD ---
     zone.deposit(user, pathusd_gas_amount).await?;

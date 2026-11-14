@@ -1,4 +1,4 @@
-use crate::utils::{L1_TIMEOUT, Network};
+use crate::utils::Network;
 use alloy::{primitives::U256, providers::ProviderBuilder};
 use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::{precompiles::ITIP20, zones::ZONE_TOKEN_ADDRESS};
@@ -29,7 +29,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // --- Steps 1-3: Start L1 and a zone connected to it ---
-    let (l1, [zone], [alice, bob]) = &Network::default().fund(2_000_000).start().await?;
+    let (_, [zone], [alice, bob]) = &Network::default().fund(2_000_000).start().await?;
 
     // --- Step 4: Alice deposits 1 pathUSD (shield) ---
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)
@@ -70,11 +70,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
             alloy::sol_types::SolError::abi_encode(&tempo_contracts::zones::Unauthorized {}),
             "L2 transfer must be rejected as unauthorized before the opt-in"
         );
-        let opt_in_block = l1
-            .set_transfers_enabled_on_portal(zone.portal_address(), true)
-            .await?;
-        zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
-            .await?;
+        zone.enable_transfers(true).await?;
 
         let receipt = zone_token
             .transfer(bob.address(), U256::from(transfer_amount))

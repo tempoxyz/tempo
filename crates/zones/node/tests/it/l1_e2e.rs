@@ -106,18 +106,11 @@ async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
     let router = l1
         .deploy_router_with_dex(factory, STABLECOIN_DEX_ADDRESS)
         .await?;
-    let gateway_block = l1
-        .set_zone_gateway_on_portal(portal_address, router, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway(router, true).await?;
     zone.assert_zone_gateway(router, true).await?;
 
-    l1.enable_token_on_portal(portal_address, alpha).await?;
-    l1.enable_token_on_portal(portal_address, beta).await?;
-    let enable_block = l1.provider().get_block_number().await?;
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(alpha).await?;
+    zone.enable_token(beta).await?;
 
     l1.create_dex_pair(alpha).await?;
     l1.create_dex_pair(beta).await?;
@@ -539,7 +532,7 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
 
     // This test exercises withdrawal batching, not access control. Opening the portal avoids one
     // L1 allowlist transaction per recipient.
-    l1.set_access_mode_on_portal(portal_address, false).await?;
+    zone.set_access_mode(false).await?;
 
     // A single funded depositor keeps L1 setup deterministic while still exercising deposits to
     // many distinct zone accounts.
@@ -791,11 +784,7 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
         "open mode accepted an unregistered callback target"
     );
 
-    let gateway_block = l1
-        .set_zone_gateway_on_portal(portal_address, router, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway(router, true).await?;
     zone.assert_zone_gateway(router, true).await?;
 
     let callback_amount = 150_000u128;
@@ -908,19 +897,11 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
         );
     }
 
-    let add_block = l1
-        .set_allowed_account_on_portal(portal_address, outsider, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(add_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(outsider, true).await?;
     zone.assert_allowed_account(outsider, true).await?;
     outsider_account.deposit(500_000, L1_TIMEOUT, &zone).await?;
 
-    let remove_block = l1
-        .set_allowed_account_on_portal(portal_address, outsider, false)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(remove_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(outsider, false).await?;
     zone.assert_allowed_account(outsider, false).await?;
     assert!(
         outsider_account
@@ -967,9 +948,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         "closed access accepted an unlisted depositor"
     );
 
-    let open_access_block = l1.set_access_mode_on_portal(portal_address, false).await?;
-    zone.wait_for_l2_tempo_finalized(open_access_block, L1_TIMEOUT)
-        .await?;
+    zone.set_access_mode(false).await?;
     zone.assert_access_enforced(false).await?;
     zone.assert_allowed_account(outsider, true).await?;
     outsider_account
@@ -995,18 +974,14 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         "open account access disabled gateway registration enforcement"
     );
 
-    let open_gateway_block = l1.set_gateway_mode_on_portal(portal_address, false).await?;
-    zone.wait_for_l2_tempo_finalized(open_gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway_mode(false).await?;
     zone.assert_gateway_open(true).await?;
     outsider_account
         .withdraw_with(callback.clone())
         .await
         .wrap_err("callback should pass after opening gateway mode")?;
 
-    let closed_access_block = l1.set_access_mode_on_portal(portal_address, true).await?;
-    zone.wait_for_l2_tempo_finalized(closed_access_block, L1_TIMEOUT)
-        .await?;
+    zone.set_access_mode(true).await?;
     zone.assert_access_enforced(true).await?;
     assert!(
         outsider_account
@@ -1020,9 +995,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         .await
         .wrap_err("callback should still pass after reclosing account access")?;
 
-    let enforced_gateway_block = l1.set_gateway_mode_on_portal(portal_address, true).await?;
-    zone.wait_for_l2_tempo_finalized(enforced_gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway_mode(true).await?;
     assert!(
         outsider_account
             .simulate_withdraw_with(callback)
@@ -1064,11 +1037,7 @@ async fn test_queued_plain_withdrawal_bounces_after_recipient_revocation() -> ey
         .await?;
     let trailing_l1_before = l1.balance_of(PATH_USD_ADDRESS, trailing_recipient).await?;
 
-    let revocation_block = l1
-        .set_allowed_account_on_portal(portal_address, revoked_recipient, false)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(revocation_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(revoked_recipient, false).await?;
     zone.assert_allowed_account(revoked_recipient, false)
         .await?;
 
@@ -1134,14 +1103,7 @@ async fn test_queued_callback_bounces_after_gateway_revocation() -> eyre::Result
         .balance_of(PATH_USD_ADDRESS, trailing_recipient)
         .await?;
 
-    let revocation_block = fixture
-        .l1
-        .set_zone_gateway_on_portal(fixture.portal_address, fixture.router, false)
-        .await?;
-    fixture
-        .zone
-        .wait_for_l2_tempo_finalized(revocation_block, L1_TIMEOUT)
-        .await?;
+    fixture.zone.set_gateway(fixture.router, false).await?;
     fixture
         .zone
         .assert_zone_gateway(fixture.router, false)
@@ -1547,10 +1509,7 @@ async fn test_swap_and_deposit_into_same_zone_bounces_back_when_target_deposits_
         .quote_dex_swap_exact_amount_in(fixture.alpha, fixture.beta, fixture.swap_amount)
         .await?;
 
-    fixture
-        .l1
-        .pause_deposits_on_portal(fixture.portal_address, fixture.beta)
-        .await?;
+    fixture.zone.pause_deposits(fixture.beta, true).await?;
 
     let _sequencer = spawn_sequencer(
         &fixture.l1,
@@ -1686,13 +1645,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     // --- Step 3: Enable ZoneUSD on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled event from a live block.
-    l1.enable_token_on_portal(zone.portal_address(), l1_zone_usd)
-        .await?;
-    let enable_block = l1.provider().get_block_number().await?;
-
-    // Wait for the zone to finalize past the enableToken block
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(l1_zone_usd).await?;
 
     // L2 token address is the same as L1 by design (auto-initialized via TokenEnabled event)
     let l2_zone_usd = l1_zone_usd;
@@ -2004,10 +1957,7 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    let membership_block = l1
-        .set_allowed_account_on_portal(portal_address, clean_signer.address(), true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(membership_block, L1_TIMEOUT)
+    zone.set_allowed_account(clean_signer.address(), true)
         .await?;
     zone.assert_allowed_account(clean_signer.address(), true)
         .await?;
@@ -2156,7 +2106,12 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    l1.set_access_mode_on_portal(portal_address, false).await?;
+    // The zone isn't launched yet, so open the portal directly.
+    let receipt = ZonePortal::new(portal_address, l1.admin_provider())
+        .setAccessMode(false)
+        .mined()
+        .await?;
+    assert!(receipt.status(), "setAccessMode reverted");
 
     let [listed_signer, unlisted_signer] = signers();
     let datadir = tempfile::tempdir()?;
@@ -2573,9 +2528,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(cluster.portal_address, true)
-        .await?;
+    let opt_in_block = leader.enable_transfers(true).await?;
     let mut account = ZoneAccount::with_signer(alice.clone(), l1, leader, cluster.portal_address);
     // Alice is a fresh key, so fund her L1 gas too.
     l1.fund_user(alice.address(), 2 * AMOUNT).await?;
@@ -2752,9 +2705,7 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
     let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(cluster.portal_address, true)
-        .await?;
+    let opt_in_block = leader.enable_transfers(true).await?;
     let mut account = ZoneAccount::with_signer(alice.clone(), l1, leader, cluster.portal_address);
     // Alice is a fresh key, so fund her L1 gas too.
     l1.fund_user(alice.address(), 2 * AMOUNT).await?;
@@ -3133,11 +3084,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // Opt the zone into transfers so the rejection below comes from the sender blacklist.
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(portal_address, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_transfers(true).await?;
 
     // --- Step 4: Deposit to Alice via the admin account ---
     // Alice is blacklisted as a sender, so she can't transfer pathUSD on L1

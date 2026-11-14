@@ -1,10 +1,7 @@
 //! Multi-asset zone deposit and withdrawal.
 
 use crate::utils::{L1_TIMEOUT, Network};
-use alloy::{
-    primitives::{B256, U256},
-    providers::Provider,
-};
+use alloy::primitives::{B256, U256};
 use tempo_precompiles::test_util::TIP20Setup;
 
 /// Alice deposits AlphaUSD and BetaUSD into a zone and withdraws both back to L1.
@@ -37,15 +34,8 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     // --- Step 3: Enable both tokens on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled events from live blocks.
-    l1.enable_token_on_portal(zone.portal_address(), l1_alpha)
-        .await?;
-    l1.enable_token_on_portal(zone.portal_address(), l1_beta)
-        .await?;
-    let enable_block = l1.provider().get_block_number().await?;
-
-    // Wait for the zone to finalize past the enableToken blocks
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(l1_alpha).await?;
+    zone.enable_token(l1_beta).await?;
 
     // L1 and L2 token addresses are the same by design
     let l2_alpha = l1_alpha;

@@ -330,11 +330,7 @@ async fn test_tempo_change_reaches_the_zone(change: Change) -> eyre::Result<()> 
     fund_on_zone(l1, zone, portal, account).await?;
     fund_on_zone(l1, zone, portal, bystander.address()).await?;
     // The test zone is closed, so the portal must admit the account's withdrawal.
-    let allowed = l1
-        .set_allowed_account_on_portal(portal, account, true)
-        .await?;
-    zone.wait_for_tempo_block_number(allowed, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(account, true).await?;
 
     assert_eq!(env.zone_chain.commitment(account).await?, B256::ZERO);
     let tx = env
