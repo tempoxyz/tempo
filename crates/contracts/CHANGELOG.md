@@ -1,5 +1,21 @@
 # Changelog
 
+## `tempo-contracts@2.0.0`
+
+### Minor Changes
+
+- Added the configurable account precompile interface (`IConfigurableAccount`) and its `CONFIGURABLE_ACCOUNT_ADDRESS`. Nothing registers or calls it yet. (by @joshieDo, [#8502](https://github.com/tempoxyz/tempo/pull/8502))
+- Added the `ConfigurableAccount` account keychain signature type (value 3). From T14, the T3+ `authorizeKey` overloads and `authorizeAdminKey` accept it for a code-free delegate other than the granting account that is not a reserved address (precompile, TIP-20, virtual or zone portal). Earlier forks keep reverting exactly as for an unknown signature type. (by @joshieDo, [#8527](https://github.com/tempoxyz/tempo/pull/8527))
+- Registered the configurable account precompile at T14 and stored configuration commitments in the journaled account extension. The first commitment write is priced like account creation and installs the `0xef` account marker (`CONFIGURABLE_ACCOUNT_CODE`, `CONFIGURABLE_ACCOUNT_CODE_HASH`, `valid_account_code`); later writes cost 5,000 gas. `PrecompileStorageProvider::config_commitment` and `set_config_commitment` are now required, `account_config_commitment` decodes a commitment, `CONFIG_COMMITMENT_REGISTRATION_GAS` is removed, and a registered keychain-signed sender is exempt from EIP-3607 from T14. From T14 the handler seeds the upgrade authority, so a root-signed `upgradeAccount` that is the whole transaction registers its sender, and a registered account can be named as a ConfigurableAccount delegate key. (by @joshieDo, [#8743](https://github.com/tempoxyz/tempo/pull/8743))
+- Added the `UnsupportedOnZone()` error to `IConfigurableAccount`, which `updateConfig` and `upgradeAccount` revert with on zones (TIP-1154). (by @0xrusowsky, [#9035](https://github.com/tempoxyz/tempo/pull/9035))
+- From T14 the signature verifier precompile exposes `verifyConfigurableAccount(account, hash, signature)`: it returns whether a configurable account signature's owner quorum approves `hash` for `account` against its current configuration, and reverts for malformed or invalid approvals. Its calldata is exempt from the primitive signature size cap. (by @joshieDo, [#8750](https://github.com/tempoxyz/tempo/pull/8750))
+- Added portal transfer opt-in controls, contract bindings, and the T15 portal runtime. Updated development genesis bytecode and hardened zone transfer admission checks. (by @adityapk00, [#8549](https://github.com/tempoxyz/tempo/pull/8549))
+- Added the `RootKeyRetired(address account)` error to `ITIP20` and `ITIP20ChannelReserve`. From T14, TIP-20 `permit` reverts with it when the owner has a config commitment, because a committed account no longer acts through its own root key. Channel `open` and nonzero `topUp` revert with it when the voucher signer has one; vouchers on already-funded channels stay redeemable after the signer migrates. (by @joshieDo, [#8525](https://github.com/tempoxyz/tempo/pull/8525))
+
+### Patch Changes
+
+- Moved function-local `use`s to module scope. No public API or behavior changes. (by @joshieDo, [#8920](https://github.com/tempoxyz/tempo/pull/8920))
+
 ## `tempo-contracts@1.16.0`
 
 ### Minor Changes
