@@ -14329,7 +14329,9 @@ dependencies = [
  "alloy-transport",
  "k256 0.13.4",
  "serde",
+ "serde_json",
  "tempo-hardfork",
+ "test-case",
  "tokio",
 ]
 
