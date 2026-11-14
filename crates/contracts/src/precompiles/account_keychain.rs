@@ -260,15 +260,13 @@ impl IAccountKeychain::KeyRestrictions {
         self
     }
 
-    /// Enforces spending limits without adding any, so the key can spend nothing until a limit
-    /// is set.
+    /// Enforces spending limits without adding any, so the key can't spend until one is set.
     pub fn enforce_limits(mut self) -> Self {
         self.enforceLimits = true;
         self
     }
 
-    /// Enforces spending limits and allows the key to spend `amount` of `token` per `period`
-    /// seconds. A zero `period` makes it a one-time limit.
+    /// Allows spending `amount` of `token` per `period` seconds, or once if `period` is zero.
     pub fn limit(mut self, token: Address, amount: U256, period: u64) -> Self {
         self.enforceLimits = true;
         self.limits.push(IAccountKeychain::TokenLimit {
