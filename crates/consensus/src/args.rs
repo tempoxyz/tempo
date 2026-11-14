@@ -153,15 +153,6 @@ pub struct Args {
     #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
     pub verification_mode: VerificationMode,
 
-    /// Deprecated compatibility flag. P2P queue capacities are derived from
-    /// peer-set limits and channel quotas, so this value is ignored.
-    #[arg(
-        long = "consensus.message-backlog",
-        value_name = "COUNT",
-        help = "Deprecated: ignored; P2P queue capacities are derived from peer-set limits and channel quotas."
-    )]
-    pub message_backlog: Option<usize>,
-
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
     #[arg(long = "consensus.mailbox-size", default_value = "16384")]
@@ -203,15 +194,6 @@ pub struct Args {
     /// activity timeout.
     #[arg(long = "consensus.views-to-track", default_value_t = 256)]
     pub views_to_track: u64,
-
-    /// Deprecated compatibility flag. Leader skipping is now driven by wall-clock
-    /// inactivity (see `--consensus.inactive-time-before-leader-skip`), so this value is ignored.
-    #[arg(
-        long = "consensus.inactive-views-until-leader-skip",
-        value_name = "COUNT",
-        help = "Deprecated: ignored; use --consensus.inactive-time-before-leader-skip."
-    )]
-    pub inactive_views_until_leader_skip: Option<u64>,
 
     /// How long the selected leader must have been silent, while a quorum of
     /// validators was active, before its view is skipped without waiting for
@@ -858,7 +840,6 @@ mod tests {
             args.inactive_time_before_leader_skip.into_duration(),
             Duration::from_millis(11_200)
         );
-        assert_eq!(args.inactive_views_until_leader_skip, None);
     }
 
     #[test]
@@ -892,39 +873,6 @@ mod tests {
             Duration::from_millis(10_001)
         );
         args.validate_simplex_timing().unwrap();
-    }
-
-    #[test]
-    fn deprecated_inactive_views_flag_still_parses() {
-        assert_eq!(
-            parse(&[
-                "--dev",
-                "--consensus.inactive-views-until-leader-skip",
-                "32"
-            ])
-            .consensus
-            .inactive_views_until_leader_skip,
-            Some(32),
-        );
-    }
-
-    #[test]
-    fn deprecated_message_backlog_is_only_set_when_supplied() {
-        assert_eq!(parse(&["--dev"]).consensus.message_backlog, None);
-        for value in ["0", "16384", "32768"] {
-            assert_eq!(
-                parse(&["--dev", "--consensus.message-backlog", value])
-                    .consensus
-                    .message_backlog,
-                Some(value.parse().unwrap()),
-            );
-        }
-        assert_eq!(
-            parse(&["--dev", "--consensus.message-backlog=16384"])
-                .consensus
-                .message_backlog,
-            Some(16384),
-        );
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
