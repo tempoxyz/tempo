@@ -10,7 +10,7 @@ use std::{
 
 use alloy_provider::{Provider as _, RootProvider};
 use alloy_pubsub::{ConnectionHandle, PubSubConnect};
-use alloy_rpc_client::{RpcClient, WsConnect};
+use alloy_rpc_client::{RpcClient, WebSocketConfig, WsConnect};
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use alloy_transport::{TransportErrorKind, TransportResult};
 use commonware_consensus::{Reporter, types::Height};
@@ -18,6 +18,7 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use rand_08::Rng as _;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_alloy::TempoNetwork;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
@@ -55,6 +56,11 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the upstream node may take to answer `consensus_subscribe`.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Largest websocket message, and frame, accepted from the upstream node.
+///
+/// Blocks arrive as JSON, which is several times larger than their RLP encoding, and the
+/// upstream sends each reply as a single unfragmented frame.
+const MAX_UPSTREAM_MESSAGE_SIZE: usize = 8 * MAX_RLP_BLOCK_SIZE;
 
 /// Manages the connection to the upstream node.
 ///
@@ -359,6 +365,11 @@ impl Connector for WebSocketConnector {
         async move {
             let connect = NoReconnect(
                 WsConnect::new(url.as_str())
+                    .with_config(
+                        WebSocketConfig::default()
+                            .max_message_size(Some(MAX_UPSTREAM_MESSAGE_SIZE))
+                            .max_frame_size(Some(MAX_UPSTREAM_MESSAGE_SIZE)),
+                    )
                     .with_keepalive_interval(PING_INTERVAL)
                     // alloy already stops at the first non-retryable reconnect error; this keeps
                     // it from waiting between attempts if that ever changes.
@@ -746,6 +757,37 @@ mod tests {
         let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
         let (_, client) = connector.connect(0).await;
         assert!(heartbeat_failure(&client.unwrap().provider).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn websocket_client_accepts_replies_larger_than_a_block() {
+        // A full block's JSON is more than twice its RLP size, past tungstenite's 16 MiB default
+        // frame limit.
+        let len = 3 * MAX_RLP_BLOCK_SIZE;
+        let mut module = jsonrpsee::RpcModule::new(());
+        module
+            .register_method("large_reply", move |_, _| "a".repeat(len))
+            .unwrap();
+        let config = jsonrpsee::server::ServerConfig::builder()
+            .max_response_body_size(MAX_UPSTREAM_MESSAGE_SIZE as u32)
+            .build();
+        let server = jsonrpsee::server::Server::builder()
+            .set_config(config)
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let reply = client
+            .unwrap()
+            .provider
+            .raw_request::<_, String>("large_reply".into(), ())
+            .await
+            .unwrap();
+        assert_eq!(reply.len(), len);
     }
 
     #[tokio::test]
