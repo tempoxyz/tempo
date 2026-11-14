@@ -72,6 +72,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
 
     function setUp() public override {
         super.setUp();
+        _pinT14ForValidatorConfigV1();
 
         targetContract(address(this));
 

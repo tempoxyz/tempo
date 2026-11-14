@@ -43,7 +43,9 @@ impl Precompile for ValidatorConfigV2 {
                     setNetworkIdentityRotationEpoch(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_network_identity_rotation_epoch(sender, c)
                     }),
+                    #[schedule(until = T15)]
                     migrateValidator(call) => mutate(call, msg_sender, |sender, c| self.migrate_validator(sender, c)),
+                    #[schedule(until = T15)]
                     initializeIfMigrated(call) => mutate(call, msg_sender, |sender, _| self.initialize_if_migrated(sender))
                 }
             }
@@ -57,17 +59,18 @@ mod tests {
     use crate::{
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::{Address, FixedBytes},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, ValidatorConfigV2Error,
+        IValidatorConfigV2, IValidatorConfigV2::IValidatorConfigV2Calls, UnknownFunctionSelector,
+        ValidatorConfigV2Error,
     };
 
     #[test]
@@ -233,6 +236,45 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_disables_migration() -> eyre::Result<()> {
+        let sender = Address::random();
+        let migrate = IValidatorConfigV2::migrateValidatorCall { idx: 0 }.abi_encode();
+        let finalize = IValidatorConfigV2::initializeIfMigratedCall {}.abi_encode();
+
+        // T14: migration calls reach the migration logic (V1 is empty here)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut vc = ValidatorConfigV2::new();
+            for calldata in [&migrate, &finalize] {
+                let result = vc.call(calldata, sender);
+                expect_precompile_revert(
+                    &result,
+                    ValidatorConfigV2Error::empty_v_1_validator_set(),
+                );
+            }
+            Ok(())
+        })?;
+
+        // T15: both selectors are gone
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut vc = ValidatorConfigV2::new();
+            for (calldata, selector) in [
+                (&migrate, IValidatorConfigV2::migrateValidatorCall::SELECTOR),
+                (
+                    &finalize,
+                    IValidatorConfigV2::initializeIfMigratedCall::SELECTOR,
+                ),
+            ] {
+                let result = vc.call(calldata, sender);
+                let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
+                assert_eq!(decoded.selector.0, selector);
+            }
             Ok(())
         })
     }

@@ -1,4 +1,6 @@
-use crate::utils::{ForkSchedule, TestNodeBuilder, run_schedule_cases, setup_test_token};
+use crate::utils::{
+    ForkSchedule, TestNodeBuilder, make_genesis_at, run_schedule_cases, setup_test_token,
+};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -666,7 +668,11 @@ async fn test_unknown_selector_error_via_rpc(schedule: ForkSchedule) -> eyre::Re
 async fn test_get_validators_state_override_no_oom() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    // V1 dispatch is disabled from T15.
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T14))
+        .build_http_only()
+        .await?;
     let provider = ProviderBuilder::new().connect_http(setup.http_url);
     let val_config = ValidatorConfig::new();
     let tx = TransactionRequest::default()
