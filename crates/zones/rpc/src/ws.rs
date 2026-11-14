@@ -494,10 +494,9 @@ async fn revalidate_auth(
             key_id,
             config_commitment,
         } => {
-            let (key_info, commitment) = tokio::try_join!(
-                api.get_keychain_key(auth.caller, key_id),
-                api.get_config_commitment(key_id),
-            )?;
+            let (key_info, commitment) = api
+                .get_keychain_key_and_commitment(auth.caller, key_id)
+                .await?;
             validate_keychain_key_info(&key_info)?;
             match config_commitment {
                 None => ensure_not_retired_root(commitment),
