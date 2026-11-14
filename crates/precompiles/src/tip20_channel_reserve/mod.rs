@@ -855,8 +855,7 @@ impl TIP20ChannelReserve {
     }
 }
 
-/// Returns the id of the channel `descriptor` names on chain `chain_id`, matching
-/// [`TIP20ChannelReserve::compute_channel_id`].
+/// Returns the channel id of `descriptor` on `chain_id`, as the precompile computes it.
 pub fn compute_channel_id(
     descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
     chain_id: u64,
@@ -864,8 +863,7 @@ pub fn compute_channel_id(
     keccak256(channel_id_preimage(descriptor, chain_id))
 }
 
-/// Returns the EIP-712 digest that signs a voucher for `cumulative_amount` of `channel_id` on
-/// chain `chain_id`, matching [`TIP20ChannelReserve::get_voucher_digest`].
+/// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
 pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
     let struct_hash = keccak256(voucher_struct_preimage(channel_id, cumulative_amount));
     keccak256(voucher_digest_preimage(
