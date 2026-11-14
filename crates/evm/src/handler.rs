@@ -70,7 +70,8 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Operations charged:
 /// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
-/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
+/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it;
+///   T15 corrects this, see [`T15_EXPIRING_NONCE_GAS`])
 /// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
 ///
 /// Excluded from gas calculation:
@@ -84,6 +85,12 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST as u64 + 100 + 3 * WARM_SSTORE_RESET as u64;
+
+/// T15+ [`EXPIRING_NONCE_GAS`]: `seen[old_hash]` is a different slot from `ring[idx]`, so reading
+/// the ring entry does not warm it and its SLOAD is cold as well.
+///
+/// Total: 3*2100 + 3*2900 = 15,000 gas
+const T15_EXPIRING_NONCE_GAS: u64 = 3 * COLD_SLOAD_COST as u64 + 3 * WARM_SSTORE_RESET as u64;
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
@@ -414,7 +421,12 @@ fn nonce_intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> (u64, u
     let params = &host.version().gas_params;
 
     if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
-        (EXPIRING_NONCE_GAS, 0)
+        let gas = if spec.is_t15() {
+            T15_EXPIRING_NONCE_GAS
+        } else {
+            EXPIRING_NONCE_GAS
+        };
+        (gas, 0)
     } else if spec.is_t1() && tx.nonce == 0 {
         // TIP-1000: Storage pricing updates for launch
         // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
