@@ -178,6 +178,7 @@ create-zone name token="" access_enforced="false" gateway_enforced="false":
         --initial-token "$ZONE_TOKEN_L1" \
         --admin "$ADMIN_ADDR" \
         --sequencer "$SEQUENCER_ADDR" \
+        --allow-single-sequencer \
         "${CREATE_ARGS[@]}"
     echo "Zone '{{name}}' created. Artifacts in $OUTPUT/"
 
@@ -909,6 +910,7 @@ deploy-zone name token="" access_enforced="false" gateway_enforced="false":
         --initial-token "$ZONE_TOKEN_L1" \
         --admin "$ADMIN_ADDR" \
         --sequencer "$SEQUENCER_ADDR" \
+        --allow-single-sequencer \
         "${CREATE_ARGS[@]}"
     echo ""
 

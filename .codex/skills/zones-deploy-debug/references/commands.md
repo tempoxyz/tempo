@@ -15,7 +15,7 @@ just deploy-zone my-zone
 That recipe creates the zone, stores `sequencerKey` and `adminKey` in `generated/my-zone/zone.json`, and starts the node immediately. If you need tighter control, run:
 
 ```bash
-target/debug/tempo-xtask create-zone --output generated/my-zone --l1-rpc-url "$HTTP_RPC" --sequencer "$SEQUENCER_ADDR" --private-key "$SEQUENCER_KEY"
+target/debug/tempo-xtask create-zone --output generated/my-zone --l1-rpc-url "$HTTP_RPC" --sequencer "$SEQUENCER_ADDR" --allow-single-sequencer --private-key "$SEQUENCER_KEY"
 target/debug/tempo-xtask set-encryption-key --l1-rpc-url "$HTTP_RPC" --portal "$PORTAL" --private-key "$SEQUENCER_KEY"
 ```
 
