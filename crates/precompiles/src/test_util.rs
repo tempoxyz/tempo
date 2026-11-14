@@ -402,9 +402,7 @@ impl TIP20Setup {
     }
 }
 
-/// Sets up an account's [`AccountKeychain`] the way a transaction from that account sees it:
-/// `tx.origin` is the account, its root key authorizes each Secp256k1 key, then the transaction
-/// key switches to [`Self::acting_as`] (the root key unless set).
+/// Sets up `account`'s [`AccountKeychain`] as its transaction sees it, by default as the root key.
 ///
 /// ```ignore
 /// let keychain = KeychainSetup::new(user)
