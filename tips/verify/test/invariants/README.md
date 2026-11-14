@@ -623,11 +623,11 @@ The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) 
 
 ### Type Disambiguation Invariants
 
-- **SV6**: Signature type disambiguation - exactly 65 bytes is secp256k1 (no prefix). Non-65-byte signatures with unknown type prefixes must revert via both `recover()` and `verify()`.
+- **SV6**: Signature type disambiguation - exactly 65 bytes is secp256k1 (no prefix). Non-65-byte signatures with unknown type prefixes must revert via both `recover()` and `verify()`. From T15, this applies to `recover()` only (TIP-1168).
 
 ### Keychain Rejection Invariants
 
-- **SV7**: Keychain signature rejection - signatures with `0x03` (Keychain secp256k1) or `0x04` (Keychain P256) prefixes must be rejected, even when containing valid-looking inner signatures. Both `recover()` and `verify()` must revert. The precompile may return either `InvalidFormat()` (when the keychain prefix is rejected at the parsing layer as an unsupported type) or `InvalidSignature()` (if parsing succeeds but verification rejects it).
+- **SV7**: Keychain signature rejection - signatures with `0x03` (Keychain secp256k1) or `0x04` (Keychain P256) prefixes must be rejected, even when containing valid-looking inner signatures. Both `recover()` and `verify()` must revert. From T15, this applies to `recover()` only: `verify()` returns the `verifyKeychainAdmin` result (TIP-1168). The precompile may return either `InvalidFormat()` (when the keychain prefix is rejected at the parsing layer as an unsupported type) or `InvalidSignature()` (if parsing succeeds but verification rejects it).
 
 ## TIP-1022 Virtual Addresses
 
