@@ -1,6 +1,6 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmTypes, TempoTxEnv, transaction::ExecutionContext,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, TempoTxEnv, transaction::ExecutionContext,
 };
 use alloy_consensus::{
     Transaction,
@@ -277,6 +277,8 @@ pub struct TempoBlockExecutor<'a> {
     incentive_gas_used: u64,
     block_gas_used: u64,
     parallel: Option<ParallelExecution>,
+    /// Builds the EVMs of [`BlockExecutor::execute_transactions_parallel`]'s workers.
+    pub(crate) worker_config: Option<&'a TempoEvmConfig>,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -308,6 +310,7 @@ impl<'a> TempoBlockExecutor<'a> {
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
             parallel: None,
+            worker_config: None,
         }
     }
 
@@ -788,13 +791,14 @@ impl<'a> TempoBlockExecutor<'a> {
     ///
     /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
     /// the block.
-    pub fn execute_block_transactions<'t, B, F>(
+    pub fn execute_block_transactions<R, B, F>(
         &mut self,
-        transactions: impl IntoIterator<Item = (Recovered<TempoTxEnv>, &'t Recovered<TempoTxEnvelope>)>,
+        transactions: impl IntoIterator<Item = (Recovered<TempoTxEnv>, R)>,
         base: &B,
         make_evm: F,
     ) -> Result<ParallelExecutionStats, BlockExecutionError>
     where
+        R: RecoveredTx<TempoTxEnvelope>,
         B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
     {
@@ -810,13 +814,14 @@ impl<'a> TempoBlockExecutor<'a> {
             let mut tx_env = tx_env.clone();
             // Remove any prewarming-specific context that was added to the tx env.
             tx_env.inner_mut().set_expiring_nonce_idx(None);
+            let tx = tx.tx();
             lanes.push(TxLane {
                 tx_hash: *tx.tx_hash(),
                 is_system_tx: self.validate_tx_pre_execution(tx)?,
                 is_payment: self.is_payment(tx),
                 execution_context: tx_env.inner().execution_context(),
             });
-            txs.push((tx_env, tx.inner()));
+            txs.push((tx_env, tx));
         }
 
         // Check each transaction's section as it commits, over a copy of the section state.
@@ -875,9 +880,9 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Executes and commits `transactions` one by one.
-    fn execute_sequentially(
+    fn execute_sequentially<R: RecoveredTx<TempoTxEnvelope>>(
         &mut self,
-        transactions: Vec<(Recovered<TempoTxEnv>, &Recovered<TempoTxEnvelope>)>,
+        transactions: Vec<(Recovered<TempoTxEnv>, R)>,
     ) -> Result<ParallelExecutionStats, BlockExecutionError> {
         let count = transactions.len();
         for tx in transactions {
@@ -917,6 +922,14 @@ impl ParallelExecution {
             commit: ParallelCommit::Batched,
         }
     }
+}
+
+/// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
+fn worker_evm_factory<F>(f: F) -> F
+where
+    F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
+{
+    f
 }
 
 /// What a transaction's section and lane checks need, known before it executes.
@@ -1056,6 +1069,31 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
 
         Ok(())
+    }
+
+    fn executes_in_parallel(&self) -> bool {
+        self.parallel.is_some() && self.worker_config.is_some()
+    }
+
+    fn execute_transactions_parallel<T: ExecutorTx<Self>>(
+        &mut self,
+        transactions: Vec<T>,
+        base: &(dyn evm2::evm::DynDatabaseRef + Sync),
+    ) -> Result<(), BlockExecutionError> {
+        let transactions = transactions.into_iter().map(|tx| tx.into_parts());
+        let Some(config) = self.worker_config else {
+            return self.execute_sequentially(transactions.collect()).map(drop);
+        };
+        let env = TempoEvmEnv {
+            spec: self.evm().config_spec_id(),
+            version: *self.evm().version(),
+            block: *self.evm().block(),
+        };
+        let make_evm = worker_evm_factory(move |db| {
+            reth_evm::BlockExecutorFactory::evm_with_env(config, db, env.clone())
+        });
+        self.execute_block_transactions(transactions, base, make_evm)
+            .map(drop)
     }
 
     fn receipts(&self) -> &[TempoReceipt] {

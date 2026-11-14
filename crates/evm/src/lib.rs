@@ -213,6 +213,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
         executor.set_parallel_execution(self.parallel_execution);
+        executor.worker_config = Some(self);
         executor
     }
 
