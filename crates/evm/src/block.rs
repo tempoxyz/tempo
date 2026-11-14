@@ -20,8 +20,8 @@ use evm2::{
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
-    RecoveredTx,
+    BlockValidationError, CommitChanges, ConfigureEvm as _, ExecutorTx, GasOutput, ReceiptBuilder,
+    ReceiptBuilderCtx, RecoveredTx,
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
@@ -788,19 +788,23 @@ impl<'a> TempoBlockExecutor<'a> {
     /// - `base` is the state the executor's EVM reads beneath its overlay, shared with the workers.
     /// - `make_evm` builds a worker EVM over the database it is given, with the executor's spec,
     ///   configuration and block environment.
+    /// - `on_speculative` sees each speculative execution's changes, by transaction index, on a
+    ///   worker thread before they are validated: hints for prefetching, not committed state.
     ///
     /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
     /// the block.
-    pub fn execute_block_transactions<R, B, F>(
+    pub fn execute_block_transactions<R, B, F, H>(
         &mut self,
         transactions: impl IntoIterator<Item = (Recovered<TempoTxEnv>, R)>,
         base: &B,
         make_evm: F,
+        on_speculative: H,
     ) -> Result<ParallelExecutionStats, BlockExecutionError>
     where
         R: RecoveredTx<TempoTxEnvelope>,
         B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
+        H: Fn(usize, TxStateChanges<'_>) + Sync,
     {
         let transactions = transactions.into_iter().collect::<Vec<_>>();
         let Some(parallel) = self.parallel else {
@@ -836,7 +840,7 @@ impl<'a> TempoBlockExecutor<'a> {
             make_evm,
             parallel.threads,
             None,
-            |_, _| {},
+            on_speculative,
             |index, result| {
                 let lane = &lanes[index];
                 let block_gas_used = if use_regular_gas {
@@ -926,7 +930,7 @@ impl ParallelExecution {
 
 /// Blocks with fewer transactions execute sequentially even with parallel execution on: spawning
 /// workers and opening their state providers costs more than they save.
-const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
+pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
 
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F
@@ -1075,18 +1079,18 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         Ok(())
     }
 
-    fn executes_in_parallel(&self) -> bool {
-        self.parallel.is_some() && self.worker_config.is_some()
-    }
-
     fn execute_transactions_parallel<T: ExecutorTx<Self>>(
         &mut self,
         transactions: Vec<T>,
         base: &(dyn evm2::evm::DynDatabaseRef + Sync),
+        on_speculative: &(dyn Fn(usize, TxStateChanges<'_>) + Sync),
     ) -> Result<(), BlockExecutionError> {
-        let small = transactions.len() < PARALLEL_EXECUTION_MIN_TRANSACTIONS;
+        let len = transactions.len();
         let transactions = transactions.into_iter().map(|tx| tx.into_parts());
-        let Some(config) = self.worker_config.filter(|_| !small) else {
+        let Some(config) = self
+            .worker_config
+            .filter(|config| config.executes_transactions_in_parallel(len))
+        else {
             return self.execute_sequentially(transactions.collect()).map(drop);
         };
         let env = TempoEvmEnv {
@@ -1097,7 +1101,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let make_evm = worker_evm_factory(move |db| {
             reth_evm::BlockExecutorFactory::evm_with_env(config, db, env.clone())
         });
-        self.execute_block_transactions(transactions, base, make_evm)
+        self.execute_block_transactions(transactions, base, make_evm, on_speculative)
             .map(drop)
     }
 

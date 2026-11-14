@@ -141,7 +141,12 @@ fn run(
     let make_evm = evm_factory(|db| BlockExecutorFactory::evm_with_env(config, db, env.clone()));
     let start = Instant::now();
     let reexecuted = executor
-        .execute_block_transactions(tx_envs.into_iter().zip(txs), &**snapshot, make_evm)
+        .execute_block_transactions(
+            tx_envs.into_iter().zip(txs),
+            &**snapshot,
+            make_evm,
+            |_, _| {},
+        )
         .expect("block execution failed")
         .reexecuted;
     let elapsed = start.elapsed();

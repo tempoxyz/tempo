@@ -228,8 +228,12 @@ fn execute(
     executor.set_parallel_execution(parallel);
 
     let make_evm = evm_factory(|db| BlockExecutorFactory::evm_with_env(&config, db, env.clone()));
-    let result =
-        executor.execute_block_transactions(tx_envs.into_iter().zip(txs), &**snapshot, make_evm);
+    let result = executor.execute_block_transactions(
+        tx_envs.into_iter().zip(txs),
+        &**snapshot,
+        make_evm,
+        |_, _| {},
+    );
     let error = result.as_ref().err().map(|error| error.to_string());
     let receipts = executor.receipts().to_vec();
     let executor_state = executor.executor_state();

@@ -246,6 +246,11 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
+    fn executes_transactions_in_parallel(&self, transaction_count: usize) -> bool {
+        self.parallel_execution.is_some()
+            && transaction_count >= block::PARALLEL_EXECUTION_MIN_TRANSACTIONS
+    }
+
     #[cfg(feature = "jit")]
     fn with_jit_support_enabled(mut self, enabled: bool) -> Self {
         self.evm_factory.set_jit_support(enabled);
