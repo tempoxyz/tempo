@@ -160,6 +160,13 @@ impl Slot<U256> {
     pub fn sdec(&mut self, delta: U256) -> Result<()> {
         <Self as StorageOps>::sdec(self, self.slot, delta)
     }
+
+    /// Adds `delta`, wrapping, to this slot without reading it. See
+    /// [`crate::storage::PrecompileStorageProvider::sadd_blind`].
+    #[inline]
+    pub fn sadd_blind(&mut self, delta: U256) -> Result<()> {
+        StorageCtx.sadd_blind(self.address, self.slot, delta)
+    }
 }
 
 /// Wrapper that routes storage operations through transient storage (TLOAD/TSTORE).

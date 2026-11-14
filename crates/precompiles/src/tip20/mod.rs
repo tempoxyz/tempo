@@ -1488,7 +1488,12 @@ impl TIP20Token {
         }
 
         self.decrement_balance(from, amount)?;
-        self.increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)?;
+        if crate::storage::StorageCtx.defers_storage_writes() {
+            // Fee custody is only debited by this transaction's refund and fee distribution.
+            self.balances[TIP_FEE_MANAGER_ADDRESS].sadd_blind(amount)?;
+        } else {
+            self.increment_balance(TIP_FEE_MANAGER_ADDRESS, amount)?;
+        }
 
         Ok(())
     }
@@ -1533,7 +1538,12 @@ impl TIP20Token {
             )?;
         }
 
-        let refund_debit = self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund);
+        // The refund is at most what this transaction's pre-transaction debit credited.
+        let refund_debit = if crate::storage::StorageCtx.defers_storage_writes() {
+            self.balances[TIP_FEE_MANAGER_ADDRESS].sadd_blind(U256::ZERO.wrapping_sub(refund))
+        } else {
+            self.decrement_balance(TIP_FEE_MANAGER_ADDRESS, refund)
+        };
         #[cfg(feature = "fuzz")]
         antithesis_sdk::assert_always!(
             !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),

@@ -508,6 +508,49 @@ where
         self.sstore_inner(address, key, value, |_| sstore_action)
     }
 
+    fn defers_storage_writes(&self) -> bool {
+        // Builder replay records exact actions: keep reading the slot there.
+        self.evm.defers_storage_resolution() && !self.actions.is_enabled()
+    }
+
+    fn sadd_blind(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        if !self.defers_storage_writes() {
+            let value = self.sload_inner(address, key, true)?.wrapping_add(delta);
+            return self.sstore_inner(address, key, value, |result| {
+                StorageAction::Sstore(address, key, result.present_value, value)
+            });
+        }
+        self.ensure_not_static()?;
+        let is_cold = self.evm.state_mut().storage_add(&address, key, delta)?;
+        // Gas from the access alone, never from the value.
+        self.deduct_gas(self.version.gas_params.get(GasId::WarmStorageReadCost))?;
+        if is_cold {
+            self.deduct_gas(
+                self.version
+                    .gas_params
+                    .get(GasId::ColdStorageAdditionalCost),
+            )?;
+        }
+        self.deduct_gas(self.version.gas_params.get(GasId::SstoreStatic))
+    }
+
+    fn defer_storage_op(
+        &mut self,
+        op: evm2::evm::DeferredStorageOp,
+    ) -> Result<bool, TempoPrecompileError> {
+        if !self.defers_storage_writes() {
+            return Ok(false);
+        }
+        self.ensure_not_static()?;
+        self.evm.state_mut().defer_storage_op(op);
+        Ok(true)
+    }
+
     #[inline]
     fn sdec(
         &mut self,

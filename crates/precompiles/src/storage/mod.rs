@@ -149,6 +149,30 @@ pub trait PrecompileStorageProvider {
         self.sstore(address, key, value)
     }
 
+    /// Returns whether the provider defers storage writes to the end of the transaction, as parallel
+    /// block execution's workers do: then the fee and expiring-nonce precompiles write their
+    /// block-wide counters without reading them ([`Self::sadd_blind`], [`Self::defer_storage_op`]),
+    /// so transactions that only touch those counters do not conflict. The block's state and
+    /// receipts are the same either way.
+    fn defers_storage_writes(&self) -> bool {
+        false
+    }
+
+    /// Adds `delta`, wrapping, to a persistent storage slot without reading it, when the provider
+    /// can defer the add to the end of the transaction; otherwise reads and writes the slot.
+    ///
+    /// Only for slots whose value never decides the transaction's gas or control flow.
+    fn sadd_blind(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        let value = self.sload(address, key)?.wrapping_add(delta);
+        self.sstore(address, key, value)
+    }
+
+    /// Defers `op` to the end of the transaction, returning whether the provider could; the caller
+    /// performs the operation itself when it could not.
+    fn defer_storage_op(&mut self, _op: evm2::evm::DeferredStorageOp) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()>;
 
