@@ -4,6 +4,10 @@
 //! sequentially and with evm2's optimistic parallel executor at several thread counts, and checks
 //! that every variant commits the sequential result. Set `TEMPO_TIP20_EXEC_TXS` to replay a txgen raw transaction file,
 //! `TEMPO_PAR_THREADS` (comma-separated) and `TEMPO_PAR_ITERS` to change the sweep.
+//!
+//! To model a node, set `TEMPO_PAR_HOOK=1` to attach a state hook that forwards every update to a
+//! consumer thread in timed runs too, and `TEMPO_PAR_BASE_NS` to make the first read of each key
+//! from the pre-block state spin for that many nanoseconds, like a cold database read.
 
 #[path = "tip20_execution.rs"]
 #[allow(dead_code)]
@@ -20,7 +24,7 @@ use evm2::{
 use reth_evm::{BlockExecutor, BlockExecutorFactory};
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     hint::black_box,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -32,10 +36,46 @@ use tempo_primitives::TempoTxEnvelope;
 use tip20::common::bench_env;
 
 /// The pre-block state as a shared database for the workers.
-struct Snapshot(Cache);
+struct Snapshot(Cache, ColdReads);
+
+/// Spins on the first read of each key, like a database read that misses its caches.
+#[derive(Default)]
+struct ColdReads {
+    nanos: u64,
+    touched: Vec<Mutex<HashSet<(Address, U256)>>>,
+}
+
+impl ColdReads {
+    fn new(nanos: u64) -> Self {
+        Self {
+            nanos,
+            touched: (0..64).map(|_| Mutex::default()).collect(),
+        }
+    }
+
+    fn read(&self, address: &Address, key: U256) {
+        if self.nanos == 0 {
+            return;
+        }
+        let shard = (address[19] as usize ^ key.as_limbs()[0] as usize) % self.touched.len();
+        if self.touched[shard].lock().unwrap().insert((*address, key)) {
+            let start = Instant::now();
+            while start.elapsed().as_nanos() < u128::from(self.nanos) {
+                std::hint::spin_loop();
+            }
+        }
+    }
+
+    fn reset(&self) {
+        for shard in &self.touched {
+            shard.lock().unwrap().clear();
+        }
+    }
+}
 
 impl DynDatabaseRef for Snapshot {
     fn get_account(&self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.1.read(address, U256::MAX);
         Ok(self.0.accounts.get(address).cloned().flatten())
     }
 
@@ -44,6 +84,7 @@ impl DynDatabaseRef for Snapshot {
     }
 
     fn get_storage(&self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.1.read(address, *key);
         Ok(self
             .0
             .storage
@@ -112,6 +153,7 @@ fn run(
     threads: Option<NonZeroUsize>,
     commit: ParallelCommit,
     verify: bool,
+    hook: Option<&std::sync::mpsc::Sender<StateUpdate>>,
 ) -> Run {
     let tx_envs: Vec<_> = txs
         .iter()
@@ -124,7 +166,14 @@ fn run(
     executor
         .apply_pre_execution_changes()
         .expect("pre-execution changes failed");
+    snapshot.1.reset();
     let updates = Arc::new(Mutex::new(Vec::new()));
+    if !verify && let Some(consumer) = hook {
+        let consumer = consumer.clone();
+        executor.set_state_hook(move |update| {
+            let _ = consumer.send(update);
+        });
+    }
     if verify {
         let updates = updates.clone();
         executor.set_state_hook(move |mut update| {
@@ -223,7 +272,20 @@ fn main() {
         false,
         hardfork,
     );
-    let snapshot = Arc::new(Snapshot(seeded.cache));
+    let base_nanos = std::env::var("TEMPO_PAR_BASE_NS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let snapshot = Arc::new(Snapshot(seeded.cache, ColdReads::new(base_nanos)));
+    let hook = (std::env::var("TEMPO_PAR_HOOK").as_deref() == Ok("1")).then(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<StateUpdate>();
+        std::thread::spawn(move || {
+            for update in receiver {
+                black_box(update.accounts.len());
+            }
+        });
+        sender
+    });
     let txs = &workload.transactions;
     println!(
         "hardfork {hardfork:?}, {} transactions, {iters} iterations",
@@ -244,6 +306,7 @@ fn main() {
             t,
             commit,
             verify,
+            hook.as_ref(),
         )
     };
     let mut baseline = None;
