@@ -608,6 +608,33 @@ where
             revalidate_txs.extend(transactions);
         }
 
+        // A user token set only by an orphaned block may have chosen the cached fee token of a
+        // transaction without an explicit one, and the new segment has no event to show it.
+        if let Some(orphaned) = &orphaned {
+            let user_token_changes = TempoPoolUpdates::from_chain(orphaned).user_token_changes;
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| tx.transaction.inner().fee_token().is_none())
+                    .filter(|tx| {
+                        tx.transaction
+                            .fee_payer()
+                            .is_ok_and(|payer| user_token_changes.contains(&payer))
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let transactions = pool.remove_transactions(hashes);
+                for tx in &transactions {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+                revalidate_txs.extend(transactions);
+            }
+        }
+
         // Revalidate transactions whose authorities' configuration commitment changed,
         // including eventless first registration (TIP-1112).
         let changed_commitments: AddressSet = bundle_state
