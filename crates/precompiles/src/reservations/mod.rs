@@ -1771,6 +1771,30 @@ impl Reservations {
         self.repay_line(owner, call.lender, call.line, repaid)
     }
 
+    /// Lowers what `call.owner` owes on the lender's line by up to `call.amount` without a
+    /// transfer, since the lender is the one repaid, and grows the lien as a repayment does.
+    fn apply_to_line(
+        &mut self,
+        lender: Address,
+        call: IReservations::applyToLineCall,
+    ) -> Result<()> {
+        amount_u96(call.amount)?;
+        // It forgives what is owed and can restore undrawn credit the lien then commits, so only
+        // the lender's root key applies.
+        if AccountKeychain::new().signing_access_key(lender)?.is_some() {
+            return Err(ReservationsError::unauthorized().into());
+        }
+        if self.lines[lender][call.line].token.read()?.is_zero() {
+            return Err(ReservationsError::line_not_found().into());
+        }
+        let owed = self.credits[call.owner][lender][call.line].owed.read()?;
+        let applied = call.amount.min(owed.to());
+        if applied == 0 {
+            return Ok(());
+        }
+        self.repay_line(call.owner, lender, call.line, applied)
+    }
+
     /// Adds interest to what `call.owner` owes on the lender's line. The undrawn limit shrinks by
     /// it, so the lender's lien shrinks to match and the freed part returns to its balance.
     fn charge_interest(
@@ -2719,6 +2743,17 @@ mod tests {
                 IReservations::repayCreditCall {
                     lender,
                     line,
+                    amount,
+                },
+            )
+        }
+
+        fn apply_to_line(&mut self, lender: Address, line: B256, amount: u128) -> Result<()> {
+            self.reservations.apply_to_line(
+                lender,
+                IReservations::applyToLineCall {
+                    line,
+                    owner: self.owner,
                     amount,
                 },
             )
@@ -6258,6 +6293,75 @@ mod tests {
     }
 
     #[test]
+    fn test_lender_applies_proceeds_to_a_line() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(0)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            f.capture(id, 200)?;
+            assert_eq!(f.reservation_of(lender)?, (300, 500));
+            let owner = f.owner;
+            assert_eq!(
+                f.apply_to_line(lender, line, 0).unwrap_err(),
+                ReservationsError::invalid_amount().into()
+            );
+            // Only the line's lender applies: the owner has no such line of its own.
+            assert_eq!(
+                f.apply_to_line(owner, line, 10).unwrap_err(),
+                ReservationsError::line_not_found().into()
+            );
+
+            // The owner pays nothing; what it owes drops and the lien grows back from the
+            // lender's available balance, whose total stays.
+            f.reservations.clear_emitted_events();
+            f.apply_to_line(lender, line, 50)?;
+            f.reservations.assert_emitted_events(vec![
+                ReservationsEvent::line_reserved(lender, line, f.token.address(), 350),
+                ReservationsEvent::credit_repaid(owner, lender, line, 50),
+            ]);
+            assert_eq!(f.credit(lender, line)?, (500, 150, 0));
+            assert_eq!(f.reservation_of(lender)?, (350, 450));
+            assert_eq!(f.balance(lender)?, U256::from(800));
+            assert_eq!(f.balance(owner)?, U256::ZERO);
+
+            // An access key of the lender cannot apply, whatever its scope.
+            let key = Address::random();
+            let mut keychain = authorize_key_for(
+                lender,
+                key,
+                f.token.address(),
+                1_000,
+                &[IReservations::applyToLineCall::SELECTOR],
+            )?;
+            assert_eq!(
+                f.apply_to_line(lender, line, 10).unwrap_err(),
+                ReservationsError::unauthorized().into()
+            );
+            keychain.set_tx_origin(Address::random())?;
+
+            // A lender that first cuts the limit writes the rest off without reserving anything.
+            f.offer_credit(lender, line, f.payee, 0)?;
+            assert_eq!(f.reservation_of(lender)?, (0, 800));
+            f.reservations.clear_emitted_events();
+            f.apply_to_line(lender, line, 1_000)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::credit_repaid(
+                    owner, lender, line, 150,
+                )]);
+            assert_eq!(f.credit(lender, line)?, (0, 0, 0));
+            assert_eq!(f.reservation_of(lender)?, (0, 800));
+
+            // Nothing owed applies nothing.
+            f.reservations.clear_emitted_events();
+            f.apply_to_line(lender, line, 10)?;
+            f.reservations
+                .assert_emitted_events(Vec::<ReservationsEvent>::new());
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_line_holds_stay_within_the_limits() -> eyre::Result<()> {
         at_t15(|| {
             let mut f = Fixture::new(100)?;
@@ -7976,6 +8080,36 @@ mod tests {
                 f.seize_lien(lender, id, to, 1).unwrap_err(),
                 ReservationsError::lien_not_found().into()
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_lender_applies_seized_collateral_to_the_line() -> eyre::Result<()> {
+        at_t15(|| {
+            let mut f = Fixture::new(100)?;
+            let (lender, line) = f.open_credit(1_000, 500)?;
+            let collateral = B256::random();
+            f.pledge(lender, collateral, 60)?;
+            let id = B256::random();
+            f.hold_on_line(id, 200, 200, lender, line)?;
+            f.capture(id, 200)?;
+            // The owner pays from its 40 available first, so the line paid 160.
+            assert_eq!(f.credit(lender, line)?, (500, 160, 0));
+            // On default the lender stops the line, takes the collateral and applies it, with no
+            // key of the owner's; the owner's other balance and holds stay.
+            f.offer_credit(lender, line, f.payee, 0)?;
+            f.seize_lien(lender, collateral, lender, 60)?;
+            f.reservations.clear_emitted_events();
+            f.apply_to_line(lender, line, 60)?;
+            f.reservations
+                .assert_emitted_events(vec![ReservationsEvent::credit_repaid(
+                    f.owner, lender, line, 60,
+                )]);
+            assert_eq!(f.credit(lender, line)?, (0, 100, 0));
+            assert_eq!(f.balance(lender)?, U256::from(900));
+            assert_eq!(f.balance(f.owner)?, U256::ZERO);
+            assert_eq!(f.liened()?, 0);
             Ok(())
         })
     }

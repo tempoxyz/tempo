@@ -97,6 +97,10 @@ crate::sol! {
         /// Adds `amount` of interest to what `owner` owes on the caller's line `line`. Called by
         /// the lender; interest counts against the limit like a draw and lowers the lien to match.
         function chargeInterest(bytes32 line, address owner, uint128 amount) external;
+        /// Lowers what `owner` owes on the caller's line `line` by up to `amount`, as `repayCredit`
+        /// does, with no transfer since the caller is the lender repaid: for proceeds it already
+        /// holds, such as sold collateral, or for debt it writes off. Root key only.
+        function applyToLine(bytes32 line, address owner, uint128 amount) external;
         /// Opens a dispute of `amount`, at most what `owner`'s record `id` captured and has not
         /// refunded, with the cardholder's evidence hash. Called by the record's payee.
         function openDispute(address owner, bytes32 id, uint128 amount, bytes32 evidence) external;

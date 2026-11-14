@@ -166,6 +166,9 @@ impl Precompile for Reservations {
                     chargeInterest(call) => mutate(call, msg_sender, |sender, c| {
                         self.charge_interest(sender, c)
                     }),
+                    applyToLine(call) => mutate(call, msg_sender, |sender, c| {
+                        self.apply_to_line(sender, c)
+                    }),
                     openDispute(call) => mutate(call, msg_sender, |sender, c| {
                         self.open_dispute(sender, c)
                     }),
