@@ -14350,6 +14350,7 @@ dependencies = [
  "futures",
  "object_store",
  "parking_lot",
+ "pretty_assertions",
  "proptest",
  "reth-chainspec",
  "reth-cli-util",

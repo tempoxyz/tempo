@@ -3,7 +3,7 @@
 //! Every type here is the stored representation; execution lives in other modules.
 
 use crate::store::WINCODE;
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{Address, B128, B256, Bytes, U256};
 use reth_primitives_traits::Account;
 use std::collections::{BTreeMap, BTreeSet};
 use wincode::{SchemaRead, SchemaWrite};
@@ -171,37 +171,134 @@ pub struct Outputs {
 }
 
 impl Case {
-    /// Compares an executed transaction against this record, field by field.
+    /// Compares an executed transaction against this record. A mismatch names the
+    /// transaction and shows a diff of the recorded and replayed sides; fields the record
+    /// keeps only as digests show as digests.
     pub fn check(&self, actual: &Transaction) -> eyre::Result<()> {
         let outputs = actual.outputs()?;
-        let at = self.ordinal;
-        eyre::ensure!(
-            actual.ordinal == self.ordinal
-                && actual.index == self.index
-                && actual.hash == self.hash
-                && actual.before == self.before,
-            "transaction context mismatch at {at}"
-        );
-        eyre::ensure!(
-            actual.outcome.status == self.status
-                && actual.outcome.charged_gas == self.charged_gas
-                && actual.outcome.created == self.created
-                && outputs.outcome == self.outputs.outcome,
-            "transaction outcome mismatch at {at}"
-        );
-        eyre::ensure!(
-            outputs.receipt == self.outputs.receipt,
-            "transaction receipt mismatch at {at}"
-        );
-        eyre::ensure!(
-            actual.delta == self.delta,
-            "transaction delta mismatch at {at}"
-        );
-        eyre::ensure!(
-            outputs.after == self.outputs.after,
-            "transaction boundary mismatch at {at}"
-        );
-        Ok(())
+        let recorded = CaseView {
+            index: self.index,
+            ordinal: self.ordinal,
+            hash: self.hash.into(),
+            before: digest(&self.before).into(),
+            status: self.status,
+            charged_gas: self.charged_gas,
+            created: self.created.map(Address::from),
+            outcome: self.outputs.outcome.into(),
+            receipt: self.outputs.receipt.into(),
+            delta: DeltaView::from(&self.delta),
+            after: self.outputs.after.into(),
+        };
+        let replayed = CaseView {
+            index: actual.index,
+            ordinal: actual.ordinal,
+            hash: actual.hash.into(),
+            before: digest(&actual.before).into(),
+            status: actual.outcome.status,
+            charged_gas: actual.outcome.charged_gas,
+            created: actual.outcome.created.map(Address::from),
+            outcome: outputs.outcome.into(),
+            receipt: outputs.receipt.into(),
+            delta: DeltaView::from(&actual.delta),
+            after: outputs.after.into(),
+        };
+        // Decide on the raw records; the views are for display and could hide differences.
+        if actual.ordinal == self.ordinal
+            && actual.index == self.index
+            && actual.hash == self.hash
+            && actual.before == self.before
+            && actual.outcome.status == self.status
+            && actual.outcome.charged_gas == self.charged_gas
+            && actual.outcome.created == self.created
+            && outputs == self.outputs
+            && actual.delta == self.delta
+        {
+            return Ok(());
+        }
+        eyre::bail!(
+            "transaction {} (index {}, ordinal {}) mismatch (< recorded, > replayed)\n{}\nreplayed: reason {}, gas {:?}, output {}",
+            recorded.hash,
+            self.index,
+            self.ordinal,
+            pretty_assertions::Comparison::new(&recorded, &replayed),
+            actual.outcome.reason,
+            actual.outcome.gas,
+            actual
+                .outcome
+                .output
+                .clone()
+                .map(Bytes::from)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// [Case] fields in readable form, compared and diffed as a whole.
+#[derive(Debug, PartialEq, Eq)]
+struct CaseView {
+    index: u64,
+    ordinal: u64,
+    hash: B256,
+    before: B128,
+    status: u8,
+    charged_gas: u64,
+    created: Option<Address>,
+    outcome: B128,
+    receipt: B128,
+    delta: DeltaView,
+    after: B128,
+}
+
+/// [Delta] with addresses, slots and balances in readable form.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeltaView(Vec<BTreeMap<Address, ChangeView>>);
+
+#[derive(Debug, PartialEq, Eq)]
+struct ChangeView {
+    created: bool,
+    /// None wipes the account; Some keeps it, changing only the fields that are set.
+    info: Option<InfoView>,
+    storage: BTreeMap<B256, B256>,
+    code: Option<Bytes>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InfoView {
+    nonce: Option<u64>,
+    balance: Option<U256>,
+    code_hash: Option<Option<B256>>,
+}
+
+impl From<&Delta> for DeltaView {
+    fn from(delta: &Delta) -> Self {
+        Self(
+            delta
+                .0
+                .iter()
+                .map(|commit| {
+                    commit
+                        .iter()
+                        .map(|(address, change)| {
+                            let view = ChangeView {
+                                created: change.created,
+                                info: change.info.as_ref().map(|info| InfoView {
+                                    nonce: info.nonce,
+                                    balance: info.balance.map(U256::from_be_bytes),
+                                    code_hash: info.code_hash.map(|h| h.map(B256::from)),
+                                }),
+                                storage: change
+                                    .storage
+                                    .iter()
+                                    .map(|(slot, value)| ((*slot).into(), (*value).into()))
+                                    .collect(),
+                                code: change.code.clone().map(Bytes::from),
+                            };
+                            (Address::from(*address), view)
+                        })
+                        .collect()
+                })
+                .collect(),
+        )
     }
 }
 
@@ -277,4 +374,88 @@ fn marked<K: Ord + Copy, V: Clone>(witness: &BTreeMap<K, V>, bits: &[u8]) -> BTr
         .filter(|(i, _)| bits[i / 8] & (1 << (i % 8)) != 0)
         .map(|(_, (key, value))| (*key, value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transaction(charged_gas: u64, slot_value: u8) -> Transaction {
+        let change = Change {
+            info: None,
+            created: false,
+            storage: BTreeMap::from([([1; 32], [slot_value; 32])]),
+            code: None,
+        };
+        Transaction {
+            ordinal: 7,
+            index: 2,
+            hash: [0xab; 32],
+            before: vec![1],
+            after: vec![2],
+            outcome: Outcome {
+                status: 0,
+                reason: "Return".into(),
+                created: None,
+                gas: [charged_gas, 0, 0, 0],
+                charged_gas,
+                output: Some(vec![]),
+            },
+            receipt: vec![3],
+            delta: Delta(vec![BTreeMap::from([([0x11; 20], change)])]),
+        }
+    }
+
+    #[test]
+    fn check_diffs_recorded_and_replayed() {
+        let case = transaction(21_000, 1).stored().unwrap();
+        assert!(case.check(&transaction(21_000, 1)).is_ok());
+
+        let message = case.check(&transaction(21_001, 2)).unwrap_err().to_string();
+        // Drop the diff's ANSI colors, which split values mid-token.
+        let mut plain = String::new();
+        let mut chars = message.chars();
+        while let Some(c) = chars.next() {
+            if c == '' {
+                chars.by_ref().find(|&c| c == 'm');
+            } else {
+                plain.push(c);
+            }
+        }
+        let message = plain;
+        let hash = B256::from([0xab; 32]);
+        assert!(
+            message.starts_with(&format!(
+                "transaction {hash} (index 2, ordinal 7) mismatch (< recorded, > replayed)"
+            )),
+            "{message}"
+        );
+        assert!(message.contains("<    charged_gas: 21000,"), "{message}");
+        assert!(message.contains(">    charged_gas: 21001,"), "{message}");
+        assert!(
+            message.contains(&B256::from([2; 32]).to_string()),
+            "{message}"
+        );
+        assert!(message.contains("< recorded, > replayed"), "{message}");
+
+        // A wiped account (info None) and a touched one (info unchanged) must not compare equal.
+        let touched = |info: Option<InfoChange>| {
+            let mut tx = transaction(21_000, 1);
+            for change in tx.delta.0[0].values_mut() {
+                change.info = info.clone();
+            }
+            tx
+        };
+        let unchanged = InfoChange {
+            nonce: None,
+            balance: None,
+            code_hash: None,
+        };
+        let case = touched(Some(unchanged)).stored().unwrap();
+        assert!(case.check(&touched(None)).is_err());
+        assert!(
+            message.contains("replayed: reason Return, gas [21001, 0, 0, 0], output 0x"),
+            "{message}"
+        );
+    }
 }
