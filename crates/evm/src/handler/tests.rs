@@ -9,7 +9,7 @@ use alloy_consensus::{SignableTransaction, transaction::Recovered};
 use alloy_primitives::{B256, Bytes, Signature};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::SolInterface;
+use alloy_sol_types::{SolCall, SolInterface};
 use evm2::{
     DatabaseError, ExecutionConfig, SpecId,
     bytecode::Bytecode,
@@ -96,8 +96,9 @@ use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP20Error, TIPFeeAMMError
 use tempo_precompiles::{
     ECRECOVER_GAS, TIP_FEE_MANAGER_ADDRESS,
     storage::{ContractStorage, Handler, StorageActions},
+    storage_credits::StorageCredits,
     tip_fee_manager::TipFeeManager,
-    tip20::TIP20Token,
+    tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{
     TempoAddressExt, TempoTxEnvelope, gas::P256_VERIFY_GAS, transaction::calc_gas_balance_spending,
@@ -555,6 +556,88 @@ fn test_self_sponsored_fee_payer_not_rejected_pre_t2() {
             balance - calc_gas_balance_spending(result.tx_gas_used(), gas_price),
         );
     });
+}
+
+#[test]
+fn l1_beneficiary_balance_clear_still_mints_credit_at_t15() -> eyre::Result<()> {
+    let spec = TempoHardfork::T15;
+    let sender = PrivateKeySigner::random();
+    let sponsor = PrivateKeySigner::random();
+    let recipient = Address::random();
+    let gas_limit = 1_000_000;
+    let gas_price = 1_000_000_000_000;
+    let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+    let sender_funds = U256::from(10_000_000u64);
+
+    let mut evm = test_evm(spec);
+    let mut block = *evm.block();
+    block.beneficiary = sender.address();
+    evm.set_block(block);
+    evm.set_precompiles(tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
+        spec,
+        evm.ext().actions.clone(),
+        evm.ext().non_creditable_slots.clone(),
+    ));
+    let credits_before =
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || -> eyre::Result<u64> {
+            TIP20Setup::path_usd(sponsor.address())
+                .with_issuer(sponsor.address())
+                .with_mint(sender.address(), sender_funds)
+                .with_mint(sponsor.address(), max_fee)
+                // A funded recipient keeps the transfer from creating a slot that would consume the
+                // minted credit.
+                .with_mint(recipient, U256::ONE)
+                .apply()?;
+            Ok(StorageCredits::new().balance_of(PATH_USD_ADDRESS)?)
+        })?;
+
+    let mut tx = TempoTransaction {
+        chain_id: 1,
+        fee_token: Some(PATH_USD_ADDRESS),
+        gas_limit,
+        max_fee_per_gas: gas_price,
+        max_priority_fee_per_gas: gas_price,
+        calls: vec![Call {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: recipient,
+                amount: sender_funds,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        ..Default::default()
+    };
+    tx.fee_payer_signature =
+        Some(sponsor.sign_hash_sync(&tx.fee_payer_signature_hash(sender.address()))?);
+    let signature = sender.sign_hash_sync(&tx.signature_hash())?;
+    let env: TempoTxEnv = Recovered::new_unchecked(
+        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
+            PrimitiveSignature::Secp256k1(signature),
+        ))),
+        sender.address(),
+    )
+    .into();
+    assert_eq!(env.fee_payer()?, sponsor.address());
+    let result = evm
+        .transact(&Recovered::new_unchecked(env, sender.address()))?
+        .commit();
+    assert!(result.status, "transfer should succeed: {result:?}");
+
+    let (sender_balance, credits_after) = StorageCtx::enter_evm_without_tip1060_accounting(
+        &mut evm,
+        || -> eyre::Result<(U256, u64)> {
+            Ok((
+                TIP20Token::from_address(PATH_USD_ADDRESS)?.balances[sender.address()].read()?,
+                StorageCredits::new().balance_of(PATH_USD_ADDRESS)?,
+            ))
+        },
+    )?;
+    // L1 fees accrue in the fee manager, so the beneficiary's cleared balance stays creditable.
+    assert!(sender_balance.is_zero());
+    assert_eq!(credits_after, credits_before + 1);
+    Ok(())
 }
 
 #[test]

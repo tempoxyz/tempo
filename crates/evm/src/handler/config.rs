@@ -430,10 +430,16 @@ impl TempoHandlerHooks {
         }
 
         if host.config_spec_id().is_t7() && !context.collected.is_zero() {
+            // Zone fee settlement credits the beneficiary's balance directly; Tempo L1 accrues
+            // fees in the fee manager instead. Gated on T15 so active forks are unchanged.
+            let fee_recipient = (host.ext().kind == TempoEvmKind::Zone
+                && host.config_spec_id().is_t15())
+            .then_some(beneficiary);
             host.ext().non_creditable_slots.borrow_mut().initialize(
                 context.fee_payer,
                 context.fee_token,
                 key_id,
+                fee_recipient,
             );
         }
 
