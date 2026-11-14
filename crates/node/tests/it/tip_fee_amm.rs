@@ -13,14 +13,16 @@ use reth_e2e_test_utils::{
 use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth,
+    IFeeManager, IReceivePolicyGuard, IRolesAuth,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, ITIPFeeAMM,
+    ITIP20Factory, ITIP403Registry, ITIPFeeAMM, TIP20Error,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey, compute_amount_out},
     tip20::ISSUER_ROLE,
+    tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use test_case::test_case;
@@ -821,6 +823,151 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
         .mined()
         .await?;
     assert!(!burn_receipt.status());
+
+    Ok(())
+}
+
+/// From T15, a burn whose payout the recipient's receive policy would divert into a receipt only
+/// the FeeManager could claim reverts with nothing changed; with self recovery the payout is
+/// diverted into a receipt the recipient can claim.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_burn_to_receive_policy_blocked_recipient() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = test_signer(0);
+    let alice = wallet.address();
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
+    let recipient_wallet = test_signer(7);
+    let recipient = recipient_wallet.address();
+    let recipient_provider = ProviderBuilder::new()
+        .wallet(recipient_wallet)
+        .connect_http(http_url);
+
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let validator_token = setup_test_token(provider.clone(), alice).await?;
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, recipient_provider.clone());
+    let guard = IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, recipient_provider);
+
+    let amount = uint!(100000_000000000000000000_U256);
+    let mut pending = vec![];
+    pending.push(user_token.mint(alice, amount).send().await?);
+    pending.push(validator_token.mint(alice, amount).send().await?);
+    pending.push(
+        ITIP20::new(PATH_USD_ADDRESS, &provider)
+            .transfer(recipient, U256::from(10_000_000_000u64))
+            .send()
+            .await?,
+    );
+    await_successful_receipts(pending).await?;
+
+    let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
+    let pool_id = pool_key.get_id();
+    fee_amm
+        .mint(pool_key.user_token, pool_key.validator_token, amount, alice)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    let burn_amount = liquidity / U256::from(2);
+
+    registry
+        .setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, Address::ZERO)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+
+    let burn = fee_amm.burn(
+        pool_key.user_token,
+        pool_key.validator_token,
+        burn_amount,
+        recipient,
+    );
+    let Err(err) = burn.call().await else {
+        panic!("burn to an originator-recovery recipient must revert");
+    };
+    assert_eq!(
+        err.as_decoded_interface_error::<TIP20Error>(),
+        Some(TIP20Error::policy_forbids())
+    );
+
+    let pool_before = fee_amm.pools(pool_id).call().await?;
+    let receipt = burn.gas(1_000_000).send().await?.get_receipt().await?;
+    assert!(!receipt.status());
+    assert_eq!(
+        fee_amm.liquidityBalances(pool_id, alice).call().await?,
+        liquidity
+    );
+    let pool_after = fee_amm.pools(pool_id).call().await?;
+    assert_eq!(pool_after.reserveUserToken, pool_before.reserveUserToken);
+    assert_eq!(
+        pool_after.reserveValidatorToken,
+        pool_before.reserveValidatorToken
+    );
+    for token in [&user_token, &validator_token] {
+        assert_eq!(
+            token.balanceOf(RECEIVE_POLICY_GUARD_ADDRESS).call().await?,
+            U256::ZERO
+        );
+    }
+
+    registry
+        .setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, recipient)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+
+    let receipt = fee_amm
+        .burn(
+            pool_key.user_token,
+            pool_key.validator_token,
+            burn_amount,
+            recipient,
+        )
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    let blocked: Vec<_> = receipt
+        .logs()
+        .iter()
+        .filter_map(|log| IReceivePolicyGuard::TransferBlocked::decode_log(&log.inner).ok())
+        .map(|event| event.data)
+        .collect();
+    assert_eq!(blocked.len(), 2, "both payouts must be diverted");
+
+    // The pool was seeded with validator token only, so the user-token payout is empty.
+    let (empty, claimable): (Vec<_>, Vec<_>) = blocked
+        .into_iter()
+        .partition(|event| event.amount.is_zero());
+    assert_eq!(empty.len(), 1);
+    assert_eq!(empty[0].token, pool_key.user_token);
+    assert_eq!(claimable.len(), 1);
+    assert_eq!(claimable[0].token, pool_key.validator_token);
+
+    for event in claimable {
+        let token = ITIP20::new(event.token, &provider);
+        assert_eq!(token.balanceOf(recipient).call().await?, U256::ZERO);
+        guard
+            .claim(recipient, event.receipt)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .successful_receipt()
+            .await?;
+        assert_eq!(token.balanceOf(recipient).call().await?, event.amount);
+    }
 
     Ok(())
 }

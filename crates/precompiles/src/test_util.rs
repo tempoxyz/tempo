@@ -27,7 +27,9 @@ use crate::{
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
-    tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
+    tip403_registry::{
+        ALLOW_ALL_POLICY_ID, ITIP403Registry, PolicyType, REJECT_ALL_POLICY_ID, TIP403Registry,
+    },
 };
 #[cfg(test)]
 use alloy::primitives::Bytes;
@@ -546,6 +548,19 @@ pub fn set_empty_receive_policies(admin: Address, accounts: &[Address]) -> Resul
         registry.set_receive_policy(*account, call.clone())?;
     }
     Ok(())
+}
+
+/// Sets a TIP-1028 receive policy on `receiver` that blocks every sender for every token, with
+/// `recovery_authority` as the recovery authority (`Address::ZERO` for originator recovery).
+pub fn reject_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
+    TIP403Registry::new().set_receive_policy(
+        receiver,
+        ITIP403Registry::setReceivePolicyCall {
+            senderPolicyId: REJECT_ALL_POLICY_ID,
+            tokenFilterId: ALLOW_ALL_POLICY_ID,
+            recoveryAuthority: recovery_authority,
+        },
+    )
 }
 
 /// Test helper function for constructing EVM words from hex string literals.
