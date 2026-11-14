@@ -896,6 +896,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let taken = Mutex::new(Vec::new());
         // The error that ended `transactions` early, if any.
         let failure = Mutex::new(None);
+        // Each transaction's target, type and whether it is sponsored, for diagnostics.
+        let targets = Mutex::new(Vec::<String>::new());
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -911,6 +913,15 @@ impl<'a> TempoBlockExecutor<'a> {
             // Remove any prewarming-specific context that was added to the tx env.
             tx_env.inner_mut().set_expiring_nonce_idx(None);
             let tx = recovered.tx();
+            let sponsored = tx
+                .as_aa()
+                .is_some_and(|aa| aa.tx().fee_payer_signature.is_some());
+            targets.lock().unwrap().push(format!(
+                "{}/{}{}",
+                tx.to().unwrap_or_default(),
+                alloy_eips::Typed2718::ty(tx),
+                if sponsored { "s" } else { "" }
+            ));
             let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
                 Ok(is_system_tx) => is_system_tx,
                 Err(error) => {
@@ -998,6 +1009,7 @@ impl<'a> TempoBlockExecutor<'a> {
             Some(error) => Err(error),
             None => {
                 log_parallel_stats(number, &output.stats, false, start.elapsed());
+                log_reexec_diag(number, &targets.into_inner().unwrap());
                 Ok(output.stats)
             }
         }
@@ -1079,6 +1091,62 @@ fn log_parallel_stats(
         fallback,
         ?elapsed,
         "Executed block transactions in parallel"
+    );
+}
+
+/// Logs which reads made the committer execute transactions again.
+fn log_reexec_diag(number: U256, targets: &[String]) {
+    use std::collections::HashMap;
+    let diag = evm2::block::ethereum::parallel::take_reexec_diag();
+    let worker_reexec = evm2::block::ethereum::parallel::take_worker_reexec();
+    let mut reasons = [0usize; 3];
+    let mut keys = HashMap::<String, usize>::new();
+    let mut by_target = HashMap::<String, usize>::new();
+    let mut all_targets = HashMap::<String, usize>::new();
+    for target in targets {
+        *all_targets.entry(target.clone()).or_default() += 1;
+    }
+    for d in &diag {
+        reasons[d.reason as usize] += 1;
+        for (address, slot) in &d.keys {
+            let key = match slot {
+                Some(slot) => format!("{address}:{slot:#x}"),
+                None => format!("{address}:acct"),
+            };
+            *keys.entry(key).or_default() += 1;
+        }
+        if let Some(target) = targets.get(d.index) {
+            *by_target.entry(target.clone()).or_default() += 1;
+        }
+    }
+    let top = |map: HashMap<String, usize>| {
+        let mut v = map.into_iter().collect::<Vec<_>>();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.truncate(12);
+        v.into_iter()
+            .map(|(k, c)| format!("{k}={c}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let indices = diag
+        .iter()
+        .take(64)
+        .map(|d| d.index.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    debug!(
+        target: "tempo::parallel",
+        block_number = number.saturating_to::<u64>(),
+        committer_reexec = diag.len(),
+        worker_reexec,
+        failed = reasons[0],
+        stale = reasons[1],
+        other = reasons[2],
+        top_keys = %top(keys),
+        reexec_targets = %top(by_target),
+        all_targets = %top(all_targets),
+        indices,
+        "Parallel re-execution diagnostics"
     );
 }
 
