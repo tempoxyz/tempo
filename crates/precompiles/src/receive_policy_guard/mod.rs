@@ -11,12 +11,12 @@ use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{Recipient, TIP20Token},
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
-    sol_types::SolValue,
+    sol_types::{SolValue, abi::AbiDecoderConfig},
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
@@ -42,7 +42,7 @@ impl ReceivePolicyGuard {
 
     /// Returns the unclaimed amount for a receipt, or zero if unknown or already claimed.
     pub fn balance_of(&self, receipt: Bytes) -> Result<U256> {
-        let receipt = ClaimReceiptV1::try_from(receipt)?;
+        let receipt = decode_receipt(receipt)?;
         self.balances[self.receipt_key(&receipt)?].read()
     }
 
@@ -234,8 +234,21 @@ impl RecoveryMode {
     }
 }
 
+/// Decodes a claim receipt for the guard entry points and for Zone `balanceOf` admission.
+///
+/// Before T15 it accepts any encoding plain `abi_decode` accepts. From T15 it requires the
+/// canonical ABI encoding (no trailing bytes, no nonzero padding) and returns
+/// `InvalidReceipt` otherwise.
+pub fn decode_receipt(bytes: Bytes) -> Result<ClaimReceiptV1> {
+    if !StorageCtx.spec().is_t15() {
+        return Ok(ClaimReceiptV1::try_from(bytes)?);
+    }
+    ClaimReceiptV1::abi_decode_with_config(&bytes, AbiDecoderConfig::new().strict(true))
+        .map_err(|_| ReceivePolicyGuardError::invalid_receipt().into())
+}
+
 fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMode)> {
-    let receipt = ClaimReceiptV1::try_from(bytes)?;
+    let receipt = decode_receipt(bytes)?;
     let receiver = AddressRegistry::new()
         .resolve_recipient(receipt.recipient)
         .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
@@ -724,6 +737,86 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_receipt_rejects_non_canonical_encoding_post_t15() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            storage.set_timestamp(U256::from(1_728_001u64));
+
+            let admin = Address::random();
+            let originator = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(30u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("A", "A", admin)
+                    .with_issuer(admin)
+                    .with_mint(originator, amount)
+                    .apply()?;
+                block_all_senders(receiver, receiver)?;
+                token.transfer(
+                    originator,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                let canonical = ClaimReceiptV1::new(
+                    token.address(),
+                    receiver,
+                    originator,
+                    receiver,
+                    1_728_001,
+                    1,
+                    BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                )
+                .abi_encode();
+
+                let mut trailing = canonical.clone();
+                trailing.extend_from_slice(&[0u8; 32]);
+                // Nonzero padding in the high bytes of the `token` address word.
+                let mut dirty = canonical.clone();
+                dirty[32] = 0xff;
+                // Nonzero padding in the high bytes of the `blockedNonce` uint64 word.
+                let mut dirty_nonce = canonical.clone();
+                dirty_nonce[6 * 32] = 0xff;
+                let mut trailing_byte = canonical.clone();
+                trailing_byte.push(0);
+
+                let mut guard = ReceivePolicyGuard::new();
+                for encoding in [trailing, dirty, dirty_nonce, trailing_byte] {
+                    if spec.is_t15() {
+                        assert_invalid_receipt(
+                            guard.balance_of(encoding.clone().into()).map(|_| ()),
+                        );
+                        assert_invalid_receipt(guard.claim(
+                            receiver,
+                            receiver,
+                            encoding.clone().into(),
+                        ));
+                        assert_invalid_receipt(guard.burn_blocked_receipt(admin, encoding.into()));
+                    } else {
+                        assert_eq!(guard.balance_of(encoding.into())?, amount);
+                    }
+                }
+
+                assert_eq!(guard.balance_of(canonical.clone().into())?, amount);
+                guard.claim(receiver, receiver, canonical.into())?;
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
+                    amount
+                );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+
+        Ok(())
     }
 
     #[test]
