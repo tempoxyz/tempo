@@ -8,8 +8,9 @@
 //! - Method tier enforcement (restricted/disabled/unknown methods)
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, TIP20_TX_GAS, l1_dev_signer, now_secs, start_zone_with_redacted_rpc,
-    start_zone_with_redacted_rpc_l1, start_zone_with_redacted_rpc_l1_with_encryption,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, l1_dev_signer, now_secs, poll_until,
+    start_zone_with_redacted_rpc, start_zone_with_redacted_rpc_l1,
+    start_zone_with_redacted_rpc_l1_with_encryption, start_zone_with_uncached_redacted_rpc,
 };
 use alloy::{
     primitives::{Address, B256, TxKind, U256, address, hex},
@@ -19,6 +20,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_provider::ProviderBuilder;
 use alloy_signer::SignerSync;
 use alloy_sol_types::{SolCall, SolError};
+use eyre::OptionExt as _;
 use futures::{SinkExt, StreamExt};
 use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use serde_json::{Value, json};
@@ -848,6 +850,108 @@ async fn test_tip20_eth_call_privacy() -> eyre::Result<()> {
         sequencer_allowance.get("error").is_some(),
         "sequencer allowance(owner, spender) should revert"
     );
+
+    Ok(())
+}
+
+/// A receipt that fails to load (here its block no longer resolves by hash, as when pruning
+/// removed a sibling receipt) errors only for its sender. Other callers get the same `null` as
+/// for an unknown hash, so the error does not reveal that the transaction exists.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_transaction_receipt_load_error_is_sender_only() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut ctx = start_zone_with_uncached_redacted_rpc().await?;
+
+    let owner_signer = l1_dev_signer();
+    let owner = owner_signer.address();
+    let outsider_signer = PrivateKeySigner::random();
+
+    ctx.inject_deposit(PATH_USD_ADDRESS, owner, owner, 1_000_000)
+        .await?;
+
+    let owner_provider = ProviderBuilder::new()
+        .wallet(owner_signer.clone())
+        .connect_http(ctx.zone.http_url().clone());
+    let pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
+        .approve(Address::repeat_byte(0x22), U256::from(1))
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
+        .gas(TIP20_TX_GAS)
+        .send()
+        .await?;
+    ctx.fixture.inject_empty_block(ctx.zone.deposit_queue());
+    let receipt = pending.get_receipt().await?;
+    assert!(receipt.status(), "approve should succeed");
+    let tx_hash = receipt.transaction_hash;
+    let block_hash = receipt
+        .block_hash
+        .ok_or_eyre("mined receipt has no block hash")?;
+
+    let owner_receipt = ctx
+        .call_as_user("eth_getTransactionReceipt", json!([tx_hash]), &owner_signer)
+        .await?;
+    assert_eq!(owner_receipt["result"]["transactionHash"], json!(tx_hash));
+    let outsider_receipt = ctx
+        .call_as_user(
+            "eth_getTransactionReceipt",
+            json!([tx_hash]),
+            &outsider_signer,
+        )
+        .await?;
+    assert_eq!(
+        (
+            outsider_receipt.get("error"),
+            outsider_receipt.get("result")
+        ),
+        (None, Some(&Value::Null)),
+        "non-sender receipt lookup must be null: {outsider_receipt}"
+    );
+
+    // Keep the receipt's block off the tip, which the node still resolves by hash.
+    let block_number = receipt
+        .block_number
+        .ok_or_eyre("mined receipt has no block number")?;
+    ctx.fixture.inject_empty_block(ctx.zone.deposit_queue());
+    ctx.zone
+        .wait_for_block_number(block_number + 1, DEFAULT_TIMEOUT)
+        .await?;
+    poll_until(
+        DEFAULT_TIMEOUT,
+        Duration::from_millis(100),
+        "receipt block persisted",
+        || async {
+            Ok(ctx
+                .zone
+                .drop_persisted_block_hash_index(block_hash)?
+                .then_some(()))
+        },
+    )
+    .await?;
+
+    let owner_error = poll_until(
+        DEFAULT_TIMEOUT,
+        Duration::from_millis(100),
+        "owner receipt lookup fails",
+        || async {
+            let response = ctx
+                .call_as_user("eth_getTransactionReceipt", json!([tx_hash]), &owner_signer)
+                .await?;
+            Ok(response.get("error").cloned())
+        },
+    )
+    .await?;
+    assert_eq!(owner_error["message"], json!("header not found"));
+
+    for hash in [tx_hash, B256::repeat_byte(0xab)] {
+        let response = ctx
+            .call_as_user("eth_getTransactionReceipt", json!([hash]), &outsider_signer)
+            .await?;
+        assert_eq!(
+            (response.get("error"), response.get("result")),
+            (None, Some(&Value::Null)),
+            "non-sender receipt lookup for {hash} must be null: {response}"
+        );
+    }
 
     Ok(())
 }
