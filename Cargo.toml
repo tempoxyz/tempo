@@ -22,6 +22,7 @@ members = [
   "crates/consensus-config",
   "crates/validator-config",
   "crates/dkg-onchain-artifacts",
+  "crates/encrypted-tx",
   "crates/eyre",
   "crates/ext",
   "crates/evm",
@@ -368,6 +369,7 @@ axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
 blake3 = "1.8.5"
 bytes = "1.11.1"
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
 const-hex = { version = "1.17.0" }
