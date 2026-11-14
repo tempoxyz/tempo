@@ -68,6 +68,7 @@ use std::{
     time::Duration,
 };
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
@@ -1984,6 +1985,8 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: ZoneEvmConfig,
     ) -> eyre::Result<Self::Pool> {
+        // Zero-fee transactions are valid before T15; from T15 the validator rejects fee caps below
+        // the floor.
         let pool_config = ctx.pool_config();
 
         // this store is effectively a noop
@@ -2034,7 +2037,8 @@ where
                 DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
                 amm_liquidity_cache.clone(),
             )
-            .with_minimum_fee_cap(0)
+            // Zones have a zero base fee until T15, so the fee floor only applies from then on.
+            .with_fee_floor_from(TempoHardfork::T15)
             // Zones collect the selected fee token directly and never route through FeeAMM.
             .with_disable_fee_amm_check(true)
         });
