@@ -378,11 +378,21 @@ async fn configure_sequencing(
         !args.deposit_allowlist || should_sequence_blocks,
         "--deposits.allowlist requires a sequencer"
     );
+    eyre::ensure!(
+        !args.deposit_allowlist_fail_closed || args.deposit_allowlist || rpc_only,
+        "--deposits.allowlist.fail-closed requires --deposits.allowlist on a sequencer"
+    );
     let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
         let deposit_allowlist = enforced_allowlist_admin
-            .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
+            .map(|admin| {
+                DepositAllowlist::load(
+                    data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME),
+                    admin,
+                    args.deposit_allowlist_fail_closed,
+                )
+            })
             .transpose()?;
         node = node.with_sequencer(ZoneSequencerAddOnsConfig {
             sequencer_signer,
@@ -401,6 +411,9 @@ async fn configure_sequencing(
             },
             deposit_allowlist,
         });
+    }
+    if rpc_only && args.deposit_allowlist_fail_closed {
+        node = node.with_allowlist_fail_closed();
     }
     if rpc_only && let Some(address) = args.deposit_allowlist_admin {
         node = node.with_deposit_allowlist_relay(DepositAllowlistAdmin {
@@ -716,10 +729,12 @@ pub struct ZoneArgs {
     )]
     pub prover_attestation_policy: Option<PathBuf>,
 
-    /// Bounce deposits whose L1 sender or zone recipient is not on the allowlist persisted at
-    /// `<datadir>/deposit-allowlist.json`, and reject Zone TIP-20 transfers unless both parties
-    /// are on it. Until the admin first writes the list, the sequencer credits every deposit and
-    /// admits every transfer. Requires `--deposits.allowlist.admin`.
+    /// Enforce the allowlist groups persisted at `<datadir>/deposit-allowlist.json`: bounce
+    /// deposits whose L1 sender does not share a group with the zone recipient, reject Zone TIP-20
+    /// transfers unless both parties share a group that allows transfers, and reject withdrawals
+    /// to a listed router from accounts outside its groups. Until the admin first writes the list,
+    /// the sequencer credits every deposit and admits every transfer, unless
+    /// `--deposits.allowlist.fail-closed` is set. Requires `--deposits.allowlist.admin`.
     #[arg(long = "deposits.allowlist", env = "DEPOSITS_ALLOWLIST")]
     pub deposit_allowlist: bool,
 
@@ -732,6 +747,17 @@ pub struct ZoneArgs {
         value_name = "ADDRESS"
     )]
     pub deposit_allowlist_admin: Option<Address>,
+
+    /// Run the allowlist fail-closed, as a shared Zone should: until the admin writes the list,
+    /// bounce every deposit and reject every transfer instead of admitting them, and reject
+    /// withdrawals that call back into an L1 address (a nonzero gas limit) unless the list names
+    /// it as a router. On a sequencer it requires `--deposits.allowlist`; on an rpc_only node it
+    /// screens submissions against the leader's list with the same rules.
+    #[arg(
+        long = "deposits.allowlist.fail-closed",
+        env = "DEPOSITS_ALLOWLIST_FAIL_CLOSED"
+    )]
+    pub deposit_allowlist_fail_closed: bool,
 }
 
 fn prepend_log_filter(filter: &mut String, directives: &str) {

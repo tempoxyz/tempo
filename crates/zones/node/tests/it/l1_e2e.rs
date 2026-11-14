@@ -2355,6 +2355,7 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
             address: Address::ZERO,
             zone_chain_id: 0,
         },
+        false,
     )?;
 
     let zone = ZoneTestNode::start_from_l1_with_deposit_allowlist(
@@ -2433,12 +2434,19 @@ async fn wait_for_deposit_bounce<P: Provider>(
     .await
 }
 
+/// Members of the default group, which `zoneAdmin_setDepositAllowed` edits.
 async fn get_deposit_allowlist(node: &ZoneTestNode) -> eyre::Result<Vec<Address>> {
     let snapshot: serde_json::Value = node
         .provider()
         .raw_request("zoneAdmin_getDepositAllowlist".into(), ())
         .await?;
-    Ok(serde_json::from_value(snapshot["addresses"].clone())?)
+    let members = snapshot["policy"]["groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|group| group["id"] == "default")
+        .map_or_else(|| serde_json::json!([]), |group| group["members"].clone());
+    Ok(serde_json::from_value(members)?)
 }
 
 mod allowlist_admin {
@@ -2448,6 +2456,23 @@ mod allowlist_admin {
             bool allowed;
             uint64 nonce;
             uint64 deadline;
+        }
+
+        struct AllowlistGroup {
+            string id;
+            address[] members;
+            address[] depositors;
+            bool transfers;
+        }
+
+        struct AllowlistRouter {
+            address router;
+            string[] groups;
+        }
+
+        struct AllowlistPolicy {
+            AllowlistGroup[] groups;
+            AllowlistRouter[] routers;
         }
     }
 }
@@ -2589,13 +2614,24 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     }
     assert_eq!(get_deposit_allowlist(rpc).await?, vec![second]);
 
-    // Every sequencer reports the same version: the last applied nonce and the hash of the list.
+    // Every sequencer reports the same version: the last applied nonce and the EIP-712 struct hash
+    // of the canonical policy, here only the default group.
     let statuses: Vec<serde_json::Value> = rpc
         .provider()
         .raw_request("zoneAdmin_getDepositAllowlistStatus".into(), ())
         .await?;
     assert_eq!(statuses.len(), 3, "{statuses:?}");
-    let list_hash = alloy::primitives::keccak256(second.as_slice()).to_string();
+    let list_hash = allowlist_admin::AllowlistPolicy {
+        groups: vec![allowlist_admin::AllowlistGroup {
+            id: "default".to_owned(),
+            members: vec![second],
+            depositors: vec![],
+            transfers: true,
+        }],
+        routers: vec![],
+    }
+    .eip712_hash_struct()
+    .to_string();
     for status in &statuses {
         assert!(status["sequencer"].is_string(), "{status}");
         assert_eq!(status["initialized"], true, "{status}");

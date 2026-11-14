@@ -8,7 +8,7 @@
 //! resends, the timeout, and answering resent requests without handling them twice.
 //!
 //! [`mirror_leader`] keeps every RPC-only node's [`AllowlistMirror`] in step with the leader's
-//! list, with or without the admin, so the node rejects transfers between unlisted accounts on
+//! list, with or without the admin, so the node rejects transfers the list does not admit on
 //! submission instead of forwarding them. Reads need no signature.
 
 use std::{sync::Arc, time::Duration};
@@ -32,9 +32,9 @@ use zone_p2p::{
 };
 
 use super::{
-    AllowlistMirror, DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistApiServer,
-    DepositAllowlistError, DepositAllowlistSnapshot, DepositAllowlistStatus,
-    SequencerAllowlistStatus, SignedWrite, Write, evict_unlisted_transfers,
+    AllowlistMirror, AllowlistPolicy, DepositAllowlist, DepositAllowlistAdmin,
+    DepositAllowlistApiServer, DepositAllowlistError, DepositAllowlistSnapshot,
+    DepositAllowlistStatus, SequencerAllowlistStatus, SignedWrite, Write, evict_unlisted_transfers,
 };
 
 /// Reads relayed at once. Reads need no signature, so they have their own limit and cannot keep
@@ -265,6 +265,25 @@ impl DepositAllowlistApiServer for AllowlistRelay {
         Ok(())
     }
 
+    async fn replace_deposit_allowlist_groups(
+        &self,
+        policy: AllowlistPolicy,
+        nonce: u64,
+        deadline: u64,
+        signature: Bytes,
+    ) -> RpcResult<()> {
+        let (groups, routers) = (policy.groups.len(), policy.routers.len());
+        self.relay_write(SignedWrite {
+            write: Write::ReplaceGroups { policy },
+            nonce,
+            deadline,
+            signature,
+        })
+        .await?;
+        info!(target: "zone::allowlist", groups, routers, "Relayed deposit allowlist groups to every sequencer");
+        Ok(())
+    }
+
     async fn get_deposit_allowlist(&self) -> RpcResult<DepositAllowlistSnapshot> {
         let mut snapshots = Vec::new();
         for (peer, response) in self.relay_read(Request::Get).await? {
@@ -290,7 +309,7 @@ impl DepositAllowlistApiServer for AllowlistRelay {
                 let status = snapshot.status;
                 if status.initialized {
                     format!(
-                        "{peer}: nonce {}, {} addresses, hash {}",
+                        "{peer}: nonce {}, {} entries, hash {}",
                         status.nonce, status.count, status.list_hash
                     )
                 } else {
@@ -518,7 +537,11 @@ mod tests {
 
     use zone_payload::TransferAllowlist as _;
 
-    use crate::deposit_allowlist::{MAX_DEPOSIT_ALLOWLIST_LEN, status_of};
+    use crate::deposit_allowlist::{
+        AllowlistGroup, AllowlistRouter, MAX_DEPOSIT_ALLOWLIST_LEN, MAX_GROUP_ID_LEN, MAX_GROUPS,
+        MAX_ROUTERS, Policy, status_of,
+    };
+    use zone_payload::Movement;
 
     struct RelayFixture {
         relay: AllowlistRelay,
@@ -690,7 +713,10 @@ mod tests {
 
         for request in requests {
             request
-                .respond(serde_json::to_vec(&Answer::Ok(snapshot(vec![]))).unwrap())
+                .respond(ok(Response::Snapshot(DepositAllowlistSnapshot {
+                    status: status_of(None),
+                    policy: Policy::default(),
+                })))
                 .await;
         }
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -800,11 +826,27 @@ mod tests {
         }
     }
 
+    /// A policy whose only group is the default group holding `addresses`.
+    fn default_group(addresses: Vec<Address>) -> Policy {
+        let mut policy = Policy::default();
+        policy.default_group().members = addresses.into_iter().collect();
+        policy
+    }
+
+    /// Whether `mirror` admits a transfer from `address` to itself.
+    fn admits(mirror: &AllowlistMirror, address: Address) -> bool {
+        mirror.admits(&[Movement::Transfer {
+            spender: None,
+            from: address,
+            to: address,
+        }])
+    }
+
     /// A written list of `nonce` holding only `address`.
     fn listed(nonce: u64, address: Address) -> Response {
         Response::Snapshot(DepositAllowlistSnapshot {
             status: status(nonce),
-            addresses: vec![address],
+            policy: default_group(vec![address]),
         })
     }
 
@@ -858,8 +900,8 @@ mod tests {
             Refreshed::Listed { changed: true }
         );
         assert_eq!(fixture.relay.mirror.status(), Some(status(1)));
-        assert!(fixture.relay.mirror.allows_all(&[old]));
-        assert!(!fixture.relay.mirror.allows_all(&[new]));
+        assert!(admits(&fixture.relay.mirror, old));
+        assert!(!admits(&fixture.relay.mirror, new));
         // Only the leader is asked.
         for peer in &mut fixture.peers[1..3] {
             assert!(peer.allowlist.requests.try_recv().is_err());
@@ -892,13 +934,13 @@ mod tests {
             Refreshed::Listed { changed: true }
         );
         assert_eq!(fixture.relay.mirror.status(), Some(status(0)));
-        assert!(fixture.relay.mirror.allows_all(&[new]));
+        assert!(admits(&fixture.relay.mirror, new));
 
         // An uninitialized list or a leader without the allowlist clears the copy.
         for answer in [uninitialized(), disabled()] {
             fixture.relay.mirror.replace(DepositAllowlistSnapshot {
                 status: status(0),
-                addresses: vec![new],
+                policy: default_group(vec![new]),
             });
             let refresh = fixture.refresh_mirror();
             fixture.answer_at(0, answer.clone()).await;
@@ -907,7 +949,7 @@ mod tests {
                 Refreshed::Unlisted { cleared: true }
             );
             assert_eq!(fixture.relay.mirror.status(), None);
-            assert!(fixture.relay.mirror.allows_all(&[old, new]));
+            assert!(admits(&fixture.relay.mirror, old) && admits(&fixture.relay.mirror, new));
             let refresh = fixture.refresh_mirror();
             fixture.answer_at(0, answer).await;
             assert_eq!(
@@ -923,7 +965,7 @@ mod tests {
         let (old, new) = (Address::repeat_byte(1), Address::repeat_byte(2));
         assert!(fixture.relay.mirror.replace(DepositAllowlistSnapshot {
             status: status(1),
-            addresses: vec![old],
+            policy: default_group(vec![old]),
         }));
         fixture
             .leadership
@@ -942,7 +984,7 @@ mod tests {
             Refreshed::Listed { changed: true }
         );
         assert_eq!(fixture.relay.mirror.status(), Some(status(2)));
-        assert!(fixture.relay.mirror.allows_all(&[new]));
+        assert!(admits(&fixture.relay.mirror, new));
     }
 
     fn full_list() -> Vec<Address> {
@@ -951,39 +993,83 @@ mod tests {
             .collect()
     }
 
-    fn snapshot(addresses: Vec<Address>) -> Response {
-        Response::Snapshot(DepositAllowlistSnapshot {
-            status: DepositAllowlistStatus {
-                initialized: true,
-                nonce: u64::MAX,
-                list_hash: alloy_primitives::B256::repeat_byte(0xff),
-                count: addresses.len(),
+    /// The largest policies the limits allow: every entry a membership, or as many entries as
+    /// possible routes. Both hold the most groups and routers, with the longest group IDs.
+    fn largest_policies() -> [AllowlistPolicy; 2] {
+        let ids = (0..MAX_GROUPS)
+            .map(|index| format!("{index:0>MAX_GROUP_ID_LEN$}"))
+            .collect::<Vec<_>>();
+        let addresses = full_list();
+        let members = |members: &[Address]| {
+            ids.iter()
+                .enumerate()
+                .map(|(index, id)| AllowlistGroup {
+                    id: id.clone(),
+                    members: if index == 0 { members.to_vec() } else { vec![] },
+                    depositors: vec![],
+                    transfers: true,
+                })
+                .collect::<Vec<_>>()
+        };
+        let routers = |groups: &[String]| {
+            addresses[..MAX_ROUTERS]
+                .iter()
+                .map(|router| AllowlistRouter {
+                    router: *router,
+                    groups: groups.to_vec(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let routes = MAX_GROUPS * MAX_ROUTERS;
+        [
+            AllowlistPolicy {
+                groups: members(&addresses),
+                routers: routers(&[]),
             },
-            addresses,
-        })
+            AllowlistPolicy {
+                groups: members(&addresses[..MAX_DEPOSIT_ALLOWLIST_LEN - routes]),
+                routers: routers(&ids),
+            },
+        ]
     }
 
     #[test]
-    fn a_full_list_fits_in_one_frame_both_ways() {
-        let addresses = full_list();
-        let answer = serde_json::to_vec(&Answer::Ok(snapshot(addresses.clone()))).unwrap();
-        assert!(
-            answer.len() <= MAX_ALLOWLIST_PAYLOAD_SIZE,
-            "{}",
-            answer.len()
-        );
+    fn the_largest_lists_fit_in_one_frame_both_ways() {
+        for policy in largest_policies() {
+            let policy = Policy::try_from(policy).unwrap();
+            policy.check_limits().unwrap();
+            assert_eq!(policy.len(), MAX_DEPOSIT_ALLOWLIST_LEN);
+            let answer =
+                serde_json::to_vec(&Answer::Ok(Response::Snapshot(DepositAllowlistSnapshot {
+                    status: DepositAllowlistStatus {
+                        initialized: true,
+                        nonce: u64::MAX,
+                        list_hash: alloy_primitives::B256::repeat_byte(0xff),
+                        count: policy.len(),
+                    },
+                    policy: policy.clone(),
+                })))
+                .unwrap();
+            assert!(
+                answer.len() <= MAX_ALLOWLIST_PAYLOAD_SIZE,
+                "{}",
+                answer.len()
+            );
 
-        let replace = serde_json::to_vec(&Request::Write(SignedWrite {
-            write: Write::Replace { addresses },
-            nonce: u64::MAX,
-            deadline: u64::MAX,
-            signature: Bytes::from([0xff; 65]),
-        }))
-        .unwrap();
-        assert!(
-            replace.len() <= MAX_ALLOWLIST_PAYLOAD_SIZE,
-            "{}",
-            replace.len()
-        );
+            let replace = serde_json::to_vec(&Request::Write(SignedWrite {
+                write: Write::ReplaceGroups {
+                    policy: policy.into(),
+                },
+                nonce: u64::MAX,
+                deadline: u64::MAX,
+                signature: Bytes::from([0xff; 65]),
+            }))
+            .unwrap();
+            assert!(
+                replace.len() <= MAX_ALLOWLIST_PAYLOAD_SIZE,
+                "{}",
+                replace.len()
+            );
+        }
     }
 }

@@ -4220,6 +4220,7 @@ async fn start_real_p2p_cluster_inner(
                         .path()
                         .join(format!("node-{index}-deposit-allowlist.json")),
                     allowlist_admin,
+                    false,
                 )?;
                 allowlist.replace(seed.to_vec())?;
                 Ok(Some(allowlist))

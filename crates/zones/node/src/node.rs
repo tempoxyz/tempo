@@ -317,6 +317,13 @@ impl ZoneNode {
         self
     }
 
+    /// On an RPC-only node, screen submissions against the leader's allowlist with the
+    /// fail-closed rules a shared Zone's sequencers enforce.
+    pub fn with_allowlist_fail_closed(mut self) -> Self {
+        self.allowlist_mirror = AllowlistMirror::new(true);
+        self
+    }
+
     /// Set the redacted RPC configuration.
     pub fn with_redacted_rpc(mut self, config: ZoneRedactedRpcConfig) -> Self {
         self.redacted_rpc_config = config;
