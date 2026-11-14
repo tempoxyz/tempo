@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Component, Path, PathBuf, absolute},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use clap::{ArgMatches, FromArgMatches, Parser};
@@ -22,6 +22,9 @@ use tracing::info;
 use url::Url;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
+
+/// Longest wait for a connection or the next chunk of the consensus archive.
+const ARCHIVE_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -204,8 +207,11 @@ async fn install_consensus_archive(
     loaded: &LoadedConsensusManifest,
     force: bool,
 ) -> eyre::Result<()> {
-    let (archive_file, actual_archive_hash) =
-        write_consensus_archive_to_temp(&loaded.archive_source).await?;
+    let (archive_file, actual_archive_hash) = write_consensus_archive_to_temp(
+        &loaded.archive_source,
+        loaded.manifest.consensus_archive.size,
+    )
+    .await?;
 
     if let Some(expected) = &loaded.manifest.consensus_archive.blake3 {
         let actual_archive_hash = actual_archive_hash.to_hex().to_string();
@@ -234,6 +240,7 @@ async fn install_consensus_archive(
 
 async fn write_consensus_archive_to_temp(
     source: &ConsensusArchiveSource,
+    expected_size: u64,
 ) -> eyre::Result<(tempfile::NamedTempFile, blake3::Hash)> {
     let archive_file =
         tempfile::NamedTempFile::new().wrap_err("failed to create temporary consensus archive")?;
@@ -248,12 +255,16 @@ async fn write_consensus_archive_to_temp(
             let reader = tokio::fs::File::open(path)
                 .await
                 .wrap_err_with(|| format!("failed to open consensus archive {}", path.display()))?;
-            hash_and_write_stream(reader, writer)
+            hash_and_write_stream(reader, writer, expected_size)
                 .await
                 .wrap_err_with(|| format!("failed to copy consensus archive {}", path.display()))?
         }
         ConsensusArchiveSource::Url(url) => {
-            let client = reqwest::Client::new();
+            let client = reqwest::Client::builder()
+                .connect_timeout(ARCHIVE_IO_TIMEOUT)
+                .read_timeout(ARCHIVE_IO_TIMEOUT)
+                .build()
+                .wrap_err("failed to build consensus archive client")?;
             let resp = client
                 .get(url)
                 .send()
@@ -263,7 +274,7 @@ async fn write_consensus_archive_to_temp(
                 .wrap_err("invalid response from consensus archive url")?;
 
             let reader = StreamReader::new(resp.bytes_stream().map_err(io::Error::other));
-            hash_and_write_stream(reader, writer)
+            hash_and_write_stream(reader, writer, expected_size)
                 .await
                 .wrap_err("failed reading consensus archive body")?
         }
@@ -272,7 +283,15 @@ async fn write_consensus_archive_to_temp(
     Ok((archive_file, hash))
 }
 
-async fn hash_and_write_stream<R, W>(reader: R, writer: W) -> eyre::Result<blake3::Hash>
+/// Copies exactly `expected_size` bytes from `reader` into `writer` and returns their hash.
+///
+/// Fails as soon as the stream yields more bytes, ends early, or stalls for
+/// longer than [`ARCHIVE_IO_TIMEOUT`].
+async fn hash_and_write_stream<R, W>(
+    reader: R,
+    writer: W,
+    expected_size: u64,
+) -> eyre::Result<blake3::Hash>
 where
     R: AsyncRead,
     W: AsyncWrite,
@@ -282,15 +301,20 @@ where
 
     let mut hasher = blake3::Hasher::new();
     let mut buf = [0_u8; 64 * 1024];
+    let mut written = 0_u64;
     loop {
-        let n = reader
-            .as_mut()
-            .read(&mut buf)
+        let n = tokio::time::timeout(ARCHIVE_IO_TIMEOUT, reader.as_mut().read(&mut buf))
             .await
+            .wrap_err("timed out reading consensus archive")?
             .wrap_err("failed reading consensus archive")?;
         if n == 0 {
             break;
         }
+        ensure!(
+            n as u64 <= expected_size - written,
+            "consensus archive exceeds declared size of {expected_size} bytes",
+        );
+        written += n as u64;
 
         hasher.update(&buf[..n]);
         writer
@@ -299,6 +323,10 @@ where
             .await
             .wrap_err("failed writing temporary consensus archive")?;
     }
+    ensure!(
+        written == expected_size,
+        "consensus archive ended after {written} bytes, expected {expected_size}",
+    );
 
     writer
         .as_mut()
@@ -1352,13 +1380,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_consensus_archive_rejects_archive_larger_than_declared() {
+        let target = tempfile::tempdir().unwrap();
+        let entries: &[(&str, &[u8])] = &[("engine-finalizations-by-height-metadata/00", b"abc")];
+        let archive = write_test_consensus_archive(entries);
+        let mut loaded = loaded_test_archive(&archive, entries);
+        loaded.manifest.consensus_archive.size -= 1;
+        let expected = loaded.manifest.consensus_archive.size;
+
+        let error = install_consensus_archive(target.path(), &loaded, false)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.root_cause().to_string(),
+            format!("consensus archive exceeds declared size of {expected} bytes"),
+        );
+        assert!(!target.path().join(entries[0].0).exists());
+    }
+
+    #[tokio::test]
+    async fn install_consensus_archive_rejects_archive_shorter_than_declared() {
+        let target = tempfile::tempdir().unwrap();
+        let entries: &[(&str, &[u8])] = &[("engine-finalizations-by-height-metadata/00", b"abc")];
+        let archive = write_test_consensus_archive(entries);
+        let mut loaded = loaded_test_archive(&archive, entries);
+        let actual = loaded.manifest.consensus_archive.size;
+        loaded.manifest.consensus_archive.size += 1;
+        let expected = loaded.manifest.consensus_archive.size;
+
+        let error = install_consensus_archive(target.path(), &loaded, false)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.root_cause().to_string(),
+            format!("consensus archive ended after {actual} bytes, expected {expected}"),
+        );
+        assert!(!target.path().join(entries[0].0).exists());
+    }
+
+    #[tokio::test]
+    async fn hash_and_write_stream_stops_at_declared_size() {
+        let mut written = Vec::new();
+
+        let error = hash_and_write_stream(tokio::io::repeat(0), &mut written, 100_000)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "consensus archive exceeds declared size of 100000 bytes"
+        );
+        assert_eq!(written.len(), 64 * 1024);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hash_and_write_stream_times_out_on_stalled_reader() {
+        let (_sender, reader) = tokio::io::duplex(64);
+
+        let error = hash_and_write_stream(reader, tokio::io::sink(), 1)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "timed out reading consensus archive");
+    }
+
+    async fn serve_http_body_once(body: &'static [u8]) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).await.unwrap();
+                assert_ne!(n, 0, "client closed before sending headers");
+                request.extend_from_slice(&buf[..n]);
+            }
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        format!("http://{addr}/consensus.tar.zst")
+    }
+
+    #[tokio::test]
+    async fn write_consensus_archive_to_temp_rejects_oversized_http_body() {
+        let url = serve_http_body_once(b"0123456789").await;
+
+        let error = write_consensus_archive_to_temp(&ConsensusArchiveSource::Url(url), 4)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.root_cause().to_string(),
+            "consensus archive exceeds declared size of 4 bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_consensus_archive_to_temp_copies_http_body_while_hashing() {
+        let url = serve_http_body_once(b"0123456789").await;
+
+        let (archive_file, hash) =
+            write_consensus_archive_to_temp(&ConsensusArchiveSource::Url(url), 10)
+                .await
+                .unwrap();
+
+        assert_eq!(fs::read(archive_file.path()).unwrap(), b"0123456789");
+        assert_eq!(hash, blake3::hash(b"0123456789"));
+    }
+
+    #[tokio::test]
     async fn write_consensus_archive_to_temp_copies_path_source_while_hashing() {
         let dir = tempfile::tempdir().unwrap();
         let source_path = dir.path().join("consensus.tar.zst");
         fs::write(&source_path, b"archive").unwrap();
 
         let (archive_file, hash) =
-            write_consensus_archive_to_temp(&ConsensusArchiveSource::Path(source_path))
+            write_consensus_archive_to_temp(&ConsensusArchiveSource::Path(source_path), 7)
                 .await
                 .unwrap();
 
