@@ -102,6 +102,7 @@ fn ctx(txs: usize) -> TempoBlockExecutionCtx<'static> {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn run(
     config: &TempoEvmConfig,
     snapshot: &Arc<Snapshot>,
