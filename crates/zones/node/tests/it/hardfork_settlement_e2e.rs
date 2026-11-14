@@ -11,7 +11,7 @@ use alloy_rlp::Decodable;
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag};
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 use reth_chainspec::EthChainSpec;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, test_utils::CallBuilderExt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_contracts::{
     precompiles::{ITIP20, IZoneFactory, initial_zone_factory_state},
@@ -25,6 +25,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    test_util::TIP20Setup,
     zone_factory::{ZoneFactory, ZoneInfoStorageHandler, ZonePortalStorage, slots},
 };
 use tempo_primitives::TempoHeader;
@@ -37,14 +38,17 @@ use zone_spf::{
 };
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, L1TestNode, TcpChaosProxy, ZoneAccount, ZoneTestNode, now_secs, poll_until,
-    signer_at,
+    DEFAULT_TIMEOUT, L1TestNode, TcpChaosProxy, ZoneAccount, ZoneGenesis, ZoneL1, ZoneLaunch,
+    ZoneTestNode, build_l1_anchored_genesis, now_secs, poll_until, signer_at,
 };
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 30;
+    // Leave time for the T12 setup below, measured at under 12s on a loaded host. The zone's L1
+    // link is paused from then until activation, which stays under 20s so outstanding HTTP
+    // requests remain within their normal timeout.
+    let activation = now_secs() + 20;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();
@@ -60,29 +64,38 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         .await?;
     let portal = ZonePortal::new(portal_address, l1.provider());
     // Create metadata before the zone starts; only alpha is processed before the upgrade.
-    let alpha = l1
-        .create_tip20("Alpha", "ALP", B256::with_last_byte(1))
+    let alpha = TIP20Setup::create("Alpha", "ALP", l1.dev_address())
+        .with_salt(B256::with_last_byte(1))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let beta = l1
-        .create_tip20("Beta", "BET", B256::with_last_byte(2))
+    let beta = TIP20Setup::create("Beta", "BET", l1.dev_address())
+        .with_salt(B256::with_last_byte(2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let gamma = l1
-        .create_tip20("Gamma", "GAM", B256::with_last_byte(3))
+    let gamma = TIP20Setup::create("Gamma", "GAM", l1.dev_address())
+        .with_salt(B256::with_last_byte(3))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     // HTTP polling retains pending block-filter changes while responses are paused, without
     // WebSocket keepalive timeouts obscuring the hardfork coordination under test.
     let proxy = TcpChaosProxy::start(TcpChaosProxy::upstream_addr(l1.http_url())?).await?;
-    let (zone, spec) = ZoneTestNode::start_from_l1_with_t13(
-        l1.http_url(),
-        &proxy.proxy_url(l1.http_url())?,
-        portal_address,
-        activation,
-    )
+    let mut genesis =
+        build_l1_anchored_genesis(l1.http_url(), portal_address, BlockNumberOrTag::Latest).await?;
+    set_tempo_fork(&mut genesis, TempoHardfork::T13, activation);
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Portal {
+            url: proxy.proxy_url(l1.http_url())?.to_string(),
+            portal_address,
+        },
+        genesis: ZoneGenesis::Custom(genesis),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
+    let spec = zone.chain_spec();
     let provider = zone.provider();
     let inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, &provider);
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    l1.enable_token_on_portal(portal_address, alpha).await?;
+    enable_token(&l1, portal_address, alpha).await?;
     l1.fund_user(account.address(), 1_000_000).await?;
     account.deposit(100, DEFAULT_TIMEOUT, &zone).await?;
     zone.wait_for_tempo_block_number(l1.provider().get_block_number().await?, DEFAULT_TIMEOUT)
@@ -122,11 +135,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         U256::ZERO
     );
 
-    // Limit the pause so outstanding HTTP requests remain within their normal timeout.
-    tokio::time::sleep(Duration::from_secs(
-        activation.saturating_sub(now_secs() + 20),
-    ))
-    .await;
     proxy.pause_upstream_to_client(true);
     let l1_provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(l1.dev_signer())
@@ -182,7 +190,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     assert_eq!(portal.withdrawalBatchIndex().call().await?, 2);
 
     // Leave one enablement and one deposit outstanding on T12 while the zone cannot receive L1.
-    l1.enable_token_on_portal(portal_address, beta).await?;
+    enable_token(&l1, portal_address, beta).await?;
     account.submit_deposit(200).await?;
     let last_t12 = l1_provider
         .get_block_by_number(BlockNumberOrTag::Latest)
@@ -347,8 +355,18 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         "settlement cannot replay"
     );
     assert_eq!(portal.withdrawalBatchIndex().call().await?, 3);
-    l1.enable_token_on_portal(portal_address, gamma).await?;
+    enable_token(&l1, portal_address, gamma).await?;
     assert_eq!(portal.enabledTokenCount().call().await?, U256::from(4));
+    Ok(())
+}
+
+/// Enables `token` on the portal without waiting for the zone, since this L1 mines on demand.
+async fn enable_token(l1: &L1TestNode, portal: Address, token: Address) -> eyre::Result<()> {
+    let receipt = ZonePortal::new(portal, l1.admin_provider())
+        .enableToken(token)
+        .mined()
+        .await?;
+    eyre::ensure!(receipt.status(), "enableToken reverted");
     Ok(())
 }
 

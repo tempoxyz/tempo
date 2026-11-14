@@ -5,12 +5,12 @@
 //! subscriber naturally receives blocks and deposits — no synthetic injection.
 
 use crate::utils::{
-    DEFAULT_POLL, L1_TIMEOUT, L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs,
-    STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode,
-    assert_same_block, deposit_allowlist_admin, fetch_submit_batch_call, poll_until,
-    seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
-    spawn_sequencer_with_config, start_real_p2p_cluster, start_real_p2p_cluster_with_active_nodes,
-    start_real_p2p_cluster_with_deposit_allowlist, wait_all_at,
+    AllowlistSetup, ClusterConfig, DEFAULT_POLL, L1_TIMEOUT, L1TestNode, Network, PolicySeed,
+    RouterCallbackArgs, RouterDepositArgs, STABLECOIN_DEX_ADDRESS, WithdrawalArgs, ZoneAccount,
+    ZoneCreationConfig, ZoneGenesis, ZoneLaunch, ZoneTestNode, assert_same_block,
+    deposit_allowlist_admin, fetch_submit_batch_call, poll_until, seed_raw_tip403_policy,
+    seed_raw_tip403_token_policy, spawn_sequencer, spawn_sequencer_with_config,
+    start_real_p2p_cluster, wait_all_at,
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
@@ -31,7 +31,13 @@ use tempo_contracts::{
         ZONE_TOKEN_ADDRESS, ZonePortal, ZonePortal::Role as PortalRole,
     },
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, zone_factory::portal};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    test_util::{TIP20Setup, TIP403Setup},
+    tip403_registry::ALLOW_ALL_POLICY_ID,
+    zone_factory::portal,
+};
+use tempo_primitives::test_utils::{actors, signers, signers_vec};
 use zone_node::{
     DepositAllowlist, DepositAllowlistAdmin,
     dev::{ProvisionConfig, provision_zone},
@@ -79,37 +85,32 @@ struct SameZoneSwapFixture {
 async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
     let l1 = L1TestNode::start().await?;
 
-    let alpha = l1
-        .create_tip20("AlphaUSD", "aUSD", B256::with_last_byte(0xA1))
+    // The dev account makes the DEX market. The user holds the alpha it swaps.
+    let alpha = TIP20Setup::create("AlphaUSD", "aUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xA1))
+        .with_mint(l1.dev_address(), U256::from(ROUTER_DEX_LIQUIDITY))
+        .with_mint(l1.user_signer().address(), U256::from(ROUTER_SWAP_AMOUNT))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-    let beta = l1
-        .create_tip20("BetaUSD", "bUSD", B256::with_last_byte(0xB2))
+    let beta = TIP20Setup::create("BetaUSD", "bUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xB2))
+        .with_mint(l1.dev_address(), U256::from(ROUTER_DEX_LIQUIDITY))
+        .apply_rpc(&l1.dev_provider())
         .await?;
-
-    let mint_amount = ROUTER_DEX_LIQUIDITY + ROUTER_SWAP_AMOUNT;
-    l1.mint_tip20(alpha, l1.dev_address(), mint_amount).await?;
-    l1.mint_tip20(beta, l1.dev_address(), mint_amount).await?;
 
     let factory = l1.native_zone_factory().await?;
     let portal_address = l1.create_zone(factory).await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let router = l1
         .deploy_router_with_dex(factory, STABLECOIN_DEX_ADDRESS)
         .await?;
-    let gateway_block = l1
-        .set_zone_gateway_on_portal(portal_address, router, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway(router, true).await?;
     zone.assert_zone_gateway(router, true).await?;
 
-    l1.enable_token_on_portal(portal_address, alpha).await?;
-    l1.enable_token_on_portal(portal_address, beta).await?;
-    let enable_block = l1.provider().get_block_number().await?;
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(alpha).await?;
+    zone.enable_token(beta).await?;
 
     l1.create_dex_pair(alpha).await?;
     l1.create_dex_pair(beta).await?;
@@ -120,8 +121,6 @@ async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
     l1.fund_user(account.address(), 10_000_000).await?;
-    l1.fund_user_token(alpha, account.address(), ROUTER_SWAP_AMOUNT)
-        .await?;
     account.deposit(5_000_000, L1_TIMEOUT, &zone).await?;
 
     let alpha_minted = account
@@ -170,12 +169,10 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
     // the constructor's initial TokenEnabled event.
     let anchor_block_number = l1.provider().get_block_number().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1_at_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        anchor_block_number,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(anchor_block_number.into()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
 
     // Wait for the zone to advance past block 0 (genesis anchor)
@@ -217,7 +214,7 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
 async fn test_three_node_quorum_settles_real_batch_boundary() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let cluster = start_real_p2p_cluster(4).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig::default()).await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     eyre::ensure!(
         portal.sequencerThreshold().call().await? == 2,
@@ -275,7 +272,11 @@ async fn test_two_online_sequencers_submit_two_signature_certificate() -> eyre::
     reth_tracing::init_test_tracing();
 
     // The manifest and Portal retain all three registered members, but node C never starts.
-    let cluster = start_real_p2p_cluster_with_active_nodes(4, 2).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        active_nodes: 2,
+        ..Default::default()
+    })
+    .await?;
     eyre::ensure!(
         cluster.nodes.len() == 2 && cluster.attestation_signers.len() == 3,
         "fixture did not retain a three-member set with exactly two online nodes"
@@ -352,7 +353,11 @@ async fn test_divergent_follower_does_not_create_quorum() -> eyre::Result<()> {
     const DIVERGENT_ANCHOR_WINDOW: u64 = 64;
 
     // Leave enough Zone blocks to install the divergent state before the configured boundary.
-    let cluster = start_real_p2p_cluster(DIVERGENT_BOUNDARY).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        withdrawal_batch_interval_blocks: DIVERGENT_BOUNDARY,
+        ..Default::default()
+    })
+    .await?;
     let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
     // A newly started subscriber initializes its cache from the zone's L1 genesis anchor, not
     // from block zero. Its first non-contiguous coverage update resets the cache, which used to
@@ -456,8 +461,9 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
     reth_tracing::init_test_tracing();
 
     let l1 = L1TestNode::start().await?;
-    let initial_token = l1
-        .create_tip20("DevUSD", "dUSD", B256::with_last_byte(0xD0))
+    let initial_token = TIP20Setup::create("DevUSD", "dUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0xD0))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     let provisioned = provision_zone(ProvisionConfig {
         l1_rpc_url: l1.ws_url().to_string(),
@@ -475,12 +481,10 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
     let latest_l1_block = l1.provider().get_block_number().await?;
     assert!(latest_l1_block > provisioned.anchor_block_number);
 
-    let zone = ZoneTestNode::start_from_l1_at_block(
-        l1.http_url(),
-        l1.ws_url(),
-        provisioned.portal,
-        provisioned.anchor_block_number,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        genesis: ZoneGenesis::L1(provisioned.anchor_block_number.into()),
+        ..ZoneLaunch::from_l1(&l1, provisioned.portal)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(latest_l1_block, L1_TIMEOUT)
         .await?;
@@ -511,19 +515,16 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     const MAX_WITHDRAWALS_PER_BATCH: usize = 2;
     const TEST_MAX_BATCH_GAS: u64 = 2_500_000;
     const TEST_MAX_IN_FLIGHT_BATCHES: usize = 2;
-    const FIRST_ACCOUNT_INDEX: u32 = 3;
     const DEPOSIT_AMOUNT: u128 = 2_000_000;
     const WITHDRAWAL_AMOUNT: u128 = 250_000;
     const WITHDRAWAL_TIMEOUT: Duration = Duration::from_secs(120);
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    let signers = (FIRST_ACCOUNT_INDEX..FIRST_ACCOUNT_INDEX + ACCOUNT_COUNT)
-        .map(|index| l1.signer_at(index))
-        .collect::<Vec<_>>();
+    let signers = signers_vec(ACCOUNT_COUNT as usize);
     let recipients = signers
         .iter()
         .map(|signer| signer.address())
@@ -531,7 +532,7 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
 
     // This test exercises withdrawal batching, not access control. Opening the portal avoids one
     // L1 allowlist transaction per recipient.
-    l1.set_access_mode_on_portal(portal_address, false).await?;
+    zone.set_access_mode(false).await?;
 
     // A single funded depositor keeps L1 setup deterministic while still exercising deposits to
     // many distinct zone accounts.
@@ -717,7 +718,7 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
     let encryption_key = k256::SecretKey::from(l1.dev_signer().credential());
     l1.set_sequencer_encryption_key(portal_address, &encryption_key)
         .await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let portal = ZonePortal::new(portal_address, l1.provider());
@@ -738,20 +739,19 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
     account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
 
     // A second arbitrary account can also deposit without a membership update.
-    let second_signer = l1.signer_at(3);
+    let [second_signer] = signers();
     let mut second_account =
         ZoneAccount::with_signer(second_signer.clone(), &l1, &zone, portal_address);
     l1.fund_user(second_signer.address(), 500_000).await?;
     second_account.deposit(200_000, L1_TIMEOUT, &zone).await?;
 
     // The encrypted recipient is also arbitrary; only the depositor/refund address is public.
-    let encrypted_recipient = l1.signer_at(4).address();
+    let [encrypted_recipient, arbitrary_l1_recipient] = actors();
     account
         .deposit_with_memo(300_000, encrypted_recipient, B256::ZERO, L1_TIMEOUT, &zone)
         .await?;
 
     let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let arbitrary_l1_recipient = l1.signer_at(5).address();
     let mut withdrawal = WithdrawalArgs::new(withdrawal_amount);
     withdrawal.to = Some(arbitrary_l1_recipient);
     let l1_balance_before = l1
@@ -784,11 +784,7 @@ async fn test_open_mode_unlisted_account_roundtrip() -> eyre::Result<()> {
         "open mode accepted an unregistered callback target"
     );
 
-    let gateway_block = l1
-        .set_zone_gateway_on_portal(portal_address, router, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway(router, true).await?;
     zone.assert_zone_gateway(router, true).await?;
 
     let callback_amount = 150_000u128;
@@ -853,11 +849,11 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone.assert_access_enforced(true).await?;
 
-    let outsider_signer = l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     let portal = ZonePortal::new(portal_address, l1.provider());
     assert!(portal.hasRole(outsider, PortalRole::None).call().await?);
@@ -901,19 +897,11 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
         );
     }
 
-    let add_block = l1
-        .set_allowed_account_on_portal(portal_address, outsider, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(add_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(outsider, true).await?;
     zone.assert_allowed_account(outsider, true).await?;
     outsider_account.deposit(500_000, L1_TIMEOUT, &zone).await?;
 
-    let remove_block = l1
-        .set_allowed_account_on_portal(portal_address, outsider, false)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(remove_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(outsider, false).await?;
     zone.assert_allowed_account(outsider, false).await?;
     assert!(
         outsider_account
@@ -942,12 +930,12 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
     let l1 = L1TestNode::start().await?;
     let factory = l1.native_zone_factory().await?;
     let portal_address = l1.create_zone(factory).await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone.assert_access_enforced(true).await?;
     zone.assert_gateway_open(false).await?;
 
-    let outsider_signer = l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     let mut outsider_account =
         ZoneAccount::with_signer(outsider_signer, &l1, &zone, portal_address);
@@ -960,9 +948,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         "closed access accepted an unlisted depositor"
     );
 
-    let open_access_block = l1.set_access_mode_on_portal(portal_address, false).await?;
-    zone.wait_for_l2_tempo_finalized(open_access_block, L1_TIMEOUT)
-        .await?;
+    zone.set_access_mode(false).await?;
     zone.assert_access_enforced(false).await?;
     zone.assert_allowed_account(outsider, true).await?;
     outsider_account
@@ -988,18 +974,14 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         "open account access disabled gateway registration enforcement"
     );
 
-    let open_gateway_block = l1.set_gateway_mode_on_portal(portal_address, false).await?;
-    zone.wait_for_l2_tempo_finalized(open_gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway_mode(false).await?;
     zone.assert_gateway_open(true).await?;
     outsider_account
         .withdraw_with(callback.clone())
         .await
         .wrap_err("callback should pass after opening gateway mode")?;
 
-    let closed_access_block = l1.set_access_mode_on_portal(portal_address, true).await?;
-    zone.wait_for_l2_tempo_finalized(closed_access_block, L1_TIMEOUT)
-        .await?;
+    zone.set_access_mode(true).await?;
     zone.assert_access_enforced(true).await?;
     assert!(
         outsider_account
@@ -1013,9 +995,7 @@ async fn test_access_and_gateway_modes_are_mutable_and_independent() -> eyre::Re
         .await
         .wrap_err("callback should still pass after reclosing account access")?;
 
-    let enforced_gateway_block = l1.set_gateway_mode_on_portal(portal_address, true).await?;
-    zone.wait_for_l2_tempo_finalized(enforced_gateway_block, L1_TIMEOUT)
-        .await?;
+    zone.set_gateway_mode(true).await?;
     assert!(
         outsider_account
             .simulate_withdraw_with(callback)
@@ -1036,7 +1016,7 @@ async fn test_queued_plain_withdrawal_bounces_after_recipient_revocation() -> ey
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
@@ -1057,11 +1037,7 @@ async fn test_queued_plain_withdrawal_bounces_after_recipient_revocation() -> ey
         .await?;
     let trailing_l1_before = l1.balance_of(PATH_USD_ADDRESS, trailing_recipient).await?;
 
-    let revocation_block = l1
-        .set_allowed_account_on_portal(portal_address, revoked_recipient, false)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(revocation_block, L1_TIMEOUT)
-        .await?;
+    zone.set_allowed_account(revoked_recipient, false).await?;
     zone.assert_allowed_account(revoked_recipient, false)
         .await?;
 
@@ -1127,14 +1103,7 @@ async fn test_queued_callback_bounces_after_gateway_revocation() -> eyre::Result
         .balance_of(PATH_USD_ADDRESS, trailing_recipient)
         .await?;
 
-    let revocation_block = fixture
-        .l1
-        .set_zone_gateway_on_portal(fixture.portal_address, fixture.router, false)
-        .await?;
-    fixture
-        .zone
-        .wait_for_l2_tempo_finalized(revocation_block, L1_TIMEOUT)
-        .await?;
+    fixture.zone.set_gateway(fixture.router, false).await?;
     fixture
         .zone
         .assert_zone_gateway(fixture.router, false)
@@ -1204,81 +1173,53 @@ async fn test_queued_callback_bounces_after_gateway_revocation() -> eyre::Result
 async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
-
-    // Separate sequencer keys for each zone to avoid L1 nonce conflicts
-    let seq_a_signer = l1.signer_at(2);
-    let seq_b_signer = l1.signer_at(3);
-
-    // --- Step 2: Deploy L1 infrastructure (factory, two portals, router) ---
-    let (portal_a, portal_b, router) = l1
-        .deploy_two_open_zones_with_sequencers(seq_a_signer.clone(), seq_b_signer.clone())
+    // --- Steps 1-3: L1, both zones with their own sequencer keys, and the router ---
+    let (l1, [zone_a, zone_b], [account]) = &Network::default()
+        .zone(ZoneCreationConfig::open())
+        .zone(ZoneCreationConfig::open())
+        .fund(2_000_000)
+        .start()
         .await?;
-
-    // --- Step 3: Start both zone nodes ---
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![k256::SecretKey::from(seq_a_signer.credential())],
-    )
-    .await?;
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![k256::SecretKey::from(seq_b_signer.credential())],
-    )
-    .await?;
-
-    zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-    zone_b.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;
     zone_b.assert_access_enforced(false).await?;
     zone_a.assert_gateway_open(true).await?;
     zone_b.assert_gateway_open(true).await?;
 
     // --- Step 4: Deposit into zone_a ---
-    let mut account_a = ZoneAccount::from_l1_and_zone(&l1, &zone_a, portal_a);
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD
-    l1.fund_user(account_a.address(), deposit_amount * 2)
-        .await?;
-    account_a
-        .deposit(deposit_amount, L1_TIMEOUT, &zone_a)
-        .await?;
+    zone_a.deposit(account, deposit_amount).await?;
 
-    // Spawn sequencers for both zones
-    let _seq_a = spawn_sequencer(&l1, &zone_a, portal_a, seq_a_signer.clone()).await;
-    let _seq_b = spawn_sequencer(&l1, &zone_b, portal_b, seq_b_signer.clone()).await;
+    let _seq_a = zone_a.spawn_sequencer().await;
+    let _seq_b = zone_b.spawn_sequencer().await;
 
     // --- Step 5: Cross-zone withdrawal: zone_a → router → zone_b ---
     let cross_amount: u128 = 400_000; // 0.4 pathUSD
     let args_a_to_b = WithdrawalArgs::cross_zone_via_router(
-        &l1,
+        l1,
         cross_amount,
         router,
-        portal_b,
+        zone_b.portal_address(),
         PATH_USD_ADDRESS,
-        account_a.address(),
-        account_a.address(),
+        account.address(),
+        account.address(),
     )
     .await?;
-    account_a.withdraw_with(args_a_to_b).await?;
+    zone_a.account(account).withdraw_with(args_a_to_b).await?;
 
     // --- Step 6: Verify deposit arrives on zone_b ---
     let cross_timeout = std::time::Duration::from_secs(60);
     zone_b
         .wait_for_balance(
             ZONE_TOKEN_ADDRESS,
-            account_a.address(),
+            account.address(),
             U256::from(cross_amount),
             cross_timeout,
         )
         .await?;
 
     let zone_b_balance = zone_b
-        .balance_of(ZONE_TOKEN_ADDRESS, account_a.address())
+        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
         .await?;
     assert_eq!(
         zone_b_balance,
@@ -1288,7 +1229,7 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
 
     // zone_a balance should have decreased
     let zone_a_balance = zone_a
-        .balance_of(ZONE_TOKEN_ADDRESS, account_a.address())
+        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
         .await?;
     assert!(
         zone_a_balance <= U256::from(deposit_amount - cross_amount),
@@ -1296,32 +1237,31 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
     );
 
     // --- Step 7: Cross-zone withdrawal: zone_b → router → zone_a ---
-    let mut account_b = ZoneAccount::from_l1_and_zone(&l1, &zone_b, portal_b);
     let reverse_amount: u128 = 200_000; // 0.2 pathUSD
     let args_b_to_a = WithdrawalArgs::cross_zone_via_router(
-        &l1,
+        l1,
         reverse_amount,
         router,
-        portal_a,
+        zone_a.portal_address(),
         PATH_USD_ADDRESS,
-        account_b.address(),
-        account_b.address(),
+        account.address(),
+        account.address(),
     )
     .await?;
-    account_b.withdraw_with(args_b_to_a).await?;
+    zone_b.account(account).withdraw_with(args_b_to_a).await?;
 
     // --- Step 8: Verify deposit arrives on zone_a ---
     zone_a
         .wait_for_balance(
             ZONE_TOKEN_ADDRESS,
-            account_b.address(),
+            account.address(),
             zone_a_balance,
             cross_timeout,
         )
         .await?;
 
     let final_zone_a = zone_a
-        .balance_of(ZONE_TOKEN_ADDRESS, account_b.address())
+        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
         .await?;
     assert!(
         final_zone_a > U256::ZERO,
@@ -1330,7 +1270,7 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
 
     // zone_b balance should have decreased
     let final_zone_b = zone_b
-        .balance_of(ZONE_TOKEN_ADDRESS, account_b.address())
+        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
         .await?;
     assert!(
         final_zone_b < U256::from(cross_amount),
@@ -1349,60 +1289,43 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
 async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let l1 = L1TestNode::start().await?;
-    let seq_a_signer = l1.signer_at(2);
-    let seq_b_signer = l1.signer_at(3);
-    let blacklisted_recipient = l1.signer_at(4).address();
-    let refund_burner = l1.signer_at(5).address();
-
-    let (portal_a, portal_b, router) = l1
-        .deploy_two_open_zones_with_sequencers(seq_a_signer.clone(), seq_b_signer.clone())
+    let (l1, [zone_a, zone_b], [alice]) = &Network::default()
+        .zone(ZoneCreationConfig::open())
+        .zone(ZoneCreationConfig::open())
+        .fund(4_000_000)
+        .start()
         .await?;
+    let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
+    let [blacklisted_recipient, refund_burner] = actors();
 
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
-        .await?;
-    l1.blacklist_address(policy_id, blacklisted_recipient)
+    let policy_id = l1
+        .set_path_usd_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_recipient]),
+        )
         .await?;
     assert!(
         !l1.is_authorized(policy_id, blacklisted_recipient).await?,
         "recipient should be blacklisted on L1"
     );
 
-    let zone_a = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_a,
-        vec![k256::SecretKey::from(seq_a_signer.credential())],
-    )
-    .await?;
-    let encryption_key = k256::SecretKey::from(seq_b_signer.credential());
-    let zone_b = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_b,
-        vec![encryption_key],
-    )
-    .await?;
-
-    zone_a.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-    zone_b.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
     zone_a.assert_access_enforced(false).await?;
     zone_b.assert_access_enforced(false).await?;
     zone_a.assert_gateway_open(true).await?;
     zone_b.assert_gateway_open(true).await?;
 
-    let mut alice = ZoneAccount::from_l1_and_zone(&l1, &zone_a, portal_a);
-    let deposit_amount: u128 = 2_000_000;
     let cross_amount: u128 = 1_000_000;
-    l1.fund_user(alice.address(), deposit_amount * 2).await?;
-    alice.deposit(deposit_amount, L1_TIMEOUT, &zone_a).await?;
+    zone_a.deposit(alice, 2_000_000).await?;
 
-    let _seq_a = spawn_sequencer(&l1, &zone_a, portal_a, seq_a_signer.clone()).await;
-    let _seq_b = spawn_sequencer(&l1, &zone_b, portal_b, seq_b_signer.clone()).await;
+    let _seq_a = zone_a.spawn_sequencer().await;
+    let _seq_b = zone_b.spawn_sequencer().await;
 
     let (key_index, encrypted) = l1
-        .encrypt_deposit_for_portal(portal_b, router, blacklisted_recipient, B256::ZERO)
+        .encrypt_deposit_for_portal(
+            zone_b.portal_address(),
+            router,
+            blacklisted_recipient,
+            B256::ZERO,
+        )
         .await?;
 
     let refund_before = l1.balance_of(PATH_USD_ADDRESS, refund_burner).await?;
@@ -1412,13 +1335,13 @@ async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
         amount: cross_amount,
         router,
         token_out: PATH_USD_ADDRESS,
-        target_portal: portal_b,
+        target_portal: zone_b.portal_address(),
         key_index,
         encrypted,
         tempo_refund_recipient: refund_burner,
         min_amount_out: 0,
     });
-    alice.withdraw_with(args).await?;
+    zone_a.account(alice).withdraw_with(args).await?;
 
     let refund_after = l1
         .wait_for_balance(
@@ -1449,7 +1372,7 @@ async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
     );
 
     l1.assert_withdrawal_processed_with_status(
-        portal_a,
+        zone_a.portal_address(),
         router,
         PATH_USD_ADDRESS,
         cross_amount,
@@ -1586,10 +1509,7 @@ async fn test_swap_and_deposit_into_same_zone_bounces_back_when_target_deposits_
         .quote_dex_swap_exact_amount_in(fixture.alpha, fixture.beta, fixture.swap_amount)
         .await?;
 
-    fixture
-        .l1
-        .pause_deposits_on_portal(fixture.portal_address, fixture.beta)
-        .await?;
+    fixture.zone.pause_deposits(fixture.beta, true).await?;
 
     let _sequencer = spawn_sequencer(
         &fixture.l1,
@@ -1705,74 +1625,35 @@ async fn test_swap_and_deposit_into_same_zone_bounces_back_when_target_deposits_
     Ok(())
 }
 
-/// Multi-asset deposit + withdrawal test:
-///
-///  1. Start L1 dev node.
-///  2. Create a second TIP-20 token ("ZoneUSD") on L1.
-///  3. Create a zone with pathUSD through the native ZoneFactory.
-///  4. Enable ZoneUSD on the portal.
-///  5. Start zone node connected to L1 (ZoneUSD is auto-initialized via TokenEnabled event).
-///  6. Deposit pathUSD and ZoneUSD into the zone.
-///  7. Spawn sequencer, withdraw both tokens back to L1.
-///  8. Verify withdrawals processed and L2 balances decreased.
-///
-/// ```text
-///  L1 (pathUSD + ZoneUSD)          Zone L2
-///    |--- deposit pathUSD -------->|  ✓ pathUSD minted
-///    |--- deposit ZoneUSD -------->|  ✓ ZoneUSD minted
-///    |<-- withdraw pathUSD --------|  ✓ pathUSD burned
-///    |<-- withdraw ZoneUSD --------|  ✓ ZoneUSD burned
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// pathUSD and a second enabled token both deposit into a zone and withdraw back to L1.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 ---
-    let l1 = L1TestNode::start().await?;
+    // --- Step 1: Start L1 and a zone, funding the user with pathUSD ---
+    let pathusd_amount: u128 = 1_000_000; // 1 pathUSD
+    let (l1, [zone], [user]) = &Network::default().fund(pathusd_amount * 2).start().await?;
 
     // --- Step 2: Create a second TIP-20 token on L1 ---
-    let zone_usd_salt = B256::with_last_byte(0x2a);
-    let l1_zone_usd = l1.create_tip20("ZoneUSD", "zUSD", zone_usd_salt).await?;
-
-    // Mint ZoneUSD to the dev account so we can fund the user
-    let mint_amount: u128 = 100_000_000; // 100 ZoneUSD (6 decimals)
-    l1.mint_tip20(l1_zone_usd, l1.dev_address(), mint_amount)
+    let zoneusd_amount: u128 = 2_000_000; // 2 ZoneUSD
+    let l1_zone_usd = TIP20Setup::create("ZoneUSD", "zUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0x2a))
+        .with_mint(user.address(), U256::from(zoneusd_amount * 2))
+        .apply_rpc(&l1.dev_provider())
         .await?;
 
-    // --- Step 3: Deploy L1 infrastructure and create a zone ---
-    let portal_address = l1.deploy_zone().await?;
-
-    // --- Step 4: Start zone node connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-
-    // --- Step 5: Enable ZoneUSD on the portal ---
+    // --- Step 3: Enable ZoneUSD on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled event from a live block.
-    l1.enable_token_on_portal(portal_address, l1_zone_usd)
-        .await?;
-    let enable_block = l1.provider().get_block_number().await?;
-
-    // Wait for the zone to finalize past the enableToken block
-    zone.wait_for_l2_tempo_finalized(enable_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_token(l1_zone_usd).await?;
 
     // L2 token address is the same as L1 by design (auto-initialized via TokenEnabled event)
     let l2_zone_usd = l1_zone_usd;
 
-    // --- Step 6: Deposit both tokens (user account) ---
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let pathusd_amount: u128 = 1_000_000; // 1 pathUSD
-    let zoneusd_amount: u128 = 2_000_000; // 2 ZoneUSD
-
-    // Fund user with both tokens on L1
-    l1.fund_user(account.address(), pathusd_amount * 2).await?;
-    l1.fund_user_token(l1_zone_usd, account.address(), zoneusd_amount * 2)
-        .await?;
+    // --- Step 4: Deposit both tokens (user account) ---
 
     // Deposit pathUSD
-    let pathusd_minted = account.deposit(pathusd_amount, L1_TIMEOUT, &zone).await?;
+    let pathusd_minted = zone.deposit(user, pathusd_amount).await?;
     assert_eq!(
         pathusd_minted,
         U256::from(pathusd_amount),
@@ -1780,8 +1661,9 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     );
 
     // Deposit ZoneUSD
-    let zoneusd_minted = account
-        .deposit_token(l1_zone_usd, l2_zone_usd, zoneusd_amount, L1_TIMEOUT, &zone)
+    let zoneusd_minted = zone
+        .account(user)
+        .deposit_token(l1_zone_usd, l2_zone_usd, zoneusd_amount, L1_TIMEOUT, zone)
         .await?;
     assert_eq!(
         zoneusd_minted,
@@ -1789,51 +1671,26 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
         "ZoneUSD minted balance should equal deposit amount"
     );
 
-    // --- Step 7: Spawn sequencer and withdraw both tokens ---
-    let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-    let withdrawal_timeout = std::time::Duration::from_secs(60);
+    // --- Step 5: Spawn sequencer and withdraw both tokens ---
+    let _sequencer_handle = zone.spawn_sequencer().await;
 
     // Withdraw pathUSD
     let pathusd_withdrawal: u128 = 500_000; // 0.5 pathUSD
-    let pathusd_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(pathusd_withdrawal).await?;
-
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        pathusd_balance_before,
-        pathusd_withdrawal,
-        withdrawal_timeout,
-    )
-    .await?;
+    zone.withdraw(user, PATH_USD_ADDRESS, pathusd_withdrawal)
+        .await?;
 
     // Withdraw ZoneUSD
     let zoneusd_withdrawal: u128 = 1_000_000; // 1 ZoneUSD
-    let zoneusd_balance_before = l1.balance_of(l1_zone_usd, account.address()).await?;
-    account
-        .withdraw_token(l2_zone_usd, zoneusd_withdrawal)
-        .await?;
+    zone.withdraw(user, l2_zone_usd, zoneusd_withdrawal).await?;
 
-    l1.wait_for_withdrawal_on_l1_token(
-        portal_address,
-        l1_zone_usd,
-        account.address(),
-        zoneusd_balance_before,
-        zoneusd_withdrawal,
-        withdrawal_timeout,
-    )
-    .await?;
-
-    // --- Step 8: Verify L2 balances decreased ---
-    let final_pathusd = zone
-        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
-        .await?;
+    // --- Step 6: Verify L2 balances decreased ---
+    let final_pathusd = zone.balance_of(ZONE_TOKEN_ADDRESS, user.address()).await?;
     assert!(
         final_pathusd < U256::from(pathusd_amount - pathusd_withdrawal),
         "L2 pathUSD balance should decrease by at least the withdrawal amount (got {final_pathusd})"
     );
 
-    let final_zoneusd = zone.balance_of(l2_zone_usd, account.address()).await?;
+    let final_zoneusd = zone.balance_of(l2_zone_usd, user.address()).await?;
     assert!(
         final_zoneusd <= U256::from(zoneusd_amount - zoneusd_withdrawal),
         "L2 ZoneUSD balance should decrease by at least the withdrawal amount (got {final_zoneusd})"
@@ -1842,95 +1699,18 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Full encrypted deposit + withdrawal flow:
-///
-///  1. Start L1 dev node and create a zone through the native ZoneFactory.
-///  2. Generate sequencer encryption key, start zone with sequencer key.
-///  3. Register encryption key on the portal via `setSequencerEncryptionKey`.
-///  4. Fund depositor, call `deposit` on the portal — encrypting
-///     (recipient, memo) to the sequencer's public key. The recipient is a
-///     known key (mnemonic index 2) so we can withdraw later.
-///     The zone processes this automatically: ECIES decrypt → CP proof →
-///     AES-GCM verify → mint to recipient. `deposit_with_memo` waits for
-///     the L2 balance to confirm the full pipeline succeeded.
-///  5. Spawn sequencer tasks, recipient requests withdrawal on L2.
-///  6. Wait for batch submission + withdrawal processing on L1.
-///
-/// ```text
-///  L1                                       Zone L2
-///   │                                         │
-///   │  setSequencerEncryptionKey              │
-///   │                                         │
-///   │  deposit ──────────────────►    │
-///   │                                         │
-///   │               ECIES decrypt             │
-///   │               + CP proof                │
-///   │                   │                    │
-///   │                   ▼                    │
-///   │            advanceTempo                 │
-///   │                   │                    │
-///   │                   ▼                    │
-///   │            CP ✓ + AES decrypt           │
-///   │            → mint to recipient         │
-///   │                                         │
-///   │   ◄──── requestWithdrawal ───── │
-///   │   ◄──── submitBatch ────────  │
-///   │   processWithdrawals                     │
-///   │            → tokens to L1              │
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// An encrypted deposit mints to its hidden recipient, who withdraws back to L1.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // --- Step 1: Start L1 + deploy zone ---
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
+    let (_, [zone], [depositor, recipient]) = &Network::default().fund(2_000_000).start().await?;
 
-    // --- Step 2: Start zone with the key provisioned by deploy_zone ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-
-    // --- Step 3: Encrypted deposit to a recipient we control ---
-    // Use mnemonic index 2 as the recipient so we have keys for withdrawal.
-    let recipient_signer = l1.signer_at(2);
-    let recipient = recipient_signer.address();
-
-    let mut depositor = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let deposit_amount: u128 = 1_000_000; // 1 pathUSD
-
-    l1.fund_user(depositor.address(), deposit_amount).await?;
-
-    // deposit_with_memo waits for `balance >= deposit_amount` on L2, so success
-    // here proves the full ECIES pipeline worked (decrypt → CP verify → AES → mint).
-    depositor
-        .deposit_with_memo(deposit_amount, recipient, B256::ZERO, L1_TIMEOUT, &zone)
+    zone.deposit_to(depositor, recipient.address(), 1_000_000)
         .await?;
 
-    // --- Step 5: Spawn sequencer + withdraw from the recipient's account on L2 ---
-    // Spawn sequencer after deposit to avoid L1 nonce races — the dev signer
-    // is used by both fund_user and the sequencer's batch submitter.
-    let _sequencer_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    let mut recipient_account =
-        ZoneAccount::with_signer(recipient_signer, &l1, &zone, portal_address);
-
-    let withdrawal_amount: u128 = 500_000; // 0.5 pathUSD
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, recipient).await?;
-    recipient_account.withdraw(withdrawal_amount).await?;
-
-    // --- Step 6: Wait for the withdrawal to be fully processed on L1 ---
-    let withdrawal_timeout = std::time::Duration::from_secs(60);
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        recipient,
-        l1_balance_before,
-        withdrawal_amount,
-        withdrawal_timeout,
-    )
-    .await?;
+    let _sequencer = zone.spawn_sequencer().await;
+    zone.withdraw(recipient, PATH_USD_ADDRESS, 500_000).await?;
 
     Ok(())
 }
@@ -1941,30 +1721,18 @@ async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
 async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-
-    let recipient_signer = l1.signer_at(2);
-    let recipient = recipient_signer.address();
-    let mut depositor = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    let (l1, [zone], [depositor, recipient]) = &Network::default().fund(2_000_000).start().await?;
     let initial_deposit = 1_000_000u128;
-    l1.fund_user(depositor.address(), initial_deposit).await?;
-    depositor
-        .deposit_with_memo(initial_deposit, recipient, B256::ZERO, L1_TIMEOUT, &zone)
+    zone.deposit_to(depositor, recipient.address(), initial_deposit)
         .await?;
 
-    let admin_provider = l1.admin_provider();
-    let portal = ZonePortal::new(portal_address, &admin_provider);
+    let portal = ZonePortal::new(zone.portal_address(), l1.admin_provider());
 
     // Finalize a withdrawal into a Zone batch before the pause, so settlement has pre-pause work.
     let initial_withdrawal_batch = portal.withdrawalBatchIndex().call().await?;
     let zone_outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, zone.provider());
     let initial_zone_withdrawal_batch = zone_outbox.lastBatch().call().await?.withdrawalBatchIndex;
-    let mut recipient_account =
-        ZoneAccount::with_signer(recipient_signer, &l1, &zone, portal_address);
-    recipient_account.withdraw(500_000).await?;
+    zone.account(recipient).withdraw(500_000).await?;
     poll_until(
         L1_TIMEOUT,
         Duration::from_millis(250),
@@ -1986,7 +1754,8 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
         .block_number
         .ok_or_else(|| eyre::eyre!("pause receipt has no block number"))?;
 
-    let _ = depositor
+    let _ = zone
+        .account(depositor)
         .simulate_deposit(initial_deposit, depositor.address(), depositor.address())
         .await
         .expect_err("deposit simulation should revert while the portal is paused");
@@ -2006,7 +1775,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
     let zone_provider = zone.provider();
     // A block already in flight may finish. Require the head to remain unchanged for a full
     // second, which spans multiple Tempo blocks in the dev chain.
-    let frozen_head = wait_for_stable_zone_head(&zone).await?;
+    let frozen_head = wait_for_stable_zone_head(zone).await?;
     let frozen_anchor = zone.tempo_block_number().await?;
     assert!(
         frozen_anchor < pause_block,
@@ -2015,7 +1784,7 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
 
     // Batches finalized before the pause still settle, but the withdrawal stays queued on L1.
     let withdrawal_start_block = l1.provider().get_block_number().await?;
-    let sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let sequencer = zone.spawn_sequencer().await;
     poll_until(
         L1_TIMEOUT,
         Duration::from_millis(250),
@@ -2045,8 +1814,9 @@ async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<
 
     // Ingestion keeps following finalized L1 within its lookahead window while the Zone anchor
     // and block height remain frozen, so governance landing during the pause is applied.
-    let token = l1
-        .create_tip20("PausedUSD", "pUSD", B256::with_last_byte(0x7f))
+    let token = TIP20Setup::create("PausedUSD", "pUSD", l1.dev_address())
+        .with_salt(B256::with_last_byte(0x7f))
+        .apply_rpc(&l1.dev_provider())
         .await?;
     let governance_receipt = portal.enableToken(token).mined().await?;
     eyre::ensure!(
@@ -2119,7 +1889,7 @@ async fn test_global_pause_snapshot_stops_startup_until_resume() -> eyre::Result
     let pause_receipt = portal.pause().mined().await?;
     eyre::ensure!(pause_receipt.status(), "global pause transaction failed");
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     eyre::ensure!(
         zone.l1_block_tracker().portal_paused(),
         "startup did not initialize the finalized portal pause snapshot"
@@ -2162,42 +1932,35 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
 
-    // --- Create policy infrastructure on L1 ---
-    let policy_id = l1.create_blacklist_policy().await?;
-
-    // Assign the blacklist to pathUSD
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
+    // --- Blacklist the user account through pathUSD's transfer policy ---
+    let blacklisted_user = l1.user_signer().address();
+    let policy_id = l1
+        .set_path_usd_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_user]),
+        )
         .await?;
 
-    // Blacklist the user account
-    let blacklisted_user = l1.user_signer().address();
-    l1.blacklist_address(policy_id, blacklisted_user).await?;
-
     // Verify policy state on L1
-    let auth_result = l1.is_authorized(policy_id, blacklisted_user).await?;
     assert!(
-        !auth_result,
+        !l1.is_authorized(policy_id, blacklisted_user).await?,
         "blacklisted user should NOT be authorized on L1"
     );
 
     // Non-blacklisted address should be authorized
-    let clean_user = l1.signer_at(3).address();
-    let clean_auth = l1.is_authorized(policy_id, clean_user).await?;
+    let [clean_signer] = signers();
     assert!(
-        clean_auth,
+        l1.is_authorized(policy_id, clean_signer.address()).await?,
         "non-blacklisted user should be authorized on L1"
     );
 
     // --- Start zone and verify it advances past the policy blocks ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
-    let membership_block = l1
-        .set_allowed_account_on_portal(portal_address, clean_user, true)
+    zone.set_allowed_account(clean_signer.address(), true)
         .await?;
-    zone.wait_for_l2_tempo_finalized(membership_block, L1_TIMEOUT)
+    zone.assert_allowed_account(clean_signer.address(), true)
         .await?;
-    zone.assert_allowed_account(clean_user, true).await?;
 
     // Zone should have produced blocks — policy changes on L1 don't break zone
     let zone_block = zone.provider().get_block_number().await?;
@@ -2207,12 +1970,12 @@ async fn test_l1_policy_operations_and_zone_advancement() -> eyre::Result<()> {
     );
 
     // Deposit to a non-blacklisted user should still work.
-    // Use signer_at(3) — the same `clean_user` verified above — because the default
+    // Use `clean_signer`, verified above, because the default
     // user_signer (index 1) was blacklisted earlier in this test.
-    let clean_signer = l1.signer_at(3);
     let mut account = ZoneAccount::with_signer(clean_signer, &l1, &zone, portal_address);
     let deposit_amount: u128 = 1_000_000;
-    l1.fund_user(account.address(), deposit_amount).await?;
+    // The fresh key holds nothing on L1, so fund its gas too.
+    l1.fund_user(account.address(), deposit_amount * 2).await?;
     let minted = account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
     assert_eq!(
         minted,
@@ -2232,11 +1995,11 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
+    let policy_id = l1
+        .set_path_usd_transfer_policy(TIP403Setup::blacklist(l1.dev_address()))
         .await?;
 
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // Keep the recipient authorized on Tempo so the portal accepts and escrows
@@ -2249,7 +2012,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
         policy_block,
         PATH_USD_ADDRESS,
         policy_id,
-    );
+    )?;
     let blocked_members = [(rejected_recipient, true)];
     seed_raw_tip403_policy(
         zone.l1_state_cache(),
@@ -2343,10 +2106,14 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
 
     let l1 = L1TestNode::start().await?;
     let portal_address = l1.deploy_zone().await?;
-    l1.set_access_mode_on_portal(portal_address, false).await?;
+    // The zone isn't launched yet, so open the portal directly.
+    let receipt = ZonePortal::new(portal_address, l1.admin_provider())
+        .setAccessMode(false)
+        .mined()
+        .await?;
+    assert!(receipt.status(), "setAccessMode reverted");
 
-    let listed_signer = l1.signer_at(3);
-    let unlisted_signer = l1.signer_at(4);
+    let [listed_signer, unlisted_signer] = signers();
     let datadir = tempfile::tempdir()?;
     // This test changes the list in process, so no admin signs RPC writes.
     let allowlist = DepositAllowlist::load(
@@ -2357,19 +2124,18 @@ async fn test_deposit_allowlist_bounces_unlisted_senders() -> eyre::Result<()> {
         },
     )?;
 
-    let zone = ZoneTestNode::start_from_l1_with_deposit_allowlist(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        allowlist.clone(),
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        deposit_allowlist: Some(allowlist.clone()),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     let mut listed = ZoneAccount::with_signer(listed_signer, &l1, &zone, portal_address);
     let mut unlisted = ZoneAccount::with_signer(unlisted_signer, &l1, &zone, portal_address);
-    l1.fund_user(listed.address(), 2 * AMOUNT).await?;
-    l1.fund_user(unlisted.address(), 3 * AMOUNT).await?;
+    // Fresh keys hold nothing on L1, so each gets one extra AMOUNT for gas.
+    l1.fund_user(listed.address(), 3 * AMOUNT).await?;
+    l1.fund_user(unlisted.address(), 4 * AMOUNT).await?;
     // Start the sequencer only after L1 setup so its shared signer cannot race the funding.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
@@ -2518,12 +2284,18 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
 
     const AMOUNT: u128 = 1_000_000;
 
-    let first_signer = crate::utils::signer_at(3);
-    let second_signer = crate::utils::signer_at(4);
+    let [first_signer, second_signer] = signers();
     let (first, second) = (first_signer.address(), second_signer.address());
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[first], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
-    let (admin, zone_chain_id) = (deposit_allowlist_admin(), fixture.zone_chain_id);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![first],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
+    let (admin, zone_chain_id) = (deposit_allowlist_admin(), cluster.zone_chain_id);
 
     // The relay fails until the RPC node has connected to every sequencer.
     let listed = poll_until(
@@ -2608,8 +2380,9 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     let leader = &cluster.nodes[0];
     let mut removed = ZoneAccount::with_signer(first_signer, l1, leader, cluster.portal_address);
     let mut added = ZoneAccount::with_signer(second_signer, l1, leader, cluster.portal_address);
-    l1.fund_user(removed.address(), AMOUNT).await?;
-    l1.fund_user(added.address(), AMOUNT).await?;
+    // Fresh keys hold nothing on L1, so each gets a second AMOUNT for gas.
+    l1.fund_user(removed.address(), 2 * AMOUNT).await?;
+    l1.fund_user(added.address(), 2 * AMOUNT).await?;
 
     assert_eq!(
         added.deposit(AMOUNT, L1_TIMEOUT, leader).await?,
@@ -2651,12 +2424,20 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
 async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let added = crate::utils::signer_at(4).address();
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 2, &[], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let [added] = actors();
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        active_nodes: 2,
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let write = sign_set(
         &deposit_allowlist_admin(),
-        fixture.zone_chain_id,
+        cluster.zone_chain_id,
         &[added],
         true,
         1,
@@ -2734,28 +2515,34 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     const AMOUNT: u128 = 1_000_000;
     const TRANSFER_GAS: u64 = 500_000;
 
-    let alice_signer = crate::utils::signer_at(3);
-    let (alice, bob, carol) = (
-        alice_signer.address(),
-        crate::utils::signer_at(4).address(),
-        crate::utils::signer_at(5).address(),
-    );
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], true).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let [alice] = signers();
+    let [bob, carol] = actors();
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![alice.address(), bob],
+            rpc_relays_writes: true,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(cluster.portal_address, true)
-        .await?;
-    let mut account =
-        ZoneAccount::with_signer(alice_signer.clone(), l1, leader, cluster.portal_address);
-    l1.fund_user(alice, AMOUNT).await?;
+    let opt_in_block = leader.enable_transfers(true).await?;
+    let mut account = ZoneAccount::with_signer(alice.clone(), l1, leader, cluster.portal_address);
+    // Alice is a fresh key, so fund her L1 gas too.
+    l1.fund_user(alice.address(), 2 * AMOUNT).await?;
     account.deposit(AMOUNT, L1_TIMEOUT, leader).await?;
     for node in &cluster.nodes {
         node.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
             .await?;
-        node.wait_for_balance(ZONE_TOKEN_ADDRESS, alice, U256::from(AMOUNT), L1_TIMEOUT)
-            .await?;
+        node.wait_for_balance(
+            ZONE_TOKEN_ADDRESS,
+            alice.address(),
+            U256::from(AMOUNT),
+            L1_TIMEOUT,
+        )
+        .await?;
     }
 
     // Every sequencer can be leader, so each one sends Alice's transactions straight to its pool.
@@ -2766,7 +2553,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
             ITIP20::new(
                 ZONE_TOKEN_ADDRESS,
                 ProviderBuilder::new()
-                    .wallet(alice_signer.clone())
+                    .wallet(alice.clone())
                     .connect_http(node.http_url().clone())
                     .erased(),
             )
@@ -2792,7 +2579,10 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
     // Sequencers also share pool transactions, so one may already hold what is sent to it.
     let already_known =
         |error: &alloy::contract::Error| error.to_string().contains("already known");
-    let nonce = leader.provider().get_transaction_count(alice).await?;
+    let nonce = leader
+        .provider()
+        .get_transaction_count(alice.address())
+        .await?;
     let mut dropped = None;
     for token in &tokens {
         match token
@@ -2812,7 +2602,7 @@ async fn test_transfer_allowlist_restricts_both_parties() -> eyre::Result<()> {
         rpc,
         &sign_set(
             &deposit_allowlist_admin(),
-            fixture.zone_chain_id,
+            cluster.zone_chain_id,
             &[bob],
             false,
             1,
@@ -2901,33 +2691,46 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
     const AMOUNT: u128 = 1_000_000;
     const TRANSFER_GAS: u64 = 500_000;
 
-    let alice_signer = crate::utils::signer_at(3);
-    let (alice, bob) = (alice_signer.address(), crate::utils::signer_at(4).address());
+    let [alice] = signers();
+    let [bob] = actors();
     // Without the admin the RPC node relays no writes but still mirrors the sequencers' list.
-    let fixture = start_real_p2p_cluster_with_deposit_allowlist(4, 3, &[alice, bob], false).await?;
-    let (cluster, rpc) = (&fixture.cluster, &fixture.rpc_node);
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        deposit_allowlist: Some(AllowlistSetup {
+            seed: vec![alice.address(), bob],
+            rpc_relays_writes: false,
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let rpc = cluster.rpc_node();
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
 
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(cluster.portal_address, true)
-        .await?;
-    let mut account =
-        ZoneAccount::with_signer(alice_signer.clone(), l1, leader, cluster.portal_address);
-    l1.fund_user(alice, AMOUNT).await?;
+    let opt_in_block = leader.enable_transfers(true).await?;
+    let mut account = ZoneAccount::with_signer(alice.clone(), l1, leader, cluster.portal_address);
+    // Alice is a fresh key, so fund her L1 gas too.
+    l1.fund_user(alice.address(), 2 * AMOUNT).await?;
     account.deposit(AMOUNT, L1_TIMEOUT, leader).await?;
     rpc.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
         .await?;
-    rpc.wait_for_balance(ZONE_TOKEN_ADDRESS, alice, U256::from(AMOUNT), L1_TIMEOUT)
-        .await?;
+    rpc.wait_for_balance(
+        ZONE_TOKEN_ADDRESS,
+        alice.address(),
+        U256::from(AMOUNT),
+        L1_TIMEOUT,
+    )
+    .await?;
 
     let token = ITIP20::new(
         ZONE_TOKEN_ADDRESS,
         ProviderBuilder::new()
-            .wallet(alice_signer)
+            .wallet(alice.clone())
             .connect_http(rpc.http_url().clone())
             .erased(),
     );
-    let nonce = rpc.provider().get_transaction_count(alice).await?;
+    let nonce = rpc
+        .provider()
+        .get_transaction_count(alice.address())
+        .await?;
     let receipt = token
         .transfer(bob, U256::ONE)
         .nonce(nonce)
@@ -2952,7 +2755,7 @@ async fn test_rpc_node_mirrors_transfer_allowlist() -> eyre::Result<()> {
         .tx_hash();
     let remove_bob = sign_set(
         &deposit_allowlist_admin(),
-        fixture.zone_chain_id,
+        cluster.zone_chain_id,
         &[bob],
         false,
         1,
@@ -3016,12 +2819,10 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     l1.set_sequencer_encryption_key(portal_address, &current_key)
         .await?;
 
-    let zone = ZoneTestNode::start_from_l1_with_decryption_keys(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        vec![old_key.clone()],
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        additional_decryption_keys: vec![old_key.clone()],
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
@@ -3043,7 +2844,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
         .mined()
         .await?;
 
-    let current_recipient = l1.signer_at(2).address();
+    let [current_recipient, historical_recipient] = actors();
     let current_entry = portal.sequencerEncryptionKey().call().await?;
     let current = ecies::encrypt_deposit(
         &current_entry.x,
@@ -3073,7 +2874,6 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
         .await?;
     eyre::ensure!(current_receipt.status(), "current-key deposit was rejected");
 
-    let historical_recipient = l1.signer_at(3).address();
     let old_scalar: Scalar = *old_key.to_nonzero_scalar();
     let old_point = AffinePoint::from(ProjectivePoint::GENERATOR * old_scalar);
     let (old_x, old_y_parity) = ecies::compressed_x_and_parity(&old_point);
@@ -3145,12 +2945,11 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     let portal_address = l1.deploy_zone().await?;
 
     // --- Step 2: Create blacklist policy and blacklist the intended recipient ---
-    let policy_id = l1.create_blacklist_policy().await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, policy_id)
-        .await?;
-
-    let blacklisted_recipient = l1.signer_at(2).address();
-    l1.blacklist_address(policy_id, blacklisted_recipient)
+    let [blacklisted_recipient] = actors();
+    let policy_id = l1
+        .set_path_usd_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([blacklisted_recipient]),
+        )
         .await?;
 
     // Verify on L1
@@ -3160,7 +2959,7 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     );
 
     // --- Step 3: Start zone with sequencer key ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // --- Step 4: Make an encrypted deposit targeting the blacklisted recipient ---
@@ -3253,11 +3052,19 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     let alice_signer = l1.user_signer();
     let alice = alice_signer.address();
 
-    let sender_policy_id = l1.create_blacklist_policy().await?;
-    let compound_policy_id = l1.create_compound_policy(sender_policy_id, 1, 1).await?;
-    l1.change_transfer_policy_id(PATH_USD_ADDRESS, compound_policy_id)
+    // pathUSD briefly uses the sender blacklist alone, which mints its policy ID.
+    let sender_policy_id = l1
+        .set_path_usd_transfer_policy(
+            TIP403Setup::blacklist(l1.dev_address()).with_members([alice]),
+        )
         .await?;
-    l1.blacklist_address(sender_policy_id, alice).await?;
+    let compound_policy_id = l1
+        .set_path_usd_transfer_policy(TIP403Setup::compound(
+            sender_policy_id,
+            ALLOW_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
+        ))
+        .await?;
 
     // Verify on L1: Alice is NOT authorized as sender
     {
@@ -3273,15 +3080,11 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     }
 
     // --- Step 3: Start zone connected to L1 ---
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 
     // Opt the zone into transfers so the rejection below comes from the sender blacklist.
-    let opt_in_block = l1
-        .set_transfers_enabled_on_portal(portal_address, true)
-        .await?;
-    zone.wait_for_l2_tempo_finalized(opt_in_block, L1_TIMEOUT)
-        .await?;
+    zone.enable_transfers(true).await?;
 
     // --- Step 4: Deposit to Alice via the admin account ---
     // Alice is blacklisted as a sender, so she can't transfer pathUSD on L1

@@ -37,7 +37,7 @@ use tempo_contracts::{
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    tip20::ITIP20 as PrecompileTip20, tip403_registry::ALLOW_ALL_POLICY_ID,
+    test_util::TIP20Setup, tip20::ITIP20 as PrecompileTip20, tip403_registry::ALLOW_ALL_POLICY_ID,
 };
 use tempo_primitives::{
     TempoTxEnvelope,
@@ -1428,15 +1428,12 @@ async fn test_zone_get_zone_info_returns_all_enabled_tokens() -> eyre::Result<()
 
     let ctx = start_zone_with_redacted_rpc_l1().await?;
     let user_signer = PrivateKeySigner::random();
-    let alpha_salt = B256::with_last_byte(0x44);
-    let alpha_token = ctx
-        .l1()
-        .create_tip20("AlphaUSD", "aUSD", alpha_salt)
+    let alpha_token = TIP20Setup::create("AlphaUSD", "aUSD", ctx.l1().dev_address())
+        .with_salt(B256::with_last_byte(0x44))
+        .apply_rpc(&ctx.l1().dev_provider())
         .await?;
 
-    ctx.l1()
-        .enable_token_on_portal(ctx.portal_address(), alpha_token)
-        .await?;
+    ctx.zone.enable_token(alpha_token).await?;
 
     let zone_info = ctx
         .call_as_user("zone_getZoneInfo", serde_json::json!([]), &user_signer)

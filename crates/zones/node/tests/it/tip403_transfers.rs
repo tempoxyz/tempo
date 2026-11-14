@@ -21,8 +21,9 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 
 use crate::utils::{
     DEFAULT_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, approve_outbox, l1_dev_signer,
-    local_dev_zone_account, signer_at, start_local_zone_with_fixture,
+    local_dev_zone_account, start_local_zone_with_fixture,
 };
+use tempo_primitives::test_utils::signers;
 
 /// Deposit pathUSD to the dev account, then transfer a portion to Bob.
 ///
@@ -40,16 +41,9 @@ async fn test_deposit_then_transfer() -> eyre::Result<()> {
     let deposit_amount: u128 = 1_000_000;
 
     // Deposit pathUSD to the dev account
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
 
     // Dev transfers 400,000 to Bob.
     // Submit the tx then inject an L1 block so the zone produces a block including it.
@@ -134,16 +128,9 @@ async fn test_deposit_then_request_withdrawal() -> eyre::Result<()> {
         .and_then(|value| value.checked_add(gas_buffer))
         .expect("test deposit amount should not overflow");
 
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
 
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
@@ -205,37 +192,23 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let alice_signer = l1_dev_signer();
     let alice = alice_signer.address();
 
-    // Bob = mnemonic index 1
-    let bob_signer = signer_at(1);
-    let bob = bob_signer.address();
-
-    // Charlie = mnemonic index 2
-    let charlie_signer = signer_at(2);
-    let charlie = charlie_signer.address();
+    let [bob, charlie] = signers();
 
     let deposit_amount: u128 = 2_000_000;
 
     // Deposit to Alice
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        alice,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture.deposit(&zone, alice, alice, deposit_amount).await?;
 
     // Alice transfers 1,000,000 to Bob
     let alice_to_bob: u128 = 1_000_000;
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_signer)
         .connect_http(zone.http_url().clone());
-    fixture.seed_transfer_recipient(bob)?;
+    fixture.seed_transfer_recipient(bob.address())?;
     let tip20_alice = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
 
     let pending = tip20_alice
-        .transfer(bob, U256::from(alice_to_bob))
+        .transfer(bob.address(), U256::from(alice_to_bob))
         .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
@@ -249,7 +222,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Wait for Bob to receive funds
     zone.wait_for_balance(
         PATH_USD_ADDRESS,
-        bob,
+        bob.address(),
         U256::from(alice_to_bob),
         DEFAULT_TIMEOUT,
     )
@@ -258,13 +231,13 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Bob transfers 500,000 to Charlie
     let bob_to_charlie: u128 = 500_000;
     let bob_provider = ProviderBuilder::new()
-        .wallet(bob_signer)
+        .wallet(bob.clone())
         .connect_http(zone.http_url().clone());
-    fixture.seed_transfer_recipient(charlie)?;
+    fixture.seed_transfer_recipient(charlie.address())?;
     let tip20_bob = ITIP20::new(PATH_USD_ADDRESS, &bob_provider);
 
     let pending = tip20_bob
-        .transfer(charlie, U256::from(bob_to_charlie))
+        .transfer(charlie.address(), U256::from(bob_to_charlie))
         .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
@@ -278,7 +251,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Wait for Charlie to receive funds
     zone.wait_for_balance(
         PATH_USD_ADDRESS,
-        charlie,
+        charlie.address(),
         U256::from(bob_to_charlie),
         DEFAULT_TIMEOUT,
     )
@@ -298,7 +271,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
         "Alice balance {alice_balance} too low"
     );
 
-    let bob_balance = zone.balance_of(PATH_USD_ADDRESS, bob).await?;
+    let bob_balance = zone.balance_of(PATH_USD_ADDRESS, bob.address()).await?;
     let bob_expected = alice_to_bob - bob_to_charlie;
     assert!(
         bob_balance <= U256::from(bob_expected),
@@ -309,7 +282,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
         "Bob balance {bob_balance} too low"
     );
 
-    let charlie_balance = zone.balance_of(PATH_USD_ADDRESS, charlie).await?;
+    let charlie_balance = zone.balance_of(PATH_USD_ADDRESS, charlie.address()).await?;
     assert_eq!(
         charlie_balance,
         U256::from(bob_to_charlie),
@@ -333,15 +306,9 @@ async fn test_transfer_emits_events() -> eyre::Result<()> {
     let transfer_amount: u128 = 250_000;
 
     // Deposit to dev
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
 
     // Transfer to Bob. Seed its receive-policy baseline before pool validation.
     fixture.seed_transfer_recipient(bob)?;
@@ -400,15 +367,9 @@ async fn test_transfer_with_memo() -> eyre::Result<()> {
     let memo = B256::with_last_byte(0x42);
 
     // Deposit to dev
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, dev_address, dev_address, deposit_amount);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        dev_address,
-        U256::from(deposit_amount),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(&zone, dev_address, dev_address, deposit_amount)
+        .await?;
 
     // Transfer with memo. Seed its receive-policy baseline before pool validation.
     fixture.seed_transfer_recipient(bob)?;

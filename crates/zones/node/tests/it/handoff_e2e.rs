@@ -26,7 +26,7 @@ use crate::utils::{
 /// barrier's tip-evidence round trip, and the generation swap.
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a fenced or demoted node is watched to confirm it produces nothing.
-const QUIESCENCE: Duration = Duration::from_secs(3);
+const QUIESCENCE: Duration = Duration::from_secs(1);
 /// Live-propagation ceiling during the observation→activation window: well below the
 /// follower's 30-second inactivity backfill probe, so a routing regression that degrades
 /// the window to backfill-paced replication fails fast instead of passing slowly.
