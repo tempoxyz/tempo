@@ -195,6 +195,24 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.sdec(address, key, delta))
     }
 
+    /// Returns whether the provider defers storage writes. See
+    /// [`PrecompileStorageProvider::defers_storage_writes`].
+    pub fn defers_storage_writes(&self) -> bool {
+        Self::with_storage(|s| s.defers_storage_writes())
+    }
+
+    /// Adds `delta` to a slot without reading it. See
+    /// [`PrecompileStorageProvider::sadd_blind`].
+    pub fn sadd_blind(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
+        Self::try_with_storage(|s| s.sadd_blind(address, key, delta))
+    }
+
+    /// Defers a storage operation to the end of the transaction. See
+    /// [`PrecompileStorageProvider::defer_storage_op`].
+    pub fn defer_storage_op(&mut self, op: evm2::evm::DeferredStorageOp) -> Result<bool> {
+        Self::try_with_storage(|s| s.defer_storage_op(op))
+    }
+
     /// Performs a TSTORE operation (transient storage write).
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))

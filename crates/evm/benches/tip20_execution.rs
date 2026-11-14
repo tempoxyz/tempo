@@ -4,7 +4,7 @@
 //! `TEMPO_TIP20_EXEC_TXS` to a newline-delimited raw 2718 txgen output file to replay exact
 //! txgen transactions against the in-memory fixed-cache execution path.
 
-mod common;
+pub(crate) mod common;
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
@@ -42,13 +42,13 @@ const DEFAULT_TX_COUNT: usize = 4_096;
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone)]
-struct Workload {
-    transactions: Vec<Recovered<TempoTxEnvelope>>,
-    participants: Vec<Address>,
-    block_timestamp: u64,
+pub(crate) struct Workload {
+    pub(crate) transactions: Vec<Recovered<TempoTxEnvelope>>,
+    pub(crate) participants: Vec<Address>,
+    pub(crate) block_timestamp: u64,
 }
 
-fn seed_in_memory_cache_db(
+pub(crate) fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     with_policies: bool,
@@ -206,7 +206,7 @@ fn load_txgen_workload(path: &Path) -> Workload {
     }
 }
 
-fn workload() -> Workload {
+pub(crate) fn workload() -> Workload {
     if let Ok(path) = std::env::var("TEMPO_TIP20_EXEC_TXS") {
         load_txgen_workload(Path::new(&path))
     } else {

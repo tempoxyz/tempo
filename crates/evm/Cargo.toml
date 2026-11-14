@@ -107,5 +107,9 @@ name = "tip20_execution"
 harness = false
 
 [[bench]]
+name = "tip20_parallel"
+harness = false
+
+[[bench]]
 name = "dex_execution"
 harness = false

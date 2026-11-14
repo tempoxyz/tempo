@@ -29,7 +29,9 @@ pub use action_replay::{
     StorageActionReplayOutcome, StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    ExecutorState, ParallelExecution, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+};
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
@@ -83,6 +85,7 @@ pub struct TempoEvmConfig {
     chain_spec: Arc<TempoChainSpec>,
     evm_factory: TempoEvmFactory,
     sender_recovery_cache: Option<SenderRecoveryCache>,
+    parallel_execution: Option<ParallelExecution>,
     /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
@@ -109,6 +112,7 @@ impl TempoEvmConfig {
         Self {
             evm_factory: TempoEvmFactory::default(),
             sender_recovery_cache: None,
+            parallel_execution: None,
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
@@ -117,6 +121,13 @@ impl TempoEvmConfig {
     /// Uses the provided sender recovery cache.
     pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
         self.sender_recovery_cache = Some(cache);
+        self
+    }
+
+    /// Executes blocks passed to [`TempoBlockExecutor::execute_block_transactions`] in parallel.
+    /// Off by default.
+    pub fn with_parallel_execution(mut self, parallel: Option<ParallelExecution>) -> Self {
+        self.parallel_execution = parallel;
         self
     }
 
@@ -200,7 +211,9 @@ impl BlockExecutorFactory for TempoEvmConfig {
     where
         Self: 'a,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
+        executor.set_parallel_execution(self.parallel_execution);
+        executor
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {

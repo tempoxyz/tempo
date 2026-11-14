@@ -11,7 +11,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256};
@@ -139,6 +139,45 @@ impl NonceManager {
         let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        // 3-6. The ring position depends on every earlier expiring-nonce transaction of the block,
+        // and the insert costs fixed gas: insert at the transaction's end, so transactions do not
+        // conflict on the pointer.
+        if crate::storage::StorageCtx.defers_storage_writes() {
+            let op = evm2::evm::DeferredStorageOp::new(move |access| {
+                let set_full = || {
+                    let error = TempoPrecompileError::from(NonceError::expiring_nonce_set_full());
+                    evm2::DatabaseError::new(error, false)
+                };
+                let manager = Self::new();
+                let address = manager.address;
+                let ptr_slot = manager.expiring_nonce_ring_ptr.slot();
+                let ptr = access.sload(&address, ptr_slot)?.saturating_to::<u32>();
+                let ring_slot = manager.expiring_nonce_ring[ptr].slot();
+                let old_hash = access.sload(&address, ring_slot)?;
+                if !old_hash.is_zero() {
+                    let old_seen = manager.expiring_nonce_seen[B256::from(old_hash)].slot();
+                    let old_expiry = access.sload(&address, old_seen)?;
+                    if !old_expiry.is_zero() && old_expiry > U256::from(now) {
+                        // The block executes again sequentially, which reports the error.
+                        return Err(set_full());
+                    }
+                    access.sstore(&address, old_seen, U256::ZERO)?;
+                }
+                access.sstore(
+                    &address,
+                    ring_slot,
+                    U256::from_be_bytes(expiring_nonce_hash.0),
+                )?;
+                let seen = manager.expiring_nonce_seen[expiring_nonce_hash].slot();
+                access.sstore(&address, seen, U256::from(valid_before))?;
+                let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
+                access.sstore(&address, ptr_slot, U256::from(next))
+            });
+            if crate::storage::StorageCtx.defer_storage_op(op)? {
+                return Ok(());
+            }
         }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
