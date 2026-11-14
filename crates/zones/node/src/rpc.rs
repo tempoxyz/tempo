@@ -876,6 +876,15 @@ where
                         y_parity: key.y_parity,
                     })
                     .collect(),
+                unbound: status
+                    .unbound
+                    .into_iter()
+                    .map(|key| BoundDecryptionKey {
+                        key_index: key.key_index,
+                        x: key.x,
+                        y_parity: key.y_parity,
+                    })
+                    .collect(),
             }
         }),
         local: Some(LocalSequencerInfo {

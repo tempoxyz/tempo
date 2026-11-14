@@ -1701,6 +1701,7 @@ address = "node-c.example:9200"
                     })
                     .collect(),
                 bound: Vec::new(),
+                unbound: Vec::new(),
             });
             test_node_snapshot(name, info)
         };
