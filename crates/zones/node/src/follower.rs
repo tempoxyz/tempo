@@ -703,7 +703,7 @@ where
             self.stop
                 .run_until_cancelled(async {
                     match peer_block.block.witness {
-                        Some(proof) => collector.persist_received(proof).await,
+                        Some(proof) => collector.persist_received(proof, timestamp).await,
                         None if collector.witness_mandatory(timestamp) => collector
                             .collect_and_persist(block_number, hash)
                             .await
