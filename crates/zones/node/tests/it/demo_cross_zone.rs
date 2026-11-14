@@ -40,9 +40,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     let l1 = net.l1();
     let [zone_a, zone_b] = net.zones();
     let [alice, bob] = net.accounts();
-    let bob_address = bob.address();
     let [refund_burner] = actors();
-    let (portal_a, portal_b) = (zone_a.portal_address(), zone_b.portal_address());
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;
     zone_b.assert_access_enforced(false).await?;
@@ -58,7 +56,7 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     let _seq_b = zone_b.spawn_sequencer().await;
 
     // Verify Bob starts with zero on zone_b
-    let bob_before = zone_b.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
+    let bob_before = zone_b.balance_of(ZONE_TOKEN_ADDRESS, bob.address()).await?;
     assert_eq!(
         bob_before,
         U256::ZERO,
@@ -73,16 +71,16 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
         l1,
         cross_amount,
         router,
-        portal_b,
+        zone_b.portal_address(),
         PATH_USD_ADDRESS,
-        bob_address,   // recipient on zone_b is Bob
+        bob.address(), // recipient on zone_b is Bob
         refund_burner, // Tempo refund target if Zone B later bounces the deposit
     )
     .await?;
     zone_a.account(alice).withdraw_with(args).await?;
     let callback_succeeded = l1
         .wait_for_withdrawal_processed_status(
-            portal_a,
+            zone_a.portal_address(),
             router,
             PATH_USD_ADDRESS,
             cross_amount,
@@ -96,13 +94,13 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     zone_b
         .wait_for_balance(
             ZONE_TOKEN_ADDRESS,
-            bob_address,
+            bob.address(),
             U256::from(cross_amount),
             cross_timeout,
         )
         .await?;
 
-    let bob_final = zone_b.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
+    let bob_final = zone_b.balance_of(ZONE_TOKEN_ADDRESS, bob.address()).await?;
     assert_eq!(
         bob_final,
         U256::from(cross_amount),

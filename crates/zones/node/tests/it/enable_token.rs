@@ -231,7 +231,6 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     let l1 = net.l1();
     let [zone] = net.zones();
     let [user] = net.accounts();
-    let portal_address = zone.portal_address();
 
     // --- Step 2: Create AlphaUSD on L1 ---
     // --- Step 3: Mint AlphaUSD to the user ---
@@ -246,7 +245,7 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled event from a live block (events in blocks <= genesis are not
     // backfilled).
-    l1.enable_token_on_portal(portal_address, l1_alpha_usd)
+    l1.enable_token_on_portal(zone.portal_address(), l1_alpha_usd)
         .await?;
     let enable_block = l1.provider().get_block_number().await?;
 

@@ -102,7 +102,6 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     let l1 = net.l1();
     let [zone] = net.zones();
     let [user] = net.accounts();
-    let portal_address = zone.portal_address();
     let deposit_amount: u128 = 5_000_000;
     zone.deposit(user, deposit_amount).await?;
 
@@ -112,21 +111,23 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
         std::time::Duration::from_millis(200),
         "at least one BatchSubmitted",
         || async move {
-            let count = batch_submitted_count(l1, portal_address).await?;
+            let count = batch_submitted_count(l1, zone.portal_address()).await?;
             if count > 0 { Ok(Some(count)) } else { Ok(None) }
         },
     )
     .await?;
     assert!(
-        !portal_block_hash(l1, portal_address).await?.is_zero(),
+        !portal_block_hash(l1, zone.portal_address())
+            .await?
+            .is_zero(),
         "portal blockHash should be non-zero after first batch"
     );
 
     // `None` restarts without a withdrawal; each later cycle withdraws after the restart.
     let withdrawals = [None, Some(200_000u128), Some(300_000), Some(400_000)];
     for withdrawal in withdrawals {
-        let hash_before = portal_block_hash(l1, portal_address).await?;
-        let batches_before = batch_submitted_count(l1, portal_address).await?;
+        let hash_before = portal_block_hash(l1, zone.portal_address()).await?;
+        let batches_before = batch_submitted_count(l1, zone.portal_address()).await?;
 
         abort_task(seq.monitor_handle).await?;
         abort_task(seq.withdrawal_handle).await?;
@@ -143,19 +144,19 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
             std::time::Duration::from_millis(200),
             "new batches should be submitted after restart",
             || async move {
-                let count = batch_submitted_count(l1, portal_address).await?;
+                let count = batch_submitted_count(l1, zone.portal_address()).await?;
                 Ok((count > batches_before).then_some(()))
             },
         )
         .await?;
         assert_ne!(
             hash_before,
-            portal_block_hash(l1, portal_address).await?,
+            portal_block_hash(l1, zone.portal_address()).await?,
             "portal blockHash should advance after restart (withdrawal: {withdrawal:?})"
         );
     }
 
-    let total_batches = batch_submitted_count(l1, portal_address).await?;
+    let total_batches = batch_submitted_count(l1, zone.portal_address()).await?;
     assert!(
         total_batches >= 3,
         "should have at least 3 batches across the restart cycles (got {total_batches})"
@@ -191,7 +192,6 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     let l1 = net.l1();
     let [zone] = net.zones();
     let [user] = net.accounts();
-    let portal_address = zone.portal_address();
     let mut account = zone.account(user);
     zone.deposit(user, 3_000_000).await?;
 
@@ -215,13 +215,13 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
         std::time::Duration::from_millis(200),
         "portal withdrawal queue tail > 0",
         || async move {
-            let (_, tail) = portal_queue_state(l1, portal_address).await?;
+            let (_, tail) = portal_queue_state(l1, zone.portal_address()).await?;
             if tail > 0 { Ok(Some(tail)) } else { Ok(None) }
         },
     )
     .await?;
 
-    let (head_before, tail_before) = portal_queue_state(l1, portal_address).await?;
+    let (head_before, tail_before) = portal_queue_state(l1, zone.portal_address()).await?;
     assert!(
         tail_before > head_before,
         "expected pending withdrawal slot: tail={tail_before} head={head_before}"
@@ -250,7 +250,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
                         "restarted withdrawal processor exited before processing the pending withdrawal"
                     );
                 }
-                let (head, _) = portal_queue_state(l1, portal_address).await?;
+                let (head, _) = portal_queue_state(l1, zone.portal_address()).await?;
                 if head >= tail_before {
                     Ok(Some(head))
                 } else {
@@ -265,7 +265,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     zone.withdraw(user, PATH_USD_ADDRESS, 400_000).await?;
 
     // Portal queue should have advanced further
-    let (head_after, tail_after) = portal_queue_state(l1, portal_address).await?;
+    let (head_after, tail_after) = portal_queue_state(l1, zone.portal_address()).await?;
     assert!(
         tail_after > tail_before,
         "portal tail should advance after second withdrawal (before={tail_before}, after={tail_after})"

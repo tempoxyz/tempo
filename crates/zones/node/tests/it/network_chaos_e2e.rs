@@ -324,7 +324,7 @@ async fn assert_outage_asset_flow(
     .await?;
     eyre::ensure!(receipt.status(), "{} withdrawal reverted", flow.phase);
 
-    cluster
+    let l1_balance_after = cluster
         .l1
         .wait_for_withdrawal_on_l1(
             cluster.portal_address,
@@ -333,10 +333,6 @@ async fn assert_outage_asset_flow(
             OUTAGE_WITHDRAWAL,
             NETWORK_TIMEOUT,
         )
-        .await?;
-    let l1_balance_after = cluster
-        .l1
-        .balance_of(PATH_USD_ADDRESS, account.address())
         .await?;
     assert_eq!(
         l1_balance_after,

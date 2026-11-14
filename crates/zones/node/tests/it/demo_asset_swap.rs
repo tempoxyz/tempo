@@ -38,7 +38,6 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     let l1 = net.l1();
     let [zone] = net.zones();
     let [alice] = net.accounts();
-    let portal_address = zone.portal_address();
 
     // --- Step 2: Create two TIP-20 tokens on L1 ---
     let alpha_salt = B256::with_last_byte(100);
@@ -61,8 +60,10 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     // --- Step 3: Enable both tokens on the portal ---
     // Must happen AFTER zone startup so the zone's L1 subscriber picks up the
     // TokenEnabled events from live blocks.
-    l1.enable_token_on_portal(portal_address, l1_alpha).await?;
-    l1.enable_token_on_portal(portal_address, l1_beta).await?;
+    l1.enable_token_on_portal(zone.portal_address(), l1_alpha)
+        .await?;
+    l1.enable_token_on_portal(zone.portal_address(), l1_beta)
+        .await?;
     let enable_block = l1.provider().get_block_number().await?;
 
     // Wait for the zone to finalize past the enableToken blocks

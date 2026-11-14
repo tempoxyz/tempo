@@ -61,6 +61,7 @@ use tempo_precompiles::{
     storage::{
         Handler, PrecompileStorageProvider, StorageCtx, StorageKey, hashmap::HashMapStorageProvider,
     },
+    test_util::{TIP20Setup, TIP403Setup},
     tip20,
     tip403_registry::{
         ALLOW_ALL_POLICY_ID, AuthRole, CompoundPolicyData as RawCompoundPolicyData, PolicyData,
@@ -103,7 +104,7 @@ pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 /// Atomic counter for unique zone IDs across concurrent tests.
 static NEXT_ZONE_ID: AtomicU64 = AtomicU64::new(71_000);
 
-pub(crate) fn next_unique_chain_id() -> u64 {
+pub fn next_unique_chain_id() -> u64 {
     zone_chain_id(1_337, NEXT_ZONE_ID.fetch_add(1, Ordering::Relaxed) as u32)
         .expect("test zone ID fits in u32")
 }
@@ -489,7 +490,7 @@ fn precompile_writes(
 }
 
 /// Add every slot `write` stores through the precompiles' typed storage to `genesis`.
-pub(crate) fn alloc_precompile_writes(
+pub fn alloc_precompile_writes(
     genesis: &mut Genesis,
     write: impl FnOnce() -> tempo_precompiles::Result<()>,
 ) -> eyre::Result<()> {
@@ -507,7 +508,7 @@ pub(crate) fn alloc_precompile_writes(
 
 /// Seed the raw L1 cache at `block_number` with every slot `write` stores through the
 /// precompiles' typed storage, so tests never pack slots by hand.
-pub(crate) fn seed_raw_l1_storage(
+pub fn seed_raw_l1_storage(
     cache: &mut zone_l1::state::L1StateCacheInner,
     block_number: u64,
     write: impl FnOnce() -> tempo_precompiles::Result<()>,
@@ -763,7 +764,7 @@ impl ZoneTestNode {
     }
 
     /// Returns the chain spec this node launched with.
-    pub(crate) fn chain_spec(&self) -> Arc<ZoneChainSpec> {
+    pub fn chain_spec(&self) -> Arc<ZoneChainSpec> {
         self.chain_spec.clone()
     }
 
@@ -1056,7 +1057,7 @@ impl ZoneTestNode {
     }
 
     /// Launch a zone node configured by `config`.
-    pub(crate) async fn launch(config: ZoneLaunch) -> eyre::Result<Self> {
+    pub async fn launch(config: ZoneLaunch) -> eyre::Result<Self> {
         let ZoneLaunch {
             l1,
             genesis,
@@ -1354,7 +1355,7 @@ pub(crate) struct ZoneLaunch {
 impl ZoneLaunch {
     /// A zone following `portal_address` on `l1`, with genesis anchored to the L1's latest block
     /// and the L1 dev key as sequencer.
-    pub(crate) fn from_l1(l1: &L1TestNode, portal_address: Address) -> Self {
+    pub fn from_l1(l1: &L1TestNode, portal_address: Address) -> Self {
         Self {
             l1: ZoneL1::Portal {
                 url: l1.ws_url().to_string(),
@@ -1543,8 +1544,8 @@ impl L1TestNode {
 
     /// Transfer pathUSD from the dev account to each `(recipient, amount)`.
     ///
-    /// Sends the transfers back to back with explicit nonces, then awaits their receipts together.
-    pub(crate) async fn fund_users(
+    /// Sends every transfer at once with explicit nonces, so none waits on another.
+    pub async fn fund_users(
         &self,
         transfers: impl IntoIterator<Item = (Address, u128)>,
     ) -> eyre::Result<()> {
@@ -1554,21 +1555,15 @@ impl L1TestNode {
             .get_transaction_count(self.dev_address())
             .pending()
             .await?;
-        let mut pending = Vec::new();
-        for (offset, (to, amount)) in (0..).zip(transfers) {
-            pending.push(
-                pathusd
-                    .transfer(to, U256::from(amount))
-                    .nonce(nonce + offset)
-                    .send()
-                    .await?,
-            );
-        }
-        for receipt in
-            try_join_all(pending.into_iter().map(|pending| pending.get_receipt())).await?
-        {
-            eyre::ensure!(receipt.status(), "funding transfer failed");
-        }
+        try_join_all((nonce..).zip(transfers).map(|(nonce, (to, amount))| {
+            let transfer = pathusd.transfer(to, U256::from(amount)).nonce(nonce);
+            async move {
+                let receipt = transfer.send().await?.get_receipt().await?;
+                eyre::ensure!(receipt.status(), "funding transfer failed");
+                eyre::Ok(())
+            }
+        }))
+        .await?;
         Ok(())
     }
 
@@ -2257,9 +2252,15 @@ impl L1TestNode {
         ))
     }
 
-    /// The transfer policy ID `token` uses on L1.
-    pub(crate) async fn transfer_policy_id(&self, token: Address) -> eyre::Result<u64> {
-        Ok(ITIP20::new(token, self.provider())
+    /// Create `policy` as the dev account and make it pathUSD's transfer policy on L1.
+    ///
+    /// Returns the new policy's ID.
+    pub async fn set_path_usd_transfer_policy(&self, policy: TIP403Setup) -> eyre::Result<u64> {
+        TIP20Setup::path_usd(self.dev_address())
+            .with_transfer_policy(policy)
+            .apply_rpc(&self.dev_provider())
+            .await?;
+        Ok(ITIP20::new(PATH_USD_ADDRESS, self.provider())
             .transferPolicyId()
             .call()
             .await?)
@@ -2466,7 +2467,7 @@ async fn patch_clean_portal_snapshot<P: Provider<TempoNetwork>>(
 ///
 /// When the portal exists at that block, the genesis is patched with its initial-token
 /// commitment; see [`patch_clean_portal_snapshot`].
-pub(crate) async fn build_l1_anchored_genesis(
+pub async fn build_l1_anchored_genesis(
     l1_http_url: &url::Url,
     portal_address: Address,
     block: BlockNumberOrTag,
@@ -3351,7 +3352,7 @@ pub(crate) struct RealP2pCluster {
 
 impl RealP2pCluster {
     /// Returns the RPC-only node that mirrors the sequencers' deposit allowlist.
-    pub(crate) fn rpc_node(&self) -> &ZoneTestNode {
+    pub fn rpc_node(&self) -> &ZoneTestNode {
         self.rpc_node
             .as_ref()
             .expect("this cluster was started without a deposit allowlist")
@@ -3511,7 +3512,7 @@ pub(crate) struct AllowlistSetup {
 
 /// Start a three-member P2P quorum against a real Tempo L1 and a Portal registered with the
 /// exact per-node attestation keys.
-pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Result<RealP2pCluster> {
+pub async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Result<RealP2pCluster> {
     let ClusterConfig {
         withdrawal_batch_interval_blocks,
         active_nodes,
@@ -4869,7 +4870,7 @@ impl L1Fixture {
     /// Each fork block's timestamp is past that of every block this fixture builds at the same
     /// height, so the branches never share a block above `parent`. The fork seeds no L1 state
     /// caches or enabled-token registries.
-    pub(crate) fn fork_of(&self, parent: &FixtureBlock) -> Self {
+    pub fn fork_of(&self, parent: &FixtureBlock) -> Self {
         Self {
             next_block_number: parent.header.inner.number + 1,
             next_timestamp: self.next_timestamp + 1,
@@ -5017,7 +5018,7 @@ impl L1Fixture {
     /// for `to`'s zone balance to grow by `amount`.
     ///
     /// Returns `to`'s zone balance after the deposit.
-    pub(crate) async fn deposit(
+    pub async fn deposit(
         &mut self,
         zone: &ZoneTestNode,
         from: Address,

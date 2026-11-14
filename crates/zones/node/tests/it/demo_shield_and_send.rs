@@ -48,10 +48,9 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     );
 
     // --- Step 5: Alice transfers 0.5 pathUSD to Bob on L2 ---
-    let bob_address = bob.address();
 
     // Verify Bob starts with zero
-    let bob_balance_before = zone.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
+    let bob_balance_before = zone.balance_of(ZONE_TOKEN_ADDRESS, bob.address()).await?;
     assert_eq!(
         bob_balance_before,
         U256::ZERO,
@@ -69,7 +68,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
 
         // --- Step 5: Transfers stay disabled until the portal admin opts in ---
         let disabled = zone_token
-            .transfer(bob_address, U256::from(transfer_amount))
+            .transfer(bob.address(), U256::from(transfer_amount))
             .call()
             .await
             .expect_err("L2 transfer must revert before the portal opts into transfers");
@@ -85,7 +84,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
             .await?;
 
         let receipt = zone_token
-            .transfer(bob_address, U256::from(transfer_amount))
+            .transfer(bob.address(), U256::from(transfer_amount))
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L2 transfer from Alice to Bob failed");
@@ -93,7 +92,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
 
     // --- Step 7: Verify balances ---
     let alice_final = zone.balance_of(ZONE_TOKEN_ADDRESS, alice.address()).await?;
-    let bob_final = zone.balance_of(ZONE_TOKEN_ADDRESS, bob_address).await?;
+    let bob_final = zone.balance_of(ZONE_TOKEN_ADDRESS, bob.address()).await?;
 
     // Alice pays gas for the L2 transfer, so her balance is slightly less
     assert!(

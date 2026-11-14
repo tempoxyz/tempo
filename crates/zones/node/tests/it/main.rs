@@ -22,6 +22,10 @@ mod spf;
 mod stepping_e2e;
 mod tip403_policy;
 mod tip403_transfers;
+#[allow(
+    unreachable_pub,
+    reason = "the test crate exports nothing, so its helpers are plain pub"
+)]
 mod utils;
 mod witness_outage_e2e;
 

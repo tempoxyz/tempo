@@ -192,8 +192,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let alice_signer = l1_dev_signer();
     let alice = alice_signer.address();
 
-    let [bob_signer, charlie_signer] = signers();
-    let (bob, charlie) = (bob_signer.address(), charlie_signer.address());
+    let [bob, charlie] = signers();
 
     let deposit_amount: u128 = 2_000_000;
 
@@ -205,11 +204,11 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_signer)
         .connect_http(zone.http_url().clone());
-    fixture.seed_transfer_recipient(bob)?;
+    fixture.seed_transfer_recipient(bob.address())?;
     let tip20_alice = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
 
     let pending = tip20_alice
-        .transfer(bob, U256::from(alice_to_bob))
+        .transfer(bob.address(), U256::from(alice_to_bob))
         .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
@@ -223,7 +222,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Wait for Bob to receive funds
     zone.wait_for_balance(
         PATH_USD_ADDRESS,
-        bob,
+        bob.address(),
         U256::from(alice_to_bob),
         DEFAULT_TIMEOUT,
     )
@@ -232,13 +231,13 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Bob transfers 500,000 to Charlie
     let bob_to_charlie: u128 = 500_000;
     let bob_provider = ProviderBuilder::new()
-        .wallet(bob_signer)
+        .wallet(bob.clone())
         .connect_http(zone.http_url().clone());
-    fixture.seed_transfer_recipient(charlie)?;
+    fixture.seed_transfer_recipient(charlie.address())?;
     let tip20_bob = ITIP20::new(PATH_USD_ADDRESS, &bob_provider);
 
     let pending = tip20_bob
-        .transfer(charlie, U256::from(bob_to_charlie))
+        .transfer(charlie.address(), U256::from(bob_to_charlie))
         .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
@@ -252,7 +251,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
     // Wait for Charlie to receive funds
     zone.wait_for_balance(
         PATH_USD_ADDRESS,
-        charlie,
+        charlie.address(),
         U256::from(bob_to_charlie),
         DEFAULT_TIMEOUT,
     )
@@ -272,7 +271,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
         "Alice balance {alice_balance} too low"
     );
 
-    let bob_balance = zone.balance_of(PATH_USD_ADDRESS, bob).await?;
+    let bob_balance = zone.balance_of(PATH_USD_ADDRESS, bob.address()).await?;
     let bob_expected = alice_to_bob - bob_to_charlie;
     assert!(
         bob_balance <= U256::from(bob_expected),
@@ -283,7 +282,7 @@ async fn test_sequential_transfers() -> eyre::Result<()> {
         "Bob balance {bob_balance} too low"
     );
 
-    let charlie_balance = zone.balance_of(PATH_USD_ADDRESS, charlie).await?;
+    let charlie_balance = zone.balance_of(PATH_USD_ADDRESS, charlie.address()).await?;
     assert_eq!(
         charlie_balance,
         U256::from(bob_to_charlie),
