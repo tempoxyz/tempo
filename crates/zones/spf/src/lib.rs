@@ -237,29 +237,6 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         inbox::slots::PROCESSED_ENABLED_TOKEN_COUNT,
     )?
     .to::<u64>();
-    let has_withdrawal_finalization = witness
-        .zone_blocks
-        .iter()
-        .any(|block| block.finalize_withdrawal_batch_count.is_some());
-    let (withdrawal_queue_hash, withdrawal_batch_index) = if has_withdrawal_finalization {
-        let hash = B256::from(read_zone_storage(
-            &mut zone_state,
-            ZONE_OUTBOX_ADDRESS,
-            outbox::slots::WITHDRAWAL_QUEUE_HASH,
-        )?);
-        let index_slot = read_zone_storage(
-            &mut zone_state,
-            ZONE_OUTBOX_ADDRESS,
-            outbox::slots::WITHDRAWAL_BATCH_INDEX,
-        )?;
-        // The index occupies the low 64 bits of a packed Solidity slot.
-        (hash, index_slot.wrapping_to::<u64>())
-    } else {
-        (
-            B256::ZERO,
-            witness.public_inputs.expected_withdrawal_batch_index,
-        )
-    };
     let final_tempo_hash = B256::from(read_zone_storage(
         &mut zone_state,
         TEMPO_STATE_ADDRESS,
@@ -291,12 +268,10 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
     // The result links the public parent hash to the final carried header and
     // exposes the state transitions the portal will commit on successful proof
     // verification.
-    if withdrawal_batch_index != witness.public_inputs.expected_withdrawal_batch_index {
-        return Err(Error::WithdrawalBatchIndexMismatch {
-            expected: witness.public_inputs.expected_withdrawal_batch_index,
-            actual: withdrawal_batch_index,
-        });
-    }
+    let (withdrawal_queue_hash, withdrawal_batch_index) = read_withdrawal_batch_commitment(
+        &mut zone_state,
+        witness.public_inputs.expected_withdrawal_batch_index,
+    )?;
     Ok(BatchOutput {
         next_zone_height: previous_header.number(),
         block_transition: BlockTransition {
@@ -348,6 +323,36 @@ fn validate_zone_block_timestamp(
     }
 
     Ok(())
+}
+
+/// Reads the withdrawal batch commitment from the final ZoneOutbox state and binds its index to
+/// the public input.
+///
+/// The index is always read from state, never taken from the prover-supplied public input, so a
+/// proof cannot advance the portal's batch index without advancing the Zone's.
+fn read_withdrawal_batch_commitment(
+    zone_state: &mut CacheDB<Db<WitnessDatabase>>,
+    expected_withdrawal_batch_index: u64,
+) -> Result<(B256, u64), Error> {
+    let withdrawal_queue_hash = B256::from(read_zone_storage(
+        zone_state,
+        ZONE_OUTBOX_ADDRESS,
+        outbox::slots::WITHDRAWAL_QUEUE_HASH,
+    )?);
+    // The index occupies the low 64 bits of a packed Solidity slot.
+    let withdrawal_batch_index = read_zone_storage(
+        zone_state,
+        ZONE_OUTBOX_ADDRESS,
+        outbox::slots::WITHDRAWAL_BATCH_INDEX,
+    )?
+    .wrapping_to::<u64>();
+    if withdrawal_batch_index != expected_withdrawal_batch_index {
+        return Err(Error::WithdrawalBatchIndexMismatch {
+            expected: expected_withdrawal_batch_index,
+            actual: withdrawal_batch_index,
+        });
+    }
+    Ok((withdrawal_queue_hash, withdrawal_batch_index))
 }
 
 fn read_zone_storage(
@@ -1050,6 +1055,34 @@ mod tests {
         assert_eq!(
             database.get_storage(&account, &U256::from(3)).unwrap(),
             U256::from(9)
+        );
+    }
+
+    #[test]
+    fn withdrawal_batch_index_is_read_from_outbox_state() {
+        // The outbox is still at batch 7: a prover claiming batch 8 must be rejected even though
+        // no block finalized withdrawals to move the index.
+        let (state_root, witness) = witnessed_account_state(
+            ZONE_OUTBOX_ADDRESS,
+            0,
+            U256::ZERO,
+            alloy_consensus::constants::KECCAK_EMPTY,
+            Vec::new(),
+            Some((outbox::slots::WITHDRAWAL_BATCH_INDEX, U256::from(7))),
+        );
+        let database = WitnessDatabase::from_zone_state_witness(witness, state_root).unwrap();
+        let mut zone_state = CacheDB::new(Db::new(database));
+
+        assert_eq!(
+            read_withdrawal_batch_commitment(&mut zone_state, 8),
+            Err(Error::WithdrawalBatchIndexMismatch {
+                expected: 8,
+                actual: 7,
+            })
+        );
+        assert_eq!(
+            read_withdrawal_batch_commitment(&mut zone_state, 7),
+            Ok((B256::ZERO, 7))
         );
     }
 
