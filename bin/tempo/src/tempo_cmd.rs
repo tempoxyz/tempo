@@ -1,6 +1,8 @@
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::{
-    fs::OpenOptions,
-    io::Write as _,
+    fs::{File, OpenOptions},
+    io::{Seek as _, SeekFrom, Write as _},
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
@@ -1060,20 +1062,18 @@ impl GenerateSigningKey {
             warn_unencrypted_signing_key_deprecation();
         }
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
-            .map_err(Report::new)
-            .and_then(|f| match passphrase {
-                Some(passphrase) => signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new),
-                None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
-            })
-            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
+        write_signing_key_file(&output, force, |f| match passphrase {
+            Some(passphrase) => signing_key
+                .write_encrypted(f, passphrase)
+                .map_err(Report::new),
+            None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
+        })
+        .wrap_err_with(|| {
+            format!(
+                "failed writing signing key to `{}` (public key: {public_key})",
+                output.display()
+            )
+        })?;
         eprintln!(
             "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
@@ -1133,6 +1133,159 @@ fn read_signing_key<P1: AsRef<Path>, P2: AsRef<Path>>(
     }
 }
 
+/// Writes a signing key to `path` with `write`, readable and writable only by its owner on Unix.
+///
+/// Fails if `path` exists unless `force` is set. With `force`, an existing regular file is
+/// atomically replaced by a new file owned by the caller, so the old key stays in place if writing
+/// fails and descriptors opened on the old file can't read the new key. Where the file can't be
+/// replaced (a bind mount, or a read-only directory or one the caller can't write) it is
+/// overwritten in place, as are other targets; see [`create_signing_key_file`].
+fn write_signing_key_file(
+    path: &Path,
+    force: bool,
+    write: impl FnOnce(&mut File) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let target = if force {
+        match std::fs::symlink_metadata(path) {
+            // Only creating a new file keeps a symlink planted at `path` after this check from
+            // redirecting the key.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => KeyFileTarget::New,
+            Err(err) => return Err(err.into()),
+            Ok(metadata) if metadata.is_file() => KeyFileTarget::Existing(metadata),
+            Ok(_) => KeyFileTarget::Any,
+        }
+    } else {
+        KeyFileTarget::New
+    };
+    if !matches!(target, KeyFileTarget::Existing(_)) {
+        return write_signing_key_file_in_place(path, dir, &target, write);
+    }
+
+    // The staged file is created with mode `0o600` on Unix.
+    let mut staged = match tempfile::NamedTempFile::new_in(dir) {
+        Ok(staged) => staged,
+        Err(err) if is_unreplaceable(&err) => {
+            return write_signing_key_file_in_place(path, dir, &target, write);
+        }
+        Err(err) => return Err(err.into()),
+    };
+    write(staged.as_file_mut())?;
+    // Without syncing first, a crash after the rename can leave an empty key at `path`.
+    staged.as_file().sync_all()?;
+    match staged.persist(path) {
+        Ok(_) => sync_dir(dir),
+        Err(err) if is_unreplaceable(&err.error) => {
+            let mut staged = err.file;
+            write_signing_key_file_in_place(path, dir, &target, |file| {
+                staged.seek(SeekFrom::Start(0))?;
+                std::io::copy(&mut staged, file)?;
+                Ok(())
+            })
+        }
+        Err(err) => Err(err.error.into()),
+    }
+}
+
+/// Writes a signing key to `path` in place with `write` (see [`create_signing_key_file`]) and, if
+/// it is a regular file, syncs it and its directory `dir` to disk.
+fn write_signing_key_file_in_place(
+    path: &Path,
+    dir: &Path,
+    target: &KeyFileTarget,
+    write: impl FnOnce(&mut File) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let mut file = create_signing_key_file(path, target)?;
+    write(&mut file)?;
+    // Pipes and devices such as `/dev/stdout` can't be synced.
+    if file.metadata()?.is_file() {
+        file.sync_all()?;
+        sync_dir(dir)?;
+    }
+    Ok(())
+}
+
+/// Syncs directory `dir` so that files created or renamed in it survive a crash. Does nothing
+/// outside Unix, where directories can't be opened as files.
+///
+/// Called after the key is already in place, so the error says so.
+fn sync_dir(dir: &Path) -> eyre::Result<()> {
+    #[cfg(unix)]
+    File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .wrap_err_with(|| {
+            format!(
+                "the signing key was written, but syncing its directory `{}` to disk failed",
+                dir.display()
+            )
+        })?;
+    Ok(())
+}
+
+/// Whether `err` means a file can't be replaced by renaming, but may still be overwritten in place.
+fn is_unreplaceable(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::ReadOnlyFilesystem
+            | std::io::ErrorKind::ResourceBusy
+    )
+}
+
+/// What [`create_signing_key_file`] may open at its path.
+enum KeyFileTarget {
+    /// Only a new file: fails if anything, including a symlink, exists at the path.
+    New,
+    /// The regular file with this metadata. Fails if the path now leads to any other file.
+    Existing(std::fs::Metadata),
+    /// Whatever the path leads to, following symlinks and creating a missing file.
+    Any,
+}
+
+/// Opens `path` for writing a signing key in place, readable and writable only by its owner on
+/// Unix.
+///
+/// Unless `target` is [`KeyFileTarget::New`], an existing regular file has its permissions
+/// restricted and is then truncated; pipes and devices such as `/dev/stdout` are opened as they
+/// are.
+fn create_signing_key_file(path: &Path, target: &KeyFileTarget) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(matches!(target, KeyFileTarget::New))
+        .create(matches!(target, KeyFileTarget::Any))
+        .truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+
+    // The path is checked before it is opened, so a symlink may have been planted in between.
+    #[cfg(unix)]
+    if let KeyFileTarget::Existing(expected) = target
+        && (metadata.dev(), metadata.ino()) != (expected.dev(), expected.ino())
+    {
+        return Err(std::io::Error::other(format!(
+            "`{}` changed while the signing key was being written",
+            path.display()
+        )));
+    }
+
+    // `mode` only applies when the file is created. Restricting before truncating keeps the old
+    // contents if the caller may write the file but not change its mode.
+    if !matches!(target, KeyFileTarget::New) && metadata.is_file() {
+        #[cfg(unix)]
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
+    }
+
+    Ok(file)
+}
+
 #[derive(Debug, clap::Args)]
 pub struct EncryptSigningKey {
     /// Existing plaintext ed25519 signing key file.
@@ -1174,24 +1327,17 @@ impl EncryptSigningKey {
             )
         })?;
 
-        OpenOptions::new()
-            .write(true)
-            .create_new(!force)
-            .create(force)
-            .truncate(force)
-            .open(&output)
-            .map_err(Report::new)
-            .and_then(|f| {
-                signing_key
-                    .write_encrypted(f, passphrase)
-                    .map_err(Report::new)
-            })
-            .wrap_err_with(|| {
-                format!(
-                    "failed writing encrypted signing key to `{}`",
-                    output.display()
-                )
-            })?;
+        write_signing_key_file(&output, force, |f| {
+            signing_key
+                .write_encrypted(f, passphrase)
+                .map_err(Report::new)
+        })
+        .wrap_err_with(|| {
+            format!(
+                "failed writing encrypted signing key to `{}`",
+                output.display()
+            )
+        })?;
 
         eprintln!("wrote encrypted signing key to: {}", output.display());
         Ok(())
@@ -1712,6 +1858,168 @@ mod tests {
     const TEST_SIGNATURE: &str = "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111";
     const TEST_INGRESS: &str = "127.0.0.1:8000";
     const TEST_EGRESS: &str = "127.0.0.1";
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+
+        create_signing_key_file(&path, &KeyFileTarget::New).unwrap();
+
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_restricts_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"existing contents").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        create_signing_key_file(&path, &KeyFileTarget::Any).unwrap();
+
+        let metadata = path.metadata().unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_signing_key_file_force_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"old key").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut held = File::open(&path).unwrap();
+
+        write_signing_key_file(&path, true, |f| Ok(f.write_all(b"new key")?)).unwrap();
+
+        let mut held_contents = String::new();
+        std::io::Read::read_to_string(&mut held, &mut held_contents).unwrap();
+        assert_eq!(held_contents, "old key");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new key");
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn write_signing_key_file_force_keeps_existing_file_on_write_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, b"old key").unwrap();
+
+        let err = write_signing_key_file(&path, true, |_| Err(eyre!("write failed"))).unwrap_err();
+
+        assert_eq!(err.to_string(), "write failed");
+        assert_eq!(std::fs::read(&path).unwrap(), b"old key");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_signing_key_file_force_writes_symlink_target_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("signing.key");
+        let link = dir.path().join("link.key");
+        std::fs::write(&target, b"old key").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_signing_key_file(&link, true, |f| Ok(f.write_all(b"new key")?)).unwrap();
+
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new key");
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_restricts_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("signing.key");
+        let link = dir.path().join("link.key");
+        std::fs::write(&target, b"existing contents").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        create_signing_key_file(&link, &KeyFileTarget::Any).unwrap();
+
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        let metadata = target.metadata().unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_creates_dangling_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("signing.key");
+        let link = dir.path().join("link.key");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        create_signing_key_file(&link, &KeyFileTarget::Any).unwrap();
+
+        assert_eq!(
+            target.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_force_keeps_mode_of_non_regular_file() {
+        let path = Path::new("/dev/null");
+        let mode = path.metadata().unwrap().permissions().mode();
+
+        create_signing_key_file(path, &KeyFileTarget::Any).unwrap();
+
+        assert_eq!(path.metadata().unwrap().permissions().mode(), mode);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_refuses_swapped_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signing.key");
+        let other = dir.path().join("other.key");
+        std::fs::write(&path, b"old key").unwrap();
+        std::fs::write(&other, b"other contents").unwrap();
+        let expected = std::fs::symlink_metadata(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+
+        let err = create_signing_key_file(&path, &KeyFileTarget::Existing(expected)).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        assert_eq!(std::fs::read(&other).unwrap(), b"other contents");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_signing_key_file_new_refuses_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("signing.key");
+        let link = dir.path().join("link.key");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = create_signing_key_file(&link, &KeyFileTarget::New).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn create_signing_key_file_refuses_existing_file_without_force() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+
+        let err = create_signing_key_file(file.path(), &KeyFileTarget::New).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    }
 
     #[test]
     fn parse_p2p_proxy_defaults() {
