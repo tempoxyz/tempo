@@ -1012,6 +1012,10 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
+        // Refunds are claimed by msg.sender, which can never be a virtual address.
+        if (StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)) {
+            revert InvalidBouncebackRecipient();
+        }
         // Enforced gateways may deposit callback returns without also being allowed accounts.
         _requireAllowedDepositor(msg.sender);
         _requireAllowed(tempoRefundRecipient);

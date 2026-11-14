@@ -5793,6 +5793,24 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(bob), bobBalanceBefore + amount);
     }
 
+    /// @notice A virtual address can't be a refund recipient, since it can never claim a refund.
+    function test_deposit_revertsForVirtualRefundRecipient() public {
+        address virtualRecipient = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(0x58e21090), bytes10(0xfdfdfdfdfdfdfdfdfdfd), bytes6(uint48(1))
+                )
+            )
+        );
+        assertTrue(StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(virtualRecipient));
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), virtualRecipient);
+        vm.stopPrank();
+    }
+
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.
     function test_withdrawalQueue_acceptsBacklogBeyondFormerCapacity() public {
         vm.roll(genesisTempoBlockNumber + 1);
