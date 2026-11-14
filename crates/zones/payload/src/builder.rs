@@ -48,7 +48,7 @@ use tempo_transaction_pool::{
 };
 use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::{ZoneEvm, ZoneEvmConfig};
+use zone_evm::{ZoneEvm, ZoneEvmConfig, build_advance_tempo_tx_from_parts};
 use zone_l1::{PreparedL1Block, TempoStateExt};
 use zone_precompiles::L1StateError;
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
@@ -850,37 +850,6 @@ pub(crate) fn build_advance_tempo_tx_owned(
         prepared.decryptions,
         prepared.enabled_tokens,
         chain_id,
-    )
-}
-
-fn build_advance_tempo_tx_from_parts(
-    header: &TempoHeader,
-    deposits: Vec<abi::QueuedDeposit>,
-    decryptions: Vec<abi::DecryptionData>,
-    enabled_tokens: Vec<abi::EnabledToken>,
-    chain_id: u64,
-) -> Recovered<TempoTxEnvelope> {
-    let calldata = abi::IZoneInbox::advanceTempoCall {
-        header: alloy_rlp::encode(header).into(),
-        deposits,
-        decryptions,
-        enabledTokens: enabled_tokens,
-    }
-    .abi_encode();
-
-    let tx = TxLegacy {
-        chain_id: Some(chain_id),
-        nonce: 0,
-        gas_price: 0,
-        gas_limit: 0,
-        to: ZONE_INBOX_ADDRESS.into(),
-        value: U256::ZERO,
-        input: calldata.into(),
-    };
-
-    Recovered::new_unchecked(
-        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
-        TEMPO_SYSTEM_TX_SENDER,
     )
 }
 
