@@ -286,8 +286,14 @@ where
 
     /// Drains the waiters by fetching the data they are waiting for.
     ///
-    /// Only executes if a client is present and connected.
+    /// Always drops waiters whose requester went away. Only fetches if a
+    /// client is present and connected.
     fn drain_waiters(&mut self) {
+        self.waiters.retain(|request| match request {
+            super::ingress::Message::GetFinalization { response, .. } => !response.is_closed(),
+            super::ingress::Message::GetBlock { response, .. } => !response.is_closed(),
+        });
+
         if self.pending_connect.is_some()
             || self.pending_stream.is_some()
             || self.event_stream.is_none()
@@ -565,7 +571,9 @@ async fn get_block(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::ingress::Message, *};
+    use alloy_primitives::B256;
+    use commonware_runtime::{Runner as _, deterministic};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct DropGuard(Arc<AtomicBool>);
@@ -778,6 +786,41 @@ mod tests {
             .expect("connect must give up on its own");
         let err = client.expect_err("a stalled handshake must fail");
         assert_eq!(err.to_string(), "timed out connecting to upstream node");
+    }
+
+    #[test]
+    fn drain_waiters_drops_cancelled_requests_while_disconnected() {
+        deterministic::Runner::default().start(|context| async move {
+            let connector =
+                WebSocketConnector::new(Url::parse("ws://upstream.test").expect("valid test URL"));
+            let (mut actor, _mailbox) = init(context, connector, random_jitter);
+
+            let (response, cancelled) = oneshot::channel();
+            drop(cancelled);
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(1),
+                response,
+            });
+            let (response, cancelled) = oneshot::channel();
+            drop(cancelled);
+            actor.waiters.push(Message::GetBlock {
+                digest: Digest(B256::with_last_byte(1)),
+                response,
+            });
+            let (response, _waiting) = oneshot::channel();
+            actor.waiters.push(Message::GetFinalization {
+                height: Height::new(2),
+                response,
+            });
+
+            actor.drain_waiters();
+
+            assert!(matches!(
+                actor.waiters.as_slice(),
+                [Message::GetFinalization { height, .. }]
+                    if *height == Height::new(2)
+            ));
+        });
     }
 
     #[test]
