@@ -70,6 +70,10 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
         // The accepted cache keys mirrored slots without their anchor. That is sound because a
         // Zone EVM executes one block, whose committed opening advanceTempo is its only anchor change.
+        // Reads outside a transaction resolve at this checkpoint too.
+        self.l1
+            .set_checkpoint(initial_anchor)
+            .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         self.l1.begin_transaction(initial_anchor);
 
         let tx_hash = match request.envelope.execution_context() {
@@ -108,6 +112,15 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         let result = self.inner.execute(transaction, request.host)?;
         validate_journal(request.host.state())
             .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
+        // A committed advanceTempo moves the checkpoint that reads before the next transaction
+        // resolve at.
+        let checkpoint = request
+            .host
+            .state_mut()
+            .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
+        self.l1
+            .set_checkpoint(checkpoint)
+            .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         Ok(result)
     }
 }
@@ -137,7 +150,7 @@ pub(crate) mod tests {
         registry::{HandlerError, TxRegistry, TxRequest, handler},
     };
     use reth_chainspec::EthChainSpec;
-    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm};
+    use reth_evm::{BlockExecutor, BlockExecutorFactory, ConfigureEvm, Evm};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -218,7 +231,7 @@ pub(crate) mod tests {
         BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
     }
 
-    pub(super) fn transaction(
+    pub(crate) fn transaction(
         caller: Address,
         envelope: impl Into<TempoTxEnvelope>,
     ) -> Recovered<TempoTxEnv> {
@@ -565,5 +578,40 @@ pub(crate) mod tests {
                 IConfigurableAccount::UnsupportedOnZone {}.abi_encode()
             );
         }
+    }
+
+    /// Accounts loaded outside a transaction, as `eth_callBundle` loads its coinbase, carry
+    /// their commitment at the checkpoint, so a later transaction is checked against it.
+    #[test]
+    fn accounts_loaded_outside_transactions_carry_their_commitment() {
+        let retired = Address::repeat_byte(0x0b);
+        let l1 = MockL1Reader::default();
+        l1.insert_commitment(retired, 0, B256::repeat_byte(7));
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &config(l1.clone()),
+            sender_db(Address::ZERO),
+            fee_free_env(TempoHardfork::T14),
+        );
+
+        let info = Evm::account_info(&mut evm, &retired).unwrap().unwrap();
+        assert!(!info.extension.is_empty());
+
+        // The commitment retires the primitive root key that signs this legacy transaction.
+        let tx = TxLegacy {
+            gas_limit: 100_000,
+            to: Address::repeat_byte(0x33).into(),
+            ..Default::default()
+        };
+        let error = evm
+            .transact(&transaction(
+                retired,
+                tx.into_signed(Signature::test_signature()),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error.external_ref::<TempoInvalidTransaction>(),
+            Some(TempoInvalidTransaction::RootKeyRetired { account, .. }) if *account == retired
+        ));
+        assert_eq!(l1.commitment_requests(), [(retired, 0)]);
     }
 }
