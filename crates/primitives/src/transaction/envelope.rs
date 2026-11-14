@@ -280,41 +280,61 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
-        self.is_tip1045_payment(0)
+        self.is_tip1045_payment(0, false)
     }
 
     /// T15+ [TIP-20 payment] (TIP-1045) classification.
     ///
     /// Like [`is_payment_v2`](Self::is_payment_v2), but static-only payment calls may carry up to
     /// [`MAX_PAYMENT_TRAILING_BYTES`] bytes after their ABI-encoded arguments, e.g. an attribution
-    /// tag appended by integrators. Dynamic payment calls are unchanged.
+    /// tag appended by integrators, and channel reserve `settle` and `close` may carry a
+    /// well-formed configurable account voucher signature (TIP-1166).
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v3(&self) -> bool {
-        self.is_tip1045_payment(MAX_PAYMENT_TRAILING_BYTES)
+        self.is_tip1045_payment(MAX_PAYMENT_TRAILING_BYTES, true)
     }
 
-    /// TIP-1045 classification allowing `max_trailing_bytes` after static-only payment calls.
-    fn is_tip1045_payment(&self, max_trailing_bytes: usize) -> bool {
+    /// TIP-1045 classification allowing `max_trailing_bytes` after static-only payment calls, and
+    /// configurable account voucher signatures when `configurable_vouchers` is set.
+    fn is_tip1045_payment(&self, max_trailing_bytes: usize, configurable_vouchers: bool) -> bool {
         match self {
-            Self::Legacy(tx) => {
-                is_tip1045_call(tx.tx().to.to(), &tx.tx().input, max_trailing_bytes)
-            }
+            Self::Legacy(tx) => is_tip1045_call(
+                tx.tx().to.to(),
+                &tx.tx().input,
+                max_trailing_bytes,
+                configurable_vouchers,
+            ),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
-                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
+                    && is_tip1045_call(
+                        tx.to.to(),
+                        &tx.input,
+                        max_trailing_bytes,
+                        configurable_vouchers,
+                    )
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
-                    && is_tip1045_call(tx.to.to(), &tx.input, max_trailing_bytes)
+                    && is_tip1045_call(
+                        tx.to.to(),
+                        &tx.input,
+                        max_trailing_bytes,
+                        configurable_vouchers,
+                    )
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input, max_trailing_bytes)
+                    && is_tip1045_call(
+                        Some(&tx.to),
+                        &tx.input,
+                        max_trailing_bytes,
+                        configurable_vouchers,
+                    )
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -325,10 +345,14 @@ impl TempoTxEnvelope {
                         .key_authorization
                         .as_ref()
                         .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                    && tx
-                        .calls
-                        .iter()
-                        .all(|call| is_tip1045_call(call.to.to(), &call.input, max_trailing_bytes))
+                    && tx.calls.iter().all(|call| {
+                        is_tip1045_call(
+                            call.to.to(),
+                            &call.input,
+                            max_trailing_bytes,
+                            configurable_vouchers,
+                        )
+                    })
             }
         }
     }
@@ -592,8 +616,16 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
 }
 
 /// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
+///
+/// Voucher signatures must be primitive, or also configurable account signatures when
+/// `configurable_vouchers` is set. Only their encoding is checked.
 #[inline]
-fn is_tip1045_call(to: Option<&Address>, input: &[u8], max_trailing_bytes: usize) -> bool {
+fn is_tip1045_call(
+    to: Option<&Address>,
+    input: &[u8],
+    max_trailing_bytes: usize,
+    configurable_vouchers: bool,
+) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input, max_trailing_bytes),
@@ -602,7 +634,14 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8], max_trailing_bytes: usize
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
                 max_trailing_bytes,
-                |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
+                |signature| {
+                    super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
+                        || (configurable_vouchers
+                            && super::tt_signature::TempoSignature::from_bytes(signature)
+                                .is_ok_and(|signature| {
+                                    signature.as_configurable_account().is_some()
+                                }))
+                },
             )
         }
         _ => false,
@@ -1037,6 +1076,60 @@ mod tests {
                     !envelope.is_payment_v2(),
                     "V2 must reject Keychain-wrapped channel reserve voucher signatures"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_payment_v3_accepts_configurable_account_voucher_signature() {
+        let config = crate::transaction::ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![crate::transaction::ConfigurableAccountOwner {
+                owner: Address::repeat_byte(0x01),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account().unwrap();
+        let configurable = TempoSignature::ConfigurableAccount(
+            crate::transaction::ConfigurableAccountSignature::try_new(
+                account,
+                config,
+                vec![PrimitiveSignature::Secp256k1(Signature::test_signature())],
+            )
+            .unwrap(),
+        )
+        .to_bytes();
+        let keychain = TempoSignature::Keychain(KeychainSignature::new(
+            Address::random(),
+            PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        ))
+        .to_bytes();
+
+        let descriptor = channel_descriptor();
+        for (signature, v3) in [(configurable, true), (keychain, false)] {
+            let calldatas = [
+                ITIP20ChannelReserve::settleCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: U96::ONE,
+                    signature: signature.clone(),
+                }
+                .abi_encode(),
+                ITIP20ChannelReserve::closeCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: U96::ONE,
+                    captureAmount: U96::ONE,
+                    signature,
+                }
+                .abi_encode(),
+            ];
+            for calldata in calldatas {
+                for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into())
+                {
+                    assert!(!envelope.is_payment_v2());
+                    assert_eq!(envelope.is_payment_v3(), v3);
+                }
             }
         }
     }
