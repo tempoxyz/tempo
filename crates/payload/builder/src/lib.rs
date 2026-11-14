@@ -393,6 +393,7 @@ where
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
         let mut parallel_transactions_executed = 0u64;
+        let mut parallel_replay_fallbacks = 0u64;
         let mut total_fees = U256::ZERO;
 
         let next_attributes = TempoNextBlockEnvAttributes {
@@ -645,14 +646,38 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
-                parallel_transactions_executed += 1;
+            let replay_result = pool_tx.replay.take().map(|replay| {
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
+                    &mut result_closure,
                 )
-            } else {
+            });
+            let execution_result = match replay_result {
+                Some(Err(BlockExecutionError::Internal(err)))
+                    if StorageActionReplayError::from_internal_block_execution_error(&err)
+                        .is_some() =>
+                {
+                    // The replay was recorded against the parent state, and an earlier
+                    // transaction in this block changed what it read. That makes the replay
+                    // stale, not the transaction invalid, so execute it normally instead.
+                    trace!(
+                        target: "payload_builder",
+                        tx_hash = ?tx.hash(),
+                        ?err,
+                        "Replay conflicts with block state, executing transaction"
+                    );
+                    parallel_replay_fallbacks += 1;
+                    self.metrics.parallel_replay_fallbacks.increment(1);
+                    None
+                }
+                Some(result) => {
+                    parallel_transactions_executed += 1;
+                    Some(result)
+                }
+                None => None,
+            };
+            let execution_result = execution_result.unwrap_or_else(|| {
                 executor.invalidate_expiring_nonce_cache();
                 executor
                     .execute_transaction_without_commit(tx.transaction.executable())
@@ -660,7 +685,7 @@ where
                         result_closure(&result);
                         executor.commit_transaction(result).map(|_| ())
                     })
-            };
+            });
 
             if let Err(err) = execution_result {
                 match err {
@@ -705,29 +730,6 @@ where
                             self.metrics.inc_pool_tx_skipped("invalid_tx");
                         }
                         continue;
-                    }
-                    BlockExecutionError::Internal(err) => {
-                        if let Some(err) =
-                            StorageActionReplayError::from_internal_block_execution_error(&err)
-                        {
-                            invalid_pool_transaction_execution_attempts += 1;
-                            best_txs.mark_invalid(
-                                &pool_tx,
-                                InvalidPoolTransactionError::Consensus(
-                                    InvalidTransactionError::TxTypeNotSupported,
-                                ),
-                            );
-                            self.metrics.inc_pool_tx_skipped("invalid_replay");
-                            trace!(
-                                target: "payload_builder",
-                                tx_hash = ?tx.hash(),
-                                ?err,
-                                "Skipping invalid replay transaction"
-                            );
-                            continue;
-                        } else {
-                            return Err(PayloadBuilderError::evm(err));
-                        }
                     }
                     _ => return Err(PayloadBuilderError::evm(err)),
                 }
@@ -1028,6 +1030,7 @@ where
             pool_transactions_yielded,
             pool_transactions_included,
             parallel_transactions_executed,
+            parallel_replay_fallbacks,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
             total_transactions,
