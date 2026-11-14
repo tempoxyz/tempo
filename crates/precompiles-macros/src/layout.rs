@@ -150,12 +150,6 @@ pub(crate) fn gen_constructor(
 
             #[inline(always)]
             fn __new(address: ::alloy::primitives::Address) -> Self {
-                // Run collision detection checks in debug builds outside fuzz builds.
-                #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-                {
-                    slots::__check_all_collisions();
-                }
-
                 Self {
                     #(#field_inits,)*
                     address,
@@ -223,9 +217,9 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
 
 /// Generate the `slots` module with constants and collision checks
 ///
-/// Returns the slots module containing only constants and collision detection functions
+/// Returns the slots module containing only constants and compile-time collision checks
 pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
-    // Generate constants and collision check functions
+    // Generate constants and collision checks
     let constants = packing::gen_constants_from_ir(allocated_fields, false);
     let collision_checks = gen_collision_checks(allocated_fields);
 
@@ -239,30 +233,18 @@ pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_mac
     }
 }
 
-/// Generate collision check functions for all fields
+/// Generate a `const` block asserting that no two fields share storage.
 fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
-    let mut generated = proc_macro2::TokenStream::new();
-    let mut check_fn_calls = Vec::new();
+    let checks = allocated_fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| packing::gen_collision_assertions(idx, field, allocated_fields));
 
-    // Generate collision detection check functions for all fields
-    for (idx, allocated) in allocated_fields.iter().enumerate() {
-        let (check_fn_name, check_fn) =
-            packing::gen_collision_check_fn(idx, allocated, allocated_fields);
-        generated.extend(check_fn);
-        check_fn_calls.push(check_fn_name);
+    quote! {
+        const _: () = {
+            #(#checks)*
+        };
     }
-
-    // Generate a module initializer that calls all check functions
-    // Always generate the function, even if empty, so the constructor can call it
-    generated.extend(quote! {
-        #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-        #[inline(never)]
-        pub(super) fn __check_all_collisions() {
-            #(#check_fn_calls();)*
-        }
-    });
-
-    generated
 }
 
 /// Generate a `Default` implementation that calls `Self::new()`.
