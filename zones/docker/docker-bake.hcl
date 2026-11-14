@@ -174,6 +174,16 @@ target "tempo-zone-xtask" {
   target = "tempo-zone-xtask"
 }
 
+# tempo-zone with the corpus and fuzz features, for corpus capture, replay and fuzzing jobs.
+# Not reproducible and never a production image.
+target "tempo-zone-fuzz" {
+  inherits = ["_common", "docker-metadata"]
+  target = "tempo-zone"
+  args = {
+    RUST_FEATURES = "jemalloc,corpus,fuzz"
+  }
+}
+
 # Export the canonical executable before the deferred genesis is available.
 target "tempo-zone-prover-compiled" {
   dockerfile = "zones/docker/Dockerfile.reproducible"

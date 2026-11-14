@@ -21,6 +21,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -46,7 +47,7 @@ use crate::{
 const T15_REMOVED_PREDEPLOYS: [Address; 2] = [PERMIT2_ADDRESS, MULTICALL3_ADDRESS];
 
 /// The current transaction-ordering phase of a zone block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 enum ZoneBlockPhase {
     /// The block has not yet committed its required opening `advanceTempo` transaction.
     AwaitingAdvanceTempo,
@@ -172,6 +173,19 @@ impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
     }
 }
 
+/// Block-level state of a [`ZoneBlockExecutor`] between transactions, from
+/// [`ZoneBlockExecutor::executor_state`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneExecutorState {
+    /// Phase the next transaction is admitted in.
+    phase: ZoneBlockPhase,
+    /// Inner executor's cumulative gas used.
+    cumulative_gas_used: u64,
+    /// Inner executor's blob gas used.
+    blob_gas_used: u64,
+}
+
 /// Simplified block executor for zone nodes.
 ///
 /// Enforces the successful block-opening `advanceTempo` system transaction and same-block
@@ -203,6 +217,31 @@ impl<'a> ZoneBlockExecutor<'a> {
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
             prague_active,
         }
+    }
+
+    /// Block-level state after all prior transactions were committed.
+    ///
+    /// With [`Self::with_executor_state`] this executes one transaction from its exact prestate
+    /// (as `tempo-corpus` does), not a whole block. The inner executor's separate regular/state
+    /// block gas counters are not restorable; they only gate block-gas admission, which a
+    /// canonical transaction passes either way.
+    #[doc(hidden)]
+    pub fn executor_state(&self) -> ZoneExecutorState {
+        ZoneExecutorState {
+            phase: self.phase,
+            cumulative_gas_used: self.inner.inner.cumulative_gas_used,
+            blob_gas_used: self.inner.inner.blob_gas_used,
+        }
+    }
+
+    /// Restores [`Self::executor_state`] into a fresh executor over the matching prestate.
+    ///
+    /// Do not apply pre-execution changes again or finalize this executor.
+    #[doc(hidden)]
+    pub fn with_executor_state(&mut self, state: ZoneExecutorState) {
+        self.phase = state.phase;
+        self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
+        self.inner.inner.blob_gas_used = state.blob_gas_used;
     }
 
     /// Clears the code of [`T15_REMOVED_PREDEPLOYS`], keeping their balance, nonce, and storage.
