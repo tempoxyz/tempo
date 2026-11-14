@@ -47,7 +47,7 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -78,6 +78,10 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
+
+/// Execution time at or above which a transaction discarded for exhausting the build budget is
+/// removed from the pool instead of being left there for a later block.
+const SLOW_TRANSACTION_EXECUTION_THRESHOLD: Duration = Duration::from_millis(100);
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -498,9 +502,17 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        // Execution time of a transaction discarded for exhausting the build budget.
+        // Validators never replay it, so it is excluded from replayable work.
+        let mut discarded_transaction_elapsed = Duration::ZERO;
+        // A discarded transaction slow enough to be removed from the pool once the fill ends.
+        let mut slow_discarded_transaction = None;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
-        // work would consume that window.
+        // work would consume that window. A transaction, including the first, whose
+        // execution exhausts the budget is discarded and left in the pool for a later block,
+        // unless its execution took at least SLOW_TRANSACTION_EXECUTION_THRESHOLD, in which
+        // case it is removed from the pool.
         // Snapshot the shared estimator once so every stop decision in this
         // build uses the same multiplier, dry build finish and validation feedback.
         let build_plan = payload_build_budget
@@ -630,6 +642,10 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
+            // Snapshot before `result_closure` borrows the counter mutably.
+            let gas_used_before_tx = cumulative_gas_used;
+            let mut exceeded_build_budget = false;
+
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
@@ -645,22 +661,45 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
+            let transaction_execution_start = Instant::now();
+            let executed = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
+                executor.execute_transaction_with_actions_without_commit(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
+                executor.execute_transaction_without_commit(tx.transaction.executable())
             };
+            let transaction_execution_elapsed = transaction_execution_start.elapsed();
+            // A replayed transaction was executed by a prewarm worker; replaying it here is
+            // much cheaper than that execution.
+            let transaction_cost = pool_tx
+                .replay_execution_elapsed
+                .unwrap_or(transaction_execution_elapsed);
+            let execution_result = executed.and_then(|result| {
+                // Any pool transaction, including the first, is discarded when its execution
+                // exhausts the budget. A slow one is removed from the pool below, so it cannot
+                // be re-executed and discarded block after block.
+                if let Some(plan) = build_plan.as_ref() {
+                    let workload = ValidationLatencyWorkload::new(
+                        gas_used_before_tx + result.block_gas_used(),
+                        pool_transactions_included as usize + 1,
+                    );
+                    exceeded_build_budget = plan.exhausted(&plan.decision(
+                        start.elapsed(),
+                        normal_transaction_fill_idle_elapsed,
+                        workload,
+                    ));
+                    // Leave the transaction uncommitted and unmarked so it stays in the pool.
+                    if exceeded_build_budget {
+                        return Ok(());
+                    }
+                }
+                result_closure(&result);
+                executor.commit_transaction(result).map(|_| ())
+            });
 
             if let Err(err) = execution_result {
                 match err {
@@ -733,6 +772,28 @@ where
                 }
             }
 
+            if exceeded_build_budget {
+                discarded_transaction_elapsed = transaction_execution_elapsed;
+                let remove_from_pool = transaction_cost >= SLOW_TRANSACTION_EXECUTION_THRESHOLD;
+                debug!(
+                    target: "payload_builder",
+                    tx_hash = ?tx.hash(),
+                    elapsed = ?start.elapsed(),
+                    execution_elapsed = ?transaction_cost,
+                    gas_used = cumulative_gas_used,
+                    transactions = pool_transactions_included,
+                    remove_from_pool,
+                    "dropping transaction that exhausted the payload build budget"
+                );
+                if remove_from_pool {
+                    slow_discarded_transaction = Some(*tx.hash());
+                    self.metrics.inc_pool_tx_skipped("build_budget_slow");
+                } else {
+                    self.metrics.inc_pool_tx_skipped("build_budget");
+                }
+                break BlockBuildStopReason::BuildBudget;
+            }
+
             trace!("Transaction executed");
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
@@ -746,9 +807,14 @@ where
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
 
+        // Its descendants cannot execute without it, so they go too.
+        if let Some(tx_hash) = slow_discarded_transaction {
+            self.pool.remove_transactions_and_descendants(vec![tx_hash]);
+        }
+
         let elapsed_at_tx_cutoff = start.elapsed();
-        let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_at_tx_cutoff = elapsed_at_tx_cutoff
+            .saturating_sub(normal_transaction_fill_idle_elapsed + discarded_transaction_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -978,7 +1044,8 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let validation_work_duration = elapsed
+            .saturating_sub(normal_transaction_fill_idle_elapsed + discarded_transaction_elapsed);
         if payload_build_budget.is_some() {
             let finished_at = Instant::now();
             self.estimator.on_build_finished(
