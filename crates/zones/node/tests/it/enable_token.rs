@@ -200,11 +200,10 @@ async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
 
     // --- Step 1: Start L1 and a zone, funding the user with pathUSD for L2 gas ---
     let pathusd_gas_amount: u128 = 5_000_000; // 5 pathUSD for L2 gas
-    let net = Network::builder()
-        .accounts(1, pathusd_gas_amount * 2)
+    let (l1, [zone], [user]) = &Network::default()
+        .fund(pathusd_gas_amount * 2)
         .start()
         .await?;
-    let (l1, [zone], [user]) = net.parts();
 
     // --- Step 2: Create AlphaUSD on L1 ---
     // --- Step 3: Mint AlphaUSD to the user ---

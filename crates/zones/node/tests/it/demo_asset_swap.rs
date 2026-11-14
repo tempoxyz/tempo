@@ -14,8 +14,7 @@ async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
 
     // --- Step 1: Start L1 and a zone ---
     // Alice's pathUSD pays for gas.
-    let net = Network::builder().accounts(1, 10_000_000).start().await?;
-    let (l1, [zone], [alice]) = net.parts();
+    let (l1, [zone], [alice]) = &Network::default().fund(10_000_000).start().await?;
 
     // --- Step 2: Create two TIP-20 tokens on L1 ---
     let alpha_salt = B256::with_last_byte(100);

@@ -133,8 +133,9 @@ template (`crates/node/assets/zone-dev-genesis.json`, via `zone_node::genesis`):
 - **`L1TestNode`** — In-process Tempo L1 dev node. Fields are private; use
   `http_url()` and `ws_url()` getters. Constructed via `start()`.
 - **`Network`** — A dev L1 with zones and funded accounts:
-  `Network::builder().zone(config).accounts(n, fund).start()`, one closed zone
-  unless `zone` is called, split with `let (l1, [zone], [alice]) = net.parts()`.
+  `let (l1, [zone], [alice, bob]) = &Network::default().fund(amount).start().await?`,
+  with one closed zone unless `zone(config)` is called and as many accounts as the
+  pattern binds.
   Each `Zone` derefs to its `ZoneTestNode`, settles with its own sequencer key,
   and exposes `deposit` and `withdraw` (which wait for the resulting balance),
   `account()` and `spawn_sequencer()`.

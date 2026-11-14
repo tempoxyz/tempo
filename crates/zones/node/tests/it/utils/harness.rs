@@ -1,4 +1,4 @@
-//! [`Network`]: a dev L1 with zones and funded accounts, started in one call.
+//! [`Network`]: starts a dev L1 with zones and funded accounts in one call.
 
 use std::{ops::Deref, rc::Rc, time::Duration};
 
@@ -6,7 +6,7 @@ use alloy_primitives::{Address, U256};
 use alloy_signer_local::PrivateKeySigner;
 use futures::future::try_join_all;
 use k256::SecretKey;
-use tempo_primitives::test_utils::signers_vec;
+use tempo_primitives::test_utils::signers;
 
 use super::{
     L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneCreationConfig, ZoneLaunch, ZoneTestNode,
@@ -19,14 +19,14 @@ const GAS_FUNDING: u128 = 10_000_000;
 /// Time a withdrawal has to settle: a batch, its submission and its processing.
 const WITHDRAWAL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Builds a [`Network`]. See [`Network::builder`].
-pub(crate) struct NetworkBuilder {
+/// A dev L1 with zones and funded accounts, started by [`Self::start`].
+#[derive(Default)]
+pub(crate) struct Network {
     zones: Vec<ZoneCreationConfig>,
-    accounts: usize,
     fund: u128,
 }
 
-impl NetworkBuilder {
+impl Network {
     /// Adds a zone. A closed zone also admits the network's accounts. Without any, the network
     /// has one closed zone.
     pub fn zone(mut self, config: ZoneCreationConfig) -> Self {
@@ -34,23 +34,32 @@ impl NetworkBuilder {
         self
     }
 
-    /// Adds `count` accounts holding `fund` pathUSD each on the L1.
-    pub fn accounts(mut self, count: usize, fund: u128) -> Self {
-        self.accounts = count;
-        self.fund = fund;
+    /// Funds each account with `amount` pathUSD on the L1.
+    pub fn fund(mut self, amount: u128) -> Self {
+        self.fund = amount;
         self
     }
 
     /// Starts the L1, funds every key and launches each zone on its own sequencer key.
-    pub async fn start(self) -> eyre::Result<Network> {
-        let l1 = Rc::new(L1TestNode::start().await?);
-        let accounts = signers_vec(self.accounts);
+    ///
+    /// Returns the L1, the `Z` zones in the order they were added and `A` fresh accounts. Fails
+    /// unless `Z` matches the zones added.
+    pub async fn start<const Z: usize, const A: usize>(
+        self,
+    ) -> eyre::Result<(Rc<L1TestNode>, [Zone; Z], [PrivateKeySigner; A])> {
         let zones = if self.zones.is_empty() {
             vec![ZoneCreationConfig::closed(Vec::new())]
         } else {
             self.zones
         };
-        let sequencers = signers_vec(zones.len());
+        eyre::ensure!(
+            zones.len() == Z,
+            "network has {} zones, not {Z}",
+            zones.len()
+        );
+        let l1 = Rc::new(L1TestNode::start().await?);
+        let accounts = signers::<A>();
+        let sequencers = signers::<Z>();
         l1.fund_users(
             std::iter::once((l1.admin_address(), GAS_FUNDING))
                 .chain(
@@ -116,47 +125,10 @@ impl NetworkBuilder {
         ))
         .await?;
 
-        Ok(Network {
-            l1,
-            zones,
-            accounts,
-        })
-    }
-}
-
-/// A dev L1 with zones and funded accounts, started by [`NetworkBuilder::start`].
-pub(crate) struct Network {
-    l1: Rc<L1TestNode>,
-    zones: Vec<Zone>,
-    accounts: Vec<PrivateKeySigner>,
-}
-
-impl Network {
-    /// Returns a builder for a network with no zones and no accounts.
-    pub fn builder() -> NetworkBuilder {
-        NetworkBuilder {
-            zones: Vec::new(),
-            accounts: 0,
-            fund: 0,
-        }
-    }
-
-    /// Returns the L1, the zones in the order they were added and the funded accounts. Panics
-    /// unless there are `Z` zones and `A` accounts.
-    pub fn parts<const Z: usize, const A: usize>(
-        &self,
-    ) -> (&L1TestNode, &[Zone; Z], &[PrivateKeySigner; A]) {
-        (
-            &self.l1,
-            self.zones
-                .as_slice()
-                .try_into()
-                .expect("network has a different number of zones"),
-            self.accounts
-                .as_slice()
-                .try_into()
-                .expect("network has a different number of accounts"),
-        )
+        let zones = zones
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("one zone per config"));
+        Ok((l1, zones, accounts))
     }
 }
 

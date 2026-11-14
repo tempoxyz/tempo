@@ -1212,13 +1212,12 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // --- Steps 1-3: L1, both zones with their own sequencer keys, and the router ---
-    let net = Network::builder()
+    let (l1, [zone_a, zone_b], [account]) = &Network::default()
         .zone(ZoneCreationConfig::open())
         .zone(ZoneCreationConfig::open())
-        .accounts(1, 2_000_000)
+        .fund(2_000_000)
         .start()
         .await?;
-    let (l1, [zone_a, zone_b], [account]) = net.parts();
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;
     zone_b.assert_access_enforced(false).await?;
@@ -1328,13 +1327,12 @@ async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
 async fn test_cross_zone_router_tempo_refund_recipient() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder()
+    let (l1, [zone_a, zone_b], [alice]) = &Network::default()
         .zone(ZoneCreationConfig::open())
         .zone(ZoneCreationConfig::open())
-        .accounts(1, 4_000_000)
+        .fund(4_000_000)
         .start()
         .await?;
-    let (l1, [zone_a, zone_b], [alice]) = net.parts();
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     let [blacklisted_recipient, refund_burner] = actors();
 
@@ -1675,11 +1673,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
 
     // --- Step 1: Start L1 and a zone, funding the user with pathUSD ---
     let pathusd_amount: u128 = 1_000_000; // 1 pathUSD
-    let net = Network::builder()
-        .accounts(1, pathusd_amount * 2)
-        .start()
-        .await?;
-    let (l1, [zone], [user]) = net.parts();
+    let (l1, [zone], [user]) = &Network::default().fund(pathusd_amount * 2).start().await?;
 
     // --- Step 2: Create a second TIP-20 token on L1 ---
     let zoneusd_amount: u128 = 2_000_000; // 2 ZoneUSD
@@ -1757,8 +1751,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
 async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder().accounts(2, 2_000_000).start().await?;
-    let (_, [zone], [depositor, recipient]) = net.parts();
+    let (_, [zone], [depositor, recipient]) = &Network::default().fund(2_000_000).start().await?;
 
     zone.deposit_to(depositor, recipient.address(), 1_000_000)
         .await?;
@@ -1775,8 +1768,7 @@ async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
 async fn test_global_pause_stops_and_resumes_block_production() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder().accounts(2, 2_000_000).start().await?;
-    let (l1, [zone], [depositor, recipient]) = net.parts();
+    let (l1, [zone], [depositor, recipient]) = &Network::default().fund(2_000_000).start().await?;
     let initial_deposit = 1_000_000u128;
     zone.deposit_to(depositor, recipient.address(), initial_deposit)
         .await?;

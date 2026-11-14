@@ -94,8 +94,7 @@ async fn abort_task(handle: tokio::task::JoinHandle<()>) -> eyre::Result<()> {
 async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder().accounts(1, 6_000_000).start().await?;
-    let (l1, [zone], [user]) = net.parts();
+    let (l1, [zone], [user]) = &Network::default().fund(6_000_000).start().await?;
     let deposit_amount: u128 = 5_000_000;
     zone.deposit(user, deposit_amount).await?;
 
@@ -178,8 +177,7 @@ async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
 async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let net = Network::builder().accounts(1, 4_000_000).start().await?;
-    let (l1, [zone], [user]) = net.parts();
+    let (l1, [zone], [user]) = &Network::default().fund(4_000_000).start().await?;
     let mut account = zone.account(user);
     zone.deposit(user, 3_000_000).await?;
 

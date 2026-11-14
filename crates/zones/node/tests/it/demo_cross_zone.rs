@@ -31,13 +31,12 @@ async fn test_cross_zone_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // --- Steps 1-3: L1, both zones with their own sequencer keys, and the router ---
-    let net = Network::builder()
+    let (l1, [zone_a, zone_b], [alice, bob]) = &Network::default()
         .zone(ZoneCreationConfig::open())
         .zone(ZoneCreationConfig::open())
-        .accounts(2, 2_000_000)
+        .fund(2_000_000)
         .start()
         .await?;
-    let (l1, [zone_a, zone_b], [alice, bob]) = net.parts();
     let [refund_burner] = actors();
     let router = l1.deploy_router(l1.native_zone_factory().await?).await?;
     zone_a.assert_access_enforced(false).await?;

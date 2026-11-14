@@ -29,8 +29,7 @@ async fn test_shield_and_send() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // --- Steps 1-3: Start L1 and a zone connected to it ---
-    let net = Network::builder().accounts(2, 2_000_000).start().await?;
-    let (l1, [zone], [alice, bob]) = net.parts();
+    let (l1, [zone], [alice, bob]) = &Network::default().fund(2_000_000).start().await?;
 
     // --- Step 4: Alice deposits 1 pathUSD (shield) ---
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD (6 decimals)
