@@ -193,30 +193,7 @@ async fn test_pool_validation_uses_enabled_token_anchored_policy() -> eyre::Resu
     Ok(())
 }
 
-/// Full TokenEnabled pipeline with a real in-process L1 node:
-///
-///  1. Start L1 dev node and a zone, funding the user with pathUSD (for L2 gas).
-///  2. Create a second TIP-20 token ("AlphaUSD" / "aUSD") on L1.
-///  3. Mint AlphaUSD to the dev account.
-///  4. Enable AlphaUSD on the portal (emits `TokenEnabled` event) — must
-///     happen AFTER zone startup so the live L1 subscriber picks it up
-///     (events in blocks ≤ genesis are not backfilled).
-///  5. Wait for the zone to finalize past the `enableToken` L1 block.
-///  6. Fund user with AlphaUSD on L1.
-///  7. Deposit pathUSD first (for L2 gas), then deposit AlphaUSD.
-///  8. Verify AlphaUSD balance on L2.
-///  9. Spawn sequencer, withdraw AlphaUSD back to L1 and wait for the withdrawal to be
-///     processed on L1.
-///
-/// ```text
-///  L1 (TokenEnabled + deposit)          Zone L2
-///    |--- enableToken("AlphaUSD") ---->|  ✓ token initialized via builder
-///    |--- deposit pathUSD ------------>|  ✓ pathUSD minted (gas)
-///    |--- deposit AlphaUSD ----------->|  ✓ AlphaUSD minted
-///    |<-- withdraw AlphaUSD -----------|  ✓ AlphaUSD burned
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// A token enabled on a real L1 after zone startup can be deposited and withdrawn.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_enable_token_via_real_l1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

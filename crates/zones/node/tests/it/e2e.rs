@@ -569,8 +569,7 @@ async fn test_empty_l1_blocks_advance_zone() -> eyre::Result<()> {
     Ok(())
 }
 
-/// A finalized L1 never reorgs, so a zone offered a fork of L1 history it already consumed
-/// rejects the fork, keeps its chain, and keeps following the original branch.
+/// A zone rejects a fork of L1 history it already consumed and keeps following the original.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_zone_rejects_fork_of_consumed_l1_history() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

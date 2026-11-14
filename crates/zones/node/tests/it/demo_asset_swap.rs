@@ -7,24 +7,7 @@ use alloy::{
 };
 use tempo_precompiles::test_util::TIP20Setup;
 
-/// Multi-asset deposit + withdrawal:
-///
-/// 1. Start L1 dev node and a zone.
-/// 2. Create AlphaUSD and BetaUSD on L1.
-/// 3. Enable both tokens (auto-initialized on the zone via `TokenEnabled` events from L1).
-/// 4. Alice deposits AlphaUSD and BetaUSD.
-/// 5. Spawn sequencer, withdraw both tokens and wait for the L1 withdrawals.
-/// 6. Verify L2 balance decreases.
-///
-/// ```text
-///  L1 (AlphaUSD + BetaUSD)            Zone L2
-///   |--- deposit AlphaUSD ----------->|  ✓ AlphaUSD minted
-///   |--- deposit BetaUSD ------------>|  ✓ BetaUSD minted
-///   |<-- withdraw AlphaUSD -----------|  ✓ AlphaUSD burned
-///   |<-- withdraw BetaUSD ------------|  ✓ BetaUSD burned
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// Alice deposits AlphaUSD and BetaUSD into a zone and withdraws both back to L1.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_multiasset_deposit_and_withdraw() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

@@ -32,9 +32,7 @@ const SHORT_MULTI_BOUNDARY_GAP_BLOCKS: u64 = SHORT_EIP2935_HISTORY_WINDOW
     + 1;
 const CURRENT_TIP_BATCH_INTERVAL: u64 = 8;
 
-/// Extended timeout for ancestry tests — the L1 needs to mine >16k blocks and
-/// the zone must replay enough history to cross the first out-of-window boundary. It stays
-/// under nextest's 3-minute kill so a stall reports the wait that failed.
+/// Ancestry tests mine >16k L1 blocks. Stays under nextest's 3-minute kill.
 const STEPPING_TIMEOUT: Duration = Duration::from_secs(150);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(90);
 const SHORT_STEPPING_TIMEOUT: Duration = Duration::from_secs(60);

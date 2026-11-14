@@ -25,9 +25,7 @@ use crate::utils::{
 /// Ceiling for one leadership switch: covers the Commonware handshake, the promotion
 /// barrier's tip-evidence round trip, and the generation swap.
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a fenced or demoted node is watched to confirm it produces nothing. The in-memory L1
-/// hands each anchor to the engines at once, and an allowed node builds on it within a few
-/// hundred milliseconds.
+/// How long a fenced or demoted node is watched to confirm it produces nothing.
 const QUIESCENCE: Duration = Duration::from_secs(1);
 /// Live-propagation ceiling during the observation→activation window: well below the
 /// follower's 30-second inactivity backfill probe, so a routing regression that degrades

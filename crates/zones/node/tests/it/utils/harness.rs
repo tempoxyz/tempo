@@ -27,8 +27,7 @@ pub(crate) struct NetworkBuilder {
 }
 
 impl NetworkBuilder {
-    /// Adds a zone whose portal is created with `config`'s access and gateway modes. A closed
-    /// zone also admits the network's accounts.
+    /// Adds a zone. A closed zone also admits the network's accounts.
     pub fn zone(mut self, config: ZoneCreationConfig) -> Self {
         self.zones.push(config);
         self
@@ -41,12 +40,7 @@ impl NetworkBuilder {
         self
     }
 
-    /// Starts the L1, creates and funds the accounts, creates every zone's portal and launches its
-    /// node, returning once each zone has processed its genesis L1 block.
-    ///
-    /// Each zone gets its own funded sequencer key, which also holds the portal's encryption key,
-    /// so sequencers never race the dev key's nonce. The L1 admin is funded for admin-only portal
-    /// calls.
+    /// Starts the L1, funds every key and launches each zone on its own sequencer key.
     pub async fn start(self) -> eyre::Result<Network> {
         let l1 = Rc::new(L1TestNode::start().await?);
         let accounts = signers_vec(self.accounts);
@@ -146,11 +140,7 @@ impl Network {
         &self.l1
     }
 
-    /// Returns the zones, in the order they were added.
-    ///
-    /// # Panics
-    ///
-    /// If the network has other than `N` zones.
+    /// Returns the zones, in the order they were added. Panics unless there are `N`.
     pub fn zones<const N: usize>(&self) -> &[Zone; N] {
         self.zones
             .as_slice()
@@ -158,11 +148,7 @@ impl Network {
             .expect("network has a different number of zones")
     }
 
-    /// Returns the funded accounts. Their keys come from the seeded test RNG.
-    ///
-    /// # Panics
-    ///
-    /// If the network has other than `N` accounts.
+    /// Returns the funded accounts. Panics unless there are `N`.
     pub fn accounts<const N: usize>(&self) -> &[PrivateKeySigner; N] {
         self.accounts
             .as_slice()
@@ -193,16 +179,12 @@ impl Zone {
         self.portal_address
     }
 
-    /// Deposits `amount` pathUSD from `from` to itself and waits for the zone balance.
-    ///
-    /// Returns `from`'s zone balance after the deposit.
+    /// Deposits `amount` pathUSD from `from` to itself and returns its zone balance once credited.
     pub async fn deposit(&self, from: &PrivateKeySigner, amount: u128) -> eyre::Result<U256> {
         self.deposit_to(from, from.address(), amount).await
     }
 
-    /// Deposits `amount` pathUSD from `from` to `to` and waits for `to`'s zone balance.
-    ///
-    /// Returns `to`'s zone balance after the deposit.
+    /// Deposits `amount` pathUSD from `from` to `to` and returns `to`'s zone balance once credited.
     pub async fn deposit_to(
         &self,
         from: &PrivateKeySigner,
@@ -214,11 +196,7 @@ impl Zone {
             .await
     }
 
-    /// Withdraws `amount` of `token` from `account`'s zone balance to its own L1 address, then
-    /// waits until the portal processed the withdrawal. Needs a running sequencer, see
-    /// [`Self::spawn_sequencer`].
-    ///
-    /// Returns `account`'s L1 balance of `token` after the withdrawal.
+    /// Withdraws to `account`'s L1 address and returns its L1 balance once processed.
     pub async fn withdraw(
         &self,
         account: &PrivateKeySigner,
@@ -239,8 +217,7 @@ impl Zone {
             .await
     }
 
-    /// Returns `signer`'s [`ZoneAccount`] on this zone, for flows beyond [`Self::deposit`] and
-    /// [`Self::withdraw`].
+    /// Returns `signer`'s [`ZoneAccount`] on this zone.
     pub fn account(&self, signer: &PrivateKeySigner) -> ZoneAccount {
         ZoneAccount::with_signer(signer.clone(), &self.l1, &self.node, self.portal_address)
     }

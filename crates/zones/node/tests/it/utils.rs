@@ -109,12 +109,7 @@ pub fn next_unique_chain_id() -> u64 {
         .expect("test zone ID fits in u32")
 }
 
-/// Returns a signer derived from [`TEST_MNEMONIC`] at the given BIP-44 index.
-///
-/// Only for keys tests must agree on across nodes and genesis: the L1 roles (dev at 0, which the
-/// dev node signs with, user at 1, admin at 2) and deterministic owners. Genesis funds the first
-/// mnemonic accounts, so a test that reuses one inherits its balance. Any other party draws a
-/// fresh, unfunded key from [`signers`](tempo_primitives::test_utils::signers).
+/// Returns the [`TEST_MNEMONIC`] signer at a BIP-44 index. Only for fixed roles and owners.
 pub(crate) fn signer_at(index: u32) -> alloy_signer_local::PrivateKeySigner {
     MnemonicBuilder::<English>::default()
         .phrase(TEST_MNEMONIC)
@@ -506,8 +501,7 @@ pub fn alloc_precompile_writes(
     Ok(())
 }
 
-/// Seed the raw L1 cache at `block_number` with every slot `write` stores through the
-/// precompiles' typed storage, so tests never pack slots by hand.
+/// Seed the raw L1 cache at `block_number` with every slot `write` stores.
 pub fn seed_raw_l1_storage(
     cache: &mut zone_l1::state::L1StateCacheInner,
     block_number: u64,
@@ -1326,10 +1320,7 @@ impl ZoneTestNode {
     }
 }
 
-/// Configuration for [`ZoneTestNode::launch`].
-///
-/// The default is a standalone zone on a [`ZoneL1::Stub`] with a template genesis, a throwaway
-/// sequencer key and an 8-block withdrawal batch interval.
+/// Configuration for [`ZoneTestNode::launch`]. Defaults to a standalone zone on a [`ZoneL1::Stub`].
 pub(crate) struct ZoneLaunch {
     /// The L1 the zone follows.
     pub(crate) l1: ZoneL1,
@@ -1339,8 +1330,7 @@ pub(crate) struct ZoneLaunch {
     pub(crate) sequencer_signer: PrivateKeySigner,
     /// Blocks between withdrawal batch finalizations.
     pub(crate) withdrawal_batch_interval_blocks: u64,
-    /// Runs the node as a multi-sequencer quorum member, driven by the real role controller
-    /// instead of a harness-owned `ZoneEngine`.
+    /// Runs the node as a quorum member driven by the real role controller.
     pub(crate) p2p: Option<P2pConfig>,
     /// Keys for deposits encrypted to keys other than the sequencer's.
     pub(crate) additional_decryption_keys: Vec<SecretKey>,
@@ -1353,8 +1343,7 @@ pub(crate) struct ZoneLaunch {
 }
 
 impl ZoneLaunch {
-    /// A zone following `portal_address` on `l1`, with genesis anchored to the L1's latest block
-    /// and the L1 dev key as sequencer.
+    /// A zone following `portal_address` on `l1` from its latest block, sequenced by the dev key.
     pub fn from_l1(l1: &L1TestNode, portal_address: Address) -> Self {
         Self {
             l1: ZoneL1::Portal {
@@ -1390,14 +1379,11 @@ impl Default for ZoneLaunch {
 
 /// The L1 a [`ZoneTestNode`] follows.
 pub(crate) enum ZoneL1 {
-    /// A local RPC stub that serves only the enabled-token snapshot needed at startup. The
-    /// test injects L1 blocks through the deposit queue and seeds the L1 state cache via
-    /// [`L1Fixture::seed_l1_cache`] for TempoState storage reads.
+    /// A local RPC stub. The test injects L1 blocks and seeds the L1 state cache itself.
     Stub { chain_id: u64 },
     /// A zone without a portal whose L1 subscriber connects to `url`.
     Rpc { url: String, chain_id: u64 },
-    /// The portal at `portal_address` on the L1 at `url`. The portal's zone ID determines the
-    /// chain ID.
+    /// The portal at `portal_address` on the L1 at `url`, whose zone ID sets the chain ID.
     Portal {
         url: String,
         portal_address: Address,
@@ -1410,9 +1396,6 @@ pub(crate) enum ZoneGenesis {
     /// `zone_node::genesis::genesis_template()`.
     Template,
     /// Anchored to this block of the zone's L1. See [`build_l1_anchored_genesis`].
-    ///
-    /// Anchoring below the L1 tip preserves the full replay gap, e.g. for long-downtime
-    /// catch-up tests.
     L1(BlockNumberOrTag),
     /// This genesis.
     Custom(Genesis),
@@ -1542,9 +1525,7 @@ impl L1TestNode {
         Ok(())
     }
 
-    /// Transfer pathUSD from the dev account to each `(recipient, amount)`.
-    ///
-    /// Sends every transfer at once with explicit nonces, so none waits on another.
+    /// Transfer pathUSD from the dev account to each `(recipient, amount)`, all at once.
     pub async fn fund_users(
         &self,
         transfers: impl IntoIterator<Item = (Address, u128)>,
@@ -1758,8 +1739,7 @@ impl L1TestNode {
     ///
     /// Polls the account's L1 token balance until it increases by at least
     /// `amount` from the caller-provided pre-withdrawal balance, then asserts
-    /// both `BatchSubmitted` and `WithdrawalProcessed` events exist on the portal. Returns the
-    /// account's L1 balance after the withdrawal.
+    /// both `BatchSubmitted` and `WithdrawalProcessed` events exist on the portal.
     pub(crate) async fn wait_for_withdrawal_on_l1(
         &self,
         portal_address: Address,
@@ -1781,8 +1761,7 @@ impl L1TestNode {
 
     /// Wait for a withdrawal of a specific token to be fully processed on L1.
     ///
-    /// `balance_before` must be captured before submitting the withdrawal request. Returns the
-    /// account's L1 balance after the withdrawal.
+    /// `balance_before` must be captured before submitting the withdrawal request.
     pub(crate) async fn wait_for_withdrawal_on_l1_token(
         &self,
         portal_address: Address,
@@ -2463,10 +2442,7 @@ async fn patch_clean_portal_snapshot<P: Provider<TempoNetwork>>(
     Ok(())
 }
 
-/// Build a zone test genesis anchored to an L1 block.
-///
-/// When the portal exists at that block, the genesis is patched with its initial-token
-/// commitment; see [`patch_clean_portal_snapshot`].
+/// Build a zone test genesis anchored to an L1 block, patched with the portal's initial token.
 pub async fn build_l1_anchored_genesis(
     l1_http_url: &url::Url,
     portal_address: Address,
@@ -3359,17 +3335,11 @@ impl RealP2pCluster {
     }
 }
 
-/// Configuration for [`start_real_p2p_cluster`].
-///
-/// The default launches all three members, each connected directly to the L1, with a 4-block
-/// withdrawal batch interval.
+/// Configuration for [`start_real_p2p_cluster`]. Defaults to three direct nodes, 4-block batches.
 pub(crate) struct ClusterConfig {
-    /// Blocks between withdrawal batch finalizations. A short interval bounds how long tests
-    /// wait for an empty batch boundary; a full import following checkpoint-only blocks may
-    /// close a batch sooner.
+    /// Blocks between withdrawal batch finalizations.
     pub(crate) withdrawal_batch_interval_blocks: u64,
-    /// How many of the three configured members to launch: two or three. A reachable 2-of-3
-    /// quorum settles without waiting for the offline third member.
+    /// How many of the three configured members to launch: two or three.
     pub(crate) active_nodes: usize,
     /// How the nodes reach the L1.
     pub(crate) l1_proxy: L1ProxyMode,
@@ -3377,14 +3347,11 @@ pub(crate) struct ClusterConfig {
     pub(crate) l1_block_time: Option<Duration>,
     /// Routes every P2P link through an independently controllable [`P2pChaosNetwork`] proxy.
     pub(crate) proxy_p2p: bool,
-    /// Runs settlement proving, so every node persists witnesses before canonicalization. No
-    /// prover listens on the routed endpoint: every proof fails fast and settlement falls back
-    /// to the `NoProof` verifier.
+    /// Runs settlement proving against an unreachable prover, falling back to `NoProof`.
     pub(crate) settlement_proving: bool,
     /// Seeds every sequencer's deposit allowlist and adds an RPC-only node that mirrors it.
     pub(crate) deposit_allowlist: Option<AllowlistSetup>,
-    /// The L1 serves no state proofs and the zone stays before T15, so collecting any zone
-    /// block's witness fails while the L1 subscriber keeps observing headers and portal events.
+    /// The L1 serves no state proofs and the zone stays before T15, so witnesses fail.
     pub(crate) without_l1_proofs: bool,
 }
 
@@ -3489,8 +3456,7 @@ fn available_address() -> eyre::Result<SocketAddr> {
 pub(crate) enum L1ProxyMode {
     /// Every node connects to the L1 directly.
     Direct,
-    /// Every node connects through one shared [`TcpChaosProxy`], so disconnecting it closes
-    /// every established L1 connection.
+    /// Every node connects through one shared [`TcpChaosProxy`].
     All,
     /// Every node connects through its own [`TcpChaosProxy`].
     PerNode,
@@ -3505,13 +3471,11 @@ pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
 pub(crate) struct AllowlistSetup {
     /// Addresses every sequencer's list starts with.
     pub(crate) seed: Vec<Address>,
-    /// Whether the RPC-only node runs with the admin and relays `zoneAdmin` writes; otherwise
-    /// writes must go to the sequencers directly.
+    /// Whether the RPC-only node relays `zoneAdmin` writes to the sequencers.
     pub(crate) rpc_relays_writes: bool,
 }
 
-/// Start a three-member P2P quorum against a real Tempo L1 and a Portal registered with the
-/// exact per-node attestation keys.
+/// Start a three-member P2P quorum against a real Tempo L1.
 pub async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Result<RealP2pCluster> {
     let ClusterConfig {
         withdrawal_batch_interval_blocks,
@@ -4865,11 +4829,7 @@ impl L1Fixture {
         FixtureBlock { header }
     }
 
-    /// Returns a fixture whose next block forks off `parent`, a block this fixture built.
-    ///
-    /// Each fork block's timestamp is past that of every block this fixture builds at the same
-    /// height, so the branches never share a block above `parent`. The fork seeds no L1 state
-    /// caches or enabled-token registries.
+    /// Returns a fixture whose next block forks off `parent`, with no caches or registries.
     pub fn fork_of(&self, parent: &FixtureBlock) -> Self {
         Self {
             next_block_number: parent.header.inner.number + 1,
@@ -5014,10 +4974,7 @@ impl L1Fixture {
         Ok(height)
     }
 
-    /// Inject an L1 block depositing `amount` pathUSD from `from` to `to` into `zone`, then wait
-    /// for `to`'s zone balance to grow by `amount`.
-    ///
-    /// Returns `to`'s zone balance after the deposit.
+    /// Inject a deposit of `amount` pathUSD into `zone` and return `to`'s balance once credited.
     pub async fn deposit(
         &mut self,
         zone: &ZoneTestNode,

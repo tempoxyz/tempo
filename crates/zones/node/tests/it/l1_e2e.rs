@@ -1672,24 +1672,7 @@ async fn test_swap_and_deposit_into_same_zone_bounces_back_when_target_deposits_
     Ok(())
 }
 
-/// Multi-asset deposit + withdrawal test:
-///
-///  1. Start L1 dev node and a zone with pathUSD.
-///  2. Create a second TIP-20 token ("ZoneUSD") on L1.
-///  3. Enable ZoneUSD on the portal (auto-initialized on the zone via TokenEnabled event).
-///  4. Deposit pathUSD and ZoneUSD into the zone.
-///  5. Spawn sequencer, withdraw both tokens back to L1 and wait for their processing.
-///  6. Verify L2 balances decreased.
-///
-/// ```text
-///  L1 (pathUSD + ZoneUSD)          Zone L2
-///    |--- deposit pathUSD -------->|  ✓ pathUSD minted
-///    |--- deposit ZoneUSD -------->|  ✓ ZoneUSD minted
-///    |<-- withdraw pathUSD --------|  ✓ pathUSD burned
-///    |<-- withdraw ZoneUSD --------|  ✓ ZoneUSD burned
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// pathUSD and a second enabled token both deposit into a zone and withdraw back to L1.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1776,41 +1759,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Full encrypted deposit + withdrawal flow:
-///
-///  1. Start L1 dev node and create a zone through the native ZoneFactory, registering the
-///     sequencer's encryption key on the portal.
-///  2. Fund the depositor, call `deposit` on the portal — encrypting (recipient, memo) to the
-///     sequencer's public key. The zone processes this automatically: ECIES decrypt → CP proof →
-///     AES-GCM verify → mint to recipient. `deposit_to` waits for the L2 balance to confirm the
-///     full pipeline succeeded.
-///  3. Spawn sequencer tasks, recipient requests withdrawal on L2.
-///  4. Wait for batch submission + withdrawal processing on L1.
-///
-/// ```text
-///  L1                                       Zone L2
-///   │                                         │
-///   │  setSequencerEncryptionKey              │
-///   │                                         │
-///   │  deposit ──────────────────►    │
-///   │                                         │
-///   │               ECIES decrypt             │
-///   │               + CP proof                │
-///   │                   │                    │
-///   │                   ▼                    │
-///   │            advanceTempo                 │
-///   │                   │                    │
-///   │                   ▼                    │
-///   │            CP ✓ + AES decrypt           │
-///   │            → mint to recipient         │
-///   │                                         │
-///   │   ◄──── requestWithdrawal ───── │
-///   │   ◄──── submitBatch ────────  │
-///   │   processWithdrawals                     │
-///   │            → tokens to L1              │
-/// ```
-///
-/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
+/// An encrypted deposit mints to its hidden recipient, who withdraws back to L1.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
