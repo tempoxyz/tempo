@@ -4,11 +4,13 @@
 //! compare with the intent, and the older balance/log consistency check remains complementary.
 
 use alloy::{
+    consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _},
+    eips::eip2718::Decodable2718 as _,
     network::{AnyTransactionReceipt, ReceiptResponse as _},
     primitives::{Address, B256, U256},
     providers::Provider as _,
     rpc::types::{BlockId, Filter, Log},
-    sol_types::SolEvent as _,
+    sol_types::{SolCall as _, SolEvent as _},
 };
 use antithesis_sdk::assert_always;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -24,7 +26,7 @@ use tempo_primitives::transaction::calc_gas_balance_spending;
 use crate::{
     Context,
     checks::logs,
-    intents::{Chain, Effect, Intent},
+    intents::{Chain, DepositCase, Effect, Intent},
     ledger::Record,
 };
 
@@ -37,6 +39,7 @@ type Refund = (Address, u128);
 
 #[derive(Debug, Clone)]
 struct Deposit {
+    case: DepositCase,
     id: B256,
     sender: Address,
     to: Address,
@@ -91,6 +94,8 @@ struct Observed {
     credits: BTreeMap<B256, Vec<(Address, Address, u128)>>,
     failures: BTreeMap<B256, Vec<(Address, u128)>>,
     refunds: Vec<Refund>,
+    // Delivered refunds normalized by their explicit processing-time fee.
+    delivered_refunds: Vec<Refund>,
     payouts: BTreeMap<B256, Vec<(Address, u128, bool)>>,
     bounces: BTreeMap<u64, Vec<u128>>,
     returns: Vec<Refund>,
@@ -116,6 +121,288 @@ impl Context {
             &json!({ "error": result.as_ref().err().map(|error| format!("{error:#}")) })
         );
         result
+    }
+
+    /// Requires canonical finalized admission, queue outcomes, delivered refund and settlement.
+    /// Missing evidence retries; contradictions fail, including credit of the corrupted payload.
+    pub(super) async fn bad_tag_evidence(
+        &self,
+        bad: &Intent,
+        valid: &Intent,
+        baseline: &crate::recovery::FinalizedCheckpoint,
+        settled: &crate::recovery::FinalizedCheckpoint,
+    ) -> eyre::Result<bool> {
+        eyre::ensure!(
+            self.zones.len() == 4,
+            "bad-tag evidence requires four zone nodes"
+        );
+        eyre::ensure!(
+            bad.sender == valid.sender && bad.tx != valid.tx && bad.nonce < valid.nonce,
+            "bad-tag successor is not distinct and later"
+        );
+        let cohort = Cohort::from_intents([bad, valid]);
+        let mut deposits = Vec::new();
+        let mut order = Vec::new();
+        let mut numbers = Vec::new();
+        for (intent, expected_case) in [(bad, DepositCase::BadTag), (valid, DepositCase::Ordinary)]
+        {
+            let Effect::Deposit { to, amount, case } = intent.effect else {
+                eyre::bail!("bad-tag episode intent is not a deposit");
+            };
+            eyre::ensure!(
+                case == expected_case && intent.chain == Chain::L1,
+                "wrong bad-tag episode case"
+            );
+            let Some(receipt) = self.l1.get_transaction_receipt(intent.tx).await? else {
+                return Ok(false);
+            };
+            eyre::ensure!(
+                receipt.transaction_hash == intent.tx,
+                "bad-tag admission receipt has wrong hash"
+            );
+            let height = receipt
+                .block_number
+                .ok_or_eyre("deposit receipt has no height")?;
+            if height > settled.l1_height {
+                return Ok(false);
+            }
+            let canonical = self
+                .l1
+                .get_block_by_number(height.into())
+                .await?
+                .ok_or_eyre("deposit admission block missing")?;
+            eyre::ensure!(
+                receipt.block_hash == Some(canonical.header.hash),
+                "bad-tag admission is not canonical"
+            );
+            eyre::ensure!(receipt.status(), "bad-tag episode outer deposit reverted");
+            let events: Vec<_> = receipt
+                .inner
+                .logs()
+                .iter()
+                .filter(|log| log.address() == self.portal)
+                .filter_map(|log| ZonePortal::DepositMade::decode_log(&log.inner).ok())
+                .collect();
+            eyre::ensure!(
+                events.len() == 1,
+                "bad-tag admission needs exactly one DepositMade"
+            );
+            let made = &events[0];
+            let mut raw = intent.raw.as_ref();
+            let signed = TxEnvelope::decode_2718(&mut raw)?;
+            eyre::ensure!(
+                raw.is_empty()
+                    && signed.tx_hash() == &intent.tx
+                    && signed.recover_signer()? == intent.sender
+                    && signed.to() == Some(self.portal),
+                "bad-tag signed envelope differs from intent"
+            );
+            let call = ZonePortal::depositCall::abi_decode_validate(signed.input())?;
+            eyre::ensure!(
+                call.token == PATH_USD_ADDRESS
+                    && call.amount == amount
+                    && call.tempoRefundRecipient == intent.sender
+                    && made.keyIndex == call.keyIndex
+                    && made.ephemeralPubkeyX == call.encrypted.ephemeralPubkeyX
+                    && made.ephemeralPubkeyYParity == call.encrypted.ephemeralPubkeyYParity
+                    && made.ciphertext == call.encrypted.ciphertext
+                    && made.nonce == call.encrypted.nonce
+                    && made.tag == call.encrypted.tag,
+                "bad-tag admission payload differs from signed calldata"
+            );
+            numbers.push(made.depositNumber);
+            eyre::ensure!(
+                made.sender == intent.sender
+                    && made.tempoRefundRecipient == intent.sender
+                    && made.token == PATH_USD_ADDRESS
+                    && made.netAmount.checked_add(made.fee) == Some(amount),
+                "bad-tag admission differs from intent"
+            );
+            deposits.push(Deposit {
+                id: made.newCurrentDepositQueueHash,
+                sender: intent.sender,
+                to,
+                amount: made.netAmount,
+                case,
+            });
+            order.push((
+                height,
+                receipt
+                    .transaction_index
+                    .ok_or_eyre("deposit receipt has no index")?,
+            ));
+        }
+        eyre::ensure!(
+            order[0] < order[1]
+                && deposits[0].id != deposits[1].id
+                && deposits[0].to != deposits[1].to,
+            "bad-tag valid successor is not distinct and later"
+        );
+        eyre::ensure!(
+            numbers[0].checked_add(1) == Some(numbers[1]),
+            "valid deposit is not the next queue entry"
+        );
+        // This episode owns a fresh sender. Do not invent attribution when its history isn't isolated.
+        let records = self.ledger.records()?;
+        let sender_deposits: BTreeSet<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Intent(intent)
+                    if intent.sender == bad.sender
+                        && matches!(intent.effect, Effect::Deposit { .. }) =>
+                {
+                    Some(intent.tx)
+                }
+                _ => None,
+            })
+            .collect();
+        eyre::ensure!(
+            sender_deposits == BTreeSet::from([bad.tx, valid.tx]),
+            "bad-tag refund sender is not isolated"
+        );
+        let l1_logs = logs(
+            &self.l1,
+            Filter::new().address(self.portal),
+            settled.l1_height,
+        )
+        .await?;
+        let l1_transfers = logs(
+            &self.l1,
+            Filter::new().address(PATH_USD_ADDRESS),
+            settled.l1_height,
+        )
+        .await?;
+        for log in &l1_logs {
+            let Ok(refund) = ZonePortal::DepositBounceBack::decode_log(&log.inner) else {
+                continue;
+            };
+            if refund.tempoRefundRecipient != bad.sender || refund.token != PATH_USD_ADDRESS {
+                continue;
+            }
+            let Some(receipt) = self
+                .finalized_refund_receipt(log, settled.l1_height)
+                .await?
+            else {
+                return Ok(false);
+            };
+            let transfers: Vec<_> = payments(receipt.logs())
+                .into_iter()
+                .filter(|(from, to, _)| *from == self.portal && *to == bad.sender)
+                .collect();
+            eyre::ensure!(
+                transfers == [(self.portal, bad.sender, U256::from(refund.amount))],
+                "refund receipt does not pay the isolated recipient exactly once"
+            );
+        }
+        for zone in &self.zones {
+            let zone_logs = logs(
+                zone,
+                Filter::new().address(ZONE_INBOX_ADDRESS),
+                settled.height,
+            )
+            .await?;
+            let observed = observe(&zone_logs, &l1_logs)?;
+            if !bad_tag_ready(&deposits, &observed)? {
+                return Ok(false);
+            }
+            check_bridge(&cohort, &deposits, &[], &observed)?;
+            let transfers = logs(
+                zone,
+                Filter::new().address(PATH_USD_ADDRESS),
+                settled.height,
+            )
+            .await?;
+            check_token_effects(
+                &cohort,
+                &deposits,
+                &[],
+                &observed,
+                self.portal,
+                &payments(&transfers),
+                &payments(&l1_transfers),
+            )?;
+            // Both outcome receipts and their event blocks must be in the common finalized prefix.
+            let mut outcome_order = Vec::new();
+            for (index, deposit) in deposits.iter().enumerate() {
+                let event = zone_logs
+                    .iter()
+                    .find(|log| {
+                        if index == 0 {
+                            IZoneInbox::DepositFailed::decode_log(&log.inner)
+                                .is_ok_and(|event| event.depositHash == deposit.id)
+                        } else {
+                            IZoneInbox::DepositProcessed::decode_log(&log.inner)
+                                .is_ok_and(|event| event.depositHash == deposit.id)
+                        }
+                    })
+                    .ok_or_eyre("bad-tag episode outcome missing")?;
+                let proof = crate::recovery::ReceiptProof {
+                    tx: event
+                        .transaction_hash
+                        .ok_or_eyre("deposit outcome has no tx")?,
+                    height: event
+                        .block_number
+                        .ok_or_eyre("deposit outcome has no block")?,
+                    hash: event
+                        .block_hash
+                        .ok_or_eyre("deposit outcome has no block hash")?,
+                    success: true,
+                };
+                eyre::ensure!(
+                    proof.height <= settled.height,
+                    "deposit outcome is beyond finalized settlement"
+                );
+                outcome_order.push((
+                    proof.height,
+                    event
+                        .transaction_index
+                        .ok_or_eyre("deposit outcome has no tx index")?,
+                    event
+                        .log_index
+                        .ok_or_eyre("deposit outcome has no log index")?,
+                ));
+                if !self
+                    .check_checkpoint(baseline, settled, &proof, &[0, 1, 2, 3])
+                    .await?
+                {
+                    return Ok(false);
+                }
+            }
+            eyre::ensure!(
+                outcome_order[0] < outcome_order[1],
+                "successor processed before bad-tag deposit"
+            );
+        }
+        Ok(true)
+    }
+
+    // Sequencer processWithdrawals uses Tempo's 0x76 envelope, not an Ethereum receipt type.
+    async fn finalized_refund_receipt(
+        &self,
+        log: &Log,
+        finalized_height: u64,
+    ) -> eyre::Result<Option<AnyTransactionReceipt>> {
+        let tx = log
+            .transaction_hash
+            .ok_or_eyre("refund has no transaction hash")?;
+        let Some(receipt) = self
+            .l1
+            .raw_request::<_, Option<AnyTransactionReceipt>>(
+                "eth_getTransactionReceipt".into(),
+                [tx],
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let height = log.block_number.ok_or_eyre("refund has no block number")?;
+        let block = self
+            .l1
+            .get_block_by_number(height.into())
+            .await?
+            .ok_or_eyre("refund block missing")?;
+        verify_finalized_refund(log, &receipt, finalized_height, block.header.hash)?;
+        Ok(Some(receipt))
     }
 
     async fn observe_effects(&self) -> eyre::Result<Option<()>> {
@@ -196,7 +483,7 @@ impl Context {
             let (fee_payer, mut fee_payments) = receipt_fees(&receipt, intent.chain, beneficiary)?;
             let actual = token_payments(receipt.logs());
             match intent.effect {
-                Effect::Deposit { to, amount } if receipt.status() => {
+                Effect::Deposit { to, amount, case } if receipt.status() => {
                     let made = receipt
                         .logs()
                         .iter()
@@ -240,6 +527,7 @@ impl Context {
                         &actual,
                     )?;
                     deposits.push(Deposit {
+                        case,
                         id: made.newCurrentDepositQueueHash,
                         sender: intent.sender,
                         to,
@@ -331,6 +619,75 @@ impl Context {
         )?;
         Ok(Some(()))
     }
+}
+
+fn verify_finalized_refund(
+    log: &Log,
+    receipt: &AnyTransactionReceipt,
+    finalized_height: u64,
+    canonical_hash: B256,
+) -> eyre::Result<()> {
+    eyre::ensure!(
+        !log.removed
+            && log
+                .block_number
+                .is_some_and(|height| height <= finalized_height)
+            && log.block_hash == Some(canonical_hash)
+            && receipt.block_hash == log.block_hash
+            && receipt.block_number == log.block_number
+            && Some(receipt.transaction_hash) == log.transaction_hash
+            && receipt.transaction_index == log.transaction_index
+            && log.log_index.is_some()
+            && receipt.status()
+            && receipt
+                .logs()
+                .iter()
+                .filter(|event| !event.removed
+                    && event.inner == log.inner
+                    && event.log_index == log.log_index
+                    && event.transaction_hash == log.transaction_hash
+                    && event.block_hash == log.block_hash
+                    && event.block_number == log.block_number
+                    && event.transaction_index == log.transaction_index)
+                .count()
+                == 1,
+        "refund is not an exact canonical finalized receipt log"
+    );
+    Ok(())
+}
+
+// Readiness distinguishes absent asynchronous evidence from a contradictory observed outcome.
+fn bad_tag_ready(deposits: &[Deposit], observed: &Observed) -> eyre::Result<bool> {
+    eyre::ensure!(deposits.len() == 2, "bad-tag episode needs two deposits");
+    let bad = &deposits[0];
+    let valid = &deposits[1];
+    eyre::ensure!(
+        !observed.credits.contains_key(&bad.id),
+        "bad-tag deposit was credited: {}",
+        bad.id
+    );
+    eyre::ensure!(
+        !observed.failures.contains_key(&valid.id),
+        "valid successor deposit failed: {}",
+        valid.id
+    );
+    if !observed.failures.contains_key(&bad.id) || !observed.credits.contains_key(&valid.id) {
+        return Ok(false);
+    }
+    let delivered: Vec<_> = observed
+        .delivered_refunds
+        .iter()
+        .copied()
+        .filter(|(sender, _)| *sender == bad.sender)
+        .collect();
+    if delivered.is_empty() {
+        return Ok(false);
+    }
+    eyre::ensure!(
+        delivered == [(bad.sender, bad.amount)],
+        "bad-tag delivered refund differs from failed intent"
+    );
+    Ok(true)
 }
 
 fn verify_receipt(tx: B256, receipt: Option<&AnyTransactionReceipt>) -> eyre::Result<()> {
@@ -571,6 +928,13 @@ fn observe(zone_logs: &[Log], l1_logs: &[Log]) -> eyre::Result<Observed> {
             observed
                 .refund_payments
                 .push((event.tempoRefundRecipient, event.amount));
+            observed.delivered_refunds.push((
+                event.tempoRefundRecipient,
+                event
+                    .amount
+                    .checked_add(event.bouncebackFee)
+                    .ok_or_eyre("deposit refund overflow")?,
+            ));
             observed.refunds.push((
                 event.tempoRefundRecipient,
                 event
@@ -624,6 +988,11 @@ fn check_bridge(
         eyre::ensure!(
             credits.len() + failures.len() == 1,
             "deposit needs exactly one credit or failure: {}",
+            deposit.id
+        );
+        eyre::ensure!(
+            deposit.case != DepositCase::BadTag || credits.is_empty(),
+            "bad-tag deposit was credited: {}",
             deposit.id
         );
         if !credits.is_empty() {
@@ -831,6 +1200,7 @@ mod tests {
     fn cohort() -> Cohort {
         let mut deposit = intent();
         deposit.effect = Effect::Deposit {
+            case: DepositCase::Ordinary,
             to: Address::repeat_byte(3),
             amount: 10,
         };
@@ -844,6 +1214,7 @@ mod tests {
 
     fn deposit() -> Deposit {
         Deposit {
+            case: DepositCase::Ordinary,
             id: B256::repeat_byte(1),
             sender: Address::repeat_byte(2),
             to: Address::repeat_byte(3),
@@ -934,6 +1305,7 @@ mod tests {
         intent.chain = Chain::L1;
         let recipient = Address::repeat_byte(3);
         intent.effect = Effect::Deposit {
+            case: DepositCase::Ordinary,
             to: recipient,
             amount: 1_000_000_000,
         };
@@ -1018,6 +1390,7 @@ mod tests {
                         };
                         intent.effect = match kind {
                             "deposit" => Effect::Deposit {
+                                case: DepositCase::Ordinary,
                                 to: recipient,
                                 amount: 10,
                             },
@@ -1727,6 +2100,7 @@ mod tests {
                 }
             } else {
                 Effect::Deposit {
+                    case: DepositCase::Ordinary,
                     to: Address::repeat_byte(3),
                     amount: 10,
                 }
@@ -1824,6 +2198,7 @@ mod tests {
                 }
             } else {
                 Effect::Deposit {
+                    case: DepositCase::Ordinary,
                     to: stranger,
                     amount: 10,
                 }
@@ -1927,6 +2302,7 @@ mod tests {
                 intent.chain = if deposit { Chain::L1 } else { Chain::Zone };
                 intent.effect = if deposit {
                     Effect::Deposit {
+                        case: DepositCase::Ordinary,
                         to: recipient,
                         amount: 10,
                     }
@@ -2069,6 +2445,7 @@ mod tests {
         let portal = Address::repeat_byte(8);
         for effect in [
             Effect::Deposit {
+                case: DepositCase::Ordinary,
                 to: fresh,
                 amount: 10,
             },
@@ -2108,6 +2485,7 @@ mod tests {
             );
         }
         intent.effect = Effect::Deposit {
+            case: DepositCase::Ordinary,
             to: fresh,
             amount: 10,
         };
@@ -2133,5 +2511,492 @@ mod tests {
                 .to_string(),
             "withdrawal returns differ from bounced intents"
         );
+    }
+    #[tokio::test]
+    async fn bad_tag_full_history_oracle_rejects_wrong_outcomes_and_refunds() {
+        for mutation in [
+            "none",
+            "ordinary_credit",
+            "bad_credit",
+            "missing_refund",
+            "duplicate_refund",
+            "wrong_recipient",
+            "wrong_amount",
+            "wrong_fee",
+            "pending",
+            "missing_failure",
+            "duplicate_failure",
+            "wrong_queue",
+            "missing_successor",
+            "failed_successor",
+            "wrong_token",
+            "wrong_transfer",
+            "bad_mint",
+        ] {
+            let portal = Address::repeat_byte(8);
+            let mut bad = intent();
+            bad.raw = Bytes::from_static(b"bad-tag oracle signed fixture");
+            bad.tx = alloy::primitives::keccak256(&bad.raw);
+            bad.chain = Chain::L1;
+            bad.effect = Effect::Deposit {
+                to: Address::repeat_byte(3),
+                amount: 12,
+                case: if mutation == "ordinary_credit" {
+                    DepositCase::Ordinary
+                } else {
+                    DepositCase::BadTag
+                },
+            };
+            let mut valid = bad.clone();
+            valid.raw = Bytes::from_static(b"valid successor oracle signed fixture");
+            valid.tx = alloy::primitives::keccak256(&valid.raw);
+            valid.nonce += 1;
+            valid.effect = Effect::Deposit {
+                to: Address::repeat_byte(4),
+                amount: 11,
+                case: DepositCase::Ordinary,
+            };
+            let bad_deposit = Deposit {
+                case: DepositCase::BadTag,
+                ..deposit()
+            };
+            let valid_deposit = Deposit {
+                id: B256::repeat_byte(6),
+                sender: bad.sender,
+                to: Address::repeat_byte(4),
+                amount: 11,
+                case: DepositCase::Ordinary,
+            };
+            let failed = event_log(
+                IZoneInbox::DepositFailed {
+                    depositHash: bad_deposit.id,
+                    sender: bad.sender,
+                    token: PATH_USD_ADDRESS,
+                    amount: 10,
+                },
+                ZONE_INBOX_ADDRESS,
+            );
+            let credit = event_log(
+                IZoneInbox::DepositProcessed {
+                    depositHash: valid_deposit.id,
+                    sender: valid.sender,
+                    to: valid_deposit.to,
+                    token: PATH_USD_ADDRESS,
+                    amount: 11,
+                    memo: B256::ZERO,
+                },
+                ZONE_INBOX_ADDRESS,
+            );
+            let mut zone_logs = vec![failed.clone(), credit];
+            let mut l1_logs = vec![event_log(
+                ZonePortal::DepositBounceBack {
+                    tempoRefundRecipient: bad.sender,
+                    token: PATH_USD_ADDRESS,
+                    amount: 7,
+                    bouncebackFee: 3,
+                },
+                portal,
+            )];
+            let mut zone_transfers = vec![event_log(
+                ITIP20::Transfer {
+                    from: Address::ZERO,
+                    to: valid_deposit.to,
+                    amount: U256::from(11),
+                },
+                PATH_USD_ADDRESS,
+            )];
+            let mut l1_transfers = vec![event_log(
+                ITIP20::Transfer {
+                    from: portal,
+                    to: bad.sender,
+                    amount: U256::from(7),
+                },
+                PATH_USD_ADDRESS,
+            )];
+            match mutation {
+                "bad_credit" | "ordinary_credit" => {
+                    zone_logs[0] = event_log(
+                        IZoneInbox::DepositProcessed {
+                            depositHash: bad_deposit.id,
+                            sender: bad.sender,
+                            to: bad_deposit.to,
+                            token: PATH_USD_ADDRESS,
+                            amount: 10,
+                            memo: B256::ZERO,
+                        },
+                        ZONE_INBOX_ADDRESS,
+                    );
+                    l1_logs.clear();
+                    l1_transfers.clear();
+                    zone_transfers.push(event_log(
+                        ITIP20::Transfer {
+                            from: Address::ZERO,
+                            to: bad_deposit.to,
+                            amount: U256::from(10),
+                        },
+                        PATH_USD_ADDRESS,
+                    ));
+                }
+                "missing_refund" => {
+                    l1_logs.clear();
+                    l1_transfers.clear();
+                }
+                "duplicate_refund" => {
+                    l1_logs.push(l1_logs[0].clone());
+                    l1_transfers.push(l1_transfers[0].clone());
+                }
+                "wrong_recipient" | "wrong_amount" | "wrong_fee" | "wrong_token" => {
+                    l1_logs[0] = event_log(
+                        ZonePortal::DepositBounceBack {
+                            tempoRefundRecipient: if mutation == "wrong_recipient" {
+                                Address::repeat_byte(99)
+                            } else {
+                                bad.sender
+                            },
+                            token: if mutation == "wrong_token" {
+                                Address::repeat_byte(99)
+                            } else {
+                                PATH_USD_ADDRESS
+                            },
+                            amount: if mutation == "wrong_amount" { 8 } else { 7 },
+                            bouncebackFee: if mutation == "wrong_fee" { 4 } else { 3 },
+                        },
+                        portal,
+                    );
+                }
+                "pending" => {
+                    l1_logs[0] = event_log(
+                        ZonePortal::DepositBounceBackPending {
+                            tempoRefundRecipient: bad.sender,
+                            token: PATH_USD_ADDRESS,
+                            amount: 7,
+                            bouncebackFee: 3,
+                        },
+                        portal,
+                    );
+                    l1_transfers.clear();
+                }
+                "missing_failure" => {
+                    zone_logs.remove(0);
+                }
+                "duplicate_failure" => zone_logs.push(failed),
+                "wrong_queue" => {
+                    zone_logs[0] = event_log(
+                        IZoneInbox::DepositFailed {
+                            depositHash: B256::repeat_byte(99),
+                            sender: bad.sender,
+                            token: PATH_USD_ADDRESS,
+                            amount: 10,
+                        },
+                        ZONE_INBOX_ADDRESS,
+                    );
+                }
+                "missing_successor" => {
+                    zone_logs.pop();
+                    zone_transfers.clear();
+                }
+                "failed_successor" => {
+                    zone_logs[1] = event_log(
+                        IZoneInbox::DepositFailed {
+                            depositHash: valid_deposit.id,
+                            sender: valid.sender,
+                            token: PATH_USD_ADDRESS,
+                            amount: 11,
+                        },
+                        ZONE_INBOX_ADDRESS,
+                    );
+                }
+                "wrong_transfer" => {
+                    l1_transfers[0] = event_log(
+                        ITIP20::Transfer {
+                            from: portal,
+                            to: bad.sender,
+                            amount: U256::from(8),
+                        },
+                        PATH_USD_ADDRESS,
+                    );
+                }
+                "bad_mint" => zone_transfers.push(event_log(
+                    ITIP20::Transfer {
+                        from: Address::ZERO,
+                        to: bad_deposit.to,
+                        amount: U256::from(10),
+                    },
+                    PATH_USD_ADDRESS,
+                )),
+                _ => {}
+            }
+            let observed = observe(&zone_logs, &l1_logs).unwrap();
+            if mutation == "none" {
+                assert!(
+                    bad_tag_ready(&[bad_deposit.clone(), valid_deposit.clone()], &observed)
+                        .unwrap()
+                );
+            }
+            if matches!(
+                mutation,
+                "pending" | "missing_successor" | "missing_failure" | "missing_refund"
+            ) {
+                assert!(
+                    !bad_tag_ready(&[bad_deposit.clone(), valid_deposit.clone()], &observed)
+                        .unwrap()
+                );
+            }
+            if mutation == "failed_successor" {
+                assert_eq!(
+                    bad_tag_ready(&[bad_deposit.clone(), valid_deposit.clone()], &observed)
+                        .unwrap_err()
+                        .to_string(),
+                    format!("valid successor deposit failed: {}", valid_deposit.id)
+                );
+            }
+            let l1 = Asserter::new();
+            let zone = Asserter::new();
+            l1.push_success(&"0x1");
+            l1.push_success(&l1_logs);
+            l1.push_success(&l1_transfers);
+            zone.push_success(&"0x1");
+            zone.push_success(&zone_logs);
+            zone.push_success(&zone_transfers);
+            for (intent, deposit, fee) in [(&bad, &bad_deposit, 2), (&valid, &valid_deposit, 0)] {
+                let made = event_log(
+                    ZonePortal::DepositMade {
+                        newCurrentDepositQueueHash: deposit.id,
+                        sender: intent.sender,
+                        token: PATH_USD_ADDRESS,
+                        netAmount: deposit.amount,
+                        fee,
+                        keyIndex: U256::ZERO,
+                        ephemeralPubkeyX: B256::ZERO,
+                        ephemeralPubkeyYParity: 2,
+                        ciphertext: Bytes::new(),
+                        nonce: Default::default(),
+                        tag: Default::default(),
+                        tempoRefundRecipient: intent.sender,
+                        depositNumber: intent.nonce + 1,
+                    },
+                    portal,
+                );
+                let mut receipt_logs = vec![
+                    made,
+                    event_log(
+                        ITIP20::Transfer {
+                            from: intent.sender,
+                            to: portal,
+                            amount: U256::from(deposit.amount + fee),
+                        },
+                        PATH_USD_ADDRESS,
+                    ),
+                ];
+                if fee != 0 {
+                    receipt_logs.push(event_log(
+                        ITIP20::Transfer {
+                            from: portal,
+                            to: Address::repeat_byte(55),
+                            amount: U256::from(fee),
+                        },
+                        PATH_USD_ADDRESS,
+                    ));
+                }
+                let mut receipt = fee_receipt(0, 0, None, intent.sender, receipt_logs);
+                receipt.transaction_hash = intent.tx;
+                l1.push_success(&receipt);
+                if fee != 0 {
+                    l1.push_success(&alloy::primitives::Bytes::from(
+                        Address::repeat_byte(55).into_word().to_vec(),
+                    ));
+                }
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let ledger = Ledger::open(dir.path()).unwrap();
+            ledger.append(&Record::Intent(bad)).unwrap();
+            ledger.append(&Record::Intent(valid)).unwrap();
+            let ctx = Context {
+                ledger,
+                http: Default::default(),
+                l1_url: "http://l1.invalid".parse().unwrap(),
+                l1: ProviderBuilder::new()
+                    .connect_mocked_client(l1.clone())
+                    .erased(),
+                zone_urls: vec!["http://zone.invalid".parse().unwrap()],
+                zones: vec![
+                    ProviderBuilder::new()
+                        .connect_mocked_client(zone.clone())
+                        .erased(),
+                ],
+                portal,
+            };
+            let result = ctx.observe_effects().await;
+            let expected = match mutation {
+                "none" | "ordinary_credit" | "pending" => None,
+                "bad_credit" => Some(format!("bad-tag deposit was credited: {}", bad_deposit.id)),
+                "missing_failure" | "duplicate_failure" | "wrong_queue" => Some(format!(
+                    "deposit needs exactly one credit or failure: {}",
+                    bad_deposit.id
+                )),
+                "missing_successor" => Some(format!(
+                    "deposit needs exactly one credit or failure: {}",
+                    valid_deposit.id
+                )),
+                "wrong_transfer" => {
+                    Some("portal transfers differ from intended payouts and refunds".to_owned())
+                }
+                "bad_mint" => Some("mint transfers differ from intended credits".to_owned()),
+                _ => Some("deposit refunds differ from failed intents".to_owned()),
+            };
+            if let Some(expected) = expected {
+                assert_eq!(result.unwrap_err().to_string(), expected, "{mutation}");
+            } else {
+                assert_eq!(result.unwrap(), Some(()), "{mutation}");
+            }
+            assert!(l1.read_q().is_empty(), "{mutation}");
+            assert!(zone.read_q().is_empty(), "{mutation}");
+        }
+    }
+    #[test]
+    fn refund_requires_exact_canonical_finalized_receipt_log() {
+        let mut log = event_log(
+            ZonePortal::DepositBounceBack {
+                tempoRefundRecipient: Address::repeat_byte(2),
+                token: PATH_USD_ADDRESS,
+                amount: 7,
+                bouncebackFee: 3,
+            },
+            Address::repeat_byte(8),
+        );
+        log.block_number = Some(1);
+        log.block_hash = Some(B256::repeat_byte(23));
+        log.transaction_hash = Some(intent().tx);
+        log.transaction_index = Some(0);
+        log.log_index = Some(1);
+        let receipt = fee_receipt(0, 0, None, intent().sender, vec![log.clone()]);
+        verify_finalized_refund(&log, &receipt, 1, B256::repeat_byte(23)).unwrap();
+        for mutation in 0..7 {
+            let mut wrong = log.clone();
+            match mutation {
+                0 => wrong.removed = true,
+                1 => wrong.block_hash = Some(B256::ZERO),
+                2 => wrong.block_number = Some(2),
+                3 => wrong.transaction_hash = Some(B256::ZERO),
+                4 => wrong.transaction_index = Some(1),
+                5 => wrong.log_index = None,
+                _ => wrong.log_index = Some(3),
+            }
+            assert_eq!(
+                verify_finalized_refund(&wrong, &receipt, 1, B256::repeat_byte(23))
+                    .unwrap_err()
+                    .to_string(),
+                "refund is not an exact canonical finalized receipt log"
+            );
+        }
+        assert_eq!(
+            verify_finalized_refund(&log, &receipt, 0, B256::repeat_byte(23))
+                .unwrap_err()
+                .to_string(),
+            "refund is not an exact canonical finalized receipt log"
+        );
+    }
+    #[tokio::test]
+    async fn process_withdrawals_tempo_receipt_uses_the_finalized_refund_boundary() {
+        let portal = Address::repeat_byte(8);
+        let sender = intent().sender;
+        let mut refund = event_log(
+            ZonePortal::DepositBounceBack {
+                tempoRefundRecipient: sender,
+                token: PATH_USD_ADDRESS,
+                amount: 7,
+                bouncebackFee: 3,
+            },
+            portal,
+        );
+        refund.block_number = Some(1);
+        refund.block_hash = Some(B256::repeat_byte(23));
+        refund.transaction_hash = Some(intent().tx);
+        refund.transaction_index = Some(0);
+        refund.log_index = Some(1);
+        let mut payment = event_log(
+            ITIP20::Transfer {
+                from: portal,
+                to: sender,
+                amount: U256::from(7),
+            },
+            PATH_USD_ADDRESS,
+        );
+        payment.block_number = refund.block_number;
+        payment.block_hash = refund.block_hash;
+        payment.transaction_hash = refund.transaction_hash;
+        payment.transaction_index = refund.transaction_index;
+        payment.log_index = Some(0);
+        let mut wire = serde_json::to_value(fee_receipt(
+            0,
+            0,
+            None,
+            sender,
+            vec![payment, refund.clone()],
+        ))
+        .unwrap();
+        // A sequencer's processWithdrawals is sent as a Tempo transaction with nonce key 2.
+        // Returning its real receipt envelope here fails an Ethereum-only provider decoder.
+        wire["type"] = json!("0x76");
+        let mut block = Block::<B256>::default();
+        block.header.number = 1;
+        block.header.hash = B256::repeat_byte(23);
+        let l1 = Asserter::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Context {
+            ledger: Ledger::open(dir.path()).unwrap(),
+            http: Default::default(),
+            l1_url: "http://l1.invalid".parse().unwrap(),
+            l1: ProviderBuilder::new()
+                .connect_mocked_client(l1.clone())
+                .erased(),
+            zone_urls: vec![],
+            zones: vec![],
+            portal,
+        };
+        for mutation in [
+            "none",
+            "removed",
+            "wrong_hash",
+            "unfinalized",
+            "duplicate_log",
+        ] {
+            let mut log = refund.clone();
+            let mut receipt = wire.clone();
+            match mutation {
+                "removed" => log.removed = true,
+                "wrong_hash" => receipt["blockHash"] = json!(B256::ZERO),
+                "duplicate_log" => receipt["logs"].as_array_mut().unwrap().push(json!(refund)),
+                _ => {}
+            }
+            l1.push_success(&receipt);
+            l1.push_success(&block);
+            let result = ctx
+                .finalized_refund_receipt(&log, if mutation == "unfinalized" { 0 } else { 1 })
+                .await;
+            if mutation == "none" {
+                let receipt = result.unwrap().unwrap();
+                assert_eq!(receipt.transaction_hash, intent().tx);
+                assert!(receipt.status());
+                assert_eq!(
+                    payments(receipt.logs()),
+                    vec![(portal, sender, U256::from(7))]
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "refund is not an exact canonical finalized receipt log"
+                );
+            }
+            assert!(l1.read_q().is_empty(), "{mutation}");
+        }
+        l1.push_success(&serde_json::Value::Null);
+        assert!(
+            ctx.finalized_refund_receipt(&refund, 1)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(l1.read_q().is_empty());
     }
 }

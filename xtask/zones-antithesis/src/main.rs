@@ -24,17 +24,15 @@ use serde_json::json;
 use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
-    zones::{
-        DepositPayload, IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
-        ZonePortal,
-    },
+    zones::{IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal},
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
 
-use intents::{Chain, Effect};
+use intents::{Chain, DepositCase, Effect};
 use ledger::{Account, Lease, Ledger, Record};
 
+mod bad_tag;
 mod campaign;
 mod checks;
 mod effects;
@@ -129,6 +127,8 @@ enum Command {
     Seed,
     /// Deposits from a funder or a new L1 account to a new or existing zone account.
     Deposit,
+    /// Refunds an accepted bad-tag deposit and settles a distinct valid successor.
+    BadTagDeposit,
     /// Transfers pathUSD inside the zone to a new or existing account.
     Transfer,
     /// Withdraws from the zone to a new or existing L1 address.
@@ -251,6 +251,7 @@ impl Antithesis {
             }
             Command::FaultProxy { .. } => unreachable!("fault proxy dispatched before RPC setup"),
             Command::ReleaseOutages => return Ok(()),
+            Command::BadTagDeposit => return ctx.bad_tag_deposit(&self.fault_control_dir).await,
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
@@ -335,7 +336,12 @@ impl Context {
             let account = self.ledger.new_account()?;
             let from_block = zone.get_block_number().await?;
             let deposit = self
-                .send_deposit(&funder, account.address(), SEED_AMOUNT)
+                .send_deposit(
+                    &funder,
+                    account.address(),
+                    SEED_AMOUNT,
+                    DepositCase::Ordinary,
+                )
                 .await?
                 .ok_or_else(|| eyre!("seed deposit to {} reverted", account.address()))?;
             pending.push((deposit, from_block));
@@ -398,7 +404,10 @@ impl Context {
         let (to, new_recipient) = self.pick_recipient(sender.address())?;
         let zone = self.random_zone();
         let from_block = zone.get_block_number().await?;
-        let Some(deposit) = self.send_deposit(&sender, to, amount).await? else {
+        let Some(deposit) = self
+            .send_deposit(&sender, to, amount, DepositCase::Ordinary)
+            .await?
+        else {
             // Deposits revert legitimately when the portal's unprocessed-deposit cap is reached
             // because faults stall the zone.
             println!("deposit: reverted");
@@ -684,7 +693,24 @@ impl Context {
         sender: &Account,
         to: Address,
         amount: u128,
+        case: DepositCase,
     ) -> eyre::Result<Option<Record>> {
+        let intent = self.prepare_deposit(sender, to, amount, case).await?;
+        let receipt = self.send_intent(&intent).await?;
+        if !receipt.status() {
+            return Ok(None);
+        }
+        intent.obligation(&receipt)
+    }
+
+    /// Generates the payload before signing and syncing the exact submission intent.
+    async fn prepare_deposit(
+        &self,
+        sender: &Account,
+        to: Address,
+        amount: u128,
+        case: DepositCase,
+    ) -> eyre::Result<intents::Intent> {
         let l1 = self.wallet(sender, &self.l1_url);
         let portal = ZonePortal::new(self.portal, &l1);
         let (key, key_index) = portal.encryption_key().await?;
@@ -701,13 +727,8 @@ impl Context {
             key_index,
         )
         .ok_or_eyre("ECIES encryption failed")?;
-        let payload = DepositPayload {
-            ephemeralPubkeyX: encrypted.eph_pub_x,
-            ephemeralPubkeyYParity: encrypted.eph_pub_y_parity,
-            ciphertext: Bytes::from(encrypted.ciphertext),
-            nonce: encrypted.nonce.into(),
-            tag: encrypted.tag.into(),
-        };
+        let payload = case.payload(encrypted);
+
         let request = portal
             .deposit(
                 PATH_USD_ADDRESS,
@@ -718,20 +739,14 @@ impl Context {
             )
             .gas(DEPOSIT_TX_GAS)
             .into_transaction_request();
-        let intent = self
-            .prepare_intent(
-                sender,
-                Chain::L1,
-                0,
-                request,
-                Effect::Deposit { to, amount },
-            )
-            .await?;
-        let receipt = self.send_intent(&intent).await?;
-        if !receipt.status() {
-            return Ok(None);
-        }
-        intent.obligation(&receipt)
+        self.prepare_intent(
+            sender,
+            Chain::L1,
+            0,
+            request,
+            Effect::Deposit { to, amount, case },
+        )
+        .await
     }
 
     /// Approves the portal to spend `account`'s L1 pathUSD, unless it already may.
@@ -1051,6 +1066,12 @@ mod cli_tests {
 
     #[test]
     fn controlled_campaign_commands_parse() {
+        assert!(matches!(
+            Antithesis::try_parse_from(["zones", "bad-tag-deposit"])
+                .unwrap()
+                .command,
+            Command::BadTagDeposit
+        ));
         assert!(matches!(
             Antithesis::try_parse_from(["zones", "asymmetric-handoff"])
                 .unwrap()

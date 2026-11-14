@@ -30,12 +30,28 @@ pub(crate) enum Chain {
     Zone,
 }
 
+/// Payload generation case retained with the signed bytes, including unknown sends.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DepositCase {
+    /// Existing deposits may credit or bounce, depending on execution conditions.
+    #[default]
+    Ordinary,
+    /// Exactly one authentication-tag bit was flipped before signing; credit is forbidden.
+    BadTag,
+}
+
 /// The obligation created by successful execution, or an auxiliary payment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Effect {
     /// Encrypted deposit; its receipt supplies the queue hash and net amount.
-    Deposit { to: Address, amount: u128 },
+    Deposit {
+        to: Address,
+        amount: u128,
+        #[serde(default)]
+        case: DepositCase,
+    },
     /// Zone transfer, including every fanout child and the recovery probe.
     Transfer { to: Address, amount: u128 },
     /// Zone withdrawal, whose successful receipt obligates L1 payment.
@@ -349,7 +365,7 @@ impl Context {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ledger::Ledger;
     use alloy::primitives::Bloom;
@@ -360,7 +376,7 @@ mod tests {
         net::TcpListener,
     };
 
-    async fn request(listener: &TcpListener) -> (tokio::net::TcpStream, Value) {
+    pub(crate) async fn request(listener: &TcpListener) -> (tokio::net::TcpStream, Value) {
         let (stream, _) = listener.accept().await.unwrap();
         let mut reader = BufReader::new(stream);
         let mut length = None;

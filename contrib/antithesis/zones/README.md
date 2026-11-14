@@ -69,6 +69,7 @@ images it is given, so they must be in the image rather than copied in when a co
 |---|---|
 | `first_seed` | Approves the portal for the L1 funders and funds the first zone accounts |
 | `parallel_driver_deposit` | Deposits from a funder or a new L1 account to a new or existing zone account |
+| `serial_driver_bad_tag_deposit` | Submits an encrypted deposit with a flipped authentication tag, requires its exact refund without zone credit, then checks that a distinct valid successor settles |
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
@@ -99,6 +100,20 @@ shared lock before reconciliation, retaining their normal concurrency while excl
 episodes. Antithesis scheduling also supplies a quiet window. Direct local invocations must stop
 continuously launched writers so terminal checks can acquire the lock. Leadership requests and observed updates survive driver cancellation;
 consistency and recovery check their history and activation boundaries.
+
+### Invalid encrypted-deposit refunds
+
+`serial_driver_bad_tag_deposit` changes one bit of an encrypted deposit's authentication tag
+before signing it. The curve point, key index, ciphertext length and refund address remain valid,
+so the L1 portal must accept it before the zone rejects its decryption. The signed intent records
+the expected failure before broadcast; reconciliation reuses those exact bytes after a lost reply
+or cancelled driver.
+
+The episode requires an actual L1 refund, no zone credit for the invalid deposit, and successful
+credit and finalized settlement of a distinct valid deposit behind it. The independent effect
+checker retains its complete token-event and refund multisets, including bridge fees. An outer L1
+revert, pending refund, skipped episode or merely matching final balances does not count as
+completed coverage. Ordinary deposits keep their existing credit-or-refund checks.
 
 ### Mid-run recovery
 
