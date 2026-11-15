@@ -299,6 +299,13 @@ fn final_state(updates: &[StateUpdate]) -> BTreeMap<Address, (String, BTreeMap<U
                 entry.1.clear();
             }
             for (key, slot) in &account.storage {
+                // A batched commit streams every slot a transaction wrote, also the ones it left
+                // unchanged, which sequential execution does not stream.
+                if slot.previous_or_original_value == slot.present_value
+                    && !entry.1.contains_key(key)
+                {
+                    continue;
+                }
                 entry.1.insert(*key, slot.present_value);
             }
         }
