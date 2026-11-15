@@ -902,44 +902,48 @@ impl<'a> TempoBlockExecutor<'a> {
         let mut hints = StaticHints::default();
         // The rank of each expiring-nonce transaction, for the prefetch thread.
         let (ring_ranks, ring_ranks_rx) = mpsc::channel();
-        let stream = transactions.by_ref().map_while(|tx| {
-            let tx = match tx {
-                Ok(tx) => tx,
-                Err(error) => {
-                    *failure.lock().unwrap() = Some(stream_error(error));
-                    return None;
+        // The closure owns `ring_ranks`: the prefetch thread ends once the stream is dropped.
+        let stream = {
+            let (failure, taken, lanes, hints) = (&failure, &taken, &lanes, &mut hints);
+            transactions.by_ref().map_while(move |tx| {
+                let tx = match tx {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        *failure.lock().unwrap() = Some(stream_error(error));
+                        return None;
+                    }
+                };
+                if restores {
+                    taken.lock().unwrap().push(tx.clone());
                 }
-            };
-            if restores {
-                taken.lock().unwrap().push(tx.clone());
-            }
-            let (mut tx_env, recovered) = tx.into_send_parts();
-            if let Some(rank) = tx_env.inner().expiring_nonce_idx() {
-                // The prefetch thread only stops early when the database fails.
-                let _ = ring_ranks.send(rank);
-            }
-            // Remove any prewarming-specific context that was added to the tx env.
-            tx_env.inner_mut().set_expiring_nonce_idx(None);
-            let tx = recovered.tx();
-            let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
-                Ok(is_system_tx) => is_system_tx,
-                Err(error) => {
-                    *failure.lock().unwrap() = Some(error.into());
-                    return None;
+                let (mut tx_env, recovered) = tx.into_send_parts();
+                if let Some(rank) = tx_env.inner().expiring_nonce_idx() {
+                    // The prefetch thread only stops early when the database fails.
+                    let _ = ring_ranks.send(rank);
                 }
-            };
-            lanes.lock().unwrap().push(TxLane {
-                tx_hash: *tx.tx_hash(),
-                is_system_tx,
-                is_payment: Self::is_payment_at(spec, tx),
-                execution_context: tx_env.inner().execution_context(),
-            });
-            let dependencies = hints.next(tx_env.inner());
-            Some(StreamedTx::with_dependencies(
-                (tx_env, ConsensusTx(recovered)),
-                dependencies,
-            ))
-        });
+                // Remove any prewarming-specific context that was added to the tx env.
+                tx_env.inner_mut().set_expiring_nonce_idx(None);
+                let tx = recovered.tx();
+                let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
+                    Ok(is_system_tx) => is_system_tx,
+                    Err(error) => {
+                        *failure.lock().unwrap() = Some(error.into());
+                        return None;
+                    }
+                };
+                lanes.lock().unwrap().push(TxLane {
+                    tx_hash: *tx.tx_hash(),
+                    is_system_tx,
+                    is_payment: Self::is_payment_at(spec, tx),
+                    execution_context: tx_env.inner().execution_context(),
+                });
+                let dependencies = hints.next(tx_env.inner());
+                Some(StreamedTx::with_dependencies(
+                    (tx_env, ConsensusTx(recovered)),
+                    dependencies,
+                ))
+            })
+        };
 
         // Check each transaction's section as it commits, over a copy of the section state.
         let mut committed = Vec::new();
@@ -948,7 +952,6 @@ impl<'a> TempoBlockExecutor<'a> {
             // The committer runs each transaction's deferred expiring-nonce insert in block order,
             // reading a ring entry and the replay-set entry it evicts, both usually cold. Each
             // transaction's rank fixes its ring entry, so a thread loads them all ahead of it.
-            // It ends when `stream` is dropped.
             scope.spawn(move || {
                 NonceManager::read_expiring_nonce_ring_slots(
                     capacity,
