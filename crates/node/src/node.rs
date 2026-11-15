@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use evm2::block::ethereum::parallel::ParallelCommit;
+use evm2::block::ethereum::parallel::{ParallelCommit, set_stream_interval};
 use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::{
     network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
@@ -50,7 +50,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
     validate::EthTransactionValidatorBuilder,
 };
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{ParallelExecution, TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
@@ -172,6 +172,16 @@ pub struct TempoNodeArgs {
         requires = "execution_parallel_threads"
     )]
     pub execution_parallel_in_order: bool,
+
+    /// With `--execution.parallel-threads`, microseconds between the state updates batched commits
+    /// stream to the state root task. `0` streams after every transaction.
+    #[arg(
+        long = "execution.parallel-stream-us",
+        value_name = "MICROS",
+        hide = true,
+        requires = "execution_parallel_threads"
+    )]
+    pub execution_parallel_stream_us: Option<u64>,
 }
 
 impl Default for TempoNodeArgs {
@@ -190,6 +200,7 @@ impl Default for TempoNodeArgs {
             shadow_replay: None,
             execution_parallel_threads: None,
             execution_parallel_in_order: false,
+            execution_parallel_stream_us: None,
         }
     }
 }
@@ -220,6 +231,9 @@ impl TempoNodeArgs {
             });
         if let Some(parallel) = parallel_execution {
             warn!(?parallel, "Parallel block execution is experimental");
+        }
+        if let Some(us) = self.execution_parallel_stream_us {
+            set_stream_interval(Duration::from_micros(us));
         }
         TempoExecutorBuilder { parallel_execution }
     }
@@ -758,7 +772,7 @@ where
                     let mut shutdown = std::pin::pin!(shutdown);
                     loop {
                         tokio::select! {
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {
                                 jit_metrics.record(&metrics_backend.stats());
                             }
                             _ = &mut shutdown => break,
