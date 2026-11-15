@@ -435,6 +435,15 @@ impl TempoTxEnv {
         self
     }
 
+    /// Returns the transaction's index among the block's expiring-nonce transactions, when the
+    /// block's transaction iterator set it.
+    pub const fn expiring_nonce_idx(&self) -> Option<usize> {
+        match &self.evm_tx {
+            TempoEvmTx::AA(transaction) => transaction.expiring_nonce_idx(),
+            _ => None,
+        }
+    }
+
     /// Sets the transaction's block-local expiring nonce index.
     pub fn set_expiring_nonce_idx(&mut self, index: Option<usize>) {
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {

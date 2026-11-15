@@ -208,6 +208,43 @@ impl NonceManager {
 
         Ok(())
     }
+
+    /// Reads, through `sload`, the slots the deferred expiring-nonce inserts of a block's
+    /// transactions read: for each rank in `ranks` (a transaction's index among the block's
+    /// expiring-nonce transactions), the ring entry that many entries past the ring pointer, and
+    /// the replay-set entry it evicts.
+    ///
+    /// Called ahead of the inserts, to load the slots into the database's caches; the values are
+    /// only hints. Stops at the first read `sload` fails, signalled by `None`.
+    pub fn read_expiring_nonce_ring_slots(
+        capacity: u32,
+        ranks: impl IntoIterator<Item = usize>,
+        mut sload: impl FnMut(Address, U256) -> Option<U256>,
+    ) {
+        let manager = Self::new();
+        let address = manager.address;
+        let Some(ptr) = sload(address, manager.expiring_nonce_ring_ptr.slot()) else {
+            return;
+        };
+        let (ptr, capacity) = (u64::from(ptr.saturating_to::<u32>()), u64::from(capacity));
+        for rank in ranks {
+            let Ok(index) = u32::try_from((ptr + rank as u64) % capacity) else {
+                return;
+            };
+            let Some(old_hash) = sload(address, manager.expiring_nonce_ring[index].slot()) else {
+                return;
+            };
+            if !old_hash.is_zero()
+                && sload(
+                    address,
+                    manager.expiring_nonce_seen[B256::from(old_hash)].slot(),
+                )
+                .is_none()
+            {
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -215,7 +252,9 @@ mod tests {
 
     use crate::{
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{
+            ContractStorage, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+        },
     };
 
     use super::*;
@@ -395,6 +434,46 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_read_expiring_nonce_ring_slots() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        let hashes = [
+            B256::repeat_byte(0x01),
+            B256::repeat_byte(0x02),
+            B256::repeat_byte(0x03),
+        ];
+        let (address, ptr, ring, seen) = StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            for hash in hashes {
+                mgr.check_and_mark_expiring_nonce(hash, now + 10)?;
+            }
+            let ring = [3, 0, 1].map(|index| mgr.expiring_nonce_ring[index].slot());
+            let seen = hashes.map(|hash| mgr.expiring_nonce_seen[hash].slot());
+            Ok::<_, eyre::Report>((mgr.address, mgr.expiring_nonce_ring_ptr.slot(), ring, seen))
+        })?;
+
+        // With a capacity of 4 the pointer, at 3, wraps: ranks 0, 1 and 2 select ring entries 3
+        // (empty), 0 and 1, and the replay-set entries of the hashes the last two hold.
+        let mut reads = Vec::new();
+        NonceManager::read_expiring_nonce_ring_slots(4, [0, 1, 2], |read_address, slot| {
+            assert_eq!(read_address, address);
+            reads.push(slot);
+            storage.sload(read_address, slot).ok()
+        });
+        assert_eq!(reads, [ptr, ring[0], ring[1], seen[0], ring[2], seen[1]]);
+
+        // A failed read stops the reads.
+        let mut count = 0;
+        NonceManager::read_expiring_nonce_ring_slots(4, [0, 1, 2], |_, _| {
+            count += 1;
+            None
+        });
+        assert_eq!(count, 1);
+        Ok(())
     }
 
     #[test]

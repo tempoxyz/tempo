@@ -28,7 +28,7 @@ use std::{
     borrow::Borrow,
     convert::Infallible,
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 use tempo_chainspec::{
@@ -42,6 +42,7 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
     t13_zone_factory_state, t14_zone_factory_state, t15_zone_factory_state,
 };
+use tempo_precompiles::nonce::NonceManager;
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::{debug, trace};
 
@@ -899,6 +900,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let failure = Mutex::new(None);
         // Dependencies from each transaction's static facts, derived as they arrive.
         let mut hints = StaticHints::default();
+        // The rank of each expiring-nonce transaction, for the prefetch thread.
+        let (ring_ranks, ring_ranks_rx) = mpsc::channel();
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -911,6 +914,10 @@ impl<'a> TempoBlockExecutor<'a> {
                 taken.lock().unwrap().push(tx.clone());
             }
             let (mut tx_env, recovered) = tx.into_send_parts();
+            if let Some(rank) = tx_env.inner().expiring_nonce_idx() {
+                // The prefetch thread only stops early when the database fails.
+                let _ = ring_ranks.send(rank);
+            }
             // Remove any prewarming-specific context that was added to the tx env.
             tx_env.inner_mut().set_expiring_nonce_idx(None);
             let tx = recovered.tx();
@@ -936,35 +943,49 @@ impl<'a> TempoBlockExecutor<'a> {
 
         // Check each transaction's section as it commits, over a copy of the section state.
         let mut committed = Vec::new();
-        let result = self.inner.inner.execute_transaction_stream(
-            stream,
-            base,
-            make_evm,
-            parallel.threads,
-            on_speculative,
-            |index, result| {
-                let lanes = lanes.lock().unwrap();
-                let lane = &lanes[index];
-                let block_gas_used = if use_regular_gas {
-                    result.execution_gas_spent()
-                } else {
-                    result.tx_gas_used()
-                };
-                let next_section = Self::next_section(
-                    budgets.section,
-                    budgets.non_shared_gas_left,
-                    budgets.non_payment_gas_left,
-                    lane.tx_hash,
-                    lane.is_system_tx,
-                    lane.is_payment,
-                    block_gas_used,
-                )?;
-                budgets.record(next_section, block_gas_used, lane.is_payment);
-                committed.push((next_section, block_gas_used));
-                Ok(())
-            },
-            &mut on_receipt,
-        );
+        let capacity = spec.expiring_nonce_set_capacity();
+        let result = std::thread::scope(|scope| {
+            // The committer runs each transaction's deferred expiring-nonce insert in block order,
+            // reading a ring entry and the replay-set entry it evicts, both usually cold. Each
+            // transaction's rank fixes its ring entry, so a thread loads them all ahead of it.
+            // It ends when `stream` is dropped.
+            scope.spawn(move || {
+                NonceManager::read_expiring_nonce_ring_slots(
+                    capacity,
+                    ring_ranks_rx,
+                    |address, slot| base.get_storage(&address, &slot).ok(),
+                );
+            });
+            self.inner.inner.execute_transaction_stream(
+                stream,
+                base,
+                make_evm,
+                parallel.threads,
+                on_speculative,
+                |index, result| {
+                    let lanes = lanes.lock().unwrap();
+                    let lane = &lanes[index];
+                    let block_gas_used = if use_regular_gas {
+                        result.execution_gas_spent()
+                    } else {
+                        result.tx_gas_used()
+                    };
+                    let next_section = Self::next_section(
+                        budgets.section,
+                        budgets.non_shared_gas_left,
+                        budgets.non_payment_gas_left,
+                        lane.tx_hash,
+                        lane.is_system_tx,
+                        lane.is_payment,
+                        block_gas_used,
+                    )?;
+                    budgets.record(next_section, block_gas_used, lane.is_payment);
+                    committed.push((next_section, block_gas_used));
+                    Ok(())
+                },
+                &mut on_receipt,
+            )
+        });
         let failure = failure.into_inner().unwrap();
         if let Err(error) = &result
             && restores
