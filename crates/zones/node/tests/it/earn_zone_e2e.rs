@@ -288,6 +288,8 @@ impl Default for EarnLimits {
 #[derive(Clone, Copy)]
 struct EarnAccessPolicy {
     policy_id: u64,
+    /// Account the setup whitelists, for tests that revoke its eligibility.
+    outsider: Address,
 }
 
 struct EarnZoneFixture {
@@ -432,7 +434,11 @@ impl EarnZoneFixture {
                     SETUP_CALL_GAS_LIMIT,
                 )
                 .await?;
-            Some(EarnAccessPolicy { policy_id })
+            let [outsider] = actors();
+            Some(EarnAccessPolicy {
+                policy_id,
+                outsider,
+            })
         } else {
             None
         };
@@ -570,7 +576,6 @@ impl EarnZoneFixture {
             )
             .await?;
         if let Some(policy) = access_policy {
-            let [outsider] = actors();
             for account in [
                 earn_vault,
                 router,
@@ -579,7 +584,7 @@ impl EarnZoneFixture {
                 ZONE_OUTBOX_ADDRESS,
                 owner,
                 user_address,
-                outsider,
+                policy.outsider,
             ] {
                 setup
                     .call(
@@ -2040,7 +2045,7 @@ async fn controls_par_pool_failures_bounce_until_restored() -> eyre::Result<()> 
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
-    let [outsider] = actors();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     fixture
@@ -2052,7 +2057,7 @@ async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
 async fn zone_ineligible_private_transfer_blocked() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
     let user = fixture.user.address();
-    let [outsider] = actors();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     let user_shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;

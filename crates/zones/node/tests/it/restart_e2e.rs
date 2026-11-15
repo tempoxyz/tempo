@@ -226,7 +226,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
         std::time::Duration::from_millis(200),
         "portal head advances past first withdrawal",
         || {
-                        let seq_handle2 = &seq_handle2;
+            let seq_handle2 = &seq_handle2;
             async move {
                 if seq_handle2.monitor_handle.is_finished() {
                     eyre::bail!("restarted monitor task exited before restoring the pending withdrawal");
