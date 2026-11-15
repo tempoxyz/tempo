@@ -107,6 +107,11 @@ runs:
             ...(status === 'firing' && env.ALERT_DETAIL ? [env.ALERT_DETAIL] : []),
             `Run: ${runUrl}`,
           ].join('\n');
+          // Bad metadata must not keep a firing event from going out.
+          let metadata = {};
+          try { metadata = JSON.parse(env.ALERT_METADATA || '{}'); } catch (error) {
+            core.warning(`Ignoring invalid incident.io metadata: ${error.message}`);
+          }
           const payload = {
             title,
             description,
@@ -120,7 +125,7 @@ runs:
               run_id: String(context.runId),
               run_attempt: String(env.GITHUB_RUN_ATTEMPT),
               run_url: runUrl,
-              ...JSON.parse(env.ALERT_METADATA || '{}'),
+              ...metadata,
             },
           };
 

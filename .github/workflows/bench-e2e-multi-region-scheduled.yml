@@ -249,4 +249,4 @@ jobs:
           key: tempo:bench-e2e-multi-region-nightly
           name: Nightly multi-region benchmark
           resolve-jobs: bench-e2e-multi-region,save-state
-          metadata: '{"team":"reth","baseline_ref":"${{ needs.resolve-refs.outputs.baseline-ref }}","feature_ref":"${{ needs.resolve-refs.outputs.feature-ref }}"}'
+          metadata: '{"team":"reth","baseline_ref":${{ toJSON(needs.resolve-refs.outputs.baseline-ref) }},"feature_ref":${{ toJSON(needs.resolve-refs.outputs.feature-ref) }}}'

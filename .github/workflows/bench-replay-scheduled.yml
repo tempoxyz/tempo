@@ -330,4 +330,4 @@ jobs:
           name: Nightly ${{ needs.resolve-refs.outputs.chain || (github.event.schedule == '1 0 * * *' && 'testnet' || 'mainnet') }} replay benchmark
           resolve-jobs: bench-replay,save-state
           detail: ${{ needs.resolve-refs.outputs.is-stale == 'true' && format('The nightly Docker build is {0}h old (threshold 24h); check docker.yml.', needs.resolve-refs.outputs.stale-age-hours) || '' }}
-          metadata: '{"team":"reth","baseline_ref":"${{ needs.resolve-refs.outputs.baseline-ref }}","feature_ref":"${{ needs.resolve-refs.outputs.feature-ref }}"}'
+          metadata: '{"team":"reth","baseline_ref":${{ toJSON(needs.resolve-refs.outputs.baseline-ref) }},"feature_ref":${{ toJSON(needs.resolve-refs.outputs.feature-ref) }}}'
