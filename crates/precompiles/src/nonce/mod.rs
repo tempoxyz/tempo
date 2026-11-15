@@ -125,6 +125,27 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        self.check_and_mark_expiring_nonce_at(expiring_nonce_hash, valid_before, None)
+    }
+
+    /// Validates and records an expiring nonce transaction as
+    /// [`Self::check_and_mark_expiring_nonce`], given the ring pointer the block executor predicts
+    /// the transaction finds: the pointer at the start of the block advanced once for every
+    /// earlier expiring nonce transaction of the block.
+    ///
+    /// When storage writes are deferred, as in parallel block execution, a predicted pointer lets
+    /// the transaction insert at that slot itself and defer only the pointer advance, which checks
+    /// the prediction: a wrong one fails the transaction's commit, and the block executes again
+    /// sequentially. Otherwise the prediction is ignored.
+    ///
+    /// # Errors
+    /// The errors of [`Self::check_and_mark_expiring_nonce`].
+    pub fn check_and_mark_expiring_nonce_at(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        predicted_ptr: Option<u32>,
+    ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
         let spec = self.storage.spec();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
@@ -142,8 +163,33 @@ impl NonceManager {
         }
 
         // 3-6. The ring position depends on every earlier expiring-nonce transaction of the block,
-        // and the insert costs fixed gas: insert at the transaction's end, so transactions do not
-        // conflict on the pointer.
+        // and the insert costs fixed gas: with a predicted pointer, insert at its slot now and
+        // advance the pointer at the transaction's end, so transactions do not conflict on it.
+        if let Some(ptr) = predicted_ptr
+            && crate::storage::StorageCtx.defers_storage_writes()
+        {
+            self.insert_expiring_nonce(ptr, expiring_nonce_hash, valid_before, now)?;
+            let address = self.address;
+            let ptr_slot = self.expiring_nonce_ring_ptr.slot();
+            let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
+            let op = evm2::evm::DeferredStorageOp::new(move |access| {
+                if access.sload(&address, ptr_slot)? != U256::from(ptr) {
+                    // The block executes again sequentially, which inserts at the actual pointer.
+                    let error = TempoPrecompileError::Fatal(
+                        "expiring nonce ring pointer mispredicted".to_string(),
+                    );
+                    return Err(evm2::DatabaseError::new(error, false));
+                }
+                access.sstore(&address, ptr_slot, U256::from(next))
+            });
+            if crate::storage::StorageCtx.defer_storage_op(op)? {
+                return Ok(());
+            }
+            // Deferring always succeeds when storage writes are deferred.
+            return Err(TempoPrecompileError::Fatal(
+                "expiring nonce pointer advance not deferred".to_string(),
+            ));
+        }
         if crate::storage::StorageCtx.defers_storage_writes() {
             let op = evm2::evm::DeferredStorageOp::new(move |access| {
                 let set_full = || {
@@ -182,7 +228,26 @@ impl NonceManager {
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
+
+        // 4-5. Evict the entry at the pointer and insert the new one.
+        self.insert_expiring_nonce(ptr, expiring_nonce_hash, valid_before, now)?;
+
+        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
+        let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
+        self.expiring_nonce_ring_ptr.write(next)?;
+
+        Ok(())
+    }
+
+    /// Evicts the expired entry at ring slot `idx`, if any, and records `expiring_nonce_hash`
+    /// there and in the seen set, without moving the ring pointer.
+    fn insert_expiring_nonce(
+        &mut self,
+        idx: u32,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        now: u64,
+    ) -> Result<()> {
         let old_hash = self.expiring_nonce_ring[idx].read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
@@ -201,10 +266,6 @@ impl NonceManager {
         // 5. Insert new entry
         self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
-
-        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
-        self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
     }

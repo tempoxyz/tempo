@@ -42,6 +42,7 @@ use tempo_contracts::precompiles::{
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
     t13_zone_factory_state, t14_zone_factory_state, t15_zone_factory_state,
 };
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots::EXPIRING_NONCE_RING_PTR};
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::{debug, trace};
 
@@ -891,6 +892,22 @@ impl<'a> TempoBlockExecutor<'a> {
         let mut budgets = self.budgets();
         self.inner.inner.set_parallel_commit(parallel.commit);
         let restores = self.inner.inner.commits_batched();
+        // Each expiring-nonce transaction finds the ring pointer advanced once for every earlier one
+        // of the block. Predict it, so each inserts at its own slot as it executes: a wrong
+        // prediction fails the batched commit, which executes the block again sequentially.
+        let mut expiring_nonce_ptr = if restores && spec.is_t1() {
+            let ptr = self
+                .evm_mut()
+                .state_mut()
+                .storage_slot_untracked(&NONCE_PRECOMPILE_ADDRESS, &EXPIRING_NONCE_RING_PTR)
+                .map_err(map_database_error)?;
+            Some((
+                ptr.saturating_to::<u32>(),
+                spec.expiring_nonce_set_capacity(),
+            ))
+        } else {
+            None
+        };
         // Filled on the thread that iterates `transactions`, as they arrive.
         let lanes = Mutex::new(Vec::new());
         // Every transaction taken from `transactions`, to execute again if a batched commit fails.
@@ -914,6 +931,12 @@ impl<'a> TempoBlockExecutor<'a> {
             // Remove any prewarming-specific context that was added to the tx env.
             tx_env.inner_mut().set_expiring_nonce_idx(None);
             let tx = recovered.tx();
+            if let Some((ptr, capacity)) = &mut expiring_nonce_ptr
+                && tx.is_expiring_nonce()
+            {
+                tx_env.inner_mut().set_expiring_nonce_ptr(Some(*ptr));
+                *ptr = if *ptr + 1 >= *capacity { 0 } else { *ptr + 1 };
+            }
             let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
                 Ok(is_system_tx) => is_system_tx,
                 Err(error) => {

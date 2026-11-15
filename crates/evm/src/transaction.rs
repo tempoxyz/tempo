@@ -34,6 +34,7 @@ pub struct TempoAaTx {
     transaction: Arc<Recovered<AASigned>>,
     fee_payer: Option<Address>,
     expiring_nonce_idx: Option<usize>,
+    expiring_nonce_ptr: Option<u32>,
     override_key_id: Option<Address>,
 }
 
@@ -48,6 +49,7 @@ impl TempoAaTx {
             transaction: Arc::new(transaction),
             fee_payer,
             expiring_nonce_idx: None,
+            expiring_nonce_ptr: None,
             override_key_id: None,
         }
     }
@@ -59,6 +61,16 @@ impl TempoAaTx {
 
     fn set_expiring_nonce_idx(&mut self, index: Option<usize>) {
         self.expiring_nonce_idx = index;
+    }
+
+    /// Returns the expiring-nonce ring pointer parallel block execution predicts the transaction
+    /// finds.
+    pub const fn expiring_nonce_ptr(&self) -> Option<u32> {
+        self.expiring_nonce_ptr
+    }
+
+    fn set_expiring_nonce_ptr(&mut self, ptr: Option<u32>) {
+        self.expiring_nonce_ptr = ptr;
     }
 
     /// Returns the access-key override used by RPC simulation.
@@ -439,6 +451,16 @@ impl TempoTxEnv {
     pub fn set_expiring_nonce_idx(&mut self, index: Option<usize>) {
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
             transaction.set_expiring_nonce_idx(index);
+        }
+    }
+
+    /// Sets the expiring-nonce ring pointer parallel block execution predicts the transaction
+    /// finds. See [`NonceManager::check_and_mark_expiring_nonce_at`].
+    ///
+    /// [`NonceManager::check_and_mark_expiring_nonce_at`]: tempo_precompiles::nonce::NonceManager::check_and_mark_expiring_nonce_at
+    pub fn set_expiring_nonce_ptr(&mut self, ptr: Option<u32>) {
+        if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
+            transaction.set_expiring_nonce_ptr(ptr);
         }
     }
 }
