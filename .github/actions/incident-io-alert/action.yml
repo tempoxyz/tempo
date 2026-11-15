@@ -1,0 +1,152 @@
+name: "incident.io alert"
+description: >-
+  Sends a firing or resolved event to an incident.io HTTP alert source. Pass status, or pass
+  results (toJSON(needs)) and resolve-jobs to fire when any needed job failed and resolve when
+  every resolve job succeeded. Reruns never resolve a derived status, since a rerun may be an
+  older run. A firing event that can't be sent fails the step; a resolve only warns.
+
+inputs:
+  url:
+    description: "incident.io HTTP alert source URL"
+    required: true
+  token:
+    description: "incident.io HTTP alert source token"
+    required: true
+  key:
+    description: "Deduplication key: events with the same key update the same alert"
+    required: true
+  status:
+    description: "firing or resolved; empty derives it from results and resolve-jobs"
+    required: false
+    default: ""
+  results:
+    description: "toJSON(needs) of the calling job, to derive status"
+    required: false
+    default: "{}"
+  resolve-jobs:
+    description: "Comma-separated jobs in results that must all succeed to resolve"
+    required: false
+    default: ""
+  name:
+    description: "Alert name, used for a default title and description"
+    required: false
+    default: ""
+  title:
+    description: "Alert title; defaults to '<name> failed: <jobs>' or '<name> recovered'"
+    required: false
+    default: ""
+  description:
+    description: "Alert description; defaults to the outcome, failed jobs, detail and run link"
+    required: false
+    default: ""
+  detail:
+    description: "Extra line for the default description of a firing alert"
+    required: false
+    default: ""
+  metadata:
+    description: "JSON object merged into the event's metadata"
+    required: false
+    default: "{}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Send incident.io event
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        INCIDENT_IO_URL: ${{ inputs.url }}
+        INCIDENT_IO_TOKEN: ${{ inputs.token }}
+        ALERT_KEY: ${{ inputs.key }}
+        ALERT_STATUS: ${{ inputs.status }}
+        ALERT_RESULTS: ${{ inputs.results }}
+        ALERT_RESOLVE_JOBS: ${{ inputs.resolve-jobs }}
+        ALERT_NAME: ${{ inputs.name }}
+        ALERT_TITLE: ${{ inputs.title }}
+        ALERT_DESCRIPTION: ${{ inputs.description }}
+        ALERT_DETAIL: ${{ inputs.detail }}
+        ALERT_METADATA: ${{ inputs.metadata }}
+      with:
+        retries: 0
+        script: |
+          const env = process.env;
+          const jobs = JSON.parse(env.ALERT_RESULTS || '{}');
+          const failedJobs = Object.entries(jobs)
+            .filter(([, job]) => job.result === 'failure').map(([name]) => name);
+          let status = env.ALERT_STATUS;
+          if (!status) {
+            const resolveJobs = env.ALERT_RESOLVE_JOBS.split(',').map(s => s.trim()).filter(Boolean);
+            if (failedJobs.length) status = 'firing';
+            else if (resolveJobs.length && resolveJobs.every(name => jobs[name]?.result === 'success')) {
+              if (env.GITHUB_RUN_ATTEMPT !== '1') {
+                core.info('Rerun; leaving the incident.io alert unchanged');
+                return;
+              }
+              status = 'resolved';
+            } else {
+              core.info('Nothing to report; leaving the incident.io alert unchanged');
+              return;
+            }
+          }
+          if (status !== 'firing' && status !== 'resolved') throw new Error(`Unknown status '${status}'`);
+
+          if (!env.INCIDENT_IO_URL || !env.INCIDENT_IO_TOKEN) {
+            if (status === 'firing') throw new Error('incident.io URL or token is not set; cannot send the firing event');
+            core.notice('incident.io URL or token is not set; skipping the resolved event');
+            return;
+          }
+
+          const repo = `${context.repo.owner}/${context.repo.repo}`;
+          const runUrl = `${context.serverUrl}/${repo}/actions/runs/${context.runId}/attempts/${env.GITHUB_RUN_ATTEMPT}`;
+          const name = env.ALERT_NAME || context.workflow;
+          const title = env.ALERT_TITLE || (status === 'firing'
+            ? `${name} failed${failedJobs.length ? ': ' + failedJobs.join(', ') : ''}`
+            : `${name} recovered`);
+          const description = env.ALERT_DESCRIPTION || [
+            `${name} (${context.workflow}) ${status === 'firing' ? 'failed' : 'succeeded'}.`,
+            ...(status === 'firing' && failedJobs.length ? [`Failed jobs: ${failedJobs.join(', ')}`] : []),
+            ...(status === 'firing' && env.ALERT_DETAIL ? [env.ALERT_DETAIL] : []),
+            `Run: ${runUrl}`,
+          ].join('\n');
+          const payload = {
+            title,
+            description,
+            status,
+            deduplication_key: env.ALERT_KEY,
+            source_url: runUrl,
+            metadata: {
+              repository: repo,
+              workflow: context.workflow,
+              failed_jobs: failedJobs.join(','),
+              run_id: String(context.runId),
+              run_attempt: String(env.GITHUB_RUN_ATTEMPT),
+              run_url: runUrl,
+              ...JSON.parse(env.ALERT_METADATA || '{}'),
+            },
+          };
+
+          // The deduplication key makes a repeated event idempotent, so retrying is safe.
+          const delays = [2000, 4000];
+          let lastError;
+          for (let i = 0; i <= delays.length; i++) {
+            try {
+              const response = await fetch(env.INCIDENT_IO_URL, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${env.INCIDENT_IO_TOKEN}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(15000),
+              });
+              if (response.ok) {
+                core.info(`Sent incident.io ${status} event for ${payload.deduplication_key}`);
+                return;
+              }
+              lastError = new Error(`HTTP ${response.status}`);
+              // Other 4xx (such as a bad token) won't succeed on retry.
+              if (response.status < 500 && response.status !== 429) break;
+            } catch (error) { lastError = error; }
+            if (i < delays.length) await new Promise(resolve => setTimeout(resolve, delays[i]));
+          }
+          if (status === 'resolved') {
+            core.warning(`Failed to send the incident.io resolved event: ${lastError.message}`);
+            return;
+          }
+          throw new Error(`Failed to send the incident.io firing event: ${lastError.message}`);

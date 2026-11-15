@@ -227,16 +227,26 @@ jobs:
       !cancelled() &&
       github.event_name == 'schedule' &&
       github.repository == 'tempoxyz/tempo'
-    uses: ./.github/workflows/bench-incident-alert.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
+      contents: read
       id-token: write
-    with:
-      results: ${{ toJSON(needs) }}
-      key: tempo:bench-e2e-multi-region-nightly
-      name: Nightly multi-region benchmark
-      resolve-jobs: bench-e2e-multi-region,save-state
-      baseline-ref: ${{ needs.resolve-refs.outputs.baseline-ref }}
-      feature-ref: ${{ needs.resolve-refs.outputs.feature-ref }}
-    secrets:
-      INCIDENT_IO_RETH_CI_URL: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
-      INCIDENT_IO_RETH_CI_TOKEN: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions/incident-io-alert
+          persist-credentials: false
+
+      - uses: ./.github/actions/incident-io-alert # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+        with:
+          url: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
+          token: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
+          results: ${{ toJSON(needs) }}
+          key: tempo:bench-e2e-multi-region-nightly
+          name: Nightly multi-region benchmark
+          resolve-jobs: bench-e2e-multi-region,save-state
+          metadata: '{"team":"reth","baseline_ref":"${{ needs.resolve-refs.outputs.baseline-ref }}","feature_ref":"${{ needs.resolve-refs.outputs.feature-ref }}"}'
