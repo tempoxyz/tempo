@@ -1093,7 +1093,7 @@ where
 
 /// Returns how many threads prefetch state ahead of `workers` parallel workers.
 fn prefetch_threads(workers: NonZeroUsize) -> usize {
-    workers.get().div_ceil(2)
+    workers.get()
 }
 
 /// Logs the counters of a block executed in parallel, and whether it executed again one
