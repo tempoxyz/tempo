@@ -28,7 +28,10 @@ use std::{
     borrow::Borrow,
     convert::Infallible,
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{
@@ -283,6 +286,8 @@ pub struct TempoBlockExecutor<'a> {
     parallel: Option<ParallelExecution>,
     /// Builds the EVMs of [`BlockExecutor::execute_transactions_parallel`]'s workers.
     pub(crate) worker_config: Option<&'a TempoEvmConfig>,
+    /// Whether the block's transactions executed in parallel.
+    executed_in_parallel: bool,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -315,6 +320,7 @@ impl<'a> TempoBlockExecutor<'a> {
             replay_state: StorageActionReplayState::default(),
             parallel: None,
             worker_config: None,
+            executed_in_parallel: false,
         }
     }
 
@@ -1061,6 +1067,85 @@ impl ParallelExecution {
 /// workers and opening their state providers costs more than they save.
 pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
 
+/// Blocks that used less gas than this say too little about parallel execution speed to steer it.
+const PARALLEL_SLOWDOWN_MIN_GAS: u64 = 50_000_000;
+
+/// A block executed in parallel this many tenths times slower per unit of gas than usual makes the
+/// blocks that follow it execute sequentially.
+const PARALLEL_SLOWDOWN_FACTOR_TENTHS: u64 = 20;
+
+/// How many blocks with enough transactions to execute in parallel, built or validated, execute
+/// sequentially after a slow parallel block.
+const PARALLEL_SLOWDOWN_SEQUENTIAL_BLOCKS: u32 = 3;
+
+/// Executes a few blocks sequentially after a block executed in parallel much slower per unit of
+/// gas than parallel blocks usually do.
+///
+/// Such blocks come in runs, for example while blocks read state that no cache holds yet: the
+/// sequential path prewarms that state on idle threads, while parallel workers read it on their
+/// critical path. The pause counts blocks rather than time, so that it covers the same number of
+/// blocks however fast they arrive.
+#[derive(Debug, Default)]
+pub(crate) struct ParallelSlowdown {
+    /// Moving average of parallel execution time per unit of gas, in picoseconds, or 0 before the
+    /// first block.
+    typical_ps_per_gas: AtomicU64,
+    /// How many more blocks with enough transactions to execute in parallel, built or validated,
+    /// execute sequentially.
+    sequential_blocks_left: AtomicU32,
+}
+
+impl ParallelSlowdown {
+    /// Returns whether the next block may execute in parallel.
+    pub(crate) fn allows_parallel(&self) -> bool {
+        self.sequential_blocks_left.load(Ordering::Relaxed) == 0
+    }
+
+    /// Records that a block used `gas` executing in parallel for `elapsed`.
+    pub(crate) fn record_parallel(&self, elapsed: Duration, gas: u64) {
+        if gas < PARALLEL_SLOWDOWN_MIN_GAS {
+            return;
+        }
+        let sample = (elapsed.as_nanos() * 1000 / u128::from(gas)) as u64;
+        let typical = self.typical_ps_per_gas.load(Ordering::Relaxed);
+        if typical == 0 {
+            self.typical_ps_per_gas.store(sample, Ordering::Relaxed);
+            return;
+        }
+        if sample * 10 > typical * PARALLEL_SLOWDOWN_FACTOR_TENTHS {
+            self.sequential_blocks_left
+                .store(PARALLEL_SLOWDOWN_SEQUENTIAL_BLOCKS, Ordering::Relaxed);
+            debug!(
+                target: "tempo::parallel",
+                sample_ps_per_gas = sample,
+                typical_ps_per_gas = typical,
+                "Slow parallel block, executing the next blocks sequentially"
+            );
+        }
+        // Clamp outliers so that one slow block moves the average little, while a lasting slowdown
+        // still raises it.
+        let sample = sample.min(typical * 2);
+        self.typical_ps_per_gas
+            .store(typical - typical / 8 + sample / 8, Ordering::Relaxed);
+    }
+
+    /// Records that a block with `transactions` transactions executed sequentially.
+    fn record_sequential(&self, transactions: usize) {
+        if transactions >= PARALLEL_EXECUTION_MIN_TRANSACTIONS {
+            let left = self.sequential_blocks_left.load(Ordering::Relaxed);
+            if left > 0 {
+                // Losing the race to a slow parallel block that restarted the count is fine.
+                let _ = self.sequential_blocks_left.compare_exchange(
+                    left,
+                    left - 1,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
+        }
+    }
+}
+
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F
 where
@@ -1270,8 +1355,15 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let make_evm = worker_evm_factory(move |db| {
             reth_evm::BlockExecutorFactory::evm_with_env(config, db, env.clone())
         });
-        self.execute_transaction_stream(transactions, base, make_evm, on_speculative, on_receipt)
-            .map(drop)
+        self.executed_in_parallel = true;
+        let start = Instant::now();
+        let gas_before = self.inner.inner.cumulative_gas_used;
+        self.execute_transaction_stream(transactions, base, make_evm, on_speculative, on_receipt)?;
+        config.parallel_slowdown.record_parallel(
+            start.elapsed(),
+            self.inner.inner.cumulative_gas_used - gas_before,
+        );
+        Ok(())
     }
 
     fn receipts(&self) -> &[TempoReceipt] {
@@ -1411,6 +1503,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // incentive section exceeds the available block capacity.
         if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
+        }
+
+        if let Some(config) = self.worker_config
+            && !self.executed_in_parallel
+        {
+            config
+                .parallel_slowdown
+                .record_sequential(self.inner.receipts().len());
         }
 
         self.set_post_execution_block_access_index();
@@ -3973,5 +4073,31 @@ mod tests {
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
         );
+    }
+
+    #[test]
+    fn slow_parallel_block_pauses_parallel_execution_for_a_few_blocks() {
+        let slowdown = ParallelSlowdown::default();
+        let gas = PARALLEL_SLOWDOWN_MIN_GAS;
+        let ms = Duration::from_millis;
+        slowdown.record_parallel(ms(100), gas);
+        // Slower, but under the threshold.
+        slowdown.record_parallel(ms(190), gas);
+        assert!(slowdown.allows_parallel());
+        // Small blocks don't count.
+        slowdown.record_parallel(ms(1000), gas - 1);
+        assert!(slowdown.allows_parallel());
+
+        slowdown.record_parallel(ms(1000), gas);
+        for _ in 0..PARALLEL_SLOWDOWN_SEQUENTIAL_BLOCKS {
+            assert!(!slowdown.allows_parallel());
+            // Blocks too small to execute in parallel don't shorten the pause.
+            slowdown.record_sequential(PARALLEL_EXECUTION_MIN_TRANSACTIONS - 1);
+            assert!(!slowdown.allows_parallel());
+            slowdown.record_sequential(PARALLEL_EXECUTION_MIN_TRANSACTIONS);
+        }
+        assert!(slowdown.allows_parallel());
+        slowdown.record_sequential(PARALLEL_EXECUTION_MIN_TRANSACTIONS);
+        assert!(slowdown.allows_parallel());
     }
 }

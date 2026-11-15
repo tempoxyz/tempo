@@ -87,6 +87,8 @@ pub struct TempoEvmConfig {
     evm_factory: TempoEvmFactory,
     sender_recovery_cache: Option<SenderRecoveryCache>,
     parallel_execution: Option<ParallelExecution>,
+    /// Shared by clones, so that every executor sees how fast recent blocks executed in parallel.
+    parallel_slowdown: Arc<block::ParallelSlowdown>,
     /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
@@ -114,6 +116,7 @@ impl TempoEvmConfig {
             evm_factory: TempoEvmFactory::default(),
             sender_recovery_cache: None,
             parallel_execution: None,
+            parallel_slowdown: Default::default(),
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
@@ -250,6 +253,7 @@ impl ConfigureEvm for TempoEvmConfig {
     fn executes_transactions_in_parallel(&self, transaction_count: usize) -> bool {
         self.parallel_execution.is_some()
             && transaction_count >= block::PARALLEL_EXECUTION_MIN_TRANSACTIONS
+            && self.parallel_slowdown.allows_parallel()
     }
 
     #[cfg(feature = "jit")]
