@@ -256,7 +256,12 @@ jobs:
             if (failedJobs.length) status = 'firing';
             else if (jobs['bench-e2e-multi-region']?.result === 'success' &&
                      jobs['save-state']?.result === 'success') status = 'resolved';
-            else {
+            if (status === 'resolved' && process.env.GITHUB_RUN_ATTEMPT !== '1') {
+              // A rerun may be an older night: don't clear a page a newer night raised.
+              core.info('Rerun of a scheduled run; leaving the incident.io alert unchanged');
+              return;
+            }
+            if (!status) {
               core.info('Benchmark did not run; leaving the incident.io alert unchanged');
               return;
             }
@@ -319,7 +324,10 @@ jobs:
                   return;
                 }
                 lastError = new Error(`HTTP ${response.status}`);
+                // Other 4xx (such as a bad token) won't succeed on retry.
+                if (response.status < 500 && response.status !== 429) break;
               } catch (error) { lastError = error; }
+              if (i < 2) await new Promise(resolve => setTimeout(resolve, 2 ** i * 2000));
             }
             // A failed resolve must not fail an otherwise green run; a failed page must.
             if (status === 'resolved') {

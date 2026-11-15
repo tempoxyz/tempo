@@ -9,7 +9,8 @@ const step = workflow.split('      - name: Update incident.io alert\n')[1];
 const script = step.split('          script: |\n')[1]
   .split('\n').map(line => line.slice(12)).join('\n');
 const notify = new (Object.getPrototypeOf(async function () {}).constructor)(
-  'context', 'core', 'process', 'fetch', script);
+  'context', 'core', 'process', 'fetch', 'setTimeout', script);
+const instant = callback => callback();
 
 const FAILED = {
   'resolve-refs': 'success', 'bench-e2e-multi-region': 'failure', 'save-state': 'skipped',
@@ -49,7 +50,7 @@ async function run(results = FAILED, options = {}) {
       const next = responses.length > 1 ? responses.shift() : responses[0];
       if (next === 'network') throw new Error('connection lost');
       return next;
-    });
+    }, instant);
   } catch (err) { error = err; }
   return { calls, error, logs };
 }
@@ -133,6 +134,29 @@ for (const response of ['network', { ok: false, status: 503 }]) {
     assert.equal(calls.length, 3);
   });
 }
+
+test('a rerun does not resolve a newer page', async () => {
+  const { calls, error } = await run(PASSED, { attempt: '2' });
+  assert.equal(error, undefined);
+  assert.deepEqual(calls, []);
+});
+
+test('a rerun can still fire', async () => {
+  const { calls } = await run(FAILED, { attempt: '2' });
+  assert.equal(calls[0].body.status, 'firing');
+});
+
+test('does not retry a client error', async () => {
+  const { calls, error } = await run(undefined, { responses: [{ ok: false, status: 401 }] });
+  assert.ok(error);
+  assert.equal(calls.length, 1);
+});
+
+test('retries a rate limit', async () => {
+  const { calls, error } = await run(undefined, { responses: [{ ok: false, status: 429 }, { ok: true, status: 202 }] });
+  assert.equal(error, undefined);
+  assert.equal(calls.length, 2);
+});
 
 test('a failed resolve only warns', async () => {
   const { calls, error, logs } = await run(PASSED, { responses: [{ ok: false, status: 503 }] });
