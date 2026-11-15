@@ -28,19 +28,19 @@ pub(crate) struct Network {
 
 impl Network {
     /// Adds a zone (one closed zone by default). Closed zones admit the network's accounts.
-    pub fn zone(mut self, config: ZoneCreationConfig) -> Self {
+    pub(crate) fn zone(mut self, config: ZoneCreationConfig) -> Self {
         self.zones.push(config);
         self
     }
 
     /// Funds each account with `amount` pathUSD on the L1.
-    pub fn fund(mut self, amount: u128) -> Self {
+    pub(crate) fn fund(mut self, amount: u128) -> Self {
         self.fund = amount;
         self
     }
 
     /// Starts the L1, `Z` zones and `A` funded accounts. Fails unless `Z` zones were added.
-    pub async fn start<const Z: usize, const A: usize>(
+    pub(crate) async fn start<const Z: usize, const A: usize>(
         self,
     ) -> eyre::Result<(Rc<L1TestNode>, [Zone; Z], [PrivateKeySigner; A])> {
         let zones = if self.zones.is_empty() {
@@ -146,17 +146,21 @@ impl Deref for Zone {
 
 impl Zone {
     /// Returns the zone's portal on the L1.
-    pub fn portal_address(&self) -> Address {
+    pub(crate) fn portal_address(&self) -> Address {
         self.portal_address
     }
 
     /// Deposits `amount` pathUSD from `from` to itself and returns its zone balance once credited.
-    pub async fn deposit(&self, from: &PrivateKeySigner, amount: u128) -> eyre::Result<U256> {
+    pub(crate) async fn deposit(
+        &self,
+        from: &PrivateKeySigner,
+        amount: u128,
+    ) -> eyre::Result<U256> {
         self.deposit_to(from, from.address(), amount).await
     }
 
     /// Deposits `amount` pathUSD from `from` to `to` and returns `to`'s zone balance once credited.
-    pub async fn deposit_to(
+    pub(crate) async fn deposit_to(
         &self,
         from: &PrivateKeySigner,
         to: Address,
@@ -168,7 +172,7 @@ impl Zone {
     }
 
     /// Withdraws to `account`'s L1 address and returns its L1 balance once processed.
-    pub async fn withdraw(
+    pub(crate) async fn withdraw(
         &self,
         account: &PrivateKeySigner,
         token: Address,
@@ -189,12 +193,12 @@ impl Zone {
     }
 
     /// Returns `signer`'s [`ZoneAccount`] on this zone.
-    pub fn account(&self, signer: &PrivateKeySigner) -> ZoneAccount {
+    pub(crate) fn account(&self, signer: &PrivateKeySigner) -> ZoneAccount {
         ZoneAccount::with_signer(signer.clone(), &self.l1, &self.node, self.portal_address)
     }
 
     /// Spawns the zone's batch submitter and withdrawal processor, signing with its sequencer key.
-    pub async fn spawn_sequencer(&self) -> zone_sequencer::ZoneSequencerHandle {
+    pub(crate) async fn spawn_sequencer(&self) -> zone_sequencer::ZoneSequencerHandle {
         spawn_sequencer(
             &self.l1,
             &self.node,

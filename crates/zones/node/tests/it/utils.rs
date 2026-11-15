@@ -104,7 +104,7 @@ pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
 /// Atomic counter for unique zone IDs across concurrent tests.
 static NEXT_ZONE_ID: AtomicU64 = AtomicU64::new(71_000);
 
-pub fn next_unique_chain_id() -> u64 {
+pub(crate) fn next_unique_chain_id() -> u64 {
     zone_chain_id(1_337, NEXT_ZONE_ID.fetch_add(1, Ordering::Relaxed) as u32)
         .expect("test zone ID fits in u32")
 }
@@ -490,7 +490,7 @@ fn precompile_writes(
 }
 
 /// Add every slot `write` stores through the precompiles' typed storage to `genesis`.
-pub fn alloc_precompile_writes(
+pub(crate) fn alloc_precompile_writes(
     genesis: &mut Genesis,
     write: impl FnOnce() -> tempo_precompiles::Result<()>,
 ) -> eyre::Result<()> {
@@ -507,7 +507,7 @@ pub fn alloc_precompile_writes(
 }
 
 /// Seed the raw L1 cache at `block_number` with every slot `write` stores.
-pub fn seed_raw_l1_storage(
+pub(crate) fn seed_raw_l1_storage(
     cache: &mut zone_l1::state::L1StateCacheInner,
     block_number: u64,
     write: impl FnOnce() -> tempo_precompiles::Result<()>,
@@ -752,7 +752,7 @@ impl ZoneTestNode {
     }
 
     /// Returns the chain spec this node launched with.
-    pub fn chain_spec(&self) -> Arc<ZoneChainSpec> {
+    pub(crate) fn chain_spec(&self) -> Arc<ZoneChainSpec> {
         self.chain_spec.clone()
     }
 
@@ -819,13 +819,13 @@ impl ZoneTestNode {
     }
 
     /// Enables `token` on the zone's portal, permanently; see [`Self::pause_deposits`].
-    pub async fn enable_token(&self, token: Address) -> eyre::Result<u64> {
+    pub(crate) async fn enable_token(&self, token: Address) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::enableTokenCall { token })
             .await
     }
 
     /// Registers or deregisters `gateway` as a callback gateway on the zone's portal.
-    pub async fn set_gateway(&self, gateway: Address, allowed: bool) -> eyre::Result<u64> {
+    pub(crate) async fn set_gateway(&self, gateway: Address, allowed: bool) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::setGatewayCall {
             account: gateway,
             allowed,
@@ -834,31 +834,35 @@ impl ZoneTestNode {
     }
 
     /// Sets whether callback withdrawals must target a registered gateway.
-    pub async fn set_gateway_mode(&self, enforced: bool) -> eyre::Result<u64> {
+    pub(crate) async fn set_gateway_mode(&self, enforced: bool) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::setGatewayModeCall { enforced })
             .await
     }
 
     /// Sets whether only allowed accounts may deposit and receive plain withdrawals.
-    pub async fn set_access_mode(&self, enforced: bool) -> eyre::Result<u64> {
+    pub(crate) async fn set_access_mode(&self, enforced: bool) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::setAccessModeCall { enforced })
             .await
     }
 
     /// Adds `account` to or removes it from the portal's allowed accounts.
-    pub async fn set_allowed_account(&self, account: Address, allowed: bool) -> eyre::Result<u64> {
+    pub(crate) async fn set_allowed_account(
+        &self,
+        account: Address,
+        allowed: bool,
+    ) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::setAllowedAccountCall { account, allowed })
             .await
     }
 
     /// Enables or disables zone-internal TIP-20 transfers.
-    pub async fn enable_transfers(&self, enabled: bool) -> eyre::Result<u64> {
+    pub(crate) async fn enable_transfers(&self, enabled: bool) -> eyre::Result<u64> {
         self.portal_admin_call(ZonePortal::setTransfersEnabledCall { enabled })
             .await
     }
 
     /// Pauses or resumes deposits of `token`.
-    pub async fn pause_deposits(&self, token: Address, paused: bool) -> eyre::Result<u64> {
+    pub(crate) async fn pause_deposits(&self, token: Address, paused: bool) -> eyre::Result<u64> {
         if paused {
             self.portal_admin_call(ZonePortal::pauseDepositsCall { token })
                 .await
@@ -1112,7 +1116,7 @@ impl ZoneTestNode {
     }
 
     /// Launch a zone node configured by `config`.
-    pub async fn launch(config: ZoneLaunch) -> eyre::Result<Self> {
+    pub(crate) async fn launch(config: ZoneLaunch) -> eyre::Result<Self> {
         let ZoneLaunch {
             l1,
             genesis,
@@ -1405,7 +1409,7 @@ pub(crate) struct ZoneLaunch {
 
 impl ZoneLaunch {
     /// A zone following `portal_address` on `l1` from its latest block, sequenced by the dev key.
-    pub fn from_l1(l1: &L1TestNode, portal_address: Address) -> Self {
+    pub(crate) fn from_l1(l1: &L1TestNode, portal_address: Address) -> Self {
         Self {
             l1: ZoneL1::Portal {
                 url: l1.ws_url().to_string(),
@@ -1585,7 +1589,7 @@ impl L1TestNode {
     }
 
     /// Transfer pathUSD from the dev account to each `(recipient, amount)`, all at once.
-    pub async fn fund_users(
+    pub(crate) async fn fund_users(
         &self,
         transfers: impl IntoIterator<Item = (Address, u128)>,
     ) -> eyre::Result<()> {
@@ -2159,7 +2163,10 @@ impl L1TestNode {
     }
 
     /// Makes `policy`, created by the dev account, pathUSD's L1 transfer policy; returns its ID.
-    pub async fn set_path_usd_transfer_policy(&self, policy: TIP403Setup) -> eyre::Result<u64> {
+    pub(crate) async fn set_path_usd_transfer_policy(
+        &self,
+        policy: TIP403Setup,
+    ) -> eyre::Result<u64> {
         TIP20Setup::path_usd(self.dev_address())
             .with_transfer_policy(policy)
             .apply_rpc(&self.dev_provider())
@@ -2368,7 +2375,7 @@ async fn patch_clean_portal_snapshot<P: Provider<TempoNetwork>>(
 }
 
 /// Build a zone test genesis anchored to an L1 block, patched with the portal's initial token.
-pub async fn build_l1_anchored_genesis(
+pub(crate) async fn build_l1_anchored_genesis(
     l1_http_url: &url::Url,
     portal_address: Address,
     block: BlockNumberOrTag,
@@ -3251,7 +3258,7 @@ pub(crate) struct RealP2pCluster {
 
 impl RealP2pCluster {
     /// Returns the RPC-only node that mirrors the sequencers' deposit allowlist.
-    pub fn rpc_node(&self) -> &ZoneTestNode {
+    pub(crate) fn rpc_node(&self) -> &ZoneTestNode {
         self.rpc_node
             .as_ref()
             .expect("this cluster was started without a deposit allowlist")
@@ -3399,7 +3406,7 @@ pub(crate) struct AllowlistSetup {
 }
 
 /// Start a three-member P2P quorum against a real Tempo L1.
-pub async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Result<RealP2pCluster> {
+pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Result<RealP2pCluster> {
     let ClusterConfig {
         withdrawal_batch_interval_blocks,
         active_nodes,
@@ -4753,7 +4760,7 @@ impl L1Fixture {
     }
 
     /// Returns a fixture whose next block forks off `parent`, with no caches or registries.
-    pub fn fork_of(&self, parent: &FixtureBlock) -> Self {
+    pub(crate) fn fork_of(&self, parent: &FixtureBlock) -> Self {
         Self {
             next_block_number: parent.header.inner.number + 1,
             next_timestamp: self.next_timestamp + 1,
@@ -4898,7 +4905,7 @@ impl L1Fixture {
     }
 
     /// Inject a deposit of `amount` pathUSD into `zone` and return `to`'s balance once credited.
-    pub async fn deposit(
+    pub(crate) async fn deposit(
         &mut self,
         zone: &ZoneTestNode,
         from: Address,
