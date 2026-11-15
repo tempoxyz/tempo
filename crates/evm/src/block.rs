@@ -589,8 +589,8 @@ impl<'a> TempoBlockExecutor<'a> {
         Self::validate_system_tx_at(self.evm().config_spec_id(), self.evm().block().number, tx)
     }
 
-    /// Implements [`Self::validate_system_tx`] at hardfork `spec` and block `number`, so it can run
-    /// while the inner executor is borrowed.
+    /// Validates a system transaction at hardfork `spec` and block `number`, so it can run while the
+    /// inner executor is borrowed.
     fn validate_system_tx_at(
         spec: TempoHardfork,
         number: U256,
