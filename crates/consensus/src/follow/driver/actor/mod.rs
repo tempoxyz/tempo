@@ -299,8 +299,13 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block =
-            Digested::from(Block::from_execution_block_unchecked(certified.block));
+        let consensus_block = match Block::try_from_execution_block(certified.block) {
+            Ok(block) => Digested::from(block),
+            Err(error) => {
+                warn!(%error, "upstream finalized block failed validation");
+                return Ok(());
+            }
+        };
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);

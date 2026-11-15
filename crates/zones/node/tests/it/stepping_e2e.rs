@@ -26,8 +26,6 @@ const SHORT_EIP2935_HISTORY_WINDOW: u64 = 10;
 const SHORT_EIP2935_SAFETY_MARGIN: u64 = 4;
 const SHORT_EIP2935_EFFECTIVE_WINDOW: u64 =
     SHORT_EIP2935_HISTORY_WINDOW - SHORT_EIP2935_SAFETY_MARGIN;
-const SHORT_EXTENDED_GAP_BLOCKS: u64 =
-    SHORT_EIP2935_HISTORY_WINDOW + SHORT_EIP2935_EFFECTIVE_WINDOW + 1;
 const SHORT_MULTI_BOUNDARY_BATCH_COUNT: u64 = 3;
 const SHORT_MULTI_BOUNDARY_GAP_BLOCKS: u64 = SHORT_EIP2935_HISTORY_WINDOW
     + SHORT_EIP2935_EFFECTIVE_WINDOW * SHORT_MULTI_BOUNDARY_BATCH_COUNT
@@ -179,25 +177,17 @@ async fn test_batch_submission_after_extended_l1_gap() -> eyre::Result<()> {
     );
 
     // Poll until L1 reaches the target — at 10ms/block this takes ~160 seconds.
-    let poll_start = std::time::Instant::now();
-    loop {
-        let current = l1.provider().get_block_number().await?;
-        if current >= target_block {
-            tracing::info!(
-                current,
-                target_block,
-                elapsed_secs = poll_start.elapsed().as_secs(),
-                "L1 advanced past EIP-2935 window"
-            );
-            break;
-        }
-        if poll_start.elapsed() > STEPPING_TIMEOUT {
-            return Err(eyre::eyre!(
-                "Timed out waiting for L1 to reach block {target_block} (current: {current})"
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    let current = poll_until(
+        STEPPING_TIMEOUT,
+        Duration::from_millis(500),
+        "L1 to reach the extended ancestry target block",
+        || async {
+            let current = l1.provider().get_block_number().await?;
+            Ok((current >= target_block).then_some(current))
+        },
+    )
+    .await?;
+    tracing::info!(current, target_block, "L1 advanced past EIP-2935 window");
 
     // --- Step 4: Start zone node connected to L1, anchored at the portal genesis ---
     let zone = ZoneTestNode::start_from_l1_genesis_block(
@@ -267,108 +257,10 @@ async fn test_batch_submission_after_extended_l1_gap() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Same ancestry scenario as the ignored long-gap test, but with a 10-block
-/// configured EIP-2935 window so it runs in regular integration test time.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_batch_submission_after_configured_short_l1_gap() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let anchor_config =
-        BatchAnchorConfig::new(SHORT_EIP2935_HISTORY_WINDOW, SHORT_EIP2935_SAFETY_MARGIN)?;
-
-    let l1 = L1TestNode::start_with(|cfg| {
-        cfg.dev.block_time = Some(Duration::from_millis(20));
-    })
-    .await?;
-
-    let portal_address = l1.deploy_zone().await?;
-    let genesis_block = l1.provider().get_block_number().await?;
-    let portal = ZonePortal::new(portal_address, l1.provider());
-    let target_block = genesis_block + SHORT_EXTENDED_GAP_BLOCKS;
-
-    poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(50),
-        "L1 advanced past configured short EIP-2935 window",
-        || {
-            let provider = l1.provider();
-            async move {
-                let current = provider.get_block_number().await?;
-                if current >= target_block {
-                    Ok(Some(current))
-                } else {
-                    Ok(None)
-                }
-            }
-        },
-    )
-    .await?;
-
-    let zone = ZoneTestNode::start_from_l1_genesis_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        genesis_block,
-    )
-    .await?;
-
-    let first_step_tempo = genesis_block + SHORT_EIP2935_EFFECTIVE_WINDOW;
-    zone.wait_for_tempo_block_number(first_step_tempo, SHORT_STEPPING_TIMEOUT)
-        .await?;
-
-    let l1_tip = l1.provider().get_block_number().await?;
-    eyre::ensure!(
-        l1_tip.saturating_sub(first_step_tempo) > SHORT_EIP2935_HISTORY_WINDOW,
-        "test precondition not met: first configured boundary tempo {first_step_tempo} is only {} blocks behind L1 tip {l1_tip}",
-        l1_tip.saturating_sub(first_step_tempo),
-    );
-
-    let seq = spawn_sequencer_with_config(
-        &l1,
-        &zone,
-        portal_address,
-        l1.dev_signer(),
-        anchor_config,
-        zone_sequencer::WithdrawalBatchLimits::default(),
-    )
-    .await;
-
-    poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(250),
-        "BatchSubmitted event after configured short L1 gap",
-        || {
-            let portal = &portal;
-            let seq = &seq;
-            async move {
-                if seq.monitor_handle.is_finished() {
-                    eyre::bail!("monitor task exited before submitting a batch");
-                }
-
-                if seq.withdrawal_handle.is_finished() {
-                    eyre::bail!("withdrawal processor exited before batch submission completed");
-                }
-
-                let events = portal
-                    .BatchSubmitted_1_filter()
-                    .from_block(0)
-                    .query()
-                    .await?;
-                if events.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(events.len()))
-                }
-            }
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
-/// Verifies that a larger configured-window gap submits multiple finalized
-/// batch boundaries before the sequencer catches up.
+/// Verifies that a larger configured-window gap submits multiple finalized batch boundaries
+/// before the sequencer catches up, each as ancestry-mode calldata rather than a direct
+/// `tempoBlockNumber` lookup. Proving is intentionally unconfigured, so this also preserves the
+/// pre-T11 empty-proof path.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -525,8 +417,7 @@ async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyr
                     let tx_hash = log.transaction_hash.ok_or_else(|| {
                         eyre::eyre!("BatchSubmitted log missing transaction hash")
                     })?;
-                    let (call, _) = fetch_submit_batch_call(l1, tx_hash).await?;
-                    calls.push(call);
+                    calls.push(fetch_submit_batch_call(l1, tx_hash).await?);
                 }
 
                 Ok(Some(calls))
@@ -537,7 +428,7 @@ async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyr
 
     let tempo_block_numbers = calls
         .iter()
-        .map(|call| call.tempoBlockNumber)
+        .map(|(call, _)| call.tempoBlockNumber)
         .collect::<Vec<_>>();
     eyre::ensure!(
         tempo_block_numbers == boundary_tempo_block_numbers,
@@ -554,171 +445,19 @@ async fn test_configured_short_l1_gap_submits_multiple_batch_boundaries() -> eyr
     eyre::ensure!(
         calls
             .iter()
-            .all(|call| call.recentTempoBlockNumber > call.tempoBlockNumber),
+            .all(|(call, _)| call.recentTempoBlockNumber > call.tempoBlockNumber),
         "boundary catch-up submissions should use ancestry anchors: {tempo_block_numbers:?}"
+    );
+    eyre::ensure!(
+        calls.iter().all(|(call, inclusion_block)| {
+            inclusion_block.saturating_sub(call.tempoBlockNumber) > SHORT_EIP2935_EFFECTIVE_WINDOW
+        }),
+        "boundary catch-up submissions should anchor out-of-config-window tempo blocks: {tempo_block_numbers:?}"
     );
     // This pre-T11 test leaves proving unconfigured, so proof bytes stay empty.
     eyre::ensure!(
-        calls.iter().all(|call| call.proof.is_empty()),
+        calls.iter().all(|(call, _)| call.proof.is_empty()),
         "unconfigured boundary catch-up submissions should keep proof bytes empty"
-    );
-
-    Ok(())
-}
-
-/// Verifies that the fast configured-window ancestry path submits ancestry-mode
-/// calldata, not a direct `tempoBlockNumber` lookup. Proving is intentionally unconfigured, so
-/// this also preserves the pre-T11 empty-proof path.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_boundary_ancestry_submission_uses_recent_anchor() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let anchor_config =
-        BatchAnchorConfig::new(SHORT_EIP2935_HISTORY_WINDOW, SHORT_EIP2935_SAFETY_MARGIN)?;
-
-    let l1 = L1TestNode::start_with(|cfg| {
-        cfg.dev.block_time = Some(Duration::from_millis(20));
-    })
-    .await?;
-
-    let portal_address = l1.deploy_zone().await?;
-    let genesis_block = l1.provider().get_block_number().await?;
-    let portal = ZonePortal::new(portal_address, l1.provider());
-    let target_block = genesis_block + SHORT_EXTENDED_GAP_BLOCKS;
-
-    poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(50),
-        "L1 advanced past configured short EIP-2935 window",
-        || {
-            let provider = l1.provider();
-            async move {
-                let current = provider.get_block_number().await?;
-                if current >= target_block {
-                    Ok(Some(current))
-                } else {
-                    Ok(None)
-                }
-            }
-        },
-    )
-    .await?;
-
-    let zone = ZoneTestNode::start_from_l1_genesis_block(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        genesis_block,
-    )
-    .await?;
-
-    let zone_provider = zone.provider();
-    let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &zone_provider);
-    let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, &zone_provider);
-    let first_boundary_tempo = poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(50),
-        "first finalized zone batch boundary",
-        || {
-            let outbox = &outbox;
-            let tempo_state = &tempo_state;
-            async move {
-                let events = outbox.BatchFinalized_filter().from_block(0).query().await?;
-                let Some((_, log)) = events.first() else {
-                    return Ok(None);
-                };
-                let zone_block = log
-                    .block_number
-                    .ok_or_else(|| eyre::eyre!("BatchFinalized log missing block number"))?;
-                let tempo_block_number = tempo_state
-                    .tempoBlockNumber()
-                    .block(BlockId::number(zone_block))
-                    .call()
-                    .await?;
-                Ok(Some(tempo_block_number))
-            }
-        },
-    )
-    .await?;
-
-    poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(50),
-        "first finalized zone batch boundary aged past configured history window",
-        || {
-            let provider = l1.provider();
-            async move {
-                let current = provider.get_block_number().await?;
-                Ok(
-                    (current.saturating_sub(first_boundary_tempo) > SHORT_EIP2935_HISTORY_WINDOW)
-                        .then_some(current),
-                )
-            }
-        },
-    )
-    .await?;
-
-    let seq = spawn_sequencer_with_config(
-        &l1,
-        &zone,
-        portal_address,
-        l1.dev_signer(),
-        anchor_config,
-        zone_sequencer::WithdrawalBatchLimits::default(),
-    )
-    .await;
-
-    let (call, inclusion_block) = poll_until(
-        SHORT_STEPPING_TIMEOUT,
-        Duration::from_millis(250),
-        "ancestry submitBatch calldata using recent anchor",
-        || {
-            let portal = &portal;
-            let seq = &seq;
-            let l1 = &l1;
-            async move {
-                if seq.monitor_handle.is_finished() {
-                    eyre::bail!("monitor task exited before submitting a batch");
-                }
-
-                if seq.withdrawal_handle.is_finished() {
-                    eyre::bail!("withdrawal processor exited before batch submission completed");
-                }
-
-                let events = portal
-                    .BatchSubmitted_1_filter()
-                    .from_block(0)
-                    .query()
-                    .await?;
-                for (_, log) in events {
-                    let tx_hash = log.transaction_hash.ok_or_else(|| {
-                        eyre::eyre!("BatchSubmitted log missing transaction hash")
-                    })?;
-                    let (call, inclusion_block) = fetch_submit_batch_call(l1, tx_hash).await?;
-
-                    if call.recentTempoBlockNumber != 0 {
-                        return Ok(Some((call, inclusion_block)));
-                    }
-                }
-
-                Ok(None)
-            }
-        },
-    )
-    .await?;
-
-    eyre::ensure!(
-        call.recentTempoBlockNumber > call.tempoBlockNumber,
-        "ancestry submission should use a recent anchor greater than tempoBlockNumber"
-    );
-    eyre::ensure!(
-        inclusion_block.saturating_sub(call.tempoBlockNumber) > SHORT_EIP2935_EFFECTIVE_WINDOW,
-        "test did not submit an out-of-config-window tempo block: tempo={}, included_at={inclusion_block}",
-        call.tempoBlockNumber,
-    );
-    eyre::ensure!(
-        call.proof.is_empty(),
-        "unconfigured ancestry submission should keep proof bytes empty"
     );
 
     Ok(())

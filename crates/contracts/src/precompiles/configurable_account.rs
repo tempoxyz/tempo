@@ -65,6 +65,7 @@ sol! {
         error UpgradeMustBeDirectCall();
         error AccountAlreadyConfigurable();
         error AccountHasCode();
+        error UnsupportedOnZone();
     }
 }
 

@@ -710,6 +710,9 @@ where
             account.set_code_slow(Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE));
         }
         account.set_extension(AccountExtension::from(encode_config_commitment(commitment)));
+        self.actions.record_always(StorageAction::ConfigCommitment(
+            address, previous, commitment,
+        ));
         Ok(())
     }
 }

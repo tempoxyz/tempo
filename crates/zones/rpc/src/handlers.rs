@@ -26,8 +26,13 @@ use crate::{
 ///   serializing to JSON.
 pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `AccountKeychain.getKey(account, keyId)` — returns the current keychain
-    /// authorization for a recovered access key.
+    /// authorization for a recovered access key. Fails when Tempo state cannot be read in time.
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo>;
+
+    /// Returns the TIP-1108 commitment that zone execution reads for `account` at the current
+    /// anchor, zero when it has none, or `None` while the zone has not activated configurable
+    /// accounts (T14). Fails when Tempo state cannot be read in time.
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>>;
 
     /// `eth_blockNumber` — returns the latest block number.
     fn block_number(&self) -> BoxFut<'_>;
@@ -726,9 +731,9 @@ fn normalize_block_number(number: BlockNumberOrTag) -> BlockNumberOrTag {
     }
 }
 
-/// Applies [`normalize_block_number`] to a block id. Without it `pending` resolves to a block
-/// the engine has executed but not yet made canonical.
-fn normalize_block_id(block: BlockId) -> BlockId {
+/// Treats `pending` as `latest` in a block id, since zones have no real pending block. Without it
+/// `pending` resolves to a block the engine has executed but not yet made canonical.
+pub fn normalize_block_id(block: BlockId) -> BlockId {
     match block {
         BlockId::Number(number) => BlockId::Number(normalize_block_number(number)),
         hash @ BlockId::Hash(_) => hash,
@@ -739,6 +744,7 @@ fn normalize_block_id(block: BlockId) -> BlockId {
 mod tests {
     use alloy_primitives::Address;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use crate::types::to_raw;
@@ -756,6 +762,10 @@ mod tests {
 
     impl ZoneRpcApi for MockZoneRpcApi {
         fn get_keychain_key(&self, _account: Address, _key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
+            Box::pin(async { Err(eyre::eyre!("not implemented")) })
+        }
+
+        fn get_config_commitment(&self, _account: Address) -> BoxEyreFut<'_, Option<B256>> {
             Box::pin(async { Err(eyre::eyre!("not implemented")) })
         }
 
@@ -837,7 +847,7 @@ mod tests {
         AuthContext {
             caller: Address::repeat_byte(0xaa),
             expires_at: 1_700_000_000,
-            keychain_key_id: None,
+            signer: crate::auth::AuthSigner::Root,
         }
     }
 
@@ -1002,34 +1012,33 @@ mod tests {
         assert_eq!(err.message, "state overrides not allowed");
     }
 
+    // The mock echoes the block it is asked to run against.
+    #[test_case("eth_call", "pending" => json!("latest"))]
+    #[test_case("eth_call", "latest" => json!("latest"))]
+    #[test_case("eth_call", "0x10" => json!("0x10"))]
+    #[test_case("eth_estimateGas", "pending" => json!("latest"))]
+    #[test_case("eth_estimateGas", "latest" => json!("latest"))]
+    #[test_case("eth_estimateGas", "0x10" => json!("0x10"))]
     #[tokio::test]
-    async fn simulations_treat_pending_as_latest() {
+    async fn simulations_treat_pending_as_latest(
+        method: &str,
+        requested: &str,
+    ) -> serde_json::Value {
         let api = MockZoneRpcApi::default();
-        for method in ["eth_call", "eth_estimateGas"] {
-            // The mock echoes the block it is asked to run against.
-            for (requested, forwarded) in [
-                (json!("pending"), json!("latest")),
-                (json!("latest"), json!("latest")),
-                (json!("0x10"), json!("0x10")),
-            ] {
-                let resp = dispatch(
-                    &request(
-                        method,
-                        json!([
-                            {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
-                            requested,
-                        ]),
-                    ),
-                    &auth(),
-                    &api,
-                )
-                .await;
+        let resp = dispatch(
+            &request(
+                method,
+                json!([
+                    {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
+                    requested,
+                ]),
+            ),
+            &auth(),
+            &api,
+        )
+        .await;
 
-                let block: serde_json::Value =
-                    serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap();
-                assert_eq!(block, forwarded, "{method} at {requested}");
-            }
-        }
+        serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap()
     }
 
     #[tokio::test]
@@ -1076,26 +1085,23 @@ mod tests {
         }
     }
 
+    #[test_case("eth_getCode")]
+    #[test_case("eth_getProof")]
+    #[test_case("admin_peers")]
+    #[test_case("debug_accountRange")]
+    #[test_case("txpool_contentFrom")]
+    #[test_case("missing_method")]
     #[tokio::test]
-    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label() {
+    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label(name: &str) {
         let api = MockZoneRpcApi::default();
 
-        for name in [
-            "eth_getCode",
-            "eth_getProof",
-            "admin_peers",
-            "debug_accountRange",
-            "txpool_contentFrom",
-            "missing_method",
-        ] {
-            assert_eq!(Method::from_name(name), None, "method: {name}");
-            assert_eq!(Method::metric_label(name), "unknown");
-            let error = dispatch(&request(name, json!([])), &auth(), &api)
-                .await
-                .error
-                .expect("method must return an error");
-            assert_eq!(error.code, -32601, "method: {name}");
-            assert_eq!(error.message, "Method not found", "method: {name}");
-        }
+        assert_eq!(Method::from_name(name), None);
+        assert_eq!(Method::metric_label(name), "unknown");
+        let error = dispatch(&request(name, json!([])), &auth(), &api)
+            .await
+            .error
+            .expect("method must return an error");
+        assert_eq!(error.code, -32601);
+        assert_eq!(error.message, "Method not found");
     }
 }

@@ -54,6 +54,7 @@ fn extra_data() -> String {
 mod tests {
     use super::*;
     use crate::rpc::OperatorWeb3Api;
+    use jsonrpsee::types::{Response, response::Success};
     use reth_rpc_api::Web3ApiServer as _;
 
     #[tokio::test]
@@ -83,14 +84,18 @@ mod tests {
         assert_eq!(client_version(), metadata.p2p_client_version);
         assert_ne!(client_version(), "reth-test");
 
-        let rpc_client_version = OperatorWeb3Api
+        let (response, _) = OperatorWeb3Api
             .into_rpc()
-            .call::<_, String>(
-                "web3_clientVersion",
-                jsonrpsee::core::EmptyServerParams::new(),
+            .raw_json_request(
+                r#"{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}"#,
+                1,
             )
             .await
             .expect("operator client version should be available");
-        assert_eq!(rpc_client_version, client_version());
+        let response = serde_json::from_str::<Response<'_, String>>(&response).unwrap();
+        assert_eq!(
+            Success::try_from(response).unwrap().result,
+            client_version()
+        );
     }
 }

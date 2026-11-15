@@ -342,6 +342,28 @@ async fn test_non_secp_auth_tokens() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Owner-quorum tokens of a configurable account authenticate as the account (TIP-1154).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_configurable_account_auth_tokens() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let ctx = start_zone_with_redacted_rpc().await?;
+    let owner = P256SigningKey::random(&mut OsRng);
+    let (token, account) = ctx.configurable_account_token(&owner);
+
+    // Account-scoped reads are allowed only for the authenticated caller.
+    let response = ctx
+        .call(
+            "eth_getTransactionCount",
+            json!([account, "latest"]),
+            &token,
+        )
+        .await?;
+    assert_eq!(response["result"], "0x0", "{response}");
+
+    Ok(())
+}
+
 /// Invalid P256 signatures and WebAuthn challenge mismatches are rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
@@ -370,9 +392,9 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Authorized P256 keychain tokens authenticate as the root account in both V1 and V2 encodings.
+/// Authorized P256 V2 keychain tokens authenticate as the root account.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
+async fn test_keychain_auth_tokens_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut ctx = start_zone_with_redacted_rpc().await?;
@@ -396,28 +418,26 @@ async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
     )
     .await?;
 
-    for version in [0x03, 0x04] {
-        let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, version);
-        let resp = ctx
-            .call(
-                "eth_call",
-                serde_json::json!([
-                    {
-                        "from": format!("{:#x}", root_signer.address()),
-                        "to": format!("{:#x}", root_signer.address()),
-                        "input": "0x"
-                    },
-                    "latest"
-                ]),
-                &token,
-            )
-            .await?;
-        assert_eq!(
-            resp["result"].as_str().unwrap(),
-            "0x",
-            "keychain auth should allow calls from the root account",
-        );
-    }
+    let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x04);
+    let resp = ctx
+        .call(
+            "eth_call",
+            serde_json::json!([
+                {
+                    "from": format!("{:#x}", root_signer.address()),
+                    "to": format!("{:#x}", root_signer.address()),
+                    "input": "0x"
+                },
+                "latest"
+            ]),
+            &token,
+        )
+        .await?;
+    assert_eq!(
+        resp["result"].as_str().unwrap(),
+        "0x",
+        "keychain auth should allow calls from the root account",
+    );
 
     Ok(())
 }
@@ -1451,11 +1471,13 @@ fn encryption_public_key(secret_key: &k256::SecretKey) -> (String, u8) {
 async fn test_zone_get_encryption_key_reads_latest_l1_key() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let ctx = start_zone_with_redacted_rpc_l1_with_encryption().await?;
+    // The node holds the rotated key, so its L1 ingestion, which authorization reads Tempo
+    // through, outlives the rotation.
+    let second_key = k256::SecretKey::from_slice(&[0x42; 32])?;
+    let ctx = start_zone_with_redacted_rpc_l1_with_encryption(vec![second_key.clone()]).await?;
     let portal_address = ctx.portal_address();
     let caller = ctx.l1().user_signer();
 
-    let second_key = k256::SecretKey::from_slice(&[0x42; 32])?;
     ctx.l1()
         .set_sequencer_encryption_key(portal_address, &second_key)
         .await?;
