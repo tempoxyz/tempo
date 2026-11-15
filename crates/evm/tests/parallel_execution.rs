@@ -8,7 +8,7 @@
 #[allow(dead_code)]
 mod tip20;
 
-use alloy_consensus::transaction::{Recovered, TxHashRef};
+use alloy_consensus::transaction::{Recovered, SignerRecoverable, TxHashRef};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
