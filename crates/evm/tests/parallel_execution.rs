@@ -255,14 +255,18 @@ fn execute_until(
         &**snapshot,
         make_evm,
         |_, _| {},
-        |index, receipt| {
+        |index, receipt, copy| {
+            // A worker's copy of a receipt equals the receipt it recorded.
+            if let Some(copy) = &copy {
+                assert_eq!(copy, receipt, "receipt {index} copy differs");
+            }
             // A batched commit that fails executes the block again, streaming the receipts before
             // the failure again, unchanged.
             if let Some(seen) = streamed.get(index) {
                 assert_eq!(seen, receipt, "receipt {index} changed");
             } else {
                 assert_eq!(index, streamed.len(), "receipt {index} out of order");
-                streamed.push(receipt.clone());
+                streamed.push(copy.unwrap_or_else(|| receipt.clone()));
             }
         },
     );

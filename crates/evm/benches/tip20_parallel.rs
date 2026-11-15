@@ -5,6 +5,10 @@
 //! that every variant commits the sequential result. Set `TEMPO_TIP20_EXEC_TXS` to replay a txgen raw transaction file,
 //! `TEMPO_PAR_THREADS` (comma-separated) and `TEMPO_PAR_ITERS` to change the sweep.
 //!
+//! To model the node's receipt root task, set `TEMPO_PAR_RECEIPTS=1`: receipts then stream, as the
+//! engine streams them, to a thread that encodes them into the receipt trie, and timed runs end
+//! when it has the root.
+//!
 //! To model a node, set `TEMPO_PAR_HOOK=1` to attach a state hook that forwards every update to a
 //! consumer thread in timed runs too, and `TEMPO_PAR_BASE_NS` to make the first read of each key
 //! from the pre-block state spin for that many nanoseconds, like a cold database read.
@@ -13,8 +17,9 @@
 #[allow(dead_code)]
 mod tip20;
 
-use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_consensus::{TxReceipt, transaction::Recovered};
+use alloy_eips::Encodable2718;
+use alloy_primitives::{Address, B256, Bloom, Bytes, U256};
 use evm2::{
     block::{StateUpdate, ethereum::parallel::ParallelCommit},
     bytecode::Bytecode,
@@ -23,8 +28,10 @@ use evm2::{
 };
 use reth_evm::{BlockExecutor, BlockExecutorFactory};
 use reth_evm_ethereum::EthBlockExecutionCtx;
+use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use std::{
     collections::{BTreeMap, HashSet},
+    convert::Infallible,
     hint::black_box,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
@@ -32,7 +39,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{ParallelExecution, TempoBlockExecutionCtx, TempoEvm, TempoEvmConfig, TempoTxEnv};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
 use tip20::common::bench_env;
 
 /// The pre-block state as a shared database for the workers.
@@ -189,15 +196,39 @@ fn run(
     executor.set_parallel_execution(threads.map(|threads| ParallelExecution { threads, commit }));
     let make_evm = evm_factory(|db| BlockExecutorFactory::evm_with_env(config, db, env.clone()));
     let start = Instant::now();
-    let reexecuted = executor
-        .execute_block_transactions(
-            tx_envs.into_iter().zip(txs),
+    let reexecuted = if std::env::var("TEMPO_PAR_RECEIPTS").as_deref() == Ok("1") {
+        let len = txs.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let root = std::thread::spawn(move || receipt_root(receiver));
+        let mut batch = Vec::with_capacity(32);
+        let stats = executor.execute_transaction_stream(
+            tx_envs.into_iter().zip(txs).map(Ok::<_, Infallible>),
             &**snapshot,
             make_evm,
             |_, _| {},
-        )
-        .expect("block execution failed")
-        .reexecuted;
+            move |index, receipt: &TempoReceipt, copy: Option<TempoReceipt>| {
+                // The engine sends each receipt, or the copy a worker made, in batches.
+                batch.push((index, copy.unwrap_or_else(|| receipt.clone())));
+                if batch.len() == 32 || index + 1 == len {
+                    for receipt in batch.drain(..) {
+                        let _ = sender.send(receipt);
+                    }
+                }
+            },
+        );
+        black_box(root.join().unwrap());
+        stats.expect("block execution failed").reexecuted
+    } else {
+        executor
+            .execute_block_transactions(
+                tx_envs.into_iter().zip(txs),
+                &**snapshot,
+                make_evm,
+                |_, _| {},
+            )
+            .expect("block execution failed")
+            .reexecuted
+    };
     let elapsed = start.elapsed();
 
     let receipts = black_box(executor.receipts());
@@ -216,6 +247,22 @@ fn run(
         reexecuted,
         output,
     }
+}
+
+/// Builds the receipt root and bloom from receipts that arrive in order, as the engine's receipt
+/// root task does.
+fn receipt_root(receiver: std::sync::mpsc::Receiver<(usize, TempoReceipt)>) -> (B256, Bloom) {
+    let mut builder = OrderedTrieRootEncodedBuilder::new();
+    let mut bloom = Bloom::ZERO;
+    let mut buf = Vec::with_capacity(512);
+    for (_, receipt) in receiver {
+        let receipt = receipt.with_bloom_ref();
+        buf.clear();
+        receipt.encode_2718(&mut buf);
+        bloom |= *receipt.bloom_ref();
+        builder.push_next(&buf);
+    }
+    (builder.finalize(), bloom)
 }
 
 /// The block's final state from its streamed updates: every account and slot it changed, at its
