@@ -186,7 +186,10 @@ fn run(
         });
     }
 
-    executor.set_parallel_execution(threads.map(|threads| ParallelExecution { threads, commit }));
+    executor.set_parallel_execution(threads.map(|threads| ParallelExecution {
+        commit,
+        ..ParallelExecution::new(threads)
+    }));
     let make_evm = evm_factory(|db| BlockExecutorFactory::evm_with_env(config, db, env.clone()));
     let start = Instant::now();
     let reexecuted = executor

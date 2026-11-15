@@ -316,8 +316,8 @@ where
 
 fn parallel(threads: usize, commit: ParallelCommit) -> Option<ParallelExecution> {
     Some(ParallelExecution {
-        threads: NonZeroUsize::new(threads).unwrap(),
         commit,
+        ..ParallelExecution::new(NonZeroUsize::new(threads).unwrap())
     })
 }
 

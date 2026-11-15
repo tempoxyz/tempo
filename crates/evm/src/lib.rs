@@ -30,7 +30,8 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{
-    ExecutorState, ParallelExecution, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+    ExecutorState, PARALLEL_EXECUTION_MIN_TRANSACTIONS, ParallelExecution, TempoBlockExecutor,
+    TempoReceiptBuilder, TempoTxResult,
 };
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -247,8 +248,8 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn executes_transactions_in_parallel(&self, transaction_count: usize) -> bool {
-        self.parallel_execution.is_some()
-            && transaction_count >= block::PARALLEL_EXECUTION_MIN_TRANSACTIONS
+        self.parallel_execution
+            .is_some_and(|parallel| transaction_count >= parallel.min_transactions)
     }
 
     #[cfg(feature = "jit")]

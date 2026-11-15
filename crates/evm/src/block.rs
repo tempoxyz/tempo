@@ -1031,6 +1031,8 @@ pub struct ParallelExecution {
     pub threads: NonZeroUsize,
     /// How the block's transactions commit.
     pub commit: ParallelCommit,
+    /// Blocks with fewer transactions execute sequentially.
+    pub min_transactions: usize,
 }
 
 impl ParallelExecution {
@@ -1039,13 +1041,15 @@ impl ParallelExecution {
         Self {
             threads,
             commit: ParallelCommit::Batched,
+            min_transactions: PARALLEL_EXECUTION_MIN_TRANSACTIONS,
         }
     }
 }
 
-/// Blocks with fewer transactions execute sequentially even with parallel execution on: spawning
-/// workers and opening their state providers costs more than they save.
-pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
+/// Default [`ParallelExecution::min_transactions`]: smaller blocks execute sequentially even with
+/// parallel execution on, since spawning workers and opening their state providers costs more
+/// than they save.
+pub const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
 
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F

@@ -52,7 +52,10 @@ use reth_transaction_pool::{
 };
 use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
-use tempo_evm::{ParallelExecution, TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::{
+    PARALLEL_EXECUTION_MIN_TRANSACTIONS, ParallelExecution, TempoEvmConfig,
+    consensus::TempoConsensus,
+};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
     ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
@@ -172,6 +175,16 @@ pub struct TempoNodeArgs {
         requires = "execution_parallel_threads"
     )]
     pub execution_parallel_in_order: bool,
+
+    /// With `--execution.parallel-threads`, blocks with fewer transactions execute sequentially.
+    #[arg(
+        long = "execution.parallel-min-txs",
+        value_name = "TXS",
+        hide = true,
+        requires = "execution_parallel_threads",
+        default_value_t = PARALLEL_EXECUTION_MIN_TRANSACTIONS
+    )]
+    pub execution_parallel_min_txs: usize,
 }
 
 impl Default for TempoNodeArgs {
@@ -190,6 +203,7 @@ impl Default for TempoNodeArgs {
             shadow_replay: None,
             execution_parallel_threads: None,
             execution_parallel_in_order: false,
+            execution_parallel_min_txs: PARALLEL_EXECUTION_MIN_TRANSACTIONS,
         }
     }
 }
@@ -217,6 +231,7 @@ impl TempoNodeArgs {
                 } else {
                     ParallelCommit::Batched
                 },
+                min_transactions: self.execution_parallel_min_txs,
             });
         if let Some(parallel) = parallel_execution {
             warn!(?parallel, "Parallel block execution is experimental");
