@@ -277,6 +277,85 @@ where
         Ok(())
     }
 
+    /// Adds `delta` (wrapping) to a slot the transaction has not loaded through a range-checked
+    /// blind add, when its storage writes are deferred and the slot's value lies in `min..=max`,
+    /// charging exactly the gas of [`Self::sload_inner`] followed by [`Self::sstore_inner`].
+    /// Returns `false`, changing nothing, when the caller must load and write the slot itself.
+    ///
+    /// The range must hold only nonzero values whose sum with `delta` is nonzero, so the write is
+    /// a clean nonzero-to-nonzero one whose gas, refund and storage credits are the same for every
+    /// value in it. Parallel block execution accepts the transaction over any committed value in
+    /// the range and applies the add to that value, which gives the result of the exact load and
+    /// write.
+    fn add_within(
+        &mut self,
+        address: Address,
+        key: U256,
+        delta: U256,
+        min: U256,
+        max: U256,
+    ) -> Result<bool, TempoPrecompileError> {
+        if delta.is_zero()
+            || !self.version.feature(EvmFeatures::EIP2929)
+            || !self.defers_storage_writes()
+        {
+            return Ok(false);
+        }
+        let params = &self.version.gas_params;
+        let warm_read = params.get(GasId::WarmStorageReadCost);
+        let cold = params.get(GasId::ColdStorageAdditionalCost);
+        let sstore_static = params.get(GasId::SstoreStatic);
+        let stipend = params.get(GasId::CallStipend);
+        let clean_write = SStore {
+            original_value: U256::ONE,
+            present_value: U256::ONE,
+            new_value: U256::from(2),
+            is_cold: false,
+            _non_exhaustive: (),
+        };
+        let write = params.sstore_dynamic_gas(true, &clean_write);
+        // Only when no step of the exact load and write could run out of gas or skip a cold load,
+        // so that charging the same amounts here is the same.
+        let load = warm_read.saturating_add(cold);
+        let remaining = self.gas_tracker.remaining();
+        if remaining < load.saturating_add(sstore_static).saturating_add(write)
+            || remaining.saturating_sub(load) <= stipend
+        {
+            return Ok(false);
+        }
+
+        self.evm.state_mut().account(&address)?.warm();
+        let Some((value, is_cold)) = self
+            .evm
+            .state_mut()
+            .storage_add_within(&address, key, delta, min, max)?
+        else {
+            return Ok(false);
+        };
+        let result = SStore {
+            original_value: value,
+            present_value: value,
+            new_value: value.wrapping_add(delta),
+            is_cold: false,
+            _non_exhaustive: (),
+        };
+
+        self.deduct_gas(warm_read)?;
+        if is_cold {
+            self.deduct_gas(cold)?;
+        }
+        self.deduct_gas(sstore_static)?;
+        if self.tip1060_storage_credits_enabled {
+            sstore_storage_credits(self, address, Some(key), &result)?
+        }
+        self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+        self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
+        if self.spec.is_t4() {
+            self.refund_gas(self.version.gas_params.sstore_refund(true, &result));
+        }
+        Ok(true)
+    }
+
     #[inline]
     fn with_loaded_account<R>(
         &mut self,
@@ -490,6 +569,13 @@ where
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
 
+        // A sum in `1..=MAX` neither overflows nor leaves the slot zero.
+        if let Some(max) = U256::MAX.checked_sub(delta)
+            && self.add_within(address, key, delta, U256::ONE, max)?
+        {
+            return Ok(());
+        }
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -559,6 +645,13 @@ where
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
+
+        // A value above `delta` neither underflows nor leaves the slot zero.
+        if let Some(min) = delta.checked_add(U256::ONE)
+            && self.add_within(address, key, delta.wrapping_neg(), min, U256::MAX)?
+        {
+            return Ok(());
+        }
 
         let current = self.sload_inner(address, key, false)?;
         let value = current
@@ -1095,6 +1188,86 @@ mod tests {
     impl Default for TestEvm {
         fn default() -> Self {
             Self::new(TempoHardfork::default())
+        }
+    }
+
+    /// Under deferred storage writes, `sinc` and `sdec` of a slot the transaction has not loaded
+    /// take a range-checked blind add exactly when the slot stays nonzero and in range, and charge
+    /// the same gas and refund, return the same result and leave the same value as reading and
+    /// writing the slot.
+    #[test]
+    fn test_range_checked_deltas_match_exact_reads() {
+        let address = Address::repeat_byte(0x20);
+        let key = U256::from(7);
+        let near_max = U256::MAX - U256::from(2);
+        // (start, increment, delta, takes the blind add)
+        let cases = [
+            (U256::from(100), true, U256::from(5), true),
+            (U256::from(100), false, U256::from(5), true),
+            (U256::from(100), false, U256::from(99), true),
+            // Writes that zero, start from zero, underflow or overflow read the slot.
+            (U256::from(100), false, U256::from(100), false),
+            (U256::from(100), false, U256::from(101), false),
+            (U256::ZERO, true, U256::from(5), false),
+            (near_max, true, U256::from(2), true),
+            (near_max, true, U256::from(3), false),
+        ];
+        for spec in [TempoHardfork::T3, TempoHardfork::default()] {
+            for (start, increment, delta, blind) in cases {
+                for warm in [false, true] {
+                    let run = |defer: bool| {
+                        let mut evm = TestEvm::with_storage(spec, address, key, start);
+                        evm.evm.set_defer_storage_resolution(defer);
+                        let mut provider = evm.provider_with_gas_limit(1_000_000, 0);
+                        if warm {
+                            provider.sload(address, key).unwrap();
+                        }
+                        let before = (provider.gas_used(), provider.gas_refunded());
+                        let result = if increment {
+                            provider.sinc(address, key, delta)
+                        } else {
+                            provider.sdec(address, key, delta)
+                        };
+                        let charged = (
+                            provider.gas_used() - before.0,
+                            provider.gas_refunded() - before.1,
+                            provider.state_gas_used(),
+                        );
+                        drop(provider);
+                        let value = evm
+                            .evm
+                            .state_mut()
+                            .storage(&address)
+                            .unwrap()
+                            .into_slot(key)
+                            .unwrap()
+                            .current();
+                        (result, charged, value)
+                    };
+                    let case = (spec, start, increment, delta, warm);
+                    assert_eq!(run(true), run(false), "{case:?}");
+
+                    let mut evm = TestEvm::with_storage(spec, address, key, start);
+                    evm.evm.set_defer_storage_resolution(true);
+                    let mut provider = evm.provider_with_gas_limit(1_000_000, 0);
+                    if warm {
+                        provider.sload(address, key).unwrap();
+                    }
+                    let delta = if increment {
+                        delta
+                    } else {
+                        delta.wrapping_neg()
+                    };
+                    let (min, max) = if increment {
+                        (U256::ONE, U256::MAX.saturating_sub(delta))
+                    } else {
+                        (delta.wrapping_neg().saturating_add(U256::ONE), U256::MAX)
+                    };
+                    // A slot the transaction loaded is read and written in place.
+                    let taken = provider.add_within(address, key, delta, min, max).unwrap();
+                    assert_eq!(taken, blind && !warm, "{case:?}");
+                }
+            }
         }
     }
 

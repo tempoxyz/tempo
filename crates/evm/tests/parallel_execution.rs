@@ -10,6 +10,7 @@ mod tip20;
 
 use alloy_consensus::transaction::{Recovered, TxHashRef};
 use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use evm2::{
@@ -35,10 +36,14 @@ use tempo_evm::{
     ExecutorState, ParallelExecution, TempoBlockExecutionCtx, TempoEvm, TempoEvmConfig, TempoTxEnv,
 };
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, storage::StorageKey};
-use tempo_primitives::{TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoReceipt, TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+};
 use test_case::test_matrix;
 use tip20::common::{
-    DEFAULT_BLOCK_TIMESTAMP, bench_env, latest_known_hardfork, sign_precompile_call,
+    CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS, TXGEN_GAS_LIMIT, bench_env,
+    latest_known_hardfork, sign_precompile_call,
 };
 
 /// Block gas limit of bench_env.
@@ -145,6 +150,67 @@ impl Accounts {
                         Bytes::from(transfer.abi_encode()),
                     )
                 }
+            })
+            .collect()
+    }
+
+    /// count pathUSD transfers that all credit one recipient; every sponsored_every-th one is
+    /// instead an AA transfer to it whose fee one sponsor pays.
+    fn hot_transactions(
+        &self,
+        count: usize,
+        sponsored_every: Option<usize>,
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
+        let sponsor = &self.signers[1];
+        let recipient = self.participants[2];
+        (0..count)
+            .map(|idx| {
+                let transfer = ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(idx as u64 + 1),
+                };
+                if !sponsored_every.is_some_and(|every| idx % every == every - 1) {
+                    let signer = &self.signers[idx % self.signers.len()];
+                    return sign_precompile_call(
+                        signer,
+                        PATH_USD_ADDRESS,
+                        Bytes::from(transfer.abi_encode()),
+                    );
+                }
+                // The sponsor cannot pay for its own transactions.
+                let signer = &self.signers[if idx % self.signers.len() == 1 {
+                    3
+                } else {
+                    idx % self.signers.len()
+                }];
+                let mut aa = TempoTransaction {
+                    chain_id: CHAIN_ID,
+                    fee_token: Some(PATH_USD_ADDRESS),
+                    max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
+                    max_fee_per_gas: TXGEN_FEE_PER_GAS,
+                    gas_limit: TXGEN_GAS_LIMIT,
+                    calls: vec![Call::new(
+                        PATH_USD_ADDRESS,
+                        Bytes::from(transfer.abi_encode()),
+                    )],
+                    access_list: Default::default(),
+                    nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                    nonce: 0,
+                    fee_payer_signature: None,
+                    valid_before: Some(NonZeroU64::new(DEFAULT_BLOCK_TIMESTAMP + 10).unwrap()),
+                    valid_after: None,
+                    key_authorization: None,
+                    tempo_authorization_list: Vec::new(),
+                };
+                aa.fee_payer_signature = Some(
+                    sponsor
+                        .sign_hash_sync(&aa.fee_payer_signature_hash(signer.address()))
+                        .unwrap(),
+                );
+                let signature = signer.sign_hash_sync(&aa.signature_hash()).unwrap();
+                TempoTxEnvelope::from(aa.into_signed(signature.into()))
+                    .try_into_recovered()
+                    .unwrap()
             })
             .collect()
     }
@@ -493,4 +559,30 @@ fn parallel_stream_error_matches_sequential(commit: ParallelCommit, threads: usi
     );
     assert_eq!(stats, None);
     assert_eq!(outcome, sequential);
+}
+
+/// Every transaction credits one recipient, and with sponsored_every every sponsored_every-th
+/// one's fee is paid by one sponsor: the recipient's and the sponsor's balances are slots every
+/// such transaction updates.
+#[test_matrix([None, Some(2)], [ParallelCommit::InOrder, ParallelCommit::Batched], [2, 4])]
+fn parallel_hot_balances_match_sequential(
+    sponsored_every: Option<usize>,
+    commit: ParallelCommit,
+    threads: usize,
+) {
+    let accounts = Accounts::new();
+    let snapshot = Arc::new(Snapshot(accounts.seed()));
+    let txs = accounts.hot_transactions(TX_COUNT, sponsored_every);
+    let ctx = || ctx(txs.len(), BLOCK_GAS_LIMIT, 0);
+
+    let (sequential, _) = execute(&snapshot, &txs, ctx(), None);
+    assert_eq!(sequential.error, None);
+    assert_eq!(sequential.receipts.len(), TX_COUNT);
+    assert!(sequential.receipts.iter().all(|receipt| receipt.success));
+    assert!(sequential.finish.is_ok(), "{:?}", sequential.finish);
+
+    let (outcome, stats) = execute(&snapshot, &txs, ctx(), parallel(threads, commit));
+    assert_eq!(outcome, sequential);
+    eprintln!("{sponsored_every:?} {commit:?} {threads}: {stats:?}");
+    ensure_speculative(stats, commit, threads);
 }
