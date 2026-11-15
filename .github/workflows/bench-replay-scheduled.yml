@@ -237,44 +237,24 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  # Pages reth on-call through incident.io's Reth CI source (which posts to
-  # #eng-reth-alerts) when a scheduled run fails, and resolves the same alert on
-  # the next scheduled run that passes (see .github/scripts/bench-incident-alert.js).
+  # Pages reth on-call through incident.io on scheduled failures.
   incident-io:
     needs: [resolve-refs, fail-on-stale, bench-replay, save-state]
     if: >-
       !cancelled() &&
       github.event_name == 'schedule' &&
       github.repository == 'tempoxyz/tempo'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    uses: ./.github/workflows/bench-incident-alert.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     permissions:
-      contents: read
       id-token: write
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - name: Checkout alert script
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-
-      - name: Update incident.io alert
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          INCIDENT_IO_URL: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
-          INCIDENT_IO_TOKEN: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
-          BENCH_JOB_RESULTS: ${{ toJSON(needs) }}
-          ALERT_KEY: tempo:bench-replay-nightly-${{ needs.resolve-refs.outputs.chain || (github.event.schedule == '1 0 * * *' && 'testnet' || 'mainnet') }}
-          ALERT_NAME: Nightly ${{ needs.resolve-refs.outputs.chain || (github.event.schedule == '1 0 * * *' && 'testnet' || 'mainnet') }} replay benchmark
-          ALERT_WORKFLOW: bench-replay-scheduled.yml
-          ALERT_RESOLVE_JOBS: bench-replay,save-state
-          ALERT_DETAIL: ${{ needs.resolve-refs.outputs.is-stale == 'true' && format('The nightly Docker build is {0}h old (threshold 24h); check docker.yml.', needs.resolve-refs.outputs.stale-age-hours) || '' }}
-          BENCH_BASELINE_REF: ${{ needs.resolve-refs.outputs.baseline-ref }}
-          BENCH_FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
-        with:
-          retries: 0
-          script: |
-            await require('./.github/scripts/bench-incident-alert.js')({ core, context });
+    with:
+      results: ${{ toJSON(needs) }}
+      key: tempo:bench-replay-nightly-${{ needs.resolve-refs.outputs.chain || (github.event.schedule == '1 0 * * *' && 'testnet' || 'mainnet') }}
+      name: Nightly ${{ needs.resolve-refs.outputs.chain || (github.event.schedule == '1 0 * * *' && 'testnet' || 'mainnet') }} replay benchmark
+      resolve-jobs: bench-replay,save-state
+      detail: ${{ needs.resolve-refs.outputs.is-stale == 'true' && format('The nightly Docker build is {0}h old (threshold 24h); check docker.yml.', needs.resolve-refs.outputs.stale-age-hours) || '' }}
+      baseline-ref: ${{ needs.resolve-refs.outputs.baseline-ref }}
+      feature-ref: ${{ needs.resolve-refs.outputs.feature-ref }}
+    secrets:
+      INCIDENT_IO_RETH_CI_URL: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
+      INCIDENT_IO_RETH_CI_TOKEN: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
