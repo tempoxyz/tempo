@@ -14,7 +14,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256, U256, map::B256Set};
+use alloy::primitives::{Address, B256, U256};
 use evm2::{
     DatabaseError,
     evm::{
@@ -140,9 +140,9 @@ impl NonceManager {
     ///
     /// When storage writes are deferred, as in parallel block execution, an indexed transaction
     /// checks the ring slot `index` positions past the pointer before the block, which is where
-    /// sequential execution inserts it, and inserts its hash together with the block's other
-    /// inserts once every transaction committed (see [`ExpiringNonceInsert`]), so transactions
-    /// do not conflict on the pointer.
+    /// sequential execution inserts it, and inserts its hash as it commits, advancing the pointer
+    /// once every transaction committed (see [`ExpiringNonceInsert`]), so transactions do not
+    /// conflict on the pointer.
     ///
     /// # Errors
     /// As [`Self::check_and_mark_expiring_nonce`].
@@ -186,7 +186,7 @@ impl NonceManager {
                     }
                     // Clearing an already cleared entry changes nothing.
                     if old_expiry != 0 {
-                        evicted = Some((old_hash, self.expiring_nonce_seen[old_hash].slot()));
+                        evicted = Some(self.expiring_nonce_seen[old_hash].slot());
                     }
                 }
                 let op = DeferredStorageOp::batched(ExpiringNonceInsert {
@@ -290,10 +290,10 @@ fn ring_position(ptr: u32, steps: usize, capacity: u32) -> u32 {
 /// transactions, whose execution checked the ring slot sequential execution inserts it at and
 /// marked its hash seen.
 ///
-/// Batched parallel commits check that the transaction is the block's `index`th insert as it
-/// commits, and write every insert's ring slot, the evicted entries and the pointer once the
-/// block's transactions committed. No transaction's outcome depends on those writes: an evicted
-/// entry reads as expired whether it is cleared or not.
+/// Batched parallel commits check that the transaction is the block's `index`th insert and write
+/// its ring slot and evicted entry as it commits, without reading storage, and the pointer once
+/// the block's transactions committed. No transaction's outcome depends on those writes: an
+/// evicted entry reads as expired whether it is cleared or not.
 struct ExpiringNonceInsert {
     hash: B256,
     now: u64,
@@ -305,8 +305,8 @@ struct ExpiringNonceInsert {
     ring_slot: U256,
     /// The entry at the ring slot before the block.
     old_hash: B256,
-    /// The entry the insert evicts from the seen set, with its seen slot.
-    evicted: Option<(B256, U256)>,
+    /// The seen slot of the entry the insert evicts.
+    evicted: Option<U256>,
 }
 
 impl ExpiringNonceInsert {
@@ -339,43 +339,31 @@ impl BatchedStorageOp for ExpiringNonceInsert {
         access.sstore(&address, ptr_slot, U256::from(next))
     }
 
-    fn check(&self, earlier: &[DeferredStorageOp]) -> DbResult<()> {
+    fn commit(
+        &self,
+        earlier: &[DeferredStorageOp],
+        access: &mut DeferredBatchAccess,
+    ) -> DbResult<()> {
         // Inserting past the capacity evicts an entry of the block, which has not expired.
         if self.index != earlier.len() || self.index >= self.capacity as usize {
             return Err(Self::set_full());
+        }
+        let address = NONCE_PRECOMPILE_ADDRESS;
+        // A later insert of the evicted hash writes its expiry at its own, later, version.
+        if let Some(old_seen) = self.evicted {
+            access.sstore(&address, old_seen, U256::ZERO);
+        }
+        if self.old_hash != self.hash {
+            access.sstore(&address, self.ring_slot, self.hash.into());
         }
         Ok(())
     }
 
     fn run_batch(&self, ops: &[DeferredStorageOp], access: &mut DeferredBatchAccess) {
-        let inserts = ops
-            .iter()
-            .map(|op| {
-                op.downcast_ref::<Self>()
-                    .expect("batches hold one operation type")
-            })
-            .collect::<Vec<_>>();
-        // A later insert of an evicted hash keeps the expiry its transaction wrote.
-        let reinserted = if inserts.iter().any(|insert| insert.evicted.is_some()) {
-            inserts.iter().map(|insert| insert.hash).collect()
-        } else {
-            B256Set::default()
-        };
-        let address = NONCE_PRECOMPILE_ADDRESS;
-        for insert in &inserts {
-            if let Some((old_hash, old_seen)) = insert.evicted
-                && !reinserted.contains(&old_hash)
-            {
-                access.sstore(&address, old_seen, U256::ZERO);
-            }
-            if insert.old_hash != insert.hash {
-                access.sstore(&address, insert.ring_slot, insert.hash.into());
-            }
-        }
-        let next = ring_position(self.ptr, inserts.len(), self.capacity);
+        let next = ring_position(self.ptr, ops.len(), self.capacity);
         if next != self.ptr {
             let ptr_slot = NonceManager::new().expiring_nonce_ring_ptr.slot();
-            access.sstore(&address, ptr_slot, U256::from(next));
+            access.sstore(&NONCE_PRECOMPILE_ADDRESS, ptr_slot, U256::from(next));
         }
     }
 }
