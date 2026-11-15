@@ -1072,7 +1072,7 @@ const PARALLEL_SLOWDOWN_MIN_GAS: u64 = 50_000_000;
 
 /// A block executed in parallel this many tenths times slower per unit of gas than usual makes the
 /// blocks that follow it execute sequentially.
-const PARALLEL_SLOWDOWN_FACTOR_TENTHS: u64 = 20;
+const PARALLEL_SLOWDOWN_FACTOR_TENTHS: u64 = 15;
 
 /// How many blocks with enough transactions to execute in parallel, built or validated, execute
 /// sequentially after a slow parallel block.
@@ -4082,7 +4082,7 @@ mod tests {
         let ms = Duration::from_millis;
         slowdown.record_parallel(ms(100), gas);
         // Slower, but under the threshold.
-        slowdown.record_parallel(ms(190), gas);
+        slowdown.record_parallel(ms(140), gas);
         assert!(slowdown.allows_parallel());
         // Small blocks don't count.
         slowdown.record_parallel(ms(1000), gas - 1);
