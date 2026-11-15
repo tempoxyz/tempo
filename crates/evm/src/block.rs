@@ -1,6 +1,7 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, transaction::ExecutionContext,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, parallel_hints::StaticHints,
+    transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -28,6 +29,7 @@ use std::{
     convert::Infallible,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tempo_chainspec::{
     TempoChainSpec,
@@ -882,6 +884,7 @@ impl<'a> TempoBlockExecutor<'a> {
             );
         };
 
+        let start = Instant::now();
         let spec = self.evm().config_spec_id();
         let number = self.evm().block().number;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
@@ -894,6 +897,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let taken = Mutex::new(Vec::new());
         // The error that ended `transactions` early, if any.
         let failure = Mutex::new(None);
+        // Dependencies from each transaction's static facts, derived as they arrive.
+        let mut hints = StaticHints::default();
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -922,7 +927,11 @@ impl<'a> TempoBlockExecutor<'a> {
                 is_payment: Self::is_payment_at(spec, tx),
                 execution_context: tx_env.inner().execution_context(),
             });
-            Some(StreamedTx::new((tx_env, ConsensusTx(recovered))))
+            let dependencies = hints.next(tx_env.inner());
+            Some(StreamedTx::with_dependencies(
+                (tx_env, ConsensusTx(recovered)),
+                dependencies,
+            ))
         });
 
         // Check each transaction's section as it commits, over a copy of the section state.
@@ -969,13 +978,15 @@ impl<'a> TempoBlockExecutor<'a> {
                 .into_iter()
                 .flatten();
             let taken = taken.into_inner().unwrap().into_iter().map(Ok);
-            return self.execute_sequentially(
+            let stats = self.execute_sequentially(
                 taken
                     .chain(failure.map(Err))
                     .chain(rest.map(|tx| tx.map_err(stream_error)))
                     .map(|tx| tx.map(T::into_send_parts)),
                 &mut on_receipt,
-            );
+            )?;
+            log_parallel_stats(number, &stats, true, start.elapsed());
+            return Ok(stats);
         }
         // Otherwise the transactions before a failure stay committed: account for them too.
         let lanes = lanes.into_inner().unwrap();
@@ -992,7 +1003,10 @@ impl<'a> TempoBlockExecutor<'a> {
         let output = result?;
         match failure {
             Some(error) => Err(error),
-            None => Ok(output.stats),
+            None => {
+                log_parallel_stats(number, &output.stats, false, start.elapsed());
+                Ok(output.stats)
+            }
         }
     }
 
@@ -1053,6 +1067,26 @@ where
     F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
 {
     f
+}
+
+/// Logs the counters of a block executed in parallel, and whether it executed again one
+/// transaction at a time after the parallel commit failed.
+fn log_parallel_stats(
+    number: U256,
+    stats: &ParallelExecutionStats,
+    fallback: bool,
+    elapsed: Duration,
+) {
+    debug!(
+        target: "tempo::parallel",
+        block_number = number.saturating_to::<u64>(),
+        txs = stats.transactions,
+        speculative = stats.speculative,
+        reexecuted = stats.reexecuted,
+        fallback,
+        ?elapsed,
+        "Executed block transactions in parallel"
+    );
 }
 
 /// Converts an error `transactions` yielded into the error that ends the block.
