@@ -27,7 +27,10 @@ use std::{
     borrow::Borrow,
     convert::Infallible,
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tempo_chainspec::{
@@ -1054,6 +1057,69 @@ impl ParallelExecution {
 /// workers and opening their state providers costs more than they save.
 pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
 
+/// Blocks that used less gas than this say too little about parallel execution speed to steer it.
+const PARALLEL_SLOWDOWN_MIN_GAS: u64 = 50_000_000;
+
+/// A block executed in parallel this many tenths times slower per unit of gas than usual makes the
+/// blocks that follow it execute sequentially for [`PARALLEL_SLOWDOWN_SEQUENTIAL_FOR`].
+const PARALLEL_SLOWDOWN_FACTOR_TENTHS: u64 = 15;
+
+/// How long blocks execute sequentially after a slow parallel block.
+const PARALLEL_SLOWDOWN_SEQUENTIAL_FOR: Duration = Duration::from_secs(3);
+
+/// Executes blocks sequentially for a while after a block executed in parallel much slower per unit
+/// of gas than parallel blocks usually do.
+///
+/// Such blocks come in runs, for example while blocks read state that no cache holds yet: the
+/// sequential path prewarms that state on idle threads, while parallel workers read it on their
+/// critical path.
+#[derive(Debug, Default)]
+pub(crate) struct ParallelSlowdown {
+    /// Moving average of parallel execution time per unit of gas, in picoseconds, or 0 before the
+    /// first block.
+    typical_ps_per_gas: AtomicU64,
+    /// Until when blocks execute sequentially.
+    sequential_until: Mutex<Option<Instant>>,
+}
+
+impl ParallelSlowdown {
+    /// Returns whether the next block may execute in parallel.
+    pub(crate) fn allows_parallel(&self) -> bool {
+        self.sequential_until
+            .lock()
+            .unwrap()
+            .is_none_or(|until| Instant::now() >= until)
+    }
+
+    /// Records that a block used `gas` executing in parallel for `elapsed`.
+    pub(crate) fn record(&self, elapsed: Duration, gas: u64) {
+        if gas < PARALLEL_SLOWDOWN_MIN_GAS {
+            return;
+        }
+        let sample = (elapsed.as_nanos() * 1000 / u128::from(gas)) as u64;
+        let typical = self.typical_ps_per_gas.load(Ordering::Relaxed);
+        if typical == 0 {
+            self.typical_ps_per_gas.store(sample, Ordering::Relaxed);
+            return;
+        }
+        if sample * 10 > typical * PARALLEL_SLOWDOWN_FACTOR_TENTHS {
+            *self.sequential_until.lock().unwrap() =
+                Some(Instant::now() + PARALLEL_SLOWDOWN_SEQUENTIAL_FOR);
+            debug!(
+                target: "tempo::parallel",
+                sample_ps_per_gas = sample,
+                typical_ps_per_gas = typical,
+                "Slow parallel block, executing the next blocks sequentially"
+            );
+        }
+        // Clamp outliers so that one slow block moves the average little, while a lasting slowdown
+        // still raises it.
+        let sample = sample.min(typical * 2);
+        self.typical_ps_per_gas
+            .store(typical - typical / 8 + sample / 8, Ordering::Relaxed);
+    }
+}
+
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F
 where
@@ -1263,8 +1329,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let make_evm = worker_evm_factory(move |db| {
             reth_evm::BlockExecutorFactory::evm_with_env(config, db, env.clone())
         });
-        self.execute_transaction_stream(transactions, base, make_evm, on_speculative, on_receipt)
-            .map(drop)
+        let start = Instant::now();
+        let gas_before = self.inner.inner.cumulative_gas_used;
+        self.execute_transaction_stream(transactions, base, make_evm, on_speculative, on_receipt)?;
+        config.parallel_slowdown.record(
+            start.elapsed(),
+            self.inner.inner.cumulative_gas_used - gas_before,
+        );
+        Ok(())
     }
 
     fn receipts(&self) -> &[TempoReceipt] {
