@@ -222,8 +222,7 @@ jobs:
 
   # Pages reth on-call through incident.io's Reth CI source (which posts to
   # #eng-reth-alerts) when a scheduled run fails, and resolves the same alert on
-  # the next scheduled run that benchmarks and saves state. Runs with no new main
-  # commit leave the alert unchanged. Fails loudly if a failure cannot be sent.
+  # the next scheduled run that passes (see .github/scripts/bench-incident-alert.js).
   incident-io:
     needs: [resolve-refs, bench-e2e-multi-region, save-state]
     if: >-
@@ -233,10 +232,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       id-token: write
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout alert script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
 
       - name: Update incident.io alert
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -244,94 +250,13 @@ jobs:
           INCIDENT_IO_URL: ${{ secrets.INCIDENT_IO_RETH_CI_URL }}
           INCIDENT_IO_TOKEN: ${{ secrets.INCIDENT_IO_RETH_CI_TOKEN }}
           BENCH_JOB_RESULTS: ${{ toJSON(needs) }}
+          ALERT_KEY: tempo:bench-e2e-multi-region-nightly
+          ALERT_NAME: Nightly multi-region benchmark
+          ALERT_WORKFLOW: bench-e2e-multi-region-scheduled.yml
+          ALERT_RESOLVE_JOBS: bench-e2e-multi-region,save-state
+          BENCH_BASELINE_REF: ${{ needs.resolve-refs.outputs.baseline-ref }}
+          BENCH_FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
         with:
           retries: 0
           script: |
-            if (context.eventName !== 'schedule' ||
-                `${context.repo.owner}/${context.repo.repo}` !== 'tempoxyz/tempo') return;
-            const jobs = JSON.parse(process.env.BENCH_JOB_RESULTS);
-            const failedJobs = Object.entries(jobs)
-              .filter(([, job]) => job.result === 'failure').map(([name]) => name);
-            let status;
-            if (failedJobs.length) status = 'firing';
-            else if (jobs['bench-e2e-multi-region']?.result === 'success' &&
-                     jobs['save-state']?.result === 'success') status = 'resolved';
-            if (status === 'resolved' && process.env.GITHUB_RUN_ATTEMPT !== '1') {
-              // A rerun may be an older night: don't clear a page a newer night raised.
-              core.info('Rerun of a scheduled run; leaving the incident.io alert unchanged');
-              return;
-            }
-            if (!status) {
-              core.info('Benchmark did not run; leaving the incident.io alert unchanged');
-              return;
-            }
-
-            const url = process.env.INCIDENT_IO_URL;
-            const token = process.env.INCIDENT_IO_TOKEN;
-            if (!url || !token) {
-              if (status === 'firing') {
-                throw new Error('INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; cannot alert reth on-call');
-              }
-              core.notice('INCIDENT_IO_RETH_CI_URL or INCIDENT_IO_RETH_CI_TOKEN is not set; skipping incident.io alert');
-              return;
-            }
-
-            const attempt = process.env.GITHUB_RUN_ATTEMPT;
-            const runUrl = `https://github.com/tempoxyz/tempo/actions/runs/${context.runId}/attempts/${attempt}`;
-            const refs = jobs['resolve-refs']?.outputs || {};
-            const workflow = 'bench-e2e-multi-region-scheduled.yml';
-            const payload = {
-              title: status === 'firing'
-                ? `Nightly multi-region benchmark failed: ${failedJobs.join(', ')}`
-                : 'Nightly multi-region benchmark recovered',
-              description: [
-                status === 'firing'
-                  ? `The nightly multi-region benchmark (${workflow}) failed.\nFailed jobs: ${failedJobs.join(', ')}`
-                  : `The nightly multi-region benchmark (${workflow}) succeeded.`,
-                `Baseline: ${refs['baseline-ref'] || 'unknown'}`,
-                `Feature: ${refs['feature-ref'] || 'unknown'}`,
-                `Attempt: ${attempt}`,
-                `Run: ${runUrl}`,
-              ].join('\n'),
-              status,
-              deduplication_key: 'tempo:bench-e2e-multi-region-nightly',
-              source_url: runUrl,
-              metadata: {
-                team: 'reth',
-                repository: 'tempoxyz/tempo',
-                workflow,
-                failed_jobs: failedJobs.join(','),
-                baseline_ref: refs['baseline-ref'] || '',
-                feature_ref: refs['feature-ref'] || '',
-                run_id: String(context.runId),
-                run_attempt: String(attempt),
-                run_url: runUrl,
-              },
-            };
-
-            // The deduplication key makes a repeated event idempotent, so retrying is safe.
-            let lastError;
-            for (let i = 0; i < 3; i++) {
-              try {
-                const response = await fetch(url, {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
-                  signal: AbortSignal.timeout(15000),
-                });
-                if (response.ok) {
-                  core.info(`Sent incident.io ${status} event for ${payload.deduplication_key}`);
-                  return;
-                }
-                lastError = new Error(`HTTP ${response.status}`);
-                // Other 4xx (such as a bad token) won't succeed on retry.
-                if (response.status < 500 && response.status !== 429) break;
-              } catch (error) { lastError = error; }
-              if (i < 2) await new Promise(resolve => setTimeout(resolve, 2 ** i * 2000));
-            }
-            // A failed resolve must not fail an otherwise green run; a failed page must.
-            if (status === 'resolved') {
-              core.warning(`Failed to send the incident.io resolved event: ${lastError.message}`);
-              return;
-            }
-            throw new Error(`Failed to send the incident.io firing event: ${lastError.message}`);
+            await require('./.github/scripts/bench-incident-alert.js')({ core, context });
