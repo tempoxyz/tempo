@@ -255,14 +255,18 @@ fn execute_until(
         &**snapshot,
         make_evm,
         |_, _| {},
-        |index, receipt| {
+        |index, receipt, copy| {
+            // A worker's copy of a receipt equals the receipt it recorded.
+            if let Some(copy) = &copy {
+                assert_eq!(copy, receipt, "receipt {index} copy differs");
+            }
             // A batched commit that fails executes the block again, streaming the receipts before
             // the failure again, unchanged.
             if let Some(seen) = streamed.get(index) {
                 assert_eq!(seen, receipt, "receipt {index} changed");
             } else {
                 assert_eq!(index, streamed.len(), "receipt {index} out of order");
-                streamed.push(receipt.clone());
+                streamed.push(copy.unwrap_or_else(|| receipt.clone()));
             }
         },
     );
@@ -299,6 +303,13 @@ fn final_state(updates: &[StateUpdate]) -> BTreeMap<Address, (String, BTreeMap<U
                 entry.1.clear();
             }
             for (key, slot) in &account.storage {
+                // A batched commit streams every slot a transaction wrote, also the ones it left
+                // unchanged, which sequential execution does not stream.
+                if slot.previous_or_original_value == slot.present_value
+                    && !entry.1.contains_key(key)
+                {
+                    continue;
+                }
                 entry.1.insert(*key, slot.present_value);
             }
         }
@@ -446,6 +457,79 @@ fn parallel_full_ring_reports_sequential_error(commit: ParallelCommit, threads: 
     assert_eq!(outcome.finish, sequential.finish);
 }
 
+/// The expiring-nonce ring holds expired entries the block's transactions evict: the hash of a
+/// later transaction of the block, a transaction's own hash, an entry already cleared from the seen
+/// set and one entry twice. With `evict_inserted`, a transaction also reaches the entry of an
+/// earlier transaction's hash, which that transaction marked seen again, so it fails with
+/// ExpiringNonceSetFull. Both commit modes commit exactly what sequential execution does.
+#[test_matrix([false, true], [ParallelCommit::InOrder, ParallelCommit::Batched], [1, 4])]
+fn parallel_ring_evictions_match_sequential(
+    evict_inserted: bool,
+    commit: ParallelCommit,
+    threads: usize,
+) {
+    const EVICTED_AT: u32 = 60;
+
+    let accounts = Accounts::new();
+    let mut cache = accounts.seed();
+    let txs = accounts.transactions(TX_COUNT, None);
+    let hash = |index: usize| txs[index].inner().unique_tx_identifier(txs[index].signer());
+    let expired = U256::from(DEFAULT_BLOCK_TIMESTAMP - 1);
+    let mut entries = vec![
+        (10, hash(20), expired),
+        (30, hash(30), expired),
+        (40, B256::repeat_byte(0xcd), U256::ZERO),
+        (45, B256::repeat_byte(0xef), expired),
+        (46, B256::repeat_byte(0xef), expired),
+    ];
+    if evict_inserted {
+        entries.push((EVICTED_AT, hash(5), expired));
+    }
+    let nonce_storage = &mut cache
+        .storage
+        .entry(NONCE_PRECOMPILE_ADDRESS)
+        .or_default()
+        .slots;
+    for (index, entry, expiry) in entries {
+        nonce_storage.insert(
+            index.mapping_slot(U256::from(EXPIRING_NONCE_RING_SLOT)),
+            U256::from_be_bytes(entry.0),
+        );
+        nonce_storage.insert(
+            entry.mapping_slot(U256::from(EXPIRING_NONCE_SEEN_SLOT)),
+            expiry,
+        );
+    }
+    let snapshot = Arc::new(Snapshot(cache));
+    let ctx = || ctx(txs.len(), BLOCK_GAS_LIMIT, 0);
+
+    let (sequential, _) = execute(&snapshot, &txs, ctx(), None);
+    let (outcome, stats) = execute(&snapshot, &txs, ctx(), parallel(threads, commit));
+    if evict_inserted {
+        assert!(
+            sequential
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("ExpiringNonceSetFull")),
+            "{:?}",
+            sequential.error
+        );
+        assert_eq!(sequential.receipts.len(), EVICTED_AT as usize);
+        assert_eq!(stats, None);
+        assert_eq!(outcome.error, sequential.error);
+        assert_eq!(outcome.receipts, sequential.receipts);
+        assert_eq!(outcome.streamed, sequential.streamed);
+        assert_eq!(outcome.executor_state, sequential.executor_state);
+        assert_eq!(outcome.state, sequential.state);
+        assert_eq!(outcome.finish, sequential.finish);
+    } else {
+        assert_eq!(sequential.error, None);
+        assert_eq!(sequential.receipts.len(), TX_COUNT);
+        assert_eq!(outcome, sequential);
+        ensure_speculative(stats, commit, threads);
+    }
+}
+
 #[test_matrix([0, 1], [ParallelCommit::InOrder, ParallelCommit::Batched], [1, 4])]
 fn parallel_executes_tiny_blocks(count: usize, commit: ParallelCommit, threads: usize) {
     let accounts = Accounts::new();
@@ -493,4 +577,777 @@ fn parallel_stream_error_matches_sequential(commit: ParallelCommit, threads: usi
     );
     assert_eq!(stats, None);
     assert_eq!(outcome, sequential);
+}
+
+/// Seeded randomized differential test: Tempo-like blocks execute in parallel exactly as they do
+/// sequentially.
+///
+/// Every seed builds one block mixing TIP-20 transfers over several tokens, hot recipients, one hot
+/// sponsor, channel opens on the channel reserve, issuer mints, approvals and transferFrom, batched
+/// calls, reverting and out-of-gas calls, non-payment calls, expiring, protocol and 2D nonce chains
+/// and EIP-1559 transactions, sometimes with invalid transactions, stream errors or tight section
+/// budgets, over an empty expiring-nonce ring or one about to wrap, with expired entries to evict
+/// or an unexpired one that fills it. Each runs sequentially and with both commit modes on 1, 4
+/// and 8 workers, comparing receipts, streamed receipts, streamed state, executor counters and
+/// finish output.
+///
+/// TEMPO_PARALLEL_FUZZ_SEEDS sets how many seeds run (default 12), from TEMPO_PARALLEL_FUZZ_START
+/// (default 0). A mismatch panics with the seed and the minimized transaction indices.
+mod fuzz {
+    use super::*;
+    use alloy_consensus::{SignableTransaction, TxEip1559, transaction::SignerRecoverable};
+    use alloy_primitives::{Signature, TxKind};
+    use alloy_signer::SignerSync;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempo_contracts::precompiles::{ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
+    use tempo_precompiles::{
+        error::TempoPrecompileError,
+        nonce::NonceManager,
+        storage::{Handler, StorageCtx},
+        tip_fee_manager::TipFeeManager,
+        tip20::{ISSUER_ROLE, TIP20Token},
+        tip20_channel_reserve::TIP20ChannelReserve,
+        tip20_factory::TIP20Factory,
+        tip403_registry::TIP403Registry,
+    };
+    use tempo_primitives::transaction::{Call, TEMPO_EXPIRING_NONCE_KEY, TempoTransaction};
+    use tip20::common::{TXGEN_FEE_PER_GAS, TXGEN_GAS_LIMIT, bench_evm, seeded_db};
+
+    /// Chain id of bench_env.
+    const CHAIN_ID: u64 = 1337;
+    /// Senders, recipients and spenders.
+    const PARTICIPANTS: u8 = 24;
+    /// TIP-20 tokens besides pathUSD.
+    const EXTRA_TOKENS: u8 = 3;
+    /// Balance of every participant in every token.
+    const MINT: u128 = 1_000_000_000_000_000_000;
+    /// Parallel configurations every block runs in.
+    const CONFIGS: [(ParallelCommit, usize); 6] = [
+        (ParallelCommit::InOrder, 1),
+        (ParallelCommit::InOrder, 4),
+        (ParallelCommit::InOrder, 8),
+        (ParallelCommit::Batched, 1),
+        (ParallelCommit::Batched, 4),
+        (ParallelCommit::Batched, 8),
+    ];
+
+    /// Transactions parallel executions committed from their speculative execution.
+    static SPECULATIVE: AtomicUsize = AtomicUsize::new(0);
+    /// Transactions parallel executions executed again on the executor.
+    static REEXECUTED: AtomicUsize = AtomicUsize::new(0);
+
+    /// SplitMix64.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            z ^ (z >> 31)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn index(&mut self, n: usize) -> usize {
+            self.below(n as u64) as usize
+        }
+
+        /// True with probability pct percent.
+        fn chance(&mut self, pct: u64) -> bool {
+            self.below(1000) < pct * 10
+        }
+    }
+
+    /// Expiring-nonce ring slots a ring world fills ahead of the pointer: more than a block's
+    /// expiring-nonce transactions.
+    const RING_PREFILL: u32 = 1_200;
+    /// Ring slots between the pointer and its wrap in a ring world.
+    const RING_WRAP_IN: u32 = 7;
+    /// Offset from the pointer of the unexpired entry in a full-ring world.
+    const RING_FULL_AT: u32 = 40;
+
+    /// The expiring-nonce ring a world starts from.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Ring {
+        /// Empty, with its pointer at 0.
+        Empty,
+        /// The pointer just before the ring wraps and every slot ahead taken by expired entries,
+        /// some already cleared from the seen set: transactions evict them.
+        Wrap,
+        /// As Wrap, with an unexpired entry RING_FULL_AT slots ahead: the transaction that reaches
+        /// it fails with ExpiringNonceSetFull.
+        Full,
+    }
+
+    /// Accounts, tokens and the pre-block state shared by every seed.
+    struct World {
+        signers: Vec<PrivateKeySigner>,
+        addresses: Vec<Address>,
+        sponsor: PrivateKeySigner,
+        tokens: Vec<Address>,
+        /// Recipients most transfers go to: a hot account and the channel reserve.
+        hot: Vec<Address>,
+        snapshot: Arc<Snapshot>,
+    }
+
+    impl World {
+        fn new(ring: Ring) -> Self {
+            let signers: Vec<_> = (1..=PARTICIPANTS)
+                .map(|i| PrivateKeySigner::from_bytes(&B256::with_last_byte(i)).unwrap())
+                .collect();
+            let addresses: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
+            let sponsor = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x5f)).unwrap();
+            let tokens: Vec<_> = (0..=EXTRA_TOKENS)
+                .map(|id| {
+                    let mut bytes = PATH_USD_ADDRESS.into_array();
+                    bytes[19] = id;
+                    Address::from(bytes)
+                })
+                .collect();
+            let hot = vec![Address::repeat_byte(0x77), addresses[1]];
+
+            let mut evm = bench_evm(
+                Default::default(),
+                latest_known_hardfork(),
+                DEFAULT_BLOCK_TIMESTAMP,
+            );
+            let admin = addresses[0];
+            let holders: Vec<_> = addresses
+                .iter()
+                .copied()
+                .chain([sponsor.address()])
+                .collect();
+            StorageCtx::enter_evm(&mut evm, || {
+                TIP403Registry::new().initialize()?;
+                TIP20Factory::new().initialize()?;
+                for (id, token) in tokens.iter().enumerate() {
+                    let quote = if id == 0 {
+                        Address::ZERO
+                    } else {
+                        PATH_USD_ADDRESS
+                    };
+                    TIP20Factory::new().create_token_reserved_address(
+                        *token, "Token", "TKN", "USD", quote, admin,
+                    )?;
+                    let mut tip20 = TIP20Token::from_address(*token)?;
+                    tip20.grant_role_internal(admin, ISSUER_ROLE)?;
+                    for holder in &holders {
+                        tip20.mint(
+                            admin,
+                            ITIP20::mintCall {
+                                to: *holder,
+                                amount: U256::from(MINT),
+                            },
+                        )?;
+                    }
+                    // Every participant lets the next one spend its tokens.
+                    for (i, owner) in addresses.iter().enumerate() {
+                        tip20.approve(
+                            *owner,
+                            ITIP20::approveCall {
+                                spender: addresses[(i + 1) % addresses.len()],
+                                amount: U256::from(MINT / 1000),
+                            },
+                        )?;
+                    }
+                }
+                TipFeeManager::new().initialize()?;
+                // Fee AMM liquidity, so fees paid in any token swap to the validator's pathUSD.
+                for token in &tokens[1..] {
+                    TipFeeManager::new().mint(
+                        admin,
+                        *token,
+                        PATH_USD_ADDRESS,
+                        U256::from(MINT / 10),
+                        admin,
+                    )?;
+                }
+                NonceManager::new().initialize()?;
+                if ring != Ring::Empty {
+                    let mut nonces = NonceManager::new();
+                    let capacity = latest_known_hardfork().expiring_nonce_set_capacity();
+                    let start = capacity - RING_WRAP_IN;
+                    nonces.expiring_nonce_ring_ptr.write(start)?;
+                    for i in 0..RING_PREFILL {
+                        let hash = B256::from(U256::from(0xa11ce_u64 + u64::from(i)));
+                        nonces.expiring_nonce_ring[(start + i) % capacity].write(hash)?;
+                        let expiry = if ring == Ring::Full && i == RING_FULL_AT {
+                            DEFAULT_BLOCK_TIMESTAMP + 1_000
+                        } else if i % 3 == 0 {
+                            0
+                        } else {
+                            DEFAULT_BLOCK_TIMESTAMP - u64::from(i % 50)
+                        };
+                        nonces.expiring_nonce_seen[hash].write(expiry)?;
+                    }
+                }
+                TIP20ChannelReserve::new().initialize()?;
+                Ok::<(), TempoPrecompileError>(())
+            })
+            .expect("failed to seed fuzz state");
+            evm.state_mut().commit_transaction();
+            evm.state_mut().clear_transaction_state();
+            let snapshot = Arc::new(Snapshot(seeded_db(&evm).cache));
+
+            Self {
+                signers,
+                addresses,
+                sponsor,
+                tokens,
+                hot,
+                snapshot,
+            }
+        }
+    }
+
+    /// One generated block and how it executes.
+    struct Block {
+        txs: Vec<Recovered<TempoTxEnvelope>>,
+        /// The transaction stream fails at this index.
+        fail_at: Option<usize>,
+        /// Section budgets cut at the gas used before this fraction (per mille) of the block.
+        tight: Option<(bool, u64)>,
+    }
+
+    /// Per-block generator state.
+    struct Generator<'a> {
+        world: &'a World,
+        rng: Rng,
+        /// Next protocol nonce of each participant.
+        nonces: Vec<u64>,
+        /// Next nonce of each participant's 2D nonce keys 1 to 3.
+        nonces_2d: Vec<[u64; 3]>,
+    }
+
+    impl<'a> Generator<'a> {
+        fn new(world: &'a World, seed: u64) -> Self {
+            let n = world.signers.len();
+            Self {
+                world,
+                rng: Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ 0xdead_beef),
+                nonces: vec![0; n],
+                nonces_2d: vec![[0; 3]; n],
+            }
+        }
+
+        fn token(&mut self) -> Address {
+            if self.rng.chance(50) {
+                PATH_USD_ADDRESS
+            } else {
+                self.world.tokens[self.rng.index(self.world.tokens.len())]
+            }
+        }
+
+        fn recipient(&mut self) -> Address {
+            if self.rng.chance(35) {
+                self.world.hot[self.rng.index(self.world.hot.len())]
+            } else {
+                self.world.addresses[self.rng.index(self.world.addresses.len())]
+            }
+        }
+
+        fn amount(&mut self) -> U256 {
+            if self.rng.chance(3) {
+                // More than any balance: the transfer reverts.
+                U256::from(MINT) * U256::from(1000)
+            } else {
+                U256::from(1 + self.rng.below(1_000_000))
+            }
+        }
+
+        fn transfer(&mut self) -> Call {
+            let token = self.token();
+            let call = ITIP20::transferCall {
+                to: self.recipient(),
+                amount: self.amount(),
+            };
+            Call::new(token, Bytes::from(call.abi_encode()))
+        }
+
+        /// One call of sender's transaction.
+        fn call(&mut self, sender: usize) -> Call {
+            match self.rng.below(100) {
+                0..50 => self.transfer(),
+                50..62 => {
+                    let token = self.token();
+                    let call = ITIP20ChannelReserve::openCall {
+                        payee: self.world.addresses[self.rng.index(self.world.addresses.len())],
+                        operator: Address::ZERO,
+                        token,
+                        deposit: alloy_primitives::aliases::U96::from(1 + self.rng.below(10_000)),
+                        salt: B256::from(U256::from(self.rng.next())),
+                        authorizedSigner: Address::ZERO,
+                    };
+                    Call::new(
+                        TIP20_CHANNEL_RESERVE_ADDRESS,
+                        Bytes::from(call.abi_encode()),
+                    )
+                }
+                62..72 => {
+                    // Spend the previous participant's allowance, or one that does not exist.
+                    let n = self.world.addresses.len();
+                    let from = if self.rng.chance(85) {
+                        (sender + n - 1) % n
+                    } else {
+                        self.rng.index(n)
+                    };
+                    let token = self.token();
+                    let call = ITIP20::transferFromCall {
+                        from: self.world.addresses[from],
+                        to: self.recipient(),
+                        amount: U256::from(1 + self.rng.below(1_000_000_000)),
+                    };
+                    Call::new(token, Bytes::from(call.abi_encode()))
+                }
+                72..78 => {
+                    // Only participant 0 is an issuer: mints by others revert.
+                    let token = self.token();
+                    let call = ITIP20::mintCall {
+                        to: self.recipient(),
+                        amount: U256::from(1 + self.rng.below(1_000_000)),
+                    };
+                    Call::new(token, Bytes::from(call.abi_encode()))
+                }
+                78..84 => {
+                    let token = self.token();
+                    let n = self.world.addresses.len();
+                    let call = ITIP20::approveCall {
+                        spender: self.world.addresses[(sender + 1) % n],
+                        amount: U256::from(self.rng.below(1_000_000_000)),
+                    };
+                    Call::new(token, Bytes::from(call.abi_encode()))
+                }
+                84..90 => {
+                    // Not a payment: an EOA call with calldata.
+                    let to = self.world.addresses[self.rng.index(self.world.addresses.len())];
+                    Call::new(to, Bytes::from(self.rng.next().to_be_bytes()))
+                }
+                90..94 => {
+                    // Unknown selector: reverts.
+                    let token = self.token();
+                    Call::new(token, Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]))
+                }
+                94..97 => {
+                    // Transfer to the zero address: reverts.
+                    let token = self.token();
+                    let call = ITIP20::transferCall {
+                        to: Address::ZERO,
+                        amount: U256::ONE,
+                    };
+                    Call::new(token, Bytes::from(call.abi_encode()))
+                }
+                _ => {
+                    // Read-only call.
+                    let token = self.token();
+                    let call = ITIP20::balanceOfCall {
+                        account: self.recipient(),
+                    };
+                    Call::new(token, Bytes::from(call.abi_encode()))
+                }
+            }
+        }
+
+        fn gas_limit(&mut self) -> u64 {
+            if self.rng.chance(3) {
+                // Often runs out of gas during execution, rarely below the intrinsic gas.
+                285_000 + self.rng.below(120_000)
+            } else {
+                TXGEN_GAS_LIMIT
+            }
+        }
+
+        fn transaction(&mut self) -> Recovered<TempoTxEnvelope> {
+            let sender = self.rng.index(self.world.signers.len());
+            let signer = &self.world.signers[sender];
+            if self.rng.chance(5) {
+                // An EIP-1559 call on the protocol nonce.
+                let call = self.transfer();
+                let nonce = self.nonces[sender];
+                self.nonces[sender] += 1;
+                let tx = TxEip1559 {
+                    chain_id: CHAIN_ID,
+                    nonce,
+                    gas_limit: self.gas_limit(),
+                    max_fee_per_gas: TXGEN_FEE_PER_GAS,
+                    max_priority_fee_per_gas: self.rng.below(2) as u128,
+                    to: TxKind::Call(call.to.into_to().unwrap()),
+                    value: U256::ZERO,
+                    access_list: Default::default(),
+                    input: call.input,
+                };
+                let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+                return TempoTxEnvelope::Eip1559(tx.into_signed(signature))
+                    .try_into_recovered()
+                    .unwrap();
+            }
+
+            let calls = if self.rng.chance(8) {
+                (0..2 + self.rng.below(3))
+                    .map(|_| self.call(sender))
+                    .collect()
+            } else {
+                vec![self.call(sender)]
+            };
+            let (nonce_key, nonce, valid_before) = match self.rng.below(100) {
+                0..70 => (
+                    TEMPO_EXPIRING_NONCE_KEY,
+                    0,
+                    Some(
+                        NonZeroU64::new(DEFAULT_BLOCK_TIMESTAMP + 1 + self.rng.below(25)).unwrap(),
+                    ),
+                ),
+                70..85 => {
+                    let nonce = self.nonces[sender];
+                    self.nonces[sender] += 1;
+                    (U256::ZERO, nonce, None)
+                }
+                _ => {
+                    let key = self.rng.index(3);
+                    let nonce = self.nonces_2d[sender][key];
+                    self.nonces_2d[sender][key] += 1;
+                    (U256::from(key + 1), nonce, None)
+                }
+            };
+            let sponsor = match self.rng.below(100) {
+                0..20 => Some(&self.world.sponsor),
+                // Another participant: a sponsor that is the sender is invalid.
+                20..25 => {
+                    let n = self.world.signers.len();
+                    Some(&self.world.signers[(sender + 1 + self.rng.index(n - 1)) % n])
+                }
+                _ => None,
+            };
+            let mut tx = TempoTransaction {
+                chain_id: CHAIN_ID,
+                fee_token: if self.rng.chance(10) {
+                    None
+                } else {
+                    Some(PATH_USD_ADDRESS)
+                },
+                max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
+                max_fee_per_gas: TXGEN_FEE_PER_GAS,
+                gas_limit: self.gas_limit(),
+                calls,
+                access_list: Default::default(),
+                nonce_key,
+                nonce,
+                fee_payer_signature: sponsor.map(|_| Signature::test_signature()),
+                valid_before,
+                valid_after: None,
+                key_authorization: None,
+                tempo_authorization_list: Vec::new(),
+            };
+            let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+            if let Some(sponsor) = sponsor {
+                tx.fee_payer_signature = Some(
+                    sponsor
+                        .sign_hash_sync(&tx.fee_payer_signature_hash(signer.address()))
+                        .unwrap(),
+                );
+            }
+            TempoTxEnvelope::from(tx.into_signed(signature.into()))
+                .try_into_recovered()
+                .unwrap()
+        }
+
+        fn block(mut self) -> Block {
+            let count = match self.rng.below(100) {
+                0..25 => self.rng.index(130),
+                25..90 => 128 + self.rng.index(300),
+                _ => 400 + self.rng.index(600),
+            };
+            let mut txs: Vec<_> = (0..count).map(|_| self.transaction()).collect();
+            // Rarely, an invalid transaction ends the block with an error.
+            if !txs.is_empty() && self.rng.chance(6) {
+                let at = self.rng.index(txs.len());
+                match self.rng.below(3) {
+                    // Replays an earlier transaction.
+                    0 => {
+                        let replay = txs[self.rng.index(at + 1)].clone();
+                        txs.insert(at, replay);
+                    }
+                    // Skips a protocol nonce.
+                    1 => {
+                        let sender = self.rng.index(self.world.signers.len());
+                        self.nonces[sender] += 1;
+                        txs.insert(at, self.transaction_from_protocol_nonce(sender));
+                    }
+                    // Drains a sender's fee balance.
+                    _ => {
+                        let sender = self.rng.index(self.world.signers.len());
+                        txs.insert(at, self.drain(sender));
+                    }
+                }
+            }
+            let fail_at =
+                (!txs.is_empty() && self.rng.chance(5)).then(|| self.rng.index(txs.len()));
+            let tight = self
+                .rng
+                .chance(15)
+                .then(|| (self.rng.chance(50), self.rng.below(1000)));
+            Block {
+                txs,
+                fail_at,
+                tight,
+            }
+        }
+
+        fn transaction_from_protocol_nonce(&mut self, sender: usize) -> Recovered<TempoTxEnvelope> {
+            let nonce = self.nonces[sender];
+            self.nonces[sender] += 1;
+            self.sign(sender, vec![self.transfer_static()], U256::ZERO, nonce)
+        }
+
+        fn transfer_static(&self) -> Call {
+            let call = ITIP20::transferCall {
+                to: self.world.hot[0],
+                amount: U256::ONE,
+            };
+            Call::new(PATH_USD_ADDRESS, Bytes::from(call.abi_encode()))
+        }
+
+        /// Sends almost all of sender's pathUSD to the hot account on an expiring nonce.
+        fn drain(&mut self, sender: usize) -> Recovered<TempoTxEnvelope> {
+            let call = ITIP20::transferCall {
+                to: self.world.hot[0],
+                amount: U256::from(MINT - 1_000),
+            };
+            let call = Call::new(PATH_USD_ADDRESS, Bytes::from(call.abi_encode()));
+            self.sign(sender, vec![call], TEMPO_EXPIRING_NONCE_KEY, 0)
+        }
+
+        fn sign(
+            &self,
+            sender: usize,
+            calls: Vec<Call>,
+            nonce_key: U256,
+            nonce: u64,
+        ) -> Recovered<TempoTxEnvelope> {
+            let signer = &self.world.signers[sender];
+            let tx = TempoTransaction {
+                chain_id: CHAIN_ID,
+                fee_token: Some(PATH_USD_ADDRESS),
+                max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
+                max_fee_per_gas: TXGEN_FEE_PER_GAS,
+                gas_limit: TXGEN_GAS_LIMIT,
+                calls,
+                access_list: Default::default(),
+                nonce_key,
+                nonce,
+                fee_payer_signature: None,
+                valid_before: (nonce_key == TEMPO_EXPIRING_NONCE_KEY)
+                    .then(|| NonZeroU64::new(DEFAULT_BLOCK_TIMESTAMP + 20).unwrap()),
+                valid_after: None,
+                key_authorization: None,
+                tempo_authorization_list: Vec::new(),
+            };
+            let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+            TempoTxEnvelope::from(tx.into_signed(signature.into()))
+                .try_into_recovered()
+                .unwrap()
+        }
+    }
+
+    /// The block's execution context: tight section budgets cut at the gas the sequential execution
+    /// used before a point in the block.
+    fn block_ctx(
+        snapshot: &Arc<Snapshot>,
+        txs: &[Recovered<TempoTxEnvelope>],
+        tight: Option<(bool, u64)>,
+    ) -> TempoBlockExecutionCtx<'static> {
+        let Some((non_payment, per_mille)) = tight else {
+            return ctx(txs.len(), BLOCK_GAS_LIMIT, 0);
+        };
+        let (probe, _) = execute(snapshot, txs, ctx(txs.len(), BLOCK_GAS_LIMIT, 0), None);
+        let gas = probe
+            .receipts
+            .get(probe.receipts.len() * per_mille as usize / 1000)
+            .map_or(0, |receipt| receipt.cumulative_gas_used);
+        if non_payment {
+            ctx(txs.len(), gas / 8, 0)
+        } else {
+            ctx(txs.len(), BLOCK_GAS_LIMIT, BLOCK_GAS_LIMIT - gas)
+        }
+    }
+
+    /// Describes the first difference between two outcomes.
+    fn first_difference(expected: &Outcome, actual: &Outcome) -> String {
+        if expected.error != actual.error {
+            return format!("error: {:?} != {:?}", expected.error, actual.error);
+        }
+        for (name, a, b) in [
+            ("receipts", &expected.receipts, &actual.receipts),
+            ("streamed", &expected.streamed, &actual.streamed),
+        ] {
+            if a.len() != b.len() {
+                return format!("{name}: {} != {} receipts", a.len(), b.len());
+            }
+            if let Some(i) = (0..a.len()).find(|&i| a[i] != b[i]) {
+                return format!("{name}[{i}]: {:?} != {:?}", a[i], b[i]);
+            }
+        }
+        for (address, value) in &expected.state {
+            if actual.state.get(address) != Some(value) {
+                return format!(
+                    "state of {address}: {value:?} != {:?}",
+                    actual.state.get(address)
+                );
+            }
+        }
+        for address in actual.state.keys() {
+            if !expected.state.contains_key(address) {
+                return format!(
+                    "state of {address}: only in parallel {:?}",
+                    actual.state[address]
+                );
+            }
+        }
+        if expected.executor_state != actual.executor_state {
+            return format!(
+                "executor state: {:?} != {:?}",
+                expected.executor_state, actual.executor_state
+            );
+        }
+        if expected.finish != actual.finish {
+            return match (&expected.finish, &actual.finish) {
+                (Ok((a, _)), Ok((b, _))) if a != b => format!("finish result: {a} != {b}"),
+                (Ok(_), Ok(_)) => "finish bundle state differs".to_string(),
+                (a, b) => format!("finish: {:?} != {:?}", a.as_ref().err(), b.as_ref().err()),
+            };
+        }
+        "equal".to_string()
+    }
+
+    /// Runs txs sequentially and in every configuration; returns the first mismatch.
+    fn check(
+        snapshot: &Arc<Snapshot>,
+        txs: &[Recovered<TempoTxEnvelope>],
+        fail_at: Option<usize>,
+        tight: Option<(bool, u64)>,
+        configs: &[(ParallelCommit, usize)],
+    ) -> Option<((ParallelCommit, usize), String, Outcome)> {
+        let ctx = block_ctx(snapshot, txs, tight);
+        let (sequential, _) = execute_until(snapshot, txs, ctx.clone(), None, fail_at);
+        for &(commit, threads) in configs {
+            let (outcome, stats) = execute_until(
+                snapshot,
+                txs,
+                ctx.clone(),
+                parallel(threads, commit),
+                fail_at,
+            );
+            if outcome != sequential {
+                return Some((
+                    (commit, threads),
+                    first_difference(&sequential, &outcome),
+                    sequential,
+                ));
+            }
+            if let Some(stats) = stats {
+                assert_eq!(stats.transactions, txs.len());
+                SPECULATIVE.fetch_add(stats.speculative, Ordering::Relaxed);
+                REEXECUTED.fetch_add(stats.reexecuted, Ordering::Relaxed);
+            }
+        }
+        None
+    }
+
+    /// Removes transactions while some configuration still mismatches, repeating each check to
+    /// catch scheduling-dependent mismatches.
+    fn minimize(
+        snapshot: &Arc<Snapshot>,
+        mut txs: Vec<Recovered<TempoTxEnvelope>>,
+        tight: Option<(bool, u64)>,
+        config: (ParallelCommit, usize),
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
+        let fails = |txs: &[Recovered<TempoTxEnvelope>]| {
+            (0..4).any(|_| check(snapshot, txs, None, tight, &[config]).is_some())
+        };
+        let mut chunk = txs.len() / 2;
+        while chunk > 0 {
+            let mut start = 0;
+            while start < txs.len() {
+                let end = (start + chunk).min(txs.len());
+                let candidate: Vec<_> = txs[..start].iter().chain(&txs[end..]).cloned().collect();
+                if fails(&candidate) {
+                    txs = candidate;
+                } else {
+                    start = end;
+                }
+            }
+            chunk /= 2;
+        }
+        txs
+    }
+
+    fn env_u64(name: &str, default: u64) -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    #[test]
+    fn parallel_fuzz_matches_sequential() {
+        let start = env_u64("TEMPO_PARALLEL_FUZZ_START", 0);
+        let seeds = env_u64("TEMPO_PARALLEL_FUZZ_SEEDS", 12);
+        // Most seeds start from an empty ring; the rest from a ring about to wrap, full or not.
+        let worlds = [Ring::Empty, Ring::Wrap, Ring::Empty, Ring::Full].map(World::new);
+        let mut totals = [0usize; 4];
+        for seed in start..start + seeds {
+            let world = &worlds[(seed % worlds.len() as u64) as usize];
+            let block = Generator::new(world, seed).block();
+            let mismatch = check(
+                &world.snapshot,
+                &block.txs,
+                block.fail_at,
+                block.tight,
+                &CONFIGS,
+            );
+            if let Some((config, difference, _)) = mismatch {
+                let minimal = minimize(&world.snapshot, block.txs.clone(), block.tight, config);
+                let hashes: Vec<_> = minimal.iter().map(|tx| *tx.tx_hash()).collect();
+                let minimal_difference =
+                    check(&world.snapshot, &minimal, None, block.tight, &[config])
+                        .map(|(_, difference, _)| difference);
+                panic!(
+                    "seed {seed} {config:?}: {difference}\nminimized to {} of {} transactions \
+                     {hashes:?}: {minimal_difference:?}",
+                    minimal.len(),
+                    block.txs.len(),
+                );
+            }
+            // Coverage: blocks, transactions, failed receipts, blocks ending with an error.
+            let ctx = block_ctx(&world.snapshot, &block.txs, block.tight);
+            let (sequential, _) =
+                execute_until(&world.snapshot, &block.txs, ctx, None, block.fail_at);
+            totals[0] += 1;
+            totals[1] += sequential.receipts.len();
+            totals[2] += sequential.receipts.iter().filter(|r| !r.success).count();
+            totals[3] += usize::from(sequential.error.is_some());
+            if std::env::var("TEMPO_PARALLEL_FUZZ_VERBOSE").is_ok() {
+                eprintln!(
+                    "seed {seed}: {} txs, {} receipts, {} failed, error {:?}",
+                    block.txs.len(),
+                    sequential.receipts.len(),
+                    sequential.receipts.iter().filter(|r| !r.success).count(),
+                    sequential.error
+                );
+            }
+        }
+        eprintln!(
+            "fuzzed {} blocks: {} receipts, {} failed, {} ended with an error; parallel runs \
+             committed {} speculative and {} re-executed transactions",
+            totals[0],
+            totals[1],
+            totals[2],
+            totals[3],
+            SPECULATIVE.load(Ordering::Relaxed),
+            REEXECUTED.load(Ordering::Relaxed),
+        );
+    }
 }

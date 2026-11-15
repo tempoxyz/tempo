@@ -827,12 +827,13 @@ impl<'a> TempoBlockExecutor<'a> {
         F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
     {
-        self.execute_transaction_stream(
+        self.execute_stream(
             transactions.into_iter().map(Ok::<_, Infallible>),
             base,
             make_evm,
             on_speculative,
-            |_, _| {},
+            false,
+            |_, _, _| {},
         )
     }
 
@@ -855,8 +856,10 @@ impl<'a> TempoBlockExecutor<'a> {
     /// - `on_speculative` sees each speculative execution's changes, by transaction index, on a
     ///   worker thread before they are validated: hints for prefetching, not committed state.
     /// - `on_receipt` sees each transaction's receipt, by index and in block order, as soon as it
-    ///   is recorded. When a failed batched commit executes the block again, it sees the receipts
-    ///   of the transactions before the failure again, unchanged.
+    ///   is recorded, with an equal copy a worker built from the speculative result it recorded,
+    ///   if any, to keep without cloning the receipt. When a failed batched commit executes the
+    ///   block again, it sees the receipts of the transactions before the failure again,
+    ///   unchanged.
     ///
     /// Call it after [`BlockExecutor::apply_pre_execution_changes`] and before any transaction of
     /// the block.
@@ -866,6 +869,35 @@ impl<'a> TempoBlockExecutor<'a> {
         base: &B,
         make_evm: F,
         on_speculative: H,
+        on_receipt: P,
+    ) -> Result<ParallelExecutionStats, BlockExecutionError>
+    where
+        T: SendExecutorTx<Self>,
+        E: core::error::Error + Send + Sync + 'static,
+        B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
+        F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
+        H: Fn(usize, TxStateChanges<'_>) + Sync,
+        P: FnMut(usize, &TempoReceipt, Option<TempoReceipt>),
+    {
+        self.execute_stream(
+            transactions,
+            base,
+            make_evm,
+            on_speculative,
+            true,
+            on_receipt,
+        )
+    }
+
+    /// Executes as [`Self::execute_transaction_stream`], with workers building copies of the
+    /// receipts for `on_receipt` only when `copy_receipts` is set.
+    fn execute_stream<T, E, B, F, H, P>(
+        &mut self,
+        transactions: impl Iterator<Item = Result<T, E>> + Send,
+        base: &B,
+        make_evm: F,
+        on_speculative: H,
+        copy_receipts: bool,
         mut on_receipt: P,
     ) -> Result<ParallelExecutionStats, BlockExecutionError>
     where
@@ -874,7 +906,7 @@ impl<'a> TempoBlockExecutor<'a> {
         B: evm2::evm::DynDatabaseRef + Sync + ?Sized,
         F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
         H: Fn(usize, TxStateChanges<'_>) + Sync,
-        P: FnMut(usize, &TempoReceipt),
+        P: FnMut(usize, &TempoReceipt, Option<TempoReceipt>),
     {
         let mut transactions = transactions;
         let Some(parallel) = self.parallel else {
@@ -899,6 +931,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let failure = Mutex::new(None);
         // Dependencies from each transaction's static facts, derived as they arrive.
         let mut hints = StaticHints::default();
+        // Expiring nonce transactions taken so far.
+        let mut expiring_nonces = 0;
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -911,9 +945,17 @@ impl<'a> TempoBlockExecutor<'a> {
                 taken.lock().unwrap().push(tx.clone());
             }
             let (mut tx_env, recovered) = tx.into_send_parts();
-            // Remove any prewarming-specific context that was added to the tx env.
-            tx_env.inner_mut().set_expiring_nonce_idx(None);
             let tx = recovered.tx();
+            // Replace any prewarming-specific context that was added to the tx env: a batched
+            // commit inserts each expiring nonce at its index among the block's expiring nonce
+            // transactions.
+            let expiring_nonce_idx = (restores && tx.is_expiring_nonce()).then(|| {
+                expiring_nonces += 1;
+                expiring_nonces - 1
+            });
+            tx_env
+                .inner_mut()
+                .set_expiring_nonce_idx(expiring_nonce_idx);
             let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
                 Ok(is_system_tx) => is_system_tx,
                 Err(error) => {
@@ -963,7 +1005,26 @@ impl<'a> TempoBlockExecutor<'a> {
                 committed.push((next_section, block_gas_used));
                 Ok(())
             },
-            &mut on_receipt,
+            // Clone the logs, the costly part of a receipt, on the worker rather than the
+            // committer. Only the cumulative gas, and the type, which the result does not carry,
+            // are left to fill in.
+            |_, result| {
+                copy_receipts.then(|| TempoReceipt {
+                    tx_type: TempoTxType::Legacy,
+                    success: result.status,
+                    cumulative_gas_used: 0,
+                    logs: result.logs.clone(),
+                })
+            },
+            |index, receipt: &TempoReceipt, copy: Option<TempoReceipt>| {
+                let copy = copy.map(|mut copy| {
+                    copy.tx_type = receipt.tx_type;
+                    copy.cumulative_gas_used = receipt.cumulative_gas_used;
+                    debug_assert_eq!(&copy, receipt, "receipt {index} copy differs");
+                    copy
+                });
+                on_receipt(index, receipt, copy);
+            },
         );
         let failure = failure.into_inner().unwrap();
         if let Err(error) = &result
@@ -1014,13 +1075,13 @@ impl<'a> TempoBlockExecutor<'a> {
     fn execute_sequentially<T: ExecutorTx<Self>>(
         &mut self,
         transactions: impl IntoIterator<Item = Result<T, BlockExecutionError>>,
-        on_receipt: &mut (impl FnMut(usize, &TempoReceipt) + ?Sized),
+        on_receipt: &mut (impl FnMut(usize, &TempoReceipt, Option<TempoReceipt>) + ?Sized),
     ) -> Result<ParallelExecutionStats, BlockExecutionError> {
         let mut stats = ParallelExecutionStats::default();
         for tx in transactions {
             self.execute_transaction(tx?)?;
             if let Some(receipt) = self.receipts().last() {
-                on_receipt(self.receipts().len() - 1, receipt);
+                on_receipt(self.receipts().len() - 1, receipt, None);
             }
             stats.transactions += 1;
             stats.reexecuted += 1;
@@ -1247,7 +1308,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         transactions: impl Iterator<Item = Result<T, E>> + Send,
         base: &(dyn evm2::evm::DynDatabaseRef + Sync),
         on_speculative: &(dyn Fn(usize, TxStateChanges<'_>) + Sync),
-        on_receipt: &mut dyn FnMut(usize, &Self::Receipt),
+        on_receipt: &mut dyn FnMut(usize, &Self::Receipt, Option<Self::Receipt>),
     ) -> Result<(), BlockExecutionError>
     where
         T: SendExecutorTx<Self>,
