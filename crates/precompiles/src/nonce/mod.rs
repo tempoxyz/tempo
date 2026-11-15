@@ -12,7 +12,7 @@ use tempo_precompiles_macros::contract;
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageKey},
 };
 use alloy::primitives::{Address, B256, U256};
 
@@ -154,10 +154,11 @@ impl NonceManager {
                 let address = manager.address;
                 let ptr_slot = manager.expiring_nonce_ring_ptr.slot();
                 let ptr = access.sload(&address, ptr_slot)?.saturating_to::<u32>();
-                let ring_slot = manager.expiring_nonce_ring[ptr].slot();
+                let ring_slot = ptr.mapping_slot(manager.expiring_nonce_ring.slot());
                 let old_hash = access.sload(&address, ring_slot)?;
                 if !old_hash.is_zero() {
-                    let old_seen = manager.expiring_nonce_seen[B256::from(old_hash)].slot();
+                    let old_seen =
+                        B256::from(old_hash).mapping_slot(manager.expiring_nonce_seen.slot());
                     let old_expiry = access.sload(&address, old_seen)?;
                     if !old_expiry.is_zero() && old_expiry > U256::from(now) {
                         // The block executes again sequentially, which reports the error.
@@ -170,7 +171,7 @@ impl NonceManager {
                     ring_slot,
                     U256::from_be_bytes(expiring_nonce_hash.0),
                 )?;
-                let seen = manager.expiring_nonce_seen[expiring_nonce_hash].slot();
+                let seen = expiring_nonce_hash.mapping_slot(manager.expiring_nonce_seen.slot());
                 access.sstore(&address, seen, U256::from(valid_before))?;
                 let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
                 access.sstore(&address, ptr_slot, U256::from(next))

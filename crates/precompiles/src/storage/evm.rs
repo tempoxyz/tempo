@@ -520,10 +520,11 @@ where
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
         if !self.defers_storage_writes() {
-            let value = self.sload_inner(address, key, true)?.wrapping_add(delta);
-            return self.sstore_inner(address, key, value, |result| {
-                StorageAction::Sstore(address, key, result.present_value, value)
-            });
+            // Through the provider's own `sload` and `sstore` as a trait object: inlining them
+            // here would add callers to their helpers and change how those inline elsewhere.
+            let provider: &mut dyn PrecompileStorageProvider = core::hint::black_box(self);
+            let value = provider.sload(address, key)?.wrapping_add(delta);
+            return provider.sstore(address, key, value);
         }
         self.ensure_not_static()?;
         let is_cold = self.evm.state_mut().storage_add(&address, key, delta)?;
