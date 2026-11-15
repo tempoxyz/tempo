@@ -19,6 +19,7 @@ mod instructions;
 #[cfg(feature = "jit")]
 pub mod jit;
 mod parallel_hints;
+mod parallel_prefetch;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;

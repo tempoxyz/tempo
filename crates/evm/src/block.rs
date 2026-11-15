@@ -1,6 +1,8 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, parallel_hints::StaticHints,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes,
+    parallel_hints::StaticHints,
+    parallel_prefetch::{Prefetcher, StopOnDrop, prefetch_keys},
     transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
@@ -899,6 +901,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let failure = Mutex::new(None);
         // Dependencies from each transaction's static facts, derived as they arrive.
         let mut hints = StaticHints::default();
+        // Reads the state each transaction is expected to read ahead of the workers.
+        let prefetcher = Prefetcher::new(parallel.threads.get());
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -928,43 +932,61 @@ impl<'a> TempoBlockExecutor<'a> {
                 execution_context: tx_env.inner().execution_context(),
             });
             let dependencies = hints.next(tx_env.inner());
+            prefetcher.push(prefetch_keys(tx_env.inner()));
             Some(StreamedTx::with_dependencies(
                 (tx_env, ConsensusTx(recovered)),
                 dependencies,
             ))
         });
+        let stream = stream.chain(core::iter::from_fn(|| {
+            prefetcher.close();
+            None
+        }));
 
         // Check each transaction's section as it commits, over a copy of the section state.
         let mut committed = Vec::new();
-        let result = self.inner.inner.execute_transaction_stream(
-            stream,
-            base,
-            make_evm,
-            parallel.threads,
-            on_speculative,
-            |index, result| {
-                let lanes = lanes.lock().unwrap();
-                let lane = &lanes[index];
-                let block_gas_used = if use_regular_gas {
-                    result.execution_gas_spent()
-                } else {
-                    result.tx_gas_used()
-                };
-                let next_section = Self::next_section(
-                    budgets.section,
-                    budgets.non_shared_gas_left,
-                    budgets.non_payment_gas_left,
-                    lane.tx_hash,
-                    lane.is_system_tx,
-                    lane.is_payment,
-                    block_gas_used,
-                )?;
-                budgets.record(next_section, block_gas_used, lane.is_payment);
-                committed.push((next_section, block_gas_used));
-                Ok(())
-            },
-            &mut on_receipt,
-        );
+        let result = std::thread::scope(|scope| {
+            let _stop = StopOnDrop(&prefetcher);
+            for _ in 0..prefetch_threads(parallel.threads) {
+                let prefetcher = &prefetcher;
+                // Without a prefetch thread, the workers read the state themselves.
+                let _ = std::thread::Builder::new()
+                    .name("tempo-prefetch".into())
+                    .spawn_scoped(scope, move || prefetcher.run(base));
+            }
+            self.inner.inner.execute_transaction_stream(
+                stream,
+                base,
+                make_evm,
+                parallel.threads,
+                |index, changes: TxStateChanges<'_>| {
+                    prefetcher.executed(index);
+                    on_speculative(index, changes);
+                },
+                |index, result| {
+                    let lanes = lanes.lock().unwrap();
+                    let lane = &lanes[index];
+                    let block_gas_used = if use_regular_gas {
+                        result.execution_gas_spent()
+                    } else {
+                        result.tx_gas_used()
+                    };
+                    let next_section = Self::next_section(
+                        budgets.section,
+                        budgets.non_shared_gas_left,
+                        budgets.non_payment_gas_left,
+                        lane.tx_hash,
+                        lane.is_system_tx,
+                        lane.is_payment,
+                        block_gas_used,
+                    )?;
+                    budgets.record(next_section, block_gas_used, lane.is_payment);
+                    committed.push((next_section, block_gas_used));
+                    Ok(())
+                },
+                &mut on_receipt,
+            )
+        });
         let failure = failure.into_inner().unwrap();
         if let Err(error) = &result
             && restores
@@ -1067,6 +1089,11 @@ where
     F: for<'x> Fn(Box<dyn evm2::evm::DynDatabase + 'x>) -> TempoEvm<'x> + Sync,
 {
     f
+}
+
+/// Returns how many threads prefetch state ahead of `workers` parallel workers.
+fn prefetch_threads(workers: NonZeroUsize) -> usize {
+    workers.get().div_ceil(2)
 }
 
 /// Logs the counters of a block executed in parallel, and whether it executed again one
