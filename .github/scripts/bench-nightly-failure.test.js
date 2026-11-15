@@ -3,59 +3,94 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { test } = require('node:test');
 
-// Exercise the existing scheduled workflow's inline notification without requests.
+// Exercise the scheduled workflow's inline incident.io alert without requests.
 const workflow = readFileSync(join(__dirname, '../workflows/bench-e2e-multi-region-scheduled.yml'), 'utf8');
-const step = workflow.split('      - name: Alert reth on-call\n')[1];
+const step = workflow.split('      - name: Update incident.io alert\n')[1];
 const script = step.split('          script: |\n')[1]
   .split('\n').map(line => line.slice(12)).join('\n');
 const notify = new (Object.getPrototypeOf(async function () {}).constructor)(
   'context', 'core', 'process', 'fetch', script);
 
-async function run(results = { 'bench-e2e-multi-region': 'failure' }, options = {}) {
+const FAILED = {
+  'resolve-refs': 'success', 'bench-e2e-multi-region': 'failure', 'save-state': 'skipped',
+};
+const PASSED = {
+  'resolve-refs': 'success', 'bench-e2e-multi-region': 'success', 'save-state': 'success',
+};
+
+async function run(results = FAILED, options = {}) {
   const calls = [];
+  const logs = { warning: [], notice: [] };
   const context = {
     repo: options.repo || { owner: 'tempoxyz', repo: 'tempo' },
     eventName: options.event || 'schedule',
     runId: 35810193790,
   };
+  const jobs = Object.fromEntries(Object.entries(results).map(([name, result]) => [name, {
+    result,
+    outputs: name === 'resolve-refs' ? { 'baseline-ref': 'aaaa', 'feature-ref': 'bbbb' } : {},
+  }]));
+  const responses = [...(options.responses || [{ ok: true, status: 202 }])];
   let error;
   try {
-    await notify(context, { info: () => {} }, {
+    await notify(context, {
+      info: () => {},
+      notice: m => logs.notice.push(m),
+      warning: m => logs.warning.push(m),
+    }, {
       env: {
-        SLACK_BENCH_BOT_TOKEN: options.missingToken ? '' : 'test-token',
+        INCIDENT_IO_URL: options.missingSecrets ? '' : 'https://api.incident.io/v2/alert_events/http/source',
+        INCIDENT_IO_TOKEN: options.missingSecrets ? '' : 'test-token',
         GITHUB_RUN_ATTEMPT: options.attempt || '1',
-        BENCH_JOB_RESULTS: JSON.stringify(Object.fromEntries(
-          Object.entries(results).map(([name, result]) => [name, { result }]))),
+        BENCH_JOB_RESULTS: JSON.stringify(jobs),
       },
     }, async (url, request) => {
       calls.push({ url, ...request, body: JSON.parse(request.body) });
-      if (options.networkError) throw new Error('connection lost');
-      return {
-        ok: !options.httpError, status: 503,
-        json: async () => options.response || { ok: true, channel: 'C09KA1JNJ02', ts: '1.23' },
-      };
+      const next = responses.length > 1 ? responses.shift() : responses[0];
+      if (next === 'network') throw new Error('connection lost');
+      return next;
     });
   } catch (err) { error = err; }
-  return { calls, error };
+  return { calls, error, logs };
 }
 
 for (const results of [
   { 'resolve-refs': 'failure', 'bench-e2e-multi-region': 'skipped', 'save-state': 'skipped' },
-  { 'resolve-refs': 'success', 'bench-e2e-multi-region': 'failure', 'save-state': 'skipped' },
+  FAILED,
   { 'resolve-refs': 'success', 'bench-e2e-multi-region': 'success', 'save-state': 'failure' },
 ]) {
-  test(`alerts on dependency failure: ${JSON.stringify(results)}`, async () => {
+  test(`fires on dependency failure: ${JSON.stringify(results)}`, async () => {
     const { calls, error } = await run(results);
     assert.equal(error, undefined);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://slack.com/api/chat.postMessage');
-    assert.equal(calls[0].body.channel, 'C09KA1JNJ02');
-    assert.match(calls[0].body.text, /<!subteam\^S0C0784UDQF\|oncall-reth>/);
-    assert.match(calls[0].body.text, /35810193790\/attempts\/1/);
+    const { url, headers, body } = calls[0];
+    assert.equal(url, 'https://api.incident.io/v2/alert_events/http/source');
+    assert.equal(headers.Authorization, 'Bearer test-token');
+    assert.equal(body.status, 'firing');
+    assert.equal(body.deduplication_key, 'tempo:bench-e2e-multi-region-nightly');
+    assert.equal(body.metadata.team, 'reth');
     const failedJob = Object.keys(results).find(name => results[name] === 'failure');
-    assert.ok(calls[0].body.text.includes(`*Failed jobs:* ${failedJob}`));
+    assert.ok(body.title.includes(failedJob));
+    assert.match(body.description, /35810193790\/attempts\/1/);
+    assert.match(body.description, /Baseline: aaaa/);
   });
 }
+
+test('resolves after a run that benchmarked and saved state', async () => {
+  const { calls, error } = await run(PASSED);
+  assert.equal(error, undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.status, 'resolved');
+  assert.equal(calls[0].body.deduplication_key, 'tempo:bench-e2e-multi-region-nightly');
+});
+
+test('a run with no new commit leaves the alert unchanged', async () => {
+  const { calls, error } = await run({
+    'resolve-refs': 'success', 'bench-e2e-multi-region': 'skipped', 'save-state': 'skipped',
+  });
+  assert.equal(error, undefined);
+  assert.deepEqual(calls, []);
+});
 
 for (const event of ['workflow_dispatch', 'push']) {
   test(`ignores ${event}`, async () => {
@@ -63,32 +98,45 @@ for (const event of ['workflow_dispatch', 'push']) {
   });
 }
 
-for (const result of ['success', 'cancelled', 'skipped']) {
-  test(`ignores ${result} jobs`, async () => {
-    const { calls, error } = await run({ 'bench-e2e-multi-region': result });
-    assert.equal(error, undefined);
-    assert.deepEqual(calls, []);
-  });
-}
-
-test('does not post from a fork', async () => {
+test('does not send from a fork', async () => {
   assert.deepEqual((await run(undefined, { repo: { owner: 'fork', repo: 'tempo' } })).calls, []);
 });
 
 test('a failed rerun links to its attempt', async () => {
-  const { calls, error } = await run(undefined, { attempt: '2' });
-  assert.equal(error, undefined);
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].body.text, /35810193790\/attempts\/2/);
+  const { calls } = await run(undefined, { attempt: '2' });
+  assert.match(calls[0].body.source_url, /35810193790\/attempts\/2/);
 });
 
-for (const options of [
-  { missingToken: true }, { httpError: true },
-  { response: { ok: false, error: 'not_in_channel' } }, { networkError: true },
-]) {
-  test(`surfaces delivery failure without retrying: ${JSON.stringify(options)}`, async () => {
-    const { calls, error } = await run(undefined, options);
+test('missing secrets fail a firing alert', async () => {
+  const { calls, error } = await run(undefined, { missingSecrets: true });
+  assert.ok(error);
+  assert.deepEqual(calls, []);
+});
+
+test('missing secrets only note a resolve', async () => {
+  const { calls, error, logs } = await run(PASSED, { missingSecrets: true });
+  assert.equal(error, undefined);
+  assert.deepEqual(calls, []);
+  assert.equal(logs.notice.length, 1);
+});
+
+test('retries a transient delivery failure', async () => {
+  const { calls, error } = await run(undefined, { responses: ['network', { ok: true, status: 202 }] });
+  assert.equal(error, undefined);
+  assert.equal(calls.length, 2);
+});
+
+for (const response of ['network', { ok: false, status: 503 }]) {
+  test(`surfaces a firing delivery failure after 3 attempts: ${JSON.stringify(response)}`, async () => {
+    const { calls, error } = await run(undefined, { responses: [response] });
     assert.ok(error);
-    assert.equal(calls.length, options.missingToken ? 0 : 1);
+    assert.equal(calls.length, 3);
   });
 }
+
+test('a failed resolve only warns', async () => {
+  const { calls, error, logs } = await run(PASSED, { responses: [{ ok: false, status: 503 }] });
+  assert.equal(error, undefined);
+  assert.equal(calls.length, 3);
+  assert.equal(logs.warning.length, 1);
+});
