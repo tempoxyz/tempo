@@ -1077,6 +1077,8 @@ fn log_parallel_stats(
     fallback: bool,
     elapsed: Duration,
 ) {
+    let t = &stats.timings;
+    let us = |duration: Duration| duration.as_micros() as u64;
     debug!(
         target: "tempo::parallel",
         block_number = number.saturating_to::<u64>(),
@@ -1085,6 +1087,32 @@ fn log_parallel_stats(
         reexecuted = stats.reexecuted,
         fallback,
         ?elapsed,
+        elapsed_us = us(elapsed),
+        total_us = us(t.total),
+        input_first_us = us(t.input_first),
+        input_end_us = us(t.input_end),
+        input_wait_us = us(t.input_wait),
+        input_cpu_us = us(t.input_cpu),
+        input_runq_us = us(t.input_runq),
+        commit_end_us = us(t.commit_end),
+        commit_input_wait_us = us(t.commit_input_wait),
+        commit_worker_wait_us = us(t.commit_worker_wait),
+        commit_reexec_us = us(t.commit_reexec),
+        commit_cpu_us = us(t.commit_cpu),
+        commit_runq_us = us(t.commit_runq),
+        materialize_us = us(t.materialize),
+        stream_join_us = us(t.stream_join),
+        workers_done_us = us(t.workers_done),
+        worker_busy_us = us(t.worker_busy),
+        worker_tail_busy_us = us(t.worker_tail_busy),
+        worker_sched_wait_us = us(t.worker_sched_wait),
+        worker_wall_us = us(t.worker_wall),
+        worker_cpu_us = us(t.worker_cpu),
+        worker_runq_us = us(t.worker_runq),
+        stream_busy_us = us(t.stream_busy),
+        stream_cpu_us = us(t.stream_cpu),
+        stream_runq_us = us(t.stream_runq),
+        stream_end_us = us(t.stream_end),
         "Executed block transactions in parallel"
     );
 }
