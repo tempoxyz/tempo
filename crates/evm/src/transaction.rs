@@ -34,6 +34,7 @@ pub struct TempoAaTx {
     transaction: Arc<Recovered<AASigned>>,
     fee_payer: Option<Address>,
     expiring_nonce_idx: Option<usize>,
+    expiring_nonce_prefetch_idx: Option<usize>,
     override_key_id: Option<Address>,
 }
 
@@ -48,6 +49,7 @@ impl TempoAaTx {
             transaction: Arc::new(transaction),
             fee_payer,
             expiring_nonce_idx: None,
+            expiring_nonce_prefetch_idx: None,
             override_key_id: None,
         }
     }
@@ -59,6 +61,16 @@ impl TempoAaTx {
 
     fn set_expiring_nonce_idx(&mut self, index: Option<usize>) {
         self.expiring_nonce_idx = index;
+    }
+
+    /// Returns the transaction's index among expiring-nonce transactions in the block, kept only
+    /// to prefetch the ring buffer slots it will use: it never changes a result.
+    pub const fn expiring_nonce_prefetch_idx(&self) -> Option<usize> {
+        self.expiring_nonce_prefetch_idx
+    }
+
+    fn set_expiring_nonce_prefetch_idx(&mut self, index: Option<usize>) {
+        self.expiring_nonce_prefetch_idx = index;
     }
 
     /// Returns the access-key override used by RPC simulation.
@@ -439,6 +451,15 @@ impl TempoTxEnv {
     pub fn set_expiring_nonce_idx(&mut self, index: Option<usize>) {
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
             transaction.set_expiring_nonce_idx(index);
+        }
+    }
+
+    /// Moves the transaction's block-local expiring nonce index to where only prefetching reads
+    /// it, so that execution does not use it.
+    pub fn keep_expiring_nonce_idx_for_prefetch(&mut self) {
+        if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
+            let index = transaction.expiring_nonce_idx.take();
+            transaction.set_expiring_nonce_prefetch_idx(index);
         }
     }
 }

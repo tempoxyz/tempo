@@ -908,8 +908,9 @@ impl<'a> TempoBlockExecutor<'a> {
                 taken.lock().unwrap().push(tx.clone());
             }
             let (mut tx_env, recovered) = tx.into_send_parts();
-            // Remove any prewarming-specific context that was added to the tx env.
-            tx_env.inner_mut().set_expiring_nonce_idx(None);
+            // Remove any prewarming-specific context that was added to the tx env, keeping the
+            // expiring nonce index only to prefetch ring buffer slots.
+            tx_env.inner_mut().keep_expiring_nonce_idx_for_prefetch();
             let tx = recovered.tx();
             let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
                 Ok(is_system_tx) => is_system_tx,

@@ -125,6 +125,18 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        self.check_and_mark_expiring_nonce_with_prefetch(expiring_nonce_hash, valid_before, None)
+    }
+
+    /// [`Self::check_and_mark_expiring_nonce`], given the transaction's index among the block's
+    /// expiring-nonce transactions when known: parallel block execution then prefetches the ring
+    /// buffer slots the insert will read. The index never changes the result.
+    pub fn check_and_mark_expiring_nonce_with_prefetch(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        prefetch_idx: Option<usize>,
+    ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
         let spec = self.storage.spec();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
@@ -175,6 +187,25 @@ impl NonceManager {
                 let next = if ptr + 1 >= capacity { 0 } else { ptr + 1 };
                 access.sstore(&address, ptr_slot, U256::from(next))
             });
+            // Without a failed insert, the transaction inserts at the block's first pointer plus
+            // its index among the block's expiring-nonce transactions.
+            let op = match prefetch_idx.and_then(|index| u32::try_from(index).ok()) {
+                Some(index) => op.with_prefetch(move |access| {
+                    let manager = Self::new();
+                    let address = manager.address;
+                    let ptr_slot = manager.expiring_nonce_ring_ptr.slot();
+                    let first = access.sload(&address, ptr_slot)?.saturating_to::<u32>();
+                    let ptr = ((u64::from(first) + u64::from(index)) % u64::from(capacity)) as u32;
+                    let old_hash =
+                        access.sload(&address, manager.expiring_nonce_ring[ptr].slot())?;
+                    if !old_hash.is_zero() {
+                        let old_seen = manager.expiring_nonce_seen[B256::from(old_hash)].slot();
+                        access.sload(&address, old_seen)?;
+                    }
+                    Ok(())
+                }),
+                None => op,
+            };
             if crate::storage::StorageCtx.defer_storage_op(op)? {
                 return Ok(());
             }

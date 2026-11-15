@@ -1199,7 +1199,11 @@ fn apply_nonce(
                 None
             };
             nonces
-                .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                .check_and_mark_expiring_nonce_with_prefetch(
+                    replay_hash,
+                    valid_before,
+                    aa.expiring_nonce_prefetch_idx(),
+                )
                 .map_err(|error| match error {
                     TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
                     TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
