@@ -150,6 +150,69 @@ jobs:
           BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
         run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
 
+      - name: Alert on stale nightly
+        # Scheduled runs page through incident.io from the incident-io job; manual runs keep Slack.
+        if: steps.refs.outputs.is-stale == 'true' && github.event_name == 'workflow_dispatch' && inputs.slack != 'never'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STALE_AGE_HOURS: ${{ steps.refs.outputs.stale-age-hours }}
+          NIGHTLY_CREATED: ${{ steps.refs.outputs.nightly-created }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        with:
+          script: |
+            const token = process.env.SLACK_BENCH_BOT_TOKEN;
+            const channel = process.env.SLACK_BENCH_CHANNEL;
+            if (!token || !channel) {
+              core.warning('Slack credentials not set, skipping stale nightly alert');
+              return;
+            }
+
+            const repo = `${context.repo.owner}/${context.repo.repo}`;
+            const runUrl = `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+            const ageHours = process.env.STALE_AGE_HOURS;
+            const created = process.env.NIGHTLY_CREATED;
+            const featureRef = process.env.FEATURE_REF;
+            const shortSha = featureRef.slice(0, 8);
+            const blocks = [
+              {
+                type: 'header',
+                text: { type: 'plain_text', text: ':rotating_light: Replay Nightly: Docker build is stale', emoji: true },
+              },
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: [
+                    '*Scheduled replay benchmark did not run* because the latest nightly Docker build is stale.',
+                    '',
+                    `The latest nightly image was built from a commit that is *${ageHours}h old* (threshold: 24h).`,
+                    `Stale commit: \`${shortSha}\` (built at ${created})`,
+                    '',
+                    '*Action required:* Check the <https://github.com/' + repo + '/actions/workflows/docker.yml|docker.yml> workflow.',
+                  ].join('\n'),
+                },
+              },
+              {
+                type: 'actions',
+                elements: [{
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'View Run :github:', emoji: true },
+                  url: runUrl,
+                  action_id: 'ci_button',
+                }],
+              },
+            ];
+
+            const resp = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel, blocks, text: 'Replay nightly: Docker build is stale', unfurl_links: false }),
+            });
+            const data = await resp.json();
+            if (!data.ok) core.warning(`Slack API error: ${JSON.stringify(data)}`);
+
   # Separate from resolve-refs, which save-state needs to succeed to refresh state.
   fail-on-stale:
     needs: resolve-refs
