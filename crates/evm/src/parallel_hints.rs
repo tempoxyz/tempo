@@ -6,12 +6,11 @@
 use crate::transaction::{TempoEvmTx, TempoTxEnv};
 use alloy_primitives::{Address, TxKind, map::HashMap};
 use std::borrow::Borrow;
-use tempo_contracts::precompiles::PaymentSlots;
 use tempo_primitives::TempoAddressExt;
 
 /// Derives each transaction's dependencies on earlier transactions of the block from what the
-/// transaction itself says: its sender, its fee payer, the holders of the TIP-20 payments it makes
-/// and the contracts other than TIP-20 tokens it calls.
+/// transaction itself says: its sponsored fee payer and the contracts other than TIP-20 tokens it
+/// calls.
 ///
 /// Each such address is a key the transaction is expected to write, and a transaction depends on
 /// the last earlier transaction that wrote each of its keys. Contracts other than TIP-20 tokens
@@ -43,18 +42,15 @@ impl StaticHints {
                 dependencies.push(writer);
             }
         };
-        write(sender);
         if let Ok(fee_payer) = tx.fee_payer()
             && fee_payer != sender
         {
             write(fee_payer);
         }
-        for (kind, input) in evm_tx.calls() {
+        for (kind, _) in evm_tx.calls() {
             let TxKind::Call(to) = kind else { continue };
             if !to.is_tip20() {
                 write(to);
-            } else if let Some(payment) = PaymentSlots::classify(input) {
-                payment.addresses().iter().copied().for_each(&mut write);
             }
         }
         dependencies.sort_unstable();
