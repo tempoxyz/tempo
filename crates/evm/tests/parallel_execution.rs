@@ -453,6 +453,79 @@ fn parallel_full_ring_reports_sequential_error(commit: ParallelCommit, threads: 
     assert_eq!(outcome.finish, sequential.finish);
 }
 
+/// The expiring-nonce ring holds expired entries the block's transactions evict: the hash of a
+/// later transaction of the block, a transaction's own hash, an entry already cleared from the seen
+/// set and one entry twice. With `evict_inserted`, a transaction also reaches the entry of an
+/// earlier transaction's hash, which that transaction marked seen again, so it fails with
+/// ExpiringNonceSetFull. Both commit modes commit exactly what sequential execution does.
+#[test_matrix([false, true], [ParallelCommit::InOrder, ParallelCommit::Batched], [1, 4])]
+fn parallel_ring_evictions_match_sequential(
+    evict_inserted: bool,
+    commit: ParallelCommit,
+    threads: usize,
+) {
+    const EVICTED_AT: u32 = 60;
+
+    let accounts = Accounts::new();
+    let mut cache = accounts.seed();
+    let txs = accounts.transactions(TX_COUNT, None);
+    let hash = |index: usize| txs[index].inner().unique_tx_identifier(txs[index].signer());
+    let expired = U256::from(DEFAULT_BLOCK_TIMESTAMP - 1);
+    let mut entries = vec![
+        (10, hash(20), expired),
+        (30, hash(30), expired),
+        (40, B256::repeat_byte(0xcd), U256::ZERO),
+        (45, B256::repeat_byte(0xef), expired),
+        (46, B256::repeat_byte(0xef), expired),
+    ];
+    if evict_inserted {
+        entries.push((EVICTED_AT, hash(5), expired));
+    }
+    let nonce_storage = &mut cache
+        .storage
+        .entry(NONCE_PRECOMPILE_ADDRESS)
+        .or_default()
+        .slots;
+    for (index, entry, expiry) in entries {
+        nonce_storage.insert(
+            index.mapping_slot(U256::from(EXPIRING_NONCE_RING_SLOT)),
+            U256::from_be_bytes(entry.0),
+        );
+        nonce_storage.insert(
+            entry.mapping_slot(U256::from(EXPIRING_NONCE_SEEN_SLOT)),
+            expiry,
+        );
+    }
+    let snapshot = Arc::new(Snapshot(cache));
+    let ctx = || ctx(txs.len(), BLOCK_GAS_LIMIT, 0);
+
+    let (sequential, _) = execute(&snapshot, &txs, ctx(), None);
+    let (outcome, stats) = execute(&snapshot, &txs, ctx(), parallel(threads, commit));
+    if evict_inserted {
+        assert!(
+            sequential
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("ExpiringNonceSetFull")),
+            "{:?}",
+            sequential.error
+        );
+        assert_eq!(sequential.receipts.len(), EVICTED_AT as usize);
+        assert_eq!(stats, None);
+        assert_eq!(outcome.error, sequential.error);
+        assert_eq!(outcome.receipts, sequential.receipts);
+        assert_eq!(outcome.streamed, sequential.streamed);
+        assert_eq!(outcome.executor_state, sequential.executor_state);
+        assert_eq!(outcome.state, sequential.state);
+        assert_eq!(outcome.finish, sequential.finish);
+    } else {
+        assert_eq!(sequential.error, None);
+        assert_eq!(sequential.receipts.len(), TX_COUNT);
+        assert_eq!(outcome, sequential);
+        ensure_speculative(stats, commit, threads);
+    }
+}
+
 #[test_matrix([0, 1], [ParallelCommit::InOrder, ParallelCommit::Batched], [1, 4])]
 fn parallel_executes_tiny_blocks(count: usize, commit: ParallelCommit, threads: usize) {
     let accounts = Accounts::new();

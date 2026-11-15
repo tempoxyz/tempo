@@ -899,6 +899,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let failure = Mutex::new(None);
         // Dependencies from each transaction's static facts, derived as they arrive.
         let mut hints = StaticHints::default();
+        // Expiring nonce transactions taken so far.
+        let mut expiring_nonces = 0;
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -911,9 +913,17 @@ impl<'a> TempoBlockExecutor<'a> {
                 taken.lock().unwrap().push(tx.clone());
             }
             let (mut tx_env, recovered) = tx.into_send_parts();
-            // Remove any prewarming-specific context that was added to the tx env.
-            tx_env.inner_mut().set_expiring_nonce_idx(None);
             let tx = recovered.tx();
+            // Replace any prewarming-specific context that was added to the tx env: a batched
+            // commit inserts each expiring nonce at its index among the block's expiring nonce
+            // transactions.
+            let expiring_nonce_idx = (restores && tx.is_expiring_nonce()).then(|| {
+                expiring_nonces += 1;
+                expiring_nonces - 1
+            });
+            tx_env
+                .inner_mut()
+                .set_expiring_nonce_idx(expiring_nonce_idx);
             let is_system_tx = match Self::validate_tx_pre_execution_at(spec, number, tx) {
                 Ok(is_system_tx) => is_system_tx,
                 Err(error) => {
