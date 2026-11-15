@@ -1,6 +1,7 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, transaction::ExecutionContext,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmTypes, parallel_hints::StaticHints,
+    transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -896,6 +897,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let taken = Mutex::new(Vec::new());
         // The error that ended `transactions` early, if any.
         let failure = Mutex::new(None);
+        // Dependencies from each transaction's static facts, derived as they arrive.
+        let mut hints = StaticHints::default();
         let stream = transactions.by_ref().map_while(|tx| {
             let tx = match tx {
                 Ok(tx) => tx,
@@ -924,7 +927,11 @@ impl<'a> TempoBlockExecutor<'a> {
                 is_payment: Self::is_payment_at(spec, tx),
                 execution_context: tx_env.inner().execution_context(),
             });
-            Some(StreamedTx::new((tx_env, ConsensusTx(recovered))))
+            let dependencies = hints.next(tx_env.inner());
+            Some(StreamedTx::with_dependencies(
+                (tx_env, ConsensusTx(recovered)),
+                dependencies,
+            ))
         });
 
         // Check each transaction's section as it commits, over a copy of the section state.
