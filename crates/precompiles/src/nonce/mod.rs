@@ -353,8 +353,9 @@ impl BatchedStorageOp for ExpiringNonceInsert {
         if let Some(old_seen) = self.evicted {
             access.sstore(&address, old_seen, U256::ZERO);
         }
+        // Only the block's insert at this slot reads it, during its own execution.
         if self.old_hash != self.hash {
-            access.sstore(&address, self.ring_slot, self.hash.into());
+            access.sstore_unread(&address, self.ring_slot, self.hash.into());
         }
         Ok(())
     }
