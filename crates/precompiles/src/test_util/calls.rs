@@ -111,7 +111,10 @@ impl DexSetup {
         let (base, base_calls) = self.base.calls(0);
         calls.extend(base_calls);
         if self.create_pair {
-            let admin = self.base.admin.expect("set by `DexSetup::new`");
+            let admin = self
+                .base
+                .admin
+                .expect("set by every `DexSetup` constructor");
             let create = IStablecoinDEX::createPairCall { base };
             calls.push(SetupCall::new(STABLECOIN_DEX_ADDRESS, admin, &create));
         }
@@ -209,6 +212,12 @@ mod tests {
         );
         let dex = DexSetup::new(admin).trader(alice, traded.to());
         let fee_amm = FeeAmmSetup::new(admin).liquidity(bob, deposited);
+        // Markets over the tokens above, as a fixture world adds them to its own tokens.
+        let ((base, quote), _) = dex.calls();
+        let ((user_token, _), _) = fee_amm.calls();
+        let existing_pair =
+            DexSetup::pair(admin, user_token, PATH_USD_ADDRESS).trader(bob, traded.to());
+        let existing_pool = FeeAmmSetup::pool(admin, base, quote).liquidity(alice, deposited);
 
         let lowered = storage_after(admin, || {
             for token in &tokens {
@@ -220,10 +229,15 @@ mod tests {
                     .try_for_each(execute)?;
             }
             execute(compound.call(admin))?;
-            [dex.calls().1, fee_amm.calls().1]
-                .into_iter()
-                .flatten()
-                .try_for_each(execute)
+            [
+                dex.calls().1,
+                fee_amm.calls().1,
+                existing_pair.calls().1,
+                existing_pool.calls().1,
+            ]
+            .into_iter()
+            .flatten()
+            .try_for_each(execute)
         });
         let applied = storage_after(admin, || {
             for token in tokens {
@@ -231,7 +245,9 @@ mod tests {
             }
             compound.apply()?;
             dex.apply()?;
-            fee_amm.apply().map(drop)
+            fee_amm.apply()?;
+            existing_pair.apply()?;
+            existing_pool.apply().map(drop)
         });
 
         assert_eq!(applied, lowered);

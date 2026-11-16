@@ -44,6 +44,8 @@ use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{ITIP20Factory, TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+#[cfg(any(test, feature = "test-utils"))]
+use tempo_primitives::test_utils::salts;
 use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Returns the revert payload or panics with the unexpected EVM2 result.
@@ -403,10 +405,11 @@ impl TIP20Setup {
     }
 }
 
-/// Sets up a BASE token over pathUSD on the [`StablecoinDEX`], with funded traders and the pair.
+/// Sets up a pair on the [`StablecoinDEX`], with funded traders.
 ///
 /// ```ignore
 /// let (base, quote) = DexSetup::new(admin).trader(alice, amount).apply()?;
+/// let (base, quote) = DexSetup::pair(admin, base, quote).trader(bob, amount).apply()?;
 /// ```
 #[cfg(any(test, feature = "test-utils"))]
 pub struct DexSetup {
@@ -418,13 +421,30 @@ pub struct DexSetup {
 #[cfg(any(test, feature = "test-utils"))]
 impl DexSetup {
     /// A new BASE token over pathUSD and their pair. `admin` administers BASE, creates pathUSD
-    /// if it's missing, and mints both to the traders.
+    /// if it's missing, and mints both to the traders. BASE's salt comes from the test RNG.
     pub fn new(admin: Address) -> Self {
+        let [salt] = salts();
         Self {
-            base: TIP20Setup::create("BASE", "BASE", admin).with_salt(B256::random()),
+            base: TIP20Setup::create("BASE", "BASE", admin).with_salt(salt),
             quote: TIP20Setup::path_usd(admin),
             create_pair: true,
         }
+    }
+
+    /// The pair of existing tokens `base` and its quote token `quote`. `admin` administers
+    /// both and mints them to the traders.
+    pub fn pair(admin: Address, base: Address, quote: Address) -> Self {
+        Self {
+            base: TIP20Setup::config(base).with_admin(admin),
+            quote: TIP20Setup::config(quote).with_admin(admin),
+            create_pair: true,
+        }
+    }
+
+    /// Creates BASE with `salt`. Has no effect on [`Self::pair`].
+    pub fn with_salt(mut self, salt: B256) -> Self {
+        self.base = self.base.with_salt(salt);
+        self
     }
 
     /// Mints `amount` of both tokens to `trader`, who approves exactly that to the DEX.
@@ -471,14 +491,33 @@ pub struct FeeAmmSetup {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl FeeAmmSetup {
-    /// New user and validator tokens administered by `admin`, with an empty pool.
+    /// New user and validator tokens administered by `admin`, with an empty pool. Their salts
+    /// come from the test RNG.
     pub fn new(admin: Address) -> Self {
+        let [user_salt, validator_salt] = salts();
         Self {
-            user_token: TIP20Setup::create("UserToken", "UTK", admin).with_salt(B256::random()),
+            user_token: TIP20Setup::create("UserToken", "UTK", admin).with_salt(user_salt),
             validator_token: TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_salt(B256::random()),
+                .with_salt(validator_salt),
             liquidity: Vec::new(),
         }
+    }
+
+    /// The pool of existing tokens `user_token` and `validator_token`. `admin` administers
+    /// the validator token and mints it to the liquidity providers.
+    pub fn pool(admin: Address, user_token: Address, validator_token: Address) -> Self {
+        Self {
+            user_token: TIP20Setup::config(user_token).with_admin(admin),
+            validator_token: TIP20Setup::config(validator_token).with_admin(admin),
+            liquidity: Vec::new(),
+        }
+    }
+
+    /// Creates the user and validator tokens with these salts. Has no effect on [`Self::pool`].
+    pub fn with_salts(mut self, user: B256, validator: B256) -> Self {
+        self.user_token = self.user_token.with_salt(user);
+        self.validator_token = self.validator_token.with_salt(validator);
+        self
     }
 
     /// Mints `amount` validator tokens to `provider`, who deposits them all into the pool.
