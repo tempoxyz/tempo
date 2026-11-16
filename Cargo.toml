@@ -454,10 +454,10 @@ reth-zstd-compressors = { git = "https://github.com/paradigmxyz/reth-core", rev 
 # evm2 is patched through its pre-transfer URL, which redirects to alloy-rs/evm2, because Cargo
 # rejects a patch from the same source.
 [patch."https://github.com/alloy-rs/evm2"]
-evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "6b441c7e6faa37056a6b7f027a9891f7d8660028" }
-evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "6b441c7e6faa37056a6b7f027a9891f7d8660028" }
-evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "6b441c7e6faa37056a6b7f027a9891f7d8660028" }
-evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "6b441c7e6faa37056a6b7f027a9891f7d8660028" }
+evm2 = { git = "https://github.com/DaniPopes/evm2", rev = "2085de7bd080015af9267cc2c446648825de7934" }
+evm2-inspectors = { git = "https://github.com/DaniPopes/evm2", rev = "2085de7bd080015af9267cc2c446648825de7934" }
+evm2-jit = { git = "https://github.com/DaniPopes/evm2", rev = "2085de7bd080015af9267cc2c446648825de7934" }
+evm2-macros = { git = "https://github.com/DaniPopes/evm2", rev = "2085de7bd080015af9267cc2c446648825de7934" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
