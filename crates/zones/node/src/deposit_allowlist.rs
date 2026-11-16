@@ -750,10 +750,7 @@ mod tests {
         noop::MockTransactionValidator,
     };
     use tempo_precompiles::tip20::ITIP20;
-    use tempo_primitives::{
-        TempoAddressExt as _,
-        transaction::{Call, TempoTransaction},
-    };
+    use tempo_primitives::transaction::{Call, TempoTransaction};
     use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
     use zone_l1::abi::ChaumPedersenProof;
 
