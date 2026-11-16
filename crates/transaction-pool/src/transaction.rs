@@ -199,8 +199,8 @@ impl TempoPooledTransaction {
         self.is_payment_v3
     }
 
-    /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
+    /// Returns true if this AA transaction's nonce is tracked by the `NonceManager` rather than
+    /// by the account's protocol nonce: `nonce key != 0` (includes expiring nonce txs)
     pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
@@ -289,17 +289,19 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the unique identifier for this AA transaction.
-    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
-        let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
+    /// Returns the pool's identifier for this transaction: its sender's nonce lane and its nonce
+    /// in that lane.
+    ///
+    /// Non-AA transactions use the protocol nonce, which is the lane of nonce key 0.
+    pub fn lane_transaction_id(&self) -> AA2dTransactionId {
+        let seq_id = AASequenceId {
             address: self.sender(),
-            nonce_key,
+            nonce_key: self.nonce_key().unwrap_or_default(),
         };
-        Some(AA2dTransactionId {
-            seq_id: sender,
+        AA2dTransactionId {
+            seq_id,
             nonce: self.nonce(),
-        })
+        }
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
@@ -678,6 +680,14 @@ pub enum TempoPoolTransactionError {
     )]
     ExceedsNonPaymentLimit,
 
+    /// Canonical updates kept changing the pool while the transaction validated.
+    ///
+    /// Thrown during pool admission when a canonical update landed during every validation
+    /// attempt, so none validated the transaction against the state the pool is maintained
+    /// for. The transaction may be valid and can be submitted again.
+    #[error("Chain state changed during every validation attempt, please resubmit")]
+    StateChangedDuringValidation,
+
     /// An AA transaction's `valid_before` is too close to the current pool tip.
     ///
     /// Thrown during pool admission when `valid_before` is less than or equal to
@@ -862,7 +872,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                         err,
                         HandlerError::InvalidChainId { .. }
                             | HandlerError::MissingChainId
-                            | HandlerError::IntrinsicGasTooLow { .. }
                             | HandlerError::NonceOverflow
                             | HandlerError::TxGasLimitGreaterThanCap { .. }
                             | HandlerError::CreateInitCodeSizeLimit { .. }
@@ -878,6 +887,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
+            | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
             | Self::AccessKeyExpired { .. }
@@ -1298,6 +1308,7 @@ mod tests {
         KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
         TempoSignature, TempoTransaction, tempo_transaction::Call,
     };
+    use test_case::test_case;
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
 
@@ -1447,22 +1458,15 @@ mod tests {
         assert!(keychain(&large) >= keychain(&small) + extra_heap);
     }
 
-    #[test]
-    fn size_is_stable_across_tx_env_caching() {
-        let transactions = [
-            eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])),
-            TxBuilder::aa(Address::random())
-                .access_list(large_access_list())
-                .build(),
-        ];
-        for transaction in transactions {
-            let size = transaction.size();
-            assert!(transaction.cached_tx_env().is_none());
-            let _ = transaction.tx_env();
-            assert!(transaction.cached_tx_env().is_some());
-            assert_eq!(transaction.size(), size);
-            assert_eq!(transaction.with_discarded_caches().size(), size);
-        }
+    #[test_case(eip1559_pooled(large_access_list(), Bytes::from(vec![1u8; 1024])))]
+    #[test_case(TxBuilder::aa(Address::random()).access_list(large_access_list()).build())]
+    fn size_is_stable_across_tx_env_caching(transaction: TempoPooledTransaction) {
+        let size = transaction.size();
+        assert!(transaction.cached_tx_env().is_none());
+        let _ = transaction.tx_env();
+        assert!(transaction.cached_tx_env().is_some());
+        assert_eq!(transaction.size(), size);
+        assert_eq!(transaction.with_discarded_caches().size(), size);
     }
 
     #[test]
@@ -1477,16 +1481,8 @@ mod tests {
 
         let aa = TxBuilder::aa(Address::random())
             .calls(vec![
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input: input.clone(),
-                },
-                Call {
-                    to: TxKind::Call(Address::random()),
-                    value: U256::ZERO,
-                    input,
-                },
+                Call::new(Address::random(), input.clone()),
+                Call::new(Address::random(), input),
             ])
             .build();
         let envelope_size = aa.inner().inner().size();
@@ -1593,9 +1589,10 @@ mod tests {
             "Non-AA tx should have no nonce key slot"
         );
         assert!(!tx.is_aa_2d(), "Non-AA tx should not be AA 2D");
-        assert!(
-            tx.aa_transaction_id().is_none(),
-            "Non-AA tx should have no AA transaction ID"
+        assert_eq!(
+            tx.lane_transaction_id().seq_id.nonce_key,
+            U256::ZERO,
+            "Non-AA tx should use the protocol nonce lane"
         );
     }
 
@@ -1613,10 +1610,8 @@ mod tests {
         );
         assert!(!tx.is_aa_2d(), "AA tx with nonce_key=0 should NOT be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, U256::ZERO);
         assert_eq!(aa_id.nonce, nonce);
@@ -1640,10 +1635,8 @@ mod tests {
         );
         assert!(tx.is_aa_2d(), "AA tx with nonce_key > 0 should be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, nonce_key);
         assert_eq!(aa_id.nonce, nonce);
@@ -1668,121 +1661,30 @@ mod tests {
         assert_eq!(slot1, slot2);
     }
 
-    #[test]
-    fn test_is_bad_transaction() {
-        let cases: &[(TempoPoolTransactionError, bool)] = &[
-            (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
-            (
-                TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore {
-                    valid_before: 100,
-                    min_allowed: 200,
-                }),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter {
-                    valid_after: 200,
-                    max_allowed: 100,
-                }),
-                false,
-            ),
-            (TempoPoolTransactionError::Keychain("test error"), false),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotTip20 {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: Address::repeat_byte(0x20),
-                        currency: "EUR".to_string(),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::FeeTokenPaused {
-                        address: Address::repeat_byte(0x20),
-                    },
-                )),
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AccessKeyExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::KeyAuthorizationExpired {
-                    expiry: 100,
-                    min_allowed: 200,
-                },
-                false,
-            ),
-            (
-                TempoPoolTransactionError::AddressCheck {
-                    address: Address::repeat_byte(0x20),
-                },
-                false,
-            ),
-            (TempoPoolTransactionError::SubblockNonceKey, true),
-            (
-                TempoPoolTransactionError::Evm(HandlerError::external(
-                    TempoInvalidTransaction::CallsValidation("calls error"),
-                )),
-                true,
-            ),
-        ];
-
-        for (err, expected) in cases {
-            assert_eq!(
-                err.is_bad_transaction(),
-                *expected,
-                "Unexpected is_bad_transaction() for: {err}"
-            );
-        }
+    #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore { valid_before: 100, min_allowed: 200 }) => false)]
+    #[test_case(TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter { valid_after: 200, max_allowed: 100 }) => false)]
+    #[test_case(TempoPoolTransactionError::Keychain("test error") => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::NonceManagerError("nonce error".to_string()))) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotTip20 { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address: Address::repeat_byte(0x20), currency: "EUR".to_string() })) => false)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::FeeTokenPaused { address: Address::repeat_byte(0x20) })) => false)]
+    #[test_case(TempoPoolTransactionError::AccessKeyExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::KeyAuthorizationExpired { expiry: 100, min_allowed: 200 } => false)]
+    #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
+    // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
+    #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]
+    #[test_case(TempoPoolTransactionError::Evm(HandlerError::external(TempoInvalidTransaction::CallsValidation("calls error"))) => true)]
+    fn test_is_bad_transaction(err: TempoPoolTransactionError) -> bool {
+        err.is_bad_transaction()
     }
 
-    #[test]
-    fn test_requires_nonce_check() {
-        let cases: &[(TempoPooledTransaction, bool, &str)] = &[
-            (
-                TxBuilder::eip1559(Address::random())
-                    .gas_limit(21000)
-                    .build_eip1559(),
-                true,
-                "Non-AA should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random()).build(),
-                true,
-                "AA with nonce_key=0 should require nonce check",
-            ),
-            (
-                TxBuilder::aa(Address::random())
-                    .nonce_key(U256::ONE)
-                    .build(),
-                false,
-                "AA with nonce_key > 0 should NOT require nonce check",
-            ),
-        ];
-
-        for (tx, expected, msg) in cases {
-            assert_eq!(tx.requires_nonce_check(), *expected, "{msg}");
-        }
+    #[test_case(TxBuilder::eip1559(Address::random()).gas_limit(21000).build_eip1559() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).build() => true)]
+    #[test_case(TxBuilder::aa(Address::random()).nonce_key(U256::ONE).build() => false)]
+    fn test_requires_nonce_check(tx: TempoPooledTransaction) -> bool {
+        tx.requires_nonce_check()
     }
 
     #[test]
@@ -1854,11 +1756,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 20_000_000_000,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(Address::random(), Bytes::new())],
             nonce_key: U256::ZERO,
             nonce,
             ..Default::default()

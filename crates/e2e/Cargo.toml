@@ -78,7 +78,7 @@ commonware-macros.workspace = true
 commonware-parallel.workspace = true
 alloy-provider = { workspace = true, features = ["pubsub", "reqwest"] }
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-eyre.workspace = true
 tempo-primitives.workspace = true
 tracing-subscriber.workspace = true

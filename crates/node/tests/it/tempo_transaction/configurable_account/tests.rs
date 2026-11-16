@@ -817,11 +817,10 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
 
     let tx = account.transaction(
         &env,
-        vec![Call {
-            to: CONFIGURABLE_ACCOUNT_ADDRESS.into(),
-            value: U256::ZERO,
-            input: Bytes::from_static(&[0xff, 0xff, 0xff, 0xff]),
-        }],
+        vec![Call::new(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            Bytes::from_static(&[0xff, 0xff, 0xff, 0xff]),
+        )],
     );
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, false).await?;

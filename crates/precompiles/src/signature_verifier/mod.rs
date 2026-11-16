@@ -230,7 +230,8 @@ struct RecoveredKeychainKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::test_util::with_storage;
+
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
@@ -245,8 +246,7 @@ mod tests {
 
     #[test]
     fn test_verify_secp256k1_valid() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let signer = PrivateKeySigner::random();
             let hash = B256::repeat_byte(0xAA);
             let sig = signer.sign_hash_sync(&hash)?;
@@ -261,8 +261,7 @@ mod tests {
 
     #[test]
     fn test_verify_p256_valid() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let signing_key = SigningKey::random(&mut OsRng);
             let verifying_key = signing_key.verifying_key();
             let encoded = verifying_key.to_encoded_point(false);
@@ -296,8 +295,7 @@ mod tests {
 
     #[test]
     fn test_verify_empty_signature_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let result = sign_recover(B256::ZERO, vec![]);
             assert!(result.is_err());
             Ok(())
@@ -306,8 +304,7 @@ mod tests {
 
     #[test]
     fn test_verify_secp256k1_wrong_length_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             // 64 bytes — not 65
             let result = sign_recover(B256::ZERO, vec![0u8; 64]);
             assert!(result.is_err());
@@ -320,8 +317,7 @@ mod tests {
 
     #[test]
     fn test_verify_p256_wrong_length_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             // 0x01 prefix + 128 bytes (should be 129)
             let mut sig = vec![SIGNATURE_TYPE_P256];
             sig.extend_from_slice(&[0u8; 128]);
@@ -333,8 +329,7 @@ mod tests {
 
     #[test]
     fn test_verify_webauthn_too_short_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             // 0x02 prefix + 127 bytes (min is 128)
             let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
             sig.extend_from_slice(&[0u8; 127]);
@@ -346,8 +341,7 @@ mod tests {
 
     #[test]
     fn test_verify_webauthn_too_long_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             // 0x02 prefix + 2049 bytes (max is 2048)
             let mut sig = vec![SIGNATURE_TYPE_WEBAUTHN];
             sig.extend_from_slice(&[0u8; 2049]);
@@ -359,8 +353,7 @@ mod tests {
 
     #[test]
     fn test_verify_unknown_type_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let mut sig = vec![0x05];
             sig.extend_from_slice(&[0u8; 129]);
             let result = sign_recover(B256::ZERO, sig);
@@ -371,8 +364,7 @@ mod tests {
 
     #[test]
     fn test_verify_invalid_secp256k1_signature_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let result = sign_recover(B256::ZERO, vec![0u8; 65]);
             assert!(result.is_err());
             Ok(())

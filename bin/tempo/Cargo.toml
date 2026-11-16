@@ -138,6 +138,9 @@ nix = { version = "0.30.1", features = ["signal"], optional = true }
 [dev-dependencies]
 jsonrpsee.workspace = true
 
+[build-dependencies]
+smolgen.workspace = true
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"

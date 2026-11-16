@@ -744,7 +744,7 @@ mod tests {
             )),
             TempoTxEnvelope::AA(TempoTransaction {
                 fee_token: Some(PAYMENT_TKN),
-                calls: vec![Call { to: TxKind::Call(to), value: U256::ZERO, input: calldata }],
+                calls: vec![Call::new(to, calldata)],
                 access_list,
                 ..Default::default()
             }.into_signed(Signature::test_signature().into())),
@@ -852,11 +852,7 @@ mod tests {
     #[test]
     fn test_payment_classification_aa_with_tip20_prefix() {
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let call = Call {
-            to: TxKind::Call(payment_addr),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(payment_addr, Bytes::new());
         let envelope = create_aa_envelope(call);
         assert!(envelope.is_payment_v1());
     }
@@ -864,22 +860,14 @@ mod tests {
     #[test]
     fn test_payment_classification_aa_without_tip20_prefix() {
         let non_payment_addr = address!("1234567890123456789012345678901234567890");
-        let call = Call {
-            to: TxKind::Call(non_payment_addr),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(non_payment_addr, Bytes::new());
         let envelope = create_aa_envelope(call);
         assert!(!envelope.is_payment_v1());
     }
 
     #[test]
     fn test_payment_classification_aa_no_to_address() {
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(TxKind::Create, Bytes::new());
         let envelope = create_aa_envelope(call);
         assert!(!envelope.is_payment_v1());
     }
@@ -888,11 +876,7 @@ mod tests {
     fn test_payment_classification_aa_partial_match() {
         // First 12 bytes match TIP20_PAYMENT_PREFIX, remaining 8 bytes differ
         let payment_addr = address!("20c0000000000000000000001111111111111111");
-        let call = Call {
-            to: TxKind::Call(payment_addr),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(payment_addr, Bytes::new());
         let envelope = create_aa_envelope(call);
         assert!(envelope.is_payment_v1());
     }
@@ -901,11 +885,7 @@ mod tests {
     fn test_payment_classification_aa_different_prefix() {
         // Different prefix (30c0 instead of 20c0)
         let non_payment_addr = address!("30c0000000000000000000000000000000000001");
-        let call = Call {
-            to: TxKind::Call(non_payment_addr),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
+        let call = Call::new(non_payment_addr, Bytes::new());
         let envelope = create_aa_envelope(call);
         assert!(!envelope.is_payment_v1());
     }
@@ -1180,11 +1160,7 @@ mod tests {
         .abi_encode();
         let tx = TempoTransaction {
             fee_token: Some(PAYMENT_TKN),
-            calls: vec![Call {
-                to: TxKind::Call(PAYMENT_TKN),
-                value: U256::ZERO,
-                input: Bytes::from(calldata),
-            }],
+            calls: vec![Call::new(PAYMENT_TKN, calldata)],
             key_authorization: Some(
                 KeyAuthorization {
                     chain_id: 1,
@@ -1237,11 +1213,7 @@ mod tests {
         .abi_encode();
         let tx = TempoTransaction {
             fee_token: Some(PAYMENT_TKN),
-            calls: vec![Call {
-                to: TxKind::Call(PAYMENT_TKN),
-                value: U256::ZERO,
-                input: Bytes::from(calldata),
-            }],
+            calls: vec![Call::new(PAYMENT_TKN, calldata)],
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
                     chain_id: U256::ONE,
@@ -1377,11 +1349,7 @@ mod tests {
         assert!(!system_tx.has_sub_block_nonce_key_prefix());
 
         // AA-specific methods
-        let aa_envelope = create_aa_envelope(Call {
-            to: TxKind::Call(PAYMENT_TKN),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        });
+        let aa_envelope = create_aa_envelope(Call::new(PAYMENT_TKN, Bytes::new()));
         assert!(aa_envelope.is_aa());
         assert!(aa_envelope.as_aa().is_some());
         assert_eq!(aa_envelope.fee_token(), Some(PAYMENT_TKN));

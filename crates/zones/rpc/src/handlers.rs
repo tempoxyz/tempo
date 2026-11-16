@@ -744,6 +744,7 @@ pub fn normalize_block_id(block: BlockId) -> BlockId {
 mod tests {
     use alloy_primitives::Address;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use crate::types::to_raw;
@@ -1011,34 +1012,33 @@ mod tests {
         assert_eq!(err.message, "state overrides not allowed");
     }
 
+    // The mock echoes the block it is asked to run against.
+    #[test_case("eth_call", "pending" => json!("latest"))]
+    #[test_case("eth_call", "latest" => json!("latest"))]
+    #[test_case("eth_call", "0x10" => json!("0x10"))]
+    #[test_case("eth_estimateGas", "pending" => json!("latest"))]
+    #[test_case("eth_estimateGas", "latest" => json!("latest"))]
+    #[test_case("eth_estimateGas", "0x10" => json!("0x10"))]
     #[tokio::test]
-    async fn simulations_treat_pending_as_latest() {
+    async fn simulations_treat_pending_as_latest(
+        method: &str,
+        requested: &str,
+    ) -> serde_json::Value {
         let api = MockZoneRpcApi::default();
-        for method in ["eth_call", "eth_estimateGas"] {
-            // The mock echoes the block it is asked to run against.
-            for (requested, forwarded) in [
-                (json!("pending"), json!("latest")),
-                (json!("latest"), json!("latest")),
-                (json!("0x10"), json!("0x10")),
-            ] {
-                let resp = dispatch(
-                    &request(
-                        method,
-                        json!([
-                            {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
-                            requested,
-                        ]),
-                    ),
-                    &auth(),
-                    &api,
-                )
-                .await;
+        let resp = dispatch(
+            &request(
+                method,
+                json!([
+                    {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
+                    requested,
+                ]),
+            ),
+            &auth(),
+            &api,
+        )
+        .await;
 
-                let block: serde_json::Value =
-                    serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap();
-                assert_eq!(block, forwarded, "{method} at {requested}");
-            }
-        }
+        serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap()
     }
 
     #[tokio::test]
@@ -1085,26 +1085,23 @@ mod tests {
         }
     }
 
+    #[test_case("eth_getCode")]
+    #[test_case("eth_getProof")]
+    #[test_case("admin_peers")]
+    #[test_case("debug_accountRange")]
+    #[test_case("txpool_contentFrom")]
+    #[test_case("missing_method")]
     #[tokio::test]
-    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label() {
+    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label(name: &str) {
         let api = MockZoneRpcApi::default();
 
-        for name in [
-            "eth_getCode",
-            "eth_getProof",
-            "admin_peers",
-            "debug_accountRange",
-            "txpool_contentFrom",
-            "missing_method",
-        ] {
-            assert_eq!(Method::from_name(name), None, "method: {name}");
-            assert_eq!(Method::metric_label(name), "unknown");
-            let error = dispatch(&request(name, json!([])), &auth(), &api)
-                .await
-                .error
-                .expect("method must return an error");
-            assert_eq!(error.code, -32601, "method: {name}");
-            assert_eq!(error.message, "Method not found", "method: {name}");
-        }
+        assert_eq!(Method::from_name(name), None);
+        assert_eq!(Method::metric_label(name), "unknown");
+        let error = dispatch(&request(name, json!([])), &auth(), &api)
+            .await
+            .error
+            .expect("method must return an error");
+        assert_eq!(error.code, -32601);
+        assert_eq!(error.message, "Method not found");
     }
 }

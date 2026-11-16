@@ -44,15 +44,15 @@ impl TempoFaucetExtApiServer for TempoFaucetExt {
         for tokens in self.faucet_token_addresses.chunks(32) {
             let calls = tokens
                 .iter()
-                .map(|token| Call {
-                    to: (*token).into(),
-                    value: U256::ZERO,
-                    input: ITIP20::mintCall {
-                        to: address,
-                        amount: self.funding_amount,
-                    }
-                    .abi_encode()
-                    .into(),
+                .map(|token| {
+                    Call::new(
+                        *token,
+                        ITIP20::mintCall {
+                            to: address,
+                            amount: self.funding_amount,
+                        }
+                        .abi_encode(),
+                    )
                 })
                 .collect();
             let tx_hash = *self

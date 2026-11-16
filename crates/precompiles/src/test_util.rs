@@ -1,7 +1,14 @@
 //! Test utilities for precompile dispatch testing
 
 pub mod abi_conformance;
+#[cfg(any(test, feature = "test-utils"))]
+mod calls;
+#[cfg(feature = "rpc-test-utils")]
+mod rpc;
 pub mod storage_conformance;
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use calls::SetupCall;
 
 /// Resolves a contract artifact within a Foundry output directory.
 pub fn foundry_artifact_path(
@@ -13,7 +20,7 @@ pub fn foundry_artifact_path(
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-use crate::error::TempoPrecompileError;
+use crate::account_keychain::{AccountKeychain, KeyRestrictions, SignatureType};
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     address_registry::{AddressRegistry, IAddressRegistry},
@@ -21,6 +28,11 @@ use crate::{
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
     tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
+};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::{
+    STABLECOIN_DEX_ADDRESS, error::TempoPrecompileError, stablecoin_dex::StablecoinDEX,
+    tip_fee_manager::TipFeeManager,
 };
 #[cfg(test)]
 use alloy::primitives::Bytes;
@@ -34,6 +46,8 @@ use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{ITIP20Factory, TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+#[cfg(any(test, feature = "test-utils"))]
+use tempo_primitives::test_utils::salts;
 use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Returns the revert payload or panics with the unexpected EVM2 result.
@@ -109,6 +123,11 @@ pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
 }
 
+/// Runs `f` in a [`StorageCtx`] over a fresh [`HashMapStorageProvider`] (chain ID 1) at `spec`.
+pub fn with_storage<R>(spec: tempo_chainspec::hardfork::TempoHardfork, f: impl FnOnce() -> R) -> R {
+    StorageCtx::enter(&mut HashMapStorageProvider::new_with_spec(1, spec), f)
+}
+
 /// Setup mode - determines how the token is obtained.
 #[derive(Default, Clone)]
 #[cfg(any(test, feature = "test-utils"))]
@@ -160,8 +179,7 @@ pub struct TIP20Setup {
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
-    reward_opt_ins: Vec<Address>,
-    distribute_rewards: Vec<U256>,
+    transfer_policy: Option<TIP403Setup>,
     clear_events: bool,
 }
 
@@ -248,9 +266,7 @@ impl TIP20Setup {
         self
     }
 
-    /// Mint tokens to an address after creation.
-    ///
-    /// Note: Requires ISSUER_ROLE on admin (use `with_issuer(admin)`).
+    /// Mint tokens to an address after creation, granting the admin ISSUER_ROLE if it lacks it.
     pub fn with_mint(mut self, to: Address, amount: U256) -> Self {
         self.mints.push((to, amount));
         self
@@ -262,15 +278,9 @@ impl TIP20Setup {
         self
     }
 
-    /// Opt a user into rewards (sets reward recipient to themselves).
-    pub fn with_reward_opt_in(mut self, user: Address) -> Self {
-        self.reward_opt_ins.push(user);
-        self
-    }
-
-    /// Distribute rewards (requires tokens minted to admin first).
-    pub fn with_reward(mut self, amount: U256) -> Self {
-        self.distribute_rewards.push(amount);
+    /// Create `policy` and make it the token's transfer policy, after mints and approvals.
+    pub fn with_transfer_policy(mut self, policy: TIP403Setup) -> Self {
+        self.transfer_policy = Some(policy);
         self
     }
 
@@ -347,12 +357,20 @@ impl TIP20Setup {
             token.grant_role_internal(account, role)?;
         }
 
+        // Resolved at most once, and only when a mint or the transfer policy needs it.
+        let (mut admin, token_address) = (self.admin, token.address());
+        let mut admin = || {
+            *admin.get_or_insert_with(|| {
+                get_tip20_admin(token_address).expect("unable to get token admin")
+            })
+        };
+
         // Apply mints
+        if !self.mints.is_empty() {
+            token.grant_role_internal(admin(), tip20::ISSUER_ROLE)?;
+        }
         for (to, amount) in self.mints {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.mint(admin, ITIP20::mintCall { to, amount })?;
+            token.mint(admin(), ITIP20::mintCall { to, amount })?;
         }
 
         // Apply approvals
@@ -360,17 +378,13 @@ impl TIP20Setup {
             token.approve(owner, ITIP20::approveCall { spender, amount })?;
         }
 
-        // Apply reward opt-ins
-        for user in self.reward_opt_ins {
-            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
-        }
-
-        // Distribute rewards
-        for amount in self.distribute_rewards {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
+        if let Some(policy) = self.transfer_policy {
+            token.change_transfer_policy_id(
+                admin(),
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy.apply()?,
+                },
+            )?;
         }
 
         if self.clear_events {
@@ -390,6 +404,279 @@ impl TIP20Setup {
     pub fn expect_tip20_err(self, expected: TIP20Error) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
+    }
+}
+
+/// Sets up a pair on the [`StablecoinDEX`], with funded traders.
+///
+/// ```ignore
+/// let (base, quote) = DexSetup::new(admin).trader(alice, amount).apply()?;
+/// let (base, quote) = DexSetup::pair(admin, base, quote).trader(bob, amount).apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub struct DexSetup {
+    base: TIP20Setup,
+    quote: TIP20Setup,
+    create_pair: bool,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl DexSetup {
+    /// A new BASE token over pathUSD and their pair. `admin` administers BASE, creates pathUSD
+    /// if it's missing, and mints both to the traders. BASE's salt comes from the test RNG.
+    pub fn new(admin: Address) -> Self {
+        let [salt] = salts();
+        Self {
+            base: TIP20Setup::create("BASE", "BASE", admin).with_salt(salt),
+            quote: TIP20Setup::path_usd(admin),
+            create_pair: true,
+        }
+    }
+
+    /// The pair of existing tokens `base` and its quote token `quote`. `admin` administers
+    /// both and mints them to the traders.
+    pub fn pair(admin: Address, base: Address, quote: Address) -> Self {
+        Self {
+            base: TIP20Setup::config(base).with_admin(admin),
+            quote: TIP20Setup::config(quote).with_admin(admin),
+            create_pair: true,
+        }
+    }
+
+    /// Creates BASE with `salt`. Has no effect on [`Self::pair`].
+    pub fn with_salt(mut self, salt: B256) -> Self {
+        self.base = self.base.with_salt(salt);
+        self
+    }
+
+    /// Mints `amount` of both tokens to `trader`, who approves exactly that to the DEX.
+    pub fn trader(mut self, trader: Address, amount: u128) -> Self {
+        let amount = U256::from(amount);
+        let fund = |token: TIP20Setup| {
+            token
+                .with_mint(trader, amount)
+                .with_approval(trader, STABLECOIN_DEX_ADDRESS, amount)
+        };
+        self.base = fund(self.base);
+        self.quote = fund(self.quote);
+        self
+    }
+
+    /// Leaves the pair uncreated.
+    pub fn without_pair(mut self) -> Self {
+        self.create_pair = false;
+        self
+    }
+
+    /// Applies the setup in the entered storage context. Returns `(base, quote)`.
+    pub fn apply(self) -> Result<(Address, Address)> {
+        let quote = self.quote.apply()?.address();
+        let base = self.base.apply()?.address();
+        if self.create_pair {
+            StablecoinDEX::new().create_pair(base)?;
+        }
+        Ok((base, quote))
+    }
+}
+
+/// Sets up a USD user token and a USD validator token with a fee AMM pool between them.
+///
+/// ```ignore
+/// let (user_token, validator_token) = FeeAmmSetup::new(admin).liquidity(lp, amount).apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub struct FeeAmmSetup {
+    user_token: TIP20Setup,
+    validator_token: TIP20Setup,
+    liquidity: Vec<(Address, U256)>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl FeeAmmSetup {
+    /// New user and validator tokens administered by `admin`, with an empty pool. Their salts
+    /// come from the test RNG.
+    pub fn new(admin: Address) -> Self {
+        let [user_salt, validator_salt] = salts();
+        Self {
+            user_token: TIP20Setup::create("UserToken", "UTK", admin).with_salt(user_salt),
+            validator_token: TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_salt(validator_salt),
+            liquidity: Vec::new(),
+        }
+    }
+
+    /// The pool of existing tokens `user_token` and `validator_token`. `admin` administers
+    /// the validator token and mints it to the liquidity providers.
+    pub fn pool(admin: Address, user_token: Address, validator_token: Address) -> Self {
+        Self {
+            user_token: TIP20Setup::config(user_token).with_admin(admin),
+            validator_token: TIP20Setup::config(validator_token).with_admin(admin),
+            liquidity: Vec::new(),
+        }
+    }
+
+    /// Creates the user and validator tokens with these salts. Has no effect on [`Self::pool`].
+    pub fn with_salts(mut self, user: B256, validator: B256) -> Self {
+        self.user_token = self.user_token.with_salt(user);
+        self.validator_token = self.validator_token.with_salt(validator);
+        self
+    }
+
+    /// Mints `amount` validator tokens to `provider`, who deposits them all into the pool.
+    pub fn liquidity(mut self, provider: Address, amount: U256) -> Self {
+        self.validator_token = self.validator_token.with_mint(provider, amount);
+        self.liquidity.push((provider, amount));
+        self
+    }
+
+    /// Applies the setup in the entered storage context. Returns `(user_token, validator_token)`.
+    pub fn apply(self) -> Result<(Address, Address)> {
+        let user_token = self.user_token.apply()?.address();
+        let validator_token = self.validator_token.apply()?.address();
+        let mut fee_manager = TipFeeManager::new();
+        for (provider, amount) in self.liquidity {
+            fee_manager.mint(provider, user_token, validator_token, amount, provider)?;
+        }
+        Ok((user_token, validator_token))
+    }
+}
+
+/// Sets up `account`'s [`AccountKeychain`] as its transaction sees it, by default as the root key.
+///
+/// ```ignore
+/// let keychain = KeychainSetup::new(user)
+///     .key(access_key, KeyRestrictions::unrestricted().limit(token, amount, 0))
+///     .acting_as(access_key)
+///     .apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub struct KeychainSetup {
+    account: Address,
+    keys: Vec<(Address, KeyRestrictions)>,
+    acting_as: Address,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl KeychainSetup {
+    /// A keychain for `account` with no access keys, used by its root key.
+    pub fn new(account: Address) -> Self {
+        Self {
+            account,
+            keys: Vec::new(),
+            acting_as: Address::ZERO,
+        }
+    }
+
+    /// Authorizes the Secp256k1 access key `key_id` with `restrictions`.
+    pub fn key(mut self, key_id: Address, restrictions: KeyRestrictions) -> Self {
+        self.keys.push((key_id, restrictions));
+        self
+    }
+
+    /// Runs the transaction as access key `key_id` once the keys are authorized.
+    pub fn acting_as(mut self, key_id: Address) -> Self {
+        self.acting_as = key_id;
+        self
+    }
+
+    /// Initializes the keychain and applies the setup in the entered storage context.
+    pub fn apply(self) -> Result<AccountKeychain> {
+        let mut keychain = AccountKeychain::initialized()?;
+        keychain.set_transaction_key(Address::ZERO)?;
+        keychain.set_tx_origin(self.account)?;
+        for (key_id, restrictions) in self.keys {
+            keychain.authorize_key(
+                self.account,
+                key_id,
+                SignatureType::Secp256k1,
+                restrictions,
+                None,
+            )?;
+        }
+        keychain.set_transaction_key(self.acting_as)?;
+        Ok(keychain)
+    }
+}
+
+/// Helper for TIP-403 policy setup in tests.
+///
+/// ```ignore
+/// let policy_id = TIP403Setup::whitelist(admin).with_members([alice, bob]).apply()?;
+/// let token = TIP20Setup::create("Test", "TST", admin)
+///     .with_transfer_policy(TIP403Setup::compound(policy_id, ALLOW_ALL_POLICY_ID, policy_id))
+///     .apply()?;
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub enum TIP403Setup {
+    /// A whitelist or blacklist.
+    Simple {
+        /// Policy admin, also the creator.
+        admin: Address,
+        /// `WHITELIST` or `BLACKLIST`.
+        policy_type: PolicyType,
+        /// Accounts the policy starts with.
+        members: Vec<Address>,
+    },
+    /// A compound policy over existing simple policy IDs.
+    Compound(ITIP403Registry::createCompoundPolicyCall),
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl TIP403Setup {
+    /// A whitelist owned by `admin`.
+    pub fn whitelist(admin: Address) -> Self {
+        Self::Simple {
+            admin,
+            policy_type: PolicyType::WHITELIST,
+            members: Vec::new(),
+        }
+    }
+
+    /// A blacklist owned by `admin`.
+    pub fn blacklist(admin: Address) -> Self {
+        Self::Simple {
+            admin,
+            policy_type: PolicyType::BLACKLIST,
+            members: Vec::new(),
+        }
+    }
+
+    /// A compound policy over the given simple policy IDs, created by the zero address.
+    pub fn compound(sender: u64, recipient: u64, mint_recipient: u64) -> Self {
+        Self::Compound(ITIP403Registry::createCompoundPolicyCall {
+            senderPolicyId: sender,
+            recipientPolicyId: recipient,
+            mintRecipientPolicyId: mint_recipient,
+        })
+    }
+
+    /// Add accounts to the whitelist or blacklist. Panics on a compound policy.
+    pub fn with_members(mut self, accounts: impl IntoIterator<Item = Address>) -> Self {
+        let Self::Simple { members, .. } = &mut self else {
+            panic!("compound policies have no members");
+        };
+        members.extend(accounts);
+        self
+    }
+
+    /// Creates the policy and returns its ID.
+    pub fn apply(self) -> Result<u64> {
+        let mut registry = TIP403Registry::new();
+        match self {
+            Self::Simple {
+                admin,
+                policy_type,
+                members,
+            } => registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin,
+                    policyType: policy_type,
+                    accounts: members,
+                },
+            ),
+            Self::Compound(call) => registry.create_compound_policy(Address::ZERO, call),
+        }
     }
 }
 

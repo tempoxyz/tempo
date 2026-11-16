@@ -295,11 +295,7 @@ fn simulation_rejects_invalid_roles(configure: fn(&mut TempoTransactionRequest),
 /// `eth_simulateV1` fills a missing `to` with `Create`; a batch keeps exactly its own calls.
 #[test]
 fn simulated_batch_ignores_the_filled_create_kind() {
-    let call = Call {
-        to: TxKind::Call(Address::repeat_byte(1)),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    };
+    let call = Call::new(Address::repeat_byte(1), Bytes::new());
     let mut request = aa_request(SignatureType::Secp256k1);
     request.inner.to = Some(TxKind::Create);
     request.calls = vec![call.clone(), call.clone()];
