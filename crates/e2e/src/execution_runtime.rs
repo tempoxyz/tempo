@@ -377,7 +377,7 @@ impl ExecutionRuntime {
     }
 
     /// Constructs a new execution runtime to launch execution nodes.
-    pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
+    pub fn with_chain_spec(mut chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
@@ -596,6 +596,15 @@ impl ExecutionRuntime {
                                 "receiver must hold the return channel until the node is returned",
                             );
                         }
+                        Message::SetT15Time(t15_time) => {
+                            let mut genesis = chain_spec.genesis().clone();
+                            genesis
+                                .config
+                                .extra_fields
+                                .insert_value("t15Time".to_string(), t15_time)
+                                .unwrap();
+                            chain_spec = TempoChainSpec::from_genesis(genesis);
+                        }
                         Message::RunAsync(fut) => {
                             fut.await;
                         }
@@ -749,6 +758,15 @@ impl ExecutionRuntime {
             .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    /// Moves T15 activation to `t15_time` for execution nodes spawned after this
+    /// call. Running nodes keep the chainspec they were launched with, so restart
+    /// every node to switch the whole network.
+    pub fn set_t15_time(&self, t15_time: u64) -> eyre::Result<()> {
+        self.to_runtime
+            .send(Message::SetT15Time(t15_time))
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))
     }
 
     /// Run an async task on the execution runtime's tokio runtime.
@@ -1056,6 +1074,7 @@ enum Message {
         rocksdb: Option<RocksDBProvider>,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
+    SetT15Time(u64),
     RunAsync(BoxFuture<'static, ()>),
     Stop,
 }

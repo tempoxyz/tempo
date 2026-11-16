@@ -101,16 +101,14 @@ impl ConfigurableAccount {
 
     /// The `upgradeAccount` call that commits this configuration for its address.
     fn upgrade_call(&self) -> Call {
-        Call {
-            to: CONFIGURABLE_ACCOUNT_ADDRESS.into(),
-            value: U256::ZERO,
-            input: IConfigurableAccount::upgradeAccountCall {
+        Call::new(
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            IConfigurableAccount::upgradeAccountCall {
                 threshold: self.config.threshold,
                 owners: abi_owners(&self.config),
             }
-            .abi_encode()
-            .into(),
-        }
+            .abi_encode(),
+        )
     }
 
     fn transaction(&self, env: &Localnet, calls: Vec<Call>) -> TempoTransaction {
@@ -213,11 +211,7 @@ impl ConfigurableAccount {
         };
         (
             next,
-            Call {
-                to: CONFIGURABLE_ACCOUNT_ADDRESS.into(),
-                value: U256::ZERO,
-                input: call.abi_encode().into(),
-            },
+            Call::new(CONFIGURABLE_ACCOUNT_ADDRESS, call.abi_encode()),
         )
     }
 
@@ -325,11 +319,7 @@ fn signer(seed: u8) -> PrivateKeySigner {
 }
 
 fn noop() -> Call {
-    Call {
-        to: Address::repeat_byte(0x73).into(),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    }
+    Call::new(Address::repeat_byte(0x73), Bytes::new())
 }
 
 async fn commitment(env: &Localnet, account: Address) -> eyre::Result<B256> {

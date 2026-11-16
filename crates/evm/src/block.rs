@@ -7,7 +7,7 @@ use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
-use commonware_codec::ReadExt;
+use commonware_codec::{DecodeExt as _, ReadExt};
 use evm2::{
     EvmTypes, TxResult, TxResultWithState, TxStateChanges,
     bytecode::Bytecode,
@@ -32,7 +32,7 @@ use tempo_contracts::precompiles::{
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
     RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
-    t13_zone_factory_state, t15_zone_factory_state,
+    t13_zone_factory_state, t14_zone_factory_state, t15_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -407,10 +407,12 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Installs the shared Zone runtime set for `fork`, as returned by [`zone_runtime_fork`].
-    /// T15 adds the zone transfer opt-in to the portal.
+    /// T14 pause-gates refund claims, and T15 adds the zone transfer opt-in to the portal.
     fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = if fork.is_t15() {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if fork.is_t14() {
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         };
@@ -478,9 +480,9 @@ impl<'a> TempoBlockExecutor<'a> {
         let Some(config) = config else {
             return Ok(());
         };
-        // Trailing bytes are not rejected yet, matching the committee system call.
-        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-            &mut commonware_codec::Copying(self.extra_data.as_ref()),
+        // Unlike the committee system call, this rejects trailing bytes.
+        let proposed = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::decode(
+            commonware_codec::Copying(self.extra_data.as_ref()),
         )
         .map_err(|err| {
             BlockValidationError::msg(format!(
@@ -854,7 +856,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
-        // runtime set is installed, so T13 runtimes are never reinstalled over T15 ones.
+        // runtime set is installed, so older runtimes are never reinstalled over newer ones.
         let runtime_fork = zone_runtime_fork(self.evm().config_spec_id());
         let genesis_spec = self
             .chain_spec
@@ -1097,6 +1099,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 fn zone_runtime_fork(spec: TempoHardfork) -> Option<TempoHardfork> {
     if spec.is_t15() {
         Some(TempoHardfork::T15)
+    } else if spec.is_t14() {
+        Some(TempoHardfork::T14)
     } else if spec.is_t13() {
         Some(TempoHardfork::T13)
     } else {
@@ -1158,8 +1162,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
-            ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -1172,6 +1176,33 @@ mod tests {
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
+    use test_case::{test_case, test_matrix};
+
+    /// The zone portal, verifier and messenger runtimes of the initial allocation.
+    const INITIAL_ZONE_RUNTIMES: [Bytes; 3] = [
+        ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
+        ZONE_MESSENGER_RUNTIME,
+    ];
+    const T13_ZONE_RUNTIMES: [Bytes; 3] = [
+        T13_ZONE_PORTAL_RUNTIME,
+        T13_ZONE_VERIFIER_RUNTIME,
+        T13_ZONE_MESSENGER_RUNTIME,
+    ];
+    const T14_ZONE_RUNTIMES: [Bytes; 3] = [
+        T14_ZONE_PORTAL_RUNTIME,
+        T13_ZONE_VERIFIER_RUNTIME,
+        T13_ZONE_MESSENGER_RUNTIME,
+    ];
+    const T15_ZONE_RUNTIMES: [Bytes; 3] = [
+        T15_ZONE_PORTAL_RUNTIME,
+        T13_ZONE_VERIFIER_RUNTIME,
+        T13_ZONE_MESSENGER_RUNTIME,
+    ];
+    /// `t13Time`, `t14Time` and `t15Time`.
+    const FORKS_IN_ORDER: [u64; 3] = [10, 15, 20];
+    /// What `--t13-time 200` without `--hardfork` generates.
+    const T15_BEFORE_T13: [u64; 3] = [200, 0, 0];
 
     fn system_calls_chainspec() -> Arc<TempoChainSpec> {
         let mut spec = TempoChainSpec::from_genesis(DEV.genesis().clone());
@@ -1242,45 +1273,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_system_calls_history_genesis_and_missing_code() {
+    #[test_matrix([0, 1], [false, true])]
+    fn test_system_calls_history_genesis_and_missing_code(block_number: u64, has_code: bool) {
         let chainspec = system_calls_chainspec();
-        for block_number in [0, 1] {
-            for has_code in [false, true] {
-                let mut db = InMemoryDB::default();
-                if has_code {
-                    db.insert_account_info(
-                        &HISTORY_STORAGE_ADDRESS,
-                        AccountInfo::default()
-                            .with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
-                    );
-                }
-                let mut executor = TestExecutorBuilder {
-                    parent_hash: B256::repeat_byte(0x42),
-                    ..Default::default()
-                }
-                .with_block_number(block_number)
-                .with_epoch_length(5)
-                .with_spec(TempoHardfork::T13)
-                .build(&mut db, &chainspec);
-
-                // No beacon root or builder code is required, even with Amsterdam active.
-                executor.apply_pre_execution_changes().unwrap();
-                let output = executor.finish().unwrap();
-                db.commit_source(&reth_execution_types::BundleSource(&output.state));
-                let result = output.result;
-                assert!(result.requests.is_empty());
-                assert_eq!(
-                    db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
-                        .unwrap(),
-                    if has_code && block_number > 0 {
-                        U256::from_be_bytes([0x42; 32])
-                    } else {
-                        U256::ZERO
-                    }
-                );
-            }
+        let mut db = InMemoryDB::default();
+        if has_code {
+            db.insert_account_info(
+                &HISTORY_STORAGE_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+            );
         }
+        let mut executor = TestExecutorBuilder {
+            parent_hash: B256::repeat_byte(0x42),
+            ..Default::default()
+        }
+        .with_block_number(block_number)
+        .with_epoch_length(5)
+        .with_spec(TempoHardfork::T13)
+        .build(&mut db, &chainspec);
+
+        // No beacon root or builder code is required, even with Amsterdam active.
+        executor.apply_pre_execution_changes().unwrap();
+        let output = executor.finish().unwrap();
+        db.commit_source(&reth_execution_types::BundleSource(&output.state));
+        let result = output.result;
+        assert!(result.requests.is_empty());
+        assert_eq!(
+            db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                .unwrap(),
+            if has_code && block_number > 0 {
+                U256::from_be_bytes([0x42; 32])
+            } else {
+                U256::ZERO
+            }
+        );
     }
 
     #[test]
@@ -1314,37 +1340,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_system_calls_history_revert_and_halt_are_not_block_errors() {
+    // Write slot zero, then revert or halt with an invalid opcode.
+    #[test_case(alloy_primitives::bytes!("600160005560006000fd"); "revert")]
+    #[test_case(alloy_primitives::bytes!("6001600055fe"); "halt")]
+    fn test_system_calls_history_revert_and_halt_are_not_block_errors(code: Bytes) {
         let chainspec = system_calls_chainspec();
-        // Write slot zero, then revert or halt with an invalid opcode.
-        for code in [
-            alloy_primitives::bytes!("600160005560006000fd"),
-            alloy_primitives::bytes!("6001600055fe"),
-        ] {
-            let mut db = InMemoryDB::default();
-            db.insert_account_info(
-                &HISTORY_STORAGE_ADDRESS,
-                AccountInfo::default().with_code(Bytecode::new_raw(code)),
-            );
-            let mut executor = TestExecutorBuilder::default()
-                .with_epoch_length(5)
-                .with_spec(TempoHardfork::T13)
-                .build(&mut db, &chainspec);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &HISTORY_STORAGE_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(code)),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_epoch_length(5)
+            .with_spec(TempoHardfork::T13)
+            .build(&mut db, &chainspec);
 
-            executor.apply_pre_execution_changes().unwrap();
-            let output = executor.finish().unwrap();
-            db.commit_source(&reth_execution_types::BundleSource(&output.state));
-            let result = output.result;
-            assert!(result.receipts.is_empty());
-            assert!(result.requests.is_empty());
-            assert_eq!(result.gas_used, 0);
-            assert_eq!(
-                db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
-                    .unwrap(),
-                U256::ZERO
-            );
-        }
+        executor.apply_pre_execution_changes().unwrap();
+        let output = executor.finish().unwrap();
+        db.commit_source(&reth_execution_types::BundleSource(&output.state));
+        let result = output.result;
+        assert!(result.receipts.is_empty());
+        assert!(result.requests.is_empty());
+        assert_eq!(result.gas_used, 0);
+        assert_eq!(
+            db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
     }
 
     #[test]
@@ -1680,11 +1702,17 @@ mod tests {
             Ok(())
         );
 
-        // Trailing bytes are not rejected yet, matching the committee system call.
+        // From T15, the outcome must take up all of the extra data.
         let mut trailing = correct.encode().to_vec();
         trailing.push(0);
         assert_eq!(
-            run(config(None), TempoHardfork::T15, 4, trailing.into()),
+            run(config(None), TempoHardfork::T15, 4, trailing.clone().into()),
+            Err("failed decoding boundary block extra data as DKG outcome: \
+                Extra Data: 1 bytes remained in buffer after decoding"
+                .to_string())
+        );
+        assert_eq!(
+            run(config(None), TempoHardfork::T14, 4, trailing.into()),
             Ok(())
         );
 
@@ -2256,11 +2284,7 @@ mod tests {
 
         let tx = TempoTransaction {
             chain_id: 1,
-            calls: vec![Call {
-                to: Address::ZERO.into(),
-                input: Default::default(),
-                value: Default::default(),
-            }],
+            calls: vec![Call::new(Address::ZERO, Bytes::new())],
             gas_limit: 21000,
             nonce_key: U256::from_be_bytes(nonce_bytes),
             max_fee_per_gas: 1,
@@ -2584,62 +2608,56 @@ mod tests {
         assert!(executor.finish().is_ok());
     }
 
-    #[test]
-    fn test_incentive_gas_validation_exempts_only_simulated_transactions() {
-        for hardfork in [TempoHardfork::T3, TempoHardfork::T4] {
-            for simulations in [
-                vec![true],
-                vec![false],
-                vec![false, true],
-                vec![true, false],
-            ] {
-                let chainspec = DEV.clone();
-                let mut db = InMemoryDB::default();
-                let mut executor = TestExecutorBuilder::default()
-                    .with_parent_beacon_block_root(B256::ZERO)
-                    .with_general_gas_limit(0)
-                    .with_spec(hardfork)
-                    .build(&mut db, &chainspec);
-                executor.apply_pre_execution_changes().unwrap();
-                for &simulation in &simulations {
-                    executor
-                        .commit_transaction(TempoTxResult {
-                            tx_type: TempoTxType::Legacy,
+    #[test_matrix([TempoHardfork::T3, TempoHardfork::T4], [vec![true], vec![false], vec![false, true], vec![true, false]])]
+    fn test_incentive_gas_validation_exempts_only_simulated_transactions(
+        hardfork: TempoHardfork,
+        simulations: Vec<bool>,
+    ) {
+        let chainspec = DEV.clone();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_general_gas_limit(0)
+            .with_spec(hardfork)
+            .build(&mut db, &chainspec);
+        executor.apply_pre_execution_changes().unwrap();
+        for &simulation in &simulations {
+            executor
+                .commit_transaction(TempoTxResult {
+                    tx_type: TempoTxType::Legacy,
+                    tx_hash: B256::ZERO,
+                    execution_context: if simulation {
+                        ExecutionContext::Simulation
+                    } else {
+                        ExecutionContext::Transaction {
                             tx_hash: B256::ZERO,
-                            execution_context: if simulation {
-                                ExecutionContext::Simulation
-                            } else {
-                                ExecutionContext::Transaction {
-                                    tx_hash: B256::ZERO,
-                                }
+                        }
+                    },
+                    inner: EthTransactionResultWithState::new(
+                        TxResultWithState {
+                            result: TxResult::<TempoEvmTypes> {
+                                status: true,
+                                total_gas_spent: 21_000,
+                                ..Default::default()
                             },
-                            inner: EthTransactionResultWithState::new(
-                                TxResultWithState {
-                                    result: TxResult::<TempoEvmTypes> {
-                                        status: true,
-                                        total_gas_spent: 21_000,
-                                        ..Default::default()
-                                    },
-                                    ..Default::default()
-                                },
-                                TempoTxType::Legacy,
-                                0,
-                            ),
-                            is_system_tx: false,
-                            is_payment: false,
-                            block_gas_used: 21_000,
-                        })
-                        .unwrap();
-                }
-                let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
-                match executor.finish() {
-                    Err(error) => {
-                        assert!(should_reject);
-                        assert_eq!(error.to_string(), "incentive gas limit exceeded");
-                    }
-                    Ok(_) => assert!(!should_reject),
-                }
+                            ..Default::default()
+                        },
+                        TempoTxType::Legacy,
+                        0,
+                    ),
+                    is_system_tx: false,
+                    is_payment: false,
+                    block_gas_used: 21_000,
+                })
+                .unwrap();
+        }
+        let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
+        match executor.finish() {
+            Err(error) => {
+                assert!(should_reject);
+                assert_eq!(error.to_string(), "incentive gas limit exceeded");
             }
+            Ok(_) => assert!(!should_reject),
         }
     }
 
@@ -3166,151 +3184,147 @@ mod tests {
         }
     }
 
-    #[test]
-    fn zone_runtime_upgrade_activates_at_t13() {
-        for (activation, timestamp, expected_runtimes) in [
-            (
-                u64::MAX,
-                10,
-                [
-                    ZONE_PORTAL_RUNTIME,
-                    ZONE_VERIFIER_RUNTIME,
-                    ZONE_MESSENGER_RUNTIME,
-                ],
-            ),
-            (
-                10,
-                9,
-                [
-                    ZONE_PORTAL_RUNTIME,
-                    ZONE_VERIFIER_RUNTIME,
-                    ZONE_MESSENGER_RUNTIME,
-                ],
-            ),
-            (
-                10,
-                10,
-                [
-                    T13_ZONE_PORTAL_RUNTIME,
-                    T13_ZONE_VERIFIER_RUNTIME,
-                    T13_ZONE_MESSENGER_RUNTIME,
-                ],
-            ),
-            (
-                10,
-                11,
-                [
-                    T13_ZONE_PORTAL_RUNTIME,
-                    T13_ZONE_VERIFIER_RUNTIME,
-                    T13_ZONE_MESSENGER_RUNTIME,
-                ],
-            ),
-        ] {
-            let mut genesis = DEV.genesis().clone();
+    #[test_case(u64::MAX, u64::MAX, 10, INITIAL_ZONE_RUNTIMES)]
+    #[test_case(10, u64::MAX, 9, INITIAL_ZONE_RUNTIMES)]
+    #[test_case(10, u64::MAX, 10, T13_ZONE_RUNTIMES)]
+    #[test_case(10, u64::MAX, 11, T13_ZONE_RUNTIMES)]
+    #[test_case(10, 10, 10, T14_ZONE_RUNTIMES)]
+    #[test_case(5, 10, 10, T14_ZONE_RUNTIMES)]
+    #[test_case(5, 10, 9, T13_ZONE_RUNTIMES)]
+    fn zone_runtime_upgrade_activates_at_boundaries(
+        t13_activation: u64,
+        t14_activation: u64,
+        timestamp: u64,
+        expected_runtimes: [Bytes; 3],
+    ) {
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t15Time".into(), serde_json::Value::Null);
+        for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
             genesis
                 .config
                 .extra_fields
-                .insert_value("t13Time".into(), activation)
+                .insert_value(key.into(), activation)
                 .unwrap();
-            for fork in ["t14Time", "t15Time"] {
-                genesis
-                    .config
-                    .extra_fields
-                    .insert(fork.into(), serde_json::Value::Null);
-            }
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = InMemoryDB::default();
-            let mut executor = TestExecutorBuilder::default()
-                .with_spec(if timestamp >= activation {
-                    TempoHardfork::T13
-                } else {
-                    TempoHardfork::T12
-                })
-                .with_parent_beacon_block_root(B256::ZERO)
-                .build(&mut db, &chainspec);
-            let mut block = *executor.evm().block();
-            block.timestamp = U256::from(timestamp);
-            executor.evm_mut().set_block(block);
-            executor.apply_pre_execution_changes().unwrap();
-            for (address, expected) in [
-                ZONE_PORTAL_IMPL_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-            ]
-            .into_iter()
-            .zip(expected_runtimes)
-            {
-                let overlay = executor.evm().state().overlay_db();
-                let info = overlay.account_info(&address).unwrap();
-                let installed = &overlay.cache.contracts[&info.code_hash];
-                assert_eq!(installed.original_bytes(), expected);
-            }
+        }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(if timestamp >= t14_activation {
+                TempoHardfork::T14
+            } else if timestamp >= t13_activation {
+                TempoHardfork::T13
+            } else {
+                TempoHardfork::T12
+            })
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.timestamp = U256::from(timestamp);
+        executor.evm_mut().set_block(block);
+        executor.apply_pre_execution_changes().unwrap();
+        for (address, expected) in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ]
+        .into_iter()
+        .zip(expected_runtimes)
+        {
+            let overlay = executor.evm().state().overlay_db();
+            let info = overlay.account_info(&address).unwrap();
+            let installed = &overlay.cache.contracts[&info.code_hash];
+            assert_eq!(installed.original_bytes(), expected);
+        }
+    }
+
+    #[test_case(FORKS_IN_ORDER, 14, TempoHardfork::T13, T13_ZONE_RUNTIMES)]
+    #[test_case(FORKS_IN_ORDER, 15, TempoHardfork::T14, T14_ZONE_RUNTIMES)]
+    #[test_case(FORKS_IN_ORDER, 19, TempoHardfork::T14, T14_ZONE_RUNTIMES)]
+    #[test_case(FORKS_IN_ORDER, 20, TempoHardfork::T15, T15_ZONE_RUNTIMES)]
+    #[test_case(FORKS_IN_ORDER, 21, TempoHardfork::T15, T15_ZONE_RUNTIMES)]
+    // The spec is T15 from genesis, whose allocations supply the T15 runtimes, so the
+    // executor never upgrades the runtimes it finds, even once T13's own time passes.
+    #[test_case(T15_BEFORE_T13, 199, TempoHardfork::T15, INITIAL_ZONE_RUNTIMES)]
+    #[test_case(T15_BEFORE_T13, 200, TempoHardfork::T15, INITIAL_ZONE_RUNTIMES)]
+    fn zone_runtime_upgrade_activates_at_t15(
+        schedule: [u64; 3],
+        timestamp: u64,
+        spec: TempoHardfork,
+        expected_runtimes: [Bytes; 3],
+    ) {
+        let mut genesis = DEV.genesis().clone();
+        for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
+            genesis
+                .config
+                .extra_fields
+                .insert_value(fork.into(), activation)
+                .unwrap();
+        }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(spec)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.timestamp = U256::from(timestamp);
+        executor.evm_mut().set_block(block);
+        executor.apply_pre_execution_changes().unwrap();
+        for (address, expected) in [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ]
+        .into_iter()
+        .zip(expected_runtimes)
+        {
+            let overlay = executor.evm().state().overlay_db();
+            let info = overlay.account_info(&address).unwrap();
+            let installed = &overlay.cache.contracts[&info.code_hash];
+            assert_eq!(installed.original_bytes(), expected);
         }
     }
 
     #[test]
-    fn zone_runtime_upgrade_activates_at_t15() {
-        let t13 = [
-            T13_ZONE_PORTAL_RUNTIME,
-            T13_ZONE_VERIFIER_RUNTIME,
-            T13_ZONE_MESSENGER_RUNTIME,
-        ];
-        let t15 = [
-            T15_ZONE_PORTAL_RUNTIME,
-            T13_ZONE_VERIFIER_RUNTIME,
-            T13_ZONE_MESSENGER_RUNTIME,
-        ];
-        let initial = [
-            ZONE_PORTAL_RUNTIME,
-            ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME,
-        ];
-        // `t13Time`, `t14Time` and `t15Time`.
-        let in_order = [10u64, 15, 20];
-        // What `--t13-time 200` without `--hardfork` generates.
-        let t15_before_t13 = [200u64, 0, 0];
-        for (schedule, timestamp, spec, expected_runtimes) in [
-            (in_order, 14, TempoHardfork::T13, t13.clone()),
-            (in_order, 19, TempoHardfork::T14, t13),
-            (in_order, 20, TempoHardfork::T15, t15.clone()),
-            (in_order, 21, TempoHardfork::T15, t15),
-            // The spec is T15 from genesis, whose allocations supply the T15 runtimes, so the
-            // executor never upgrades the runtimes it finds, even once T13's own time passes.
-            (t15_before_t13, 199, TempoHardfork::T15, initial.clone()),
-            (t15_before_t13, 200, TempoHardfork::T15, initial),
-        ] {
-            let mut genesis = DEV.genesis().clone();
-            for (fork, activation) in ["t13Time", "t14Time", "t15Time"].into_iter().zip(schedule) {
-                genesis
-                    .config
-                    .extra_fields
-                    .insert_value(fork.into(), activation)
-                    .unwrap();
-            }
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = InMemoryDB::default();
-            let mut executor = TestExecutorBuilder::default()
-                .with_spec(spec)
-                .with_parent_beacon_block_root(B256::ZERO)
-                .build(&mut db, &chainspec);
-            let mut block = *executor.evm().block();
-            block.timestamp = U256::from(timestamp);
-            executor.evm_mut().set_block(block);
-            executor.apply_pre_execution_changes().unwrap();
-            for (address, expected) in [
-                ZONE_PORTAL_IMPL_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-            ]
-            .into_iter()
-            .zip(expected_runtimes)
-            {
-                let overlay = executor.evm().state().overlay_db();
-                let info = overlay.account_info(&address).unwrap();
-                let installed = &overlay.cache.contracts[&info.code_hash];
-                assert_eq!(installed.original_bytes(), expected, "{timestamp}");
-            }
+    fn zone_runtime_upgrade_is_idempotent_after_t14() {
+        let mut genesis = DEV.genesis().clone();
+        for key in ["t13Time", "t14Time"] {
+            genesis
+                .config
+                .extra_fields
+                .insert_value(key.into(), 10)
+                .unwrap();
         }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.timestamp = U256::from(11);
+        executor.evm_mut().set_block(block);
+        executor.apply_pre_execution_changes().unwrap();
+
+        let hook_calls = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor.apply_pre_execution_changes().unwrap();
+        assert!(
+            hook_calls.lock().unwrap().iter().all(|state| {
+                [
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    ZONE_VERIFIER_ADDRESS,
+                    ZONE_MESSENGER_ADDRESS,
+                ]
+                .iter()
+                .all(|address| state.account(address).is_none())
+            }),
+            "installed T14 runtimes must not be rewritten on later blocks"
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::{
 use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction::TxHashRef};
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
@@ -28,7 +28,12 @@ use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::{StreamExt, TryStreamExt};
-use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use jsonrpsee::{
+    RpcModule,
+    core::RpcResult,
+    proc_macros::rpc,
+    types::{ErrorObjectOwned, Params},
+};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
 use reth_execution_types::BundleSource;
@@ -65,7 +70,10 @@ use tempo_contracts::precompiles::{
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{
-    TempoHeader, TempoPrimitives, TempoTxEnvelope, account::CONFIGURABLE_ACCOUNT_CODE,
+    TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
 };
 use tokio::{
     sync::Mutex,
@@ -203,7 +211,6 @@ impl<P> OperatorZoneApi<P> {
     }
 }
 
-#[jsonrpsee::core::async_trait]
 impl<P> ZoneApiServer for OperatorZoneApi<P>
 where
     P: StateProviderFactory + Clone + 'static,
@@ -251,7 +258,7 @@ where
     let mut module = RpcModule::new(());
     module.merge(TempoForkScheduleRpc::new(provider.clone()).into_rpc())?;
     let set_leader_sequencer = sequencer.clone();
-    module.register_async_method("zone_setLeader", move |params, _, _| {
+    module.register_async_method("zone_setLeader", move |params, _| {
         let sequencer = set_leader_sequencer.clone();
         async move {
             let (target,) = params.parse::<(Address,)>()?;
@@ -260,7 +267,7 @@ where
                 .map_err(operator_rpc_error)
         }
     })?;
-    module.register_async_method("zone_getSequencerInfo", move |_, _, _| {
+    module.register_async_method("zone_getSequencerInfo", move |_, _| {
         let sequencer = sequencer.clone();
         let provider = provider.clone();
         async move {
@@ -271,9 +278,11 @@ where
     Ok(module)
 }
 
-/// Operator `eth_getCode`, which returns what zone execution sees (TIP-1154): the account marker
-/// code for an account without zone code whose Tempo commitment at the block's anchor is nonzero,
-/// so off-chain verifiers that check code before `ecrecover` reject a retired original key.
+/// Operator `eth_getCode`, `eth_getAccountInfo` and `eth_getAccount`, which return what zone
+/// execution sees (TIP-1154): for an account without zone code whose Tempo commitment at the
+/// block's anchor is nonzero, the account marker code (or its hash) and, where the response has
+/// one, the commitment extension, so off-chain verifiers that check code before `ecrecover`
+/// reject a retired original key.
 pub(crate) fn operator_get_code_module<E>(
     eth_api: E,
     l1_state: L1StateProvider,
@@ -283,45 +292,21 @@ where
     E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     let mut module = RpcModule::new(());
-    module.register_async_method("eth_getCode", move |params, _, _| {
-        let eth_api = eth_api.clone();
-        let l1_state = l1_state.clone();
+    let (code_eth_api, code_l1_state) = (eth_api.clone(), l1_state.clone());
+    module.register_async_method("eth_getCode", move |params, _| {
+        let eth_api = code_eth_api.clone();
+        let l1_state = code_l1_state.clone();
         async move {
-            let mut params = params.sequence();
-            let address: Address = params.next()?;
+            let (address, block_id) = address_and_block_number(&params)?;
             // The header and anchor lookups below have no pending block to fall back from.
-            let block_id = zone_rpc::handlers::normalize_block_id(
-                params.optional_next::<BlockId>()?.unwrap_or_default(),
-            );
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id.unwrap_or_default());
             let code = EthState::get_code(&eth_api, address, Some(block_id))
                 .await
                 .map_err(Into::into)?;
             if !code.is_empty() {
                 return Ok(code);
             }
-            let commitment = async {
-                let provider = eth_api.provider();
-                let header = provider
-                    .header_by_id(block_id)?
-                    .ok_or_eyre("zone block not found")?;
-                let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
-                // The same accounts zone execution reads a Tempo commitment for.
-                if !spec.is_t14()
-                    || !is_valid_native_account(address, spec)
-                    || is_zone_precompile(address, spec)
-                {
-                    return eyre::Ok(B256::ZERO);
-                }
-                let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
-                Ok(tokio::time::timeout(
-                    L1_COMMITMENT_READ_TIMEOUT,
-                    l1_state.read_l1_commitment_async(address, anchor),
-                )
-                .await
-                .wrap_err("timed out reading the Tempo commitment")??)
-            }
-            .await
-            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
             Ok::<_, ErrorObjectOwned>(if commitment.is_zero() {
                 code
             } else {
@@ -329,14 +314,115 @@ where
             })
         }
     })?;
+    let (info_eth_api, info_l1_state) = (eth_api.clone(), l1_state.clone());
+    module.register_async_method("eth_getAccountInfo", move |params, _| {
+        let eth_api = info_eth_api.clone();
+        let l1_state = info_l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let mut info = EthState::get_account_info(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if !info.code.is_empty() {
+                return Ok(info);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if !commitment.is_zero() {
+                info.code = CONFIGURABLE_ACCOUNT_CODE;
+                info.extension = encode_config_commitment(commitment).into();
+            }
+            Ok::<_, ErrorObjectOwned>(info)
+        }
+    })?;
+    module.register_async_method("eth_getAccount", move |params, _| {
+        let eth_api = eth_api.clone();
+        let l1_state = l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let account = EthState::get_account(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if account
+                .as_ref()
+                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY)
+            {
+                return Ok(account);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if commitment.is_zero() {
+                return Ok(account);
+            }
+            // Zone execution sees the account even when the zone holds none for it.
+            let mut account = account.unwrap_or_default();
+            account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+            account.extension = encode_config_commitment(commitment).into();
+            Ok::<_, ErrorObjectOwned>(Some(account))
+        }
+    })?;
     Ok(module)
+}
+
+/// `eth_getCode`'s address and optional block. Positional only, as reth's generated handlers
+/// accept them.
+fn address_and_block_number(
+    params: &Params<'_>,
+) -> Result<(Address, Option<BlockId>), ErrorObjectOwned> {
+    let mut params = params.sequence();
+    Ok((params.next()?, params.optional_next()?))
+}
+
+/// `eth_getAccount`'s and `eth_getAccountInfo`'s address and block. Positional only, as reth's
+/// generated handlers accept them.
+fn address_and_block(params: &Params<'_>) -> Result<(Address, BlockId), ErrorObjectOwned> {
+    let mut params = params.sequence();
+    Ok((params.next()?, params.next()?))
+}
+
+/// The Tempo commitment zone execution reads for a codeless `address` at `block_id`, or zero for
+/// accounts it reads none for.
+async fn operator_commitment<E>(
+    eth_api: &E,
+    l1_state: &L1StateProvider,
+    address: Address,
+    block_id: BlockId,
+) -> Result<B256, ErrorObjectOwned>
+where
+    E: FullEthApi,
+    E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    async {
+        let provider = eth_api.provider();
+        let header = provider
+            .header_by_id(block_id)?
+            .ok_or_eyre("zone block not found")?;
+        let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
+        // The same accounts zone execution reads a Tempo commitment for.
+        if !spec.is_t14()
+            || !is_valid_native_account(address, spec)
+            || is_zone_precompile(address, spec)
+        {
+            return eyre::Ok(B256::ZERO);
+        }
+        let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
+        Ok(tokio::time::timeout(
+            L1_COMMITMENT_READ_TIMEOUT,
+            l1_state.read_l1_commitment_async(address, anchor),
+        )
+        .await
+        .wrap_err("timed out reading the Tempo commitment")??)
+    }
+    .await
+    .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))
 }
 
 /// Operator Web3 API backed by the globally initialized Zone version metadata.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OperatorWeb3Api;
 
-#[jsonrpsee::core::async_trait]
 impl Web3ApiServer for OperatorWeb3Api {
     async fn client_version(&self) -> RpcResult<String> {
         Ok(crate::version::client_version().to_owned())
@@ -363,94 +449,98 @@ impl<E> NodeZoneDebugApi<E> {
     }
 }
 
-#[jsonrpsee::core::async_trait]
 impl<E> ZoneDebugApi for NodeZoneDebugApi<E>
 where
     E: FullEthApi<Evm = ZoneEvmConfig, Primitives = TempoPrimitives>,
 {
-    async fn zone_execution_witness(&self, block_id: BlockId) -> RpcResult<ZoneExecutionWitness> {
-        let _permit = self
-            .eth_api
-            .tracing_task_guard()
-            .clone()
-            .acquire_owned()
-            .await;
-
-        let pending = if let BlockId::Hash(hash) = block_id
-            && hash.require_canonical != Some(true)
-        {
-            self.eth_api
-                .provider()
-                .pending_block()
-                .map_err(|error| operator_rpc_error(internal(error)))?
-                .filter(|block| block.hash() == hash.block_hash)
-        } else {
-            None
-        };
-        let block = match pending {
-            Some(block) => Some(block),
-            None => self
+    fn zone_execution_witness(
+        &self,
+        block_id: BlockId,
+    ) -> futures::future::BoxFuture<'_, RpcResult<ZoneExecutionWitness>> {
+        Box::pin(async move {
+            let _permit = self
                 .eth_api
-                .recovered_block(block_id)
+                .tracing_task_guard()
+                .clone()
+                .acquire_owned()
+                .await;
+
+            let pending = if let BlockId::Hash(hash) = block_id
+                && hash.require_canonical != Some(true)
+            {
+                self.eth_api
+                    .provider()
+                    .pending_block()
+                    .map_err(|error| operator_rpc_error(internal(error)))?
+                    .filter(|block| block.hash() == hash.block_hash)
+            } else {
+                None
+            };
+            let block = match pending {
+                Some(block) => Some(block),
+                None => self
+                    .eth_api
+                    .recovered_block(block_id)
+                    .await
+                    .map_err(|error| operator_rpc_error(internal(error)))?,
+            }
+            .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
+            let block_number = block.header().number();
+            let block_hash = block.hash();
+            let parent_hash = block.parent_hash();
+            let first_tx_input = block
+                .body()
+                .transactions
+                .first()
+                .map(|tx| tx.input().clone());
+
+            let (execution_witness, reads, initial_tempo) = self
+                .eth_api
+                .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
+                    let initial_tempo = db
+                        .db
+                        .inner()
+                        .0
+                        .tempo_num_hash()
+                        .map_err(EthApiError::from)?;
+                    let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
+                    let block_executor = evm_config.executor(&mut db);
+                    let mode = ExecutionWitnessMode::default();
+                    let output = block_executor
+                        .execute(&block)
+                        .map_err(|error| EthApiError::Internal(error.into()))?;
+                    db.commit_source(&BundleSource(&output.state));
+
+                    let witness = ExecutionWitnessRecord::new(&db)
+                        .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
+                        .into_execution_witness(
+                            &db.db.inner().0.0,
+                            eth_api.provider(),
+                            block_number,
+                            mode,
+                        )
+                        .map_err(EthApiError::from)?;
+                    Ok((witness, recorder.take_reads(), initial_tempo))
+                })
                 .await
-                .map_err(|error| operator_rpc_error(internal(error)))?,
-        }
-        .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
-        let block_number = block.header().number();
-        let block_hash = block.hash();
-        let parent_hash = block.parent_hash();
-        let first_tx_input = block
-            .body()
-            .transactions
-            .first()
-            .map(|tx| tx.input().clone());
+                .map_err(|error| operator_rpc_error(internal(error)))?;
 
-        let (execution_witness, reads, initial_tempo) = self
-            .eth_api
-            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                let initial_tempo = db
-                    .db
-                    .inner()
-                    .0
-                    .tempo_num_hash()
-                    .map_err(EthApiError::from)?;
-                let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
-                let block_executor = evm_config.executor(&mut db);
-                let mode = ExecutionWitnessMode::default();
-                let output = block_executor
-                    .execute(&block)
-                    .map_err(|error| EthApiError::Internal(error.into()))?;
-                db.commit_source(&BundleSource(&output.state));
-
-                let witness = ExecutionWitnessRecord::new(&db)
-                    .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
-                    .into_execution_witness(
-                        &db.db.inner().0.0,
-                        eth_api.provider(),
-                        block_number,
-                        mode,
-                    )
-                    .map_err(EthApiError::from)?;
-                Ok((witness, recorder.take_reads(), initial_tempo))
-            })
+            let (initial_tempo_header, tempo_state) = collect_tempo_witness(
+                &self.l1_provider,
+                initial_tempo,
+                first_tx_input.as_ref().map(|input| input.as_ref()),
+                &reads,
+            )
             .await
-            .map_err(|error| operator_rpc_error(internal(error)))?;
-
-        let (initial_tempo_header, tempo_state) = collect_tempo_witness(
-            &self.l1_provider,
-            initial_tempo,
-            first_tx_input.as_ref().map(|input| input.as_ref()),
-            &reads,
-        )
-        .await
-        .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
-        Ok(ZoneExecutionWitness {
-            block_number,
-            block_hash,
-            parent_hash,
-            execution_witness,
-            initial_tempo_header,
-            tempo_state,
+            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            Ok(ZoneExecutionWitness {
+                block_number,
+                block_hash,
+                parent_hash,
+                execution_witness,
+                initial_tempo_header,
+                tempo_state,
+            })
         })
     }
 }
@@ -1820,12 +1910,31 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
+    use jsonrpsee::{
+        Methods,
+        types::{Response, response::Success},
+    };
     use reth_provider::test_utils::MockEthProvider;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempo_alloy::rpc::ForkSchedule;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
     use zone_primitives::constants::zone_chain_id;
+
+    async fn rpc_call<T: serde::de::DeserializeOwned + Clone>(
+        module: &Methods,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, ErrorObjectOwned> {
+        let request =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+        let (response, _) = module
+            .raw_json_request(&request.to_string(), 1)
+            .await
+            .unwrap();
+        let response = serde_json::from_str::<Response<'_, T>>(&response).unwrap();
+        Success::try_from(response).map(|response| response.result)
+    }
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
@@ -1862,8 +1971,8 @@ mod tests {
         })?;
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
-        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |params, ctx, _| {
+        module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |params, ctx| {
             let params: serde_json::Value = params.parse()?;
             ctx.0.lock().unwrap().push(params.clone());
             if ctx.1.load(Ordering::Relaxed) {
@@ -2054,8 +2163,8 @@ mod tests {
         })?;
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
-        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |_, ctx, _| {
+        module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |_, ctx| {
             ctx.1.fetch_add(1, Ordering::Relaxed);
             let remaining = ctx.0.load(Ordering::Relaxed);
             if remaining > 0 {
@@ -2162,13 +2271,10 @@ mod tests {
                 ..Default::default()
             };
             provider.add_header(header.hash_slow(), header);
-            let schedule = module
-                .call::<_, ForkSchedule>(
-                    "tempo_forkSchedule",
-                    jsonrpsee::core::EmptyServerParams::new(),
-                )
-                .await
-                .expect("fork schedule should be available without authentication");
+            let schedule =
+                rpc_call::<ForkSchedule>(&module, "tempo_forkSchedule", serde_json::json!([]))
+                    .await
+                    .expect("fork schedule should be available without authentication");
             assert_eq!(schedule.active, active);
             assert_eq!(
                 schedule
@@ -2178,40 +2284,43 @@ mod tests {
             );
         }
 
-        let info = module
-            .call::<_, SequencerInfoResponse>(
-                "zone_getSequencerInfo",
-                jsonrpsee::core::EmptyServerParams::new(),
-            )
-            .await
-            .expect("single-sequencer info should be available without authentication");
+        let info = rpc_call::<SequencerInfoResponse>(
+            &module,
+            "zone_getSequencerInfo",
+            serde_json::json!([]),
+        )
+        .await
+        .expect("single-sequencer info should be available without authentication");
         assert_eq!(info.mode, "single");
         assert_eq!(info.portal, Address::repeat_byte(0x11));
 
-        let error = module
-            .call::<_, SetLeaderResponse>("zone_setLeader", [Address::repeat_byte(0x22)])
-            .await
-            .expect_err("an uninitialized sequencer context should reject the call");
+        let error = rpc_call::<SetLeaderResponse>(
+            &module,
+            "zone_setLeader",
+            serde_json::json!([Address::repeat_byte(0x22)]),
+        )
+        .await
+        .expect_err("an uninitialized sequencer context should reject the call");
         assert!(
             error
                 .to_string()
                 .contains("zone_setLeader requires multi-sequencer mode")
         );
 
-        let error = module
-            .call::<_, SetLeaderResponse>(
-                "zone_setLeader",
-                (
-                    Address::repeat_byte(0x22),
-                    serde_json::json!({
-                        "force": true,
-                        "expectedEpoch": "0x7",
-                        "recoveryBlockHash": B256::repeat_byte(0x33),
-                    }),
-                ),
-            )
-            .await
-            .expect_err("zone_setLeader no longer accepts runtime recovery options");
+        let error = rpc_call::<SetLeaderResponse>(
+            &module,
+            "zone_setLeader",
+            serde_json::json!([
+                Address::repeat_byte(0x22),
+                serde_json::json!({
+                    "force": true,
+                    "expectedEpoch": "0x7",
+                    "recoveryBlockHash": B256::repeat_byte(0x33),
+                }),
+            ]),
+        )
+        .await
+        .expect_err("zone_setLeader no longer accepts runtime recovery options");
         assert!(error.to_string().contains("Invalid params"));
     }
 

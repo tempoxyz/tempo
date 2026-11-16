@@ -473,3 +473,36 @@ fn missing_tip_is_authenticated_and_registered_before_actors_start() {
         assert_eq!(harness.storage().current().output, current_state.output);
     });
 }
+
+#[test]
+fn historical_tip_bounds_the_startup_epoch() {
+    Runner::timed(std::time::Duration::from_secs(10)).start(|mut context| async move {
+        let trusted = dkg_fixture(&mut context, Epoch::new(3));
+        let snapshot = dkg_fixture(&mut context, Epoch::new(5));
+        let snapshot_state = persisted(&snapshot, &mut context);
+        // The snapshot's floor is the boundary into epoch 5, past the trusted
+        // identity's epoch 3, while its tip claims epoch 1 to skip verification.
+        let tip_header = header(Height::new(52));
+        let historical_tip = (
+            Height::new(52),
+            make_certificate(
+                Digest(tip_header.hash_slow()),
+                Epoch::new(1),
+                1,
+                &snapshot.schemes,
+            ),
+        );
+        let mut harness = Harness::builder(context.child("test"), "historical_tip_bound")
+            .finalized_floor(Height::new(49))
+            .startup(identity(&trusted), Some(historical_tip))
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(49), &snapshot_state));
+        harness.start().await;
+        harness.wait_for_exit().await;
+        assert!(harness.epoch_manager.events().is_empty());
+        assert!(harness.scheme_provider.scheme(Epoch::new(5)).is_none());
+    });
+}

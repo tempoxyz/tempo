@@ -80,8 +80,9 @@ pub struct L1State<P> {
     /// Committed Zone checkpoint captured from the EVM overlay at transaction entry.
     /// This is a fallback for database reads, not a selected L1 view.
     initial_anchor: Arc<Mutex<Option<U256>>>,
-    /// Tempo block number selected for the current transaction attempt.
-    anchor: Arc<Mutex<Option<u64>>>,
+    /// Tempo block number selected for the current transaction attempt, and whether the attempt
+    /// charged the `TempoState` checkpoint read (unmetered host loads can also select the anchor).
+    anchor: Arc<Mutex<Option<(u64, bool)>>>,
     /// `(account, slot)` keys successfully accessed during the current transaction attempt.
     ///
     /// Used for cold/warm gas accounting. Unlike REVM's journal, this access set is not rolled back
@@ -127,7 +128,7 @@ impl<P> L1State<P> {
 
     /// Returns the anchor selected for the current transaction, if any.
     pub fn get_anchor(&self) -> Option<u64> {
-        *self.anchor.lock()
+        self.anchor.lock().map(|(anchor, _)| anchor)
     }
 
     /// Returns the configured ZonePortal address.
@@ -139,11 +140,11 @@ impl<P> L1State<P> {
         let mut anchor = self.anchor.lock();
         match *anchor {
             None => {
-                *anchor = Some(new);
+                *anchor = Some((new, false));
                 Ok(())
             }
-            Some(current) if current == new => Ok(()),
-            Some(current) => Err(L1StateError::AnchorConflict { current, new }),
+            Some((current, _)) if current == new => Ok(()),
+            Some((current, _)) => Err(L1StateError::AnchorConflict { current, new }),
         }
     }
 
@@ -157,11 +158,12 @@ impl<P> L1State<P> {
         }
 
         let mut anchor = self.anchor.lock();
-        if let Some(current) = *anchor {
+        if let Some((current, _)) = *anchor {
             return Err(L1StateError::AnchorConflict { current, new: to });
         }
 
-        *anchor = Some(to);
+        // `finalizeTempo` charged the checkpoint read, and an earlier selection fails above.
+        *anchor = Some((to, true));
         Ok(())
     }
 }
@@ -348,9 +350,19 @@ struct L1Storage<'a, P> {
 
 impl<P: L1StorageReader> StorageOps for L1Storage<'_, P> {
     fn load(&self, slot: U256) -> tempo_precompiles::Result<U256> {
-        let anchor = match self.l1.get_anchor() {
-            Some(anchor) => anchor,
-            None => TempoState::new().tempo_block_number.read()?,
+        let is_t14 = StorageCtx::default().spec().is_t14();
+        let selected = *self.l1.anchor.lock();
+        let anchor = match selected {
+            Some((anchor, charged)) if charged || !is_t14 => anchor,
+            // From T14, charge the checkpoint once per attempt even if a host load selected it.
+            _ => {
+                let checkpoint = TempoState::new().tempo_block_number.read()?;
+                let anchor = selected.map_or(checkpoint, |(anchor, _)| anchor);
+                if is_t14 {
+                    *self.l1.anchor.lock() = Some((anchor, true));
+                }
+                anchor
+            }
         };
         self.l1
             .read_l1_storage(self.account, slot.into(), anchor)

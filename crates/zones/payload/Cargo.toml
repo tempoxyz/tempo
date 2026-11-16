@@ -51,6 +51,13 @@ evm2.workspace = true
 
 # misc
 eyre.workspace = true
+futures.workspace = true
 metrics.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
+tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+alloy-provider.workspace = true
+alloy-rpc-types-eth = { workspace = true, features = ["account-ext"] }
+tempo-alloy.workspace = true

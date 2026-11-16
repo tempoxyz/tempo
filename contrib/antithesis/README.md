@@ -27,7 +27,9 @@ built without coverage instrumentation, so only the server reports coverage and 
 | `finally_recovered` | The same once the server is back after the last fault |
 
 Launch the reth target with `--fault-tolerance legacy` (network faults and thread pauses, no container
-kills), which leaves restart recovery unexercised: "Restart recovers persisted blocks" stays unreached. A command that finds the server down exits successfully, so a restart is not a failure. Run one
+kills), which leaves restart recovery unexercised. Recovered roots and proofs are still checked
+whenever the server opens an existing database. A command that finds the server down exits
+successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
 The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).

@@ -308,8 +308,7 @@ fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
     let address = Address::random();
     let base_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(hardfork, || {
             let mut handler = DynStringRecord::handle(base_slot, LayoutCtx::FULL, address);
             let inbound_slot = base_slot + U256::ONE;
             let outbound_slot = base_slot + U256::from(2);

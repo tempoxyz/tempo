@@ -13,6 +13,8 @@ mod tests;
 
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
+use alloy_provider::{GetSubscription, Provider, ProviderCall};
+use alloy_rpc_client::NoParams;
 use jsonrpsee::{
     ConnectionId,
     core::RpcResult,
@@ -23,6 +25,7 @@ use jsonrpsee::{
     },
 };
 use parking_lot::Mutex;
+use tempo_alloy::TempoNetwork;
 use tokio::sync::Semaphore;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
@@ -65,7 +68,7 @@ impl<T> From<types::Response<T>> for RpcResult<T> {
 }
 
 /// Consensus namespace RPC trait.
-#[rpc(server, client, namespace = "consensus")]
+#[rpc(server, namespace = "consensus")]
 pub trait TempoConsensusApi {
     /// Get finalization by height query.
     ///
@@ -83,6 +86,34 @@ pub trait TempoConsensusApi {
     #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
+
+/// Client interface for the consensus namespace.
+pub trait TempoConsensusApiClient: Provider<TempoNetwork> {
+    /// Get finalization by height query.
+    fn get_finalization(&self, query: Query) -> ProviderCall<(Query,), CertifiedBlock> {
+        self.client()
+            .request("consensus_getFinalization", (query,))
+            .into()
+    }
+
+    /// Get the current consensus state snapshot.
+    fn get_latest(&self) -> ProviderCall<NoParams, ConsensusState> {
+        self.client().request_noparams("consensus_getLatest").into()
+    }
+
+    /// Subscribe to finalized block events. Needs a pubsub transport.
+    ///
+    /// Dropping the subscription does not send `consensus_unsubscribe`: the server releases it
+    /// when the connection closes.
+    fn subscribe_events(&self) -> GetSubscription<NoParams, Event>
+    where
+        Self: Sized,
+    {
+        self.subscribe_to("consensus_subscribe")
+    }
+}
+
+impl<T: Provider<TempoNetwork>> TempoConsensusApiClient for T {}
 
 /// Default cap on concurrent `consensus_subscribe` subscriptions across all connections.
 ///
@@ -212,7 +243,6 @@ impl<I: Clone> TempoConsensusRpc<I> {
     }
 }
 
-#[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
         self.consensus_feed.get_finalization(query).await.into()

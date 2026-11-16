@@ -2241,6 +2241,136 @@ mod tests {
         }
     }
 
+    /// A leader-only request refused by the local rate limiter must not widen to other peers.
+    ///
+    /// The leader completes every page at once, so each follow-up request reaches the per-peer
+    /// limiter while the leader is idle. A refusal must wait for the next retry instead of asking
+    /// the backup quorum follower.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rate_limited_leader_request_does_not_widen_to_backup() {
+        let addresses = [
+            available_address(),
+            available_address(),
+            available_address(),
+        ];
+        let identities = [61_u64, 62, 63].map(ed25519_identity);
+        let mut input = format!(
+            "leader_ed25519_public_key = \"{}\"\n",
+            const_hex::encode_prefixed(identities[0].ed25519_public_key().as_ref())
+        );
+        for (index, (identity, address)) in identities.iter().zip(addresses).enumerate() {
+            input.push_str(&format!(
+                "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\n",
+                const_hex::encode_prefixed(identity.ed25519_public_key().as_ref()),
+                secp256k1_identity(index as u64 + 61).address(),
+            ));
+        }
+        let manifest = Arc::new(ZoneManifest::parse(&input).unwrap());
+
+        let mut handles = [0_usize, 1, 2]
+            .map(|index| {
+                spawn_p2p(
+                    P2pConfig {
+                        zone_id: 9,
+                        manifest: manifest.clone(),
+                        ed25519_identity: ed25519_identity(index as u64 + 61),
+                        secp256k1_identity: Some(secp256k1_identity(index as u64 + 61)),
+                        listen: addresses[index],
+                        bypass_ip_check: false,
+                        storage_directory: None,
+                        leadership: crate::LeadershipSchedule::seeded(
+                            manifest.bootstrap_leadership(),
+                        ),
+                    },
+                    P2pNetworkId::new(1, Address::repeat_byte(0x11)),
+                )
+                .unwrap()
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let [leader, requester, backup] = &mut handles[..] else {
+            unreachable!("three handles were spawned");
+        };
+        let leader = &mut leader.parts.as_mut().unwrap().backfill;
+        let requester = &mut requester.parts.as_mut().unwrap().backfill;
+        let backup = &mut backup.parts.as_mut().unwrap().backfill;
+        let requester_commands = requester.commands.clone();
+
+        // Each node answers immediately, so no reservation stays outstanding between retries.
+        let complete = |ports: &crate::BackfillPorts, request: crate::BackfillRequest| {
+            ports
+                .commands
+                .try_send(crate::BackfillCommand::Complete {
+                    peer: request.peer,
+                    request_id: request.request_id,
+                    tip: test_tip(100),
+                })
+                .unwrap();
+        };
+
+        // Wait until the leader serves a request, so the leader is connected before measuring.
+        // Requests sent before the peers connect can fall back to the backup legitimately; their
+        // ids are at most the warm-up id, so only later ids count as widening.
+        let mut retry = tokio::time::interval(Duration::from_millis(100));
+        let warm_up_id = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                tokio::select! {
+                    _ = retry.tick() => requester_commands
+                        .send(crate::BackfillCommand::Request { start: 1 })
+                        .await
+                        .unwrap(),
+                    Some(request) = leader.requests.recv() => {
+                        let request_id = request.request_id;
+                        complete(leader, request);
+                        return request_id;
+                    }
+                    Some(request) = backup.requests.recv() => complete(backup, request),
+                    Some(_) = requester.responses.recv() => {}
+                }
+            }
+        })
+        .await
+        .expect("the leader never served a backfill request");
+
+        // Retrying every 100 ms against a 1/s leader quota makes most leader-only sends refused.
+        let mut served_by_leader = 0;
+        let window = tokio::time::sleep(Duration::from_secs(3));
+        tokio::pin!(window);
+        loop {
+            tokio::select! {
+                _ = &mut window => break,
+                _ = retry.tick() => requester_commands
+                    .send(crate::BackfillCommand::Request { start: 1 })
+                    .await
+                    .unwrap(),
+                Some(request) = leader.requests.recv() => {
+                    served_by_leader += 1;
+                    complete(leader, request);
+                }
+                Some(request) = backup.requests.recv() => {
+                    assert!(
+                        request.request_id <= warm_up_id,
+                        "rate-limited leader request widened to the backup: {request:?}"
+                    );
+                    complete(backup, request);
+                }
+                Some(_) = requester.responses.recv() => {}
+            }
+        }
+        assert!(
+            served_by_leader >= 2,
+            "the leader was not asked again after refusals"
+        );
+
+        for handle in handles {
+            tokio::time::timeout(Duration::from_secs(10), handle.shutdown())
+                .await
+                .expect("P2P runtime did not stop")
+                .expect("P2P runtime failed");
+        }
+    }
+
     /// Catch-up must reach a reachable quorum follower while the leader is offline.
     ///
     /// Commonware admission does not prove connectivity, so the offline leader can initially hold
