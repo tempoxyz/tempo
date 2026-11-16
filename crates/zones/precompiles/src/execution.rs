@@ -85,11 +85,6 @@ pub(crate) enum CallCheck {
 /// State-dependent rules resolve reads through the installed storage context.
 pub(crate) trait CallRules: 'static {
     /// Return the fixed gas charge for this selector, if one applies.
-    ///
-    /// (+T15) The call is charged `fixed_gas + input_cost`. Calldata length is public, so
-    /// charging the input cost leaks nothing, but the storage-dependent work the fixed charge hides
-    /// must stay below it: the fixed gas MUST be tuned high enough that every legitimate call,
-    /// with worst-case storage access, costs less than it.
     fn fixed_gas(&self, _selector: Option<[u8; 4]>) -> Option<u64> {
         None
     }
