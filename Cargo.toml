@@ -371,6 +371,7 @@ bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
 const-hex = { version = "1.17.0" }
+const_format = "0.2.36"
 criterion = { package = "codspeed-criterion-compat", version = "4.6.0" }
 dashmap = "6"
 dirs-next = "2.0.0"

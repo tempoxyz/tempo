@@ -15,6 +15,7 @@ use commonware_cryptography::{
     Committable, Digested, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
+use const_format::concatcp;
 use reth_consensus::ConsensusError;
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
@@ -27,6 +28,10 @@ use crate::consensus::Digest;
 use tempo_evm::consensus::{
     MAX_BLOCK_TRANSACTIONS, TempoConsensusError, validate_body_against_header,
 };
+
+/// Error message for a block with more than [`MAX_BLOCK_TRANSACTIONS`] transactions.
+const TOO_MANY_TRANSACTIONS: &str =
+    concatcp!("more than ", MAX_BLOCK_TRANSACTIONS, " transactions");
 
 /// Consensus block shared through commonware.
 ///
@@ -226,7 +231,7 @@ impl Read for Block {
             if transaction_count > MAX_BLOCK_TRANSACTIONS {
                 return Err(commonware_codec::Error::Invalid(
                     "Block",
-                    "more transactions than MAX_BLOCK_TRANSACTIONS",
+                    TOO_MANY_TRANSACTIONS,
                 ));
             }
             let mut item = transactions;
@@ -505,13 +510,11 @@ mod tests {
         assert!(
             matches!(
                 err,
-                commonware_codec::Error::Invalid(
-                    "Block",
-                    "more transactions than MAX_BLOCK_TRANSACTIONS"
-                )
+                commonware_codec::Error::Invalid("Block", TOO_MANY_TRANSACTIONS)
             ),
             "unexpected error: {err:?}"
         );
+        assert_eq!(TOO_MANY_TRANSACTIONS, "more than 65536 transactions");
     }
 
     #[test]

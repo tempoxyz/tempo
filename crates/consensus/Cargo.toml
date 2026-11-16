@@ -40,6 +40,7 @@ alloy-transport.workspace = true
 axum.workspace = true
 bytes.workspace = true
 clap.workspace = true
+const_format.workspace = true
 
 commonware-broadcast.workspace = true
 commonware-actor.workspace = true
