@@ -32,16 +32,6 @@ use common::PrecompileOutput;
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
 
-fn restrictions(expiry: u64) -> KeyRestrictions {
-    KeyRestrictions {
-        expiry,
-        enforceLimits: false,
-        limits: vec![],
-        allowAnyCalls: true,
-        allowedCalls: vec![],
-    }
-}
-
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, in the entered
 /// storage context.
 fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
@@ -94,7 +84,7 @@ fn authorization_calls(
             authorizeKey_1Call {
                 keyId: key_id,
                 signatureType: signature_type,
-                config: restrictions(expiry),
+                config: KeyRestrictions::unrestricted().expiry(expiry),
             }
             .abi_encode(),
         ),
@@ -103,7 +93,7 @@ fn authorization_calls(
             authorizeKey_2Call {
                 keyId: key_id,
                 signatureType: signature_type,
-                config: restrictions(expiry),
+                config: KeyRestrictions::unrestricted().expiry(expiry),
                 witness: B256::ZERO,
             }
             .abi_encode(),
@@ -290,7 +280,7 @@ fn stored_key_type_is_checked_on_use() {
     let grant = authorizeKey_1Call {
         keyId: DELEGATE,
         signatureType: SignatureType::ConfigurableAccount,
-        config: restrictions(u64::MAX),
+        config: KeyRestrictions::unrestricted(),
     }
     .abi_encode();
     assert!(!call_as_parent(&mut storage, &grant).is_revert());

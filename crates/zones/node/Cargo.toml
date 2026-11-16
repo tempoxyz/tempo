@@ -127,7 +127,7 @@ serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
 tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-payload-types.workspace = true
-tempo-precompiles = { workspace = true, features = ["test-utils"] }
+tempo-precompiles = { workspace = true, features = ["rpc-test-utils"] }
 tempfile.workspace = true
 test-case.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
