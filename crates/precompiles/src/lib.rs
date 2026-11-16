@@ -11,7 +11,7 @@ pub mod dispatch;
 pub use dispatch::*;
 
 mod input;
-pub use input::UnmeteredInput;
+pub use input::CallInput;
 
 pub(crate) mod ip;
 
@@ -69,13 +69,13 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
+#[cfg(test)]
+use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{
-        MovePrecompileError, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult,
-    },
+    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -326,9 +326,9 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        let Some(input) = UnmeteredInput::of_message(evm, message).covered_by(self.spec, gas)
-        else {
-            return Some(Err(PrecompileHalt::OutOfGas.into()));
+        let input = match CallInput::of_message(evm, message).read(self.spec, gas) {
+            Ok(input) => input,
+            Err(halt) => return Some(Err(halt.into())),
         };
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
         let input = input.to_vec();

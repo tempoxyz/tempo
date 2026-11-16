@@ -28,7 +28,7 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    DelegateCallNotAllowed, UnmeteredInput, charge_input_cost,
+    CallInput, DelegateCallNotAllowed, charge_input_cost,
     dispatch::selector_from_calldata,
     error::TempoPrecompileError,
     storage::{
@@ -116,9 +116,7 @@ where
     }
 
     let caller = message.caller;
-    let Some(data) = UnmeteredInput::of_message(evm, message).covered_by(env.spec, gas) else {
-        return Err(PrecompileHalt::OutOfGas.into());
-    };
+    let data = CallInput::of_message(evm, message).read(env.spec, gas)?;
 
     let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
