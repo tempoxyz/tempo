@@ -1120,7 +1120,7 @@ impl ParallelExecution {
 
 /// Blocks with fewer transactions execute sequentially even with parallel execution on: spawning
 /// workers and opening their state providers costs more than they save.
-pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 128;
+pub(crate) const PARALLEL_EXECUTION_MIN_TRANSACTIONS: usize = 256;
 
 /// Pins `f`'s signature to that of a worker EVM factory, which closures do not infer.
 fn worker_evm_factory<F>(f: F) -> F
