@@ -2,7 +2,7 @@
 
 //! Moves the dev node's block clock forward, so tests can reach timestamps without waiting for them.
 
-use crate::node::DEV_TIME_OFFSET_SECS;
+use crate::node::{DEV_FIXED_TIME_SECS, DEV_TIME_OFFSET_SECS};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use std::sync::atomic::Ordering;
 
@@ -17,6 +17,12 @@ pub trait TempoDevClockApi {
     /// Returns the offset, in seconds, the dev miner adds to wall-clock time.
     #[method(name = "devTimeOffset")]
     async fn dev_time_offset(&self) -> RpcResult<u64>;
+
+    /// Fixes the dev miner's block time at `seconds`, or returns it to the wall clock with 0.
+    ///
+    /// Each block still moves at least one millisecond past its parent, so block time never goes back.
+    #[method(name = "devSetTime")]
+    async fn dev_set_time(&self, seconds: u64) -> RpcResult<u64>;
 }
 
 /// The `tempo_dev*` clock methods, registered only on a `--dev` node.
@@ -31,5 +37,10 @@ impl TempoDevClockApiServer for TempoDevClock {
 
     async fn dev_time_offset(&self) -> RpcResult<u64> {
         Ok(DEV_TIME_OFFSET_SECS.load(Ordering::SeqCst))
+    }
+
+    async fn dev_set_time(&self, seconds: u64) -> RpcResult<u64> {
+        DEV_FIXED_TIME_SECS.store(seconds, Ordering::SeqCst);
+        Ok(seconds)
     }
 }

@@ -562,6 +562,10 @@ pub struct TempoPayloadAttributesBuilder;
 pub static DEV_TIME_OFFSET_SECS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// A fixed block time in seconds the dev miner uses instead of the wall clock, when not zero;
+/// `tempo_devSetTime` sets it.
+pub static DEV_FIXED_TIME_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl TempoPayloadAttributesBuilder {
     /// Creates a new instance of the builder.
     pub const fn new() -> Self {
@@ -579,6 +583,12 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
             .as_millis() as u64;
         let offset = DEV_TIME_OFFSET_SECS.load(std::sync::atomic::Ordering::SeqCst);
         let millis = millis.saturating_add(offset.saturating_mul(1000));
+        let fixed = DEV_FIXED_TIME_SECS.load(std::sync::atomic::Ordering::SeqCst);
+        let millis = if fixed == 0 {
+            millis
+        } else {
+            fixed.saturating_mul(1000)
+        };
         let millis = millis.max(parent.timestamp_millis() + 1);
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
