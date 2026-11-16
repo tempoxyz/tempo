@@ -14600,6 +14600,7 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+ "test-case",
 ]
 
 [[package]]
