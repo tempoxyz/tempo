@@ -214,9 +214,11 @@ impl Read for Block {
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
         // Count transactions before decoding them, since decoding expands small transactions about
-        // a hundredfold. The walk follows `Decodable2718::network_decode`, which reads a legacy
-        // transaction as an RLP list and a typed one as a type byte and an RLP list, either bare or
-        // wrapped in an RLP string.
+        // a hundredfold. The walk follows `Decodable2718::network_decode`, so it counts exactly the
+        // transactions `decode_sealed` would decode: a legacy transaction is an RLP list and a typed
+        // one a type byte and an RLP list, either bare or after an RLP string header. The decoder
+        // does not check that string's length, so it continues right after the envelope's list,
+        // reading any further envelopes packed into the string as more transactions.
         let rlp_error = |rlp_err: alloy_rlp::Error| {
             commonware_codec::Error::Wrapped("reading RLP transaction list", rlp_err.into())
         };
@@ -238,24 +240,13 @@ impl Read for Block {
             let header = alloy_rlp::Header::decode(&mut item).map_err(rlp_error)?;
             if header.list {
                 transactions = &item[header.payload_length..];
-            } else if item.len() == transactions.len() {
-                // A bare type byte, which `Header::decode` reads as a one-byte string without
-                // advancing, followed by the transaction's RLP list.
-                transactions = &item[1..];
-                alloy_rlp::Header::decode_bytes(&mut transactions, true).map_err(rlp_error)?;
             } else {
-                // `Header::decode` checked that the payload fits in `item`.
-                let (envelope, rest) = item.split_at(header.payload_length);
-                // `network_decode` would decode envelopes trailing the first one in the string as
-                // further transactions, so the string must hold exactly one.
-                let mut body = envelope
+                // `item` starts at the type byte: past the string header, or where it was for a bare
+                // type byte, which `Header::decode` reads as a one-byte string without advancing.
+                transactions = item
                     .get(1..)
                     .ok_or_else(|| rlp_error(alloy_rlp::Error::InputTooShort))?;
-                alloy_rlp::Header::decode_bytes(&mut body, true).map_err(rlp_error)?;
-                if !body.is_empty() {
-                    return Err(rlp_error(alloy_rlp::Error::UnexpectedLength));
-                }
-                transactions = rest;
+                alloy_rlp::Header::decode_bytes(&mut transactions, true).map_err(rlp_error)?;
             }
         }
 
@@ -641,32 +632,52 @@ mod tests {
         assert_eq!(decoded.body().transactions, vec![eip1559_transaction()]);
     }
 
-    #[test]
-    fn read_rejects_typed_envelopes_packed_into_one_string() {
+    /// Packs `count` copies of a typed envelope into one RLP string, as `network_decode` accepts.
+    fn typed_envelopes_packed_into_one_string(count: usize) -> Vec<u8> {
         let envelope = eip1559_envelope();
         let mut packed = Vec::new();
         alloy_rlp::Header {
             list: false,
-            payload_length: 2 * envelope.len(),
+            payload_length: count * envelope.len(),
         }
         .encode(&mut packed);
-        packed.extend_from_slice(&envelope);
-        packed.extend_from_slice(&envelope);
+        for _ in 0..count {
+            packed.extend_from_slice(&envelope);
+        }
+        packed
+    }
+
+    #[test]
+    fn reads_typed_envelopes_packed_into_one_string() {
+        let transactions = vec![eip1559_transaction(), eip1559_transaction()];
         let encoded = encoded_block_with_raw_transaction_list(
-            &packed,
-            &[eip1559_transaction(), eip1559_transaction()],
+            &typed_envelopes_packed_into_one_string(2),
+            &transactions,
+        );
+
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+
+        assert_eq!(decoded.body().transactions, transactions);
+    }
+
+    #[test]
+    fn read_counts_every_typed_envelope_packed_into_one_string() {
+        let encoded = encoded_block_with_raw_transaction_list(
+            &typed_envelopes_packed_into_one_string(MAX_BLOCK_TRANSACTIONS + 1),
+            &[],
         );
 
         let err =
             Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
 
-        let commonware_codec::Error::Wrapped("reading RLP transaction list", error) = err else {
-            panic!("unexpected error: {err:?}");
-        };
-        assert!(matches!(
-            error.downcast_ref::<alloy_rlp::Error>(),
-            Some(alloy_rlp::Error::UnexpectedLength)
-        ));
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Invalid("Block", TOO_MANY_TRANSACTIONS)
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
