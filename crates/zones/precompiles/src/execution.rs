@@ -61,6 +61,11 @@ impl ZonePrecompileEnv {
             non_creditable_slots,
         }
     }
+
+    /// The hardfork the Zone EVM runs at.
+    pub(crate) const fn spec(&self) -> TempoHardfork {
+        self.spec
+    }
 }
 
 /// Result of applying zone-specific pre-execution rules.
@@ -111,7 +116,7 @@ where
         ));
     }
 
-    let (data, caller): (&[u8], Address) = (&message.input, message.caller);
+    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };
@@ -124,6 +129,9 @@ where
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
+    // Preserve input borrowed from caller memory before storage borrows the EVM.
+    let input = data.to_vec();
+    let data = input.as_slice();
     let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
     let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
     let storage_gas = if fixed_gas.is_some() {

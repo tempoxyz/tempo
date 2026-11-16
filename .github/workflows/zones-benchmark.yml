@@ -83,6 +83,8 @@ jobs:
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
       run-type: nightly
+      # Keeps the nightly series comparable. Manual runs derive concurrency from tps.
+      max-concurrent: "4"
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
     secrets:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}

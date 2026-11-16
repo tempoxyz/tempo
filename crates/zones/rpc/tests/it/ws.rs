@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
+use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 use tokio::sync::Notify;
 use tokio_tungstenite::{connect_async, tungstenite};
 use zone_rpc::{
@@ -25,8 +26,8 @@ use zone_rpc::{
 mod auth_tokens;
 
 use auth_tokens::{
-    build_token_with_signature, now_secs, sign_keychain_signature, sign_p256_signature,
-    sign_webauthn_signature,
+    build_token_with_signature, now_secs, sign_configurable_account_signature,
+    sign_keychain_signature, sign_p256_signature, sign_webauthn_signature,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ struct MockZoneRpcApi {
     key_lookup_error: Option<&'static str>,
     ws_subscriptions_enabled: bool,
     blocking_rpc_started: Option<Arc<Notify>>,
+    commitments: Mutex<HashMap<Address, B256>>,
 }
 
 impl MockZoneRpcApi {
@@ -59,6 +61,7 @@ impl MockZoneRpcApi {
             key_lookup_error: None,
             ws_subscriptions_enabled: false,
             blocking_rpc_started: None,
+            commitments: Mutex::default(),
         }
     }
 
@@ -79,6 +82,7 @@ impl MockZoneRpcApi {
             key_lookup_error: Some(message),
             ws_subscriptions_enabled: false,
             blocking_rpc_started: None,
+            commitments: Mutex::default(),
         }
     }
 
@@ -88,6 +92,7 @@ impl MockZoneRpcApi {
             key_lookup_error: None,
             ws_subscriptions_enabled: true,
             blocking_rpc_started: None,
+            commitments: Mutex::default(),
         }
     }
 
@@ -124,6 +129,16 @@ impl ZoneRpcApi for MockZoneRpcApi {
                 isRevoked: false,
             });
         Box::pin(async move { Ok(key_info) })
+    }
+
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+        let commitment = self
+            .commitments
+            .lock()
+            .get(&account)
+            .copied()
+            .unwrap_or_default();
+        Box::pin(async move { Ok(Some(commitment)) })
     }
 
     fn block_number(&self) -> BoxFut<'_> {
@@ -908,6 +923,62 @@ async fn ws_closes_when_keychain_key_is_revoked() {
     let _closed = tokio::time::timeout(Duration::from_secs(3), ws.next())
         .await
         .expect("timed out waiting for keychain-revocation close");
+}
+
+/// A session closes once the zone's anchor retires its root signing key, or rotates the owners
+/// of its configurable account or configurable access key.
+#[tokio::test]
+async fn ws_closes_when_a_tempo_commitment_retires_its_signer() {
+    let signer = P256SigningKey::random(&mut OsRng);
+    let now = now_secs();
+    let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+    let root = sign_p256_signature(digest, &signer).expect("p256 signing should succeed");
+    let root_address = root
+        .recover_signer(&digest)
+        .expect("the signature recovers");
+    let (configurable, account, _) =
+        sign_configurable_account_signature(digest, &signer).expect("signing should succeed");
+    // A configurable account as the access key of `keychain_root`.
+    let keychain_root = Address::repeat_byte(0x78);
+    let (approval, key_id, _) = sign_configurable_account_signature(
+        KeychainSignature::signing_hash(digest, keychain_root),
+        &signer,
+    )
+    .expect("signing should succeed");
+    let TempoSignature::ConfigurableAccount(approval) = approval else {
+        unreachable!("a configurable account signature")
+    };
+    let keychain = TempoSignature::Keychain(KeychainSignature::new(keychain_root, approval));
+
+    for (signature, signer_address, api) in [
+        (root, root_address, MockZoneRpcApi::default()),
+        (configurable, account, MockZoneRpcApi::default()),
+        (
+            keychain,
+            key_id,
+            MockZoneRpcApi::with_key(
+                keychain_root,
+                key_id,
+                KeyInfoSignatureType::ConfigurableAccount,
+            ),
+        ),
+    ] {
+        let api = Arc::new(api);
+        let ctx = TestContext::start_shared(api.clone()).await;
+        let token = build_token_with_signature(signature, &fields);
+        let mut ws = connect_with_token(&ctx.ws_url(), ctx.addr, &token)
+            .await
+            .expect("authorized ws connect failed");
+
+        // The zone imports a Tempo migration or owner update of the signer.
+        api.commitments
+            .lock()
+            .insert(signer_address, B256::repeat_byte(1));
+
+        let _closed = tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .expect("timed out waiting for the session to close");
+    }
 }
 
 #[tokio::test]

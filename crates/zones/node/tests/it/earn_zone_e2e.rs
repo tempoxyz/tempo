@@ -20,7 +20,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolConstructor, SolValue};
 use eyre::WrapErr;
 use std::time::Duration;
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest, test_utils::CallBuilderExt};
 use tempo_contracts::{
     precompiles::{IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry},
     zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal},
@@ -662,9 +662,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider)
             .modifyPolicyWhitelist(policy.policy_id, account, eligible)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "updating Earn eligibility failed");
 
@@ -700,12 +698,7 @@ impl EarnZoneFixture {
     async fn set_deposits_paused(&self, paused: bool) -> eyre::Result<()> {
         let provider = self.l1.dev_provider();
         let earn_vault = EarnVault::new(self.earn_vault, &provider);
-        let receipt = earn_vault
-            .setDepositsPaused(paused)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = earn_vault.setDepositsPaused(paused).mined().await?;
         eyre::ensure!(receipt.status(), "setting Earn deposit pause failed");
         eyre::ensure!(
             earn_vault.depositsPaused().call().await? == paused,
@@ -718,9 +711,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = DemoParPool::new(self.pool, &provider)
             .setPaused(paused)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "setting par pool pause failed");
         let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
@@ -738,9 +729,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = DemoParPool::new(self.pool, &provider)
             .setRecipientAllowed(self.router, allowed)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "setting par pool router admission failed");
         let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
@@ -810,9 +799,7 @@ impl EarnZoneFixture {
         {
             let receipt = token_contract
                 .approve(self.portal, U256::MAX)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             eyre::ensure!(receipt.status(), "encrypted entry approval failed");
         }
@@ -824,9 +811,7 @@ impl EarnZoneFixture {
         let balance_before = self.zone.balance_of(token, recipient).await?;
         let receipt = ZonePortal::new(self.portal, provider)
             .deposit(token, amount, key_index, encrypted, recipient)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "encrypted Zone entry failed");
 
@@ -1485,20 +1470,13 @@ impl EarnZoneFixture {
         let asset = ITIP20::new(self.vault_asset, provider);
         let receipt = asset
             .approve(self.venue_vault, U256::from(AMOUNT))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "vault asset approval failed");
 
         let vault = VenueVault::new(self.venue_vault, provider);
         let venue_before = vault.balanceOf(user).call().await?;
-        let receipt = vault
-            .deposit(U256::from(AMOUNT), user)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = vault.deposit(U256::from(AMOUNT), user).mined().await?;
         eyre::ensure!(receipt.status(), "creating existing venue shares failed");
         let venue_after = vault.balanceOf(user).call().await?;
         let venue_shares = venue_after - venue_before;
@@ -2204,9 +2182,7 @@ async fn zone_rewards_private_holder() -> eyre::Result<()> {
     let provider = fixture.user.l1_provider();
     let receipt = ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.contribution_controller, U256::from(REWARD_AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "reward asset approval failed");
     let rewards = EarnContributionController::new(fixture.contribution_controller, provider);
@@ -2233,9 +2209,7 @@ async fn zone_rewards_private_holder() -> eyre::Result<()> {
     let receipt = rewards
         .fund(user, U256::from(REWARD_AMOUNT), max_earn_share_supply)
         .gas(REWARD_FUNDING_TX_GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "funding private-holder rewards failed");
     ensure_gas_headroom(
@@ -2309,16 +2283,12 @@ async fn matrix_deposit_public_public_succeeds() -> eyre::Result<()> {
 
     let receipt = ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.earn_vault, U256::from(AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault approval failed");
     let receipt = EarnVault::new(fixture.earn_vault, provider)
         .deposit(U256::from(AMOUNT), user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault deposit failed");
     assert_eq!(
@@ -2338,30 +2308,22 @@ async fn matrix_redeem_public_public_succeeds() -> eyre::Result<()> {
 
     ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.earn_vault, U256::from(AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     EarnVault::new(fixture.earn_vault, provider)
         .deposit(U256::from(AMOUNT), user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     let earn_shares = fixture.l1.balance_of(fixture.earn_share, user).await?;
 
     let receipt = ITIP20::new(fixture.earn_share, provider)
         .approve(fixture.earn_vault, earn_shares)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnShare approval failed");
     let receipt = EarnVault::new(fixture.earn_vault, provider)
         .redeem(earn_shares, user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault redeem failed");
     assert_eq!(

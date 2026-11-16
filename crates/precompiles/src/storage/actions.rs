@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +53,10 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
+    /// Records an account's configuration commitment before and after; equal for a read.
+    ///
+    /// Commitments live in the account extension, not in a storage slot.
+    ConfigCommitment(Address, B256, B256),
 }
 
 impl StorageAction {
@@ -63,7 +67,8 @@ impl StorageAction {
             | Self::FeeTokenBalanceCheck(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..) => *address,
+            | Self::Sdec(address, ..)
+            | Self::ConfigCommitment(address, ..) => *address,
             Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
         }
     }

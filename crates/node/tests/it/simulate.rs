@@ -5,6 +5,7 @@ use alloy::{
 };
 use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
 
@@ -29,9 +30,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
         .mint(caller, mint_amount)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Construct a TIP20 call and insert into calls

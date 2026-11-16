@@ -1,0 +1,2 @@
+#!/bin/sh
+exec reth-state-root-commands eventually_persisted

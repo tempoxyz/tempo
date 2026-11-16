@@ -13,8 +13,9 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
 
 use crate::utils::{
-    RealP2pCluster, TcpChaosProxy, ZoneAccount, batch_count, poll_until,
+    RealP2pCluster, TcpChaosProxy, ZoneAccount, assert_same_block, batch_count, poll_until,
     start_real_p2p_cluster_with_l1_proxy, start_real_p2p_cluster_with_per_node_l1_proxies,
+    wait_all_at,
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -352,9 +353,7 @@ async fn assert_outage_asset_flow(
     let inclusion_block = receipt
         .block_number
         .ok_or_else(|| eyre::eyre!("{} withdrawal receipt has no block", flow.phase))?;
-    cluster
-        .wait_all_at(inclusion_block, NETWORK_TIMEOUT)
-        .await?;
+    wait_all_at(&cluster.nodes, inclusion_block, NETWORK_TIMEOUT).await?;
 
     let transaction_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
     let expected_l2_balance = flow.l2_balance_before + U256::from(OUTAGE_DEPOSIT)
@@ -417,10 +416,8 @@ async fn recover_both_followers(
         recovered_height > baseline_height,
         "leader did not continue producing during the follower outage"
     );
-    cluster
-        .wait_all_at(recovered_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(recovered_height).await?;
+    wait_all_at(&cluster.nodes, recovered_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, recovered_height).await?;
     wait_for_settled_height(
         &portal,
         recovered_height,
@@ -439,10 +436,8 @@ async fn recover_leader(
     case: L1OutageCase,
 ) -> eyre::Result<()> {
     let baseline_height = cluster.nodes[0].provider().get_block_number().await?;
-    cluster
-        .wait_all_at(baseline_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(baseline_height).await?;
+    wait_all_at(&cluster.nodes, baseline_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, baseline_height).await?;
     leader_proxy
         .wait_for_connections_after(0, 1, NETWORK_TIMEOUT)
         .await?;
@@ -498,10 +493,8 @@ async fn recover_leader(
         recovered_height > baseline_height,
         "leader did not produce the anchors missed during its L1 outage"
     );
-    cluster
-        .wait_all_at(recovered_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(recovered_height).await?;
+    wait_all_at(&cluster.nodes, recovered_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, recovered_height).await?;
     wait_for_settled_height(
         &portal,
         recovered_height,
@@ -520,10 +513,8 @@ async fn recover_single_follower(
     case: L1OutageCase,
 ) -> eyre::Result<()> {
     let baseline_height = cluster.nodes[0].provider().get_block_number().await?;
-    cluster
-        .wait_all_at(baseline_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(baseline_height).await?;
+    wait_all_at(&cluster.nodes, baseline_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, baseline_height).await?;
     let affected_proxies = [follower_one_proxy];
     let active_fault = start_fault(case.fault, &affected_proxies).await?;
 
@@ -566,10 +557,8 @@ async fn recover_single_follower(
         recovered_height > baseline_height,
         "healthy quorum did not advance during the single-follower outage"
     );
-    cluster
-        .wait_all_at(recovered_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(recovered_height).await?;
+    wait_all_at(&cluster.nodes, recovered_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, recovered_height).await?;
     assert_outage_asset_flow(cluster, account, assets).await
 }
 
@@ -690,16 +679,14 @@ async fn test_three_sequencers_tolerate_random_active_l1_connection_resets() -> 
     )
     .await?;
     let baseline_height = cluster.nodes[0].provider().get_block_number().await?;
-    cluster
-        .wait_all_at(baseline_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(baseline_height).await?;
+    wait_all_at(&cluster.nodes, baseline_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, baseline_height).await?;
 
     let target = baseline_height + OUTAGE_BLOCK_GAP;
     let reset_connections = randomly_reset_active_connections(&proxy);
     let maintain_progress = cluster.nodes[0].wait_for_tempo_block_number(target, NETWORK_TIMEOUT);
     tokio::try_join!(reset_connections, maintain_progress)?;
-    cluster.wait_all_at(target, NETWORK_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, target, NETWORK_TIMEOUT).await?;
 
     let mut recovered_height = u64::MAX;
     for node in &cluster.nodes {
@@ -709,10 +696,8 @@ async fn test_three_sequencers_tolerate_random_active_l1_connection_resets() -> 
         recovered_height >= target,
         "zone did not reach target {target} during random active connection resets"
     );
-    cluster
-        .wait_all_at(recovered_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(recovered_height).await?;
+    wait_all_at(&cluster.nodes, recovered_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, recovered_height).await?;
     wait_for_settled_height(
         &portal,
         recovered_height,
@@ -756,10 +741,8 @@ async fn test_three_sequencers_reconnect_and_catch_up_after_l1_network_outage() 
     )
     .await?;
     let baseline_height = cluster.nodes[0].provider().get_block_number().await?;
-    cluster
-        .wait_all_at(baseline_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(baseline_height).await?;
+    wait_all_at(&cluster.nodes, baseline_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, baseline_height).await?;
 
     let accepted_before_outage = proxy.accepted_connections();
     proxy.disconnect();
@@ -814,10 +797,8 @@ async fn test_three_sequencers_reconnect_and_catch_up_after_l1_network_outage() 
         recovered_height > baseline_height,
         "nodes did not advance beyond their pre-outage zone height"
     );
-    cluster
-        .wait_all_at(recovered_height, NETWORK_TIMEOUT)
-        .await?;
-    cluster.assert_same_block(recovered_height).await?;
+    wait_all_at(&cluster.nodes, recovered_height, NETWORK_TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, recovered_height).await?;
 
     poll_until(
         NETWORK_TIMEOUT,
