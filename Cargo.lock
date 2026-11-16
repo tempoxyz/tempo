@@ -12135,7 +12135,6 @@ dependencies = [
  "reth-trie-db",
  "serde",
  "serde_json",
- "test-case",
 ]
 
 [[package]]
