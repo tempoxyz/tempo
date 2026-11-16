@@ -20,7 +20,8 @@ static MALLOC_CONF: &[u8] = b"background_thread:true\0";
 /// Compile-time jemalloc configuration that also enables heap profiling unconditionally.
 #[cfg(all(feature = "jemalloc-prof", unix))]
 #[unsafe(export_name = "_rjem_malloc_conf")]
-static MALLOC_CONF: &[u8] = b"background_thread:true,prof:true,prof_active:true,lg_prof_sample:19\0";
+static MALLOC_CONF: &[u8] =
+    b"background_thread:true,prof:true,prof_active:true,lg_prof_sample:19\0";
 
 fn main() -> eyre::Result<()> {
     tempo::tempo_main()
