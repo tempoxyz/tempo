@@ -2014,6 +2014,113 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     Ok(())
 }
 
+/// TIP-1173 activation: the first T16 block starts from an empty set and commits its root, the
+/// ring stops being written, and an expiring nonce transaction included before T16 still cannot
+/// be replayed inside the activation window, through the frozen seen slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t16_activation_keeps_pre_fork_replay_protection() -> eyre::Result<()> {
+    use reth_trie_common::EMPTY_ROOT_HASH;
+    use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+
+    reth_tracing::init_test_tracing();
+    // Far enough past the harness's starting timestamp to mine pre-fork blocks first.
+    const ACTIVATION: u64 = 1_800_000_000;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T15))
+        .with_fork_time("t16Time", ACTIVATION)
+        .build_with_node_access()
+        .await?;
+    let provider = alloy::providers::RootProvider::<TempoNetwork>::new_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let signer = test_signer(0);
+    let sign = |valid_before: u64| -> eyre::Result<TempoTxEnvelope> {
+        let tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        Ok(tx.into_signed(signature).into())
+    };
+
+    // Before T16: the ring records the entry and headers carry no root. The pool checks the
+    // window against the head, so move the head close to activation first.
+    setup.node.set_next_payload_timestamp(ACTIVATION - 30)?;
+    setup.node.advance_block().await?;
+    setup.node.set_next_payload_timestamp(ACTIVATION - 20)?;
+    let pre_fork = sign(ACTIVATION + 60)?;
+    let mined = setup
+        .node
+        .mine([pre_fork.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+    assert_eq!(mined.block().header().expiring_nonce_root, None);
+    let ptr_before = provider
+        .get_storage_at(NONCE_PRECOMPILE_ADDRESS, U256::from(3))
+        .await?;
+    assert_ne!(ptr_before, U256::ZERO, "the pre-T16 ring records the entry");
+
+    // First T16 block: empty set.
+    setup.node.set_next_payload_timestamp(ACTIVATION)?;
+    let first = setup.node.advance_block().await?;
+    assert_eq!(
+        first.block().header().expiring_nonce_root,
+        Some(EMPTY_ROOT_HASH)
+    );
+
+    // Replaying the pre-fork transaction inside the activation window is never included.
+    let replay_hash = *pre_fork.tx_hash();
+    if setup
+        .node
+        .inject_tx(pre_fork.encoded_2718().into())
+        .await
+        .is_ok()
+    {
+        let block = setup.node.advance_block().await?;
+        assert!(
+            !block
+                .block()
+                .body()
+                .transactions()
+                .any(|tx| *tx.tx_hash() == replay_hash),
+            "a pre-T16 entry was replayed inside the activation window"
+        );
+    }
+
+    // A new T16 transaction is included, changes the root, and leaves the ring untouched.
+    let latest = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let timestamp = latest.header.timestamp();
+    let fresh = sign(timestamp + 30)?;
+    let mined = setup
+        .node
+        .mine([fresh.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+    let root = mined
+        .block()
+        .header()
+        .expiring_nonce_root
+        .ok_or_eyre("T16 header without expiring nonce root")?;
+    assert_ne!(root, EMPTY_ROOT_HASH);
+    assert_eq!(
+        provider
+            .get_storage_at(NONCE_PRECOMPILE_ADDRESS, U256::from(3))
+            .await?,
+        ptr_before,
+        "T16 must not write the ring"
+    );
+
+    // Its replay is rejected by the pool against the set.
+    assert!(
+        setup
+            .node
+            .inject_tx(fresh.encoded_2718().into())
+            .await
+            .is_err(),
+        "the pool admitted a replay of a T16 entry"
+    );
+    Ok(())
+}
+
 /// The expiring nonce set follows the canonical chain and holds included expiring nonce hashes
 /// until they expire.
 #[tokio::test(flavor = "multi_thread")]

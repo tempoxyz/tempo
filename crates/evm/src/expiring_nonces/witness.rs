@@ -252,8 +252,11 @@ impl ExpiringNonceSet {
             + MAX_REVEAL_ROUNDS;
         for _ in 0..max_rounds {
             let nodes = self.proof_nodes(&targets);
-            let mut partial = PartialExpiringNonceSet::new(self.root, nodes.iter().cloned())?;
-            match partial.apply(params, entries) {
+            // Revealing the root can itself need more nodes: a root extension whose subtree no
+            // target enters is proven without the branch below it.
+            let result = PartialExpiringNonceSet::new(self.root, nodes.iter().cloned())
+                .and_then(|mut partial| partial.apply(params, entries));
+            match result {
                 Ok(_) => return Ok(nodes),
                 Err(WitnessError::MissingNode { trie, key }) => {
                     if !targets.entry(trie).or_default().insert(key) {
@@ -541,6 +544,17 @@ mod tests {
         // Deleting the only bucket empties the set.
         verify(&set, &params(100, 150), &[]);
         verify(&set, &params(100, 101), &[entry(2, 150), entry(3, 151)]);
+    }
+
+    #[test]
+    fn witness_verifies_when_targets_bypass_root_extension() {
+        // Buckets 1000 and 1001 share all but the last nibble, so the set trie's root is an
+        // extension. Bucket 1200 diverges inside it, so its path never reaches the branch.
+        let mut set = ExpiringNonceSet::default();
+        set.apply(900, &[entry(1, 1000), entry(2, 1001)]).unwrap();
+        verify(&set, &params(900, 901), &[entry(3, 1200)]);
+        verify(&set, &params(900, 901), &[]);
+        verify(&set, &params(900, 1000), &[entry(4, 1200)]);
     }
 
     #[test]
