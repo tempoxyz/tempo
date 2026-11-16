@@ -111,14 +111,28 @@ fi
 
 # ── 4. Patch [patch.crates-io] ──────────────────────────────────────────────
 # Upstream foundry pins some tempo crates to git revisions in [patch.crates-io].
-# Replace those with local paths so Cargo doesn't conflict. Tempo's own git
-# patches for other crates (e.g. reth-core) only apply inside the Tempo
-# workspace, so carry them over too.
+# Drop those entries: foundry's own tempo dependencies already resolve locally
+# through the git patch above. Patching crates.io tempo crates to the local
+# checkout would also move crates.io dependents (mpp depends on tempo-alloy
+# 1.11) onto the local workspace whenever Cargo re-resolves, such as when a
+# tempo crate gains a dependency foundry's lockfile lacks, and break them on
+# API changes. Tempo's own git patches for other crates (e.g. reth-core) only
+# apply inside the Tempo workspace, so carry them over.
+tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+awk '
+  /^\[patch\.crates-io\]/ { in_section = 1; print; next }
+  in_section && /^\[/ { in_section = 0 }
+  in_section && $1 ~ /^tempo-/ && $2 == "=" { skipping = 1 }
+  skipping {
+    # Entries may span lines (e.g. a features list); skip until the closing brace.
+    if (index($0, "}")) { skipping = 0 }
+    next
+  }
+  { print }
+' "$FOUNDRY_CARGO" > "$tmp_cargo"
+mv "$tmp_cargo" "$FOUNDRY_CARGO"
+
 CRATES_IO_PATCHES="$({
-  while IFS=$'\t' read -r crate path; do
-    [[ -n "$crate" ]] || continue
-    printf '%s\t%s = { path = "%s/%s" }\n' "$crate" "$crate" "$TEMPO_ROOT" "$path"
-  done <<< "$PATCHES"
   awk '
     /^\[patch\.crates-io\]/ { in_section = 1; next }
     in_section && /^\[/ { exit }
