@@ -70,7 +70,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
 };
 
@@ -119,7 +119,8 @@ impl Default for Config {
             updates: 64,
             accounts: 256,
             proof_workers: 2,
-            timeout_secs: 60,
+            // Include fault-induced container and worker pauses in this bounded wait.
+            timeout_secs: 600,
             // Small windows mask and prune state every few blocks.
             persistence_threshold: 5,
             num_state_masking_blocks: 2,
@@ -139,6 +140,8 @@ struct Server {
     snapshotter: Snapshotter,
     /// None only while one round is retired and the next opens.
     round: Mutex<Option<Round>>,
+    /// First fatal request error; failed state stays allocated until the harness exits.
+    failure: OnceLock<String>,
     /// The active round's view, which proof requests read without waiting for block production.
     /// Retiring a round takes it out, which waits for the proof requests reading it.
     view: RwLock<Option<Arc<View>>>,
@@ -148,58 +151,71 @@ impl Server {
     fn handle(&self, request: Request) -> Result<Response> {
         if let Request::GetProof { round, block, targets } = request {
             let view = self.view.read().map_err(|_| eyre!("view lock poisoned"))?;
+            if let Some(error) = self.failure.get() {
+                return Err(eyre!("{error}"));
+            }
             let Some(view) = view.as_deref() else {
                 return Ok(Response::Rejected { reason: format!("round {round} is over") });
             };
             return prove(view, round, block, &targets);
         }
         let mut guard = self.round.lock().map_err(|_| eyre!("round lock poisoned"))?;
-        let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
-        match request {
-            Request::StateSummary => round.summary(),
-            Request::SubmitWrites { round: id, writes, collider } => {
-                if id != round.id {
-                    return Ok(Response::Rejected { reason: format!("round {id} is over") });
-                }
-                if round.pending.len() + writes.len() > MAX_PENDING {
-                    return Ok(Response::Rejected { reason: "too many queued writes".into() });
-                }
-                round.collider.merge(collider);
-                round.pending.extend(writes);
-                Ok(Response::Queued { pending: round.pending.len() })
-            }
-            Request::BuildBlock => {
-                if round.engine.head() == self.config.blocks {
-                    let finished = guard.take().expect("active round");
-                    let number = finished.number + 1;
-                    // Wait for proof requests at this round to release its database handles.
-                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
-                    finished.finish(&self.snapshotter)?;
-                    invariant!(
-                        Arc::strong_count(&self.db) == 1,
-                        "round releases all database handles"
-                    );
-                    assert_sometimes!(true, "Trie workload completes a round");
-                    // Only a verified, fully flushed round can authorize resetting its database
-                    // and journal.
-                    self.campaign.retire()?;
-                    if self.config.rounds.is_some_and(|rounds| number >= rounds) {
-                        std::process::exit(0);
-                    }
-                    let next = Round::open(self, number)?;
-                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
-                        Some(Arc::clone(&next.view));
-                    *guard = Some(next);
-                }
-                guard.as_mut().expect("active round").build_block(&self.config)
-            }
-            Request::GetProof { .. } => unreachable!("served above"),
-            Request::CheckRoot => round.check_root(),
-            Request::Flush => {
-                round.persist(true)?;
-                Ok(Response::Flushed { round: round.id, head: round.engine.head() })
-            }
+        if let Some(error) = self.failure.get() {
+            return Err(eyre!("{error}"));
         }
+        let result = (|| {
+            let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
+            match request {
+                Request::StateSummary => round.summary(),
+                Request::SubmitWrites { round: id, writes, collider } => {
+                    if id != round.id {
+                        return Ok(Response::Rejected { reason: format!("round {id} is over") });
+                    }
+                    if round.pending.len() + writes.len() > MAX_PENDING {
+                        return Ok(Response::Rejected { reason: "too many queued writes".into() });
+                    }
+                    round.collider.merge(collider);
+                    round.pending.extend(writes);
+                    Ok(Response::Queued { pending: round.pending.len() })
+                }
+                Request::BuildBlock => {
+                    if round.engine.head() == self.config.blocks {
+                        let finished = guard.take().expect("active round");
+                        let number = finished.number + 1;
+                        // Wait for proof requests at this round to release its database handles.
+                        *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
+                        finished.finish(&self.snapshotter)?;
+                        invariant!(
+                            Arc::strong_count(&self.db) == 1,
+                            "round releases all database handles"
+                        );
+                        assert_sometimes!(true, "Trie workload completes a round");
+                        // Only a verified, fully flushed round can authorize resetting its database
+                        // and journal.
+                        self.campaign.retire()?;
+                        if self.config.rounds.is_some_and(|rounds| number >= rounds) {
+                            std::process::exit(0);
+                        }
+                        let next = Round::open(self, number)?;
+                        *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
+                            Some(Arc::clone(&next.view));
+                        *guard = Some(next);
+                    }
+                    guard.as_mut().expect("active round").build_block(&self.config)
+                }
+                Request::GetProof { .. } => unreachable!("served above"),
+                Request::CheckRoot => round.check_root(),
+                Request::Flush => {
+                    round.persist(true)?;
+                    Ok(Response::Flushed { round: round.id, head: round.engine.head() })
+                }
+            }
+        })();
+        // Publish failure before unlocking: the model and engine may already disagree. Keep
+        // their resources alive, so failure reporting cannot block on worker teardown.
+        result.inspect_err(|error| {
+            self.failure.get_or_init(|| format!("{error:#}"));
+        })
     }
 }
 
@@ -665,6 +681,7 @@ fn serve(config: Option<String>) -> Result<()> {
         db,
         snapshotter,
         round: Mutex::new(None),
+        failure: OnceLock::new(),
         view: RwLock::new(None),
     };
     let round = Round::open(&server, 0)?;
@@ -701,4 +718,135 @@ fn main() -> Result<()> {
         })
     );
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Address;
+    use input::Operation;
+    use model::Update;
+    use reth_primitives_traits::Account;
+
+    #[test]
+    fn timeout_defaults_and_overrides_reach_engine_settings() {
+        let default: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.timeout_secs, 600);
+        assert_eq!(default.settings().timeout_secs, 600);
+        let explicit: Config = serde_json::from_str(r#"{"timeout_secs":1}"#).unwrap();
+        assert_eq!(explicit.timeout_secs, 1);
+        assert_eq!(explicit.settings().timeout_secs, 1);
+    }
+
+    #[test]
+    fn failed_block_poisoning_preserves_first_error() {
+        let datadir = std::env::temp_dir().join(format!(
+            "reth-state-root-failed-block-{}-{}",
+            std::process::id(),
+            AntithesisRng.random::<u64>()
+        ));
+        let config = Config {
+            datadir: Some(datadir.clone()),
+            blocks: 4,
+            updates: 1,
+            accounts: 1,
+            ..Default::default()
+        };
+        let recorder = DebuggingRecorder::new();
+        let campaign = Campaign::new(&config).unwrap();
+        let runtime = engine::runtime(&config.settings()).unwrap();
+        let db = Arc::new(init_db(campaign.database_path().unwrap(), Default::default()).unwrap());
+        let server = Server {
+            config,
+            campaign,
+            runtime,
+            db,
+            snapshotter: recorder.snapshotter(),
+            round: Mutex::new(None),
+            failure: OnceLock::new(),
+            view: RwLock::new(None),
+        };
+        let mut round = Round::open(&server, 0).unwrap();
+        let id = round.id;
+        let address = Address::ZERO;
+        let update =
+            Update::Account { address, account: Account { nonce: 1, ..Default::default() } };
+        round
+            .journal
+            .record(1, &[Operation::UpdateBatch { updates: vec![update] }, Operation::Commit])
+            .unwrap();
+        *server.view.write().unwrap() = Some(Arc::clone(&round.view));
+        *server.round.lock().unwrap() = Some(round);
+
+        assert!(matches!(
+            server.handle(Request::BuildBlock).unwrap(),
+            Response::Block { number: 1, .. }
+        ));
+        assert!(matches!(
+            server.handle(Request::CheckRoot).unwrap(),
+            Response::Root { number: 1, .. }
+        ));
+        assert!(matches!(
+            server.handle(Request::Flush).unwrap(),
+            Response::Flushed { head: 1, .. }
+        ));
+        assert!(matches!(
+            server.handle(Request::GetProof { round: id, block: 2, targets: Vec::new() }).unwrap(),
+            Response::Rejected { reason } if reason == "no block 2"
+        ));
+        assert!(server.failure.get().is_none());
+
+        let (expected, actual) = {
+            let mut guard = server.round.lock().unwrap();
+            let round = guard.as_mut().unwrap();
+            let update =
+                Update::Account { address, account: Account { nonce: 2, ..Default::default() } };
+            let mut next = round.state.clone();
+            update.apply_to_model(&mut next);
+            // The model reads every update, but production stops at Commit. This forces a
+            // deterministic error in produce, after the model advances, without a timeout.
+            round
+                .journal
+                .record(2, &[Operation::Commit, Operation::UpdateBatch { updates: vec![update] }])
+                .unwrap();
+            (root(&next), root(&round.state))
+        };
+        assert_ne!(expected, actual);
+        // A live proof reader must not block failure reporting or trigger round teardown.
+        let view = server.view.read().unwrap();
+        let error = server.handle(Request::BuildBlock).unwrap_err();
+        let error = format!("{error:#}");
+        assert_eq!(error, format!("block 2: expected {expected}, actual {actual}"));
+        assert_eq!(server.failure.get(), Some(&error));
+        {
+            let guard = server.round.lock().unwrap();
+            let round = guard.as_ref().unwrap();
+            assert_eq!(round.engine.head(), 1);
+            assert_eq!(root(&round.state), expected);
+            assert_eq!(round.view.blocks.read().unwrap().len(), 2);
+        }
+        drop(view);
+
+        // Model, engine, and proof requests arriving after the failure all preserve its
+        // diagnostic rather than checking inconsistent state or accepting more writes.
+        for request in [
+            Request::StateSummary,
+            Request::BuildBlock,
+            Request::CheckRoot,
+            Request::Flush,
+            Request::SubmitWrites { round: id, writes: Vec::new(), collider: Collider::default() },
+            Request::GetProof { round: id, block: 1, targets: Vec::new() },
+        ] {
+            assert_eq!(format!("{:#}", server.handle(request).unwrap_err()), error);
+        }
+        {
+            let failed = server.round.lock().unwrap().take().unwrap();
+            *server.view.write().unwrap() = None;
+            // The harness exits without dropping a failed engine; tests must join its writer
+            // and drain worker queues before removing the database files.
+            failed.engine.close().unwrap();
+        }
+        drop(server);
+        fs::remove_dir_all(datadir).unwrap();
+    }
 }

@@ -39,9 +39,12 @@ kills and stops as well as thread pauses and network faults. The launch helper s
 profile explicitly (the Antithesis launch default, `legacy`, does not kill containers):
 
 ```sh
-# Use an immutable config image from the image-publishing workflow and an approved compute budget.
-contrib/antithesis/reth-state-root/launch.sh "$CONFIG_IMAGE" "$MAX_COMPUTE_HOURS"
+# Use an immutable config image from the image-publishing workflow and an approved duration and compute tier.
+contrib/antithesis/reth-state-root/launch.sh "$CONFIG_IMAGE" 12h --performance-tier turbo
 ```
+
+The helper sends an explicit fuzzing duration: a compute-hour budget alone was not honored by
+the `basic_test` launcher. Check the recorded duration and tier after launch.
 
 Antithesis restarts the container on the same `trie-state` volume mounted at `/state`; do not add a
 Docker restart policy. The server reopens the database through reth's recovery path, replays its synced operation
@@ -68,5 +71,11 @@ with SIGKILL, starts it on the same volume, and checks the recovered height and 
 It also runs the root, proof/witness and final-recovery commands and checks that block production
 continues. This is a happy-path process-crash check after a completed flush, not a power-loss or
 in-flight persistence test; it does not establish correctness at every crash boundary.
+
+To exercise an in-flight state-root calculation across a container pause longer than the old
+60-second deadline, run `pause-smoke-test.py` with the same `--image` and `--binary-dir` options.
+It then checks roots and proofs, kills the container and verifies restart recovery. The workload
+allows 600 seconds for state-root and persistence acknowledgements, including fault-induced pauses;
+this is a bounded allowance, not a guarantee against arbitrarily long fault schedules.
 
 The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).
