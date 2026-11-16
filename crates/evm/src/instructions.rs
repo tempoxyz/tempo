@@ -11,6 +11,7 @@ use evm2::{
 use evm2_macros::instruction;
 use tempo_precompiles::{
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, shim},
+    input_cost,
     storage::{
         SstoreTransitionFlags, StorageCtx, account_config_commitment,
         evm::EvmPrecompileStorageProvider,
@@ -158,6 +159,13 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
+    // `shim::call` charges input gas first, so a call that can't pay it halts out of gas
+    // either way. Check it before copying, so the copy is paid for.
+    if input_cost(spec, cx.state.input().len())
+        .map_or(true, |cost| cx.gas.tracker().remaining() < cost)
+    {
+        return Err(InstrStop::PrecompileOOG);
+    }
     let input = cx.state.input().to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);

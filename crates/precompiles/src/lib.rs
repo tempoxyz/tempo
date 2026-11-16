@@ -66,13 +66,13 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
-#[cfg(test)]
-use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
+    precompiles::{
+        MovePrecompileError, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult,
+    },
 };
 
 pub use tempo_contracts::precompiles::{
@@ -323,6 +323,13 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Every Tempo precompile charges input gas before anything else, so a call that can't
+        // pay it halts out of gas either way. Check it before copying, so the copy is paid for.
+        if input_cost(self.spec, evm.message_input(message).len())
+            .map_or(true, |cost| gas.remaining() < cost)
+        {
+            return Some(Err(PrecompileHalt::OutOfGas.into()));
+        }
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
         let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
