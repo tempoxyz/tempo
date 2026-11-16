@@ -821,9 +821,8 @@ mod tests {
     use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::{
-        PARALLEL_EXECUTION_PROOF_WORKER_NICENESS, TempoArgs, TempoChainSpec, TempoCli,
-        TempoHardfork, apply_tempo_cli_overrides, defaults, ensure_no_debug_forkchoice_driver,
-        follow::FollowMode, snapshot_download,
+        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
+        ensure_no_debug_forkchoice_driver, follow::FollowMode, snapshot_download,
     };
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
