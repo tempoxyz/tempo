@@ -51,8 +51,8 @@ use reth_db_api::{cursor::DbCursorRO, tables, transaction::DbTx};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{
     providers::LatestStateProviderRef, test_utils::MockNodeTypesWithDB, AccountReader,
-    DatabaseProviderROFactory, HeaderProvider, ProviderFactory, StageCheckpointReader,
-    StateProvider, StateRootProvider, StorageSettingsCache,
+    DatabaseProviderROFactory, HeaderProvider, ProviderError, ProviderFactory,
+    StageCheckpointReader, StateProvider, StateRootProvider, StorageSettingsCache,
 };
 use reth_stages_types::StageId;
 use reth_storage_overlay::OverlayStateProviderFactory;
@@ -493,7 +493,33 @@ fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Resul
         let witness = proof::witness(&provider, &proofs)?;
         Ok(Proved { proofs, witness })
     });
+    // TODO: remove after reth pins the Finish chain for the lifetime of a provider.
+    // StateTrieOverlayError is private, so match only its full message in ProviderError::Other.
+    let overlay_gap = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<ProviderError>())
+        .and_then(ProviderError::as_other)
+        .is_some_and(|error| {
+            let message = error.to_string();
+            let Some((tip, anchor)) = message
+                .strip_prefix("state trie overlay for tip ")
+                .and_then(|message| message.strip_suffix(" with current blocks"))
+                .and_then(|message| message.split_once(" cannot be anchored to "))
+            else {
+                return false;
+            };
+            tip.parse::<B256>().is_ok() && anchor.parse::<B256>().is_ok()
+        });
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    if overlay_gap {
+        println!(
+            "{}",
+            json!({"proof_overlay_gap": {"block": number, "db_tip": db_tip,
+                "state_tip": state_tip, "targets": targets, "error": error}})
+        );
+        return Ok(Response::Rejected { reason: error.expect("overlay gap has a provider error") });
+    }
     invariant!(
         error.is_none(),
         "eth_getMultiProof and witness at block {number} (db tip {db_tip}, state tip \
