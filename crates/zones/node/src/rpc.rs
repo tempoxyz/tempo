@@ -92,7 +92,7 @@ use zone_precompiles::is_zone_precompile;
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
-    filter::{RequestedTopics, filter_requested_logs, is_log_visible, scope_filter_for_caller},
+    filter::{RequestedTopics, filter_requested_logs, is_log_visible},
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
@@ -1470,7 +1470,8 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
+            let requested =
+                RequestedTopics::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let logs = EthFilterApiServer::logs(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1483,7 +1484,8 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
+            let requested =
+                RequestedTopics::scope_filter_for_caller(&mut filter, &auth.caller, &zone_tokens)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1623,7 +1625,8 @@ where
 
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let requested = scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
+            let requested =
+                RequestedTopics::scope_filter_for_caller(&mut filter, &caller, &zone_tokens)?;
 
             let stream = provider
                 .canonical_state_stream()
