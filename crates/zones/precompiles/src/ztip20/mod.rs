@@ -180,8 +180,9 @@ mod tests {
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile, RECEIVE_POLICY_GUARD_ADDRESS,
+        address_registry::AddressRegistry,
         storage::{Handler, StorageCtx},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
         tip20::{
             self, IRolesAuth, ISSUER_ROLE, ITIP20,
             ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token,
@@ -568,6 +569,56 @@ mod tests {
             assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
         }
         harness.assert_no_funds_moved(virtual_recipient)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_to_registered_virtual_addresses_credit_the_master() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        // On a zone the registry is mirrored from Tempo; the harness writes it directly.
+        let virtual_recipient = {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                register_virtual_master(&mut AddressRegistry::new())
+            })?
+            .1
+        };
+
+        for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_success(), "{result:?}");
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+        }
+        assert_eq!(harness.balance_of(VIRTUAL_MASTER)?, U256::from(4_321u64));
+        assert_eq!(harness.balance_of(virtual_recipient)?, U256::ZERO);
+        assert_eq!(harness.balance_of(harness.alice)?, U256::from(995_679u64));
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_to_virtual_addresses_check_the_masters_receive_policy() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        let virtual_recipient = {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                register_virtual_master(&mut AddressRegistry::new())
+            })?
+            .1
+        };
+        harness.reject_all_receipts(VIRTUAL_MASTER)?;
+
+        for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(TIP20Error::policy_forbids().abi_encode())
+            );
+        }
+        harness.assert_no_funds_moved(virtual_recipient)?;
+        assert_eq!(harness.balance_of(VIRTUAL_MASTER)?, U256::ZERO);
         Ok(())
     }
 

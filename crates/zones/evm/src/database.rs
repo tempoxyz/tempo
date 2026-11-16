@@ -16,6 +16,7 @@ use reth_execution_types::StateUpdate;
 use reth_trie_common::bundle_state::{AccountInfoRevert, AccountStatus, BundleState};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
+    ADDRESS_REGISTRY_ADDRESS,
     configurable_account::{
         CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, valid_account,
     },
@@ -31,8 +32,9 @@ use zone_precompiles::{
 /// Resolves mirrored L1 reads at the active Tempo anchor and forwards all other database
 /// operations to the caller-provided Zone database.
 ///
-/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag is mirrored
-/// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
+/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag and the whole
+/// TIP-1022 address registry are mirrored too, so upstream pause checks block on the Zone exactly
+/// what they block on Tempo, and virtual addresses resolve to the masters registered on Tempo.
 ///
 /// From T14, account loads also carry Tempo's TIP-1108 commitment and the account marker code
 /// (TIP-1154). Block outputs drop them again through `strip_bundle_commitment_overlays` and
@@ -131,9 +133,7 @@ pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbE
     // account's storage.
     state
         .account_changes()
-        .filter(|changes| {
-            changes.address == TIP403_REGISTRY_ADDRESS || is_tip20_prefix(changes.address)
-        })
+        .filter(|changes| is_mirrored_account(&changes.address) || is_tip20_prefix(changes.address))
         .try_for_each(|changes| changes.visit(&mut L1WriteGuard))
 }
 
@@ -143,7 +143,7 @@ impl StateChangeSink for L1WriteGuard {
     type Error = ZoneDbError;
 
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        if change.address == TIP403_REGISTRY_ADDRESS {
+        if is_mirrored_account(&change.address) {
             return Err(ZoneDbError::L1Write {
                 address: change.address,
                 slot: U256::ZERO,
@@ -153,7 +153,7 @@ impl StateChangeSink for L1WriteGuard {
     }
 
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        if address == TIP403_REGISTRY_ADDRESS {
+        if is_mirrored_account(&address) {
             return Err(ZoneDbError::L1Write {
                 address,
                 slot: U256::ZERO,
@@ -212,7 +212,8 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
 
     fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
         if *address != TIP403_REGISTRY_ADDRESS
-            && !(self.spec.is_t15() && is_tip20_pause_slot(address, slot))
+            && !(self.spec.is_t15()
+                && (*address == ADDRESS_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)))
         {
             return self.inner.get_storage(address, slot);
         }
@@ -238,13 +239,21 @@ fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
     is_tip20_prefix(*address) && *slot == tip20::slots::PAUSED
 }
 
+/// Returns whether all of `address`'s storage is mirrored from Tempo.
+///
+/// The address registry is guarded at every fork: it is only mirrored from T15, but no Zone
+/// precompile is installed at its address, so nothing on the Zone writes it.
+fn is_mirrored_account(address: &Address) -> bool {
+    *address == TIP403_REGISTRY_ADDRESS || *address == ADDRESS_REGISTRY_ADDRESS
+}
+
 /// Returns whether `slot` at `address` is mirrored from Tempo, so the Zone must never persist a
 /// change to it.
 ///
 /// Pause flags are guarded at every fork: they are only mirrored from T15, but the Zone never
 /// writes them.
 fn is_mirrored_slot(address: &Address, slot: &U256) -> bool {
-    *address == TIP403_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)
+    is_mirrored_account(address) || is_tip20_pause_slot(address, slot)
 }
 
 /// Removes the commitment overlays of [`L1OverlayDB`] from a block's state (see
@@ -527,6 +536,90 @@ mod tests {
         assert_eq!(
             l1.storage_requests(),
             [(token, B256::from(tip20::slots::PAUSED), anchor)]
+        );
+    }
+
+    #[test]
+    fn address_registry_is_mirrored_from_t15() {
+        let anchor = 42;
+        let slot = U256::from(7);
+        let l1 = TestL1::default();
+        l1.insert(ADDRESS_REGISTRY_ADDRESS, slot, anchor, U256::from(99));
+        for (spec, expected) in [
+            (TempoHardfork::T14, U256::from(5)),
+            (TempoHardfork::T15, U256::from(99)),
+        ] {
+            let mut inner = test_db(anchor);
+            inner.insert_account_storage(&ADDRESS_REGISTRY_ADDRESS, &slot, &U256::from(5));
+            let mut db = L1OverlayDB::new(inner, l1.clone(), Address::ZERO, spec);
+            db.l1_state().begin_transaction(U256::from(anchor));
+
+            assert_eq!(
+                db.get_storage(&ADDRESS_REGISTRY_ADDRESS, &slot).unwrap(),
+                expected,
+                "{spec:?}"
+            );
+        }
+        assert_eq!(
+            l1.storage_requests(),
+            [(ADDRESS_REGISTRY_ADDRESS, B256::from(slot), anchor)]
+        );
+    }
+
+    #[test]
+    fn guards_reject_address_registry_writes() {
+        let slot = U256::from(7);
+        let mut state = State::new(InMemoryDB::default());
+        state
+            .storage_slot(&ADDRESS_REGISTRY_ADDRESS, slot)
+            .unwrap()
+            .set(U256::ONE);
+        assert!(matches!(
+            validate_journal(&state),
+            Err(ZoneDbError::L1Write { address: ADDRESS_REGISTRY_ADDRESS, slot: s }) if s == slot
+        ));
+
+        let mut state = PendingState::default();
+        state.insert_account(
+            ADDRESS_REGISTRY_ADDRESS,
+            Some(AccountInfo::default()),
+            Some(AccountInfo::default()),
+        );
+        state.insert_storage(ADDRESS_REGISTRY_ADDRESS, slot, U256::ZERO, U256::ONE);
+        assert!(matches!(
+            validate_pending_state(&state),
+            Err(ZoneDbError::L1Write { address: ADDRESS_REGISTRY_ADDRESS, slot: s }) if s == slot
+        ));
+    }
+
+    #[test]
+    fn address_registry_overlay_is_removed_from_canonical_transition() {
+        let (anchor, slot) = (42, U256::from(7));
+        let l1 = TestL1::default();
+        l1.insert(ADDRESS_REGISTRY_ADDRESS, slot, anchor, U256::from(99));
+        let mut db = L1OverlayDB::new(test_db(anchor), l1, Address::ZERO, TempoHardfork::T15);
+        db.l1_state().begin_transaction(U256::from(anchor));
+        let observed = db.get_storage(&ADDRESS_REGISTRY_ADDRESS, &slot).unwrap();
+        assert_eq!(observed, U256::from(99));
+
+        // The registry account does not exist on the Zone; reading it must not create it.
+        let account = db.get_account(&ADDRESS_REGISTRY_ADDRESS).unwrap();
+        let mut state = PendingState::default();
+        state.insert_account(ADDRESS_REGISTRY_ADDRESS, account.clone(), account);
+        state.insert_storage(ADDRESS_REGISTRY_ADDRESS, slot, observed, observed);
+        validate_pending_state(&state).unwrap();
+
+        let mut block = BlockState::new();
+        let mut changes = TransactionChanges::default();
+        state.visit(&mut changes).unwrap();
+        block.commit(&changes);
+        let state = block.into_bundle();
+        assert!(!state.state().contains_key(&ADDRESS_REGISTRY_ADDRESS));
+        let mut inner = db.into_inner();
+        inner.commit_source(&BundleSource(&state));
+        assert_eq!(
+            inner.get_storage(&ADDRESS_REGISTRY_ADDRESS, &slot).unwrap(),
+            U256::ZERO
         );
     }
 
