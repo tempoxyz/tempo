@@ -4,7 +4,7 @@ use std::env;
 
 /// Sets version information for Tempo globally.
 ///
-/// The version information is read by the CLI. Binaries build it with [`tempo_version_metadata!`].
+/// The version information is read by the CLI. Binaries build it with [`tempo_version_metadata!`](crate::tempo_version_metadata).
 pub fn init_version_metadata(metadata: RethCliVersionConsts) {
     try_init_version_metadata(metadata)
         .expect("version metadata is set once, before anything reads it");
