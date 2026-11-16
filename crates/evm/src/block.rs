@@ -655,45 +655,6 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
-    /// Switches the EVM to the gas schedule of the lane a transaction runs in.
-    ///
-    /// From T15 the payment lane prices state loading differently from the general lane (see
-    /// [`payment_lane_version`]). The general lane's schedule is the one the EVM was built with,
-    /// so only payment transactions switch. Returns the general lane's version, which
-    /// [`Self::exit_lane`] restores, or `None` when the schedule did not change.
-    ///
-    /// Swapping the version within the spec keeps the transaction registry and precompiles,
-    /// including their caches. Precompile storage reads pick up the payment schedule too, since
-    /// they take their gas costs from the EVM's version.
-    ///
-    /// [`payment_lane_version`]: tempo_chainspec::gas_params::payment_lane_version
-    fn enter_lane(&mut self, is_payment: bool) -> Option<evm2::Version> {
-        if !is_payment {
-            return None;
-        }
-        let general = *self.evm().version();
-        let payment = tempo_chainspec::gas_params::payment_lane_version(
-            &general,
-            self.evm().config_spec_id(),
-        )?;
-        self.set_version_within_spec(payment);
-        Some(general)
-    }
-
-    /// Restores the general lane's gas schedule after [`Self::enter_lane`].
-    fn exit_lane(&mut self, general: Option<evm2::Version>) {
-        if let Some(general) = general {
-            self.set_version_within_spec(general);
-        }
-    }
-
-    fn set_version_within_spec(&mut self, version: evm2::Version) {
-        let evm = self.evm_mut();
-        let block = *evm.block();
-        let config = evm2::ExecutionConfig::for_spec_and_version(evm.config_spec_id(), version);
-        evm.set_block_and_execution_config_within_spec(block, config);
-    }
-
     /// Returns the section an executed transaction enters at the current position in the block.
     pub(crate) fn validate_tx(
         &self,
@@ -926,12 +887,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
-        let general = self.enter_lane(is_payment);
         let inner = self
             .inner
-            .execute_transaction_without_commit((tx_env, recovered));
-        self.exit_lane(general);
-        let inner = inner?;
+            .execute_transaction_without_commit((tx_env, recovered))?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -1002,7 +960,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // Validate the section inside the commit condition so the transaction commits in place
         // instead of detaching its state and reattaching it in `commit_transaction`.
         let mut validated = None;
-        let general = self.enter_lane(is_payment);
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
             |result, state_changes| {
@@ -1028,9 +985,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 validated = Some(next_section.map(|section| (section, block_gas_used)));
                 commit
             },
-        );
-        self.exit_lane(general);
-        let gas_output = gas_output?;
+        )?;
 
         let Some(gas_output) = gas_output else {
             return match validated {
@@ -2307,57 +2262,6 @@ mod tests {
             .with_spec(TempoHardfork::T5)
             .build(&mut db, &chainspec);
         assert!(!t5_executor.is_payment(&tx));
-    }
-
-    #[test]
-    fn test_payment_lane_swaps_state_loading_gas_from_t15() {
-        use evm2::version::GasId;
-
-        let chainspec = DEV.clone();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T15)
-            .build(&mut db, &chainspec);
-        let general = *executor.evm().version();
-
-        assert!(
-            executor.enter_lane(false).is_none(),
-            "general lane keeps its schedule"
-        );
-        assert_eq!(executor.evm().version().gas_params, general.gas_params);
-
-        let restore = executor.enter_lane(true);
-        assert_eq!(restore.map(|v| v.gas_params), Some(general.gas_params));
-        let payment = *executor.evm().version();
-        for id in [
-            GasId::ColdStorageAdditionalCost,
-            GasId::ColdAccountAdditionalCost,
-        ] {
-            assert!(
-                payment.gas_params.get(id) < general.gas_params.get(id),
-                "{id:?}"
-            );
-        }
-        assert_eq!(
-            payment.gas_params.get(GasId::WarmStorageReadCost),
-            general.gas_params.get(GasId::WarmStorageReadCost)
-        );
-        assert_eq!(executor.evm().config_spec_id(), TempoHardfork::T15);
-
-        executor.exit_lane(restore);
-        assert_eq!(executor.evm().version().gas_params, general.gas_params);
-    }
-
-    #[test]
-    fn test_payment_lane_priced_as_general_before_t15() {
-        let chainspec = DEV.clone();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T14)
-            .build(&mut db, &chainspec);
-        let general = *executor.evm().version();
-        assert!(executor.enter_lane(true).is_none());
-        assert_eq!(executor.evm().version().gas_params, general.gas_params);
     }
 
     #[test]

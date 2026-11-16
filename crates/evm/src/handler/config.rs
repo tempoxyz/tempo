@@ -162,6 +162,33 @@ pub fn tempo_execution_config(
     ExecutionConfig::for_spec_and_version(tempo_spec, version)
 }
 
+/// Selects the gas schedule of a transaction's lane, as the EVM's
+/// [`tx_version_selector`](Evm::tx_version_selector).
+///
+/// From T15, payment-lane transactions ([`TempoTxEnv::is_payment_v3`]) run with
+/// [`payment_lane_version`], which prices state loading separately. Other transactions, and every
+/// transaction before T15, run with the EVM's own schedule.
+///
+/// [`payment_lane_version`]: tempo_chainspec::gas_params::payment_lane_version
+pub fn lane_version(
+    spec: TempoHardfork,
+    general: &evm2::Version,
+    tx: &TempoTxEnv,
+) -> Option<evm2::Version> {
+    if !tx.is_payment_v3() {
+        return None;
+    }
+    tempo_chainspec::gas_params::payment_lane_version(general, spec)
+}
+
+/// Prices each transaction the EVM runs by its lane (see [`lane_version`]).
+///
+/// The EVM applies the selector itself, so block execution, payload building, RPC calls, gas
+/// estimation, simulation and tracing with inspectors all price a transaction the same way.
+pub fn install_lane_pricing(evm: &mut Evm<'_, TempoEvmTypes>) {
+    evm.set_tx_version_selector(Some(lane_version));
+}
+
 /// Builds a Tempo-configured EVM2 instance.
 pub fn build_tempo_evm<'a>(
     tempo_spec: TempoHardfork,
@@ -173,7 +200,7 @@ pub fn build_tempo_evm<'a>(
 ) -> Evm<'a, TempoEvmTypes> {
     let spec_id = SpecId::from(tempo_spec);
     let execution_config = tempo_execution_config(tempo_spec, chain_id);
-    Evm::new_with_execution_config_and_ext(
+    let mut evm = Evm::new_with_execution_config_and_ext(
         execution_config,
         tempo_spec,
         block,
@@ -181,7 +208,9 @@ pub fn build_tempo_evm<'a>(
         database,
         precompiles,
         ext,
-    )
+    );
+    install_lane_pricing(&mut evm);
+    evm
 }
 
 #[derive(Clone, Copy, Debug)]

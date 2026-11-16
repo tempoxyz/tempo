@@ -40,7 +40,8 @@ pub use fee_manager::{
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
     TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
-    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
+    install_lane_pricing, lane_version, tempo_execution_config, tempo_opcode_config,
+    tempo_tx_registry,
 };
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
@@ -166,7 +167,6 @@ impl TempoEvmConfig {
     where
         DB: DynDatabase + 'a,
     {
-        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
         let mut evm = evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
@@ -176,6 +176,7 @@ impl TempoEvmConfig {
             precompiles,
             ext,
         );
+        handler::install_lane_pricing(&mut evm);
         #[cfg(feature = "jit")]
         self.evm_factory.configure_jit(&mut evm);
         evm
