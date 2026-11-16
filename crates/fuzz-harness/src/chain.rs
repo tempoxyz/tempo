@@ -88,6 +88,10 @@ fn context_header(spec: &TempoChainSpec, context: &BlockContextInput) -> TempoHe
             ..Default::default()
         },
         consensus_context: None,
-        expiring_nonce_root: None,
+        // TIP-1173: T16 headers commit to the expiring nonce set; an empty set for a synthetic
+        // header.
+        expiring_nonce_root: spec
+            .is_t16_active_at_timestamp(timestamp)
+            .then_some(EMPTY_ROOT_HASH),
     }
 }

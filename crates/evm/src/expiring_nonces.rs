@@ -18,7 +18,7 @@
 //! Entries recorded before T16 stay in the frozen `expiringNonceSeen` map, which the handler still
 //! reads during the first `MAX_EXPIRY_SECS` after activation (see [`in_activation_window`]).
 //!
-//! [`witness`] verifies a block's set transition statelessly from a pool of trie nodes, for the
+//! [`PartialExpiringNonceSet`] verifies a block's set transition statelessly from a pool of trie nodes, for the
 //! zone prover.
 
 mod witness;

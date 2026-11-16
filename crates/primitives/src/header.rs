@@ -375,11 +375,12 @@ mod tests {
         };
         let encoded = alloy_rlp::encode(&full);
         assert_eq!(TempoHeader::decode(&mut encoded.as_slice()).unwrap(), full);
+        let full_hash = full.hash_slow();
         assert_ne!(
-            full.hash_slow(),
+            full_hash,
             TempoHeader {
                 expiring_nonce_root: None,
-                ..full.clone()
+                ..full
             }
             .hash_slow()
         );
