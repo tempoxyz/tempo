@@ -7,7 +7,7 @@ pub use tempo_payload_types::{
     ConfigError, Estimator, EstimatorConfig, NetworkReservation, TempoExecutionData,
     TempoPayloadTypes, estimator,
 };
-pub use version::init_version_metadata;
+pub use version::{init_unstamped_version_metadata, init_version_metadata};
 
 use crate::node::TempoAddOns;
 pub use crate::{

@@ -15,5 +15,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
 fn main() -> eyre::Result<()> {
+    // Stamped here, in the binary, so that a new build time compiles only this file again.
+    tempo_node::init_version_metadata(tempo_node::tempo_version_metadata!());
     tempo::tempo_main()
 }
