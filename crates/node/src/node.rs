@@ -558,6 +558,10 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
 #[non_exhaustive]
 pub struct TempoPayloadAttributesBuilder;
 
+/// Seconds the dev miner adds to wall-clock time; `tempo_devIncreaseTime` raises it.
+pub static DEV_TIME_OFFSET_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl TempoPayloadAttributesBuilder {
     /// Creates a new instance of the builder.
     pub const fn new() -> Self {
@@ -573,6 +577,8 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
+        let offset = DEV_TIME_OFFSET_SECS.load(std::sync::atomic::Ordering::SeqCst);
+        let millis = millis.saturating_add(offset.saturating_mul(1000));
         let millis = millis.max(parent.timestamp_millis() + 1);
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);

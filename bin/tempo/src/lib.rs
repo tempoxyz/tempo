@@ -88,7 +88,10 @@ pub use tempo_node::{
 };
 use tempo_node::{
     ShadowReplayer, TempoFullNode,
-    rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
+    rpc::{
+        TempoDevClock, TempoDevClockApiServer,
+        consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
+    },
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
@@ -629,7 +632,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
 
+                let dev = builder.config().dev.dev;
+
                 builder.extend_rpc_modules(move |ctx| {
+                    if dev {
+                        ctx.modules.merge_configured(TempoDevClock.into_rpc())
+                            .wrap_err("failed to register dev clock rpc module")?;
+                    }
+
                     if faucet_args.enabled {
                         let faucet_ext = TempoFaucetExt::new(
                             faucet_args.addresses(),

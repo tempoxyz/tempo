@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod consensus;
+pub mod dev_clock;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
@@ -13,6 +14,7 @@ use alloy_eips::BlockId;
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom, state::EvmOverrides};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
+pub use dev_clock::{TempoDevClock, TempoDevClockApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
