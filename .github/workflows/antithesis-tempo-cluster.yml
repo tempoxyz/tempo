@@ -172,6 +172,25 @@ jobs:
           export WORKLOAD_IMAGE="$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST"
           timeout 900 bash contrib/antithesis/tempo-cluster/scripts/smoke.sh
 
+      - name: Validate Antithesis setup and test-command discovery
+        env:
+          NODE_DIGEST: ${{ needs.build-and-push.outputs.node_digest }}
+          WORKLOAD_DIGEST: ${{ needs.build-and-push.outputs.workload_digest }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/antithesishq/snouty/releases/download/v0.10.0/snouty-x86_64-unknown-linux-musl.tar.xz \
+            -o "$RUNNER_TEMP/snouty.tar.xz"
+          echo "d9a2cfe404cbbd82a5658dffaed3fddffb80773498b4eaac7bedb0d22cf1b7bc  $RUNNER_TEMP/snouty.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/snouty" "$RUNNER_TEMP/antithesis-validation"
+          tar -xJf "$RUNNER_TEMP/snouty.tar.xz" -C "$RUNNER_TEMP/snouty" --strip-components=1
+          dir="$RUNNER_TEMP/antithesis-validation"
+          cp contrib/antithesis/tempo-cluster/docker-compose.yaml "$dir/"
+          {
+            echo "TEMPO_IMAGE=$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST"
+            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST"
+          } > "$dir/.env"
+          "$RUNNER_TEMP/snouty/snouty" validate "$dir" --timeout 5m
+
       - name: Upload smoke logs and assertion results
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
