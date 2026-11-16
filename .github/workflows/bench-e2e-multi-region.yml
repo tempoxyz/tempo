@@ -179,6 +179,7 @@ on:
           - state-read-hot
           - state-read-dependent
           - state-read-cold-lowmem
+          - state-read-dependent-lowmem
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -331,9 +332,10 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      # state-read-cold-lowmem runs on 62 GB validators, below the 100 GB bloat, so reads hit disk.
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && (inputs.preset == 'state-read-cold-lowmem' && 'c4d-standard-16-lssd' || 'c4d-standard-48-lssd') || 'c6id.8xlarge' }}
-      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ inputs.preset == 'state-read-cold-lowmem' && '1' || '4' }}
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
+      # The *-lowmem state-read presets cap tempo-node at 45 GB, below the 100 GB bloat, so reads hit disk.
+      BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || '' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
@@ -432,7 +434,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
+          # Bench branch only: needs tempoxyz/tempo-multi-region-benchmark#504 for --node-memory-max.
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'ejh/node-memory-max' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
@@ -620,6 +623,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -675,6 +679,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -723,6 +728,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
@@ -771,6 +777,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \

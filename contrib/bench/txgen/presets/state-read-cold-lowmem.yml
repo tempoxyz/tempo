@@ -1,5 +1,5 @@
-# Same workload as state-read-cold; the workflow runs this preset on validators with
-# less RAM (62 GB) than the 100 GB bloat, so state can't all sit in the page cache.
+# Same workload as state-read-cold; the workflow caps tempo-node at 45 GB (systemd
+# MemoryMax, page cache included), below the 100 GB bloat, so reads hit disk.
 # Worst-case state reads: random accounts across the whole state bloat, so most reads miss every cache and go to disk.
 # Every transaction spends its 10M gas on TIP20 balanceOf reads of state-bloat
 # accounts (one cold SLOAD each, ~2.6K gas per read), through the StateReader
