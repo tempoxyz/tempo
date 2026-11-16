@@ -249,7 +249,7 @@ jobs:
             echo '### Antithesis four-validator public-mix images'
             echo ''
             echo "Tag: \`$TAG\`"
-            echo 'Txgen revision: `ca437320c94baf64b05b1e31fde576e6e493479d`'
+            echo "Txgen revision: \`ca437320c94baf64b05b1e31fde576e6e493479d\`"
             echo '| Image | Immutable reference |'
             echo '|---|---|'
             echo "| Node | \`$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST\` |"
