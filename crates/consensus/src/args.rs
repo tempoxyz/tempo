@@ -15,8 +15,6 @@ use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
-const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
-    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Capacity of the shared queue carrying gossiped frames into consensus.
@@ -134,8 +132,14 @@ pub struct Args {
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
 
-    #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
-    pub max_message_size_bytes: u32,
+    /// Deprecated compatibility flag. The p2p message size limit is derived from the largest
+    /// payload consensus sends, so this value is ignored.
+    #[arg(
+        long = "consensus.max-message-size-bytes",
+        value_name = "BYTES",
+        help = "Deprecated: ignored; the p2p message size limit is derived from the largest consensus payload."
+    )]
+    pub max_message_size_bytes: Option<u32>,
 
     /// The number of worker threads assigned to consensus.
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
@@ -402,7 +406,7 @@ pub struct Args {
     /// allowed peer. The default matches the capacity of the previous fixed
     /// 16,384-message backlog on the 128/s channels.
     #[arg(long = "consensus.max-peers-per-set", default_value = "128")]
-    pub max_peers_per_set: NonZeroUsize,
+    pub max_peers_per_set: NonZeroU32,
 
     /// Maximum number of concurrent handshake attempts allowed.
     #[arg(
@@ -720,6 +724,7 @@ mod tests {
     use super::*;
     use reth_ethereum::chainspec::ForkCondition;
     use tempo_chainspec::TempoHardfork;
+    use test_case::test_case;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -786,15 +791,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deprecated_proposal_timing_flags_parse() {
-        for flag in [
-            "--consensus.time-to-prepare-proposal-transactions",
-            "--consensus.minimum-time-before-propose",
-            "--consensus.time-to-build-proposal",
-        ] {
-            parse(&["--dev", flag, "1ms"]);
-        }
+    #[test_case("--consensus.time-to-prepare-proposal-transactions")]
+    #[test_case("--consensus.minimum-time-before-propose")]
+    #[test_case("--consensus.time-to-build-proposal")]
+    fn deprecated_proposal_timing_flags_parse(flag: &str) {
+        parse(&["--dev", flag, "1ms"]);
     }
 
     #[test]

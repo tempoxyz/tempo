@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis seed
+exec tempo-zones-antithesis seed

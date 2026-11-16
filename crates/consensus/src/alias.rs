@@ -368,7 +368,8 @@ pub(crate) mod marshal {
             .find_sealed_or_recovered_block(genesis_hash, reth_provider::BlockSource::Any)
             .wrap_err("failed querying execution layer for genesis block")?
             .ok_or_eyre("execution layer did not contain the genesis block")?;
-        let genesis = Block::from_execution_block_unchecked(genesis);
+        let genesis =
+            Block::try_from_execution_block(genesis).wrap_err("genesis block is invalid")?;
         let digest = genesis.digest();
         Ok(marshal::Start::Genesis(Digested::precomputed(
             genesis, digest,

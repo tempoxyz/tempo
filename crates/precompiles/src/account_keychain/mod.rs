@@ -233,6 +233,14 @@ impl AccountKeychain {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Registers a new access key with signature type, expiry, and optional per-token spending
     /// limits. Only callable with the account's root key or, on T6+, an admin access key.
     ///
@@ -437,13 +445,7 @@ impl AccountKeychain {
             msg_sender,
             key_id,
             signature_type,
-            KeyRestrictions {
-                expiry: u64::MAX,
-                enforceLimits: false,
-                limits: Vec::new(),
-                allowAnyCalls: true,
-                allowedCalls: Vec::new(),
-            },
+            KeyRestrictions::unrestricted(),
             witness,
             true,
         )?;
@@ -1281,7 +1283,9 @@ impl AccountKeychain {
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
         if let Some(sig_type) = expected_sig_type
-            && !self.accepts_signature_type(&key, key_id, sig_type)?
+            && !Self::accepts_signature_type(&key, sig_type, || {
+                self.storage.is_retired_root(key_id)
+            })?
         {
             return Err(AccountKeychainError::signature_type_mismatch(
                 key.signature_type as u8,
@@ -1639,21 +1643,20 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Returns whether `key`, registered under `key_id`, accepts a signature of `signature_type`
+    /// Returns whether `key` accepts a signature of `signature_type`
     /// (0=Secp256k1, 1=P256, 2=WebAuthn, 3=ConfigurableAccount).
     ///
     /// A signature must have the key's stored type. From T14, a primitive key also accepts a
-    /// configurable account signature when `key_id` has a nonzero configuration commitment: the
+    /// configurable account signature when its key ID has a nonzero configuration commitment: the
     /// primitive delegate migrated to configurable ownership and its owner quorum now holds the
     /// grant. A key stored as `ConfigurableAccount` never accepts a primitive signature.
     ///
-    /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
-    /// primitive and `signature_type` is configurable.
-    fn accepts_signature_type(
-        &self,
+    /// Calls `is_retired_root` only when the key's stored type is primitive and `signature_type`
+    /// is configurable.
+    pub(crate) fn accepts_signature_type(
         key: &AuthorizedKey,
-        key_id: Address,
         signature_type: u8,
+        is_retired_root: impl FnOnce() -> Result<bool>,
     ) -> Result<bool> {
         if key.signature_type as u8 == signature_type {
             return Ok(true);
@@ -1663,7 +1666,7 @@ impl AccountKeychain {
         {
             return Ok(false);
         }
-        self.storage.is_retired_root(key_id)
+        is_retired_root()
     }
 }
 
@@ -1674,11 +1677,12 @@ mod tests {
         Precompile,
         error::TempoPrecompileError,
         storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, with_storage},
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use test_case::test_case;
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1773,8 +1777,7 @@ mod tests {
 
     #[test]
     fn test_t11_sorted_scope_validation_rejects_duplicates() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T11, || -> eyre::Result<()> {
             let mut keychain = AccountKeychain::new();
             let target = Address::repeat_byte(0x11);
             let recipient = Address::repeat_byte(0x22);
@@ -1824,10 +1827,6 @@ mod tests {
         })
     }
 
-    fn unrestricted_restrictions() -> KeyRestrictions {
-        tempo_alloy::provider::keychain::KeyRestrictions::default().into()
-    }
-
     #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -1835,8 +1834,7 @@ mod tests {
         let admin_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
@@ -1866,8 +1864,7 @@ mod tests {
         let missing_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.keys[account][active_admin_key].write(AuthorizedKey {
                 signature_type: StoredSignatureType::Secp256k1,
@@ -1918,8 +1915,7 @@ mod tests {
         let witness = B256::repeat_byte(0x65);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.authorize_admin_key(
@@ -1959,8 +1955,7 @@ mod tests {
         let child_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
@@ -1971,7 +1966,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: child_key,
                     signatureType: SignatureType::WebAuthn,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
             assert!(keychain.keys[account][child_key].read()?.expiry > 0);
@@ -1990,8 +1985,7 @@ mod tests {
         let admin_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)
         })?;
@@ -2026,7 +2020,7 @@ mod tests {
             let new_key = authorizeKeyCall {
                 keyId: Address::random(),
                 signatureType: SignatureType::Secp256k1,
-                config: unrestricted_restrictions(),
+                config: KeyRestrictions::unrestricted(),
             };
             assert_unauthorized_error(authorize_key(&mut keychain, account, new_key).unwrap_err());
 
@@ -2053,8 +2047,7 @@ mod tests {
         let delegate = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             StorageCtx.set_config_commitment(
                 delegate,
@@ -2068,16 +2061,11 @@ mod tests {
                 authorizeKeyCall {
                     keyId: delegate,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             )
             .unwrap_err();
-            assert!(matches!(
-                err,
-                TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::InvalidSignatureType(_)
-                )
-            ));
+            assert_eq!(err, AccountKeychainError::invalid_signature_type().into());
 
             Ok(())
         })
@@ -2091,8 +2079,7 @@ mod tests {
         let child_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             authorize_key(
                 &mut keychain,
@@ -2100,7 +2087,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: access_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -2111,7 +2098,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: child_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             );
 
@@ -2128,8 +2115,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
 
@@ -2164,8 +2150,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             assert_key_not_found(
@@ -2286,8 +2271,7 @@ mod tests {
         let access_key = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
             authorize_key(
                 &mut keychain,
@@ -2295,7 +2279,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: access_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -2319,8 +2303,7 @@ mod tests {
         let witness = B256::ZERO;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             authorize_key_with_witness(
@@ -2329,7 +2312,7 @@ mod tests {
                 authorizeKeyWithWitnessCall {
                     keyId: first_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                     witness,
                 },
             )?;
@@ -2344,7 +2327,7 @@ mod tests {
                 authorizeKeyWithWitnessCall {
                     keyId: second_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                     witness,
                 },
             )?;
@@ -2361,8 +2344,7 @@ mod tests {
         let witness = B256::repeat_byte(0x54);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             keychain.burn_key_authorization_witness(
@@ -2380,7 +2362,7 @@ mod tests {
                 authorizeKeyWithWitnessCall {
                     keyId: Address::random(),
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                     witness,
                 },
             );
@@ -2401,8 +2383,7 @@ mod tests {
         let witness = B256::repeat_byte(0x55);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_tx_origin(account)?;
 
             authorize_key(
@@ -2411,7 +2392,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: access_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: unrestricted_restrictions(),
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -2485,22 +2466,14 @@ mod tests {
         let token = Address::random();
         let other = Address::random();
         StorageCtx::enter(&mut storage, || {
-            // Initialize the keychain
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // First, authorize a key with main key (transaction_key = 0) to set up the test
             keychain.set_transaction_key(Address::ZERO)?;
             let setup_call = authorizeKeyCall {
                 keyId: existing_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().enforce_limits(),
             };
             authorize_key(&mut keychain, msg_sender, setup_call)?;
 
@@ -2511,13 +2484,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: other,
                 signatureType: SignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().enforce_limits(),
             };
             let auth_result = authorize_key(&mut keychain, msg_sender, auth_call);
             assert!(
@@ -2564,8 +2531,7 @@ mod tests {
         let other = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Mark delegated sender as a contract account to model the confused-deputy path.
             keychain
@@ -2581,13 +2547,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: existing_key,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().enforce_limits(),
                 },
             )?;
 
@@ -2600,13 +2560,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: other,
                     signatureType: SignatureType::P256,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().enforce_limits(),
                 },
             );
             assert!(auth_result.is_err());
@@ -2644,8 +2598,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain
                 .storage
@@ -2662,17 +2615,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
                 },
             )?;
 
@@ -2715,8 +2658,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2728,17 +2670,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
                 },
             )?;
 
@@ -2772,8 +2704,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Setup under matching tx.origin first.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2784,17 +2715,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
                 },
             )?;
 
@@ -2827,8 +2748,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2839,17 +2759,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
                 },
             )?;
 
@@ -2864,13 +2774,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: other_key,
                     signatureType: SignatureType::P256,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             );
             assert!(
@@ -2913,8 +2817,7 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
@@ -2924,17 +2827,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, account, auth_call.clone())?;
 
@@ -3003,8 +2896,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for the operation
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3013,13 +2905,8 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: 0, // Zero expiry is in the past - should fail
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                // Zero expiry is in the past - should fail
+                config: KeyRestrictions::unrestricted().expiry(0),
             };
             let result = authorize_key(&mut keychain, account, auth_call);
             assert!(
@@ -3042,23 +2929,13 @@ mod tests {
             let auth_call_past = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: 1, // Very old timestamp - should fail
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                // Very old timestamp - should fail
+                config: KeyRestrictions::unrestricted().expiry(1),
             };
             let result_past = authorize_key(&mut keychain, account, auth_call_past);
-            assert!(
-                matches!(
-                    result_past,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::ExpiryInPast(_)
-                    ))
-                ),
-                "Expected ExpiryInPast error for past expiry, got: {result_past:?}"
+            assert_eq!(
+                result_past,
+                Err(AccountKeychainError::expiry_in_past().into())
             );
 
             Ok(())
@@ -3073,8 +2950,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             let result = authorize_key(
@@ -3083,28 +2959,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100u64),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100u64), 60),
                 },
             );
 
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
+            assert_eq!(
+                result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             assert_eq!(
@@ -3131,8 +2992,7 @@ mod tests {
         let key_id_1 = Address::random();
         let key_id_2 = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for all operations
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3141,13 +3001,7 @@ mod tests {
             let auth_call_1 = authorizeKeyCall {
                 keyId: key_id_1,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_call_1)?;
 
@@ -3158,13 +3012,7 @@ mod tests {
             let auth_call_2 = authorizeKeyCall {
                 keyId: key_id_2,
                 signatureType: SignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().enforce_limits(),
             };
             authorize_key(&mut keychain, account, auth_call_2)?;
 
@@ -3190,8 +3038,7 @@ mod tests {
         let contract = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // authorize access key with 100 token spending limit
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3200,17 +3047,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -3266,12 +3103,10 @@ mod tests {
 
             // Assert that exceeding remaining limit fails
             let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
-            assert!(matches!(
+            assert_eq!(
                 exceed_result,
-                Err(TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::SpendingLimitExceeded(_)
-                ))
-            ));
+                Err(AccountKeychainError::spending_limit_exceeded().into())
+            );
 
             // Assert that the main key bypasses spending limits, does not affect existing limits
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3307,8 +3142,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Setup: Alice authorizes an access key with a spending limit of 100 tokens
             keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
@@ -3317,17 +3151,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, eoa_alice, auth_call)?;
 
@@ -3417,21 +3241,15 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize a key with expiry = 1 (minimal positive value)
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: 1, // Minimal positive expiry
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                // Minimal positive expiry
+                config: KeyRestrictions::unrestricted().expiry(1),
             };
             authorize_key(&mut keychain, account, auth_call.clone())?;
 
@@ -3514,13 +3332,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             // This would fail if initialize didn't set up storage properly
             authorize_key(&mut keychain, account, auth_call)?;
@@ -3542,21 +3354,14 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize with WebAuthn signature type
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::WebAuthn,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_call)?;
 
@@ -3593,25 +3398,14 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Authorize a key with expiry far in the future
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, account, auth_call)?;
 
@@ -3646,21 +3440,15 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Case 1: Key with enforce_limits = false
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false, // Initially no limits
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                // Initially no limits
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_call)?;
 
@@ -3712,21 +3500,14 @@ mod tests {
         let key_id_valid = Address::random();
         let key_id_never_existed = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Setup: Create and revoke a key
             let auth_call = authorizeKeyCall {
                 keyId: key_id_revoked,
                 signatureType: SignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_call)?;
             keychain.revoke_key(
@@ -3740,13 +3521,7 @@ mod tests {
             let auth_valid = authorizeKeyCall {
                 keyId: key_id_valid,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_valid)?;
 
@@ -3808,8 +3583,7 @@ mod tests {
         let key_p256 = Address::random();
         let key_webauthn = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Create keys with each signature type
@@ -3819,13 +3593,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_secp,
                     signatureType: SignatureType::Secp256k1, // type 0
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -3835,13 +3603,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_p256,
                     signatureType: SignatureType::P256, // type 1
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -3851,13 +3613,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_webauthn,
                     signatureType: SignatureType::WebAuthn, // type 2
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -3907,8 +3663,7 @@ mod tests {
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             // Use main key for authorization
             keychain.set_transaction_key(Address::ZERO)?;
@@ -3917,13 +3672,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
                 signatureType: SignatureType::P256,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: false,
-                    limits: vec![],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted(),
             };
             authorize_key(&mut keychain, account, auth_call)?;
 
@@ -3978,25 +3727,14 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4032,8 +3770,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(eoa)?;
@@ -4053,25 +3790,14 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4119,25 +3845,18 @@ mod tests {
 
         storage.set_timestamp(U256::from(100u64));
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: 200,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().expiry(200).limit(
+                    token,
+                    U256::from(100),
+                    0,
+                ),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4180,25 +3899,14 @@ mod tests {
         let token = Address::random();
 
         let key_slot = StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4235,25 +3943,14 @@ mod tests {
         let original_limit = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: original_limit,
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, original_limit, 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4295,8 +3992,7 @@ mod tests {
         let original_limit = U256::from(100);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(eoa)?;
@@ -4304,17 +4000,7 @@ mod tests {
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: original_limit,
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(token, original_limit, 0),
             };
             authorize_key(&mut keychain, eoa, auth_call)?;
 
@@ -4359,8 +4045,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
             keychain.keys[eoa][access_key].write(AuthorizedKey {
@@ -4404,8 +4089,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4458,8 +4142,7 @@ mod tests {
         let oversized_limit = U256::from(u128::MAX) + U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4469,28 +4152,13 @@ mod tests {
                 authorizeKeyCall {
                     keyId: invalid_key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: oversized_limit,
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, oversized_limit, 60),
                 },
             );
 
-            assert!(
-                matches!(
-                    authorize_result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {authorize_result:?}"
+            assert_eq!(
+                authorize_result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             authorize_key(
@@ -4499,17 +4167,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: valid_key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100u64),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100u64), 60),
                 },
             )?;
 
@@ -4522,14 +4180,9 @@ mod tests {
                 },
             );
 
-            assert!(
-                matches!(
-                    update_result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {update_result:?}"
+            assert_eq!(
+                update_result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             Ok(())
@@ -4544,8 +4197,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4555,35 +4207,15 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![
-                            TokenLimit {
-                                token,
-                                amount: U256::from(100_u64),
-                                period: 0,
-                            },
-                            TokenLimit {
-                                token,
-                                amount: U256::from(200_u64),
-                                period: 60,
-                            },
-                        ],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted()
+                        .limit(token, U256::from(100_u64), 0)
+                        .limit(token, U256::from(200_u64), 60),
                 },
             );
 
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected duplicate token limits to be rejected, got: {result:?}"
+            assert_eq!(
+                result,
+                Err(AccountKeychainError::invalid_spending_limit().into())
             );
 
             let stored_key = keychain.keys[account][key_id].read()?;
@@ -4604,8 +4236,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4650,8 +4281,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4695,8 +4325,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let limit_key = AccountKeychain::spending_limit_key(account, key_id);
             let handler = &mut keychain.spending_limits[limit_key][token];
@@ -4730,8 +4359,7 @@ mod tests {
         let undeployed_tip20 = Address::from(target_bytes);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4741,13 +4369,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -4787,8 +4409,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
@@ -4799,17 +4420,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 0),
                 },
             )?;
 
@@ -4865,8 +4476,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4876,17 +4486,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 60),
                 },
             )?;
 
@@ -4916,8 +4516,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -4927,17 +4526,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted().limit(token, U256::from(100), 60),
                 },
             )?;
             keychain.clear_emitted_events();
@@ -4997,8 +4586,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5008,13 +4596,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5048,8 +4630,7 @@ mod tests {
 
         storage.set_timestamp(U256::from(1_000u64));
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5060,16 +4641,12 @@ mod tests {
                     authorizeKeyCall {
                         keyId: key_id,
                         signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: false,
-                            allowedCalls: vec![CallScope {
+                        config: KeyRestrictions::unrestricted()
+                            .expiry(expiry)
+                            .allowed_calls(vec![CallScope {
                                 target,
                                 selectorRules: vec![],
-                            }],
-                        },
+                            }]),
                     },
                 )?;
             }
@@ -5118,8 +4695,7 @@ mod tests {
 
             storage.set_timestamp(U256::from(1_000u64));
             StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5129,17 +4705,11 @@ mod tests {
                     authorizeKeyCall {
                         keyId: key_id,
                         signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: 1_005,
-                            enforceLimits: true,
-                            limits: vec![TokenLimit {
-                                token,
-                                amount: U256::from(100u64),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
+                        config: KeyRestrictions::unrestricted().expiry(1_005).limit(
+                            token,
+                            U256::from(100u64),
+                            0,
+                        ),
                     },
                 )?;
 
@@ -5197,8 +4767,7 @@ mod tests {
             let token = Address::random();
 
             StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5208,17 +4777,7 @@ mod tests {
                     authorizeKeyCall {
                         keyId: key_id,
                         signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: true,
-                            limits: vec![TokenLimit {
-                                token,
-                                amount: U256::from(100u64),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
+                        config: KeyRestrictions::unrestricted().limit(token, U256::from(100u64), 0),
                     },
                 )?;
 
@@ -5260,37 +4819,32 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T2, 1)]
+    #[test_case(TempoHardfork::T3, 0)]
+    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3(
+        hardfork: TempoHardfork,
+        expected_sloads: u64,
+    ) -> eyre::Result<()> {
         let (account, token) = (Address::random(), Address::random());
 
-        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                let _ = keychain.initialize();
+        with_storage(hardfork, || {
+            let mut keychain = AccountKeychain::new();
+            let _ = keychain.initialize();
 
-                let sloads_before = StorageCtx.counter_sload();
-                assert_eq!(
-                    keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: Address::ZERO,
-                        token,
-                    })?,
-                    U256::ZERO
-                );
+            let sloads_before = StorageCtx.counter_sload();
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: Address::ZERO,
+                    token,
+                })?,
+                U256::ZERO
+            );
 
-                assert_eq!(
-                    StorageCtx.counter_sload() - sloads_before,
-                    expected_sloads,
-                    "{hardfork:?} should perform the expected number of storage reads for zero key_id"
-                );
+            assert_eq!(StorageCtx.counter_sload() - sloads_before, expected_sloads);
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
@@ -5300,8 +4854,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5311,13 +4864,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5346,8 +4893,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5357,13 +4903,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5397,8 +4937,7 @@ mod tests {
         let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5408,13 +4947,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5491,8 +5024,7 @@ mod tests {
         let target = DEFAULT_FEE_TOKEN;
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5502,13 +5034,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5557,10 +5083,8 @@ mod tests {
             (TempoHardfork::T3, &mut t3_sstores),
             (TempoHardfork::T4, &mut t4_sstores),
         ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
+            with_storage(hardfork, || {
+                let mut keychain = AccountKeychain::initialized()?;
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
@@ -5570,13 +5094,7 @@ mod tests {
                     authorizeKeyCall {
                         keyId: key_id,
                         signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
+                        config: KeyRestrictions::unrestricted(),
                     },
                 )?;
 
@@ -5627,8 +5145,7 @@ mod tests {
         let denied_recipient = Address::repeat_byte(0x33);
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
@@ -5639,13 +5156,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 
@@ -5709,8 +5220,7 @@ mod tests {
         let key_id = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
@@ -5720,13 +5230,7 @@ mod tests {
                 authorizeKeyCall {
                     keyId: key_id,
                     signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                    config: KeyRestrictions::unrestricted(),
                 },
             )?;
 

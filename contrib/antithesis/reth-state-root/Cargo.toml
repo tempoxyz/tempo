@@ -32,6 +32,7 @@ reth-stages-types.workspace = true
 reth-storage-overlay = { workspace = true, features = ["rayon"] }
 reth-tasks = { workspace = true, features = ["rayon", "test-utils"] }
 reth-trie.workspace = true
+reth-trie-db.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
@@ -41,7 +42,7 @@ eyre.workspace = true
 metrics-util = { workspace = true, features = ["debugging"] }
 rand_09.workspace = true
 antithesis-instrumentation.workspace = true
+antithesis-trie-shapes.workspace = true
 antithesis_sdk = { workspace = true, features = ["full", "rand_core_v0_9"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tempfile.workspace = true

@@ -16,6 +16,7 @@ on:
       - "mainnet-network-identity.json"
       - "testnet-network-identity.json"
       - "contrib/antithesis/reth-state-root/**"
+      - "contrib/antithesis/trie-shapes/**"
       - ".github/workflows/antithesis-reth-state-root.yml"
   workflow_dispatch:
 
@@ -79,7 +80,6 @@ jobs:
 
       - name: Prepare digest-paired configuration
         env:
-          TAG: ${{ steps.tags.outputs.tag }}
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           # Fail closed rather than publish a config that silently uses a moving tag.
@@ -87,7 +87,9 @@ jobs:
           dir="$RUNNER_TEMP/antithesis-reth-state-root-config"
           mkdir -p "$dir"
           cp contrib/antithesis/reth-state-root/docker-compose.yaml contrib/antithesis/reth-state-root/Dockerfile.config "$dir/"
-          printf 'RETH_STATE_ROOT_IMAGE=%s/tempo-reth-state-root-antithesis:%s@%s\n' "$REGISTRY" "$TAG" "$DIGEST" > "$dir/.env"
+          # Digest only: Antithesis turns a tag@digest reference into a file name, which a long
+          # branch tag pushes past the 255-byte limit, and the workload image is silently dropped.
+          printf 'RETH_STATE_ROOT_IMAGE=%s/tempo-reth-state-root-antithesis@%s\n' "$REGISTRY" "$DIGEST" > "$dir/.env"
 
       - name: Build and push config image
         id: config
@@ -112,6 +114,7 @@ jobs:
           {
             echo '### Antithesis reth state root image pair'
             echo ''
-            echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis:$TAG@$IMAGE_DIGEST\`"
-            echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config:$TAG@$CONFIG_DIGEST\`"
+            echo "Tag: \`$TAG\`"
+            echo "Workload: \`$REGISTRY/tempo-reth-state-root-antithesis@$IMAGE_DIGEST\`"
+            echo "Config: \`$REGISTRY/tempo-reth-state-root-antithesis-config@$CONFIG_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -7,15 +7,6 @@ use std::{
     time::Duration,
 };
 
-/// The driver may produce blocks while running, but must drain both frontiers when flushing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Phase {
-    /// Threshold saves may lag the head and mask recent state.
-    Running,
-    /// All input is executed; wait for saves and flush unmasked state to the head.
-    Flushing,
-}
-
 /// One background database writer with at most one unacknowledged save.
 pub(crate) struct Persistence {
     requests: mpsc::SyncSender<SaveBlocksInput>,
@@ -62,7 +53,7 @@ impl Persistence {
         Ok(())
     }
 
-    /// Poll a pending commit, or wait up to the timeout during backpressure and final flushing.
+    /// Poll a pending commit, or wait up to the timeout during backpressure and flushing.
     /// Only a successful acknowledgement returns the frontiers safe to verify and prune.
     pub(crate) fn acknowledge(
         &mut self,

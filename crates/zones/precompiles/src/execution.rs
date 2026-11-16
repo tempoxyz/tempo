@@ -31,7 +31,7 @@ use tempo_precompiles::{
     DelegateCallNotAllowed, charge_input_cost,
     dispatch::selector_from_calldata,
     error::TempoPrecompileError,
-    input_cost,
+    has_input_gas,
     storage::{
         PrecompileStorageProvider, StorageCtx,
         actions::StorageActions,
@@ -116,11 +116,8 @@ where
         ));
     }
 
-    let (data, caller): (&[u8], Address) = (&message.input, message.caller);
-    let Ok(input_gas) = input_cost(env.spec, data.len()) else {
-        return Err(PrecompileHalt::OutOfGas.into());
-    };
-    if gas.remaining() < input_gas {
+    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
+    if !has_input_gas(env.spec, data.len(), gas.remaining()) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
@@ -129,6 +126,9 @@ where
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
+    // Preserve input borrowed from caller memory before storage borrows the EVM.
+    let input = data.to_vec();
+    let data = input.as_slice();
     let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
     let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
     let storage_gas = if fixed_gas.is_some() {

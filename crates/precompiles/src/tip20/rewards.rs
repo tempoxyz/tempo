@@ -404,12 +404,11 @@ mod tests {
         address_registry::{MasterId, UserTag},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
-        tip403_registry::TIP403Registry,
+        test_util::{TIP20Setup, TIP403Setup},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
+    use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
@@ -860,43 +859,12 @@ mod tests {
         let alice = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
-
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_transfer_policy(TIP403Setup::blacklist(admin).with_members([alice]))
+                .apply()?;
 
             let err = token.claim_rewards(alice).unwrap_err();
-            assert!(
-                matches!(
-                    err,
-                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
-                ),
-                "Expected PolicyForbids error, got: {err:?}"
-            );
+            assert_eq!(err, TIP20Error::policy_forbids().into());
 
             Ok(())
         })
@@ -925,10 +893,7 @@ mod tests {
                 );
 
                 if hardfork.is_t3() {
-                    assert!(matches!(
-                        result.unwrap_err(),
-                        TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_))
-                    ));
+                    assert_eq!(result, Err(TIP20Error::invalid_recipient().into()));
                 } else {
                     // Pre-T3: virtual addresses are accepted
                     assert!(result.is_ok());

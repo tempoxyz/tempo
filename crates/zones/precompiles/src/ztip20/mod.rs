@@ -190,6 +190,7 @@ mod tests {
         zone_factory::ZonePortalStorage as ZonePortal,
     };
     use tempo_primitives::TempoAddressExt;
+    use test_case::test_case;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
@@ -469,54 +470,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn transfers_require_t15_and_portal_opt_in() -> eyre::Result<()> {
-        for (spec, opted_in, active) in [
-            (TempoHardfork::T13, true, false),
-            (TempoHardfork::T14, false, false),
-            (TempoHardfork::T14, true, false),
-            (TempoHardfork::T15, false, false),
-            (TempoHardfork::T15, true, true),
-        ] {
-            let mut harness = PrecompileHarness::new_at(spec)?;
-            harness.set_transfers_enabled(opted_in)?;
+    #[test_case(TempoHardfork::T13, true, false)]
+    #[test_case(TempoHardfork::T14, false, false)]
+    #[test_case(TempoHardfork::T14, true, false)]
+    #[test_case(TempoHardfork::T15, false, false)]
+    #[test_case(TempoHardfork::T15, true, true)]
+    fn transfers_require_t15_and_portal_opt_in(
+        spec: TempoHardfork,
+        opted_in: bool,
+        active: bool,
+    ) -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(spec)?;
+        harness.set_transfers_enabled(opted_in)?;
 
-            for (caller, calldata) in harness.transfer_calls(harness.bob) {
-                let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
-                assert_eq!(
-                    result.gas_used, TIP20_FIXED_TRANSFER_GAS,
-                    "{spec:?} opted_in={opted_in}"
-                );
-                if active {
-                    assert!(result.is_success(), "{spec:?} opted_in={opted_in}");
-                } else {
-                    assert!(result.is_revert(), "{spec:?} opted_in={opted_in}");
-                    assert_eq!(
-                        result.bytes,
-                        Bytes::from(Unauthorized {}.abi_encode()),
-                        "{spec:?} opted_in={opted_in}"
-                    );
-                }
+        for (caller, calldata) in harness.transfer_calls(harness.bob) {
+            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+            if active {
+                assert!(result.is_success());
+            } else {
+                assert!(result.is_revert());
+                assert_eq!(result.bytes, Bytes::from(Unauthorized {}.abi_encode()));
             }
-
-            let moved = if active { 4_321u64 } else { 0 };
-            assert_eq!(
-                harness.balance_of(harness.bob)?,
-                U256::from(moved),
-                "{spec:?} opted_in={opted_in}"
-            );
-            assert_eq!(
-                harness.balance_of(harness.alice)?,
-                U256::from(1_000_000u64 - moved),
-                "{spec:?} opted_in={opted_in}"
-            );
-            let spent = if active { 4_300u64 } else { 0 };
-            assert_eq!(
-                harness.allowance(harness.alice, harness.spender)?,
-                U256::from(300_000u64 - spent),
-                "{spec:?} opted_in={opted_in}"
-            );
         }
+
+        let moved = if active { 4_321u64 } else { 0 };
+        assert_eq!(harness.balance_of(harness.bob)?, U256::from(moved));
+        assert_eq!(
+            harness.balance_of(harness.alice)?,
+            U256::from(1_000_000u64 - moved)
+        );
+        let spent = if active { 4_300u64 } else { 0 };
+        assert_eq!(
+            harness.allowance(harness.alice, harness.spender)?,
+            U256::from(300_000u64 - spent)
+        );
         Ok(())
     }
 
@@ -1130,36 +1118,32 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn burn_at_respects_t12_boundary() -> eyre::Result<()> {
-        for (spec, active) in [
-            (TempoHardfork::T8, false),
-            (TempoHardfork::T11, false),
-            (TempoHardfork::T12, true),
-            (TempoHardfork::T13, true),
-        ] {
-            let mut harness = PrecompileHarness::new_at(spec)?;
-            let calldata = ITIP20::burnAtCall {
-                from: harness.alice,
-                amount: U256::ONE,
-            }
-            .abi_encode();
-            let admission = admit_at(&rules(), &calldata, harness.alice, spec);
-            let expected = if active {
-                assert!(matches!(admission, CallCheck::Revert(_)), "{spec:?}");
-                Unauthorized {}.abi_encode()
-            } else {
-                assert!(matches!(admission, CallCheck::Continue), "{spec:?}");
-                UnknownFunctionSelector {
-                    selector: ITIP20::burnAtCall::SELECTOR.into(),
-                }
-                .abi_encode()
-            };
-            let result = harness.call(harness.alice, calldata.into(), 100_000, false)?;
-            assert!(result.is_revert(), "{spec:?}");
-            assert_eq!(result.bytes, Bytes::from(expected), "{spec:?}");
-            assert_eq!(harness.balance_of(harness.alice)?, U256::from(1_000_000u64));
+    #[test_case(TempoHardfork::T8, false)]
+    #[test_case(TempoHardfork::T11, false)]
+    #[test_case(TempoHardfork::T12, true)]
+    #[test_case(TempoHardfork::T13, true)]
+    fn burn_at_respects_t12_boundary(spec: TempoHardfork, active: bool) -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(spec)?;
+        let calldata = ITIP20::burnAtCall {
+            from: harness.alice,
+            amount: U256::ONE,
         }
+        .abi_encode();
+        let admission = admit_at(&rules(), &calldata, harness.alice, spec);
+        let expected = if active {
+            assert!(matches!(admission, CallCheck::Revert(_)));
+            Unauthorized {}.abi_encode()
+        } else {
+            assert!(matches!(admission, CallCheck::Continue));
+            UnknownFunctionSelector {
+                selector: ITIP20::burnAtCall::SELECTOR.into(),
+            }
+            .abi_encode()
+        };
+        let result = harness.call(harness.alice, calldata.into(), 100_000, false)?;
+        assert!(result.is_revert());
+        assert_eq!(result.bytes, Bytes::from(expected));
+        assert_eq!(harness.balance_of(harness.alice)?, U256::from(1_000_000u64));
         Ok(())
     }
 }

@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis check-ledger
+exec tempo-zones-antithesis check-ledger

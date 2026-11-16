@@ -37,7 +37,7 @@ use tempo_contracts::{
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    tip20::ITIP20 as PrecompileTip20, tip403_registry::ALLOW_ALL_POLICY_ID,
+    test_util::TIP20Setup, tip20::ITIP20 as PrecompileTip20, tip403_registry::ALLOW_ALL_POLICY_ID,
 };
 use tempo_primitives::{
     TempoTxEnvelope,
@@ -392,9 +392,9 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Authorized P256 keychain tokens authenticate as the root account in both V1 and V2 encodings.
+/// Authorized P256 V2 keychain tokens authenticate as the root account.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
+async fn test_keychain_auth_tokens_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut ctx = start_zone_with_redacted_rpc().await?;
@@ -418,28 +418,26 @@ async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
     )
     .await?;
 
-    for version in [0x03, 0x04] {
-        let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, version);
-        let resp = ctx
-            .call(
-                "eth_call",
-                serde_json::json!([
-                    {
-                        "from": format!("{:#x}", root_signer.address()),
-                        "to": format!("{:#x}", root_signer.address()),
-                        "input": "0x"
-                    },
-                    "latest"
-                ]),
-                &token,
-            )
-            .await?;
-        assert_eq!(
-            resp["result"].as_str().unwrap(),
-            "0x",
-            "keychain auth should allow calls from the root account",
-        );
-    }
+    let (token, _) = ctx.keychain_p256_token(root_signer.address(), &access_signer, 0x04);
+    let resp = ctx
+        .call(
+            "eth_call",
+            serde_json::json!([
+                {
+                    "from": format!("{:#x}", root_signer.address()),
+                    "to": format!("{:#x}", root_signer.address()),
+                    "input": "0x"
+                },
+                "latest"
+            ]),
+            &token,
+        )
+        .await?;
+    assert_eq!(
+        resp["result"].as_str().unwrap(),
+        "0x",
+        "keychain auth should allow calls from the root account",
+    );
 
     Ok(())
 }
@@ -1430,15 +1428,12 @@ async fn test_zone_get_zone_info_returns_all_enabled_tokens() -> eyre::Result<()
 
     let ctx = start_zone_with_redacted_rpc_l1().await?;
     let user_signer = PrivateKeySigner::random();
-    let alpha_salt = B256::with_last_byte(0x44);
-    let alpha_token = ctx
-        .l1()
-        .create_tip20("AlphaUSD", "aUSD", alpha_salt)
+    let alpha_token = TIP20Setup::create("AlphaUSD", "aUSD", ctx.l1().dev_address())
+        .with_salt(B256::with_last_byte(0x44))
+        .apply_rpc(&ctx.l1().dev_provider())
         .await?;
 
-    ctx.l1()
-        .enable_token_on_portal(ctx.portal_address(), alpha_token)
-        .await?;
+    ctx.zone.enable_token(alpha_token).await?;
 
     let zone_info = ctx
         .call_as_user("zone_getZoneInfo", serde_json::json!([]), &user_signer)

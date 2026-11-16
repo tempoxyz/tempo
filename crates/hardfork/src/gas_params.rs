@@ -10,7 +10,8 @@ use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 const CONTRACT_CREATE_COST: u32 = 500_000;
 const NEW_ACCOUNT_COST: u32 = 250_000;
 const CODE_DEPOSIT_COST_T1: u32 = 1_000;
-const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u32 = 12_500;
+/// TIP-1000 intrinsic gas per EIP-7702 authorization from T1. No Tempo hardfork charges less.
+pub const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u32 = 12_500;
 
 // TIP-1060 (T7): the SSTORE gas function charges only the 5,000-gas residual
 // (`SSTORE_SET_COST`) on a clean creation (`original == present == 0`). The
