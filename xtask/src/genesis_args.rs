@@ -53,7 +53,6 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
-    cards::Cards,
     configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
@@ -448,9 +447,8 @@ impl GenesisArgs {
         }
 
         if self.hardforks.active_at_genesis(TempoHardfork::T15) {
-            println!("Initializing account reservations (T15 active at genesis)");
+            println!("Initializing the reservation core (T15 active at genesis)");
             with_genesis_storage(&mut evm, || Reservations::new().initialize())?;
-            with_genesis_storage(&mut evm, || Cards::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {

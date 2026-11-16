@@ -1,6 +1,5 @@
 pub mod account_keychain;
 pub mod address_registry;
-pub mod cards;
 pub mod common_errors;
 pub mod configurable_account;
 pub mod current_committee;
@@ -22,7 +21,6 @@ pub mod zone_verifier;
 
 pub use account_keychain::*;
 pub use address_registry::*;
-pub use cards::*;
 pub use common_errors::*;
 pub use configurable_account::*;
 pub use current_committee::*;
@@ -91,5 +89,4 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
     (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
     (RESERVATIONS_ADDRESS, TempoHardfork::T15),
-    (CARDS_ADDRESS, TempoHardfork::T15),
 ];
