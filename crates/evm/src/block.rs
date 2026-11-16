@@ -978,6 +978,9 @@ impl<'a> TempoBlockExecutor<'a> {
 
         // Check each transaction's section as it commits, over a copy of the section state.
         let mut committed = Vec::new();
+        // The lanes the committer moved out of `lanes`, in bulk rather than locking it for each
+        // transaction.
+        let mut committer_lanes = Vec::new();
         let result = self.inner.inner.execute_transaction_stream(
             stream,
             base,
@@ -985,8 +988,12 @@ impl<'a> TempoBlockExecutor<'a> {
             parallel.threads,
             on_speculative,
             |index, result| {
-                let lanes = lanes.lock().unwrap();
-                let lane = &lanes[index];
+                // A transaction's lane is pushed before the transaction is sent to execute.
+                if index >= committer_lanes.len() {
+                    committer_lanes.append(&mut lanes.lock().unwrap());
+                    committed.reserve(committer_lanes.len() - index);
+                }
+                let lane = &committer_lanes[index];
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
                 } else {
@@ -1050,8 +1057,8 @@ impl<'a> TempoBlockExecutor<'a> {
             return Ok(stats);
         }
         // Otherwise the transactions before a failure stay committed: account for them too.
-        let lanes = lanes.into_inner().unwrap();
-        for ((next_section, block_gas_used), lane) in committed.into_iter().zip(&lanes) {
+        committer_lanes.append(&mut lanes.into_inner().unwrap());
+        for ((next_section, block_gas_used), lane) in committed.into_iter().zip(&committer_lanes) {
             self.record_committed_tx(
                 next_section,
                 block_gas_used,
