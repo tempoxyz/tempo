@@ -104,9 +104,6 @@ url = { version = "2", optional = true }
 zeroize = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
-[build-dependencies]
-smolgen.workspace = true
-
 [dev-dependencies]
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 zone-node = { path = ".", features = ["test-utils"] }
