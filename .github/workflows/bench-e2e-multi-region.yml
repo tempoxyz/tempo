@@ -178,6 +178,7 @@ on:
           - state-read-cold
           - state-read-hot
           - state-read-dependent
+          - state-read-cold-lowmem
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -330,8 +331,9 @@ jobs:
       BENCH_INPUT_BLOAT: ${{ inputs.bloat || '100' }}
       BENCH_INPUT_VALIDATOR_COUNT: ${{ inputs['validator-count'] || (github.event_name == 'pull_request' && '1') || '10' }}
       BENCH_INPUT_REGIONS: ${{ inputs.regions || '' }}
-      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && 'c4d-standard-48-lssd' || 'c6id.8xlarge' }}
-      BENCH_INPUT_LOCAL_SSD_COUNT: '4'
+      # state-read-cold-lowmem runs on 62 GB validators, below the 100 GB bloat, so reads hit disk.
+      BENCH_INPUT_INSTANCE_TYPE: ${{ (inputs.cloud || 'gcp') == 'gcp' && (inputs.preset == 'state-read-cold-lowmem' && 'c4d-standard-16-lssd' || 'c4d-standard-48-lssd') || 'c6id.8xlarge' }}
+      BENCH_INPUT_LOCAL_SSD_COUNT: ${{ inputs.preset == 'state-read-cold-lowmem' && '1' || '4' }}
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs['max-concurrent-requests'] || (github.event_name == 'pull_request' && '10') || '5000' }}
