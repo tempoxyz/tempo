@@ -1,4 +1,4 @@
-//! The test-template harness both reth workloads share. A long-running server owns the database,
+//! The reth-state-root workload's test-template harness. A long-running server owns the database,
 //! the engine and the model; the short commands Antithesis runs from the test template talk to it
 //! over a Unix socket, one JSON request and one JSON response per line. Blocks are built only when
 //! a command asks, so Antithesis decides how writes, blocks, proofs, checks and faults interleave.

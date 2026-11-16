@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-state-root-antithesis first_genesis
+exec reth-state-root-commands first_genesis

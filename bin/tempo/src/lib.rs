@@ -36,6 +36,7 @@ mod defaults;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
+pub mod payload_bench;
 pub mod regenesis;
 pub mod shadow_replay;
 mod snapshot_download;
@@ -205,7 +206,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    tempo_node::init_version_metadata();
+    tempo_node::init_version_metadata(tempo_node::tempo_version_metadata!());
     defaults::init_defaults();
 
     // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
@@ -1421,6 +1422,25 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.disable-prewarming=false",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
+        );
 
         let cli =
             TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.parallel"]).unwrap();

@@ -9,7 +9,7 @@ use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use std::env;
-use tempo_alloy::rpc::TempoTransactionReceipt;
+use tempo_alloy::{rpc::TempoTransactionReceipt, test_utils::CallBuilderExt};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::transaction::calc_gas_balance_spending;
@@ -89,9 +89,7 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     let transfer_amount = U256::from(1_000_000u64);
     path_usd
         .transfer(new_address, transfer_amount)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Create provider with the new wallet

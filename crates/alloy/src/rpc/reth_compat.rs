@@ -511,11 +511,7 @@ mod tests {
                 max_priority_fee_per_gas: Some(2),
                 ..Default::default()
             },
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x22)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x22), Bytes::new())],
             ..Default::default()
         };
         let expected_calls = request.calls.clone();
@@ -738,11 +734,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: target.into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(target, Bytes::new())],
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
@@ -783,16 +775,8 @@ mod tests {
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
         let calls = vec![
-            Call {
-                to: Address::repeat_byte(0x11).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xaa]),
-            },
-            Call {
-                to: Address::repeat_byte(0x22).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xbb]),
-            },
+            Call::new(Address::repeat_byte(0x11), vec![0xaa]),
+            Call::new(Address::repeat_byte(0x22), vec![0xbb]),
         ];
 
         let tx = TempoTransaction {

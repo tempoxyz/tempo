@@ -28,7 +28,6 @@ impl TempoAdminApi {
     }
 }
 
-#[async_trait::async_trait]
 impl TempoAdminApiServer for TempoAdminApi {
     async fn validator_key(&self) -> RpcResult<Option<B256>> {
         Ok(self.validator_key)

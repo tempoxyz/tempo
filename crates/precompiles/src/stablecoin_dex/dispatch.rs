@@ -104,15 +104,14 @@ impl Precompile for StablecoinDEX {
 
 #[cfg(test)]
 mod tests {
-
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{DexSetup, assert_full_coverage, check_selector_coverage, with_storage},
     };
     use alloy::{
-        primitives::{Address, U256},
+        primitives::Address,
         sol_types::{SolCall, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -120,41 +119,23 @@ mod tests {
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
-        let mut exchange = StablecoinDEX::new();
-        exchange.initialize()?;
+        let mut exchange = StablecoinDEX::initialized()?;
 
         let admin = Address::random();
         let user = Address::random();
-        let amount = 200_000_000u128;
-
-        // Initialize quote token (pathUSD)
-        let quote = TIP20Setup::path_usd(admin)
-            .with_issuer(admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange.address, U256::from(amount))
-            .apply()?;
-
-        let base = TIP20Setup::create("USDC", "USDC", admin)
-            .with_issuer(admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange.address, U256::from(amount))
-            .apply()?;
-
-        // Create pair and add liquidity
-        exchange.create_pair(base.address())?;
+        let (base, quote) = DexSetup::new(admin).trader(user, 200_000_000).apply()?;
 
         // Place an order to provide liquidity
-        exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
+        exchange.place(user, base, MIN_ORDER_AMOUNT, true, 0)?;
 
-        Ok((exchange, base.address(), quote.address(), user))
+        Ok((exchange, base, quote, user))
     }
 
     #[test]
     fn test_place_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -180,8 +161,7 @@ mod tests {
     fn test_place_flip_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -208,8 +188,7 @@ mod tests {
     fn test_balance_of_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -230,8 +209,7 @@ mod tests {
     fn test_min_price() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MIN_PRICECall {};
@@ -252,8 +230,7 @@ mod tests {
     fn test_tick_spacing() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::TICK_SPACINGCall {};
@@ -278,8 +255,7 @@ mod tests {
     fn test_max_price() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::ZERO;
             let call = IStablecoinDEX::MAX_PRICECall {};
@@ -300,8 +276,7 @@ mod tests {
     fn test_create_pair_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let base = Address::repeat_byte(2u8);
@@ -321,8 +296,7 @@ mod tests {
     fn test_withdraw_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
             let token = Address::random();
@@ -345,8 +319,7 @@ mod tests {
     fn test_cancel_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
+            let mut exchange = StablecoinDEX::initialized()?;
 
             let sender = Address::random();
 
@@ -464,8 +437,7 @@ mod tests {
 
     #[test]
     fn stablecoin_dex_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T8, || {
             let mut exchange = StablecoinDEX::new();
 
             let unsupported = check_selector_coverage(

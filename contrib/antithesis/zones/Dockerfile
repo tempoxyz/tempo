@@ -50,6 +50,10 @@ ARG COVERAGE_RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-l
 # The build platform's architecture (BuildKit sets it), so local arm64 builds stay native.
 ARG TARGETARCH
 
+# The test template's commands (tempo-zones-antithesis) come from a second build without the sancov
+# flags, in its own target dir so neither build invalidates the other: only the system under test
+# reports coverage and has its threads paused. SDK assertions reach Antithesis either way.
+#
 # Private caches per workload: a concurrent or cancelled build (a cancelled workflow does not
 # stop its remote build) never holds them, and Cargo's package-cache lock lives outside the
 # registry mount, so concurrent builds must not share it.
@@ -65,8 +69,13 @@ RUN --mount=type=cache,id=antithesis-zones-cargo-registry,target=/usr/local/carg
         --features tempo/fuzz-execution,tempo-zone/fuzz,tempo/antithesis-coverage,tempo-zone/antithesis-coverage,tempo-xtask/antithesis-coverage \
     && sccache --show-stats \
     && mkdir -p /out \
-    && cd "target/$target/${RUST_PROFILE}" \
-    && cp tempo tempo-zone tempo-xtask tempo-zone-xtask /out/
+    && cp "target/$target/${RUST_PROFILE}"/tempo "target/$target/${RUST_PROFILE}"/tempo-zone \
+        "target/$target/${RUST_PROFILE}"/tempo-xtask "target/$target/${RUST_PROFILE}"/tempo-zone-xtask /out/ \
+    && RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+    cargo build --locked --profile ${RUST_PROFILE} --target "$target" --target-dir target/uninstrumented \
+        -p tempo-zones-antithesis --bin tempo-zones-antithesis \
+    && cp "target/uninstrumented/$target/${RUST_PROFILE}/tempo-zones-antithesis" /out/ \
+    && ! readelf -SW /out/tempo-zones-antithesis | grep -q __sancov_guards
 
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \

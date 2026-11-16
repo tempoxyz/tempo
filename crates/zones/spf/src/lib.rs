@@ -1251,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_reveals_the_active_tempo_checkpoint() {
+    fn reads_storage_from_the_active_tempo_checkpoint() {
         let account = Address::repeat_byte(0x34);
         let slot = U256::from(7);
         let value = U256::from(11);
@@ -1415,32 +1415,6 @@ mod tests {
 
     #[test]
     fn binds_the_initial_tempo_checkpoint_before_block_execution() {
-        let mut witness = minimal_batch_witness();
-        witness.zone_blocks.push(ZoneBlock {
-            number: 1,
-            parent_hash: witness.parent_header.hash_slow(),
-            timestamp: 0,
-            timestamp_millis_part: 0,
-            beneficiary: Address::ZERO,
-            tempo_import: full_import(Bytes::from([0x01])),
-            finalize_withdrawal_batch_count: Some(U256::ZERO),
-            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
-            transactions: vec![Bytes::from([0x01])],
-        });
-
-        assert!(matches!(
-            prove_zone_batch(&test_config(), witness),
-            Err(Error::InitialTempoCheckpointMismatch {
-                expected_number: 0,
-                expected_hash: B256::ZERO,
-                actual_number: 2,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn initial_tempo_checkpoint_binding_precedes_header_import_validation() {
         let mut witness = minimal_batch_witness();
         witness.zone_blocks.push(ZoneBlock {
             number: 1,

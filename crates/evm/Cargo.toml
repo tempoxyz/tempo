@@ -77,7 +77,6 @@ indexmap = { workspace = true, features = ["serde"] }
 insta.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 proptest.workspace = true
-rand_08.workspace = true
 reth-execution-cache.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }

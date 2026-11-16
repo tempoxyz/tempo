@@ -93,12 +93,11 @@ mod tests {
     use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
     use tempo_precompiles::{
         Precompile as _, TIP_FEE_MANAGER_ADDRESS,
-        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, TIP403Setup, with_storage},
         tip20::ITIP20,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+    use tempo_primitives::test_utils::actors;
 
     #[test]
     fn settles_fees_from_escrow_to_beneficiary() -> eyre::Result<()> {
@@ -178,39 +177,20 @@ mod tests {
 
     #[test]
     fn rejects_unauthorized_beneficiary_before_debit() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || {
-            let admin = Address::random();
-            let payer = Address::random();
-            let beneficiary = Address::random();
+        with_storage(TempoHardfork::T9, || {
+            let [admin, payer, beneficiary] = actors();
             let balance = U256::from(10_000);
-            let mut token = TIP20Setup::create("USD", "USD", admin)
-                .with_issuer(admin)
+            let token = TIP20Setup::create("USD", "USD", admin)
                 .with_mint(payer, balance)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([payer]))
                 .apply()?;
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-            let policy = registry.create_policy_with_accounts(
-                admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    accounts: vec![payer],
-                },
-            )?;
-            token.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy,
-                },
-            )?;
 
             let mut manager = ZoneFeeManager::new();
             manager.initialize(token.address())?;
-            assert!(matches!(
+            assert_eq!(
                 manager.collect_fee_pre_tx(payer, token.address(), U256::from(5_000), beneficiary,),
-                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-            ));
+                Err(TIP20Error::policy_forbids().into())
+            );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
                 balance
@@ -244,8 +224,7 @@ mod tests {
 
     #[test]
     fn short_calldata_reverts_without_panicking() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T9, || {
             let mut manager = ZoneFeeManager::new();
             for len in 0..4 {
                 assert!(matches!(

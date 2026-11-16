@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tempo-zone-xtask antithesis check-settled
+exec tempo-zones-antithesis check-settled

@@ -39,7 +39,7 @@ key in the `ANTITHESIS_REGISTRY_KEY` repository secret.
 
 `test/v1/zone_payments` ships at `/opt/antithesis/test/v1` in the workload image only (the Dockerfile's
 `workload` target), so only the `workload` container offers it. The test platform finds templates in the
-images it is given, so they must be in the image rather than copied in when a container starts. Each command is a `tempo-zone-xtask antithesis` subcommand:
+images it is given, so they must be in the image rather than copied in when a container starts. Each command is a subcommand of `tempo-zones-antithesis` ([`xtask/zones-antithesis`](../../../xtask/zones-antithesis)), built without coverage instrumentation so only the nodes report coverage:
 
 | Command | What it does |
 |---|---|
@@ -48,7 +48,8 @@ images it is given, so they must be in the image rather than copied in when a co
 | `parallel_driver_transfer` | TIP-20 transfer inside the zone to a new or existing account |
 | `parallel_driver_withdraw` | Withdraws to a new or existing L1 address |
 | `parallel_driver_fanout` | Funds 5 to 20 new zone accounts from one sender |
-| `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, and settled workload transactions stay final |
+| `parallel_driver_rotate_leader` | Hands leadership to another sequencer, through the admin or a zone node's `zone_setLeader` relay, then waits for the new leader to produce and settle |
+| `anytime_consistency` | Nodes that reached the height L1 settled agree on its hash and on balances there, settled workload transactions stay final, and every zone block comes from the leader the portal names at its Tempo anchor |
 | `eventually_settled` | After faults stop, every confirmed deposit is credited and every confirmed withdrawal is paid, and all nodes converge |
 | `finally_ledger` | The same, then every workload account's zone balance equals what the zone's Transfer logs add up to |
 

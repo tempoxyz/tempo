@@ -15,6 +15,7 @@ use commonware_runtime::{
 };
 use eyre::OptionExt as _;
 use futures::future::join_all;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -88,9 +89,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .claim(blocked.receiver, blocked.receipt.clone())
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(claim.status(), "claim receipt: {claim:#?}");
 
@@ -130,9 +129,7 @@ fn test_receive_policy_guard_claim_with_recovery() {
             .claim(destination, blocked.receipt)
             .gas(GAS)
             .gas_price(GAS_PRICE)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(claim.status(), "claim receipt: {claim:#?}");
 
@@ -204,9 +201,7 @@ async fn create_blocked_transfer(
         .setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, recovery)
         .gas(GAS)
         .gas_price(GAS_PRICE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let sender_wallet = wallet(sender_index)?;
@@ -216,9 +211,7 @@ async fn create_blocked_transfer(
         .mint(sender, amount)
         .gas(GAS)
         .gas_price(GAS_PRICE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let sender_provider = ProviderBuilder::new()
@@ -229,9 +222,7 @@ async fn create_blocked_transfer(
         .transfer(receiver, amount)
         .gas(GAS)
         .gas_price(GAS_PRICE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(transfer.status());
 
@@ -305,9 +296,7 @@ where
         )
         .gas(GAS)
         .gas_price(GAS_PRICE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(receipt.status());
 
@@ -324,9 +313,7 @@ where
         .grantRole(ISSUER_ROLE, admin)
         .gas(GAS)
         .gas_price(GAS_PRICE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(grant.status());
 

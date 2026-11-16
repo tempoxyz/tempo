@@ -1,4 +1,5 @@
 use super::{
+    configurable_account::ConfigurableAccountSignature,
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
     unique_tx_identifier_from_signable,
@@ -114,12 +115,24 @@ impl AASigned {
     /// Whether configurable account approvals sign this transaction: the outer signature, directly
     /// or inside a keychain envelope, or the inline key authorization.
     pub fn has_configurable_approvals(&self) -> bool {
-        self.signature.is_or_wraps_configurable_account()
-            || self
-                .tx
-                .key_authorization
-                .as_ref()
-                .is_some_and(|auth| auth.signature().is_configurable_account())
+        self.configurable_account_signatures().next().is_some()
+    }
+
+    /// Returns the configurable account signatures approving this transaction: the outer
+    /// signature, directly or inside a keychain envelope, then the inline key authorization's.
+    pub fn configurable_account_signatures(
+        &self,
+    ) -> impl Iterator<Item = &ConfigurableAccountSignature> {
+        let outer = match &self.signature {
+            TempoSignature::Keychain(keychain) => keychain.signature.as_configurable_account(),
+            signature => signature.as_configurable_account(),
+        };
+        let grant = self
+            .tx
+            .key_authorization
+            .as_ref()
+            .and_then(|auth| auth.signature().as_configurable_account());
+        outer.into_iter().chain(grant)
     }
 
     /// Recovers the sender and verifies any configurable account owner quorum signing an inline key
@@ -577,11 +590,7 @@ pub(crate) mod tests {
         TempoTransaction {
             chain_id: 1,
             gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         }
     }
@@ -798,11 +807,7 @@ pub(crate) mod tests {
                 fee_token: Some(Address::repeat_byte(0xFE)),
                 fee_payer_signature: Some(fee_payer_sig),
                 valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-                calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x42)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
                 ..Default::default()
             }
         };
@@ -838,11 +843,7 @@ pub(crate) mod tests {
             nonce_key: U256::MAX,
             nonce: 0,
             valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         };
         let mut discriminated_tx = tx.clone();
@@ -867,11 +868,7 @@ pub(crate) mod tests {
             nonce_key: U256::MAX,
             nonce: 0,
             valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         };
         let signed = tx.into_signed(Signature::test_signature().into());

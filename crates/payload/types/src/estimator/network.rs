@@ -112,7 +112,48 @@ impl NetworkTracker {
             network_sample,
             NETWORK_SAMPLE_TTL,
         );
+        tracing::debug!(
+            epoch = parent.epoch,
+            view = parent.view,
+            ?network_sample,
+            network_target = ?self.reservation_target(),
+            network_reserve = ?self.current_reservation,
+            samples = self.samples.len(),
+            "recorded network sample"
+        );
         true
+    }
+
+    /// Returns the last reservation and current policy-adjusted target, expiring
+    /// retained observations without advancing the reservation.
+    pub(super) fn snapshot(&mut self, now: Instant) -> (Duration, Option<Duration>) {
+        self.prune(now);
+        (self.current_reservation, self.reservation_target())
+    }
+
+    /// Unclamped target, with warm-up and corroborated fast rise applied.
+    fn reservation_target(&self) -> Option<Duration> {
+        let NetworkReservation::Adaptive {
+            network_reserve_percentile,
+            network_reserve_fast_rise,
+            ..
+        } = self.policy
+        else {
+            return None;
+        };
+        let percentile = sample_percentile(&self.samples, usize::from(network_reserve_percentile))?;
+        let percentile = if self.samples.len() < 4 {
+            self.minimum_reservation
+        } else {
+            percentile
+        };
+        let mut newest = self.samples.iter().rev().map(|(_, value)| *value);
+        Some(match (newest.next(), newest.next()) {
+            (Some(last), Some(previous)) if network_reserve_fast_rise => {
+                percentile.max(last.min(previous))
+            }
+            _ => percentile,
+        })
     }
 
     /// Expires feedback and takes one bounded step toward the configured percentile, or the minimum
@@ -122,29 +163,15 @@ impl NetworkTracker {
     pub(super) fn reserve_for_proposal(&mut self, now: Instant) -> Duration {
         self.prune(now);
         let NetworkReservation::Adaptive {
-            network_budget_max,
-            network_reserve_percentile,
-            network_reserve_fast_rise,
-            ..
+            network_budget_max, ..
         } = self.policy
         else {
             return self.minimum_reservation;
         };
-        let target = sample_percentile(&self.samples, usize::from(network_reserve_percentile))
-            .map_or(self.minimum_reservation, |percentile_reservation| {
-                let percentile_reservation = if self.samples.len() < 4 {
-                    self.minimum_reservation
-                } else {
-                    percentile_reservation
-                };
-                let mut newest = self.samples.iter().rev().map(|(_, value)| *value);
-                let observed = match (newest.next(), newest.next()) {
-                    (Some(last), Some(previous)) if network_reserve_fast_rise => {
-                        percentile_reservation.max(last.min(previous))
-                    }
-                    _ => percentile_reservation,
-                };
-                observed.clamp(self.minimum_reservation, network_budget_max)
+        let target = self
+            .reservation_target()
+            .map_or(self.minimum_reservation, |target| {
+                target.clamp(self.minimum_reservation, network_budget_max)
             });
         self.current_reservation = step_toward(
             self.current_reservation,

@@ -20,7 +20,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolConstructor, SolValue};
 use eyre::WrapErr;
 use std::time::Duration;
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest, test_utils::CallBuilderExt};
 use tempo_contracts::{
     precompiles::{IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry},
     zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal},
@@ -29,7 +29,10 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
     tip403_registry::AuthRole,
 };
-use tempo_primitives::transaction::Call;
+use tempo_primitives::{
+    test_utils::{actors, signers},
+    transaction::Call,
+};
 
 const AMOUNT: u128 = 1_000_000;
 const REWARD_AMOUNT: u128 = AMOUNT / 10;
@@ -51,7 +54,8 @@ const CONTRACT_DEPLOYMENT_TX_GAS_LIMIT: u64 = 30_000_000;
 const SETUP_CALL_GAS_LIMIT: u64 = 5_000_000;
 const MIN_GAS_HEADROOM_PERCENT: u64 = 15;
 const E2E_TIMEOUT: Duration = Duration::from_secs(90);
-const BOUNCE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Under nextest's 3-minute kill, so a stalled bounce reports the wait that failed.
+const BOUNCE_TIMEOUT: Duration = Duration::from_secs(150);
 
 alloy_sol_types::sol! {
     enum EarnFlow {
@@ -284,6 +288,8 @@ impl Default for EarnLimits {
 #[derive(Clone, Copy)]
 struct EarnAccessPolicy {
     policy_id: u64,
+    /// Account the setup whitelists, for tests that revoke its eligibility.
+    outsider: Address,
 }
 
 struct EarnZoneFixture {
@@ -428,7 +434,11 @@ impl EarnZoneFixture {
                     SETUP_CALL_GAS_LIMIT,
                 )
                 .await?;
-            Some(EarnAccessPolicy { policy_id })
+            let [outsider] = actors();
+            Some(EarnAccessPolicy {
+                policy_id,
+                outsider,
+            })
         } else {
             None
         };
@@ -466,7 +476,7 @@ impl EarnZoneFixture {
                 .await?;
         }
 
-        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
+        let zone = ZoneTestNode::start_from_l1(&l1, portal).await?;
         setup.finish().await?;
 
         let fees = FeeConfig {
@@ -566,7 +576,6 @@ impl EarnZoneFixture {
             )
             .await?;
         if let Some(policy) = access_policy {
-            let outsider = l1.signer_at(3).address();
             for account in [
                 earn_vault,
                 router,
@@ -575,7 +584,7 @@ impl EarnZoneFixture {
                 ZONE_OUTBOX_ADDRESS,
                 owner,
                 user_address,
-                outsider,
+                policy.outsider,
             ] {
                 setup
                     .call(
@@ -662,9 +671,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider)
             .modifyPolicyWhitelist(policy.policy_id, account, eligible)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "updating Earn eligibility failed");
 
@@ -687,25 +694,14 @@ impl EarnZoneFixture {
     }
 
     async fn allow_zone_account(&self, account: Address) -> eyre::Result<()> {
-        let block = self
-            .l1
-            .set_allowed_account_on_portal(self.portal, account, true)
-            .await?;
-        self.zone
-            .wait_for_l2_tempo_finalized(block, E2E_TIMEOUT)
-            .await?;
+        self.zone.set_allowed_account(account, true).await?;
         self.zone.assert_allowed_account(account, true).await
     }
 
     async fn set_deposits_paused(&self, paused: bool) -> eyre::Result<()> {
         let provider = self.l1.dev_provider();
         let earn_vault = EarnVault::new(self.earn_vault, &provider);
-        let receipt = earn_vault
-            .setDepositsPaused(paused)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = earn_vault.setDepositsPaused(paused).mined().await?;
         eyre::ensure!(receipt.status(), "setting Earn deposit pause failed");
         eyre::ensure!(
             earn_vault.depositsPaused().call().await? == paused,
@@ -718,9 +714,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = DemoParPool::new(self.pool, &provider)
             .setPaused(paused)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "setting par pool pause failed");
         let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
@@ -738,9 +732,7 @@ impl EarnZoneFixture {
         let provider = self.l1.dev_provider();
         let receipt = DemoParPool::new(self.pool, &provider)
             .setRecipientAllowed(self.router, allowed)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "setting par pool router admission failed");
         let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
@@ -810,9 +802,7 @@ impl EarnZoneFixture {
         {
             let receipt = token_contract
                 .approve(self.portal, U256::MAX)
-                .send()
-                .await?
-                .get_receipt()
+                .mined()
                 .await?;
             eyre::ensure!(receipt.status(), "encrypted entry approval failed");
         }
@@ -824,9 +814,7 @@ impl EarnZoneFixture {
         let balance_before = self.zone.balance_of(token, recipient).await?;
         let receipt = ZonePortal::new(self.portal, provider)
             .deposit(token, amount, key_index, encrypted, recipient)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "encrypted Zone entry failed");
 
@@ -1485,20 +1473,13 @@ impl EarnZoneFixture {
         let asset = ITIP20::new(self.vault_asset, provider);
         let receipt = asset
             .approve(self.venue_vault, U256::from(AMOUNT))
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         eyre::ensure!(receipt.status(), "vault asset approval failed");
 
         let vault = VenueVault::new(self.venue_vault, provider);
         let venue_before = vault.balanceOf(user).call().await?;
-        let receipt = vault
-            .deposit(U256::from(AMOUNT), user)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = vault.deposit(U256::from(AMOUNT), user).mined().await?;
         eyre::ensure!(receipt.status(), "creating existing venue shares failed");
         let venue_after = vault.balanceOf(user).call().await?;
         let venue_shares = venue_after - venue_before;
@@ -1893,7 +1874,7 @@ async fn matrix_deposit_private_private_succeeds() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_deposit_third_party_recipient() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
-    let recipient = fixture.l1.signer_at(3).address();
+    let [recipient] = actors();
     let shares = fixture
         .zone_deposit(fixture.alternate_asset, recipient)
         .await?;
@@ -1917,7 +1898,7 @@ async fn matrix_redeem_private_private_succeeds() -> eyre::Result<()> {
 async fn zone_redeem_third_party_recipient() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
     let user = fixture.user.address();
-    let recipient = fixture.l1.signer_at(3).address();
+    let [recipient] = actors();
     let shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
     let output = fixture
         .zone_redeem(shares, fixture.alternate_asset, recipient)
@@ -2064,7 +2045,7 @@ async fn controls_par_pool_failures_bounce_until_restored() -> eyre::Result<()> 
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
-    let outsider = fixture.l1.signer_at(3).address();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     fixture
@@ -2076,7 +2057,7 @@ async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
 async fn zone_ineligible_private_transfer_blocked() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
     let user = fixture.user.address();
-    let outsider = fixture.l1.signer_at(3).address();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     let user_shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
@@ -2120,7 +2101,7 @@ async fn zone_ineligible_private_transfer_blocked() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_removed_private_holder_is_blocked_until_reauthorized() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
-    let outsider_signer = fixture.l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     fixture.l1.fund_user(outsider, PUBLIC_USER_BALANCE).await?;
     fixture.allow_zone_account(outsider).await?;
@@ -2204,9 +2185,7 @@ async fn zone_rewards_private_holder() -> eyre::Result<()> {
     let provider = fixture.user.l1_provider();
     let receipt = ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.contribution_controller, U256::from(REWARD_AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "reward asset approval failed");
     let rewards = EarnContributionController::new(fixture.contribution_controller, provider);
@@ -2233,9 +2212,7 @@ async fn zone_rewards_private_holder() -> eyre::Result<()> {
     let receipt = rewards
         .fund(user, U256::from(REWARD_AMOUNT), max_earn_share_supply)
         .gas(REWARD_FUNDING_TX_GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "funding private-holder rewards failed");
     ensure_gas_headroom(
@@ -2309,16 +2286,12 @@ async fn matrix_deposit_public_public_succeeds() -> eyre::Result<()> {
 
     let receipt = ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.earn_vault, U256::from(AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault approval failed");
     let receipt = EarnVault::new(fixture.earn_vault, provider)
         .deposit(U256::from(AMOUNT), user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault deposit failed");
     assert_eq!(
@@ -2338,30 +2311,22 @@ async fn matrix_redeem_public_public_succeeds() -> eyre::Result<()> {
 
     ITIP20::new(fixture.vault_asset, provider)
         .approve(fixture.earn_vault, U256::from(AMOUNT))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     EarnVault::new(fixture.earn_vault, provider)
         .deposit(U256::from(AMOUNT), user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     let earn_shares = fixture.l1.balance_of(fixture.earn_share, user).await?;
 
     let receipt = ITIP20::new(fixture.earn_share, provider)
         .approve(fixture.earn_vault, earn_shares)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnShare approval failed");
     let receipt = EarnVault::new(fixture.earn_vault, provider)
         .redeem(earn_shares, user, U256::ONE)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     eyre::ensure!(receipt.status(), "public EarnVault redeem failed");
     assert_eq!(
