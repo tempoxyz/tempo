@@ -1,0 +1,8 @@
+# `crates/precompiles/clippy.toml` replaces this file for that crate: keep these entries in both.
+disallowed-methods = [
+    { path = "evm2::Evm::message_input", reason = "call input is readable only once gas covers its cost, use `tempo_precompiles::UnmeteredInput`" },
+    { path = "evm2::interpreter::Interpreter::input", reason = "call input is readable only once gas covers its cost, use `tempo_precompiles::UnmeteredInput`" },
+    { path = "evm2::interpreter::InterpreterState::input", reason = "call input is readable only once gas covers its cost, use `tempo_precompiles::UnmeteredInput`" },
+    { path = "evm2::interpreter::MessageInput::as_bytes", reason = "call input is readable only once gas covers its cost, use `tempo_precompiles::UnmeteredInput`" },
+    { path = "evm2::interpreter::MessageInput::to_bytes", reason = "call input is readable only once gas covers its cost, use `tempo_precompiles::UnmeteredInput`" },
+]

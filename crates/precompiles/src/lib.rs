@@ -10,6 +10,9 @@ pub mod storage;
 pub mod dispatch;
 pub use dispatch::*;
 
+mod input;
+pub use input::UnmeteredInput;
+
 pub(crate) mod ip;
 
 pub mod account_keychain;
@@ -119,12 +122,6 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .div_ceil(32)
         .checked_mul(per_word_cost)
         .ok_or(error::TempoPrecompileError::OutOfGas)
-}
-
-/// Returns whether `remaining` gas covers [`input_cost`] for `calldata_len` bytes at `spec`.
-#[inline]
-pub fn has_input_gas(spec: TempoHardfork, calldata_len: usize, remaining: u64) -> bool {
-    input_cost(spec, calldata_len).is_ok_and(|cost| remaining >= cost)
 }
 
 /// Returns the additional gas cost for duplicate validation at `spec`.
@@ -329,11 +326,12 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
+        let Some(input) = UnmeteredInput::of_message(evm, message).covered_by(self.spec, gas)
+        else {
             return Some(Err(PrecompileHalt::OutOfGas.into()));
-        }
+        };
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = evm.message_input(message).to_vec();
+        let input = input.to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());

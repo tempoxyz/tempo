@@ -10,8 +10,8 @@ use evm2::{
 };
 use evm2_macros::instruction;
 use tempo_precompiles::{
+    UnmeteredInput,
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, shim},
-    has_input_gas,
     storage::{
         SstoreTransitionFlags, StorageCtx, account_config_commitment,
         evm::EvmPrecompileStorageProvider,
@@ -159,10 +159,10 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    if !has_input_gas(spec, cx.state.input().len(), cx.gas.tracker().remaining()) {
+    let Some(input) = UnmeteredInput::of_frame(cx.state).covered_by(spec, cx.gas.tracker()) else {
         return Err(InstrStop::PrecompileOOG);
-    }
-    let input = cx.state.input().to_vec();
+    };
+    let input = input.to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
     let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
