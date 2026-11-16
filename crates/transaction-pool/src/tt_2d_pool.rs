@@ -267,18 +267,6 @@ impl AA2dPool {
             ));
         }
 
-        let lane_count = self
-            .txs_by_lane
-            .get(&tx_id.seq_id)
-            .copied()
-            .unwrap_or_default();
-        if lane_count >= self.config.max_txs_per_lane && tx_id.nonce > on_chain_nonce {
-            return Err(PoolError::new(
-                *transaction.hash(),
-                PoolErrorKind::SpammerExceededCapacity(transaction.sender()),
-            ));
-        }
-
         // At the per-authority limit, the on-chain nonce of a lane whose transactions wait behind
         // a gap is still added, which makes them executable, in place of the lane's highest nonce.
         // That one must free a slot for each authority at the limit, or the transaction is
@@ -360,6 +348,20 @@ impl AA2dPool {
                 Some(replaced)
             }
             Entry::Vacant(entry) => {
+                // The lane cap only applies to new nonces: a replacement above reuses its
+                // slot, and the on-chain nonce is always admitted so a gap can be filled.
+                let lane_count = self
+                    .txs_by_lane
+                    .get(&tx_id.seq_id)
+                    .copied()
+                    .unwrap_or_default();
+                if lane_count >= self.config.max_txs_per_lane && tx_id.nonce > on_chain_nonce {
+                    return Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::SpammerExceededCapacity(transaction.sender()),
+                    ));
+                }
+
                 // Check the per-authority limit for new (non-replacement) transactions
                 if let Some(authority) = self
                     .txs_by_authority
@@ -5948,13 +5950,22 @@ mod tests {
             pool.add_transaction(tx, 0, TempoHardfork::T1).unwrap();
         }
 
-        // Both new future nonces and future-nonce replacements are rejected at capacity.
-        for nonce in [1, 4] {
-            assert!(
-                pool.add_transaction(make_tx(nonce, 2_000_000_000), 0, TempoHardfork::T1)
-                    .is_err()
-            );
-        }
+        // New future nonces are rejected at capacity, but a future-nonce replacement keeps
+        // its slot and is admitted subject to the usual price bump.
+        assert!(
+            pool.add_transaction(make_tx(4, 2_000_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        assert!(
+            pool.add_transaction(make_tx(1, 1_000_000_000), 0, TempoHardfork::T1)
+                .is_err()
+        );
+        let bumped = pool
+            .add_transaction(make_tx(1, 2_000_000_000), 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(bumped.as_pending().is_none());
+        assert_eq!(pool.txs_by_lane[&seq_id], 3);
+        hashes[0] = *bumped.hash();
         let added = pool
             .add_transaction(make_tx(0, 1_000_000_000), 0, TempoHardfork::T1)
             .unwrap();
