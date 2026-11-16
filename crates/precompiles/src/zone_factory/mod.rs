@@ -8,7 +8,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     has_duplicates_metered,
     storage::{Handler, Mapping},
-    tip20::TIP20Token,
+    tip20::{TIP20Token, USD_CURRENCY},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
 };
@@ -141,6 +141,11 @@ impl ZoneFactory {
         let token_symbol = token.symbol()?;
         let token_currency = token.currency()?;
         validate_token_metadata(&token_name, &token_symbol, &token_currency)?;
+        // The initial token becomes the zone's immutable default fee token, and zone fee tokens
+        // must be USD from T15.
+        if self.storage.spec().is_t15() && token_currency != USD_CURRENCY {
+            return Err(ZoneFactoryError::invalid_token().into());
+        }
         let token_enablement_hash = keccak256(
             (
                 B256::ZERO,
@@ -364,6 +369,7 @@ mod tests {
     use portal::PortalTokenConfig;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ZonePortalCapability;
+    use test_case::test_case;
 
     const OWNER: Address = Address::with_last_byte(0x11);
     const ADMIN: Address = Address::with_last_byte(0x22);
@@ -627,6 +633,26 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    #[test_case(TempoHardfork::T14 => Ok(1))]
+    #[test_case(TempoHardfork::T15 => Err(ZoneFactoryError::invalid_token().into()))]
+    fn create_zone_non_usd_initial_token(hardfork: TempoHardfork) -> Result<u32> {
+        with_storage(hardfork, || {
+            let eur = TIP20Setup::create("Euro", "EUR", ADMIN)
+                .currency("EUR")
+                .apply()?
+                .address();
+            let mut factory = factory_with_owner(OWNER)?;
+            factory
+                .create_zone(
+                    OWNER,
+                    IZoneFactory::createZoneCall {
+                        params: create_params(eur),
+                    },
+                )
+                .map(|created| created.zoneId)
+        })
     }
 
     #[test]
