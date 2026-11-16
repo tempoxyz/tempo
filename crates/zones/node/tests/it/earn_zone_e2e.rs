@@ -29,7 +29,10 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
     tip403_registry::AuthRole,
 };
-use tempo_primitives::transaction::Call;
+use tempo_primitives::{
+    test_utils::{actors, signers},
+    transaction::Call,
+};
 
 const AMOUNT: u128 = 1_000_000;
 const REWARD_AMOUNT: u128 = AMOUNT / 10;
@@ -51,7 +54,8 @@ const CONTRACT_DEPLOYMENT_TX_GAS_LIMIT: u64 = 30_000_000;
 const SETUP_CALL_GAS_LIMIT: u64 = 5_000_000;
 const MIN_GAS_HEADROOM_PERCENT: u64 = 15;
 const E2E_TIMEOUT: Duration = Duration::from_secs(90);
-const BOUNCE_TIMEOUT: Duration = Duration::from_secs(180);
+/// Under nextest's 3-minute kill, so a stalled bounce reports the wait that failed.
+const BOUNCE_TIMEOUT: Duration = Duration::from_secs(150);
 
 alloy_sol_types::sol! {
     enum EarnFlow {
@@ -284,6 +288,8 @@ impl Default for EarnLimits {
 #[derive(Clone, Copy)]
 struct EarnAccessPolicy {
     policy_id: u64,
+    /// Account the setup whitelists, for tests that revoke its eligibility.
+    outsider: Address,
 }
 
 struct EarnZoneFixture {
@@ -428,7 +434,11 @@ impl EarnZoneFixture {
                     SETUP_CALL_GAS_LIMIT,
                 )
                 .await?;
-            Some(EarnAccessPolicy { policy_id })
+            let [outsider] = actors();
+            Some(EarnAccessPolicy {
+                policy_id,
+                outsider,
+            })
         } else {
             None
         };
@@ -466,7 +476,7 @@ impl EarnZoneFixture {
                 .await?;
         }
 
-        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
+        let zone = ZoneTestNode::start_from_l1(&l1, portal).await?;
         setup.finish().await?;
 
         let fees = FeeConfig {
@@ -566,7 +576,6 @@ impl EarnZoneFixture {
             )
             .await?;
         if let Some(policy) = access_policy {
-            let outsider = l1.signer_at(3).address();
             for account in [
                 earn_vault,
                 router,
@@ -575,7 +584,7 @@ impl EarnZoneFixture {
                 ZONE_OUTBOX_ADDRESS,
                 owner,
                 user_address,
-                outsider,
+                policy.outsider,
             ] {
                 setup
                     .call(
@@ -685,13 +694,7 @@ impl EarnZoneFixture {
     }
 
     async fn allow_zone_account(&self, account: Address) -> eyre::Result<()> {
-        let block = self
-            .l1
-            .set_allowed_account_on_portal(self.portal, account, true)
-            .await?;
-        self.zone
-            .wait_for_l2_tempo_finalized(block, E2E_TIMEOUT)
-            .await?;
+        self.zone.set_allowed_account(account, true).await?;
         self.zone.assert_allowed_account(account, true).await
     }
 
@@ -1871,7 +1874,7 @@ async fn matrix_deposit_private_private_succeeds() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_deposit_third_party_recipient() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
-    let recipient = fixture.l1.signer_at(3).address();
+    let [recipient] = actors();
     let shares = fixture
         .zone_deposit(fixture.alternate_asset, recipient)
         .await?;
@@ -1895,7 +1898,7 @@ async fn matrix_redeem_private_private_succeeds() -> eyre::Result<()> {
 async fn zone_redeem_third_party_recipient() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
     let user = fixture.user.address();
-    let recipient = fixture.l1.signer_at(3).address();
+    let [recipient] = actors();
     let shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
     let output = fixture
         .zone_redeem(shares, fixture.alternate_asset, recipient)
@@ -2042,7 +2045,7 @@ async fn controls_par_pool_failures_bounce_until_restored() -> eyre::Result<()> 
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
-    let outsider = fixture.l1.signer_at(3).address();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     fixture
@@ -2054,7 +2057,7 @@ async fn zone_ineligible_private_deposit_bounces() -> eyre::Result<()> {
 async fn zone_ineligible_private_transfer_blocked() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
     let user = fixture.user.address();
-    let outsider = fixture.l1.signer_at(3).address();
+    let outsider = fixture.access_policy.expect("protected fixture").outsider;
     fixture.allow_zone_account(outsider).await?;
     fixture.set_access_eligibility(outsider, false).await?;
     let user_shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
@@ -2098,7 +2101,7 @@ async fn zone_ineligible_private_transfer_blocked() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_removed_private_holder_is_blocked_until_reauthorized() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start_protected().await?;
-    let outsider_signer = fixture.l1.signer_at(3);
+    let [outsider_signer] = signers();
     let outsider = outsider_signer.address();
     fixture.l1.fund_user(outsider, PUBLIC_USER_BALANCE).await?;
     fixture.allow_zone_account(outsider).await?;
