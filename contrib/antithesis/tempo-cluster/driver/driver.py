@@ -17,6 +17,47 @@ from antithesis import assertions, lifecycle
 URLS = [f"http://validator-{i}:8545" for i in range(4)]
 RPC_TIMEOUT = 2
 RECOVERY_TIMEOUT = 180
+FAULT_CONTROL_TIMEOUT = 10
+# A terminal lease, not a permanent pause: even os._exit or a crashed driver
+# cannot strand the injector. Leave room for the handshake and the last RPC/
+# bounded 64-block receipt scan + 20-second burst to overrun the polling deadline.
+RECOVERY_PAUSE_SECONDS = 3600
+
+
+class FaultControlError(RuntimeError):
+    pass
+
+
+def pause_faults_for_recovery():
+    """Return a conservative lease deadline, or None for explicit local output."""
+    helper = os.getenv("ANTITHESIS_STOP_FAULTS")
+    if helper is None:
+        # Compose explicitly selects SDK local output. That variable is also
+        # present on-platform, so it is NOT sufficient without excluding every
+        # platform marker (including Hegel's unsupported control protocol).
+        local = (bool(os.getenv("ANTITHESIS_SDK_LOCAL_OUTPUT"))
+                 and not any(name in os.environ for name in (
+                     "ANTITHESIS_OUTPUT_DIR", "ANTITHESIS_FAULT_CONTROL"))
+                 and not Path("/usr/lib/libvoidstar.so").exists())
+        if local:
+            print("Local SDK-output mode: no Antithesis fault injector to pause", flush=True)
+            return None
+        raise FaultControlError("Recovery requires ANTITHESIS_STOP_FAULTS outside local SDK-output mode")
+    # Authoritative duration protocol (NOT Hegel 0.4.7's --pause/--unpause):
+    # https://antithesis.com/docs/product/writing_tests/controlling_faults/pause_faults/
+    # Success means the helper has stopped faults/restored the network and
+    # killed containers; their readiness is still checked over RPC below.
+    # Clock skips already in progress are not cancelled by this API.
+    requested_at = time.monotonic()
+    try:
+        status = command([helper, str(RECOVERY_PAUSE_SECONDS)], FAULT_CONTROL_TIMEOUT)
+    except OSError as error:
+        raise FaultControlError("Could not execute ANTITHESIS_STOP_FAULTS") from error
+    if status != 0:
+        raise FaultControlError(f"ANTITHESIS_STOP_FAULTS handshake failed (status {status})")
+    print(f"Fault-pause helper completed for {RECOVERY_PAUSE_SECONDS} seconds", flush=True)
+    # Count from BEFORE the handshake, conservatively covering any helper delay.
+    return requested_at + RECOVERY_PAUSE_SECONDS
 
 
 class RpcError(Exception):
@@ -210,13 +251,16 @@ class Cluster(hegel.StateMachine):
             self.recover_with_faults_paused(tc)
 
     def recover_with_faults_paused(self, tc):
-        # Construct the pause scope only when ending a timeline, not on every round.
+        # Only terminal recovery requests a lease; normal rounds retain faults.
+        # Do not rely on Hegel's pause_faults=True: pinned 0.4.7 silently no-ops
+        # without ANTITHESIS_FAULT_CONTROL, which this platform does not expose.
+        quiet_until = pause_faults_for_recovery()
         recovery = hegel.Machine(tc).steps(1)
         recovery.rule("idle", lambda _: None)
-        recovery.invariant("recovery", lambda _: self.recover(), always_run=True, pause_faults=True)
+        recovery.invariant("recovery", lambda _: self.recover(quiet_until), always_run=True)
         recovery.run()
 
-    def recover(self):
+    def recover(self, quiet_until):
         target = max(self.highest) + 3
         before = self.successful_receipts
         deadline = time.monotonic() + RECOVERY_TIMEOUT
@@ -235,6 +279,8 @@ class Cluster(hegel.StateMachine):
                 recovered = True
                 break
             time.sleep(1)
+        if quiet_until is not None and time.monotonic() >= quiet_until:
+            raise FaultControlError("Recovery exceeded the fault-pause lease; liveness result is invalid")
         assertions.always(recovered, "Cluster resumes finality and successful transactions after faults stop",
                           {"target": target, "heights": self.highest, "successful_samples": self.successful_receipts - before})
         Path("/state/recovery-result.json").write_text(json.dumps({"recovered": recovered, "heights": self.highest}))

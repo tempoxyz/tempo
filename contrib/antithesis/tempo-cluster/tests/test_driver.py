@@ -1,9 +1,13 @@
 import importlib.util
+import importlib.metadata
+import os
 from pathlib import Path
 import signal
 import sys
+import tempfile
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "driver" / "driver.py"
 spec = importlib.util.spec_from_file_location("cluster_driver", SOURCE)
@@ -89,11 +93,14 @@ class Checks(unittest.TestCase):
                 driver.block("a", "finalized")
 
     def test_on_demand_fault_pause_accepts_nested_hegel_machine(self):
-        @driver.hegel.test(test_cases=1, phases=[driver.hegel.Phase.generate])
+        @driver.hegel.test(test_cases=1, phases=[driver.hegel.Phase.generate], database="")
         def run(tc):
-            with patch.object(self.cluster, "recover") as recover:
+            with patch.dict(os.environ, {"ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl"}, clear=True), \
+                    patch.object(driver.Path, "exists", return_value=False), \
+                    patch.object(self.cluster, "recover") as recover:
                 self.cluster.recover_with_faults_paused(tc)
                 self.assertGreaterEqual(recover.call_count, 1)
+                recover.assert_called_with(None)
         run()
 
     def test_same_receipt_cannot_count_as_new_progress(self):
@@ -102,6 +109,160 @@ class Checks(unittest.TestCase):
             self.cluster.observe()
         self.assertEqual(self.cluster.successful_receipts, 1)
         self.assertEqual(self.cluster.successful_height, 8)
+
+
+class FaultPause(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.calls = self.root / "calls"
+        self.helper = self.root / "stop faults"
+        self.cluster = driver.Cluster(["a", "b", "c", "d"])
+
+    def write_helper(self, tail="exit 0"):
+        self.helper.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{self.calls}"\n{tail}\n')
+        self.helper.chmod(0o755)
+
+    def run_scope(self, env, recover):
+        # Use the actual pinned engine, not a mock of Machine/invariant. This
+        # catches accidental reintroduction of its incompatible pause protocol.
+        self.assertEqual(importlib.metadata.version("hegeltest"), "0.4.7")
+        @driver.hegel.test(test_cases=1, phases=[driver.hegel.Phase.generate], database="")
+        def run(tc):
+            with patch.dict(os.environ, env, clear=True), patch.object(self.cluster, "recover", recover):
+                self.cluster.recover_with_faults_paused(tc)
+        run()
+
+    def test_real_hegel_scope_uses_duration_once_before_recovery_not_pause_flags(self):
+        self.write_helper()
+        seen = []
+        def recover(deadline):
+            self.assertEqual(self.calls.read_text().splitlines(), [str(driver.RECOVERY_PAUSE_SECONDS)])
+            self.assertGreater(deadline, driver.time.monotonic() + driver.RECOVERY_TIMEOUT)
+            seen.append(deadline)
+        # If pause_faults=True were still used, this existing but non-executable
+        # control path would make libhegel fail before calling the invariant.
+        self.run_scope({"ANTITHESIS_STOP_FAULTS": str(self.helper),
+                        "ANTITHESIS_FAULT_CONTROL": str(self.calls)}, recover)
+        self.assertGreaterEqual(len(seen), 1)
+        self.assertEqual(len(set(seen)), 1)
+        # Returning/raising from a scope sends no --unpause: lease expiry is
+        # platform-owned, so it also works when real recovery uses os._exit.
+        self.assertEqual(self.calls.read_text().splitlines(), [str(driver.RECOVERY_PAUSE_SECONDS)])
+
+    def test_real_hegel_scope_helper_error_never_runs_recovery(self):
+        self.write_helper("exit 7")
+        recover = Mock()
+        with self.assertRaisesRegex(driver.FaultControlError, "status 7"):
+            self.run_scope({"ANTITHESIS_STOP_FAULTS": str(self.helper)}, recover)
+        recover.assert_not_called()
+
+    def test_real_hegel_scope_missing_platform_helper_never_runs_recovery(self):
+        recover = Mock()
+        with self.assertRaisesRegex(driver.FaultControlError, "requires ANTITHESIS_STOP_FAULTS"):
+            self.run_scope({"ANTITHESIS_OUTPUT_DIR": str(self.root),
+                            "ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl"}, recover)
+        recover.assert_not_called()
+
+    def test_real_hegel_scope_helper_timeout_never_runs_recovery(self):
+        self.write_helper("/bin/sleep 60")
+        recover = Mock()
+        with patch.object(driver, "FAULT_CONTROL_TIMEOUT", 0.02):
+            with self.assertRaisesRegex(driver.FaultControlError, "status -9"):
+                self.run_scope({"ANTITHESIS_STOP_FAULTS": str(self.helper)}, recover)
+        recover.assert_not_called()
+
+    def test_explicit_local_output_is_required_to_skip_helper(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(driver.Path, "exists", return_value=False):
+            with self.assertRaises(driver.FaultControlError):
+                driver.pause_faults_for_recovery()
+        with patch.dict(os.environ, {"ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl"}, clear=True), \
+                patch.object(driver.Path, "exists", return_value=False):
+            self.assertIsNone(driver.pause_faults_for_recovery())
+
+    def test_platform_markers_override_local_sdk_output(self):
+        for name in ("ANTITHESIS_OUTPUT_DIR", "ANTITHESIS_FAULT_CONTROL", "ANTITHESIS_STOP_FAULTS"):
+            with self.subTest(marker=name), \
+                    patch.dict(os.environ, {"ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl", name: ""}, clear=True), \
+                    patch.object(driver.Path, "exists", return_value=False):
+                with self.assertRaises(driver.FaultControlError):
+                    driver.pause_faults_for_recovery()
+        with patch.dict(os.environ, {"ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl"}, clear=True), \
+                patch.object(driver.Path, "exists", return_value=True):
+            with self.assertRaises(driver.FaultControlError):
+                driver.pause_faults_for_recovery()
+
+    def test_helper_missing_or_not_executable_is_not_a_local_fallback(self):
+        for exists in (False, True):
+            if exists:
+                self.helper.write_text("#!/bin/sh\nexit 0\n")
+            with self.subTest(exists=exists), \
+                    patch.dict(os.environ, {"ANTITHESIS_STOP_FAULTS": str(self.helper),
+                                            "ANTITHESIS_SDK_LOCAL_OUTPUT": "/state/sdk.jsonl"}, clear=True):
+                with self.assertRaisesRegex(driver.FaultControlError, "Could not execute"):
+                    driver.pause_faults_for_recovery()
+
+    def test_lease_starts_before_helper_and_covers_recovery_overrun(self):
+        # Observe can read 4 heads, 2 checkpoints/node, 4 pinned blocks and
+        # 64 (block, receipt) pairs; a final burst is bounded to 20 seconds.
+        overrun = (4 + 2 * 4 + 4 + 64 * 2) * driver.RPC_TIMEOUT + 20 + 1
+        self.assertGreater(driver.RECOVERY_PAUSE_SECONDS,
+                           driver.FAULT_CONTROL_TIMEOUT + driver.RECOVERY_TIMEOUT + overrun)
+        self.assertLess(driver.RECOVERY_PAUSE_SECONDS, 86400)
+        with patch.dict(os.environ, {"ANTITHESIS_STOP_FAULTS": "helper"}, clear=True), \
+                patch.object(driver, "time", types.SimpleNamespace(monotonic=lambda: 100)), \
+                patch.object(driver, "command", return_value=0) as command:
+            self.assertEqual(driver.pause_faults_for_recovery(), 100 + driver.RECOVERY_PAUSE_SECONDS)
+        command.assert_called_once_with(["helper", str(driver.RECOVERY_PAUSE_SECONDS)], driver.FAULT_CONTROL_TIMEOUT)
+
+    def test_recovery_deadline_starts_after_handshake(self):
+        self.write_helper()
+        now = [100]
+        original_command = driver.command
+        def handshake(args, timeout):
+            status = original_command(args, timeout)
+            now[0] = 1000  # Model a long handshake before recovery begins.
+            return status
+        def observe():
+            now[0] += driver.RECOVERY_TIMEOUT + 1
+            return False
+        original_recover = self.cluster.recover
+        ended = []
+        def recover(deadline):
+            if not ended:
+                original_recover(deadline)
+                ended.append(True)  # Real recovery exits instead of returning.
+        with patch.object(driver, "time", types.SimpleNamespace(monotonic=lambda: now[0], sleep=lambda _: None)), \
+                patch.object(driver, "command", side_effect=handshake), \
+                patch.object(self.cluster, "observe", side_effect=observe) as observed, \
+                patch.object(driver.assertions, "always") as assertion, \
+                patch.object(driver.Path, "write_text"), \
+                patch.object(driver.os, "_exit") as exit_timeline:
+            self.run_scope({"ANTITHESIS_STOP_FAULTS": str(self.helper)}, recover)
+        # A deadline based on the request at time 100 would skip all reads at
+        # time 1000. The successful handshake must precede starting the timer.
+        observed.assert_called_once()
+        assertion.assert_called_once()
+        self.assertFalse(assertion.call_args.args[0])
+        exit_timeline.assert_called_once_with(1)
+
+    def test_normal_rounds_do_not_pause_faults(self):
+        with patch.object(self.cluster, "observe"), patch.object(driver, "pause_faults_for_recovery") as pause:
+            self.cluster.finalized_state(None)
+        pause.assert_not_called()
+
+    def test_expired_lease_is_a_harness_error_not_a_sut_liveness_failure(self):
+        now = [10]
+        def observe():
+            now[0] = 10000
+            return False
+        with patch.object(driver, "time", types.SimpleNamespace(monotonic=lambda: now[0], sleep=lambda _: None)), \
+                patch.object(self.cluster, "observe", side_effect=observe), \
+                patch.object(driver.assertions, "always") as assertion:
+            with self.assertRaisesRegex(driver.FaultControlError, "exceeded the fault-pause lease"):
+                self.cluster.recover(100)
+        assertion.assert_not_called()
 
 
 if __name__ == "__main__":

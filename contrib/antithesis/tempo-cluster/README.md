@@ -17,10 +17,14 @@ Failed/time-out bursts have unknown outcomes and are not safety violations.
 Properties: finalized heights never regress; validators agree on block/state,
 transaction and receipt roots at the same finalized height; retained checkpoints
 stay immutable; sampled finalized receipts match their block; successful workload
-transactions and new finality are reached. A recovery action pauses faults through Hegel, requires
-all four validators to advance and a **new** successful transaction, then exits.
+transactions and new finality are reached. A recovery action requests a bounded
+quiet period through the platform's `ANTITHESIS_STOP_FAULTS` helper, requires all
+four validators to advance and observes another successful finalized transaction,
+then exits. This does not prove admission of a specific recovery-burst transaction.
 The model retains 64 checkpoints and 256 receipt IDs. RPC reads time out in 2s;
-recovery has a 180s bound. No liveness assertion assumes quorum during faults.
+recovery polls for 180s inside a one-hour quiet lease; a final bounded RPC batch
+can overrun that polling deadline. Local SDK-output mode skips the helper only
+outside Antithesis. Existing clock skips are not reversed by the pause. No liveness assertion assumes quorum during active faults.
 
 ## Build and local smoke
 
