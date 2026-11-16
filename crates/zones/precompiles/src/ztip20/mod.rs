@@ -322,12 +322,12 @@ mod tests {
         }
 
         /// Returns the gas a fixed-gas call with `calldata` is charged at the harness spec.
-        fn fixed_gas(&self, calldata: &[u8]) -> u64 {
+        fn fixed_gas(&self, calldata: &[u8]) -> eyre::Result<u64> {
             let mut gas = TIP20_FIXED_TRANSFER_GAS;
             if self.ctx.cfg.spec.is_t15() {
-                gas += tempo_precompiles::input_cost(self.ctx.cfg.spec, calldata.len()).unwrap();
+                gas += tempo_precompiles::input_cost(self.ctx.cfg.spec, calldata.len())?;
             }
-            gas
+            Ok(gas)
         }
 
         /// Returns each transfer-family call to `to` with its natural caller. Together they move
@@ -493,7 +493,7 @@ mod tests {
         harness.set_transfers_enabled(opted_in)?;
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let gas = harness.fixed_gas(&calldata);
+            let gas = harness.fixed_gas(&calldata)?;
             let result = harness.call(caller, calldata, gas, false)?;
             assert_eq!(result.gas_used, gas);
             if active {
@@ -525,7 +525,7 @@ mod tests {
         harness.reject_all_receipts(harness.bob)?;
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let gas = harness.fixed_gas(&calldata);
+            let gas = harness.fixed_gas(&calldata)?;
             let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
@@ -551,7 +551,7 @@ mod tests {
         }
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let gas = harness.fixed_gas(&calldata);
+            let gas = harness.fixed_gas(&calldata)?;
             let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
@@ -571,7 +571,7 @@ mod tests {
             Address::new_virtual(fixed_bytes!("01020304"), fixed_bytes!("010203040506"));
 
         for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
-            let gas = harness.fixed_gas(&calldata);
+            let gas = harness.fixed_gas(&calldata)?;
             let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
@@ -916,7 +916,7 @@ mod tests {
         }
         .abi_encode()
         .into();
-        let gas = harness.fixed_gas(&approve);
+        let gas = harness.fixed_gas(&approve)?;
         harness.call(harness.alice, approve, gas, false)?;
 
         let allowance_result = harness.call(
@@ -940,7 +940,7 @@ mod tests {
         }
         .abi_encode()
         .into();
-        let gas = harness.fixed_gas(&transfer_from);
+        let gas = harness.fixed_gas(&transfer_from)?;
         let result = harness.call(harness.spender, transfer_from, gas, false)?;
 
         assert!(result.is_revert());
