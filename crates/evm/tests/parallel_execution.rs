@@ -973,7 +973,7 @@ mod fuzz {
                     nonce,
                     gas_limit: self.gas_limit(),
                     max_fee_per_gas: TXGEN_FEE_PER_GAS,
-                    max_priority_fee_per_gas: self.rng.below(2) as u128,
+                    max_priority_fee_per_gas: u128::from(self.rng.below(2)),
                     to: TxKind::Call(call.to.into_to().unwrap()),
                     value: U256::ZERO,
                     access_list: Default::default(),

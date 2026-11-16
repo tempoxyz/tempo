@@ -141,7 +141,7 @@ impl NonceManager {
     /// When storage writes are deferred, as in parallel block execution, an indexed transaction
     /// checks the ring slot `index` positions past the pointer before the block, which is where
     /// sequential execution inserts it, and inserts its hash as it commits, advancing the pointer
-    /// once every transaction committed (see [`ExpiringNonceInsert`]), so transactions do not
+    /// once every transaction committed (see `ExpiringNonceInsert`), so transactions do not
     /// conflict on the pointer.
     ///
     /// # Errors
