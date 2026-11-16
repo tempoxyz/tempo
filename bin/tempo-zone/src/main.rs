@@ -25,7 +25,7 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    zone_node::init_version_metadata();
+    zone_node::init_version_metadata(env!("VERGEN_BUILD_TIMESTAMP"));
     defaults::init_defaults();
 
     if let Err(err) = ZoneCli::parse().run() {

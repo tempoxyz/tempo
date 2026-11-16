@@ -14115,6 +14115,7 @@ dependencies = [
  "secp256k1 0.33.1",
  "serde",
  "serde_json",
+ "smolgen",
  "tar",
  "tempfile",
  "tempo-alloy",
@@ -15077,6 +15078,7 @@ dependencies = [
  "reth-cli-util",
  "reth-node-core",
  "rustls",
+ "smolgen",
  "zone-node",
 ]
 

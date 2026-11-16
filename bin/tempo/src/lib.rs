@@ -206,7 +206,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    tempo_node::init_version_metadata();
+    tempo_node::init_version_metadata(env!("VERGEN_BUILD_TIMESTAMP"));
     defaults::init_defaults();
 
     // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
