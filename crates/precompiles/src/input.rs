@@ -25,14 +25,21 @@ impl<'a> CallInput<'a> {
         Self(state.input())
     }
 
-    /// Returns the bytes if `gas` covers their [`input_cost`] at `spec`, and `None` otherwise.
+    /// Returns the 4-byte function selector, if the input has one.
+    #[inline]
+    pub fn selector(&self) -> Option<[u8; 4]> {
+        self.0.first_chunk::<4>().copied()
+    }
+
+    /// Copies the bytes out if `gas` covers their [`input_cost`] at `spec`, and returns `None`
+    /// otherwise.
     ///
     /// Charges nothing: the dispatcher that receives the bytes deducts the cost.
     #[inline]
-    pub fn read(self, spec: TempoHardfork, gas: &GasTracker) -> Option<&'a [u8]> {
+    pub fn read(self, spec: TempoHardfork, gas: &GasTracker) -> Option<Vec<u8>> {
         input_cost(spec, self.0.len())
             .is_ok_and(|cost| gas.remaining() >= cost)
-            .then_some(self.0)
+            .then(|| self.0.to_vec())
     }
 }
 
@@ -41,12 +48,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_selector() {
+        assert_eq!(CallInput(&[1, 2, 3]).selector(), None);
+        assert_eq!(CallInput(&[1, 2, 3, 4, 5]).selector(), Some([1, 2, 3, 4]));
+    }
+
+    #[test]
     fn test_read_requires_input_cost() {
         let bytes = [0u8; 33];
         for (spec, cost) in [(TempoHardfork::T10, 12), (TempoHardfork::T11, 60)] {
             let read = |limit| CallInput(&bytes).read(spec, &GasTracker::new(limit));
             assert_eq!(read(cost - 1), None);
-            assert_eq!(read(cost), Some(&bytes[..]));
+            assert_eq!(read(cost).as_deref(), Some(&bytes[..]));
         }
     }
 }

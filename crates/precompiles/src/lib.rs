@@ -326,11 +326,10 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
         let Some(input) = CallInput::of_message(evm, message).read(self.spec, gas) else {
             return Some(Err(PrecompileHalt::OutOfGas.into()));
         };
-        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = input.to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
             .with_actions(self.actions.clone())
             .with_non_creditable_slots(self.non_creditable_slots.clone());

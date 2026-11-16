@@ -162,7 +162,6 @@ pub fn configurable_account(cx: _) -> Result {
     let input = CallInput::of_frame(cx.state)
         .read(spec, cx.gas.tracker())
         .ok_or(InstrStop::PrecompileOOG)?;
-    let input = input.to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
     let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
