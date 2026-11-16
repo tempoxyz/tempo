@@ -313,6 +313,14 @@ where
         let default = AccountInfo::default();
         Ok(f(account.get().unwrap_or(&default)))
     }
+
+    /// Returns whether a balance-like add to the slot `key` of `address` can be recorded as such
+    /// for parallel execution: its first access in the transaction, outside builder replay, which
+    /// records exact values. Its gas depends only on the slot's zero-ness, which parallel
+    /// execution keeps when it applies the add over another starting value.
+    fn records_slot_adds(&self, address: Address, key: U256) -> bool {
+        !self.actions.is_enabled() && self.evm.state().is_slot_untouched(&address, &key)
+    }
 }
 
 impl<T> StorageCreditsBackend for EvmPrecompileStorageProvider<'_, '_, '_, T>
@@ -490,6 +498,7 @@ where
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
 
+        let first_access = self.records_slot_adds(address, key);
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -505,7 +514,13 @@ where
             StorageAction::Sinc(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, |_| sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)?;
+        if first_access {
+            self.evm
+                .state_mut()
+                .record_slot_add(&address, key, delta, false);
+        }
+        Ok(())
     }
 
     fn defers_storage_writes(&self) -> bool {
@@ -560,6 +575,7 @@ where
     ) -> Result<(), TempoPrecompileError> {
         self.ensure_not_static()?;
 
+        let first_access = self.records_slot_adds(address, key);
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_sub(delta)
@@ -575,7 +591,13 @@ where
             StorageAction::Sdec(address, key, current, delta)
         };
 
-        self.sstore_inner(address, key, value, |_| sstore_action)
+        self.sstore_inner(address, key, value, |_| sstore_action)?;
+        if first_access {
+            self.evm
+                .state_mut()
+                .record_slot_add(&address, key, delta, true);
+        }
+        Ok(())
     }
 
     #[inline]
