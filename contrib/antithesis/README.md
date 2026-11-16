@@ -27,9 +27,10 @@ built without coverage instrumentation, so only the server reports coverage and 
 | `finally_recovered` | The same once the server is back after the last fault |
 
 Proof requests that hit the known overlay anchor gap (`state trie overlay for tip … cannot be
-anchored to … with current blocks`) are temporarily rejected and recorded as a Sometimes property,
-not a correctness failure. The server stays up; all other proof errors and returned-proof checks
-still fail normally. Remove this exception once reth pins the Finish chain for a provider's lifetime.
+anchored to … with current blocks`) are temporarily rejected and logged as `proof_overlay_gap`
+events, not assertion failures. A run does not need to encounter the gap to pass. The server stays
+up; all other proof errors and returned-proof checks still fail normally. Remove this exception once
+reth pins the Finish chain for a provider's lifetime.
 
 Launch the reth target with `--fault-tolerance legacy` (network faults and thread pauses, no container
 kills), which leaves restart recovery unexercised. Recovered roots and proofs are still checked

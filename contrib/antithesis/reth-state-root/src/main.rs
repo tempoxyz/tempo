@@ -512,13 +512,12 @@ fn prove(view: &View, round: u64, number: u64, targets: &[ProofTarget]) -> Resul
             tip.parse::<B256>().is_ok() && anchor.parse::<B256>().is_ok()
         });
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
-    assert_sometimes!(
-        overlay_gap,
-        "Proof request encounters the known overlay anchor gap",
-        &json!({"block": number, "db_tip": db_tip, "state_tip": state_tip,
-            "targets": targets, "error": error})
-    );
     if overlay_gap {
+        println!(
+            "{}",
+            json!({"proof_overlay_gap": {"block": number, "db_tip": db_tip,
+                "state_tip": state_tip, "targets": targets, "error": error}})
+        );
         return Ok(Response::Rejected { reason: error.expect("overlay gap has a provider error") });
     }
     invariant!(
