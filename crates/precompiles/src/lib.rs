@@ -372,7 +372,7 @@ mod tests {
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
     use test_case::test_case;
 
-    struct TestTypes;
+    pub(crate) struct TestTypes;
 
     impl EvmTypesHost for TestTypes {
         type ConfigSelector = BaseEvmConfigSelector;
@@ -395,7 +395,10 @@ mod tests {
         )
     }
 
-    fn test_evm(spec: TempoHardfork, initialized_token: bool) -> Evm<'static, TestTypes> {
+    pub(crate) fn test_evm(
+        spec: TempoHardfork,
+        initialized_token: bool,
+    ) -> Evm<'static, TestTypes> {
         test_evm_with_amsterdam(spec, initialized_token, false)
     }
 
