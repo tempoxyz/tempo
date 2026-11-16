@@ -107,11 +107,11 @@ mod tests {
     use crate::{
         Precompile,
         stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, StablecoinDEX},
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, with_storage},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{DexSetup, assert_full_coverage, check_selector_coverage, with_storage},
     };
     use alloy::{
-        primitives::{Address, U256},
+        primitives::Address,
         sol_types::{SolCall, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -123,28 +123,12 @@ mod tests {
 
         let admin = Address::random();
         let user = Address::random();
-        let amount = 200_000_000u128;
-
-        // Initialize quote token (pathUSD)
-        let quote = TIP20Setup::path_usd(admin)
-            .with_issuer(admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange.address, U256::from(amount))
-            .apply()?;
-
-        let base = TIP20Setup::create("USDC", "USDC", admin)
-            .with_issuer(admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange.address, U256::from(amount))
-            .apply()?;
-
-        // Create pair and add liquidity
-        exchange.create_pair(base.address())?;
+        let (base, quote) = DexSetup::new(admin).trader(user, 200_000_000).apply()?;
 
         // Place an order to provide liquidity
-        exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
+        exchange.place(user, base, MIN_ORDER_AMOUNT, true, 0)?;
 
-        Ok((exchange, base.address(), quote.address(), user))
+        Ok((exchange, base, quote, user))
     }
 
     #[test]

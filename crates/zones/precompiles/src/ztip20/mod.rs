@@ -321,6 +321,15 @@ mod tests {
             result
         }
 
+        /// Returns the gas a fixed-gas call with `calldata` is charged at the harness spec.
+        fn fixed_gas(&self, calldata: &[u8]) -> eyre::Result<u64> {
+            let mut gas = TIP20_FIXED_TRANSFER_GAS;
+            if self.ctx.cfg.spec.is_t15() {
+                gas += tempo_precompiles::input_cost(self.ctx.cfg.spec, calldata.len())?;
+            }
+            Ok(gas)
+        }
+
         /// Returns each transfer-family call to `to` with its natural caller. Together they move
         /// 4_321 from Alice, of which 4_300 is spent from the spender's allowance.
         fn transfer_calls(&self, to: Address) -> [(Address, Bytes); 4] {
@@ -484,8 +493,9 @@ mod tests {
         harness.set_transfers_enabled(opted_in)?;
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
-            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
+            assert_eq!(result.gas_used, gas);
             if active {
                 assert!(result.is_success());
             } else {
@@ -515,13 +525,14 @@ mod tests {
         harness.reject_all_receipts(harness.bob)?;
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
                 result.bytes,
                 Bytes::from(TIP20Error::policy_forbids().abi_encode())
             );
-            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+            assert_eq!(result.gas_used, gas);
         }
         harness.assert_no_funds_moved(harness.bob)?;
         Ok(())
@@ -540,7 +551,8 @@ mod tests {
         }
 
         for (caller, calldata) in harness.transfer_calls(harness.bob) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
                 result.bytes,
@@ -559,13 +571,14 @@ mod tests {
             Address::new_virtual(fixed_bytes!("01020304"), fixed_bytes!("010203040506"));
 
         for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
                 result.bytes,
                 Bytes::from(AddrRegistryError::virtual_address_unregistered().abi_encode())
             );
-            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+            assert_eq!(result.gas_used, gas);
         }
         harness.assert_no_funds_moved(virtual_recipient)?;
         Ok(())
@@ -897,17 +910,14 @@ mod tests {
         allowance_bytes[31] = 1;
         let allowance = U256::from_be_bytes(allowance_bytes);
 
-        harness.call(
-            harness.alice,
-            ITIP20::approveCall {
-                spender: harness.spender,
-                amount: allowance,
-            }
-            .abi_encode()
-            .into(),
-            TIP20_FIXED_TRANSFER_GAS,
-            false,
-        )?;
+        let approve: Bytes = ITIP20::approveCall {
+            spender: harness.spender,
+            amount: allowance,
+        }
+        .abi_encode()
+        .into();
+        let gas = harness.fixed_gas(&approve)?;
+        harness.call(harness.alice, approve, gas, false)?;
 
         let allowance_result = harness.call(
             harness.alice,
@@ -923,18 +933,15 @@ mod tests {
         assert!(allowance_result.is_success());
         assert_eq!(allowance_result.bytes, Bytes::from(allowance_bytes));
 
-        let result = harness.call(
-            harness.spender,
-            ITIP20::transferFromCall {
-                from: harness.alice,
-                to: harness.bob,
-                amount: U256::from(1_000_001u64),
-            }
-            .abi_encode()
-            .into(),
-            TIP20_FIXED_TRANSFER_GAS,
-            false,
-        )?;
+        let transfer_from: Bytes = ITIP20::transferFromCall {
+            from: harness.alice,
+            to: harness.bob,
+            amount: U256::from(1_000_001u64),
+        }
+        .abi_encode()
+        .into();
+        let gas = harness.fixed_gas(&transfer_from)?;
+        let result = harness.call(harness.spender, transfer_from, gas, false)?;
 
         assert!(result.is_revert());
         assert_eq!(

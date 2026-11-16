@@ -11,7 +11,7 @@ use tempo_contracts::{
 use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_precompiles::ecies::encrypt_deposit;
 
-use crate::utils::{DEFAULT_POLL, ZoneTestNode, poll_until};
+use crate::utils::{DEFAULT_POLL, ZoneL1, ZoneLaunch, ZoneTestNode, poll_until};
 
 const L1_WS_RPC_URL: &str = "wss://rpc.testnet.tempo.xyz";
 const L1_HTTP_RPC_URL: &str = "https://rpc.testnet.tempo.xyz";
@@ -46,7 +46,14 @@ async fn test_l1_deposit_mints_on_zone() -> eyre::Result<()> {
     fund_l1_wallet(depositor).await?;
 
     // Start the zone node pointing at the existing portal on testnet
-    let zone = ZoneTestNode::start(L1_WS_RPC_URL.to_string(), portal_address).await?;
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        l1: ZoneL1::Portal {
+            url: L1_WS_RPC_URL.to_string(),
+            portal_address,
+        },
+        ..Default::default()
+    })
+    .await?;
 
     let zone_provider = ProviderBuilder::new().connect_http(zone.http_url().clone());
     let zone_token = ITIP20::new(PATH_USD_ADDRESS, zone_provider.clone());

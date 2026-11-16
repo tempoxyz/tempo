@@ -375,15 +375,9 @@ async fn funded_zone() -> eyre::Result<(ZoneTestNode, L1Fixture, Chain, Address)
 
 /// Deposits pathUSD to `account`, which also seeds its zero commitment on Tempo.
 async fn fund(zone: &ZoneTestNode, fixture: &mut L1Fixture, account: Address) -> eyre::Result<()> {
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, account, account, ZONE_FUNDING);
-    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
-    zone.wait_for_balance(
-        PATH_USD_ADDRESS,
-        account,
-        U256::from(ZONE_FUNDING),
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    fixture
+        .deposit(zone, account, account, ZONE_FUNDING)
+        .await?;
     Ok(())
 }
 

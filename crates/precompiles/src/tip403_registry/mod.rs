@@ -280,12 +280,8 @@ impl TIP403Registry {
         Ok(binding.is_set.then_some(binding.policy_id))
     }
 
-    /// Writes the active registry binding for a TIP-20 token.
-    pub(crate) fn set_token_transfer_policy(
-        &mut self,
-        token: Address,
-        policy_id: u64,
-    ) -> Result<()> {
+    /// Writes the active registry binding for a TIP-20 token, without checking the token or policy.
+    pub fn set_token_transfer_policy(&mut self, token: Address, policy_id: u64) -> Result<()> {
         self.token_transfer_policies[token].write(TokenTransferPolicy {
             policy_id,
             is_set: true,
