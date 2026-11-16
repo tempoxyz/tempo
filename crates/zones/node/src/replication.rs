@@ -8,7 +8,7 @@ use futures::{StreamExt as _, stream::BoxStream};
 use minicbor::data::Type;
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
-use reth_storage_api::{BlockNumReader, BlockReader, StateProviderFactory};
+use reth_storage_api::{BlockNumReader, BlockReader, StageCheckpointReader, StateProviderFactory};
 use tempo_primitives::Block;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync;
@@ -50,7 +50,10 @@ pub(crate) enum BroadcasterShutdown {
 
 /// Interface used by the replication task to keep track of blocks that are persisted vs broadcast
 pub(crate) trait PersistedBlockSource: Clone + Send + Sync + 'static {
-    fn last_block_number(&self) -> eyre::Result<u64>;
+    /// The highest block that survives a crash; see [`zone_sequencer::durable_block_number`].
+    ///
+    /// Every height this node signs, serves or broadcasts must be at or below it.
+    fn durable_block_number(&self) -> eyre::Result<u64>;
     /// The canonical head, which may be ahead of the persisted head (reth persists lazily).
     ///
     /// This is a drain *target*, never a broadcast height: a canonical-only block lives in
@@ -64,10 +67,14 @@ pub(crate) trait PersistedBlockSource: Clone + Send + Sync + 'static {
 
 impl<P> PersistedBlockSource for P
 where
-    P: PersistedBlockSubscriptions + BlockReader<Block = Block> + Clone + 'static,
+    P: PersistedBlockSubscriptions
+        + BlockReader<Block = Block>
+        + StageCheckpointReader
+        + Clone
+        + 'static,
 {
-    fn last_block_number(&self) -> eyre::Result<u64> {
-        Ok(BlockNumReader::last_block_number(self)?)
+    fn durable_block_number(&self) -> eyre::Result<u64> {
+        Ok(zone_sequencer::durable_block_number(self)?)
     }
 
     fn canonical_block_number(&self) -> eyre::Result<u64> {
@@ -119,7 +126,7 @@ pub(crate) async fn broadcast_persisted_blocks<P>(
     // Handle race conditions carefully at startup. Read before subscribing, then reconcile after subscribing.
     // This closes both startup windows: a block persisted before the subscription is found by the
     // second read, while a block persisted after the subscription is retained by the stream.
-    let mut last_broadcast = match provider.last_block_number() {
+    let mut last_broadcast = match provider.durable_block_number() {
         Ok(number) => number,
         Err(err) => {
             tracing::error!(target: "zone::p2p", %err, "Failed reading persisted zone head");
@@ -127,7 +134,7 @@ pub(crate) async fn broadcast_persisted_blocks<P>(
         }
     };
     let mut persisted = provider.persisted_block_stream();
-    let startup_tip = match provider.last_block_number() {
+    let startup_tip = match provider.durable_block_number() {
         Ok(number) => number,
         Err(err) => {
             tracing::error!(target: "zone::p2p", %err, "Failed reconciling persisted zone head");
@@ -173,7 +180,7 @@ pub(crate) async fn broadcast_persisted_blocks<P>(
                         // durable and abandon the rest: a canonical-only block would disappear
                         // from this node on restart, leaving followers on a height no replica can
                         // serve.
-                        match provider.last_block_number() {
+                        match provider.durable_block_number() {
                             Ok(persisted_head) => {
                                 if let Err(err) = broadcast_persisted_range(
                                     &provider,
@@ -252,7 +259,7 @@ where
     P: PersistedBlockSource,
 {
     let canonical = provider.canonical_block_number()?;
-    let persisted_head = provider.last_block_number()?;
+    let persisted_head = provider.durable_block_number()?;
     broadcast_persisted_range(
         provider,
         commands,
@@ -461,9 +468,11 @@ fn serve_backfill_page<P>(
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<()>
 where
-    P: BlockReader<Block = Block> + StateProviderFactory,
+    P: BlockReader<Block = Block> + StageCheckpointReader + StateProviderFactory,
 {
-    let tip = provider.last_block_number()?;
+    // Never serve a block this node could still lose: a requester that imports it would
+    // conflict with the block rebuilt at that height after a crash.
+    let tip = zone_sequencer::durable_block_number(provider)?;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
     for number in start..=end {
         let block = provider.block_by_number(number)?.ok_or_else(|| {
@@ -519,7 +528,7 @@ pub(crate) async fn serve_backfill_requests<P>(
     mut requests: mpsc::Receiver<BackfillRequest>,
     proofs: Option<ProofCollectorHandle>,
 ) where
-    P: BlockReader<Block = Block> + StateProviderFactory + Clone + 'static,
+    P: BlockReader<Block = Block> + StageCheckpointReader + StateProviderFactory + Clone + 'static,
 {
     // One worker deliberately serializes page construction and sending, bounding serving
     // concurrency independently of the block import loop.
@@ -624,7 +633,7 @@ mod tests {
     }
 
     impl PersistedBlockSource for StartupRaceSource {
-        fn last_block_number(&self) -> eyre::Result<u64> {
+        fn durable_block_number(&self) -> eyre::Result<u64> {
             let read = self.reads.fetch_add(1, Ordering::SeqCst);
             Ok(if read == 0 {
                 self.tip.number - 1
@@ -666,7 +675,7 @@ mod tests {
     }
 
     impl PersistedBlockSource for DivergentHeadSource {
-        fn last_block_number(&self) -> eyre::Result<u64> {
+        fn durable_block_number(&self) -> eyre::Result<u64> {
             let read = self.startup_reads.fetch_add(1, Ordering::SeqCst);
             Ok(if read < 2 {
                 self.startup_persisted

@@ -12,7 +12,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
-use reth_storage_api::{BlockReader, StateProviderFactory};
+use reth_storage_api::{BlockReader, StageCheckpointReader, StateProviderFactory};
 #[cfg(feature = "fuzz")]
 use serde_json::json;
 use std::{
@@ -230,6 +230,7 @@ impl<P> FollowerBlockSync<P>
 where
     P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
+        + StageCheckpointReader
         + StateProviderFactory
         + Clone
         + 'static,
@@ -417,10 +418,7 @@ where
             .zoneHeight
             .try_into()
             .wrap_err("settlement height does not fit in u64")?;
-        let persisted_head = self
-            .context
-            .provider
-            .last_block_number()
+        let persisted_head = zone_sequencer::durable_block_number(&self.context.provider)
             .wrap_err("failed reading persisted zone head")?;
         eyre::ensure!(
             height <= persisted_head,

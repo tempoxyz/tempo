@@ -51,7 +51,7 @@ use reth_rpc_eth_types::{
     logs_utils,
 };
 use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
-use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
+use reth_storage_api::{BlockReaderIdExt, StageCheckpointReader, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -250,6 +250,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
     P: HeaderProvider
+        + StageCheckpointReader
         + StateProviderFactory
         + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + Clone
@@ -788,7 +789,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StageCheckpointReader + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -1705,9 +1706,9 @@ where
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StageCheckpointReader + StateProviderFactory,
 {
-    let zone_height = provider.last_block_number().map_err(internal)?;
+    let zone_height = zone_sequencer::durable_block_number(provider).map_err(internal)?;
     let zone_header = provider
         .sealed_header(zone_height)
         .map_err(internal)?
