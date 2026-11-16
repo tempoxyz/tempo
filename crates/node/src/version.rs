@@ -10,6 +10,28 @@ pub fn init_version_metadata(metadata: RethCliVersionConsts) {
         .expect("version metadata is set once, before anything reads it");
 }
 
+/// Sets Tempo's version information without a commit or build time, unless a binary already set
+/// its own with [`init_version_metadata`].
+///
+/// For binaries without Tempo's build script, such as programs that embed the node.
+pub fn init_unstamped_version_metadata() {
+    let version = env!("CARGO_PKG_VERSION");
+    let _ = try_init_version_metadata(RethCliVersionConsts {
+        name_client: "Tempo".into(),
+        cargo_pkg_version: version.into(),
+        vergen_git_sha_long: "unknown".into(),
+        vergen_git_sha: "unknown".into(),
+        vergen_build_timestamp: "unknown".into(),
+        vergen_cargo_target_triple: "unknown".into(),
+        vergen_cargo_features: "unknown".into(),
+        short_version: version.into(),
+        long_version: format!("Version: {version}").into(),
+        build_profile_name: "unknown".into(),
+        p2p_client_version: format!("tempo/v{version}/{}", env::consts::OS).into(),
+        extra_data: extra_data().into(),
+    });
+}
+
 /// The version information for Tempo, stamped by the calling binary's build script.
 ///
 /// Version metadata changes with every commit, and the build timestamp with every build. Stamped
