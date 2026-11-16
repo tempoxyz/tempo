@@ -724,7 +724,7 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
     use commonware_codec::Encode as _;
 
     use super::*;
@@ -777,23 +777,18 @@ mod tests {
     }
 
     #[test]
-    fn verification_mode_is_hidden_but_parses() {
-        use clap::CommandFactory as _;
-
+    fn verification_mode_is_hidden_from_help() {
         let help = TestCli::command().render_long_help().to_string();
         assert!(!help.contains("--consensus.verification-mode"));
-        for (value, mode) in [
-            ("immediate", VerificationMode::Immediate),
-            ("deferred", VerificationMode::Deferred),
-            ("hardfork", VerificationMode::Hardfork),
-        ] {
-            assert_eq!(
-                parse(&["--dev", "--consensus.verification-mode", value])
-                    .consensus
-                    .verification_mode,
-                mode,
-            );
-        }
+    }
+
+    #[test_case("immediate" => VerificationMode::Immediate)]
+    #[test_case("deferred" => VerificationMode::Deferred)]
+    #[test_case("hardfork" => VerificationMode::Hardfork)]
+    fn hidden_verification_mode_parses(value: &str) -> VerificationMode {
+        parse(&["--dev", "--consensus.verification-mode", value])
+            .consensus
+            .verification_mode
     }
 
     #[test]
