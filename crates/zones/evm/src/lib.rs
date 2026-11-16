@@ -704,14 +704,14 @@ mod tests {
     }
 
     #[test]
-    fn address_registry_follows_l1_at_the_active_anchor_from_t15() {
+    fn precompile_reads_of_the_address_registry_follow_l1_from_t15() {
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
         let token = address!("0x20C00000000000000000000000000000000000AA");
         let master_slot = MasterId::repeat_byte(0x01).mapping_slot(address_registry::slots::DATA);
         let master = U256::from_be_slice(Address::repeat_byte(0x11).as_slice());
         let reader = MockL1Reader::default();
-        // Registered on Tempo only: the Zone has no account at the registry address.
+        // Registered on Tempo only: Zone genesis has no account at the registry address.
         reader.insert(ADDRESS_REGISTRY_ADDRESS, master_slot, CHILD, master);
 
         for (spec, expected) in [
@@ -723,13 +723,13 @@ mod tests {
                 .unwrap()
                 .l1_state()
                 .begin_transaction(U256::from(CHILD));
-            assert_eq!(
-                evm.state_mut()
-                    .storage_slot_untracked(&ADDRESS_REGISTRY_ADDRESS, &master_slot)
-                    .unwrap(),
-                expected,
-                "{spec:?}"
-            );
+            // Precompile SLOADs load the account before the slot, as this does.
+            let value = evm
+                .state_mut()
+                .storage_slot(&ADDRESS_REGISTRY_ADDRESS, master_slot)
+                .unwrap()
+                .current();
+            assert_eq!(value, expected, "{spec:?}");
         }
     }
 
