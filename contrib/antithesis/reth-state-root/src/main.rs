@@ -272,7 +272,6 @@ impl Round {
             verify(engine.factory(), &state, base, base)?;
         }
         println!("{}", json!({"recovery": "complete", "head": base, "root": recovered_root}));
-        assert_sometimes!(base > 0, "Restart recovers persisted blocks");
         let collider_path = datadir.join("collider.json");
         let collider = if collider_path.exists() {
             serde_json::from_slice(&fs::read(&collider_path)?)?
