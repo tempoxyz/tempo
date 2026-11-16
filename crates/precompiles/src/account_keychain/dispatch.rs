@@ -232,17 +232,11 @@ mod tests {
             let calldata = authorizeKeyCall {
                 keyId: Address::random(),
                 signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token: Address::random(),
-                        amount: U256::from(100),
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                config: KeyRestrictions::unrestricted().limit(
+                    Address::random(),
+                    U256::from(100),
+                    0,
+                ),
             }
             .abi_encode();
 
@@ -447,13 +441,7 @@ mod tests {
                     IAccountKeychain::authorizeKey_2Call {
                         keyId: Address::random(),
                         signatureType: IAccountKeychain::SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
+                        config: KeyRestrictions::unrestricted(),
                         witness,
                     }
                     .abi_encode(),

@@ -31,7 +31,7 @@ use tempo_precompiles::{
     DelegateCallNotAllowed, charge_input_cost,
     dispatch::selector_from_calldata,
     error::TempoPrecompileError,
-    input_cost,
+    has_input_gas,
     storage::{
         PrecompileStorageProvider, StorageCtx,
         actions::StorageActions,
@@ -117,10 +117,7 @@ where
     }
 
     let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
-    let Ok(input_gas) = input_cost(env.spec, data.len()) else {
-        return Err(PrecompileHalt::OutOfGas.into());
-    };
-    if gas.remaining() < input_gas {
+    if !has_input_gas(env.spec, data.len(), gas.remaining()) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
