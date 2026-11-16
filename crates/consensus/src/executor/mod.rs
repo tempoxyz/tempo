@@ -30,7 +30,7 @@ mod ingress;
 
 pub(crate) use actor::Actor;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::channel::mpsc;
+use futures::{FutureExt as _, channel::mpsc};
 pub(crate) use ingress::{DeferredCeremonyOutput, Mailbox};
 
 use crate::consensus::{Digest, block::Block};
@@ -130,6 +130,13 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
         &self,
         payload_id: PayloadId,
     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static;
+
+    /// Whether the execution layer has begun shutting down. Engine calls made
+    /// after this fail because the engine task is stopping, not because
+    /// execution diverged from consensus.
+    fn is_shutting_down(&self) -> bool {
+        false
+    }
 }
 
 /// The narrow marshal-actor capability used by the executor actor.
@@ -158,6 +165,14 @@ pub(crate) trait Marshal: Clone + Send + Sync + 'static {
 }
 
 impl ExecutionLayer for Arc<TempoFullNode> {
+    fn is_shutting_down(&self) -> bool {
+        self.task_executor
+            .on_shutdown_signal()
+            .clone()
+            .now_or_never()
+            .is_some()
+    }
+
     fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
         let state = self.provider.canonical_in_memory_state();
         let head_block_hash = state.get_canonical_head().hash();

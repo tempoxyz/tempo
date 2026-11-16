@@ -495,7 +495,7 @@ where
 
                 finished = &mut self.execution_task => {
                     if let Err(error) = self.handle_execution_task_finished(finished) {
-                        log_fatal(&error);
+                        log_fatal(&error, self.execution_node.is_shutting_down());
                         break;
                     }
                 }
@@ -552,7 +552,7 @@ where
                         .wrap_err("execution layer closed its persisted-block notifications")
                         .and_then(|()| self.acknowledge_persisted());
                     if let Err(error) = result {
-                        log_fatal(&error);
+                        log_fatal(&error, self.execution_node.is_shutting_down());
                         break;
                     }
                 },
@@ -1859,8 +1859,16 @@ async fn look_up_block(
 }
 
 /// Logs the error that shuts the executor down.
-fn log_fatal(error: &Report) {
+///
+/// On a graceful shutdown the execution layer stops its engine task before the
+/// consensus runtime stops, so an engine call in flight fails. That is the
+/// expected end of the shutdown, not a divergence, and is logged at info.
+fn log_fatal(error: &Report, execution_layer_shutting_down: bool) {
     error_span!("shutdown").in_scope(|| {
+        if execution_layer_shutting_down {
+            info!(%error, "execution layer is shutting down; stopping executor");
+            return;
+        }
         error!(
             %error,
             "executor encountered fatal execution-layer update error; \

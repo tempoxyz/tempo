@@ -410,6 +410,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             )
             .with_catch_panics(true);
 
+        // Fires when the execution node begins shutting down, such as on
+        // SIGTERM. Stop the consensus stack then too, rather than keep driving
+        // an engine that is already stopping.
+        let mut execution_shutdown = node.task_executor.on_shutdown_signal().clone();
+
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
             let mut metrics_server = tempo_consensus::metrics::install(
@@ -471,6 +476,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     biased;
 
                     () = shutdown_token_clone.cancelled() => {
+                        break Ok(());
+                    }
+
+                    () = &mut execution_shutdown => {
+                        info_span!("shutdown").in_scope(|| {
+                            info!("execution node is shutting down; stopping consensus stack")
+                        });
                         break Ok(());
                     }
 
