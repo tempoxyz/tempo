@@ -1,6 +1,6 @@
 # State reader fixture
 
-`StateReader` backs the `state-read-cold` and `state-read-hot` presets. Each
+`StateReader` backs the `state-read-cold`, `state-read-hot` and `state-read-dependent` presets. Each
 transaction spends its gas on TIP20 `balanceOf` reads of state-bloat accounts,
 so a block filled with them is a worst case for state reads. It is a local
 execution fixture: chain 1337 only, no real funds.

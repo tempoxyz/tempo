@@ -177,6 +177,7 @@ on:
           - projected-pipeline
           - state-read-cold
           - state-read-hot
+          - state-read-dependent
       duration:
         description: Benchmark duration in seconds.
         type: string
