@@ -1441,7 +1441,30 @@ impl TIP20Token {
         if taken.is_zero() {
             return Ok(());
         }
-        self.increment_balance(from, taken)
+        self.unreserve(from, taken)
+    }
+
+    /// Moves `amount` of `owner`'s balance out of its balance slot for a [`Reservations`] hold or
+    /// lien, after settling `owner`'s rewards. Reserved funds leave the opted-in supply.
+    pub(crate) fn reserve(&mut self, owner: Address, amount: U256) -> Result<()> {
+        if !self.update_rewards(owner)?.is_zero() {
+            let supply = U256::from(self.get_opted_in_supply()?)
+                .checked_sub(amount)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            self.set_opted_in_supply(
+                supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
+        }
+        self.decrement_balance(owner, amount)
+    }
+
+    /// Returns `amount` of reserved funds to `owner`'s balance slot, after settling `owner`'s
+    /// rewards. They rejoin the opted-in supply if `owner` is opted in.
+    pub(crate) fn unreserve(&mut self, owner: Address, amount: U256) -> Result<()> {
+        self.handle_rewards_on_mint(owner, amount)?;
+        self.increment_balance(owner, amount)
     }
 
     /// (+T15) Moves up to `received` of `owner`'s balance to the creditor of its debt in this

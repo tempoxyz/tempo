@@ -428,6 +428,14 @@ impl HashMapStorageProvider {
     }
 
     /// Overrides the block timestamp.
+    /// Returns how many storage slots of `address` hold a non-zero value.
+    pub fn nonzero_slot_count(&self, address: Address) -> usize {
+        self.internals
+            .iter()
+            .filter(|((slot_address, _), value)| *slot_address == address && !value.is_zero())
+            .count()
+    }
+
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.block_env.timestamp = timestamp;
     }

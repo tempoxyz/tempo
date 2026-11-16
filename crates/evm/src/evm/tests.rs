@@ -4759,3 +4759,186 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
     )));
     Ok(())
 }
+
+/// Transaction gas of each reservation core operation, for TIP-1153's gas table. Run with
+/// `--nocapture` to print it.
+#[test]
+fn test_reservation_core_gas() -> eyre::Result<()> {
+    use tempo_contracts::precompiles::IReservationCore::{self, HoldRequest};
+
+    let (mut evm, owner, tokens) =
+        create_fee_fallback_evm(TempoHardfork::T15, [100_000_000, 100_000_000], 0)?;
+    let (payee, holder) = (Address::random(), Address::random());
+    fund_account(&mut evm, payee);
+    fund_account(&mut evm, holder);
+    let token = tokens[1];
+    with_fee_fallback_storage(&mut evm, || {
+        Reservations::new().initialize()?;
+        // Payee and holder pay fees in the first token; the payee already holds the second, so
+        // its balance slot exists before the first capture.
+        let mut fee_token = TIP20Token::from_address(tokens[0])?;
+        for account in [payee, holder] {
+            fee_token.mint(
+                owner,
+                ITIP20::mintCall {
+                    to: account,
+                    amount: U256::from(100_000_000u64),
+                },
+            )?;
+        }
+        TIP20Token::from_address(token)?.mint(
+            owner,
+            ITIP20::mintCall {
+                to: payee,
+                amount: U256::from(1),
+            },
+        )
+    })?;
+
+    let mut nonces = std::collections::HashMap::<Address, u64>::new();
+    let mut send =
+        |evm: &mut TempoEvm<'static>, from: Address, input: Vec<u8>| -> eyre::Result<u64> {
+            let nonce = nonces.entry(from).or_default();
+            let tx = TxLegacy {
+                chain_id: Some(1),
+                nonce: *nonce,
+                gas_limit: 3_000_000,
+                gas_price: FEE_FALLBACK_GAS_PRICE,
+                to: RESERVATIONS_ADDRESS.into(),
+                input: input.into(),
+                ..Default::default()
+            };
+            *nonce += 1;
+            let tx = Signed::new_unchecked(
+                tx,
+                alloy_primitives::Signature::test_signature(),
+                B256::ZERO,
+            );
+            let result = evm.transact_commit(
+                Recovered::new_unchecked(TempoTxEnvelope::Legacy(tx), from).into(),
+            )?;
+            assert!(result.status, "reservation call reverted");
+            Ok(result.tx_gas_used())
+        };
+    let request = |id: B256, amount: u128, expires_at: u64| HoldRequest {
+        token,
+        id,
+        amount,
+        expiresAt: expires_at,
+        payee,
+        standIn: false,
+    };
+    let ids: Vec<B256> = (0..8).map(|_| B256::random()).collect();
+    let mut gas = Vec::new();
+
+    send(
+        &mut evm,
+        owner,
+        IReservationCore::approveHolderCall {
+            holder,
+            token,
+            allowance: 1_000_000,
+        }
+        .abi_encode(),
+    )?;
+    let view = IReservationCore::reservedCall { owner, token }.abi_encode();
+    gas.push(("reserved (view, baseline)", send(&mut evm, owner, view)?));
+    let hold = |id, amount, expires_at| {
+        IReservationCore::holdCall {
+            request: request(id, amount, expires_at),
+        }
+        .abi_encode()
+    };
+    gas.push((
+        "hold, first for the owner",
+        send(&mut evm, owner, hold(ids[0], 1_000, 2_000))?,
+    ));
+    gas.push(("hold", send(&mut evm, owner, hold(ids[1], 1_000, 2_000))?));
+    gas.push((
+        "holdFrom",
+        send(
+            &mut evm,
+            holder,
+            IReservationCore::holdFromCall {
+                owner,
+                request: request(ids[2], 1_000, 2_000),
+            }
+            .abi_encode(),
+        )?,
+    ));
+    let capture = |id, amount, is_final| {
+        IReservationCore::captureCall {
+            owner,
+            id,
+            amount,
+            isFinal: is_final,
+        }
+        .abi_encode()
+    };
+    gas.push((
+        "capture, part (first capture)",
+        send(&mut evm, payee, capture(ids[0], 400, false))?,
+    ));
+    gas.push((
+        "capture, final (after a part)",
+        send(&mut evm, payee, capture(ids[0], 600, true))?,
+    ));
+    gas.push((
+        "capture, final (first capture)",
+        send(&mut evm, payee, capture(ids[2], 1_000, true))?,
+    ));
+    gas.push((
+        "release",
+        send(
+            &mut evm,
+            owner,
+            IReservationCore::releaseCall { owner, id: ids[1] }.abi_encode(),
+        )?,
+    ));
+    gas.push((
+        "refund",
+        send(
+            &mut evm,
+            payee,
+            IReservationCore::refundCall {
+                owner,
+                id: ids[0],
+                amount: 100,
+            }
+            .abi_encode(),
+        )?,
+    ));
+    gas.push((
+        "charge",
+        send(
+            &mut evm,
+            owner,
+            IReservationCore::chargeCall {
+                owner,
+                token,
+                id: ids[3],
+                amount: 100,
+                payee,
+                standIn: false,
+            }
+            .abi_encode(),
+        )?,
+    ));
+    send(&mut evm, owner, hold(ids[4], 500, 1_100))?;
+    let mut block = *evm.block();
+    block.timestamp = U256::from(1_200);
+    evm.set_block(block);
+    gas.push((
+        "releaseExpired",
+        send(
+            &mut evm,
+            payee,
+            IReservationCore::releaseExpiredCall { owner, id: ids[4] }.abi_encode(),
+        )?,
+    ));
+
+    for (operation, used) in &gas {
+        println!("{operation}: {used}");
+    }
+    Ok(())
+}

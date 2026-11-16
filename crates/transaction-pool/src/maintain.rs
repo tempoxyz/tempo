@@ -23,7 +23,7 @@ use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::VecDeque, iter, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{
-    IAccountKeychain, IFeeManager, IReservations, ITIP20, ITIP403Registry,
+    IAccountKeychain, IFeeManager, IReservationCore, ITIP20, ITIP403Registry,
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, RESERVATIONS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -237,21 +237,12 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
-            // Hold, line lien and lien changes, which all index the account and token as topics 1
-            // and 3.
-            // Releases and captures raise the available balance, which can change a fallback
-            // fee-token choice.
+            // Every reservation core event except `DebtRepaid` indexes the owner and token as topics 1
+            // and 3. Holds and liens move funds in or out of the owner's balance slot without a
+            // TIP-20 `Transfer`, which can change a fee-token choice. Repayments emit a `Transfer`.
             else if log.address == RESERVATIONS_ADDRESS {
-                if let Some(&topic0) = log.topics().first()
-                    && (topic0 == IReservations::HoldPlaced::SIGNATURE_HASH
-                        || topic0 == IReservations::HoldAdjusted::SIGNATURE_HASH
-                        || topic0 == IReservations::HoldReleased::SIGNATURE_HASH
-                        || topic0 == IReservations::HoldCaptured::SIGNATURE_HASH
-                        || topic0 == IReservations::LineReserved::SIGNATURE_HASH
-                        || topic0 == IReservations::Liened::SIGNATURE_HASH
-                        || topic0 == IReservations::LienReleased::SIGNATURE_HASH
-                        || topic0 == IReservations::LienReduced::SIGNATURE_HASH)
-                    && let [_, owner, _, token] = log.topics()
+                if let [topic0, owner, _, token] = log.topics()
+                    && *topic0 != IReservationCore::DebtRepaid::SIGNATURE_HASH
                 {
                     updates
                         .reservation_changes
@@ -1525,72 +1516,55 @@ mod tests {
         }
 
         #[test]
-        fn extracts_reservation_changes_from_hold_logs() {
+        fn extracts_reservation_changes_from_core_logs() {
             let token = tempo_precompiles::PATH_USD_ADDRESS;
             let placed_owner = Address::random();
-            let adjusted_owner = Address::random();
-            let released_owner = Address::random();
-            let lender = Address::random();
+            let captured_owner = Address::random();
             let liened_owner = Address::random();
-            let unliened_owner = Address::random();
-            let reduced_owner = Address::random();
+            let debtor = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
                 tx_type: TempoTxType::Legacy,
                 success: true,
                 cumulative_gas_used: 21_000,
                 logs: [
-                    IReservations::HoldPlaced {
+                    IReservationCore::HoldPlaced {
                         owner: placed_owner,
                         id,
                         token,
+                        placer: placed_owner,
                         payee: Address::random(),
                         amount: 1,
+                        held: 1,
                         expiresAt: 1,
+                        standIn: false,
                     }
                     .into_log_data(),
-                    IReservations::HoldAdjusted {
-                        owner: adjusted_owner,
+                    IReservationCore::HoldCaptured {
+                        owner: captured_owner,
                         id,
                         token,
+                        payee: Address::random(),
                         amount: 2,
+                        debt: 0,
+                        isFinal: true,
                     }
                     .into_log_data(),
-                    IReservations::HoldReleased {
-                        owner: released_owner,
-                        id,
-                        token,
-                    }
-                    .into_log_data(),
-                    IReservations::LineReserved {
-                        lender,
-                        line: id,
-                        token,
-                        lien: 3,
-                    }
-                    .into_log_data(),
-                    IReservations::Liened {
+                    IReservationCore::Liened {
                         owner: liened_owner,
                         authority: Address::random(),
                         token,
                         id,
+                        amount: 3,
+                        expiresAt: 0,
+                        pledged: false,
+                    }
+                    .into_log_data(),
+                    IReservationCore::DebtRepaid {
+                        owner: debtor,
+                        token,
+                        creditor: Address::random(),
                         amount: 4,
-                    }
-                    .into_log_data(),
-                    IReservations::LienReleased {
-                        owner: unliened_owner,
-                        authority: Address::random(),
-                        token,
-                        id,
-                        amount: 5,
-                    }
-                    .into_log_data(),
-                    IReservations::LienReduced {
-                        owner: reduced_owner,
-                        authority: Address::random(),
-                        token,
-                        id,
-                        amount: 6,
                     }
                     .into_log_data(),
                 ]
@@ -1609,12 +1583,8 @@ mod tests {
                 updates.reservation_changes.get(&token),
                 Some(&AddressSet::from_iter([
                     placed_owner,
-                    adjusted_owner,
-                    released_owner,
-                    lender,
-                    liened_owner,
-                    unliened_owner,
-                    reduced_owner
+                    captured_owner,
+                    liened_owner
                 ]))
             );
             assert!(updates.fee_balance_changes.is_empty());
