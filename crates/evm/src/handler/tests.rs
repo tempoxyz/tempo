@@ -18,7 +18,10 @@ use evm2::{
 };
 use proptest::prelude::*;
 use tempo_contracts::precompiles::{AccountKeychainError, IFeeManager};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, test_util::TIP20Setup};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    test_util::{FeeAmmSetup, TIP20Setup},
+};
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction,
     subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
@@ -355,25 +358,22 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() ->
 
     let (user_token, validator_token) =
         StorageCtx::enter_evm_without_tip1060_accounting(&mut test, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
+            let (user_token, validator_token) = FeeAmmSetup::new(admin).apply()?;
+            TIP20Setup::config(user_token)
+                .with_admin(admin)
                 .with_mint(fee_payer, fee)
                 .with_approval(fee_payer, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
                 .apply()?;
 
             TipFeeManager::new().set_validator_token(
                 validator,
                 IFeeManager::setValidatorTokenCall {
-                    token: validator_token.address(),
+                    token: validator_token,
                 },
                 Address::random(),
             )?;
 
-            Ok::<_, TempoPrecompileError>((user_token.address(), validator_token.address()))
+            Ok::<_, TempoPrecompileError>((user_token, validator_token))
         })?;
 
     let tx = fee_tx_env(fee_payer, user_token, gas_limit, gas_price);

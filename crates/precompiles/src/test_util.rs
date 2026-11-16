@@ -19,8 +19,6 @@ pub fn foundry_artifact_path(
     artifacts.join(source).join(format!("{contract}.json"))
 }
 
-#[cfg(any(test, feature = "test-utils"))]
-use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     address_registry::{AddressRegistry, IAddressRegistry},
@@ -28,6 +26,11 @@ use crate::{
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
     tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
+};
+#[cfg(any(test, feature = "test-utils"))]
+use crate::{
+    STABLECOIN_DEX_ADDRESS, error::TempoPrecompileError, stablecoin_dex::StablecoinDEX,
+    tip_fee_manager::TipFeeManager,
 };
 #[cfg(test)]
 use alloy::primitives::Bytes;
@@ -162,7 +165,7 @@ enum Action {
 ///     .with_mint(user, amount)
 ///     .apply()?;
 /// ```
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 pub struct TIP20Setup {
     action: Action,
@@ -400,6 +403,104 @@ impl TIP20Setup {
     }
 }
 
+/// Sets up a BASE token over pathUSD on the [`StablecoinDEX`], with funded traders and the pair.
+///
+/// ```ignore
+/// let (base, quote) = DexSetup::new(admin).trader(alice, amount).apply()?;
+/// ```
+#[derive(Clone)]
+#[cfg(any(test, feature = "test-utils"))]
+pub struct DexSetup {
+    base: TIP20Setup,
+    quote: TIP20Setup,
+    create_pair: bool,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl DexSetup {
+    /// A new BASE token over pathUSD, both administered by `admin`, and their pair.
+    pub fn new(admin: Address) -> Self {
+        Self {
+            base: TIP20Setup::create("BASE", "BASE", admin).with_salt(B256::random()),
+            quote: TIP20Setup::path_usd(admin),
+            create_pair: true,
+        }
+    }
+
+    /// Mints `amount` of both tokens to `trader`, who approves exactly that to the DEX.
+    pub fn trader(mut self, trader: Address, amount: u128) -> Self {
+        let amount = U256::from(amount);
+        let fund = |token: TIP20Setup| {
+            token
+                .with_mint(trader, amount)
+                .with_approval(trader, STABLECOIN_DEX_ADDRESS, amount)
+        };
+        self.base = fund(self.base);
+        self.quote = fund(self.quote);
+        self
+    }
+
+    /// Leaves the pair uncreated.
+    pub fn without_pair(mut self) -> Self {
+        self.create_pair = false;
+        self
+    }
+
+    /// Applies the setup in the entered storage context. Returns `(base, quote)`.
+    pub fn apply(self) -> Result<(Address, Address)> {
+        let quote = self.quote.apply()?.address();
+        let base = self.base.apply()?.address();
+        if self.create_pair {
+            StablecoinDEX::new().create_pair(base)?;
+        }
+        Ok((base, quote))
+    }
+}
+
+/// Sets up a USD user token and a USD validator token with a fee AMM pool between them.
+///
+/// ```ignore
+/// let (user_token, validator_token) = FeeAmmSetup::new(admin).liquidity(lp, amount).apply()?;
+/// ```
+#[derive(Clone)]
+#[cfg(any(test, feature = "test-utils"))]
+pub struct FeeAmmSetup {
+    user_token: TIP20Setup,
+    validator_token: TIP20Setup,
+    liquidity: Vec<(Address, U256)>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl FeeAmmSetup {
+    /// New user and validator tokens administered by `admin`, with an empty pool.
+    pub fn new(admin: Address) -> Self {
+        Self {
+            user_token: TIP20Setup::create("UserToken", "UTK", admin).with_salt(B256::random()),
+            validator_token: TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_salt(B256::random()),
+            liquidity: Vec::new(),
+        }
+    }
+
+    /// Mints `amount` validator tokens to `provider`, who deposits them all into the pool.
+    pub fn liquidity(mut self, provider: Address, amount: U256) -> Self {
+        self.validator_token = self.validator_token.with_mint(provider, amount);
+        self.liquidity.push((provider, amount));
+        self
+    }
+
+    /// Applies the setup in the entered storage context. Returns `(user_token, validator_token)`.
+    pub fn apply(self) -> Result<(Address, Address)> {
+        let user_token = self.user_token.apply()?.address();
+        let validator_token = self.validator_token.apply()?.address();
+        let mut fee_manager = TipFeeManager::new();
+        for (provider, amount) in self.liquidity {
+            fee_manager.mint(provider, user_token, validator_token, amount, provider)?;
+        }
+        Ok((user_token, validator_token))
+    }
+}
+
 /// Helper for TIP-403 policy setup in tests.
 ///
 /// ```ignore
@@ -408,6 +509,7 @@ impl TIP20Setup {
 ///     .with_transfer_policy(TIP403Setup::compound(policy_id, ALLOW_ALL_POLICY_ID, policy_id))
 ///     .apply()?;
 /// ```
+#[derive(Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 pub enum TIP403Setup {
     /// A whitelist or blacklist.

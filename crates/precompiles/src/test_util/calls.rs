@@ -1,8 +1,11 @@
 //! Lowers test setups to the precompile calls that perform them, so they can run against a node.
 
-use super::{Action, TIP20Setup, TIP403Setup};
+use super::{Action, DexSetup, FeeAmmSetup, TIP20Setup, TIP403Setup};
 use crate::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
+    stablecoin_dex::IStablecoinDEX,
+    tip_fee_manager::ITIPFeeAMM,
     tip20::{self, ITIP20},
     tip20_factory::{self, compute_tip20_address},
     tip403_registry::ITIP403Registry,
@@ -14,7 +17,8 @@ use alloy::{
 use tempo_contracts::precompiles::IRolesAuth;
 use tempo_primitives::transaction::Call;
 
-/// One call of a test setup lowered by [`TIP20Setup::calls`] or [`TIP403Setup::call`].
+/// One call of a test setup lowered by [`TIP20Setup::calls`], [`TIP403Setup::call`],
+/// [`DexSetup::calls`] or [`FeeAmmSetup::calls`].
 #[derive(Debug)]
 pub struct SetupCall {
     /// Account that sends it.
@@ -97,6 +101,46 @@ impl TIP20Setup {
     }
 }
 
+impl DexSetup {
+    /// Lowers the setup to `(base, quote)` and the calls that perform it, in the order
+    /// [`Self::apply`] performs it. Assumes pathUSD and the factory exist, as in
+    /// [`TIP20Setup::calls`].
+    pub fn calls(&self) -> ((Address, Address), Vec<SetupCall>) {
+        // Neither token has a transfer policy, so the next policy ID is unused.
+        let (quote, mut calls) = self.quote.calls(0);
+        let (base, base_calls) = self.base.calls(0);
+        calls.extend(base_calls);
+        if self.create_pair {
+            let admin = self.base.admin.expect("set by `DexSetup::new`");
+            let create = IStablecoinDEX::createPairCall { base };
+            calls.push(SetupCall::new(STABLECOIN_DEX_ADDRESS, admin, &create));
+        }
+        ((base, quote), calls)
+    }
+}
+
+impl FeeAmmSetup {
+    /// Lowers the setup to `(user_token, validator_token)` and the calls that perform it, in the
+    /// order [`Self::apply`] performs it. Assumes pathUSD and the factory exist, as in
+    /// [`TIP20Setup::calls`].
+    pub fn calls(&self) -> ((Address, Address), Vec<SetupCall>) {
+        // Neither token has a transfer policy, so the next policy ID is unused.
+        let (user_token, mut calls) = self.user_token.calls(0);
+        let (validator_token, validator_calls) = self.validator_token.calls(0);
+        calls.extend(validator_calls);
+        calls.extend(self.liquidity.iter().map(|&(provider, amount)| {
+            let mint = ITIPFeeAMM::mintCall {
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountValidatorToken: amount,
+                to: provider,
+            };
+            SetupCall::new(TIP_FEE_MANAGER_ADDRESS, provider, &mint)
+        }));
+        ((user_token, validator_token), calls)
+    }
+}
+
 impl TIP403Setup {
     /// Lowers the policy to the call that creates it, sent by the admin, or for a compound policy
     /// by `creator`. [`Self::apply`] creates compound policies from the zero address, which no
@@ -125,7 +169,9 @@ mod tests {
     use super::*;
     use crate::{
         Precompile, Result,
+        stablecoin_dex::StablecoinDEX,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip_fee_manager::TipFeeManager,
         tip20::TIP20Token,
         tip20_factory::TIP20Factory,
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -143,8 +189,10 @@ mod tests {
     #[test]
     fn calls_match_apply() {
         let [admin, alice, bob, spender] = actors();
-        let [minted, approved] = amounts();
+        let [minted, approved, traded, deposited] = amounts();
         let salt = B256::random();
+        let dex = DexSetup::new(admin).trader(alice, traded.to());
+        let fee_amm = FeeAmmSetup::new(admin).liquidity(bob, deposited);
         let setups = || {
             let tokens = [
                 TIP20Setup::path_usd(admin)
@@ -177,7 +225,9 @@ mod tests {
                     for token in tokens {
                         token.apply()?;
                     }
-                    return compound.apply().map(drop);
+                    compound.apply()?;
+                    dex.clone().apply()?;
+                    return fee_amm.clone().apply().map(drop);
                 }
                 for token in tokens {
                     let next_policy_id = TIP403Registry::new().policy_id_counter()?;
@@ -187,7 +237,11 @@ mod tests {
                         .into_iter()
                         .try_for_each(execute)?;
                 }
-                execute(compound.call(admin))
+                execute(compound.call(admin))?;
+                [dex.calls().1, fee_amm.calls().1]
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(execute)
             })
             .unwrap();
             storage
@@ -208,6 +262,10 @@ mod tests {
             TIP20Token::from_address(target)?.call(&calldata, caller)
         } else if target == TIP20_FACTORY_ADDRESS {
             TIP20Factory::new().call(&calldata, caller)
+        } else if target == STABLECOIN_DEX_ADDRESS {
+            StablecoinDEX::new().call(&calldata, caller)
+        } else if target == TIP_FEE_MANAGER_ADDRESS {
+            TipFeeManager::new().call(&calldata, caller)
         } else {
             assert_eq!(target, TIP403_REGISTRY_ADDRESS);
             TIP403Registry::new().call(&calldata, caller)

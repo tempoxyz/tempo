@@ -735,47 +735,24 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, TIP403Setup, with_storage},
+        test_util::{FeeAmmSetup, TIP20Setup, TIP403Setup, with_storage},
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
     };
     use tempo_primitives::test_utils::actors;
     use test_case::test_case;
 
-    /// Creates a USD user token and validator token owned by `admin`, applying `mints` to both.
-    fn create_token_pair(admin: Address, mints: &[(Address, U256)]) -> Result<(Address, Address)> {
-        let create = |name, symbol| {
-            mints
-                .iter()
-                .fold(
-                    TIP20Setup::create(name, symbol, admin),
-                    |setup, &(to, amount)| setup.with_mint(to, amount),
-                )
-                .apply()
-                .map(|token| token.address())
-        };
-        Ok((
-            create("UserToken", "UTK")?,
-            create("ValidatorToken", "VTK")?,
-        ))
-    }
-
-    /// Writes a pool with `liquidity` of each token and a matching LP total supply.
-    fn setup_pool_with_liquidity(
-        amm: &mut TipFeeManager,
-        user_token: Address,
-        validator_token: Address,
-        liquidity: U256,
-    ) -> Result<B256> {
-        let pool_id = amm.pool_id(user_token, validator_token);
-        let reserve: u128 = liquidity.try_into().unwrap();
-        amm.pools[pool_id].write(Pool {
-            reserve_user_token: reserve,
-            reserve_validator_token: reserve,
-        })?;
-        // sqrt(liquidity * liquidity)
-        amm.total_supply[pool_id].write(liquidity)?;
-        Ok(pool_id)
+    /// Creates a pool holding `reserve` of each token: `admin` deposits validator tokens, then a
+    /// fee swap of `reserve` user tokens, which the fee manager holds, balances it.
+    fn setup_balanced_pool(admin: Address, reserve: U256) -> Result<(Address, Address)> {
+        let (user_token, validator_token) = FeeAmmSetup::new(admin)
+            .liquidity(admin, reserve + compute_amount_out(reserve)?)
+            .apply()?;
+        TIP20Setup::config(user_token)
+            .with_mint(TIP_FEE_MANAGER_ADDRESS, reserve)
+            .apply()?;
+        TipFeeManager::new().execute_fee_swap(user_token, validator_token, reserve)?;
+        Ok((user_token, validator_token))
     }
 
     #[test]
@@ -802,13 +779,16 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let [admin, to] = actors();
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
-            let mut amm = TipFeeManager::new();
             let amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, amount)?;
+            let (user_token, validator_token) = setup_balanced_pool(admin, amount)?;
 
-            let result =
-                amm.rebalance_swap(admin, user_token, validator_token, amount + U256::ONE, to);
+            let result = TipFeeManager::new().rebalance_swap(
+                admin,
+                user_token,
+                validator_token,
+                amount + U256::ONE,
+                to,
+            );
             assert_eq!(result, Err(TIPFeeAMMError::invalid_amount().into()));
             Ok(())
         })
@@ -898,30 +878,27 @@ mod tests {
             (&with_lp[..], &without_lp[..]),
         ] {
             with_storage(TempoHardfork::T8, || {
-                let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                    .with_transfer_policy(
-                        TIP403Setup::whitelist(admin).with_members(user_members.iter().copied()),
-                    )
-                    .apply()?
-                    .address();
-                let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                    .with_transfer_policy(
-                        TIP403Setup::whitelist(admin)
-                            .with_members(validator_members.iter().copied()),
-                    )
-                    .apply()?
-                    .address();
+                let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                    .liquidity(lp, U256::from(10000))
+                    .apply()?;
+                for (token, members) in [
+                    (user_token, user_members),
+                    (validator_token, validator_members),
+                ] {
+                    TIP20Setup::config(token)
+                        .with_transfer_policy(
+                            TIP403Setup::whitelist(admin).with_members(members.iter().copied()),
+                        )
+                        .apply()?;
+                }
 
-                let mut amm = TipFeeManager::new();
-                let pool_id = setup_pool_with_liquidity(
-                    &mut amm,
+                let result = TipFeeManager::new().burn(
+                    lp,
                     user_token,
                     validator_token,
-                    U256::from(10000),
-                )?;
-                amm.set_liquidity_balances(pool_id, lp, U256::from(10000))?;
-
-                let result = amm.burn(lp, user_token, validator_token, U256::from(1000), to);
+                    U256::from(1000),
+                    to,
+                );
                 assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
                 Ok::<_, eyre::Report>(())
             })?;
@@ -934,7 +911,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin).apply()?;
 
             // MIN_LIQUIDITY = 1000, amount/2 must be > 1000, so 2000 should fail
             let result = TipFeeManager::new().mint(
@@ -955,10 +932,11 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (token1, token2) = create_token_pair(admin, &[(admin, uint!(10000000_U256))])?;
-
             let amount = uint!(10000_U256);
-            let result = TipFeeManager::new().mint(admin, token1, token2, amount, admin)?;
+            let (token1, token2) = FeeAmmSetup::new(admin).liquidity(admin, amount).apply()?;
+
+            let amm = TipFeeManager::new();
+            let result = amm.get_liquidity_balances(amm.pool_id(token1, token2), admin)?;
             assert_eq!(result, amount / uint!(2_U256) - MIN_LIQUIDITY);
 
             Ok(())
@@ -988,25 +966,25 @@ mod tests {
     }
 
     /// Test execute_fee_swap executes swap immediately, updates reserves and rounds consistently
-    #[test_case(1_000, 100)]
+    #[test_case(10_000, 100)]
     #[test_case(100_000_000_000, 10_000_000_000)]
     fn test_execute_fee_swap(liquidity: u64, amount_in: u64) -> eyre::Result<()> {
         let admin = Address::random();
         let (liquidity, amount_in) = (U256::from(liquidity), U256::from(amount_in));
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, liquidity)
+                .apply()?;
             let mut amm = TipFeeManager::new();
-            let pool_id =
-                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity)?;
 
             // e.g. 100 * 9970 / 10000 = 99
             let expected_out = (amount_in * M) / SCALE;
             let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
             assert_eq!(amount_out, expected_out);
 
-            let pool = amm.pools[pool_id].read()?;
-            assert_eq!(U256::from(pool.reserve_user_token), liquidity + amount_in);
+            let pool = amm.pools[amm.pool_id(user_token, validator_token)].read()?;
+            assert_eq!(U256::from(pool.reserve_user_token), amount_in);
             assert_eq!(
                 U256::from(pool.reserve_validator_token),
                 liquidity - expected_out
@@ -1022,12 +1000,16 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
-            let mut amm = TipFeeManager::new();
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, uint!(100_U256))?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, uint!(10000_U256))
+                .apply()?;
 
-            // Try to swap 200 tokens (would need ~199 output, but only 100 available)
-            let result = amm.execute_fee_swap(user_token, validator_token, uint!(200_U256));
+            // Try to swap 20000 tokens (would need ~19940 output, but only 10000 available)
+            let result = TipFeeManager::new().execute_fee_swap(
+                user_token,
+                validator_token,
+                uint!(20000_U256),
+            );
             assert_eq!(result, Err(TIPFeeAMMError::insufficient_liquidity().into()));
 
             Ok(())
@@ -1041,12 +1023,11 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
-            let mut amm = TipFeeManager::new();
             let unit = uint!(10_U256).pow(U256::from(6));
             let initial = uint!(100000_U256) * unit;
-            let pool_id =
-                setup_pool_with_liquidity(&mut amm, user_token, validator_token, initial)?;
+            let (user_token, validator_token) =
+                FeeAmmSetup::new(admin).liquidity(admin, initial).apply()?;
+            let mut amm = TipFeeManager::new();
 
             let (mut total_in, mut total_out) = (U256::ZERO, U256::ZERO);
             for swap in [uint!(1000_U256), uint!(2000_U256), uint!(3000_U256)] {
@@ -1058,8 +1039,8 @@ mod tests {
                 total_out += out;
             }
 
-            let pool = amm.pools[pool_id].read()?;
-            assert_eq!(U256::from(pool.reserve_user_token), initial + total_in);
+            let pool = amm.pools[amm.pool_id(user_token, validator_token)].read()?;
+            assert_eq!(U256::from(pool.reserve_user_token), total_in);
             assert_eq!(
                 U256::from(pool.reserve_validator_token),
                 initial - total_out
@@ -1076,15 +1057,12 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
-            let mut amm = TipFeeManager::new();
             let unit = uint!(10_U256).pow(U256::from(6));
-            let pool_id = setup_pool_with_liquidity(
-                &mut amm,
-                user_token,
-                validator_token,
-                uint!(100_U256) * unit,
-            )?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, uint!(100_U256) * unit)
+                .apply()?;
+            let amm = TipFeeManager::new();
+            let pool_id = amm.pool_id(user_token, validator_token);
 
             let reserve = U256::from(amm.pools[pool_id].read()?.reserve_validator_token);
 
@@ -1105,7 +1083,7 @@ mod tests {
         let [admin, to] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = create_token_pair(admin, &[])?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin).apply()?;
             let mut amm = TipFeeManager::new();
 
             for result in [
@@ -1129,14 +1107,13 @@ mod tests {
         let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(10000000_U256);
-            let mut amm = TipFeeManager::new();
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, mint_amount), (amm.address, mint_amount)])?;
-
             let liquidity = uint!(100000_U256);
-            let pool_id =
-                setup_pool_with_liquidity(&mut amm, user_token, validator_token, liquidity)?;
+            let (user_token, validator_token) = setup_balanced_pool(admin, liquidity)?;
+            TIP20Setup::config(validator_token)
+                .with_mint(admin, uint!(10000000_U256))
+                .apply()?;
+            let mut amm = TipFeeManager::new();
+            let pool_id = amm.pool_id(user_token, validator_token);
 
             let amount_out = uint!(1000_U256);
             let amount_in =
@@ -1160,27 +1137,29 @@ mod tests {
         let [admin, second_user] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(100000000_U256);
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, mint_amount), (second_user, mint_amount)])?;
+            let initial_amount = uint!(100000_U256);
+            let second_amount = uint!(50000_U256);
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, initial_amount)
+                .apply()?;
+            TIP20Setup::config(validator_token)
+                .with_mint(second_user, second_amount)
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
+            let pool_id = amm.pool_id(user_token, validator_token);
 
-            let initial_amount = uint!(100000_U256);
-            let first_liquidity =
-                amm.mint(admin, user_token, validator_token, initial_amount, admin)?;
+            let first_liquidity = amm.get_liquidity_balances(pool_id, admin)?;
             assert_eq!(
                 first_liquidity,
                 initial_amount / uint!(2_U256) - MIN_LIQUIDITY
             );
 
-            let pool_id = amm.pool_id(user_token, validator_token);
             let total_supply_after_first = amm.get_total_supply(pool_id)?;
             assert_eq!(total_supply_after_first, first_liquidity + MIN_LIQUIDITY);
 
             let reserve_val = U256::from(amm.pools[pool_id].read()?.reserve_validator_token);
 
-            let second_amount = uint!(50000_U256);
             let second_liquidity = amm.mint(
                 second_user,
                 user_token,
@@ -1213,16 +1192,17 @@ mod tests {
         let [admin, recipient] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
+            let deposit_amount = uint!(100000_U256);
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, deposit_amount)
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
+            let pool_id = amm.pool_id(user_token, validator_token);
 
-            let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = amm.get_liquidity_balances(pool_id, admin)?;
             assert_eq!(liquidity, deposit_amount / uint!(2_U256) - MIN_LIQUIDITY);
 
-            let pool_id = amm.pool_id(user_token, validator_token);
             let pool_before = amm.pools[pool_id].read()?;
             let total_supply_before = amm.get_total_supply(pool_id)?;
 
@@ -1268,17 +1248,13 @@ mod tests {
         let [admin, other_user] = actors();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) =
-                create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
+            let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                .liquidity(admin, uint!(100000_U256))
+                .apply()?;
 
             let mut amm = TipFeeManager::new();
-            let liquidity = amm.mint(
-                admin,
-                user_token,
-                validator_token,
-                uint!(100000_U256),
-                admin,
-            )?;
+            let liquidity =
+                amm.get_liquidity_balances(amm.pool_id(user_token, validator_token), admin)?;
 
             let result = amm.burn(
                 other_user,
@@ -1299,18 +1275,13 @@ mod tests {
 
         for spec in [TempoHardfork::T1B, TempoHardfork::T1C] {
             with_storage(spec, || {
-                let (user_token, validator_token) =
-                    create_token_pair(admin, &[(admin, uint!(100000000_U256))])?;
+                let (user_token, validator_token) = FeeAmmSetup::new(admin)
+                    .liquidity(admin, uint!(100000_U256))
+                    .apply()?;
 
                 let mut amm = TipFeeManager::new();
-                let liquidity = amm.mint(
-                    admin,
-                    user_token,
-                    validator_token,
-                    uint!(100000_U256),
-                    admin,
-                )?;
                 let pool_id = amm.pool_id(user_token, validator_token);
+                let liquidity = amm.get_liquidity_balances(pool_id, admin)?;
 
                 // A small reservation leaves room for a partial burn
                 let amount_out: u128 = compute_amount_out(uint!(1000_U256))?.try_into().unwrap();
@@ -1354,17 +1325,12 @@ mod tests {
 
         for spec in [TempoHardfork::T1B, TempoHardfork::T1C] {
             with_storage(spec, || {
-                let mint_amount = uint!(100000000_U256);
+                let (user_token, validator_token) = setup_balanced_pool(admin, uint!(100000_U256))?;
+                TIP20Setup::config(validator_token)
+                    .with_mint(admin, uint!(100000000_U256))
+                    .apply()?;
                 let mut amm = TipFeeManager::new();
-                let (user_token, validator_token) =
-                    create_token_pair(admin, &[(admin, mint_amount), (amm.address, mint_amount)])?;
-
-                let pool_id = setup_pool_with_liquidity(
-                    &mut amm,
-                    user_token,
-                    validator_token,
-                    uint!(100000_U256),
-                )?;
+                let pool_id = amm.pool_id(user_token, validator_token);
 
                 let amount_out: u128 = compute_amount_out(uint!(50000_U256))?.try_into().unwrap();
                 amm.reserve_pool_liquidity(pool_id, amount_out)?;
