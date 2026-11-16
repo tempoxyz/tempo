@@ -19,9 +19,9 @@ Untrusted input enters through:
 ## Components that matter most / least
 
 Most important:
-- `crates/precompiles`: TIP-20 balances, mint/burn, allowances, settled reward claims; the Fee AMM and fee manager; the stablecoin
-  DEX; TIP-403 policy enforcement; account keychain and nonce precompiles; validator config (V2; V1 is retired). Any
-  way to create, steal, freeze or misaccount tokens lives here.
+- `crates/precompiles`: TIP-20 balances, mint/burn, allowances, settled reward claims; the Fee AMM and fee
+  manager; the stablecoin DEX; TIP-403 policy enforcement; account keychain and nonce precompiles; validator config
+  (V2; V1 is retired). Any way to create, steal, freeze or misaccount tokens lives here.
 - `crates/primitives`, `crates/revm`, `crates/evm`: transaction encoding, signature verification and execution. Every
   node must reach the same state root from the same block; any non-determinism is consensus-breaking.
 - `crates/transaction-pool`: validation and admission, payment lanes, the 2D nonce pool, fee-token liquidity checks.
