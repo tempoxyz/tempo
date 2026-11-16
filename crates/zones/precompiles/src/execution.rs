@@ -116,56 +116,55 @@ where
         ));
     }
 
-    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
-    if !has_input_gas(env.spec, data.len(), gas.remaining()) {
-        return Err(PrecompileHalt::OutOfGas.into());
-    }
-
-    let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
-    if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
-        return Err(PrecompileHalt::OutOfGas.into());
-    }
-
-    // Preserve input borrowed from caller memory before storage borrows the EVM.
-    let input = data.to_vec();
-    let data = input.as_slice();
-    let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-    let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
-    let storage_gas = if fixed_gas.is_some() {
-        &mut fixed_gas_tracker
-    } else {
-        &mut *gas
-    };
-    let mut storage = EvmPrecompileStorageProvider::new(evm, storage_gas, env.spec, is_static)
-        .with_actions(env.actions.clone())
-        .with_non_creditable_slots(env.non_creditable_slots.clone());
-    if fixed_gas.is_some() {
-        // The fixed charge replaces storage-dependent pricing. Do not let the call mint,
-        // consume, or schedule TIP-1060 credits whose variable charges are discarded below.
-        storage.set_tip1060_storage_credits(false);
-    }
-
-    let result = StorageCtx::enter(&mut storage, || match rules.admit(data, caller) {
-        CallCheck::Continue => execute(data, caller),
-        CallCheck::Revert(output) => add_input_cost(
-            StorageCtx::default(),
-            data,
-            Err(PrecompileError::Revert(output)),
-        ),
-        CallCheck::Error(error) => {
-            let s = StorageCtx::default();
-            let result = s.error_result(error);
-            add_input_cost(s, data, result)
+    let caller = message.caller;
+    evm.with_message_input(message, |evm, data| {
+        if !has_input_gas(env.spec, data.len(), gas.remaining()) {
+            return Err(PrecompileHalt::OutOfGas.into());
         }
-    });
-    drop(storage);
-    if matches!(result, Ok(_) | Err(PrecompileError::Revert(_)))
-        && let Some(fixed_gas) = fixed_gas
-    {
-        gas.spend(fixed_gas)
-            .expect("fixed gas availability checked above");
-    }
-    result
+
+        let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
+        if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
+            return Err(PrecompileHalt::OutOfGas.into());
+        }
+
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
+        let storage_gas = if fixed_gas.is_some() {
+            &mut fixed_gas_tracker
+        } else {
+            &mut *gas
+        };
+        let mut storage = EvmPrecompileStorageProvider::new(evm, storage_gas, env.spec, is_static)
+            .with_actions(env.actions.clone())
+            .with_non_creditable_slots(env.non_creditable_slots.clone());
+        if fixed_gas.is_some() {
+            // The fixed charge replaces storage-dependent pricing. Do not let the call mint,
+            // consume, or schedule TIP-1060 credits whose variable charges are discarded below.
+            storage.set_tip1060_storage_credits(false);
+        }
+
+        let result = StorageCtx::enter(&mut storage, || match rules.admit(data, caller) {
+            CallCheck::Continue => execute(data, caller),
+            CallCheck::Revert(output) => add_input_cost(
+                StorageCtx::default(),
+                data,
+                Err(PrecompileError::Revert(output)),
+            ),
+            CallCheck::Error(error) => {
+                let s = StorageCtx::default();
+                let result = s.error_result(error);
+                add_input_cost(s, data, result)
+            }
+        });
+        drop(storage);
+        if matches!(result, Ok(_) | Err(PrecompileError::Revert(_)))
+            && let Some(fixed_gas) = fixed_gas
+        {
+            gas.spend(fixed_gas)
+                .expect("fixed gas availability checked above");
+        }
+        result
+    })
 }
 
 fn add_input_cost(mut s: StorageCtx, data: &[u8], res: PrecompileResult) -> PrecompileResult {

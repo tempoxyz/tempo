@@ -162,10 +162,9 @@ pub fn configurable_account(cx: _) -> Result {
     if !has_input_gas(spec, cx.state.input().len(), cx.gas.tracker().remaining()) {
         return Err(InstrStop::PrecompileOOG);
     }
-    let input = cx.state.input().to_vec();
-    let mut storage =
-        EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
-    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
+    let (input, host) = cx.state.input_host();
+    let mut storage = EvmPrecompileStorageProvider::new(host, cx.gas.tracker_mut(), spec, true);
+    let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, input)) {
         Ok(output) => (InstrStop::Return, output.into_bytes()),
         Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
         Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
