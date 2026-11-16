@@ -866,6 +866,13 @@ where
         let onchain_outcome =
             OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
                 .expect("the last block of an epoch must contain the DKG outcome");
+        ensure!(
+            onchain_outcome.epoch() == state.epoch.next(),
+            "boundary outcome at height `{height}` is for epoch `{}`, expected the next \
+             epoch `{}`",
+            onchain_outcome.epoch,
+            state.epoch.next(),
+        );
 
         info!("reading validator from contract");
 
@@ -1458,6 +1465,12 @@ where
             outcome_epoch,
         )
         .await?;
+
+        crate::startup::ensure_outcome_within_tip_epoch(
+            onchain_outcome.epoch(),
+            self.config.finalized_tip.as_ref().map(|(_, tip)| tip),
+        )
+        .wrap_err_with(|| format!("boundary outcome at height `{latest_boundary}`"))?;
 
         // The configured initial share takes precedence over the candidate
         // salvaged from a stale state. Either is only usable if it matches

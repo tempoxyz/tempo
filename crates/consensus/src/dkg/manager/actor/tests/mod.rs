@@ -2519,3 +2519,33 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         assert_eq!(harness.marshal.subscriptions(), subscriptions);
     });
 }
+
+#[test]
+fn boundary_outcome_must_be_for_the_next_epoch() {
+    Runner::timed(Duration::from_secs(10)).start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let (skipped, _, _) = dkg_state(&mut context, Epoch::new(3), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "boundary_skips_an_epoch")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        // Height 19 ends epoch 1, but its outcome claims epoch 3.
+        let boundary = outcome_header(Height::new(19), &skipped);
+        harness.execution.add_header(boundary.clone());
+        let (acknowledgement, _waiter) = commonware_utils::acknowledgement::Exact::handle();
+        let _ = commonware_consensus::Reporter::report(
+            &mut harness.mailbox().clone(),
+            commonware_consensus::marshal::Update::Block(block(boundary).into(), acknowledgement),
+        );
+        harness.wait_for_exit().await;
+
+        assert_eq!(harness.storage().current().epoch, state.epoch);
+        assert!(!harness.epoch_manager.events().iter().any(
+            |event| matches!(event, EpochEvent::Enter { epoch, .. } if *epoch == skipped.epoch)
+        ));
+    });
+}
