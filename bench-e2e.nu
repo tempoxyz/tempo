@@ -67,12 +67,18 @@ def tempo-node-help [tempo_bin: string] {
     [$result.stdout $result.stderr] | str join "\n"
 }
 
+# Hidden flags are missing from --help; clap still rejects unknown ones before handling --help.
+def node-arg-parses [tempo_bin: string, arg: list<string>] {
+    (run-external $tempo_bin "node" ...$arg "--help" | complete).exit_code == 0
+}
+
 def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
     let help = (tempo-node-help $tempo_bin)
     mut supported = []
     mut removed = []
     mut skip_next_value = false
-    for arg in $args {
+    for entry in ($args | enumerate) {
+        let arg = $entry.item
         if $skip_next_value {
             if not ($arg starts-with "--") {
                 $removed = ($removed | append $arg)
@@ -89,7 +95,9 @@ def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
         let key = ($arg | split row "=" | first)
         # Binaries before the flag took a value parse it as a bare switch and reject =false.
         let value_unsupported = ($key == "--builder.disable-prewarming" and ($arg | str contains "=") and not ($help | str contains $"($key)[="))
-        if ($help | str contains $key) and not $value_unsupported {
+        let next = ($args | get -o ($entry.index + 1))
+        let probe = if ($arg | str contains "=") or $next == null or ($next starts-with "--") { [$arg] } else { [$arg $next] }
+        if (($help | str contains $key) or (node-arg-parses $tempo_bin $probe)) and not $value_unsupported {
             $supported = ($supported | append $arg)
         } else {
             print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
