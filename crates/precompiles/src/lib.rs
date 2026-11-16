@@ -121,6 +121,12 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .ok_or(error::TempoPrecompileError::OutOfGas)
 }
 
+/// Returns whether `remaining` gas covers [`input_cost`] for `calldata_len` bytes at `spec`.
+#[inline]
+pub fn has_input_gas(spec: TempoHardfork, calldata_len: usize, remaining: u64) -> bool {
+    input_cost(spec, calldata_len).is_ok_and(|cost| remaining >= cost)
+}
+
 /// Returns the additional gas cost for duplicate validation at `spec`.
 #[inline]
 pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
@@ -323,9 +329,7 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        if input_cost(self.spec, evm.message_input(message).len())
-            .map_or(true, |cost| gas.remaining() < cost)
-        {
+        if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
             return Some(Err(PrecompileHalt::OutOfGas.into()));
         }
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
