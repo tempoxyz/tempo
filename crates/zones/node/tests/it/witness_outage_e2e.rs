@@ -9,7 +9,8 @@ use alloy_consensus::BlockHeader as _;
 use tempo_contracts::zones::ZonePortal;
 
 use crate::utils::{
-    RealP2pCluster, ZoneAccount, poll_until, start_real_p2p_cluster_without_l1_proofs,
+    RealP2pCluster, ZoneAccount, assert_same_block, poll_until,
+    start_real_p2p_cluster_without_l1_proofs, wait_all_at,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -53,8 +54,8 @@ async fn pre_t15_zone_produces_and_settles_without_witnesses() -> eyre::Result<(
 
     // Followers import the leader's blocks even though they arrive without witnesses.
     let height = leader.provider().get_block_number().await?;
-    cluster.wait_all_at(height, TIMEOUT).await?;
-    cluster.assert_same_block(height).await?;
+    wait_all_at(&cluster.nodes, height, TIMEOUT).await?;
+    assert_same_block(&cluster.nodes, height).await?;
 
     // Blocks without witnesses settle with the NoProof verifier.
     poll_until(

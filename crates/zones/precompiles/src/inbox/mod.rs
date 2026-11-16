@@ -30,7 +30,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{Handler, Mapping, Slot, StorageCtx},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
-    tip403_registry::{AuthRole, TIP403Registry},
+    tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
@@ -353,16 +353,11 @@ impl ZoneInbox {
         }
 
         let checkpoint = self.storage.checkpoint();
-        TIP20Token::from_address(token)?.mint_with_role(
+        TIP20Token::from_address(token)?.mint(
             ZONE_INBOX_ADDRESS,
             ITIP20::mintCall {
                 to,
                 amount: U256::from(amount),
-            },
-            if self.storage.spec().is_t13() {
-                AuthRole::recipient()
-            } else {
-                AuthRole::mint_recipient()
             },
         )?;
         checkpoint.commit();

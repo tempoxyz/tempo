@@ -14,7 +14,7 @@ use bincode::Options as _;
 use core::ffi::c_int;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_fuzz_types::{
-    FUZZ_ACCEPT, FUZZ_REJECT, HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION,
+    ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT, HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION,
     TempoHarnessCapabilities, TempoHarnessInput,
 };
 
@@ -37,13 +37,16 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_len: usize,
 ) -> c_int {
     if in_ptr.is_null() {
+        execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
         return FUZZ_REJECT;
     }
     let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
     let Ok(input) = bincode_options().deserialize::<TempoHarnessInput>(input) else {
+        execute::reject(ErrorClass::InvalidInput, execute::Check::HarnessInput);
         return FUZZ_REJECT;
     };
     let Ok(outcome) = bincode_options().serialize(&execute::run(input)) else {
+        execute::reject(ErrorClass::Internal, execute::Check::OutcomeEncoding);
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
@@ -83,6 +86,30 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &capabilities) }
+}
+
+/// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block
+/// applied), with the same return values and safety contract as [`tempo_fuzz_capabilities_v1`].
+/// An empty reason needs no buffer, so `out_ptr` may then be null.
+/// The outcome's [`tempo_fuzz_types::ErrorClass`] says only that it was rejected. This says which
+/// check rejected it, such as a transaction's nonce or its fee payment.
+///
+/// # Safety
+///
+/// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    execute::with_rejection(|why| {
+        if why.is_empty() && !out_written.is_null() {
+            unsafe { *out_written = 0 };
+            return FUZZ_ACCEPT;
+        }
+        unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
+    })
 }
 
 /// `bincode::serialize`'s encoding, rejecting trailing bytes.

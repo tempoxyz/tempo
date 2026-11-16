@@ -75,6 +75,14 @@ toml.workspace = true
 zeroize.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+antithesis-instrumentation = { workspace = true, optional = true }
+
+[features]
+# Link Antithesis's coverage runtime shim, for binaries built with its sancov flags (see
+# contrib/antithesis/zones/Dockerfile). Linux only.
+antithesis-coverage = ["dep:antithesis-instrumentation"]
+
 [dev-dependencies]
 base64.workspace = true
 zone-chainspec.workspace = true

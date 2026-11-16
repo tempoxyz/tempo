@@ -52,6 +52,7 @@ mod tests {
     use crate::test_utils::{test_context, test_storage_provider};
     use aes_gcm::aead::{Aead, Payload};
     use tempo_precompiles::storage::PrecompileStorageProvider;
+    use test_case::test_case;
 
     fn encrypt(plaintext: &[u8], aad: &[u8]) -> ([u8; 32], [u8; 12], Vec<u8>, [u8; 16]) {
         let key = [0x42u8; 32];
@@ -75,205 +76,51 @@ mod tests {
         (key, nonce_bytes, encrypted, tag)
     }
 
-    fn decrypt_with_native_gas(
-        key: &[u8; 32],
-        nonce: &[u8; 12],
-        ciphertext: &[u8],
-        aad: &[u8],
-        tag: &[u8; 16],
-    ) -> (Vec<u8>, bool, u64) {
+    #[test_case(b"hello world test", &[], &[] => true)]
+    #[test_case(b"", &[], &[] => true)]
+    #[test_case(b"hello world test", b"zone-inbox-v1", b"zone-inbox-v1" => true)]
+    // AAD bytes are charged.
+    #[test_case(b"", &[0xA5; 128], &[0xA5; 128] => true)]
+    #[test_case(b"secret data", b"correct", b"wrong" => false)]
+    #[test_case(b"secret data", b"zone-inbox-v1", &[] => false)]
+    fn test_aes_gcm_decrypt_charges_gas(
+        plaintext: &[u8],
+        encrypt_aad: &[u8],
+        decrypt_aad: &[u8],
+    ) -> bool {
+        let (key, nonce, ciphertext, tag) = encrypt(plaintext, encrypt_aad);
+        let expected_gas =
+            AES_GCM_BASE_GAS + AES_GCM_PER_BYTE_GAS * (ciphertext.len() + decrypt_aad.len()) as u64;
+
         let mut ctx = test_context();
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
         let gas_before = storage.gas_used();
-        let (plaintext, valid) = StorageCtx::enter(&mut storage, || {
-            charge_gas(ciphertext.len(), aad.len()).expect("charge native gas");
-            decrypt(key, nonce, ciphertext, aad, tag)
+        let (decrypted, valid) = StorageCtx::enter(&mut storage, || {
+            charge_gas(ciphertext.len(), decrypt_aad.len()).expect("charge native gas");
+            decrypt(&key, &nonce, &ciphertext, decrypt_aad, &tag)
         });
 
-        (plaintext, valid, storage.gas_used() - gas_before)
+        let expected_plaintext: &[u8] = if valid { plaintext } else { &[] };
+        assert_eq!(decrypted, expected_plaintext);
+        assert_eq!(storage.gas_used() - gas_before, expected_gas);
+        valid
     }
 
     #[test]
-    fn test_aes_gcm_roundtrip() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"hello world test";
+    fn test_aes_gcm_tampered_input() {
+        let (key, nonce, ciphertext, tag) = encrypt(b"hello world test", &[]);
+        let mut flipped_ciphertext = ciphertext.clone();
+        flipped_ciphertext[0] ^= 0x01;
 
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher.encrypt(nonce, plaintext.as_ref()).expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, &[], &tag);
-        assert!(valid);
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_aes_gcm_bad_tag() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"hello";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher.encrypt(nonce, plaintext.as_ref()).expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let bad_tag = [0xFFu8; 16];
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, &[], &bad_tag);
-        assert!(!valid);
-        assert!(decrypted.is_empty());
-    }
-
-    #[test]
-    fn test_aes_gcm_with_aad() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"hello world test";
-        let aad = b"zone-inbox-v1";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext.as_ref(),
-                    aad: aad.as_ref(),
-                },
-            )
-            .expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, aad, &tag);
-        assert!(valid);
-        assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn precompile_gas_charges_aad_bytes() {
-        let plaintext = b"";
-        let aad = vec![0xA5; 128];
-        let (key, nonce, ciphertext, tag) = encrypt(plaintext, &aad);
-        let expected_gas =
-            AES_GCM_BASE_GAS + AES_GCM_PER_BYTE_GAS * (ciphertext.len() + aad.len()) as u64;
-
-        let (decrypted, valid, gas_used) =
-            decrypt_with_native_gas(&key, &nonce, &ciphertext, &aad, &tag);
-
-        assert!(valid);
-        assert_eq!(decrypted, plaintext);
-        assert_eq!(gas_used, expected_gas);
-    }
-
-    #[test]
-    fn precompile_decrypts_without_aad_and_reports_ciphertext_gas() {
-        let plaintext = b"normal precompile path";
-        let (key, nonce, ciphertext, tag) = encrypt(plaintext, &[]);
-        let expected_gas = AES_GCM_BASE_GAS + AES_GCM_PER_BYTE_GAS * ciphertext.len() as u64;
-
-        let (decrypted, valid, gas_used) =
-            decrypt_with_native_gas(&key, &nonce, &ciphertext, &[], &tag);
-
-        assert!(valid);
-        assert_eq!(decrypted, plaintext);
-        assert_eq!(gas_used, expected_gas);
-    }
-
-    #[test]
-    fn test_aes_gcm_wrong_aad() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"secret data";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext.as_ref(),
-                    aad: b"correct",
-                },
-            )
-            .expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, b"wrong", &tag);
-        assert!(!valid);
-        assert!(decrypted.is_empty());
-    }
-
-    #[test]
-    fn test_aes_gcm_missing_aad() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"secret data";
-        let aad = b"zone-inbox-v1";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext.as_ref(),
-                    aad: aad.as_ref(),
-                },
-            )
-            .expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, &[], &tag);
-        assert!(!valid);
-        assert!(decrypted.is_empty());
-    }
-
-    #[test]
-    fn test_aes_gcm_flipped_ciphertext_bit() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"hello world test";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher.encrypt(nonce, plaintext.as_ref()).expect("encrypt");
-
-        let mut ct = encrypted[..encrypted.len() - 16].to_vec();
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        ct[0] ^= 0x01;
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, &ct, &[], &tag);
-        assert!(!valid);
-        assert!(decrypted.is_empty());
-    }
-
-    #[test]
-    fn test_aes_gcm_empty_plaintext() {
-        let key = [0x42u8; 32];
-        let nonce_bytes = [0x01u8; 12];
-        let plaintext = b"";
-
-        let cipher = Aes256Gcm::new((&key).into());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let encrypted = cipher.encrypt(nonce, plaintext.as_ref()).expect("encrypt");
-
-        let ct = &encrypted[..encrypted.len() - 16];
-        let tag: [u8; 16] = encrypted[encrypted.len() - 16..].try_into().unwrap();
-
-        let (decrypted, valid) = decrypt(&key, &nonce_bytes, ct, &[], &tag);
-        assert!(valid);
-        assert!(decrypted.is_empty());
+        for (case, ciphertext, tag) in [
+            ("bad tag", &ciphertext, [0xFFu8; 16]),
+            ("flipped ciphertext bit", &flipped_ciphertext, tag),
+        ] {
+            assert_eq!(
+                decrypt(&key, &nonce, ciphertext, &[], &tag),
+                (Vec::new(), false),
+                "{case}"
+            );
+        }
     }
 }

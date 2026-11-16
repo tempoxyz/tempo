@@ -149,7 +149,7 @@ mod tests {
         Precompile,
         account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},
         storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
     };
     use alloy::{
         primitives::{B256, U256},
@@ -162,8 +162,7 @@ mod tests {
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T6, || {
             let mut fee_manager = AccountKeychain::new();
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
                 .iter()
@@ -192,8 +191,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
@@ -229,8 +227,7 @@ mod tests {
         let account = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let calldata = authorizeKeyCall {
                 keyId: Address::random(),
@@ -308,8 +305,7 @@ mod tests {
         let calldata = aliased_set_allowed_calls_calldata(500);
         assert_eq!(calldata.len(), 48_292);
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T3, || {
             let mut keychain = AccountKeychain::new();
             let output = keychain.call(&calldata, Address::ZERO);
             assert!(crate::test_util::revert_bytes(&output).is_empty());
@@ -323,8 +319,7 @@ mod tests {
         let account = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let calldata = legacyAuthorizeKeyCall {
                 keyId: Address::random(),
@@ -353,8 +348,7 @@ mod tests {
         let token = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let authorize_calldata = legacyAuthorizeKeyCall {
                 keyId: key_id,
@@ -396,8 +390,7 @@ mod tests {
         let account = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+            let mut keychain = AccountKeychain::initialized()?;
 
             let calldata = getRemainingLimitWithPeriodCall {
                 account,
@@ -419,10 +412,8 @@ mod tests {
         let key_id = Address::random();
         let token = Address::random();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+        with_storage(TempoHardfork::T3, || {
+            let mut keychain = AccountKeychain::initialized()?;
 
             let calldata = getRemainingLimitCall {
                 account,
@@ -447,10 +438,8 @@ mod tests {
         let account = Address::random();
         let witness = B256::repeat_byte(0x53);
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
+        with_storage(TempoHardfork::T4, || {
+            let mut keychain = AccountKeychain::initialized()?;
 
             for (selector, calldata) in [
                 (
@@ -493,8 +482,7 @@ mod tests {
         let selector = getRemainingLimitWithPeriodCall::SELECTOR;
         let calldata = selector.to_vec();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let mut keychain = AccountKeychain::new();
 
             let result = keychain.call(&calldata, Address::ZERO);

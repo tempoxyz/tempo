@@ -19,12 +19,15 @@ artifacts:
   ZonePortal: ../zones/portal.abi.json
 setup:
   steps:
+    # Settlement anchors each batch to Tempo block `block.number - offset`. The helper sets the
+    # offset from TXGEN_ZONE_ANCHOR_OFFSET (default 1).
     - id: settlement
       deploy:
         type: eip1559
         from: {pool: deployer, select: {index: 0}}
         artifact: SettlementFixture
         gas_limit: 5000000
+        constructor_args: [1]
     # The helper gives portal i CREATE2 salt i and its own 2D nonce lane (key i + 1), shared
     # with its funding step, so portals deploy in parallel from one sender.
     - id: portal

@@ -33,8 +33,9 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     input_cost,
     storage::{
-        PrecompileStorageProvider, StorageCtx, actions::StorageActions,
-        evm::EvmPrecompileStorageProvider,
+        PrecompileStorageProvider, StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
     storage_credits::NonCreditableSlots,
 };
@@ -59,6 +60,11 @@ impl ZonePrecompileEnv {
             actions,
             non_creditable_slots,
         }
+    }
+
+    /// The hardfork the Zone EVM runs at.
+    pub(crate) const fn spec(&self) -> TempoHardfork {
+        self.spec
     }
 }
 
@@ -102,6 +108,7 @@ pub(crate) fn execute_precompile<T>(
 ) -> PrecompileResult
 where
     T: EvmTypes<BlockEnvExt = tempo_primitives::TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
 {
     if message.destination != message.call_target {
         return Err(PrecompileError::Revert(
@@ -109,7 +116,7 @@ where
         ));
     }
 
-    let (data, caller) = (message.input.as_ref(), message.caller);
+    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
     let Ok(input_gas) = input_cost(env.spec, data.len()) else {
         return Err(PrecompileHalt::OutOfGas.into());
     };
@@ -122,6 +129,9 @@ where
         return Err(PrecompileHalt::OutOfGas.into());
     }
 
+    // Preserve input borrowed from caller memory before storage borrows the EVM.
+    let input = data.to_vec();
+    let data = input.as_slice();
     let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
     let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
     let storage_gas = if fixed_gas.is_some() {
@@ -136,11 +146,6 @@ where
         // The fixed charge replaces storage-dependent pricing. Do not let the call mint,
         // consume, or schedule TIP-1060 credits whose variable charges are discarded below.
         storage.set_tip1060_storage_credits(false);
-    }
-    if env.spec.is_t15() {
-        // A recovery authority without a Zone key could never claim funds diverted to
-        // `ReceivePolicyGuard`, so blocked inbounds revert instead.
-        storage.set_revert_blocked_inbound(true);
     }
 
     let result = StorageCtx::enter(&mut storage, || match rules.admit(data, caller) {
@@ -232,7 +237,7 @@ mod tests {
         let message = Message::<TempoEvmTypes> {
             gas_limit: gas,
             caller,
-            input: Bytes::copy_from_slice(data),
+            input: Bytes::copy_from_slice(data).into(),
             destination: target,
             call_target: target,
             code_address: target,
@@ -286,29 +291,6 @@ mod tests {
             Some((calldata.into(), Some([0xde, 0xad, 0xbe, 0xef]), caller))
         );
         assert_eq!(*recorded_execute.borrow(), Some((calldata.into(), caller)));
-    }
-
-    #[test]
-    fn blocked_inbounds_revert_from_t15() {
-        for (spec, expected) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
-            let observed = Rc::new(Cell::new(None));
-            let execute_observed = observed.clone();
-            let execute = move |_: &[u8], _| {
-                execute_observed.set(Some(StorageCtx::default().revert_blocked_inbound()));
-                Ok(StorageCtx::default().success_output(Bytes::new()))
-            };
-            let (result, _) = call(
-                &mut test_context(),
-                spec,
-                &[],
-                Address::ZERO,
-                u64::MAX,
-                NoCallRules,
-                execute,
-            );
-            result.unwrap();
-            assert_eq!(observed.get(), Some(expected), "{spec:?}");
-        }
     }
 
     #[test]

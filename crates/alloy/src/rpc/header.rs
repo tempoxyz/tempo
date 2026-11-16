@@ -125,3 +125,56 @@ impl AsRef<TempoHeader> for TempoHeaderResponse {
         &self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::Sealable;
+    use alloy_primitives::b256;
+    use tempo_primitives::TempoConsensusContext;
+
+    #[test]
+    fn header_response_serde_roundtrip_preserves_hash() {
+        let header = TempoHeader {
+            general_gas_limit: 15_000_000,
+            shared_gas_limit: 5_000_000,
+            timestamp_millis_part: 123,
+            inner: alloy_consensus::Header {
+                parent_hash: B256::repeat_byte(0x01),
+                number: 42,
+                gas_limit: 30_000_000,
+                gas_used: 21_000,
+                timestamp: 1_700_000_000,
+                extra_data: Bytes::from_static(b"tempo"),
+                base_fee_per_gas: Some(1_000_000_000),
+                withdrawals_root: Some(B256::repeat_byte(0x02)),
+                blob_gas_used: Some(0),
+                excess_blob_gas: Some(0),
+                parent_beacon_block_root: Some(B256::repeat_byte(0x03)),
+                requests_hash: Some(B256::repeat_byte(0x04)),
+                ..Default::default()
+            },
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 1,
+                view: 5,
+                parent_view: 4,
+                // RFC 8032 test vector 1 public key.
+                proposer: b256!("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+                    .try_into()
+                    .unwrap(),
+            }),
+        };
+        let response = TempoHeaderResponse {
+            timestamp_millis: header.timestamp_millis(),
+            inner: Header::new(header.clone()),
+        };
+        assert_eq!(response.hash(), header.hash_slow());
+
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: TempoHeaderResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.inner.inner, header);
+        assert_eq!(decoded.inner.inner.hash_slow(), response.hash());
+        assert_eq!(decoded.hash(), response.hash());
+        assert_eq!(decoded.timestamp_millis, response.timestamp_millis);
+    }
+}

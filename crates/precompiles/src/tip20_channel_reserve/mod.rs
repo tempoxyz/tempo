@@ -123,6 +123,14 @@ impl TIP20ChannelReserve {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Seeds the enclosing transaction's replay-protected context hash for `open` calls.
     ///
     /// The handler seeds `keccak256(encode_for_signing || sender)` for every real transaction
@@ -856,7 +864,7 @@ impl TIP20ChannelReserve {
     ) -> Result<()> {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
         let signer = SignatureVerifier::new()
-            .recover(digest, signature.clone())
+            .recover(digest, signature)
             .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
@@ -865,7 +873,7 @@ impl TIP20ChannelReserve {
         Ok(())
     }
 
-    /// Rejects a retired root key (TIP-1112) as the voucher signer for new deposit.
+    /// Rejects a retired root key (TIP-1113) as the voucher signer for new deposit.
     ///
     /// Vouchers stay valid after their signer migrates, so a retired key keeps authority over
     /// funds already in its channels but must not gain authority over new funds.
@@ -930,8 +938,8 @@ mod tests {
         address_registry::AddressRegistry,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
-            TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
-            register_virtual_master,
+            TIP20Setup, TIP403Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
+            register_virtual_master, with_storage,
         },
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, TIP403Registry},
     };
@@ -1008,48 +1016,30 @@ mod tests {
         Ok(hash)
     }
 
-    fn install_blacklist_policy(
-        token: &mut TIP20Token,
-        admin: Address,
-    ) -> Result<(TIP403Registry, u64, u64)> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let blacklist = |registry: &mut TIP403Registry| {
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )
-        };
-        let sender_policy = blacklist(&mut registry)?;
-        let recipient_policy = blacklist(&mut registry)?;
-        let compound_policy = registry.create_compound_policy(
-            admin,
-            ITIP403Registry::createCompoundPolicyCall {
-                senderPolicyId: sender_policy,
-                recipientPolicyId: recipient_policy,
-                mintRecipientPolicyId: 1,
-            },
-        )?;
+    fn install_blacklist_policy(token: &mut TIP20Token, admin: Address) -> Result<(u64, u64)> {
+        let sender_policy = TIP403Setup::blacklist(admin).apply()?;
+        let recipient_policy = TIP403Setup::blacklist(admin).apply()?;
         token.change_transfer_policy_id(
             admin,
             ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: compound_policy,
+                newPolicyId: TIP403Setup::compound(
+                    sender_policy,
+                    recipient_policy,
+                    ALLOW_ALL_POLICY_ID,
+                )
+                .apply()?,
             },
         )?;
-        Ok((registry, sender_policy, recipient_policy))
+        Ok((sender_policy, recipient_policy))
     }
 
     fn set_blacklisted(
-        registry: &mut TIP403Registry,
         admin: Address,
         policy_id: u64,
         account: Address,
         restricted: bool,
     ) -> Result<()> {
-        registry.modify_policy_blacklist(
+        TIP403Registry::new().modify_policy_blacklist(
             admin,
             ITIP403Registry::modifyPolicyBlacklistCall {
                 policyId: policy_id,
@@ -1064,24 +1054,12 @@ mod tests {
         admin: Address,
         recipients: &[Address],
     ) -> Result<()> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let recipient_policy = registry.create_policy_with_accounts(
-            admin,
-            ITIP403Registry::createPolicyWithAccountsCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-                accounts: recipients.to_vec(),
-            },
-        )?;
-        let compound_policy = registry.create_compound_policy(
-            admin,
-            ITIP403Registry::createCompoundPolicyCall {
-                senderPolicyId: ALLOW_ALL_POLICY_ID,
-                recipientPolicyId: recipient_policy,
-                mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
-            },
-        )?;
+        let recipient_policy = TIP403Setup::whitelist(admin)
+            .with_members(recipients.iter().copied())
+            .apply()?;
+        let compound_policy =
+            TIP403Setup::compound(ALLOW_ALL_POLICY_ID, recipient_policy, ALLOW_ALL_POLICY_ID)
+                .apply()?;
         token.change_transfer_policy_id(
             admin,
             ITIP20::changeTransferPolicyIdCall {
@@ -1090,21 +1068,11 @@ mod tests {
         )
     }
 
-    fn install_receive_sender_blacklist(
-        receiver: Address,
-        blocked_sender: Address,
-    ) -> Result<(TIP403Registry, u64)> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let sender_policy = registry.create_policy_with_accounts(
-            receiver,
-            ITIP403Registry::createPolicyWithAccountsCall {
-                admin: receiver,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                accounts: vec![blocked_sender],
-            },
-        )?;
-        registry.set_receive_policy(
+    fn install_receive_sender_blacklist(receiver: Address, blocked_sender: Address) -> Result<u64> {
+        let sender_policy = TIP403Setup::blacklist(receiver)
+            .with_members([blocked_sender])
+            .apply()?;
+        TIP403Registry::new().set_receive_policy(
             receiver,
             ITIP403Registry::setReceivePolicyCall {
                 senderPolicyId: sender_policy,
@@ -1112,13 +1080,12 @@ mod tests {
                 recoveryAuthority: Address::ZERO,
             },
         )?;
-        Ok((registry, sender_policy))
+        Ok(sender_policy)
     }
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T7, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
                 &mut reserve,
@@ -1142,8 +1109,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let result = reserve.open(
                 payer,
@@ -1175,8 +1141,7 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             seed_expiring_nonce_hash(&mut reserve)?;
 
             for invalid_payee in &[token.address(), virtual_payee] {
@@ -1227,14 +1192,12 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let (mut registry, _sender_policy, recipient_policy) =
-                install_blacklist_policy(&mut token, admin)?;
+            let (_sender_policy, recipient_policy) = install_blacklist_policy(&mut token, admin)?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // Admission must check the effective recipient, not just the virtual alias.
-            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
                 payer,
@@ -1250,13 +1213,7 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Top-ups must enforce the same resolved-recipient admission check.
-            set_blacklisted(
-                &mut registry,
-                admin,
-                recipient_policy,
-                VIRTUAL_MASTER,
-                false,
-            )?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, false)?;
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
@@ -1280,7 +1237,7 @@ mod tests {
                 expiring_nonce_hash,
             );
 
-            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, true)?;
             let res = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1306,13 +1263,11 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let (mut registry, sender_policy, recipient_policy) =
-                install_blacklist_policy(&mut token, admin)?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let (sender_policy, recipient_policy) = install_blacklist_policy(&mut token, admin)?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // A blocked recipient cannot be used as the payee for a new channel.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            set_blacklisted(admin, recipient_policy, payee, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
                 payer,
@@ -1328,7 +1283,7 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Unblock the payee so we can fund a channel for later sender-side checks.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
+            set_blacklisted(admin, recipient_policy, payee, false)?;
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
@@ -1353,7 +1308,7 @@ mod tests {
             );
 
             // Top-ups also reject channels whose payee can no longer receive.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            set_blacklisted(admin, recipient_policy, payee, true)?;
             let res = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1364,8 +1319,8 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Once funded, vouchers cannot transmit new value if the payer is blocked.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
-            set_blacklisted(&mut registry, admin, sender_policy, payer, true)?;
+            set_blacklisted(admin, recipient_policy, payee, false)?;
+            set_blacklisted(admin, sender_policy, payer, true)?;
             let digest =
                 reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
                     channelId: channel_id,
@@ -1416,8 +1371,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // The reserve is not an authorized recipient, but the logical payer -> payee path is.
             let salt = B256::random();
@@ -1539,10 +1493,9 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
-            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
+            let sender_policy = install_receive_sender_blacklist(payee, payer)?;
 
             let salt = B256::random();
             seed_expiring_nonce_hash(&mut reserve)?;
@@ -1563,7 +1516,7 @@ mod tests {
                 U256::from(1_000u128)
             );
 
-            set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
+            set_blacklisted(payee, sender_policy, payer, false)?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
                 payer,
@@ -1586,7 +1539,7 @@ mod tests {
                 expiring_nonce_hash,
             );
 
-            set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
+            set_blacklisted(payee, sender_policy, payer, true)?;
             let result = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1625,8 +1578,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // This payee accepts the reserve but not the individual payer, matching the policy
             // under which pre-T12 channel captures were funded.
@@ -1731,8 +1683,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -1759,7 +1710,7 @@ mod tests {
 
             // Receive policies remain mutable after funding. The payee now rejects only the
             // logical payer, while the physical reserve sender remains authorized.
-            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
+            let sender_policy = install_receive_sender_blacklist(payee, payer)?;
 
             let cumulative = U96::from(40);
             let digest =
@@ -1827,7 +1778,7 @@ mod tests {
             assert_eq!(state.settled, U96::ZERO);
 
             // Once the payee accepts the logical payer, the same voucher can settle.
-            set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
+            set_blacklisted(payee, sender_policy, payer, false)?;
             reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
@@ -1866,8 +1817,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -1928,8 +1878,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
 
             let salt = B256::random();
@@ -1966,7 +1915,7 @@ mod tests {
 
             // Originator recovery would make a guarded reserve-originated refund unclaimable.
             // Channel refunds reject the policy instead and leave channel state intact.
-            let (mut registry, sender_policy) =
+            let sender_policy =
                 install_receive_sender_blacklist(payer, TIP20_CHANNEL_RESERVE_ADDRESS)?;
 
             let close_result = reserve.close(
@@ -2009,13 +1958,7 @@ mod tests {
                 U256::ZERO
             );
 
-            set_blacklisted(
-                &mut registry,
-                payer,
-                sender_policy,
-                TIP20_CHANNEL_RESERVE_ADDRESS,
-                false,
-            )?;
+            set_blacklisted(payer, sender_policy, TIP20_CHANNEL_RESERVE_ADDRESS, false)?;
             reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
@@ -2047,8 +1990,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let result = reserve.open(
                 payer,
@@ -2079,8 +2021,7 @@ mod tests {
                 .with_role(payer, TIP20Token::pause_role())
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2151,8 +2092,7 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
 
             let channel_id = reserve.open(
@@ -2323,8 +2263,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let hash = seed_expiring_nonce_hash(&mut reserve)?;
             let first = reserve.open(
@@ -2383,8 +2322,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(200u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2473,8 +2411,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(300u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2566,8 +2503,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2626,8 +2562,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2682,8 +2617,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_rejects_static_mutation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let mut reserve = TIP20ChannelReserve::new();
             let result = reserve.call(
                 &ITIP20ChannelReserve::openCall {
@@ -2714,8 +2648,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
                 payer,
@@ -2767,8 +2700,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
                 payer,
@@ -2823,8 +2755,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
                 payer,
@@ -2882,8 +2813,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
                 payer,
