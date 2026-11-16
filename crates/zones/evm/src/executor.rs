@@ -24,9 +24,15 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
+    precompiles::NONCE_PRECOMPILE_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
-use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder,
+    expiring_nonces::{
+        BlockExpiringNonces, ExpiringNonce, ExpiringNonceSets, t16_activation_window,
+    },
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
@@ -160,6 +166,7 @@ impl ZoneTransactionKind {
 pub struct ZoneTxResult {
     inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
     next_phase: ZoneBlockPhase,
+    expiring_nonce: Option<(alloy_primitives::B256, ExpiringNonce)>,
 }
 
 impl BlockTransactionResult<TempoEvmTypes> for ZoneTxResult {
@@ -182,17 +189,33 @@ pub struct ZoneBlockExecutor<'a> {
     inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
     phase: ZoneBlockPhase,
     prague_active: bool,
+    /// The block's expiring nonce bookkeeping (TIP-1173).
+    expiring_nonces: BlockExpiringNonces,
 }
 
 impl<'a> ZoneBlockExecutor<'a> {
     /// Create a zone block executor for `evm` and the current block context.
+    ///
+    /// Without expiring nonce sets (the zone prover) the executor checks only the frozen pre-T16
+    /// ring; the caller verifies the expiring nonce set itself.
     pub fn new(
         evm: ZoneEvm<'a>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a ZoneChainSpec,
+        expiring_nonce_sets: Option<ExpiringNonceSets>,
     ) -> Self {
-        let prague_active =
-            chain_spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to::<u64>());
+        let timestamp = evm.block().timestamp.saturating_to::<u64>();
+        let prague_active = chain_spec.is_prague_active_at_timestamp(timestamp);
+        let spec = evm.config_spec_id();
+        let expiring_nonces = BlockExpiringNonces::new(
+            expiring_nonce_sets,
+            ctx.inner.parent_hash,
+            ctx.block_hash,
+            ctx.expiring_nonce_root,
+            timestamp,
+            spec.is_t16(),
+            t16_activation_window(chain_spec, timestamp, spec),
+        );
         Self {
             inner: EthBlockExecutor::new(
                 evm,
@@ -202,6 +225,7 @@ impl<'a> ZoneBlockExecutor<'a> {
             ),
             phase: ZoneBlockPhase::AwaitingAdvanceTempo,
             prague_active,
+            expiring_nonces,
         }
     }
 
@@ -280,6 +304,21 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
 
         let next_phase = self.phase.validate_transaction(recovered.tx())?;
 
+        let tx_hash = *alloy_consensus::transaction::TxHashRef::tx_hash(recovered.tx());
+        let expiring_nonce = ExpiringNonce::from_tx(
+            recovered.tx(),
+            *recovered.signer(),
+            self.inner.evm().config_spec_id(),
+        );
+        if let Some(entry) = expiring_nonce.as_ref() {
+            let state = self.inner.evm_mut().state_mut();
+            self.expiring_nonces.check(tx_hash, entry, |slot| {
+                state
+                    .storage_slot_untracked(&NONCE_PRECOMPILE_ADDRESS, &slot)
+                    .map_err(BlockExecutionError::other)
+            })?;
+        }
+
         let result = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered));
@@ -288,7 +327,11 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         validate_pending_state(&inner.result().pending_state)
             .map_err(BlockExecutionError::other)?;
 
-        Ok(ZoneTxResult { inner, next_phase })
+        Ok(ZoneTxResult {
+            inner,
+            next_phase,
+            expiring_nonce: expiring_nonce.map(|entry| (tx_hash, entry)),
+        })
     }
 
     fn commit_transaction(
@@ -296,7 +339,11 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         output: Self::TransactionResultWithState,
     ) -> Result<GasOutput, BlockExecutionError> {
         self.phase.advance_to(output.next_phase);
-        self.inner.commit_transaction(output.inner)
+        let gas = self.inner.commit_transaction(output.inner)?;
+        if let Some((tx_hash, entry)) = output.expiring_nonce {
+            self.expiring_nonces.record(tx_hash, entry);
+        }
+        Ok(gas)
     }
 
     fn finish_with_block_access_list(
@@ -359,6 +406,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
 
         let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
         strip_bundle_commitment_overlays(&mut output.state);
+        self.expiring_nonces.finish()?;
         Ok((output, block_access_list))
     }
 
@@ -686,7 +734,7 @@ mod tests {
             block_hash: None,
             expiring_nonce_root: None,
         };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
         executor.phase = ZoneBlockPhase::Executing;
 
         let tx = Recovered::new_unchecked(
@@ -741,7 +789,7 @@ mod tests {
             block_hash: None,
             expiring_nonce_root: None,
         };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
         executor.phase = ZoneBlockPhase::Executing;
         executor
             .inner
@@ -841,7 +889,7 @@ mod tests {
                 block_hash: None,
                 expiring_nonce_root: None,
             };
-            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
             executor.phase = phase;
             let event = TempoAdvanced {
                 tempoBlockHash: B256::ZERO,
@@ -1082,7 +1130,7 @@ mod tests {
             block_hash: None,
             expiring_nonce_root: None,
         };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
 
         // The header is the valid next checkpoint, but a decryption entry without an encrypted
         // deposit makes the Inbox precompile revert after attempting the checkpoint transition.
@@ -1155,7 +1203,7 @@ mod tests {
             block_hash: None,
             expiring_nonce_root: None,
         };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
         executor.phase = ZoneBlockPhase::Executing;
 
         let create_policy = ITIP403Registry::createPolicyCall {
@@ -1230,6 +1278,7 @@ mod tests {
             zone_config.evm_with_env(db, fee_free_env(TempoHardfork::T14)),
             reth_evm::ConfigureEvm::context_for_block(&zone_config, &block).unwrap(),
             zone_config.chain_spec(),
+            None,
         );
         executor.phase = ZoneBlockPhase::Executing;
         let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1482,7 +1531,7 @@ mod tests {
             block_hash: None,
             expiring_nonce_root: None,
         };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
         executor.apply_pre_execution_changes().unwrap();
         // Isolate automatic system calls from the required opening transaction.
         executor.phase = ZoneBlockPhase::Executing;
@@ -1574,7 +1623,7 @@ mod tests {
                 block_hash: None,
                 expiring_nonce_root: None,
             };
-            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec, None);
             executor.apply_pre_execution_changes().unwrap();
             // Isolate the pre-execution change from the required opening transaction.
             executor.phase = ZoneBlockPhase::Executing;

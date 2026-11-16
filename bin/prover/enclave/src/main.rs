@@ -613,6 +613,7 @@ mod tests {
                 node_pool: Vec::new(),
             },
             tempo_ancestry_headers: Vec::new(),
+            expiring_nonce_witness: Vec::new(),
         }
     }
 }

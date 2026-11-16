@@ -44,7 +44,9 @@ impl SpfConfig {
 
     /// Crates a [`ZoneEvmConfig`] for the given L1 storage reader.
     pub fn evm_config<L1: L1StorageReader>(&self, l1_provider: L1) -> ZoneEvmConfig<L1> {
+        // The prover verifies the expiring nonce set from `BatchWitness::expiring_nonce_witness`.
         ZoneEvmConfig::new(self.chain_spec.clone(), l1_provider, self.portal())
+            .without_expiring_nonce_sets()
     }
 }
 
@@ -93,6 +95,11 @@ pub struct BatchWitness {
     /// RLP-encoded headers ordered from `tempo_block_number + 1` through the
     /// anchor block when ancestry verification is needed.
     pub tempo_ancestry_headers: Vec<Bytes>,
+    /// TIP-1173: deduplicated RLP-encoded nodes of the expiring nonce set trie and bucket tries,
+    /// covering every path the batch's T16 blocks expire, check or insert, against the set
+    /// committed by the parent header (empty before T16).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub expiring_nonce_witness: Vec<Bytes>,
 }
 
 /// Typed inputs for the opening ZoneInbox system transaction.

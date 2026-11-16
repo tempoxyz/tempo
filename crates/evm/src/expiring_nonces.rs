@@ -11,14 +11,28 @@
 //! Before T16 the set runs in shadow mode next to the `NonceManager` ring: the ring stays
 //! authoritative, and every block's expiring nonce transactions are checked against and inserted
 //! into the set, so the two can be compared. From T16 (TIP-1173) the set is authoritative: the
-//! block executor rejects replays against it, the ring is no longer read or written, and the set
-//! root is committed in the block header's `expiring_nonce_root`.
+//! block executor rejects replays against it, the ring is no longer written, and the set root is
+//! committed in the block header's `expiring_nonce_root`.
+//!
+//! The set starts empty at the first T16 block, so its root is verifiable from headers alone.
+//! Entries recorded before T16 stay in the frozen `expiringNonceSeen` map, which the handler still
+//! reads during the first `MAX_EXPIRY_SECS` after activation (see [`in_activation_window`]).
+//!
+//! [`witness`] verifies a block's set transition statelessly from a pool of trie nodes, for the
+//! zone prover.
 
-use std::{collections::BTreeMap, sync::Arc};
+mod witness;
+pub use witness::{BlockParams, PartialExpiringNonceSet, WitnessError, WitnessTrie};
+
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{Address, B256, Keccak256, U256, map::B256Map};
 use parking_lot::Mutex;
+use reth_evm::{BlockExecutionError, BlockValidationError};
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles};
 use reth_trie_sparse::{
     ArenaParallelSparseTrie, LeafUpdate, SparseTrie, TrieNodeEpoch, errors::SparseTrieError,
@@ -26,7 +40,7 @@ use reth_trie_sparse::{
 use schnellru::{ByLength, LruMap};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoTxEnvelope;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 /// Number of block snapshots kept. Covers the unfinalized branches a node executes on top of.
 const SNAPSHOT_CAPACITY: u32 = 256;
@@ -90,6 +104,9 @@ pub enum Error {
 pub struct ExpiringNonceSet {
     buckets: BTreeMap<u64, Arc<Bucket>>,
     root: B256,
+    /// Whether the set was derived under T16 rules. A pre-T16 (shadow) set is not the parent set
+    /// of the first T16 block, which starts empty.
+    authoritative: bool,
 }
 
 impl Default for ExpiringNonceSet {
@@ -97,6 +114,7 @@ impl Default for ExpiringNonceSet {
         Self {
             buckets: BTreeMap::new(),
             root: EMPTY_ROOT_HASH,
+            authoritative: false,
         }
     }
 }
@@ -105,6 +123,16 @@ impl ExpiringNonceSet {
     /// Returns the set's root.
     pub const fn root(&self) -> B256 {
         self.root
+    }
+
+    /// Returns whether the set was derived under T16 rules.
+    pub const fn is_authoritative(&self) -> bool {
+        self.authoritative
+    }
+
+    /// Marks the set as derived under T16 rules, or not.
+    pub fn set_authoritative(&mut self, authoritative: bool) {
+        self.authoritative = authoritative;
     }
 
     /// Returns whether `entry` is in the set.
@@ -176,6 +204,7 @@ impl ExpiringNonceSet {
             }
             let bucket = Arc::make_mut(self.buckets.entry(valid_before).or_default());
             bucket.len += leaves.len();
+            bucket.keys.extend(leaves.keys().copied());
             let mut blinded = false;
             bucket
                 .trie
@@ -235,10 +264,27 @@ impl ExpiringNonceSets {
         timestamp: u64,
         entries: &[ExpiringNonce],
     ) -> Option<ExpiringNonceSet> {
+        self.derive_with(parent_hash, timestamp, entries, false)
+    }
+
+    /// Like [`Self::derive`], under T16 rules when `authoritative`: a pre-T16 parent set is
+    /// replaced by an empty set, since the first T16 block starts from empty, and the result is
+    /// marked authoritative.
+    pub fn derive_with(
+        &self,
+        parent_hash: B256,
+        timestamp: u64,
+        entries: &[ExpiringNonce],
+        authoritative: bool,
+    ) -> Option<ExpiringNonceSet> {
         let Some(mut set) = self.inner.lock().by_block.get(&parent_hash).cloned() else {
             debug!(target: "evm::expiring_nonces", %parent_hash, "Parent expiring nonce set unknown");
             return None;
         };
+        if authoritative && !set.is_authoritative() {
+            set = ExpiringNonceSet::default();
+        }
+        set.set_authoritative(authoritative);
         let replays = match set.apply(timestamp, entries) {
             Ok(replays) => replays,
             Err(err) => {
@@ -318,6 +364,8 @@ struct Bucket {
     trie: ArenaParallelSparseTrie,
     root: B256,
     len: usize,
+    /// The bucket's replay hashes, to build witness proofs from.
+    keys: Vec<B256>,
 }
 
 impl Default for Bucket {
@@ -326,6 +374,261 @@ impl Default for Bucket {
             trie: ArenaParallelSparseTrie::default(),
             root: EMPTY_ROOT_HASH,
             len: 0,
+            keys: Vec::new(),
+        }
+    }
+}
+
+/// Returns the set-trie key of bucket `valid_before`: the 32-byte big-endian word, which keeps
+/// ascending `valid_before` in ascending path order.
+pub fn bucket_key(valid_before: u64) -> B256 {
+    B256::from(U256::from(valid_before))
+}
+
+/// Returns whether a T16 block at `timestamp` still reads the frozen pre-T16 `expiringNonceSeen`
+/// map: entries recorded before T16 activation at `activation` can be live until
+/// `activation + max_expiry_secs`.
+pub fn in_activation_window(activation: u64, timestamp: u64, max_expiry_secs: u64) -> bool {
+    timestamp < activation.saturating_add(max_expiry_secs)
+}
+
+/// Returns whether a block at `timestamp` with `spec` is a T16 block in the activation window of
+/// `chain_spec`'s T16 schedule.
+pub fn t16_activation_window(
+    chain_spec: &impl tempo_chainspec::spec::TempoHardforks,
+    timestamp: u64,
+    spec: TempoHardfork,
+) -> bool {
+    if !spec.is_t16() {
+        return false;
+    }
+    match chain_spec.tempo_fork_activation(TempoHardfork::T16) {
+        reth_chainspec::ForkCondition::Timestamp(activation) => {
+            in_activation_window(activation, timestamp, spec.expiring_nonce_max_expiry_secs())
+        }
+        // Not scheduled by timestamp: active from genesis, so nothing predates it.
+        _ => false,
+    }
+}
+
+/// Returns the Nonce precompile slot of `expiringNonceSeen[hash]`, which holds the entry's
+/// `valid_before` when the pre-T16 ring recorded it.
+pub fn frozen_seen_slot(hash: B256) -> U256 {
+    tempo_precompiles::nonce::NonceManager::new().expiring_nonce_seen[hash].slot()
+}
+
+/// T16+ (TIP-1173): a transaction rejected because its expiring nonce entry is already in the set.
+///
+/// Wraps the [`evm2::registry::HandlerError`] so
+/// [`crate::TempoInvalidTransaction::from_invalid_tx_error`] recovers
+/// [`crate::TempoInvalidTransaction::ExpiringNonceReplay`] like any handler rejection.
+#[derive(Debug)]
+pub struct ExpiringNonceReplayError(evm2::registry::HandlerError);
+
+impl ExpiringNonceReplayError {
+    /// Returns the block error rejecting transaction `tx_hash` as a replay.
+    pub fn block_error(tx_hash: B256) -> BlockExecutionError {
+        BlockValidationError::InvalidTx {
+            hash: tx_hash,
+            error: Box::new(Self(evm2::registry::HandlerError::from(
+                crate::TempoInvalidTransaction::ExpiringNonceReplay,
+            ))),
+        }
+        .into()
+    }
+}
+
+impl core::fmt::Display for ExpiringNonceReplayError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl core::error::Error for ExpiringNonceReplayError {}
+
+impl reth_evm::InvalidTxError for ExpiringNonceReplayError {
+    fn as_any(&self) -> &(dyn core::any::Any + 'static) {
+        &self.0
+    }
+}
+
+/// One block's expiring nonce bookkeeping, shared by the L1 and zone block executors.
+///
+/// Before T16 it records entries and derives the shadow set at the end of the block. From T16 it
+/// rejects replays against the parent's set and the block's own entries before each transaction
+/// executes, then derives the set, checks a sealed block's header root and stores the set (or
+/// stages a payload's set until it is assembled).
+#[derive(Debug)]
+pub struct BlockExpiringNonces {
+    /// `None` when the caller verifies the set itself, as the zone prover does.
+    sets: Option<ExpiringNonceSets>,
+    /// Whether the block falls in the activation window and must also read the frozen ring.
+    frozen_window: bool,
+    parent_hash: B256,
+    block_hash: Option<B256>,
+    header_root: Option<B256>,
+    timestamp: u64,
+    authoritative: bool,
+    entries: Vec<ExpiringNonce>,
+    tx_hashes: Vec<B256>,
+    /// T16+: the parent's set with this block's expired buckets dropped, loaded on first use.
+    base: Option<ExpiringNonceSet>,
+    /// T16+: entries committed earlier in this block.
+    pending: HashSet<ExpiringNonce>,
+}
+
+impl BlockExpiringNonces {
+    /// Starts a block at `timestamp` on top of `parent_hash`. `block_hash` and `header_root` are
+    /// known when executing a sealed block; `authoritative` is whether T16 is active, and
+    /// `frozen_window` whether the block is in the activation window (see
+    /// [`in_activation_window`]). Without `sets` only the frozen ring is checked.
+    pub fn new(
+        sets: Option<ExpiringNonceSets>,
+        parent_hash: B256,
+        block_hash: Option<B256>,
+        header_root: Option<B256>,
+        timestamp: u64,
+        authoritative: bool,
+        frozen_window: bool,
+    ) -> Self {
+        Self {
+            sets,
+            frozen_window: authoritative && frozen_window,
+            parent_hash,
+            block_hash,
+            header_root,
+            timestamp,
+            authoritative,
+            entries: Vec::new(),
+            tx_hashes: Vec::new(),
+            base: None,
+            pending: HashSet::new(),
+        }
+    }
+
+    /// Returns whether the set is authoritative for this block (T16+).
+    pub const fn is_authoritative(&self) -> bool {
+        self.authoritative
+    }
+
+    /// Returns the parent's set as this block sees it, with expired buckets dropped.
+    ///
+    /// A parent set derived before T16 is replaced by an empty set: the first T16 block starts
+    /// from empty. An unknown parent set fails the block.
+    fn base(&mut self) -> Result<&ExpiringNonceSet, BlockExecutionError> {
+        if self.base.is_none() {
+            let sets = self
+                .sets
+                .as_ref()
+                .ok_or_else(|| BlockExecutionError::msg("expiring nonce sets are disabled"))?;
+            let parent = sets.get(self.parent_hash).ok_or_else(|| {
+                BlockExecutionError::msg(format!(
+                    "expiring nonce set of parent {} is unknown",
+                    self.parent_hash
+                ))
+            })?;
+            let mut set = if parent.is_authoritative() {
+                parent
+            } else {
+                ExpiringNonceSet::default()
+            };
+            set.expire(self.timestamp);
+            self.base = Some(set);
+        }
+        Ok(self.base.as_ref().expect("loaded above"))
+    }
+
+    /// T16+: rejects `entry` of transaction `tx_hash` if the set already holds it, or, in the
+    /// activation window, if the frozen ring holds it unexpired. `read_frozen` reads a Nonce
+    /// precompile storage slot. Does nothing before T16.
+    pub fn check(
+        &mut self,
+        tx_hash: B256,
+        entry: &ExpiringNonce,
+        read_frozen: impl FnOnce(U256) -> Result<U256, BlockExecutionError>,
+    ) -> Result<(), BlockExecutionError> {
+        if !self.authoritative {
+            return Ok(());
+        }
+        if self.frozen_window
+            && read_frozen(frozen_seen_slot(entry.hash))? > U256::from(self.timestamp)
+        {
+            trace!(target: "evm::expiring_nonces", ?tx_hash, hash = %entry.hash, "Rejecting: replay of a pre-T16 expiring nonce");
+            return Err(ExpiringNonceReplayError::block_error(tx_hash));
+        }
+        if self.sets.is_none() {
+            return Ok(());
+        }
+        let replay = self.pending.contains(entry) || self.base()?.contains(entry);
+        if replay {
+            trace!(target: "evm::expiring_nonces", ?tx_hash, hash = %entry.hash, "Rejecting: expiring nonce replay");
+            return Err(ExpiringNonceReplayError::block_error(tx_hash));
+        }
+        Ok(())
+    }
+
+    /// Records the entry of committed transaction `tx_hash`.
+    pub fn record(&mut self, tx_hash: B256, entry: ExpiringNonce) {
+        if self.authoritative {
+            self.pending.insert(entry);
+        }
+        self.entries.push(entry);
+        self.tx_hashes.push(tx_hash);
+    }
+
+    /// Returns the entries recorded so far, in commit order.
+    pub fn entries(&self) -> &[ExpiringNonce] {
+        &self.entries
+    }
+
+    /// Derives and stores the block's set. From T16 returns its root, after checking it against a
+    /// sealed block's header.
+    pub fn finish(mut self) -> Result<Option<B256>, BlockExecutionError> {
+        let Some(sets) = self.sets.clone() else {
+            return Ok(None);
+        };
+        if !self.authoritative {
+            if let Some(set) = sets.derive(self.parent_hash, self.timestamp, &self.entries) {
+                self.store(set);
+            }
+            return Ok(None);
+        }
+
+        let mut set = self.base()?.clone();
+        let replays = set
+            .apply(self.timestamp, &self.entries)
+            .map_err(BlockExecutionError::other)?;
+        if !replays.is_empty() {
+            // Every entry was checked before its transaction executed.
+            return Err(BlockExecutionError::msg(
+                "expiring nonce set accepted a replay it already holds",
+            ));
+        }
+        set.set_authoritative(true);
+        let root = set.root();
+        if self.block_hash.is_some() && self.header_root != Some(root) {
+            return Err(BlockValidationError::msg(format!(
+                "expiring nonce root mismatch: header {:?}, computed {root}",
+                self.header_root
+            ))
+            .into());
+        }
+        metrics::gauge!("tempo_expiring_nonce_set_entries").set(set.len() as f64);
+        metrics::gauge!("tempo_expiring_nonce_set_buckets").set(set.bucket_count() as f64);
+        self.store(set);
+        Ok(Some(root))
+    }
+
+    fn store(&self, set: ExpiringNonceSet) {
+        let Some(sets) = self.sets.as_ref() else {
+            return;
+        };
+        match self.block_hash {
+            Some(block_hash) => sets.insert(block_hash, set),
+            None => sets.stage(
+                staged_key(self.parent_hash, self.timestamp, &self.tx_hashes),
+                set,
+            ),
         }
     }
 }
@@ -335,9 +638,10 @@ impl Default for Bucket {
 fn root_of(buckets: impl IntoIterator<Item = (u64, B256)>) -> B256 {
     let mut builder = HashBuilder::default();
     for (valid_before, bucket_root) in buckets {
-        // Big-endian keys keep ascending `valid_before` in ascending path order.
-        let key = B256::from(U256::from(valid_before));
-        builder.add_leaf(Nibbles::unpack(key), &alloy_rlp::encode(bucket_root));
+        builder.add_leaf(
+            Nibbles::unpack(bucket_key(valid_before)),
+            &alloy_rlp::encode(bucket_root),
+        );
     }
     builder.root()
 }

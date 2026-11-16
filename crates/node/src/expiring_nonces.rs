@@ -14,7 +14,7 @@ use reth_provider::{
     ProviderResult,
 };
 use reth_tracing::tracing::{debug, error, info};
-use tempo_chainspec::spec::{TempoChainSpec, TempoHardforks as _};
+use tempo_chainspec::spec::TempoHardforks;
 use tempo_evm::expiring_nonces::{ExpiringNonce, ExpiringNonceSet, ExpiringNonceSets};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
 use tokio::sync::broadcast::error::RecvError;
@@ -43,7 +43,7 @@ where
     P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
         + BlockNumReader
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + ChainSpecProvider<ChainSpec: TempoHardforks>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
@@ -113,10 +113,16 @@ where
             return Ok(());
         }
         let entries = self.entries(block);
-        match self
-            .sets
-            .derive(block.parent_hash(), block.timestamp(), &entries)
-        {
+        let authoritative = self
+            .provider
+            .chain_spec()
+            .is_t16_active_at_timestamp(block.timestamp());
+        match self.sets.derive_with(
+            block.parent_hash(),
+            block.timestamp(),
+            &entries,
+            authoritative,
+        ) {
             Some(set) => self.sets.insert(block.hash(), set),
             None => self.rebuild(block.number())?,
         }
@@ -150,6 +156,16 @@ where
 
         let mut set = ExpiringNonceSet::default();
         for block in self.provider.recovered_block_range(first..=tip)? {
+            // TIP-1173: the first T16 block starts from an empty set.
+            if !set.is_authoritative()
+                && self
+                    .provider
+                    .chain_spec()
+                    .is_t16_active_at_timestamp(block.timestamp())
+            {
+                set = ExpiringNonceSet::default();
+                set.set_authoritative(true);
+            }
             let replays = match set.apply(block.timestamp(), &self.entries(&block)) {
                 Ok(replays) => replays,
                 Err(err) => {

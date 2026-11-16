@@ -41,6 +41,23 @@ pub struct ZoneExecutionWitness {
     pub initial_tempo_header: TempoHeader,
     /// Deduplicated RLP-encoded account and storage proof nodes for all Tempo reads.
     pub tempo_state: Vec<Bytes>,
+    /// TIP-1173 expiring nonce set witness, present for T16 blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiring_nonce_witness: Option<ExpiringNonceWitness>,
+}
+
+/// Proof material for replaying one block's expiring nonce set transition (TIP-1173).
+///
+/// The nodes cover every path the block expires, checks or inserts in the parent's set. A batch
+/// merges its blocks' nodes by hash: paths a block creates are computed by the verifier, and
+/// subtrees earlier blocks left untouched keep their hashes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpiringNonceWitness {
+    /// Root of the parent's set: the parent header's `expiring_nonce_root`, or the empty root
+    /// for the first T16 block.
+    pub parent_root: B256,
+    /// Deduplicated, unordered RLP-encoded nodes of the set trie and bucket tries.
+    pub nodes: Vec<Bytes>,
 }
 
 /// A JSON-RPC 2.0 request.

@@ -701,6 +701,14 @@ where
             };
 
         let task_executor = ctx.node.task_executor().clone();
+        // TIP-1173: from T16 zone block execution and witness generation need the parent's
+        // expiring nonce set, so seed it at the tip before the zone produces or imports blocks.
+        let expiring_nonce_tracker = tempo_node::ExpiringNonceTracker::new(
+            ctx.node.provider().clone(),
+            ctx.node.evm_config().expiring_nonce_sets().clone(),
+        );
+        expiring_nonce_tracker.seed();
+        expiring_nonce_tracker.spawn(task_executor.clone());
         if !self.portal_address.is_zero() {
             // Initialize the pause gate before block production starts, so a restart during a
             // pause does not produce blocks while ingestion catches up.

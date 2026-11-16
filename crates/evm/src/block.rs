@@ -37,28 +37,7 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
-use crate::expiring_nonces::{ExpiringNonce, ExpiringNonceSet, ExpiringNonceSets, staged_key};
-
-/// T16+ (TIP-1173): a transaction rejected because its expiring nonce entry is already in the set.
-///
-/// Wraps the [`evm2::registry::HandlerError`] so [`crate::TempoInvalidTransaction::from_invalid_tx_error`]
-/// recovers [`crate::TempoInvalidTransaction::ExpiringNonceReplay`] like any handler rejection.
-#[derive(Debug)]
-struct ExpiringNonceReplayError(evm2::registry::HandlerError);
-
-impl core::fmt::Display for ExpiringNonceReplayError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl core::error::Error for ExpiringNonceReplayError {}
-
-impl reth_evm::InvalidTxError for ExpiringNonceReplayError {
-    fn as_any(&self) -> &(dyn core::any::Any + 'static) {
-        &self.0
-    }
-}
+use crate::expiring_nonces::{BlockExpiringNonces, ExpiringNonce, ExpiringNonceSets};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -305,23 +284,8 @@ pub struct TempoBlockExecutor<'a> {
     incentive_gas_used: u64,
     block_gas_used: u64,
 
-    /// Snapshots the block's expiring nonce set is derived from and stored in.
-    expiring_nonce_sets: ExpiringNonceSets,
-    /// Parent whose expiring nonce set the block's set is derived from.
-    parent_hash: B256,
-    /// The block's hash; its expiring nonce set is only stored when this is known.
-    block_hash: Option<B256>,
-    /// Replay-protection entries of the committed expiring nonce transactions.
-    expiring_nonces: Vec<ExpiringNonce>,
-    /// Hashes of the committed expiring nonce transactions, which key a payload's staged set.
-    expiring_nonce_tx_hashes: Vec<B256>,
-    /// T16+: the parent's expiring nonce set with this block's expired buckets dropped, loaded on
-    /// first use. Replays are rejected against it and [`Self::expiring_nonce_pending`].
-    expiring_nonce_base: Option<ExpiringNonceSet>,
-    /// T16+: entries committed earlier in this block.
-    expiring_nonce_pending: std::collections::HashSet<ExpiringNonce>,
-    /// The header's expiring nonce root when executing a sealed block.
-    header_expiring_nonce_root: Option<B256>,
+    /// The block's expiring nonce bookkeeping (TIP-1173).
+    expiring_nonces: BlockExpiringNonces,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -340,8 +304,17 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
-        let parent_hash = ctx.inner.parent_hash;
-        let header_expiring_nonce_root = ctx.expiring_nonce_root;
+        let timestamp = evm.block().timestamp.saturating_to::<u64>();
+        let spec = evm.config_spec_id();
+        let expiring_nonces = BlockExpiringNonces::new(
+            Some(expiring_nonce_sets),
+            ctx.inner.parent_hash,
+            ctx.block_hash,
+            ctx.expiring_nonce_root,
+            timestamp,
+            spec.is_t16(),
+            crate::expiring_nonces::t16_activation_window(chain_spec, timestamp, spec),
+        );
         let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
@@ -355,53 +328,8 @@ impl<'a> TempoBlockExecutor<'a> {
             inner,
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
-            expiring_nonce_sets,
-            parent_hash,
-            block_hash: ctx.block_hash,
-            expiring_nonces: Vec::new(),
-            expiring_nonce_tx_hashes: Vec::new(),
-            expiring_nonce_base: None,
-            expiring_nonce_pending: Default::default(),
-            header_expiring_nonce_root,
+            expiring_nonces,
         }
-    }
-
-    /// T16+ (TIP-1173): rejects an expiring nonce entry already in the set, before its
-    /// transaction commits. The set replaces the Nonce precompile ring, which the handler no
-    /// longer touches.
-    fn check_expiring_nonce(
-        &mut self,
-        tx_hash: B256,
-        entry: &ExpiringNonce,
-    ) -> Result<(), BlockExecutionError> {
-        if self.expiring_nonce_base.is_none() {
-            let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
-            let mut set = self
-                .expiring_nonce_sets
-                .get(self.parent_hash)
-                .ok_or_else(|| {
-                    BlockExecutionError::msg(format!(
-                        "expiring nonce set of parent {} is unknown",
-                        self.parent_hash
-                    ))
-                })?;
-            set.expire(timestamp);
-            self.expiring_nonce_base = Some(set);
-        }
-        let base = self.expiring_nonce_base.as_ref().expect("loaded above");
-        if base.contains(entry) || self.expiring_nonce_pending.contains(entry) {
-            trace!(target: "tempo::block", ?tx_hash, hash = %entry.hash, "Rejecting: expiring nonce replay");
-            return Err(BlockValidationError::InvalidTx {
-                hash: tx_hash,
-                error: Box::new(ExpiringNonceReplayError(
-                    evm2::registry::HandlerError::from(
-                        crate::TempoInvalidTransaction::ExpiringNonceReplay,
-                    ),
-                )),
-            }
-            .into());
-        }
-        Ok(())
     }
 
     /// Block-level counters after all prior transactions were committed.
@@ -836,11 +764,7 @@ impl<'a> TempoBlockExecutor<'a> {
     ) {
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
         if let Some(expiring_nonce) = expiring_nonce {
-            if self.expiring_nonce_base.is_some() {
-                self.expiring_nonce_pending.insert(expiring_nonce);
-            }
-            self.expiring_nonces.push(expiring_nonce);
-            self.expiring_nonce_tx_hashes.push(tx_hash);
+            self.expiring_nonces.record(tx_hash, expiring_nonce);
         }
 
         self.section = next_section;
@@ -1042,10 +966,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
         let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
-        if let Some(entry) = expiring_nonce.as_ref()
-            && self.evm().config_spec_id().is_t16()
-        {
-            self.check_expiring_nonce(tx_hash, entry)?;
+        if let Some(entry) = expiring_nonce.as_ref() {
+            let state = self.inner.evm_mut().state_mut();
+            self.expiring_nonces.check(tx_hash, entry, |slot| {
+                state
+                    .storage_slot_untracked(
+                        &tempo_contracts::precompiles::NONCE_PRECOMPILE_ADDRESS,
+                        &slot,
+                    )
+                    .map_err(BlockExecutionError::other)
+            })?;
         }
 
         let gas_output = self.inner.commit_transaction(inner)?;
@@ -1076,10 +1006,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let is_payment = self.is_payment(original);
         let expiring_nonce =
             ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id());
-        if let Some(entry) = expiring_nonce.as_ref()
-            && self.evm().config_spec_id().is_t16()
-        {
-            self.check_expiring_nonce(tx_hash, entry)?;
+        if let Some(entry) = expiring_nonce.as_ref() {
+            let state = self.inner.evm_mut().state_mut();
+            self.expiring_nonces.check(tx_hash, entry, |slot| {
+                state
+                    .storage_slot_untracked(
+                        &tempo_contracts::precompiles::NONCE_PRECOMPILE_ADDRESS,
+                        &slot,
+                    )
+                    .map_err(BlockExecutionError::other)
+            })?;
         }
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (section, non_shared_gas_left, non_payment_gas_left) = (
@@ -1150,13 +1086,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
 
-        let expiring_nonce_sets = self.expiring_nonce_sets.clone();
-        let (parent_hash, block_hash) = (self.parent_hash, self.block_hash);
-        let expiring_nonces = std::mem::take(&mut self.expiring_nonces);
-        let expiring_nonce_tx_hashes = std::mem::take(&mut self.expiring_nonce_tx_hashes);
-        let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
-        let authoritative = self.evm().config_spec_id().is_t16();
-        let header_expiring_nonce_root = self.header_expiring_nonce_root;
+        let expiring_nonces = std::mem::replace(
+            &mut self.expiring_nonces,
+            BlockExpiringNonces::new(None, B256::ZERO, None, None, 0, false, false),
+        );
 
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
@@ -1189,43 +1122,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             output.result.gas_used = block_gas_used;
         }
 
-        // Before T16 the set runs in shadow mode: the ring already enforced replay protection.
-        // From T16 the set is authoritative: every entry was checked in `commit_transaction`, a
-        // missing parent set fails the block, and a sealed block's header root must match.
-        // A payload being built has no hash yet, so its set is staged until
+        // Before T16 the set runs in shadow mode next to the ring. From T16 it is authoritative:
+        // a sealed block's header root must match, and a payload's set is staged until
         // `TempoBlockAssembler` assembles it and writes its root into the header.
-        let set = expiring_nonce_sets.derive(parent_hash, timestamp, &expiring_nonces);
-        if authoritative {
-            let set = set.ok_or_else(|| {
-                BlockExecutionError::msg(format!(
-                    "failed to derive expiring nonce set from parent {parent_hash}"
-                ))
-            })?;
-            if block_hash.is_some() && header_expiring_nonce_root != Some(set.root()) {
-                return Err(BlockValidationError::msg(format!(
-                    "expiring nonce root mismatch: header {header_expiring_nonce_root:?}, computed {}",
-                    set.root()
-                ))
-                .into());
-            }
-            metrics::gauge!("tempo_expiring_nonce_set_entries").set(set.len() as f64);
-            metrics::gauge!("tempo_expiring_nonce_set_buckets").set(set.bucket_count() as f64);
-            match block_hash {
-                Some(block_hash) => expiring_nonce_sets.insert(block_hash, set),
-                None => expiring_nonce_sets.stage(
-                    staged_key(parent_hash, timestamp, &expiring_nonce_tx_hashes),
-                    set,
-                ),
-            }
-        } else if let Some(set) = set {
-            match block_hash {
-                Some(block_hash) => expiring_nonce_sets.insert(block_hash, set),
-                None => expiring_nonce_sets.stage(
-                    staged_key(parent_hash, timestamp, &expiring_nonce_tx_hashes),
-                    set,
-                ),
-            }
-        }
+        expiring_nonces.finish()?;
         Ok((output, block_access_list))
     }
 

@@ -32,6 +32,11 @@ impl TempoBlockAssembler {
         }
     }
 
+    /// Returns the expiring nonce sets payload roots are read from.
+    pub fn expiring_nonce_sets(&self) -> &ExpiringNonceSets {
+        &self.expiring_nonce_sets
+    }
+
     pub fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
@@ -48,7 +53,7 @@ impl TempoBlockAssembler {
                     shared_gas_limit,
                     consensus_context,
                     block_hash: _,
-                    expiring_nonce_root: _,
+                    expiring_nonce_root: ctx_expiring_nonce_root,
                 },
             parent,
             transactions,
@@ -77,8 +82,13 @@ impl TempoBlockAssembler {
             &expiring_nonce_tx_hashes,
         );
 
-        // T16+ (TIP-1173): the header commits to the payload's expiring nonce set.
-        let expiring_nonce_root = if evm_env.spec.is_t16() {
+        // T16+ (TIP-1173): the header commits to the payload's expiring nonce set. A caller that
+        // verified the set itself (the zone prover) passes its root in the context.
+        let expiring_nonce_root = if !evm_env.spec.is_t16() {
+            None
+        } else if let Some(root) = ctx_expiring_nonce_root {
+            Some(root)
+        } else {
             Some(
                 self.expiring_nonce_sets
                     .staged_root(staged_key)
@@ -86,8 +96,6 @@ impl TempoBlockAssembler {
                         BlockExecutionError::msg("expiring nonce set of the payload is not staged")
                     })?,
             )
-        } else {
-            None
         };
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);

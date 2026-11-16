@@ -3313,6 +3313,7 @@ fn test_t16_expiring_nonce_set_rejects_cross_block_replay() -> eyre::Result<()> 
 
     let parent_hash = B256::repeat_byte(0x22);
     let mut parent = ExpiringNonceSet::default();
+    parent.set_authoritative(true);
     assert!(parent.apply(timestamp - 1, &[entry])?.is_empty());
     let sets = ExpiringNonceSets::default();
     sets.insert(parent_hash, parent.clone());
@@ -3343,6 +3344,38 @@ fn test_t16_expiring_nonce_set_rejects_cross_block_replay() -> eyre::Result<()> 
     expired.expire(valid_before);
     assert!(expired.is_empty());
     assert_eq!(expired.root(), reth_trie_common::EMPTY_ROOT_HASH);
+    Ok(())
+}
+
+/// TIP-1173: the first T16 block starts from an empty set, so a parent set derived in shadow mode
+/// is not carried over; pre-T16 entries are rejected through the frozen ring instead.
+#[test]
+fn test_t16_first_block_ignores_shadow_set() -> eyre::Result<()> {
+    use crate::expiring_nonces::{ExpiringNonce, ExpiringNonceSet, ExpiringNonceSets};
+
+    let timestamp = 1_000u64;
+    let chainspec = test_chainspec();
+    let (tx, caller, mut db) = t16_expiring_nonce_fixture(&chainspec, timestamp + 30)?;
+    let entry = ExpiringNonce::from_tx(&tx, caller, TempoHardfork::T16).expect("expiring nonce");
+
+    let parent_hash = B256::repeat_byte(0x33);
+    let mut shadow = ExpiringNonceSet::default();
+    assert!(shadow.apply(timestamp - 1, &[entry])?.is_empty());
+    assert!(!shadow.is_authoritative());
+    let sets = ExpiringNonceSets::default();
+    sets.insert(parent_hash, shadow);
+
+    let mut executor = TestExecutorBuilder::default()
+        .with_spec(TempoHardfork::T16)
+        .with_epoch_length(100)
+        .with_parent_hash(parent_hash)
+        .with_expiring_nonce_sets(sets)
+        .build(&mut db, &chainspec);
+    let mut block = *executor.evm().block();
+    block.timestamp = U256::from(timestamp);
+    block.basefee = U256::ZERO;
+    executor.evm_mut().set_block(block);
+    executor.execute_transaction(Recovered::new_unchecked(tx, caller))?;
     Ok(())
 }
 

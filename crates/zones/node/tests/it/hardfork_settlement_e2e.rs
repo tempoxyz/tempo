@@ -601,5 +601,6 @@ pub(crate) async fn batch_witness(
             node_pool: tempo_nodes.into_values().collect(),
         },
         tempo_ancestry_headers: vec![],
+        expiring_nonce_witness: Vec::new(),
     })
 }
