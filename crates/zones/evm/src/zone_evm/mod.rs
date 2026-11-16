@@ -487,6 +487,16 @@ pub(crate) mod tests {
                     &sender.mapping_slot(BALANCES),
                     &U256::from(u64::MAX),
                 );
+                // T15 accepts only USD fee tokens: short Solidity string "USD" (length * 2 in the
+                // lowest byte).
+                let mut currency = [0u8; 32];
+                currency[..3].copy_from_slice(b"USD");
+                currency[31] = 6;
+                db.insert_account_storage(
+                    &DEFAULT_FEE_TOKEN,
+                    &tempo_precompiles::tip20::slots::CURRENCY,
+                    &U256::from_be_bytes(currency),
+                );
                 let mut env = fee_free_env(hardfork);
                 env.version
                     .features
