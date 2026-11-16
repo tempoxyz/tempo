@@ -223,8 +223,11 @@ impl Read for Block {
             commonware_codec::Error::Wrapped("reading RLP transaction list", rlp_err.into())
         };
         let mut block = bytes.as_ref();
+        // Step into the block list: header, transactions, ommers, withdrawals.
         let mut fields = alloy_rlp::Header::decode_bytes(&mut block, true).map_err(rlp_error)?;
+        // Skip the block header.
         alloy_rlp::Header::decode_bytes(&mut fields, true).map_err(rlp_error)?;
+        // Step into the transaction list.
         let mut transactions =
             alloy_rlp::Header::decode_bytes(&mut fields, true).map_err(rlp_error)?;
         let mut transaction_count = 0;
@@ -237,15 +240,16 @@ impl Read for Block {
                 ));
             }
             let mut item = transactions;
-            let header = alloy_rlp::Header::decode(&mut item).map_err(rlp_error)?;
-            if header.list {
-                transactions = &item[header.payload_length..];
+            let tx_header = alloy_rlp::Header::decode(&mut item).map_err(rlp_error)?;
+            if tx_header.list {
+                transactions = &item[tx_header.payload_length..];
             } else {
                 // `item` starts at the type byte: past the string header, or where it was for a bare
                 // type byte, which `Header::decode` reads as a one-byte string without advancing.
                 transactions = item
                     .get(1..)
                     .ok_or_else(|| rlp_error(alloy_rlp::Error::InputTooShort))?;
+                // Skip the typed transaction's list.
                 alloy_rlp::Header::decode_bytes(&mut transactions, true).map_err(rlp_error)?;
             }
         }
