@@ -22,10 +22,12 @@ if [[ "$mode" == prepare ]]; then
 elif [[ "$mode" == burst ]]; then
     eval "$(jq -r 'to_entries[] | "export \(.key)=\(.value|@sh)"' /state/env.json)"
     seed="${3:?seed}"; report="${4:?report}"
+    # The driver checks finalized receipts; draining adds three one-second polls
+    # even for an empty pool, and cannot succeed with the former two-second limit.
     txgen-tempo generate -s /state/public-mix.yml -n 32 --seed "$seed" --rpc "$rpc" \
         --setup-state-in /state/setup.json --signing-workers 1 \
         | bench send --rpc-url "$rpc" --tps 32 --max-concurrent 8 --retries 0 \
-            --skip-setup --drain-timeout 2 --report "json:$report"
+            --skip-setup --drain-timeout 0 --report "json:$report"
 else
     echo "Unknown mode: $mode" >&2; exit 2
 fi
