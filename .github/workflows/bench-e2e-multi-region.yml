@@ -175,6 +175,8 @@ on:
           - institutional
           - cross-border
           - projected-pipeline
+          - state-read-cold
+          - state-read-hot
       duration:
         description: Benchmark duration in seconds.
         type: string
