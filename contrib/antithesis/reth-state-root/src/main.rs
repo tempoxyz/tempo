@@ -271,6 +271,7 @@ impl Round {
         if base > 0 {
             verify(engine.factory(), &state, base, base)?;
         }
+        assert_sometimes!(base > 0, "Trie workload recovers persisted blocks after restart");
         println!("{}", json!({"recovery": "complete", "head": base, "root": recovered_root}));
         let collider_path = datadir.join("collider.json");
         let collider = if collider_path.exists() {
