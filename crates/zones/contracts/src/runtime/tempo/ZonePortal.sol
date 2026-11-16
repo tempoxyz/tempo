@@ -16,12 +16,15 @@ import {
     IZonePortal,
     MAX_WITHDRAWAL_CALLBACK_GAS,
     QueuedDeposit,
+    QueuedWithdrawal,
+    QueuedWithdrawals,
     Role,
     TokenConfig,
     TokenEnablementTransition,
     VirtualDeposit,
     Withdrawal,
     WithdrawalBounceBackDeposit,
+    WithdrawalLimit,
     ZONE_FACTORY_ADDRESS,
     ZONE_PORTAL_IMPL_ADDRESS,
     ZONE_PORTAL_PREFIX
@@ -303,6 +306,12 @@ contract ZonePortal is IZonePortal {
     /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1. Kept out of
     ///      slot 28, which TIP-1180 fills with the identity registrar and enforcement flag.
     uint8 internal _minimumAddressVersion;
+
+    /// @notice TIP-1150 per-token withdrawal limits (slot 32).
+    mapping(address token => WithdrawalLimit) internal _withdrawalLimits;
+
+    /// @notice TIP-1150 per-token queues of withdrawals waiting for limit capacity (slot 33).
+    mapping(address token => QueuedWithdrawals) internal _queuedWithdrawals;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -625,6 +634,123 @@ contract ZonePortal is IZonePortal {
         _identityRegistrar = registrar;
         _identityEnforced = enforced;
         emit IdentityConfigUpdated(registrar, enforced);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                           WITHDRAWAL LIMITS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @inheritdoc IZonePortal
+    /// @dev Not gated by pause. Once abdication of PausePortal is scheduled, a limit can only be
+    ///      loosened, so it cannot be used to freeze withdrawals.
+    function setWithdrawalLimit(
+        address token,
+        uint128 maxAmount,
+        uint64 period
+    )
+        external
+        onlyAdmin
+    {
+        // A whole refill rate makes every refill exact.
+        bool valid = maxAmount == 0 ? period == 0 : period != 0 && maxAmount % period == 0;
+        if (!valid) revert InvalidWithdrawalLimit();
+
+        WithdrawalLimit storage limit = _withdrawalLimits[token];
+        if (
+            abdicationEffectiveAt[Capability.PausePortal] != 0
+                && !_loosens(limit, maxAmount, period)
+        ) {
+            revert WithdrawalLimitTightened();
+        }
+        if (maxAmount == 0) {
+            // Queued records stay queued and are then paid in full.
+            delete _withdrawalLimits[token];
+        } else {
+            // A new limit starts full. A changed limit keeps its capacity refilled under the old
+            // limit, capped at the new maxAmount.
+            uint128 oldMaxAmount = limit.maxAmount;
+            uint128 available =
+                oldMaxAmount == 0 ? maxAmount : _refilledCapacity(limit, oldMaxAmount);
+            if (available > maxAmount) available = maxAmount;
+            limit.maxAmount = maxAmount;
+            limit.period = period;
+            _setAvailable(limit, available);
+        }
+        emit WithdrawalLimitSet(token, maxAmount, period);
+    }
+
+    /// @inheritdoc IZonePortal
+    function withdrawalLimit(address token)
+        external
+        view
+        returns (uint128 maxAmount, uint64 period, uint128 available)
+    {
+        WithdrawalLimit storage limit = _withdrawalLimits[token];
+        maxAmount = limit.maxAmount;
+        period = limit.period;
+        if (maxAmount != 0) available = _refilledCapacity(limit, maxAmount);
+    }
+
+    /// @inheritdoc IZonePortal
+    function queuedWithdrawals(address token) external view returns (uint64 head, uint64 tail) {
+        QueuedWithdrawals storage queue = _queuedWithdrawals[token];
+        return (queue.head, queue.tail);
+    }
+
+    /// @inheritdoc IZonePortal
+    function queuedWithdrawalAt(
+        address token,
+        uint256 index
+    )
+        external
+        view
+        returns (QueuedWithdrawal memory)
+    {
+        return _queuedWithdrawals[token].entries[index];
+    }
+
+    /// @dev True if (maxAmount, period) removes limit, or raises both its cap and refill rate.
+    function _loosens(
+        WithdrawalLimit storage limit,
+        uint128 maxAmount,
+        uint64 period
+    )
+        internal
+        view
+        returns (bool)
+    {
+        if (maxAmount == 0) return true;
+        uint128 oldMaxAmount = limit.maxAmount;
+        if (oldMaxAmount == 0) return false;
+        return maxAmount >= oldMaxAmount && maxAmount / period >= oldMaxAmount / limit.period;
+    }
+
+    /// @dev Capacity of a token limited to maxAmount, refilled to block.timestamp, without
+    ///      writing it. maxAmount is a multiple of period, so the refill is exact.
+    function _refilledCapacity(
+        WithdrawalLimit storage limit,
+        uint128 maxAmount
+    )
+        internal
+        view
+        returns (uint128)
+    {
+        uint256 refilled = uint256(limit.available) + (block.timestamp - limit.updatedAt)
+            * uint256(maxAmount / limit.period);
+        return refilled > maxAmount ? maxAmount : uint128(refilled);
+    }
+
+    /// @dev Stores capacity as of block.timestamp, in one slot.
+    function _setAvailable(WithdrawalLimit storage limit, uint128 available) internal {
+        limit.available = available;
+        limit.updatedAt = uint64(block.timestamp);
+    }
+
+    /// @dev Returns capacity taken by a payout whose delivery failed, capped at maxAmount.
+    function _restoreWithdrawalLimit(WithdrawalLimit storage limit, uint128 amount) internal {
+        uint128 maxAmount = limit.maxAmount;
+        uint256 restored = uint256(limit.available) + amount;
+        limit.available = restored > maxAmount ? maxAmount : uint128(restored);
     }
 
     /// @notice Return whether account allowlist enforcement is enabled.
@@ -1402,60 +1528,299 @@ contract ZonePortal is IZonePortal {
 
         // One pruning run frees credits for every checkpoint this call appends.
         _pruneDepositBuckets();
+
         for (uint256 i; i < withdrawals.length; ++i) {
-            _processWithdrawal(withdrawals[i], remainingQueues[i]);
+            Withdrawal calldata withdrawal = withdrawals[i];
+            // Pop from withdrawal queue (library handles swap and hash verification)
+            _withdrawalQueue.dequeue(withdrawal, remainingQueues[i]);
+            _processWithdrawal(withdrawal);
         }
     }
 
-    function _processWithdrawal(Withdrawal calldata withdrawal, bytes32 remainingQueue) internal {
-        // Pop from withdrawal queue (library handles swap and hash verification)
-        _withdrawalQueue.dequeue(withdrawal, remainingQueue);
-
+    /// @dev Pays, bounces or queues one dequeued main-queue entry.
+    function _processWithdrawal(Withdrawal calldata withdrawal) internal {
         address _token = withdrawal.token;
+        uint128 amount = withdrawal.amount;
+        bool isUserWithdrawal = withdrawal.fallbackNonce != 0;
 
-        if (withdrawal.fallbackNonce == 0) {
-            _processDepositBounceBack(withdrawal);
+        // Over-cap user withdrawals bounce before the limit applies and pay nothing out of escrow.
+        // Deposit bounce-backs are never exempt this way, whatever their gasLimit.
+        if (isUserWithdrawal && withdrawal.gasLimit > MAX_WITHDRAWAL_GAS_LIMIT) {
+            _bounceWithdrawal(withdrawal);
             return;
         }
 
-        if (withdrawal.gasLimit > MAX_WITHDRAWAL_GAS_LIMIT) {
-            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackNonce);
-            emit WithdrawalProcessed(
-                withdrawal.to, withdrawal.senderTag, _token, withdrawal.amount, false
-            );
-            return;
-        }
-
-        bool success;
-        if (withdrawal.gasLimit == 0) {
-            // Re-check current roles without reverting so an in-flight withdrawal to a revoked
-            // account or newly registered gateway bounces without blocking the FIFO.
-            success = (!_isGatewayEnforced || !hasRole(withdrawal.to, Role.CallbackGateway))
-                && _isAllowed(withdrawal.to)
-                && _tryTransfer(_token, withdrawal.to, withdrawal.amount);
-        } else {
-            // Isolate callback effects so failure can be caught without reverting the dequeue.
-            try this.deliverWithdrawal(
-                _token,
-                withdrawal.to,
-                withdrawal.amount,
-                withdrawal.senderTag,
-                withdrawal.senderOrg,
-                withdrawal.gasLimit,
-                withdrawal.callbackData
-            ) {
-                success = true;
-            } catch {
-                success = false;
+        QueuedWithdrawals storage tokenQueue = _queuedWithdrawals[_token];
+        if (tokenQueue.head == tokenQueue.tail) {
+            WithdrawalLimit storage limit = _withdrawalLimits[_token];
+            uint128 maxAmount = limit.maxAmount;
+            if (maxAmount == 0) {
+                _payWithdrawal(withdrawal);
+                return;
+            }
+            uint128 available = _refilledCapacity(limit, maxAmount);
+            if (amount <= available) {
+                // Charged before delivery, because a callback can reenter claimRefund.
+                _setAvailable(limit, available - amount);
+                uint128 unpaid = _payWithdrawal(withdrawal);
+                if (unpaid != 0) _restoreWithdrawalLimit(limit, unpaid);
+                return;
             }
         }
 
-        if (!success) {
-            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackNonce);
+        if (isUserWithdrawal && withdrawal.gasLimit != 0) {
+            // A callback that cannot be delivered now bounces back to the zone, including one
+            // larger than maxAmount.
+            _bounceWithdrawal(withdrawal);
+        } else if (!_canPayOut(_token)) {
+            // Every transfer fails while the token is blocked, so the entry fails as it would with
+            // no limit: a plain withdrawal bounces back and a deposit bounce-back is parked.
+            _payWithdrawal(withdrawal);
+        } else {
+            _queueWithdrawal(withdrawal);
         }
-        emit WithdrawalProcessed(
-            withdrawal.to, withdrawal.senderTag, _token, withdrawal.amount, success
+    }
+
+    /// @dev Delivers a whole main-queue entry, bouncing a failed user withdrawal back to the zone.
+    /// @return unpaid Amount that did not leave escrow: all of a bounced user withdrawal, or the
+    ///         refund a deposit bounce-back parked in refunds.
+    function _payWithdrawal(Withdrawal calldata withdrawal) internal returns (uint128 unpaid) {
+        uint128 amount = withdrawal.amount;
+        if (withdrawal.fallbackNonce == 0) {
+            uint128 bouncebackFee = calculateBouncebackFee();
+            if (bouncebackFee > amount) bouncebackFee = amount;
+            (bool refunded, uint128 collectedFee) = _processDepositBounceBack(
+                withdrawal.token, withdrawal.to, amount, amount, bouncebackFee
+            );
+            return refunded ? 0 : amount - collectedFee;
+        }
+        if (!_deliverWithdrawal(withdrawal)) {
+            _bounceWithdrawal(withdrawal);
+            return amount;
+        }
+    }
+
+    /// @dev Appends a plain withdrawal or deposit bounce-back to the tail of its token queue,
+    ///      storing only what its payout reads.
+    function _queueWithdrawal(Withdrawal calldata withdrawal) internal {
+        address _token = withdrawal.token;
+        QueuedWithdrawals storage tokenQueue = _queuedWithdrawals[_token];
+        uint64 queueIndex = tokenQueue.tail;
+        // A deposit bounce-back's payout emits no senderTag, so its record leaves that slot empty.
+        bytes32 senderTag = withdrawal.fallbackNonce != 0 ? withdrawal.senderTag : bytes32(0);
+        tokenQueue.entries[queueIndex] = QueuedWithdrawal({
+            to: withdrawal.to,
+            fallbackNonce: withdrawal.fallbackNonce,
+            partlyPaid: false,
+            senderTag: senderTag,
+            remaining: withdrawal.amount
+        });
+        tokenQueue.tail = queueIndex + 1;
+        emit WithdrawalQueued(
+            _token,
+            queueIndex,
+            withdrawal.to,
+            withdrawal.amount,
+            senderTag,
+            withdrawal.fallbackNonce
         );
+    }
+
+    /// @inheritdoc IZonePortal
+    /// @dev Refills capacity once, then pays records in order from the head. Paying a token queue
+    ///      runs no external code, so capacity is tracked in memory and written once at the end.
+    function processQueuedWithdrawals(
+        address token,
+        uint256 maxEntries
+    )
+        external
+        whenNotPaused
+        nonReentrantWithdrawal
+        returns (uint256 completed)
+    {
+        // While every transfer fails, records are returned without waiting for capacity.
+        bool blocked = !_canPayOut(token);
+
+        QueuedWithdrawals storage tokenQueue = _queuedWithdrawals[token];
+        WithdrawalLimit storage limit = _withdrawalLimits[token];
+
+        // One pruning run frees credits for every bounce-back this call appends.
+        _pruneDepositBuckets();
+
+        uint64 head = tokenQueue.head;
+        uint64 tail = tokenQueue.tail;
+        uint128 maxAmount = limit.maxAmount;
+        uint128 available = maxAmount == 0 ? 0 : _refilledCapacity(limit, maxAmount);
+
+        for (; completed < maxEntries && head < tail; ++completed) {
+            bool complete = true;
+            if (blocked) {
+                _returnQueuedWithdrawal(token, tokenQueue.entries[head], head);
+            } else {
+                (complete, available) = _payQueuedWithdrawal(
+                    token, tokenQueue.entries[head], head, maxAmount, available
+                );
+            }
+            if (!complete) break;
+            delete tokenQueue.entries[head];
+            ++head;
+        }
+
+        tokenQueue.head = head;
+        if (maxAmount != 0) _setAvailable(limit, available);
+    }
+
+    /// @dev Makes one payment on a token-queue record: its remainder, or maxAmount if smaller,
+    ///      once available covers it. Token queues hold only plain withdrawals and deposit
+    ///      bounce-backs.
+    /// @return complete True if the record was fully paid, bounced back to the zone or parked.
+    /// @return newAvailable Capacity left after this payment; unchanged for a token with no limit.
+    function _payQueuedWithdrawal(
+        address token,
+        QueuedWithdrawal storage entry,
+        uint64 queueIndex,
+        uint128 maxAmount,
+        uint128 available
+    )
+        internal
+        returns (bool complete, uint128 newAvailable)
+    {
+        newAvailable = available;
+        uint128 remaining = entry.remaining;
+        uint128 pay = maxAmount == 0 || remaining <= maxAmount ? remaining : maxAmount;
+        if (maxAmount != 0 && available < pay) return (false, available);
+        address to = entry.to;
+        uint64 fallbackNonce = entry.fallbackNonce;
+
+        if (fallbackNonce == 0) {
+            // The fee is attempted once, on the first payment, and capped at that payment.
+            uint128 bouncebackFee;
+            if (!entry.partlyPaid) {
+                bouncebackFee = calculateBouncebackFee();
+                if (bouncebackFee > pay) bouncebackFee = pay;
+            }
+            (bool refunded, uint128 collectedFee) =
+                _processDepositBounceBack(token, to, pay, remaining, bouncebackFee);
+            if (!refunded) {
+                // The whole remainder is parked, which consumes no capacity. Only the fee left.
+                if (maxAmount != 0) newAvailable = available - collectedFee;
+                emit QueuedWithdrawalPaid(token, queueIndex, collectedFee, 0);
+                return (true, newAvailable);
+            }
+        } else {
+            bytes32 senderTag = entry.senderTag;
+            if (!_deliverPlainWithdrawal(token, to, senderTag, pay)) {
+                // The whole remainder returns to the zone, which consumes no capacity.
+                _bounceWithdrawal(token, to, senderTag, remaining, fallbackNonce);
+                emit QueuedWithdrawalPaid(token, queueIndex, 0, 0);
+                return (true, available);
+            }
+        }
+
+        if (maxAmount != 0) newAvailable = available - pay;
+        remaining -= pay;
+        emit QueuedWithdrawalPaid(token, queueIndex, pay, remaining);
+        if (remaining == 0) return (true, newAvailable);
+        entry.remaining = remaining;
+        if (fallbackNonce == 0) entry.partlyPaid = true;
+    }
+
+    /// @dev Completes a record of a blocked token without capacity: a plain withdrawal's remainder
+    ///      bounces back to the zone, and a deposit bounce-back's remainder is parked in refunds.
+    function _returnQueuedWithdrawal(
+        address token,
+        QueuedWithdrawal storage entry,
+        uint64 queueIndex
+    )
+        internal
+    {
+        address to = entry.to;
+        uint128 remaining = entry.remaining;
+        uint64 fallbackNonce = entry.fallbackNonce;
+        if (fallbackNonce == 0) {
+            refunds[token][to] += remaining;
+            emit DepositBounceBackPending(to, token, remaining, 0);
+        } else {
+            _bounceWithdrawal(token, to, entry.senderTag, remaining, fallbackNonce);
+        }
+        emit QueuedWithdrawalPaid(token, queueIndex, 0, 0);
+    }
+
+    /// @dev False while a transfer of token from the portal fails for every recipient: the token
+    ///      is paused or its transfer policy does not authorize the portal as sender.
+    function _canPayOut(address token) internal view returns (bool) {
+        return !ITIP20(token).paused()
+            && TIP403_REGISTRY.isAuthorizedSender(ITIP20(token).transferPolicyId(), address(this));
+    }
+
+    /// @dev Attempts to deliver a whole main-queue user withdrawal and emits WithdrawalProcessed
+    ///      on success. The caller bounces it back on failure.
+    function _deliverWithdrawal(Withdrawal calldata withdrawal) internal returns (bool success) {
+        if (withdrawal.gasLimit == 0) {
+            return _deliverPlainWithdrawal(
+                withdrawal.token, withdrawal.to, withdrawal.senderTag, withdrawal.amount
+            );
+        }
+        // Isolate callback effects so failure can be caught without reverting the dequeue.
+        try this.deliverWithdrawal(
+            withdrawal.token,
+            withdrawal.to,
+            withdrawal.amount,
+            withdrawal.senderTag,
+            withdrawal.senderOrg,
+            withdrawal.gasLimit,
+            withdrawal.callbackData
+        ) {
+            emit WithdrawalProcessed(
+                withdrawal.to, withdrawal.senderTag, withdrawal.token, withdrawal.amount, true
+            );
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Attempts to transfer amount of a plain withdrawal to its recipient and emits
+    ///      WithdrawalProcessed on success.
+    function _deliverPlainWithdrawal(
+        address token,
+        address to,
+        bytes32 senderTag,
+        uint128 amount
+    )
+        internal
+        returns (bool success)
+    {
+        // Re-check current roles without reverting so an in-flight withdrawal to a revoked
+        // account or newly registered gateway bounces without blocking the FIFO.
+        success = (!_isGatewayEnforced || !hasRole(to, Role.CallbackGateway)) && _isAllowed(to)
+            && _tryTransfer(token, to, amount);
+        if (success) emit WithdrawalProcessed(to, senderTag, token, amount, true);
+    }
+
+    /// @dev Returns a whole main-queue user withdrawal to its zone fallback recipient.
+    function _bounceWithdrawal(Withdrawal calldata withdrawal) internal {
+        _bounceWithdrawal(
+            withdrawal.token,
+            withdrawal.to,
+            withdrawal.senderTag,
+            withdrawal.amount,
+            withdrawal.fallbackNonce
+        );
+    }
+
+    /// @dev Returns amount of a user withdrawal to its zone fallback recipient.
+    function _bounceWithdrawal(
+        address token,
+        address to,
+        bytes32 senderTag,
+        uint128 amount,
+        uint64 fallbackNonce
+    )
+        internal
+    {
+        _enqueueBounceBack(token, amount, fallbackNonce);
+        emit WithdrawalProcessed(to, senderTag, token, amount, false);
     }
 
     /// @notice Deliver a callback withdrawal in a revertable self-call frame.
@@ -1503,37 +1868,61 @@ contract ZonePortal is IZonePortal {
         }
     }
 
-    function _processDepositBounceBack(Withdrawal calldata withdrawal) internal {
-        address _token = withdrawal.token;
-        uint128 bouncebackFee = calculateBouncebackFee();
-        if (bouncebackFee > withdrawal.amount) {
-            bouncebackFee = withdrawal.amount;
-        }
+    /// @dev Refunds amount of a deposit bounce-back (all of it, or one payment of a queued one),
+    ///      charging bouncebackFee (at most amount) to the admin. If the refund cannot be
+    ///      delivered, parks remaining, the entry's whole unpaid amount, less the fee in refunds.
+    /// @return refunded True if the refund was delivered.
+    /// @return collectedFee Fee the admin received.
+    function _processDepositBounceBack(
+        address _token,
+        address to,
+        uint128 amount,
+        uint128 remaining,
+        uint128 bouncebackFee
+    )
+        internal
+        returns (bool refunded, uint128 collectedFee)
+    {
         // Only deduct the fee if the admin transfer succeeds; otherwise the full amount remains
         // refundable to the deposit recipient.
-        uint128 collectedFee;
         if (bouncebackFee > 0 && _tryTransfer(_token, admin, bouncebackFee)) {
             collectedFee = bouncebackFee;
         }
-        uint128 refundAmount = withdrawal.amount - collectedFee;
+        uint128 refundAmount = amount - collectedFee;
 
-        bool success =
-            _isAllowed(withdrawal.to) && _tryTransfer(_token, withdrawal.to, refundAmount);
+        refunded = _isAllowed(to) && _tryTransfer(_token, to, refundAmount);
 
-        if (success) {
-            emit DepositBounceBack(withdrawal.to, _token, refundAmount, collectedFee);
+        if (refunded) {
+            emit DepositBounceBack(to, _token, refundAmount, collectedFee);
         } else {
-            refunds[_token][withdrawal.to] += refundAmount;
-            emit DepositBounceBackPending(withdrawal.to, _token, refundAmount, collectedFee);
+            uint128 parked = remaining - collectedFee;
+            refunds[_token][to] += parked;
+            emit DepositBounceBackPending(to, _token, parked, collectedFee);
         }
     }
 
+    /// @inheritdoc IZonePortal
+    /// @dev Parking a refund consumes no withdrawal-limit capacity, so claiming one does. Queued
+    ///      records are paid before parked refunds, so a claim cannot hold capacity below what a
+    ///      queued installment needs.
     function claimRefund(address token) external whenNotPaused returns (uint128 amount) {
         _requireAllowed(msg.sender);
-        amount = refunds[token][msg.sender];
-        refunds[token][msg.sender] = 0;
+        QueuedWithdrawals storage tokenQueue = _queuedWithdrawals[token];
+        if (tokenQueue.head == tokenQueue.tail) {
+            uint128 owed = refunds[token][msg.sender];
+            amount = owed;
 
-        if (!_tryTransfer(token, msg.sender, amount)) revert CallbackRejected();
+            WithdrawalLimit storage limit = _withdrawalLimits[token];
+            uint128 maxAmount = limit.maxAmount;
+            if (maxAmount != 0) {
+                uint128 available = _refilledCapacity(limit, maxAmount);
+                if (amount > available) amount = available;
+                _setAvailable(limit, available - amount);
+            }
+            refunds[token][msg.sender] = owed - amount;
+        }
+
+        if (amount != 0 && !_tryTransfer(token, msg.sender, amount)) revert CallbackRejected();
 
         emit RefundClaimed(msg.sender, token, amount);
     }

@@ -54,6 +54,34 @@ pub struct PortalWithdrawalQueue {
     slots: Mapping<U256, B256>,
 }
 
+/// TIP-1150 `WithdrawalLimit` stored per token by ZonePortal, two slots.
+#[derive(Debug, Clone, Copy, Storable)]
+pub struct PortalWithdrawalLimit {
+    max_amount: u128,
+    period: u64,
+    available: u128,
+    updated_at: u64,
+}
+
+/// TIP-1150 queued withdrawal record, three slots per entry.
+#[derive(Debug, Clone, Copy, Storable)]
+pub struct PortalQueuedWithdrawal {
+    to: Address,
+    fallback_nonce: u64,
+    partly_paid: bool,
+    sender_tag: B256,
+    remaining: u128,
+}
+
+/// TIP-1150 token queue stored per token by ZonePortal.
+#[derive(Debug, Clone, Storable)]
+pub struct PortalQueuedWithdrawals {
+    head: u64,
+    tail: u64,
+    #[expect(dead_code)]
+    entries: Mapping<U256, PortalQueuedWithdrawal>,
+}
+
 /// Canonical Solidity storage layout of the ZonePortal runtime installed at T10.
 ///
 /// The generated handlers let the native factory initialize a portal without duplicating raw
@@ -137,6 +165,10 @@ pub struct ZonePortalStorage {
     deposit_bucket_base: u64,
     /// First checkpoint index not yet pruned, packed into slot 31.
     next_deposit_bucket_to_prune: u64,
+    /// TIP-1150 per-token withdrawal limits, stored as a Solidity mapping in slot 32.
+    withdrawal_limits: Mapping<Address, PortalWithdrawalLimit>,
+    /// TIP-1150 per-token withdrawal queues, stored as a Solidity mapping in slot 33.
+    queued_withdrawals: Mapping<Address, PortalQueuedWithdrawals>,
 }
 
 impl ZonePortalStorage {

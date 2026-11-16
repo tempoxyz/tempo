@@ -4,7 +4,8 @@ use super::artifact;
 use tempo_precompiles::{
     test_util::storage_conformance::{
         RustStorageField, RustStorageSlot, assert_foundry_slots, compare_layouts,
-        compare_struct_members, load_solc_layout, panic_layout_mismatch,
+        compare_nested_struct_type, compare_struct_members, load_foundry_layout, load_solc_layout,
+        panic_layout_mismatch,
     },
     zone_factory::portal,
 };
@@ -43,6 +44,8 @@ fn zone_portal_slot_constants_match_solidity() {
             portal::slots::ABDICATION_EFFECTIVE_AT,
         ),
         ("depositBuckets", portal::slots::DEPOSIT_BUCKETS),
+        ("_withdrawalLimits", portal::slots::WITHDRAWAL_LIMITS),
+        ("_queuedWithdrawals", portal::slots::QUEUED_WITHDRAWALS),
     ]
     .map(|(name, slot)| RustStorageSlot::new(name, slot));
     let packed = [
@@ -87,6 +90,39 @@ fn zone_portal_slot_constants_match_solidity() {
         &artifact("ZonePortal"),
         &[&fields[..], &packed[..]].concat(),
     );
+}
+
+#[test]
+fn zone_portal_withdrawal_limit_structs_match_solidity() {
+    let path = artifact("ZonePortal");
+    let solidity = load_foundry_layout(&path).expect("ZonePortal artifact");
+    let limit = {
+        use portal::__packing_portal_withdrawal_limit::*;
+        struct_fields!(
+            portal::slots::WITHDRAWAL_LIMITS,
+            max_amount,
+            period,
+            available,
+            updated_at
+        )
+    };
+    if let Err(errors) = compare_struct_members(&solidity, "_withdrawalLimits", &limit) {
+        panic!("WithdrawalLimit layout mismatch:\n{}", errors.join("\n"));
+    }
+    let record = {
+        use portal::__packing_portal_queued_withdrawal::*;
+        struct_fields!(
+            alloy::primitives::U256::ZERO,
+            to,
+            fallback_nonce,
+            partly_paid,
+            sender_tag,
+            remaining
+        )
+    };
+    if let Err(errors) = compare_nested_struct_type(&solidity, "struct QueuedWithdrawal", &record) {
+        panic!("QueuedWithdrawal layout mismatch:\n{}", errors.join("\n"));
+    }
 }
 
 #[test]

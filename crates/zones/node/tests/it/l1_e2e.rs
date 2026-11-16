@@ -513,8 +513,8 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     const WITHDRAWAL_COUNT: usize =
         ACCOUNT_COUNT as usize + REPEATED_ACCOUNT_COUNT * (WITHDRAWALS_PER_REPEATED_ACCOUNT - 1);
     const MAX_WITHDRAWALS_PER_BATCH: usize = 2;
-    // The 1.25M per-transaction overhead plus two 1M simple withdrawals.
-    const TEST_MAX_BATCH_GAS: u64 = 3_250_000;
+    // The 1.25M per-transaction overhead plus two 1.1M simple withdrawals, the T15 reservation.
+    const TEST_MAX_BATCH_GAS: u64 = 3_450_000;
     const TEST_MAX_IN_FLIGHT_BATCHES: usize = 2;
     const DEPOSIT_AMOUNT: u128 = 2_000_000;
     const WITHDRAWAL_AMOUNT: u128 = 250_000;
@@ -562,6 +562,7 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
             max_batch_gas: TEST_MAX_BATCH_GAS,
             max_in_flight_batches: TEST_MAX_IN_FLIGHT_BATCHES,
         },
+        Duration::from_millis(500),
     )
     .await;
     let withdrawal_start_block = l1.provider().get_block_number().await?;
@@ -1065,6 +1066,84 @@ async fn test_queued_plain_withdrawal_bounces_after_recipient_revocation() -> ey
         ],
     )
     .await?;
+
+    Ok(())
+}
+
+/// TIP-1150: a plain withdrawal larger than its token's withdrawal limit enters the token queue and
+/// is paid in installments by the sequencer's drain, with no other call. Drains run on the
+/// withdrawal processor's wakes, so they do not wait for its fallback poll interval.
+#[test_case::test_case(Duration::from_millis(500))]
+#[test_case::test_case(Duration::from_secs(3_600))]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_withdrawal_over_limit_is_paid_automatically_in_installments(
+    withdrawal_poll_interval: Duration,
+) -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let l1 = L1TestNode::start().await?;
+    let portal_address = l1.deploy_zone().await?;
+    let zone = ZoneTestNode::start_from_l1(&l1, portal_address).await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+
+    // Only the portal admin may set the limit.
+    let max_amount = 100_000u128;
+    let admin = l1.admin_provider();
+    let portal = ZonePortal::new(portal_address, &admin);
+    let receipt = portal
+        .setWithdrawalLimit(PATH_USD_ADDRESS, max_amount, 1)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(receipt.status(), "setWithdrawalLimit reverted");
+
+    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    let recipient = l1.admin_address();
+    let amount = 250_000u128;
+    l1.fund_user(account.address(), 2 * amount).await?;
+    account.deposit(2 * amount, L1_TIMEOUT, &zone).await?;
+    let before = l1.balance_of(PATH_USD_ADDRESS, recipient).await?;
+    let mut args = WithdrawalArgs::new(amount);
+    args.to = Some(recipient);
+    account.withdraw_with(args).await?;
+
+    let _sequencer = spawn_sequencer_with_config(
+        &l1,
+        &zone,
+        portal_address,
+        l1.dev_signer(),
+        zone_sequencer::BatchAnchorConfig::default(),
+        zone_sequencer::WithdrawalBatchLimits::default(),
+        withdrawal_poll_interval,
+    )
+    .await;
+    l1.wait_for_balance(
+        PATH_USD_ADDRESS,
+        recipient,
+        before + U256::from(amount),
+        Duration::from_secs(90),
+    )
+    .await?;
+
+    let reader = ZonePortal::new(portal_address, l1.provider());
+    let bounds = reader.queuedWithdrawals(PATH_USD_ADDRESS).call().await?;
+    assert_eq!(bounds.head, 1, "the withdrawal was queued once");
+    assert_eq!(bounds.tail, 1, "the token queue is empty");
+    let paid = reader
+        .QueuedWithdrawalPaid_filter()
+        .topic1(PATH_USD_ADDRESS)
+        .from_block(0)
+        .query()
+        .await?
+        .into_iter()
+        .map(|(event, _)| (event.paid, event.remaining))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paid,
+        [(100_000, 150_000), (100_000, 50_000), (50_000, 0)],
+        "installments of at most maxAmount, in order"
+    );
 
     Ok(())
 }

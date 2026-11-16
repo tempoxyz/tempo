@@ -2,8 +2,9 @@
 //!
 //! Tempo's 2D nonce system allows each account to maintain independent nonce
 //! counters ("lanes") keyed by a `U256` nonce key. Each sequencer operation
-//! type uses a dedicated lane so that `submitBatch`, `processWithdrawals`, and
-//! admin transactions can be submitted concurrently without nonce contention.
+//! type uses a dedicated lane so that `submitBatch`, `processWithdrawals`,
+//! `processQueuedWithdrawals`, and admin transactions can be submitted concurrently
+//! without nonce contention.
 //!
 //! Nonce management is handled by [`NonceKeyFiller`](tempo_alloy::fillers::NonceKeyFiller)
 //! in the provider pipeline — callers only need to set `.nonce_key(KEY)` on
@@ -22,3 +23,7 @@ pub const PROCESS_WITHDRAWAL_NONCE_KEY: U256 = uint!(2_U256);
 /// `pauseDeposits`, `resumeDeposits`). Low
 /// frequency, shared key.
 pub const ADMIN_OPS_NONCE_KEY: U256 = uint!(3_U256);
+
+/// Nonce key for `processQueuedWithdrawals` calls that drain TIP-1150 token queues. Kept apart
+/// from [`PROCESS_WITHDRAWAL_NONCE_KEY`] so drains never disturb that lane's explicit nonces.
+pub const PROCESS_QUEUED_WITHDRAWALS_NONCE_KEY: U256 = uint!(4_U256);
