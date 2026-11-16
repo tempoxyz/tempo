@@ -8,15 +8,14 @@
 //!
 //! 1. Direct-call-only rules reject delegate calls before storage access.
 //! 2. Reject calls that cannot cover the calldata input cost before admission rules decode it.
-//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge. From
-//!    T15 that charge is the larger of the fixed gas and the calldata input cost.
+//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge,
+//!    (+T15) raised to the calldata input cost when that is larger.
 //! 4. Apply [`CallRules`] admission checks using calldata, caller metadata, and anchored state.
 //! 5. Forward the original calldata and caller, applying any configured fixed gas charge.
 //!
 //! Admission-rule rejections include calldata input gas, while early delegate-call rejection is
 //! unmetered. Calls without a fixed charge retain normal provider metering, and successful
-//! fixed-price calls report exactly the configured charge, or the input cost when it is larger
-//! from T15.
+//! fixed-price calls report exactly the configured charge.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -87,7 +86,7 @@ pub(crate) enum CallCheck {
 pub(crate) trait CallRules: 'static {
     /// Return the fixed gas charge for this selector, if one applies.
     ///
-    /// From T15 the call is charged `max(fixed_gas, input_cost)`. Calldata length is public, so
+    /// (+T15) The call is charged `max(fixed_gas, input_cost)`. Calldata length is public, so
     /// charging the input cost leaks nothing, but the storage-dependent work the fixed charge hides
     /// must stay below it: the fixed gas MUST be tuned high enough that every legitimate call,
     /// with ABI-sized calldata and worst-case storage access, costs less than it.
