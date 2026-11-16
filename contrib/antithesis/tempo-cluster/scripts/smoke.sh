@@ -8,6 +8,22 @@ export DISABLE_EVENTUALLY=1
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tempo-cluster-smoke}"
 artifacts="${SMOKE_ARTIFACT_DIR:-$root/.bench-tmp/tempo-cluster-smoke}"
 mkdir -p "$artifacts"
+# Debug-assertion builds must embed age's error strings instead of reading the builder's registry.
+if timeout 60s docker run --rm --network none --entrypoint /bin/bash "${TEMPO_IMAGE:?TEMPO_IMAGE required}" -c '
+    printf "%s\n" deliberately-wrong-test-passphrase > /opt/tempo-cluster/secret
+    exec /opt/tempo-cluster/node.sh 10.21.0.11
+' > "$artifacts/signing-key-error.log" 2>&1; then
+    echo 'Incorrect signing-key passphrase unexpectedly succeeded' >&2
+    exit 1
+else
+    [[ "$?" == 1 ]]
+fi
+grep -Fq 'Decryption failed' "$artifacts/signing-key-error.log"
+if grep -Eq 'panicked|LanguageNotAvailable' "$artifacts/signing-key-error.log"; then
+    echo 'Signing-key error formatting panicked' >&2
+    exit 1
+fi
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
     docker compose logs --no-color > "$artifacts/compose.log" 2>&1 || true
     docker compose cp driver:/state/sdk.jsonl "$artifacts/sdk.jsonl" || true
