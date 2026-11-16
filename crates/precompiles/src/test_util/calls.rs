@@ -184,7 +184,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         TempoAddressExt,
-        test_utils::{actors, amounts},
+        test_utils::{actors, amounts, salts},
     };
 
     /// Applying a setup in memory and executing its lowered calls leave the same storage, so
@@ -210,8 +210,13 @@ mod tests {
             REJECT_ALL_POLICY_ID,
             ALLOW_ALL_POLICY_ID,
         );
-        let dex = DexSetup::new(admin).trader(alice, traded.to());
-        let fee_amm = FeeAmmSetup::new(admin).liquidity(bob, deposited);
+        let [dex_salt, user_salt, validator_salt] = salts();
+        let dex = DexSetup::new(admin)
+            .with_salt(dex_salt)
+            .trader(alice, traded.to());
+        let fee_amm = FeeAmmSetup::new(admin)
+            .with_salts(user_salt, validator_salt)
+            .liquidity(bob, deposited);
         // Markets over the tokens above, as a fixture world adds them to its own tokens.
         let ((base, quote), _) = dex.calls();
         let ((user_token, _), _) = fee_amm.calls();
