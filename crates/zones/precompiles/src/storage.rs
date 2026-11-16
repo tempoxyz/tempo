@@ -253,6 +253,20 @@ impl<P: L1StorageReader> L1State<P> {
             .map_err(|_| TempoPrecompileError::under_overflow())
     }
 
+    /// Returns whether `account` has `expected` in the configured ZonePortal's role mapping at
+    /// `block_number`, without gas metering, for checks made before a transaction executes.
+    pub fn has_portal_role_unmetered(
+        &self,
+        account: Address,
+        expected: tempo_contracts::zones::ZonePortal::Role,
+        block_number: u64,
+    ) -> Result<bool, L1StateError> {
+        let slot = ZonePortal::new(self.portal_address).role[account].slot();
+        let value =
+            self.read_l1_storage_unmetered(self.portal_address, B256::from(slot), block_number)?;
+        Ok(U256::from_be_bytes(value.0) == U256::from(u8::from(expected)))
+    }
+
     /// Returns whether `account` has `expected` in the configured ZonePortal's role mapping.
     pub fn has_portal_role(
         &self,

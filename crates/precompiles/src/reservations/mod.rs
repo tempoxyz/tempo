@@ -36,6 +36,7 @@ pub use tempo_contracts::precompiles::{
     IReservationCore, RESERVATIONS_ADDRESS, ReservationsError, ReservationsEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoEvmKind;
 
 /// Longest a hold may last, in seconds: 31 days.
 pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
@@ -155,12 +156,39 @@ pub struct Reservations {
     hold_totals: Mapping<Address, Mapping<B256, HoldTotals>>,
     /// Liens keyed by authority then id.
     liens: Mapping<Address, Mapping<B256, Lien>>,
+    /// On a zone, the number of tokens in which each owner owes debt. Tempo L1 keeps this count in
+    /// the owner's TIP-1028 receive policy slot, which a zone mirrors from L1 and cannot write.
+    zone_debts: Mapping<Address, u32>,
 }
 
 impl Reservations {
     /// Initializes the precompile account.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
+    }
+
+    /// Returns whether `owner` owes debt in any token, which every credit of a TIP-20 token checks
+    /// before looking for a repayment.
+    pub(crate) fn owes_debt(&self, owner: Address) -> Result<bool> {
+        if matches!(self.storage.kind(), TempoEvmKind::Zone) {
+            return Ok(self.zone_debts[owner].read()? != 0);
+        }
+        TIP403Registry::new().has_reservation_debt(owner)
+    }
+
+    /// Counts a token in which `owner` starts (`owes`) or stops owing debt.
+    fn count_debt(&mut self, owner: Address, owes: bool) -> Result<()> {
+        if !matches!(self.storage.kind(), TempoEvmKind::Zone) {
+            return TIP403Registry::new().count_reservation_debt(owner, owes);
+        }
+        let count = self.zone_debts[owner].read()?;
+        let count = if owes {
+            count.checked_add(1)
+        } else {
+            count.checked_sub(1)
+        }
+        .ok_or_else(TempoPrecompileError::under_overflow)?;
+        self.zone_debts[owner].write(count)
     }
 
     /// Returns the amount of `token` that `owner` has reserved for holds and liens.
@@ -721,7 +749,7 @@ impl Reservations {
         self.end_lien(authority, id, lien, true)
     }
 
-    fn get_hold(&self, owner: Address, id: B256) -> Result<IReservationCore::HoldRecord> {
+    pub fn get_hold(&self, owner: Address, id: B256) -> Result<IReservationCore::HoldRecord> {
         let head = self.hold_heads[owner][id].read()?;
         if head.token.is_zero() {
             return Ok(IReservationCore::HoldRecord {
@@ -761,7 +789,7 @@ impl Reservations {
         available(&TIP20Token::from_address(token)?, owner)
     }
 
-    fn allowance(
+    pub fn allowance(
         &self,
         owner: Address,
         holder: Address,
@@ -774,7 +802,11 @@ impl Reservations {
         })
     }
 
-    fn debt_of(&self, owner: Address, token: Address) -> Result<IReservationCore::debtOfReturn> {
+    pub fn debt_of(
+        &self,
+        owner: Address,
+        token: Address,
+    ) -> Result<IReservationCore::debtOfReturn> {
         let debt = self.positions[owner][token].debt.read()?;
         Ok(IReservationCore::debtOfReturn {
             creditor: if debt.is_zero() {
@@ -798,7 +830,7 @@ impl Reservations {
         self.offline_caps[owner][Recipient::resolve(payee)?.target][token].read()
     }
 
-    fn lien_of(&self, authority: Address, id: B256) -> Result<IReservationCore::lienOfReturn> {
+    pub fn lien_of(&self, authority: Address, id: B256) -> Result<IReservationCore::lienOfReturn> {
         let lien = self.liens[authority][id].read()?;
         Ok(IReservationCore::lienOfReturn {
             owner: lien.owner,
@@ -1045,7 +1077,7 @@ impl Reservations {
         self.positions[owner][token].write(position)?;
         if !owes {
             self.creditors[owner][token].write(creditor)?;
-            TIP403Registry::new().count_reservation_debt(owner, true)?;
+            self.count_debt(owner, true)?;
         }
         Ok(())
     }
@@ -1065,7 +1097,7 @@ impl Reservations {
         self.positions[owner][token].write(position)?;
         if position.debt.is_zero() {
             self.creditors[owner][token].delete()?;
-            TIP403Registry::new().count_reservation_debt(owner, false)?;
+            self.count_debt(owner, false)?;
         }
         self.emit_event(ReservationsEvent::debt_repaid(
             owner, token, creditor, amount,

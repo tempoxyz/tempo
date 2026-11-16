@@ -15,7 +15,8 @@ use evm2::{
     registry::{AnyTxHandler, HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
+use tempo_contracts::zones::ZonePortal;
+use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTx as _, TempoTxEnv, tempo_tx_registry};
 use zone_precompiles::{
     L1State, L1StorageReader, tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
 };
@@ -60,7 +61,6 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>,
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
-        crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
@@ -71,6 +71,24 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         // The accepted cache keys mirrored slots without their anchor. That is sound because a
         // Zone EVM executes one block, whose committed opening advanceTempo is its only anchor change.
         self.l1.begin_transaction(initial_anchor);
+
+        // Besides the protocol allowlist, the zone's sequencer, which operates the zone and already
+        // sees its private state, may deploy contracts in top-level creations (such as the card
+        // programs that hold funds through the reservation core). Creations inside calls stay off.
+        // An anchor or L1 read that fails grants nothing, so the creation is refused as before.
+        let deployer = request.envelope.caller();
+        let sequencer_deploys = validation::creates_contract(request.envelope)
+            && u64::try_from(initial_anchor).is_ok_and(|anchor| {
+                self.l1
+                    .has_portal_role_unmetered(deployer, ZonePortal::Role::Sequencer, anchor)
+                    .unwrap_or(false)
+            });
+        let allowlist = if sequencer_deploys {
+            core::slice::from_ref(&deployer)
+        } else {
+            CONTRACT_DEPLOYER_ALLOWLIST
+        };
+        crate::validate_transaction(request.envelope, allowlist)?;
 
         let tx_hash = match request.envelope.execution_context() {
             ExecutionContext::Transaction { tx_hash } => tx_hash,
@@ -208,6 +226,10 @@ pub(crate) mod tests {
     }
 
     pub(super) fn test_evm(db: InMemoryDB) -> ZoneEvm<'static> {
+        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, test_env())
+    }
+
+    pub(super) fn test_env() -> TempoEvmEnv {
         let spec = TempoHardfork::T7;
         let mut env = TempoEvmEnv {
             spec,
@@ -215,7 +237,7 @@ pub(crate) mod tests {
         };
         env.version = tempo_chainspec::gas_params::version(evm2::SpecId::OSAKA, spec, false);
         env.block.gas_limit = U256::from(30_000_000);
-        BlockExecutorFactory::evm_with_env(&config(MockL1Reader::default()), db, env)
+        env
     }
 
     pub(super) fn transaction(

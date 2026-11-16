@@ -31,8 +31,11 @@ pub fn validate_transaction(
     Ok(())
 }
 
+/// Returns whether any call of `tx` creates a contract.
+pub(crate) fn creates_contract(tx: &TempoTxEnv) -> bool {
+    tx.calls().any(|(kind, _)| kind.is_create())
+}
+
 fn contract_creation_deployer(tx: &TempoTxEnv) -> Option<Address> {
-    tx.calls()
-        .any(|(kind, _)| kind.is_create())
-        .then(|| tx.caller())
+    creates_contract(tx).then(|| tx.caller())
 }

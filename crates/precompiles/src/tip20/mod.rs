@@ -1406,13 +1406,14 @@ impl TIP20Token {
         self.repay_debt(to.target, amount)
     }
 
-    /// Whether debits and credits consult the [`Reservations`] precompile: from T15, on L1 only.
+    /// Whether debits and credits consult the [`Reservations`] precompile: from T15, on L1 and on
+    /// zones, which run the same reservation core over their private balances.
     fn reservations_active(&self) -> bool {
-        self.storage.spec().is_t15() && matches!(self.storage.kind(), TempoEvmKind::L1)
+        self.storage.spec().is_t15()
     }
 
     /// Returns the amount of this token `account` has reserved through [`Reservations`]: zero
-    /// before T15 and on zones, where reservations do not apply.
+    /// before T15.
     ///
     /// Reserved funds sit outside `balances`, so debits never read this; only `balanceOf` adds it.
     pub fn reserved_balance(&self, account: Address) -> Result<U256> {
@@ -1477,7 +1478,7 @@ impl TIP20Token {
     /// recipient, or the creditor's TIP-1028 receive policy rejects `owner`; the credit itself
     /// never reverts for these reasons.
     fn repay_debt(&mut self, owner: Address, received: U256) -> Result<()> {
-        if !self.reservations_active() || !TIP403Registry::new().has_reservation_debt(owner)? {
+        if !self.reservations_active() || !Reservations::new().owes_debt(owner)? {
             return Ok(());
         }
         let token = self.address;

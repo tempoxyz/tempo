@@ -221,6 +221,50 @@ mod tests {
     }
 
     #[test]
+    fn sequencer_may_create_contracts_at_top_level() {
+        use reth_evm::BlockExecutorFactory;
+        let sequencer = Address::repeat_byte(0x01);
+        let create = |caller| {
+            transaction(
+                caller,
+                TxLegacy {
+                    to: TxKind::Create,
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            )
+        };
+        let l1 = TestL1::default();
+        l1.seed_active_sequencer(Address::ZERO, 0, sequencer);
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &super::super::tests::config(l1),
+            test_db([]),
+            super::super::tests::test_env(),
+        );
+        // Validation may still fail later (fees), but never on the creation itself for the sequencer.
+        let refused = |result: Option<&TempoInvalidTransaction>| {
+            matches!(
+                result,
+                Some(TempoInvalidTransaction::CallsValidation(
+                    "contract creation is not supported"
+                ))
+            )
+        };
+        let sequencer_result = evm.validate_tx(&create(sequencer)).err();
+        assert!(!refused(
+            sequencer_result
+                .as_ref()
+                .and_then(|err| err.external_ref::<TempoInvalidTransaction>())
+        ));
+        let other_result = evm.validate_tx(&create(Address::repeat_byte(0x02))).err();
+        assert!(refused(
+            other_result
+                .as_ref()
+                .and_then(|err| err.external_ref::<TempoInvalidTransaction>())
+        ));
+    }
+
+    #[test]
     fn top_level_create_respects_allowlist() {
         let caller = Address::repeat_byte(0x01);
         let tx = transaction(

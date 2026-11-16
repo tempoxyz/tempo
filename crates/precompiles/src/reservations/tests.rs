@@ -905,6 +905,36 @@ fn test_charge_shortfall_is_capped_debt_repaid_on_receive() -> eyre::Result<()> 
     })
 }
 
+/// A zone runs the same core: holds reserve and capture, and debt is counted in the core itself,
+/// since a zone cannot write the TIP-403 registry it mirrors from L1.
+#[test]
+fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
+    let mut storage = new_storage().with_kind(TempoEvmKind::Zone);
+    StorageCtx::enter(&mut storage, || {
+        let mut f = Fixture::new(100)?;
+        let id = B256::random();
+        f.hold(id, 60)?;
+        assert_eq!(f.reserved()?, 60);
+        assert_eq!(f.balance(f.owner)?, U256::from(40));
+        f.capture(f.payee, id, 60, true)?;
+        assert_eq!((f.reserved()?, f.balance(f.payee)?), (0, U256::from(60)));
+
+        f.set_debt_cap(500)?;
+        f.charge(f.owner, B256::random(), 140, false)?;
+        assert_eq!(f.debt()?.amount, 100);
+        assert!(f.reservations.owes_debt(f.owner)?);
+        assert!(!TIP403Registry::new().has_reservation_debt(f.owner)?);
+
+        let sender = Address::random();
+        f.mint(sender, 1_000)?;
+        f.transfer(sender, f.owner, 130)?;
+        assert_eq!(f.debt()?.amount, 0);
+        assert_eq!(f.balance(f.owner)?, U256::from(30));
+        assert!(!f.reservations.owes_debt(f.owner)?);
+        Ok(())
+    })
+}
+
 #[test]
 fn test_refund_bounds() -> eyre::Result<()> {
     at_t15(|| {

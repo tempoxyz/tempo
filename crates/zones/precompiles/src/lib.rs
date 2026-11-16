@@ -71,6 +71,7 @@ mod configurable_account;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
+mod reservations;
 pub mod storage;
 mod storage_credits;
 pub mod tempo_state;
@@ -103,12 +104,13 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
-    Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS,
+    Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, RESERVATIONS_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
+    reservations::Reservations,
     signature_verifier::SignatureVerifier,
     storage::{actions::StorageActions, evm::EvmStorageExt},
     storage_credits::{NonCreditableSlots, StorageCredits},
@@ -296,6 +298,17 @@ where
             )
         } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
             zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
+        } else if address == RESERVATIONS_ADDRESS && self.env.spec().is_t15() {
+            zone_precompile!(
+                evm,
+                message,
+                gas,
+                &self.env,
+                Reservations,
+                reservations::ReservationRules {
+                    l1: self.l1.clone(),
+                }
+            )
         } else {
             #[cfg(feature = "std")]
             if address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS {
@@ -341,6 +354,8 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | STORAGE_CREDITS_ADDRESS => true,
         // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
         CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
+        // Zones run the reservation core over their private balances from T15, as Tempo does.
+        RESERVATIONS_ADDRESS => spec.is_t15(),
         _ => false,
     }
 }
