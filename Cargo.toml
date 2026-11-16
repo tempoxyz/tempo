@@ -434,6 +434,7 @@ test-case = "3"
 zeroize = "1"
 zstd = "0.14.3"
 age = { version = "0.11", default-features = false }
+rust-embed = { version = "8", default-features = false }
 secrecy = "0.10"
 bitflags = "2.11.1"
 

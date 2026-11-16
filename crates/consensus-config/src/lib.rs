@@ -3,6 +3,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// Only enables rust-embed's `debug-embed` feature for `age`, so that debug builds
+// embed its translations instead of recording their absolute path.
+use rust_embed as _;
+
 use std::{
     fmt::Display,
     io::{Read as _, Write as _},
