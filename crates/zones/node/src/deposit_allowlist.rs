@@ -30,6 +30,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
 use reth_transaction_pool::TransactionPool;
 use serde::{Deserialize, Serialize};
+use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 use tokio::sync::Notify;
 use tracing::{info, warn};
@@ -450,8 +451,8 @@ impl DepositAllowlist {
         };
         let mut rejected = 0;
         for ((sender, recipient), decryption) in senders.iter().zip(recipients).zip(decryptions) {
-            if !state.addresses.contains(sender)
-                || recipient.is_some_and(|recipient| !state.addresses.contains(&recipient))
+            if !is_listed(&state.addresses, sender)
+                || recipient.is_some_and(|recipient| !is_listed(&state.addresses, &recipient))
             {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
@@ -591,7 +592,14 @@ where
 
 /// Whether `list` holds every one of `addresses`. An unwritten list (`None`) allows everyone.
 fn allows_all(list: Option<&BTreeSet<Address>>, addresses: &[Address]) -> bool {
-    list.is_none_or(|list| addresses.iter().all(|address| list.contains(address)))
+    list.is_none_or(|list| addresses.iter().all(|address| is_listed(list, address)))
+}
+
+/// Whether `list` allows `address`. A TIP-1022 virtual address is never listed: from T15 the
+/// Zone credits its master, which the screens can't resolve, so listing either one must not let
+/// funds reach an unlisted account.
+fn is_listed(list: &BTreeSet<Address>, address: &Address) -> bool {
+    !address.is_virtual() && list.contains(address)
 }
 
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {
@@ -1151,6 +1159,32 @@ mod tests {
                 valid,
             ]
         );
+    }
+
+    #[test]
+    fn virtual_addresses_are_never_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let allowlist = alice_only(dir.path());
+        let virtual_alice = Address::new_virtual(
+            tempo_primitives::MasterId::repeat_byte(0x01),
+            tempo_primitives::UserTag::repeat_byte(0x02),
+        );
+        allowlist.replace(vec![ALICE, virtual_alice]).unwrap();
+
+        // From T15 a virtual recipient credits its master, which the screens can't see.
+        assert!(!allowlist.allows_all(&[ALICE, virtual_alice]));
+        assert!(allowlist.allows_all(&[ALICE]));
+        let valid = valid_decryption();
+        let mut decryptions = vec![valid.clone(); 2];
+        let rejected = allowlist
+            .reject_unlisted(
+                &[ALICE, ALICE],
+                &[Some(virtual_alice), Some(ALICE)],
+                &mut decryptions,
+            )
+            .unwrap();
+        assert_eq!(rejected, 1);
+        assert_eq!(decryptions, vec![FAILED_DECRYPTION, valid]);
     }
 
     #[test]
