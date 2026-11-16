@@ -153,7 +153,11 @@ impl LogOrderingRedactor {
 /// Filters logs to only those the caller is allowed to see, renumbering the
 /// `log_index` via [`LogOrderingRedactor`].
 pub fn filter_logs(logs: Vec<Log>, caller: &Address) -> Vec<Log> {
-    filter_requested_logs(logs, caller, &RequestedTopics::default())
+    let mut redactor = LogOrderingRedactor::default();
+    logs.into_iter()
+        .filter(|log| is_log_visible(log, caller))
+        .map(|log| redactor.redact(log))
+        .collect()
 }
 
 /// Filters a receipt's logs for its sender and recomputes `logsBloom`.
@@ -293,11 +297,12 @@ pub fn filter_requested_logs(
     caller: &Address,
     requested: &RequestedTopics,
 ) -> Vec<Log> {
-    let mut redactor = LogOrderingRedactor::default();
-    logs.into_iter()
-        .filter(|log| requested.matches(log) && is_log_visible(log, caller))
-        .map(|log| redactor.redact(log))
-        .collect()
+    filter_logs(
+        logs.into_iter()
+            .filter(|log| requested.matches(log))
+            .collect(),
+        caller,
+    )
 }
 
 #[cfg(test)]
