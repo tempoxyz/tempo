@@ -322,6 +322,22 @@ pub(crate) mod marshal {
             }
         }
 
+        // The peer manager registers peers from execution's finalized state
+        // before marshal or the executor run, so that state must match the
+        // archive wherever the archive certifies its height.
+        let execution_finalized = execution_finalized_point(execution_node);
+        if (first..=last).contains(&execution_finalized.0.get())
+            && let Some(execution_certificate) = certificates
+                .get(Identifier::Index(execution_finalized.0.get()))
+                .await
+                .wrap_err("failed reading certificate at execution finalized height")?
+        {
+            ensure_execution_finalized_certified(
+                execution_finalized,
+                execution_certificate.proposal.payload,
+            )?;
+        }
+
         Ok(FinalizationRange {
             floor,
             tip: Some((height, certificate)),
@@ -337,6 +353,18 @@ pub(crate) mod marshal {
         ensure!(
             Digest(header.hash_slow()) == digest,
             "finalized tip header hash does not match certificate payload at height `{height}`",
+        );
+        Ok(())
+    }
+
+    fn ensure_execution_finalized_certified(
+        (height, digest): (Height, Digest),
+        certified: Digest,
+    ) -> eyre::Result<()> {
+        ensure!(
+            digest == certified,
+            "execution finalized block `{digest}` at height `{height}` does not match \
+             certificate payload `{certified}`; execution and consensus storage are inconsistent",
         );
         Ok(())
     }
@@ -449,6 +477,8 @@ pub(crate) mod marshal {
 
     #[cfg(test)]
     mod tests {
+        use alloy_primitives::B256;
+
         use super::*;
 
         #[test]
@@ -468,6 +498,24 @@ pub(crate) mod marshal {
                 error
                     .to_string()
                     .contains("header hash does not match certificate payload")
+            );
+        }
+
+        #[test]
+        fn execution_finalized_block_must_match_certificate_digest() {
+            let height = Height::new(7);
+            let digest = Digest(B256::repeat_byte(1));
+            ensure_execution_finalized_certified((height, digest), digest).unwrap();
+
+            let error = ensure_execution_finalized_certified(
+                (height, digest),
+                Digest(B256::repeat_byte(2)),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("execution and consensus storage are inconsistent")
             );
         }
     }
