@@ -4,9 +4,9 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 ## Disabled features
 
-[docs/disabled-features.md](docs/disabled-features.md) lists code that is switched off on live networks and
-what still counts as a bug there. Read it before reviewing or scanning those paths, and add to it in the same
-pull request when you turn a feature off.
+[docs/disabled-features.md](docs/disabled-features.md) lists code that is switched off, or will be at an
+upcoming hardfork, and what still counts as a bug there. Read it before reviewing or scanning those paths, and
+add to it in the same pull request when you turn a feature off.
 
 ## Rust style
 

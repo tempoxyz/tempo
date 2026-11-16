@@ -21,7 +21,7 @@ Untrusted input enters through:
 Most important:
 - `crates/precompiles`: TIP-20 balances, mint/burn, allowances, settled reward claims; the Fee AMM and fee
   manager; the stablecoin DEX; TIP-403 policy enforcement; account keychain and nonce precompiles; validator config
-  (V2; V1 is retired). Any way to create, steal, freeze or misaccount tokens lives here.
+  (V1 and V2 until T15). Any way to create, steal, freeze or misaccount tokens lives here.
 - `crates/primitives`, `crates/revm`, `crates/evm`: transaction encoding, signature verification and execution. Every
   node must reach the same state root from the same block; any non-determinism is consensus-breaking.
 - `crates/transaction-pool`: validation and admission, payment lanes, the 2D nonce pool, fee-token liquidity checks.
@@ -90,8 +90,9 @@ A report should include a reproducer (a test in the affected crate is ideal) and
 
 ## Anything to leave alone
 
-- Retired and never-enabled features listed in [docs/disabled-features.md](../docs/disabled-features.md), except for
-  the cases that page names: reaching them past their gate, replay divergence, or a way to turn one on.
+- Features listed as retired or never enabled in [docs/disabled-features.md](../docs/disabled-features.md), except for
+  the cases that page names: reaching them past their gate, replay divergence, or a way to turn one on. Features it
+  lists as retiring at an upcoming hardfork are still live and in scope.
 - Gas-cost or performance differences from Ethereum that are documented in a TIP (`tips/`).
 - Admin and debug RPC namespaces, which operators must not expose publicly.
 - Development keys and the `test test ... junk` mnemonic in tests and localnet.
