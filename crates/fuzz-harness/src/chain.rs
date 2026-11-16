@@ -88,5 +88,6 @@ fn context_header(spec: &TempoChainSpec, context: &BlockContextInput) -> TempoHe
             ..Default::default()
         },
         consensus_context: None,
+        expiring_nonce_root: None,
     }
 }

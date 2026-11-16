@@ -29,6 +29,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
+    pub(crate) expiring_nonce_sets: crate::expiring_nonces::ExpiringNonceSets,
 }
 
 impl Default for TestExecutorBuilder {
@@ -45,6 +46,7 @@ impl Default for TestExecutorBuilder {
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             initial_section: None,
+            expiring_nonce_sets: Default::default(),
         }
     }
 }
@@ -92,6 +94,19 @@ impl TestExecutorBuilder {
     /// behavior independently of the T4 hardfork.
     pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
         self.amsterdam_eip8037_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn with_parent_hash(mut self, parent_hash: B256) -> Self {
+        self.parent_hash = parent_hash;
+        self
+    }
+
+    pub(crate) fn with_expiring_nonce_sets(
+        mut self,
+        sets: crate::expiring_nonces::ExpiringNonceSets,
+    ) -> Self {
+        self.expiring_nonce_sets = sets;
         self
     }
 
@@ -146,9 +161,10 @@ impl TestExecutorBuilder {
             shared_gas_limit: self.shared_gas_limit,
             consensus_context: None,
             block_hash: None,
+            expiring_nonce_root: None,
         };
 
-        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec, Default::default());
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec, self.expiring_nonce_sets);
 
         // Apply test-specific initial state
         if let Some(section) = self.initial_section {

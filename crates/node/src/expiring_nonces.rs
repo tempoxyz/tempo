@@ -47,19 +47,40 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
-    /// Spawns the task: seeds the set at the canonical tip, then follows canonical notifications.
+    /// Seeds the set at the canonical tip. From T16 (TIP-1173) the set is authoritative, so the
+    /// node calls this before it executes new blocks.
+    pub fn seed(&self) {
+        let started = std::time::Instant::now();
+        match self
+            .provider
+            .best_block_number()
+            .and_then(|tip| self.rebuild(tip))
+        {
+            Ok(()) => info!(
+                target: "expiring_nonces",
+                elapsed = ?started.elapsed(),
+                "Seeded expiring nonce set"
+            ),
+            Err(err) => {
+                error!(target: "expiring_nonces", %err, "Failed to seed expiring nonce set")
+            }
+        }
+    }
+
+    /// Spawns the task: seeds the set at the canonical tip unless [`Self::seed`] already did, then
+    /// follows canonical notifications.
     pub fn spawn(self, executor: TaskExecutor) {
         let mut notifs = self.provider.subscribe_to_canonical_state();
         executor.spawn_blocking_task(async move {
-            match self
-                .provider
-                .best_block_number()
-                .and_then(|tip| self.rebuild(tip))
+            if let Ok(tip) = self.provider.best_block_number()
+                && !self
+                    .provider
+                    .block_hash(tip)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|hash| self.sets.contains(hash))
             {
-                Ok(()) => info!(target: "expiring_nonces", "Seeded expiring nonce set"),
-                Err(err) => {
-                    error!(target: "expiring_nonces", %err, "Failed to seed expiring nonce set")
-                }
+                self.seed();
             }
             loop {
                 let notif = match notifs.recv().await {
@@ -144,6 +165,19 @@ where
                     "Canonical block repeats unexpired expiring nonce hashes"
                 );
             }
+        }
+        // From T16 the header commits to the set: a rebuilt set that disagrees is not used.
+        if let Some(expected) = tip_header.expiring_nonce_root
+            && expected != set.root()
+        {
+            error!(
+                target: "expiring_nonces",
+                tip,
+                %expected,
+                computed = %set.root(),
+                "Rebuilt expiring nonce set does not match the header root"
+            );
+            return Ok(());
         }
         debug!(target: "expiring_nonces", tip, first, root = %set.root(), "Rebuilt expiring nonce set");
         self.rebuilds.increment(1);

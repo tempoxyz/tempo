@@ -370,6 +370,7 @@ fn activation_config() -> TempoEvmConfig {
         ("t13Time", 0),
         ("t14Time", 10),
         ("t15Time", 1_000),
+        ("t16Time", 1_000),
     ] {
         genesis
             .config

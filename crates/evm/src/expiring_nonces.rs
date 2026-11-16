@@ -8,10 +8,11 @@
 //! bucket of the original, and a whole bucket expires at once when the block timestamp reaches its
 //! second instead of evicting entries one by one.
 //!
-//! The set runs in shadow mode next to the `NonceManager` ring: the ring stays authoritative, and
-//! every block's expiring nonce transactions are checked against and inserted into the set, so the
-//! two can be compared before the root is committed in the block header.
-// TODO: commit the root in the block header and drop the ring at the hardfork that activates it.
+//! Before T16 the set runs in shadow mode next to the `NonceManager` ring: the ring stays
+//! authoritative, and every block's expiring nonce transactions are checked against and inserted
+//! into the set, so the two can be compared. From T16 (TIP-1173) the set is authoritative: the
+//! block executor rejects replays against it, the ring is no longer read or written, and the set
+//! root is committed in the block header's `expiring_nonce_root`.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -116,6 +117,34 @@ impl ExpiringNonceSet {
         })
     }
 
+    /// Drops every bucket with `valid_before <= timestamp` and recomputes the root.
+    pub fn expire(&mut self, timestamp: u64) {
+        self.buckets = match timestamp.checked_add(1) {
+            Some(first_live) => self.buckets.split_off(&first_live),
+            None => BTreeMap::new(),
+        };
+        self.root = root_of(
+            self.buckets
+                .iter()
+                .map(|(valid_before, bucket)| (*valid_before, bucket.root)),
+        );
+    }
+
+    /// Returns the number of live entries in the set.
+    pub fn len(&self) -> usize {
+        self.buckets.values().map(|bucket| bucket.len).sum()
+    }
+
+    /// Returns whether the set holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }
+
+    /// Returns the number of non-empty buckets.
+    pub fn bucket_count(&self) -> usize {
+        self.buckets.len()
+    }
+
     /// Advances the set to a block at `timestamp` containing `entries`.
     ///
     /// Drops every bucket with `valid_before <= timestamp`, inserts `entries`, and recomputes the
@@ -146,6 +175,7 @@ impl ExpiringNonceSet {
                 continue;
             }
             let bucket = Arc::make_mut(self.buckets.entry(valid_before).or_default());
+            bucket.len += leaves.len();
             let mut blinded = false;
             bucket
                 .trie
@@ -233,6 +263,20 @@ impl ExpiringNonceSets {
         Some(set)
     }
 
+    /// Returns the set at `block_hash`, if known.
+    pub fn get(&self, block_hash: B256) -> Option<ExpiringNonceSet> {
+        self.inner.lock().by_block.get(&block_hash).cloned()
+    }
+
+    /// Returns the root of the set staged under `key`, if any.
+    pub fn staged_root(&self, key: B256) -> Option<B256> {
+        self.inner
+            .lock()
+            .staged
+            .peek(&key)
+            .map(ExpiringNonceSet::root)
+    }
+
     /// Stages the set of a payload that is not assembled yet under `key` (see [`staged_key`]).
     pub fn stage(&self, key: B256, set: ExpiringNonceSet) {
         self.inner.lock().staged.insert(key, set);
@@ -273,6 +317,7 @@ struct Snapshots {
 struct Bucket {
     trie: ArenaParallelSparseTrie,
     root: B256,
+    len: usize,
 }
 
 impl Default for Bucket {
@@ -280,6 +325,7 @@ impl Default for Bucket {
         Self {
             trie: ArenaParallelSparseTrie::default(),
             root: EMPTY_ROOT_HASH,
+            len: 0,
         }
     }
 }

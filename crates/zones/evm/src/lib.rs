@@ -373,6 +373,7 @@ where
             shared_gas_limit: 0,
             consensus_context: block.header().consensus_context,
             block_hash: None,
+            expiring_nonce_root: None,
         })
     }
 

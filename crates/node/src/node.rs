@@ -453,6 +453,16 @@ where
             ctx.node.components.evm_config.clone(),
         );
 
+        // TIP-1173: from T16 block execution and pool admission need the expiring nonce set of
+        // the parent, so seed it at the tip before the node executes new blocks, then follow the
+        // canonical chain.
+        let expiring_nonce_tracker = crate::ExpiringNonceTracker::new(
+            ctx.node.provider.clone(),
+            ctx.node.components.evm_config.expiring_nonce_sets().clone(),
+        );
+        expiring_nonce_tracker.seed();
+        expiring_nonce_tracker.spawn(ctx.node.task_executor.clone());
+
         self.inner
             .launch_add_ons_with(ctx, move |container| {
                 let reth_node_builder::rpc::RpcModuleContainer {
@@ -843,6 +853,7 @@ impl TempoPoolBuilder {
         let validator = validator.map(move |mut v| {
             v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
             v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
+            let expiring_nonce_sets = v.evm_config().expiring_nonce_sets().clone();
             TempoTransactionValidator::new(
                 v,
                 aa_valid_after_max_secs,
@@ -851,6 +862,7 @@ impl TempoPoolBuilder {
             )
             .with_disable_fee_amm_check(disable_fee_amm_check)
             .with_address_filter(address_filter.clone())
+            .with_expiring_nonce_sets(expiring_nonce_sets)
         });
         let reth_pool = Pool::new(
             validator,

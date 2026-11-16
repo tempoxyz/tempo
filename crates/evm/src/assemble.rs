@@ -48,6 +48,7 @@ impl TempoBlockAssembler {
                     shared_gas_limit,
                     consensus_context,
                     block_hash: _,
+                    expiring_nonce_root: _,
                 },
             parent,
             transactions,
@@ -75,6 +76,19 @@ impl TempoBlockAssembler {
             evm_env.block_env().timestamp.saturating_to(),
             &expiring_nonce_tx_hashes,
         );
+
+        // T16+ (TIP-1173): the header commits to the payload's expiring nonce set.
+        let expiring_nonce_root = if evm_env.spec.is_t16() {
+            Some(
+                self.expiring_nonce_sets
+                    .staged_root(staged_key)
+                    .ok_or_else(|| {
+                        BlockExecutionError::msg("expiring nonce set of the payload is not staged")
+                    })?,
+            )
+        } else {
+            None
+        };
 
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
@@ -110,6 +124,7 @@ impl TempoBlockAssembler {
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
+            expiring_nonce_root,
         });
         self.expiring_nonce_sets
             .promote(staged_key, || block.header.hash_slow());
@@ -225,6 +240,7 @@ mod tests {
             shared_gas_limit,
             consensus_context: None,
             block_hash: None,
+            expiring_nonce_root: None,
         };
 
         let tx = create_legacy_tx();
@@ -331,6 +347,7 @@ mod tests {
             shared_gas_limit,
             consensus_context: Some(ctx),
             block_hash: None,
+            expiring_nonce_root: None,
         };
 
         let transactions = vec![create_legacy_tx()];
@@ -408,6 +425,7 @@ mod tests {
             shared_gas_limit,
             consensus_context: None,
             block_hash: None,
+            expiring_nonce_root: None,
         };
 
         let transactions = vec![create_legacy_tx()];

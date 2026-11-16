@@ -392,6 +392,7 @@ mod tests {
                         ..Default::default()
                     },
                     consensus_context: None,
+                    expiring_nonce_root: None,
                 },
             )
     }

@@ -3220,6 +3220,132 @@ fn test_block_executor_expiring_nonce_replay_error() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Builds a signed expiring nonce transaction and a database funding its sender.
+fn t16_expiring_nonce_fixture(
+    chainspec: &tempo_chainspec::TempoChainSpec,
+    valid_before: u64,
+) -> eyre::Result<(TempoTxEnvelope, Address, InMemoryDB)> {
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let mut tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    tx.chain_id = chainspec.chain().id();
+    let tx = TempoTxEnvelope::AA(key_pair.sign_tx(tx)?);
+
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        &STORAGE_CREDITS_ADDRESS,
+        AccountInfo::default().with_nonce(1),
+    );
+    db.insert_account_info(
+        &caller,
+        AccountInfo {
+            balance: U256::from(DEFAULT_BALANCE),
+            ..Default::default()
+        },
+    );
+    Ok((tx, caller, db))
+}
+
+/// TIP-1173: from T16 the block executor rejects replays against the out-of-state set, within a
+/// block, and the Nonce precompile's ring storage is never written.
+#[test]
+fn test_t16_expiring_nonce_set_rejects_replay_without_ring_writes() -> eyre::Result<()> {
+    use crate::expiring_nonces::{ExpiringNonceSet, ExpiringNonceSets};
+
+    let timestamp = 1_000u64;
+    let chainspec = test_chainspec();
+    let (tx, caller, mut db) = t16_expiring_nonce_fixture(&chainspec, timestamp + 30)?;
+
+    let parent_hash = B256::repeat_byte(0x11);
+    let sets = ExpiringNonceSets::default();
+    sets.insert(parent_hash, ExpiringNonceSet::default());
+
+    let mut executor = TestExecutorBuilder::default()
+        .with_spec(TempoHardfork::T16)
+        .with_epoch_length(100)
+        .with_parent_hash(parent_hash)
+        .with_expiring_nonce_sets(sets)
+        .build(&mut db, &chainspec);
+    let mut block = *executor.evm().block();
+    block.timestamp = U256::from(timestamp);
+    block.basefee = U256::ZERO;
+    executor.evm_mut().set_block(block);
+
+    executor.execute_transaction(Recovered::new_unchecked(tx.clone(), caller))?;
+    let err = executor
+        .execute_transaction(Recovered::new_unchecked(tx, caller))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected an invalid-tx error, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+
+    let output = executor.finish()?;
+    db.commit_source(&reth_execution_types::BundleSource(&output.state));
+    // Slot 3 is the ring pointer; T16 leaves the ring and seen map untouched.
+    assert_eq!(
+        db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &U256::from(3))?,
+        U256::ZERO,
+        "T16 must not advance the ring pointer"
+    );
+    Ok(())
+}
+
+/// TIP-1173: an entry from an earlier block that is still live is a replay; once its bucket's
+/// second passes the bucket is dropped.
+#[test]
+fn test_t16_expiring_nonce_set_rejects_cross_block_replay() -> eyre::Result<()> {
+    use crate::expiring_nonces::{ExpiringNonce, ExpiringNonceSet, ExpiringNonceSets};
+
+    let timestamp = 1_000u64;
+    let valid_before = timestamp + 30;
+    let chainspec = test_chainspec();
+    let (tx, caller, mut db) = t16_expiring_nonce_fixture(&chainspec, valid_before)?;
+    let entry = ExpiringNonce::from_tx(&tx, caller, TempoHardfork::T16).expect("expiring nonce");
+
+    let parent_hash = B256::repeat_byte(0x22);
+    let mut parent = ExpiringNonceSet::default();
+    assert!(parent.apply(timestamp - 1, &[entry])?.is_empty());
+    let sets = ExpiringNonceSets::default();
+    sets.insert(parent_hash, parent.clone());
+
+    let mut executor = TestExecutorBuilder::default()
+        .with_spec(TempoHardfork::T16)
+        .with_epoch_length(100)
+        .with_parent_hash(parent_hash)
+        .with_expiring_nonce_sets(sets)
+        .build(&mut db, &chainspec);
+    let mut block = *executor.evm().block();
+    block.timestamp = U256::from(timestamp);
+    block.basefee = U256::ZERO;
+    executor.evm_mut().set_block(block);
+    let err = executor
+        .execute_transaction(Recovered::new_unchecked(tx, caller))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected an invalid-tx error, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+
+    // At timestamp == valid_before the bucket expires.
+    let mut expired = parent;
+    expired.expire(valid_before);
+    assert!(expired.is_empty());
+    assert_eq!(expired.root(), reth_trie_common::EMPTY_ROOT_HASH);
+    Ok(())
+}
+
 /// 2D nonce writes are charged manually by intrinsic gas and must not use TIP-1060 accounting.
 #[test]
 fn test_2d_nonce_preexecution_does_not_settle_nonce_storage_credits() -> eyre::Result<()> {

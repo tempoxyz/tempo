@@ -281,6 +281,11 @@ impl TempoBlockExecutor<'_> {
         {
             return Err(StorageActionReplayError::ActionConflict.into());
         }
+        // T16+ (TIP-1173): replays are rejected against the expiring nonce set when the
+        // transaction commits; the ring is no longer read or written.
+        if spec.is_t16() {
+            return Ok(());
+        }
 
         let db = self.inner.evm_mut().overlay_db_mut();
 

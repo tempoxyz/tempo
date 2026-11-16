@@ -33,9 +33,7 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
-use tempo_node::{
-    ExpiringNonceTracker, evm::expiring_nonces::ExpiringNonce, rpc::TempoTransactionRequest,
-};
+use tempo_node::{evm::expiring_nonces::ExpiringNonce, rpc::TempoTransactionRequest};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::updateSpendingLimitCall,
@@ -2028,9 +2026,8 @@ async fn test_expiring_nonce_set_tracks_canonical_chain() -> eyre::Result<()> {
         ..
     } = Localnet::new().await?;
 
+    // The node's add-ons seed and follow the set (TIP-1173).
     let sets = setup.node.inner.evm_config.expiring_nonce_sets().clone();
-    ExpiringNonceTracker::new(setup.node.inner.provider.clone(), sets.clone())
-        .spawn(setup.node.inner.task_executor.clone());
     setup.node.advance_blocks(3).await?;
 
     let parent = provider

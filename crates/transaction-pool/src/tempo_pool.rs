@@ -10,7 +10,7 @@ use crate::{
     tt_2d_pool::{AA2dPool, AASequenceId},
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, AddressSet, Entry, HashMap},
@@ -1396,6 +1396,17 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
+        // TIP-1173: from T16 included expiring nonce transactions leave no Nonce precompile slot
+        // write, so drop them from the 2D pool by the mined transaction hashes.
+        if self
+            .client()
+            .chain_spec()
+            .is_t16_active_at_timestamp(update.new_tip.header().timestamp())
+        {
+            self.aa_2d_pool
+                .write()
+                .remove_mined_expiring_nonce_txs(update.mined_transactions.iter());
+        }
         // Reth refreshes the validator's head, which advances the admission epoch. The
         // maintenance task moves the nonce lanes from the block's state changes.
         self.reth_pool.on_canonical_state_change(update);

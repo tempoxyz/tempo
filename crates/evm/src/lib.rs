@@ -378,6 +378,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
             block_hash: Some(block.hash()),
+            expiring_nonce_root: block.header().expiring_nonce_root,
         })
     }
 
@@ -403,6 +404,7 @@ impl ConfigureEvm for TempoEvmConfig {
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
             block_hash: None,
+            expiring_nonce_root: None,
         })
     }
 }

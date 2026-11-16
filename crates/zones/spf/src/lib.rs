@@ -11,6 +11,7 @@ use reth_chainspec::EthChainSpec as _;
 use reth_evm::{DynDatabase as _, execute::BlockAssemblerInput};
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::noop::NoopProvider;
+use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
@@ -145,6 +146,14 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             });
         }
         validate_zone_block_timestamp(block, block_index, &previous_header)?;
+        // TIP-1173 zone witnesses (`expiring_nonce_witness`) are not implemented yet, so a batch
+        // cannot prove zone blocks that run with the out-of-state expiring nonce set.
+        if config
+            .chain_spec()
+            .is_t16_active_at_timestamp(block.timestamp)
+        {
+            return Err(Error::ExpiringNonceWitnessUnsupported { block_index });
+        }
 
         validate_system_inputs(block, block_index)?;
         let is_last = block_index + 1 == witness.zone_blocks.len();
@@ -518,6 +527,14 @@ pub enum Error {
     /// A batch must execute at least one Zone block.
     #[error("zone batch contains no blocks")]
     EmptyZoneBatch,
+    /// The block runs with the TIP-1173 expiring nonce set, which the prover cannot verify yet.
+    #[error(
+        "zone block {block_index} activates TIP-1173, whose expiring nonce witness is not supported yet"
+    )]
+    ExpiringNonceWitnessUnsupported {
+        /// Index of the block within the batch.
+        block_index: usize,
+    },
     /// A checkpoint-only block carried operational inputs or transactions.
     #[error("checkpoint-only zone block {block_index} contains operational inputs")]
     InvalidCheckpointOnlyBlock { block_index: usize },

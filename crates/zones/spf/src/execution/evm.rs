@@ -226,6 +226,7 @@ pub(crate) fn next_block_execution_context(
         shared_gas_limit: 0,
         consensus_context: None,
         block_hash: None,
+        expiring_nonce_root: None,
     }
 }
 

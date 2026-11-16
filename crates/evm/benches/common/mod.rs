@@ -424,6 +424,7 @@ pub(crate) fn execute_txs(
         shared_gas_limit: 0,
         consensus_context: None,
         block_hash: None,
+        expiring_nonce_root: None,
     };
     let mut executor = config.create_executor(evm, ctx);
     executor

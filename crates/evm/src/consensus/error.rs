@@ -16,6 +16,10 @@ pub enum TempoConsensusError {
     #[error("general gas limit {actual} does not match expected {expected}")]
     GeneralGasLimitMismatch { expected: u64, actual: u64 },
 
+    /// The header's expiring nonce root (TIP-1173) is missing at or after T16, or present before.
+    #[error("expiring nonce root must be {}present at this timestamp", if *expected { "" } else { "absent; it is " })]
+    ExpiringNonceRootPresence { expected: bool },
+
     /// A system transaction in the block is invalid.
     #[error("invalid system transaction: {tx_hash}")]
     InvalidSystemTransaction { tx_hash: B256 },
