@@ -75,6 +75,14 @@ impl ProtocolFeeManager for ZoneProtocolFeeManager {
             return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
         }
 
+        // Fees are charged 1:1 in the fee token, so from T15 (when zone fees become nonzero)
+        // only USD-denominated TIP-20s are accepted, matching L1. This keeps tokens such as
+        // vault shares from paying fees at a price other than $1.
+        if spec.is_t15() {
+            let actions = host.ext().actions.clone();
+            host.ensure_tip20_usd(spec, fee_token, actions)?;
+        }
+
         Ok(())
     }
 
@@ -204,6 +212,52 @@ mod tests {
             Err(HandlerError::External(error))
                 if error.downcast_ref::<TempoInvalidTransaction>()
                     == Some(&TempoInvalidTransaction::InvalidFeeToken(missing_token))
+        ));
+    }
+
+    #[test]
+    fn requires_usd_fee_token_from_t15() {
+        let usd_token = address!("0x20c00000000000000000000000000000000000e1");
+        let eur_token = address!("0x20c00000000000000000000000000000000000e2");
+        let mut db = InMemoryDB::default();
+        for (token, currency) in [(usd_token, "USD"), (eur_token, "EUR")] {
+            db.insert_account_info(
+                &token,
+                AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+            );
+            // Short Solidity string: bytes left-aligned, length * 2 in the lowest byte.
+            let mut word = [0u8; 32];
+            word[..currency.len()].copy_from_slice(currency.as_bytes());
+            word[31] = (currency.len() * 2) as u8;
+            db.insert_account_storage(
+                &token,
+                &tempo_precompiles::tip20::slots::CURRENCY,
+                &U256::from_be_bytes(word),
+            );
+        }
+        let mut evm = config(MockL1Reader::default()).evm_with_env(db, TempoEvmEnv::default());
+        let manager = ZoneProtocolFeeManager::new();
+
+        // Before T15 any initialized TIP-20 is accepted.
+        assert!(
+            manager
+                .validate_fee_token(&mut evm, eur_token, TempoHardfork::T14)
+                .is_ok()
+        );
+
+        assert!(
+            manager
+                .validate_fee_token(&mut evm, usd_token, TempoHardfork::T15)
+                .is_ok()
+        );
+        assert!(matches!(
+            manager.validate_fee_token(&mut evm, eur_token, TempoHardfork::T15),
+            Err(HandlerError::External(error))
+                if matches!(
+                    error.downcast_ref::<TempoInvalidTransaction>(),
+                    Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address, currency })
+                        if *address == eur_token && currency == "EUR"
+                )
         ));
     }
 }
