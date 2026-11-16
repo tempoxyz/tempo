@@ -8,13 +8,15 @@
 //!
 //! 1. Direct-call-only rules reject delegate calls before storage access.
 //! 2. Reject calls that cannot cover the calldata input cost before admission rules decode it.
-//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge.
+//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge. From
+//!    T15 that charge is the larger of the fixed gas and the calldata input cost.
 //! 4. Apply [`CallRules`] admission checks using calldata, caller metadata, and anchored state.
 //! 5. Forward the original calldata and caller, applying any configured fixed gas charge.
 //!
 //! Admission-rule rejections include calldata input gas, while early delegate-call rejection is
 //! unmetered. Calls without a fixed charge retain normal provider metering, and successful
-//! fixed-price calls report exactly the configured charge.
+//! fixed-price calls report exactly the configured charge, or the input cost when it is larger
+//! from T15.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -31,7 +33,7 @@ use tempo_precompiles::{
     DelegateCallNotAllowed, charge_input_cost,
     dispatch::selector_from_calldata,
     error::TempoPrecompileError,
-    has_input_gas,
+    input_cost,
     storage::{
         PrecompileStorageProvider, StorageCtx,
         actions::StorageActions,
@@ -84,6 +86,11 @@ pub(crate) enum CallCheck {
 /// State-dependent rules resolve reads through the installed storage context.
 pub(crate) trait CallRules: 'static {
     /// Return the fixed gas charge for this selector, if one applies.
+    ///
+    /// From T15 the call is charged `max(fixed_gas, input_cost)`. Calldata length is public, so
+    /// charging the input cost leaks nothing, but the storage-dependent work the fixed charge hides
+    /// must stay below it: the fixed gas MUST be tuned high enough that every legitimate call,
+    /// with ABI-sized calldata and worst-case storage access, costs less than it.
     fn fixed_gas(&self, _selector: Option<[u8; 4]>) -> Option<u64> {
         None
     }
@@ -117,11 +124,20 @@ where
     }
 
     let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
-    if !has_input_gas(env.spec, data.len(), gas.remaining()) {
-        return Err(PrecompileHalt::OutOfGas.into());
-    }
+    let input_gas = match input_cost(env.spec, data.len()) {
+        Ok(input_gas) if gas.remaining() >= input_gas => input_gas,
+        _ => return Err(PrecompileHalt::OutOfGas.into()),
+    };
 
-    let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
+    let fixed_gas = rules
+        .fixed_gas(selector_from_calldata(data))
+        .map(|fixed_gas| {
+            if env.spec.is_t15() {
+                fixed_gas.max(input_gas)
+            } else {
+                fixed_gas
+            }
+        });
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
@@ -417,6 +433,42 @@ mod tests {
         assert!(matches!(
             rejected,
             Err(PrecompileError::Revert(bytes)) if bytes == Bytes::from_static(b"denied")
+        ));
+    }
+
+    #[test]
+    fn fixed_gas_charges_input_cost_when_larger_from_t15() {
+        // 5 words at 30 gas each exceed FIXED_GAS.
+        let padded = [0u8; 160];
+        let input_gas = 150;
+        let success = |_: &[u8], _| Ok(StorageCtx::default().success_output(Bytes::new()));
+
+        for (spec, data, expected) in [
+            (TempoHardfork::T14, &padded[..], FIXED_GAS),
+            (TempoHardfork::T15, &padded[..], input_gas),
+            (TempoHardfork::T15, &padded[..4], FIXED_GAS),
+        ] {
+            let mut ctx = test_context();
+            let rules = RecordingRules(Rc::new(RefCell::new(None)));
+            let (output, gas) = call(&mut ctx, spec, data, Address::ZERO, 1_000, rules, success);
+            assert!(output.is_ok(), "{spec:?} must succeed");
+            assert_eq!(gas.spent(), expected, "{spec:?} with {} bytes", data.len());
+        }
+
+        let mut ctx = test_context();
+        let rules = RecordingRules(Rc::new(RefCell::new(None)));
+        let (output, _) = call(
+            &mut ctx,
+            TempoHardfork::T15,
+            &padded,
+            Address::ZERO,
+            input_gas - 1,
+            rules,
+            success,
+        );
+        assert!(matches!(
+            output,
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
         ));
     }
 

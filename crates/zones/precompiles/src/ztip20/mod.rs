@@ -31,6 +31,11 @@ use crate::{
 ///
 /// A constant charge hides storage-dependent execution costs that could reveal whether a recipient
 /// has previously received tokens. This intentionally replaces upstream variable gas pricing.
+///
+/// From T15 a call pays `max(TIP20_FIXED_TRANSFER_GAS, input_cost)`, so padded calldata pays for
+/// its length. This value MUST stay above the worst-case variable cost of every legitimate call
+/// (ABI-sized calldata, cold and newly initialized slots, policy checks): if a legitimate call can
+/// cost more, its real gas becomes observable and leaks the storage state this charge hides.
 pub const TIP20_FIXED_TRANSFER_GAS: u64 = 100_000;
 
 pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
