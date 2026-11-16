@@ -11,7 +11,8 @@ use futures::{
     stream,
 };
 use reth_evm::{
-    BlockExecutor as _, ConfigureEvm, database::StateProviderDatabase, execute::BlockBuilder,
+    BlockExecutor as _, ConfigureEvm, EvmEnv as _, database::StateProviderDatabase,
+    execute::BlockBuilder,
 };
 use reth_primitives_traits::{Recovered, SealedHeader};
 use reth_storage_api::{StateProvider, StateProviderFactory};
@@ -130,23 +131,34 @@ where
             if !abort.is_aborted()
                 && let Err(error) = context.simulate(simulation)
             {
-                // Expected (queue-hash checks, parent-state nonces); earlier reads still warmed.
+                // Expected (queue-hash checks); earlier reads still warmed.
                 trace!(target: "zone::payload", %error, "Prewarm simulation failed");
             }
         });
     }
 
     /// Executes `simulation` on a throwaway builder for the next block and discards the result.
+    /// Since simulations run alone on parent state, the nonce check is disabled.
     fn simulate(&self, simulation: Simulation) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut worker = self.evm_config.builder_for_next_block(
+        let ctx = self
+            .evm_config
+            .context_for_next_block(&self.parent_header, self.next_block_env_attributes.clone())?;
+        let evm_env = self
+            .evm_config
+            .next_evm_env(&self.parent_header, &self.next_block_env_attributes)?
+            .with_nonce_check_disabled();
+        let evm = self.evm_config.evm_with_env(
             StateProviderDatabase::new(
                 self.provider
                     .state_by_block_hash(self.parent_header.hash())?
                     .into_evm_state_provider(),
             ),
-            &self.parent_header,
-            self.next_block_env_attributes.clone(),
-        )?;
+            evm_env.clone(),
+        );
+
+        let mut worker =
+            self.evm_config
+                .create_block_builder(evm, evm_env, &self.parent_header, ctx);
         worker.apply_pre_execution_changes()?;
         match simulation {
             Simulation::Deposit(partial) => {
