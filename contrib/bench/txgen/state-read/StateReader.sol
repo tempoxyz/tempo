@@ -12,6 +12,11 @@ contract StateReader {
     uint256 public sink;
     bytes32 public cursor;
 
+    /// The cursor starts nonzero so transactions only overwrite it, never create a new slot.
+    constructor() {
+        cursor = keccak256("state-read");
+    }
+
     /// Reads balances of pseudo-random bloat accounts with index in [start, end)
     /// until `reserve` gas is left. `salt` gives each transaction its own accounts.
     function readRandom(address token, bytes32 seed, uint256 start, uint256 end, bytes32 salt, uint256 reserve)

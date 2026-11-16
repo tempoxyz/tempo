@@ -39,7 +39,7 @@ setup:
         type: eip1559
         from: {pool: users, select: {index: 0}}
         artifact: StateReader
-        gas_limit: 2000000
+        gas_limit: 5000000
         constructor_args: []
 
 templates:
@@ -61,7 +61,7 @@ templates:
         - "0xcb5663e69e67237b807f68117b1d2f7f0f49a1e1d22ac4aa18dfa52527f2feff"
         - ${TXGEN_EXISTING_RECIPIENTS_START}
         - ${TXGEN_EXISTING_RECIPIENTS_END}
-        - 60000
+        - 200000
 
 mix:
   - template: state_read

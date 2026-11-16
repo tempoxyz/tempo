@@ -39,7 +39,7 @@ setup:
         type: eip1559
         from: {pool: users, select: {index: 0}}
         artifact: StateReader
-        gas_limit: 2000000
+        gas_limit: 5000000
         constructor_args: []
 
 templates:
