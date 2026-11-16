@@ -9,7 +9,7 @@
 //! 1. Direct-call-only rules reject delegate calls before storage access.
 //! 2. Reject calls that cannot cover the calldata input cost before admission rules decode it.
 //! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge,
-//!    (+T15) raised to the calldata input cost when that is larger.
+//!    (+T15) plus the calldata input cost.
 //! 4. Apply [`CallRules`] admission checks using calldata, caller metadata, and anchored state.
 //! 5. Forward the original calldata and caller, applying any configured fixed gas charge.
 //!
@@ -86,10 +86,10 @@ pub(crate) enum CallCheck {
 pub(crate) trait CallRules: 'static {
     /// Return the fixed gas charge for this selector, if one applies.
     ///
-    /// (+T15) The call is charged `max(fixed_gas, input_cost)`. Calldata length is public, so
+    /// (+T15) The call is charged `fixed_gas + input_cost`. Calldata length is public, so
     /// charging the input cost leaks nothing, but the storage-dependent work the fixed charge hides
     /// must stay below it: the fixed gas MUST be tuned high enough that every legitimate call,
-    /// with ABI-sized calldata and worst-case storage access, costs less than it.
+    /// with worst-case storage access, costs less than it.
     fn fixed_gas(&self, _selector: Option<[u8; 4]>) -> Option<u64> {
         None
     }
@@ -128,15 +128,14 @@ where
         _ => return Err(PrecompileHalt::OutOfGas.into()),
     };
 
-    let fixed_gas = rules
-        .fixed_gas(selector_from_calldata(data))
-        .map(|fixed_gas| {
-            if env.spec.is_t15() {
-                fixed_gas.max(input_gas)
-            } else {
-                fixed_gas
-            }
-        });
+    let fixed_gas = match rules.fixed_gas(selector_from_calldata(data)) {
+        Some(fixed_gas) if env.spec.is_t15() => Some(
+            fixed_gas
+                .checked_add(input_gas)
+                .ok_or(PrecompileHalt::OutOfGas)?,
+        ),
+        fixed_gas => fixed_gas,
+    };
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
@@ -436,16 +435,16 @@ mod tests {
     }
 
     #[test]
-    fn fixed_gas_charges_input_cost_when_larger_from_t15() {
-        // 5 words at 30 gas each exceed FIXED_GAS.
+    fn fixed_gas_adds_input_cost_from_t15() {
+        // 5 words at 30 gas each.
         let padded = [0u8; 160];
         let input_gas = 150;
         let success = |_: &[u8], _| Ok(StorageCtx::default().success_output(Bytes::new()));
 
         for (spec, data, expected) in [
             (TempoHardfork::T14, &padded[..], FIXED_GAS),
-            (TempoHardfork::T15, &padded[..], input_gas),
-            (TempoHardfork::T15, &padded[..4], FIXED_GAS),
+            (TempoHardfork::T15, &padded[..], FIXED_GAS + input_gas),
+            (TempoHardfork::T15, &padded[..4], FIXED_GAS + 30),
         ] {
             let mut ctx = test_context();
             let rules = RecordingRules(Rc::new(RefCell::new(None)));
@@ -461,7 +460,7 @@ mod tests {
             TempoHardfork::T15,
             &padded,
             Address::ZERO,
-            input_gas - 1,
+            FIXED_GAS + input_gas - 1,
             rules,
             success,
         );
