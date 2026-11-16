@@ -149,8 +149,14 @@ pub struct Args {
     ///
     /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
     /// immediate before T14, deferred from T14.
-    /// Immediate and deferred override the schedule.
-    #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
+    /// Immediate and deferred override the schedule; the flag is hidden and kept for
+    /// compatibility and testing.
+    #[arg(
+        long = "consensus.verification-mode",
+        value_enum,
+        default_value_t,
+        hide = true
+    )]
     pub verification_mode: VerificationMode,
 
     /// Deprecated compatibility flag. P2P queue capacities are derived from
@@ -768,6 +774,26 @@ mod tests {
             parse(&["--dev"]).consensus.verification_mode,
             VerificationMode::Hardfork,
         );
+    }
+
+    #[test]
+    fn verification_mode_is_hidden_but_parses() {
+        use clap::CommandFactory as _;
+
+        let help = TestCli::command().render_long_help().to_string();
+        assert!(!help.contains("--consensus.verification-mode"));
+        for (value, mode) in [
+            ("immediate", VerificationMode::Immediate),
+            ("deferred", VerificationMode::Deferred),
+            ("hardfork", VerificationMode::Hardfork),
+        ] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.verification-mode", value])
+                    .consensus
+                    .verification_mode,
+                mode,
+            );
+        }
     }
 
     #[test]
