@@ -159,8 +159,6 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    // `shim::call` charges input gas first, so a call that can't pay it halts out of gas
-    // either way. Check it before copying, so the copy is paid for.
     if input_cost(spec, cx.state.input().len())
         .map_or(true, |cost| cx.gas.tracker().remaining() < cost)
     {

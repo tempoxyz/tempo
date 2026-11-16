@@ -323,8 +323,6 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        // Every Tempo precompile charges input gas before anything else, so a call that can't
-        // pay it halts out of gas either way. Check it before copying, so the copy is paid for.
         if input_cost(self.spec, evm.message_input(message).len())
             .map_or(true, |cost| gas.remaining() < cost)
         {
