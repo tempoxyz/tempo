@@ -4,7 +4,6 @@ use crate::input_cost;
 use evm2::{
     Evm, EvmTypesHost,
     interpreter::{GasTracker, InterpreterState, Message},
-    precompiles::PrecompileHalt,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -26,15 +25,14 @@ impl<'a> CallInput<'a> {
         Self(state.input())
     }
 
-    /// Returns the bytes if `gas` covers their [`input_cost`] at `spec`.
+    /// Returns the bytes if `gas` covers their [`input_cost`] at `spec`, and `None` otherwise.
     ///
     /// Charges nothing: the dispatcher that receives the bytes deducts the cost.
     #[inline]
-    pub fn read(self, spec: TempoHardfork, gas: &GasTracker) -> Result<&'a [u8], PrecompileHalt> {
+    pub fn read(self, spec: TempoHardfork, gas: &GasTracker) -> Option<&'a [u8]> {
         input_cost(spec, self.0.len())
             .is_ok_and(|cost| gas.remaining() >= cost)
             .then_some(self.0)
-            .ok_or(PrecompileHalt::OutOfGas)
     }
 }
 
@@ -47,8 +45,8 @@ mod tests {
         let bytes = [0u8; 33];
         for (spec, cost) in [(TempoHardfork::T10, 12), (TempoHardfork::T11, 60)] {
             let read = |limit| CallInput(&bytes).read(spec, &GasTracker::new(limit));
-            assert!(matches!(read(cost - 1), Err(PrecompileHalt::OutOfGas)));
-            assert_eq!(read(cost).ok(), Some(&bytes[..]));
+            assert_eq!(read(cost - 1), None);
+            assert_eq!(read(cost), Some(&bytes[..]));
         }
     }
 }

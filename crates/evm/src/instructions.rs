@@ -161,7 +161,7 @@ pub fn configurable_account(cx: _) -> Result {
     let account = cx.state.message().destination;
     let input = CallInput::of_frame(cx.state)
         .read(spec, cx.gas.tracker())
-        .map_err(|_| InstrStop::PrecompileOOG)?;
+        .ok_or(InstrStop::PrecompileOOG)?;
     let input = input.to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);

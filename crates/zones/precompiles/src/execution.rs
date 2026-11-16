@@ -116,7 +116,9 @@ where
     }
 
     let caller = message.caller;
-    let data = CallInput::of_message(evm, message).read(env.spec, gas)?;
+    let data = CallInput::of_message(evm, message)
+        .read(env.spec, gas)
+        .ok_or(PrecompileHalt::OutOfGas)?;
 
     let fixed_gas = rules.fixed_gas(selector_from_calldata(data));
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
