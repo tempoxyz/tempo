@@ -1094,64 +1094,51 @@ fn eoa_migration_failure_keeps_fee_and_nonce() {
     }
 }
 
-#[test]
-fn eoa_migration_gas_schedule() {
+// Pinned totals: (owners, gas_used). Legacy and AA primitive transactions cost the same.
+#[test_case(1, 275_598, RootTx::Legacy)]
+#[test_case(1, 275_598, RootTx::Aa)]
+#[test_case(3, 277_770, RootTx::Legacy)]
+#[test_case(3, 277_770, RootTx::Aa)]
+fn eoa_migration_gas_schedule(count: usize, expected: u64, kind: RootTx) {
     let members = owner_set(vec![
         signer(2).address(),
         signer(3).address(),
         signer(4).address(),
     ]);
     let params = tempo_gas_params(TempoHardfork::T14);
-    // Pinned totals: (owners, gas_used). Legacy and AA primitive transactions cost the same.
-    let pins = [(1, 275_598), (3, 277_770)];
-    for (count, expected) in pins {
-        for kind in [RootTx::Legacy, RootTx::Aa] {
-            let mut f = Fixture::with_parent(false);
-            let config = f.upgraded(1, members[..count].to_vec());
-            let call = Fixture::upgrade(&config);
-            let tx = root_tx(&f, kind, 3, call.clone());
-            let result = f.run(&tx);
-            assert!(result.status, "{result:?}");
+    let mut f = Fixture::with_parent(false);
+    let config = f.upgraded(1, members[..count].to_vec());
+    let call = Fixture::upgrade(&config);
+    let tx = root_tx(&f, kind, 3, call.clone());
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
 
-            // Intrinsic: 21000 plus 4 per zero and 16 per non-zero calldata byte.
-            let intrinsic = 21_000
-                + call
-                    .input
-                    .iter()
-                    .map(|b| if *b == 0 { 4 } else { 16 })
-                    .sum::<u64>();
-            // The precompile charges, in order: ABI input, the origin TLOAD, the eligibility
-            // TLOAD, the account access for X, the 42-byte salt preimage hash, the commitment
-            // preimage hash, the zero to non-zero commitment write, and LOG3 with the ABI-encoded
-            // data (salt, threshold, owners).
-            let input = 30 * (call.input.len() as u64).div_ceil(32);
-            let salt = keccak_cost(CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN.len() + 20).unwrap();
-            let commitment =
-                keccak_cost(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + count * 21)
-                    .unwrap();
-            let warm_read = params.get(GasId::WarmStorageReadCost);
-            let origin = warm_read;
-            let tload = warm_read;
-            let account_access = warm_read;
-            let write = params.get(GasId::NewAccountCost);
-            let log_data = (4 + count as u64 * 2) * 32;
-            let log = 375 + 3 * 375 + 8 * log_data;
-            let components = intrinsic
-                + input
-                + origin
-                + salt
-                + commitment
-                + tload
-                + account_access
-                + write
-                + log;
-            assert_eq!(
-                components, expected,
-                "{count} owners, {kind:?}: component sum"
-            );
-            assert_eq!(result.tx_gas_used(), expected, "{count} owners, {kind:?}");
-        }
-    }
+    // Intrinsic: 21000 plus 4 per zero and 16 per non-zero calldata byte.
+    let intrinsic = 21_000
+        + call
+            .input
+            .iter()
+            .map(|b| if *b == 0 { 4 } else { 16 })
+            .sum::<u64>();
+    // The precompile charges, in order: ABI input, the origin TLOAD, the eligibility
+    // TLOAD, the account access for X, the 42-byte salt preimage hash, the commitment
+    // preimage hash, the zero to non-zero commitment write, and LOG3 with the ABI-encoded
+    // data (salt, threshold, owners).
+    let input = 30 * (call.input.len() as u64).div_ceil(32);
+    let salt = keccak_cost(CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN.len() + 20).unwrap();
+    let commitment =
+        keccak_cost(CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN.len() + 32 + 8 + 2 + count * 21).unwrap();
+    let warm_read = params.get(GasId::WarmStorageReadCost);
+    let origin = warm_read;
+    let tload = warm_read;
+    let account_access = warm_read;
+    let write = params.get(GasId::NewAccountCost);
+    let log_data = (4 + count as u64 * 2) * 32;
+    let log = 375 + 3 * 375 + 8 * log_data;
+    let components =
+        intrinsic + input + origin + salt + commitment + tload + account_access + write + log;
+    assert_eq!(components, expected, "component sum");
+    assert_eq!(result.tx_gas_used(), expected);
 }
 
 /// Gas of `upgradeAccount` from `sender` on `lane`, paid by the sender or by a fee sponsor, with
@@ -2728,27 +2715,22 @@ fn retired_root_permit_reverts_before_writing() {
     assert_eq!(retired_gas - result.tx_gas_used(), 2600);
 }
 
-#[test]
-fn retired_root_permit_stays_allowed() {
+// Before T14 the retirement does not exist, so even a committed owner's permit is good.
+#[test_case(TempoHardfork::T13, signer(4).address(); "t13_owner")]
+// At T14 only the owner's root key is at stake: a committed spender is no authority here.
+#[test_case(TempoHardfork::T14, signer(8).address(); "t14_spender")]
+fn retired_root_permit_stays_allowed(spec: TempoHardfork, retired: Address) {
     let (owner, spender, relayer) = (signer(4), signer(8).address(), signer(9).address());
-    // At T14 only the owner's root key is at stake: a committed spender is no authority here.
-    // Before T14 the retirement does not exist, so even a committed owner's permit is good.
-    for (spec, retired) in [
-        (TempoHardfork::T13, owner.address()),
-        (TempoHardfork::T14, spender),
-    ] {
-        let mut f = Fixture::with_spec(false, spec);
-        retire(&mut f, retired);
-        let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
-        let result = send(&mut f, relayer, vec![permit]);
-        assert!(result.status, "{spec:?}: {result:?}");
-        assert_eq!(
-            permit_state(&mut f, owner.address(), spender),
-            (U256::ONE, U256::from(100)),
-            "{spec:?}"
-        );
-        assert_eq!(result.logs.len(), 1, "{spec:?}");
-    }
+    let mut f = Fixture::with_spec(false, spec);
+    retire(&mut f, retired);
+    let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
+    let result = send(&mut f, relayer, vec![permit]);
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        permit_state(&mut f, owner.address(), spender),
+        (U256::ONE, U256::from(100))
+    );
+    assert_eq!(result.logs.len(), 1);
 }
 
 fn nonce_of(f: &mut Fixture, account: Address) -> u64 {
@@ -2909,31 +2891,30 @@ fn retired_root_channel_voucher_reverts(redeem: Redeem, how: Retire) {
     assert_reverts_with(&result, voucher_retired(retired), "open");
 }
 
-#[test]
-fn retired_root_channel_voucher_stays_allowed() {
-    let (payer, delegate, payee) = (signer(4), signer(6), signer(5).address());
-    // At T14 the payer is committed but its authorized signer is not: only the signer's root key
-    // signed, so the voucher is good. Before T14 the payer's own retired root key is good too.
-    for (spec, voucher_signer) in [
-        (TempoHardfork::T13, &payer),
-        (TempoHardfork::T14, &delegate),
-    ] {
-        for redeem in [Redeem::Settle, Redeem::Close] {
-            let mut f = Fixture::with_spec(false, spec);
-            let (channel, signature) = voucher_setup(&mut f, &payer, voucher_signer);
-            retire(&mut f, payer.address());
-            let before = channel_snapshot(&mut f, &channel);
-            let call = redeem.call(&channel, 60, signature);
-            let result = send(&mut f, payee, vec![call]);
-            assert!(result.status, "{spec:?} {redeem:?}: {result:?}");
-            let after = channel_snapshot(&mut f, &channel);
-            assert_eq!(
-                after.payee_balance,
-                before.payee_balance + U256::from(60),
-                "{spec:?} {redeem:?}: payee"
-            );
-            assert_ne!(after, before, "{spec:?} {redeem:?}");
-        }
+// At T14 the payer is committed but its authorized signer is not: only the signer's root key
+// signed, so the voucher is good. Before T14 the payer's own retired root key is good too.
+#[test_case(TempoHardfork::T13, signer(4); "t13_payer")]
+#[test_case(TempoHardfork::T14, signer(6); "t14_delegate")]
+fn retired_root_channel_voucher_stays_allowed(
+    spec: TempoHardfork,
+    voucher_signer: PrivateKeySigner,
+) {
+    let (payer, payee) = (signer(4), signer(5).address());
+    for redeem in [Redeem::Settle, Redeem::Close] {
+        let mut f = Fixture::with_spec(false, spec);
+        let (channel, signature) = voucher_setup(&mut f, &payer, &voucher_signer);
+        retire(&mut f, payer.address());
+        let before = channel_snapshot(&mut f, &channel);
+        let call = redeem.call(&channel, 60, signature);
+        let result = send(&mut f, payee, vec![call]);
+        assert!(result.status, "{redeem:?}: {result:?}");
+        let after = channel_snapshot(&mut f, &channel);
+        assert_eq!(
+            after.payee_balance,
+            before.payee_balance + U256::from(60),
+            "{redeem:?}: payee"
+        );
+        assert_ne!(after, before, "{redeem:?}");
     }
 }
 
@@ -3120,34 +3101,39 @@ fn bool_query(f: &mut Fixture, call: Call, warm: Option<Address>, label: &str) -
     (returned, result.tx_gas_used())
 }
 
+// An access key granted by the account: a committed key ID is rejected, an uncommitted one
+// under a committed account is not.
+#[test_case(false, false)]
+#[test_case(true, false)]
+#[test_case(false, true)]
+fn retired_root_keychain_verifiers_reject_access_key(key_committed: bool, account_committed: bool) {
+    let hash = B256::repeat_byte(0x42);
+    for kind in KEY_KINDS {
+        let expected = !key_committed;
+        let label = format!("{kind:?}");
+        let mut f = Fixture::with_parent(false);
+        let account = f.account;
+        let (key, signature) = keychain_signature(kind, 7, account, hash);
+        grant_kind(&mut f, 3, kind, key, false);
+        if key_committed {
+            retire(&mut f, key);
+        }
+        if account_committed {
+            retire(&mut f, account);
+        }
+        let call = Verifier::Keychain.call(account, hash, signature);
+        assert_eq!(
+            bool_query(&mut f, call, None, &label).0,
+            expected,
+            "{label}"
+        );
+    }
+}
+
 #[test]
 fn retired_root_keychain_verifiers_reject() {
     let hash = B256::repeat_byte(0x42);
     for kind in KEY_KINDS {
-        // An access key granted by the account: a committed key ID is rejected, an uncommitted one
-        // under a committed account is not.
-        for (key_committed, account_committed) in [(false, false), (true, false), (false, true)] {
-            let expected = !key_committed;
-            let label = format!(
-                "{kind:?} key committed {key_committed}, account committed {account_committed}"
-            );
-            let mut f = Fixture::with_parent(false);
-            let account = f.account;
-            let (key, signature) = keychain_signature(kind, 7, account, hash);
-            grant_kind(&mut f, 3, kind, key, false);
-            if key_committed {
-                retire(&mut f, key);
-            }
-            if account_committed {
-                retire(&mut f, account);
-            }
-            let call = Verifier::Keychain.call(account, hash, signature);
-            assert_eq!(
-                bool_query(&mut f, call, None, &label).0,
-                expected,
-                "{label}"
-            );
-        }
         // The root key of its own address: the implicit admin, or a stored row of its own.
         for committed in [false, true] {
             let label = format!("{kind:?} root, committed {committed}");
@@ -3953,72 +3939,35 @@ fn sender_registration_gas(lane: NonceLane, create_first: bool, empty_sender: bo
     block_gas(&mut f, &tx)
 }
 
-#[test]
-fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
+// The `nonce == 0` charge of the protocol lane creates the sender; a 2D `nonce == 0` charge
+// pays the nonce-key slot, so registration still pays. A first-call CREATE from a nonce-zero
+// sender pays the creation on a 2D or expiring lane, so registration adds nothing. A protocol
+// lane without the `nonce == 0` charge has no CREATE charge either, so registration pays.
+#[test_case(NonceLane::Protocol, false, false)]
+#[test_case(NonceLane::Protocol, true, false)]
+#[test_case(NonceLane::TwoD, false, true)]
+#[test_case(NonceLane::Expiring, false, true)]
+#[test_case(NonceLane::TwoD, true, false)]
+#[test_case(NonceLane::Expiring, true, false)]
+#[test_case(NonceLane::ProtocolSimulated, true, true)]
+fn registration_charges_the_new_account_cost_once_for_every_nonce_type(
+    lane: NonceLane,
+    create_first: bool,
+    registration_charges_new_account: bool,
+) {
     let params = tempo_gas_params(TempoHardfork::T14);
     let new_account = BlockGas {
         regular: params.get(GasId::NewAccountCost),
         state: params.new_account_state_gas(),
     };
-    struct Row {
-        lane: NonceLane,
-        create_first: bool,
-        registration_charges_new_account: bool,
-    }
-    // The `nonce == 0` charge of the protocol lane creates the sender; a 2D `nonce == 0` charge
-    // pays the nonce-key slot, so registration still pays. A first-call CREATE from a nonce-zero
-    // sender pays the creation on a 2D or expiring lane, so registration adds nothing. A protocol
-    // lane without the `nonce == 0` charge has no CREATE charge either, so registration pays.
-    for Row {
-        lane,
-        create_first,
-        registration_charges_new_account,
-    } in [
-        Row {
-            lane: NonceLane::Protocol,
-            create_first: false,
-            registration_charges_new_account: false,
-        },
-        Row {
-            lane: NonceLane::Protocol,
-            create_first: true,
-            registration_charges_new_account: false,
-        },
-        Row {
-            lane: NonceLane::TwoD,
-            create_first: false,
-            registration_charges_new_account: true,
-        },
-        Row {
-            lane: NonceLane::Expiring,
-            create_first: false,
-            registration_charges_new_account: true,
-        },
-        Row {
-            lane: NonceLane::TwoD,
-            create_first: true,
-            registration_charges_new_account: false,
-        },
-        Row {
-            lane: NonceLane::Expiring,
-            create_first: true,
-            registration_charges_new_account: false,
-        },
-        Row {
-            lane: NonceLane::ProtocolSimulated,
-            create_first: true,
-            registration_charges_new_account: true,
-        },
-    ] {
-        let funded = sender_registration_gas(lane, create_first, false);
-        let empty = sender_registration_gas(lane, create_first, true);
-        let expected = if registration_charges_new_account {
-            funded.plus(new_account)
-        } else {
-            funded
-        };
-        assert_eq!(empty, expected, "{lane:?}, create first: {create_first}");
-    }
+    let funded = sender_registration_gas(lane, create_first, false);
+    let empty = sender_registration_gas(lane, create_first, true);
+    let expected = if registration_charges_new_account {
+        funded.plus(new_account)
+    } else {
+        funded
+    };
+    assert_eq!(empty, expected);
 }
 
 #[test]
@@ -5344,8 +5293,16 @@ fn native_signed_parent_delegate_grant_outcomes(
 
 /// A grant that a configurable delegate uses in the same transaction must name that delegate
 /// and its key type, and be signed by the parent.
-#[test]
-fn native_delegate_grant_is_bound_to_the_transaction() {
+#[test_case(false, SignatureType::ConfigurableAccount, false, None; "matching")]
+#[test_case(true, SignatureType::ConfigurableAccount, false, Some("root-signed key authorization must use root transaction signature"); "wrong_target")]
+#[test_case(false, SignatureType::Secp256k1, false, Some("key authorization key_type does not match the keychain signature type"); "wrong_type")]
+#[test_case(false, SignatureType::ConfigurableAccount, true, Some("admin-signed key authorization must be signed by transaction key"); "unrelated_signer")]
+fn native_delegate_grant_is_bound_to_the_transaction(
+    wrong_target: bool,
+    key_type: SignatureType,
+    unrelated_signer: bool,
+    expected: Option<&'static str>,
+) {
     let owner = signer(2);
     let other = signer(3);
     let config = ConfigurableAccountConfig {
@@ -5355,61 +5312,34 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
         owners: owner_set(vec![owner.address()]),
     };
     let delegate = config.derive_account().unwrap();
-    for (label, key_id, key_type, unrelated_signer, expected) in [
-        (
-            "matching",
-            delegate,
-            SignatureType::ConfigurableAccount,
-            false,
-            None,
-        ),
-        (
-            "wrong target",
-            other.address(),
-            SignatureType::ConfigurableAccount,
-            false,
-            Some("root-signed key authorization must use root transaction signature"),
-        ),
-        (
-            "wrong type",
-            delegate,
-            SignatureType::Secp256k1,
-            false,
-            Some("key authorization key_type does not match the keychain signature type"),
-        ),
-        (
-            "unrelated signer",
-            delegate,
-            SignatureType::ConfigurableAccount,
-            true,
-            Some("admin-signed key authorization must be signed by transaction key"),
-        ),
-    ] {
-        let mut f = Fixture::with_parent(false);
-        let parent = f.account;
-        let grant = KeyAuthorization::unrestricted(1, key_type, key_id).with_account(parent);
-        let grant_signer = if unrelated_signer { &other } else { &f.owner };
-        let approval = grant_signer
-            .sign_hash_sync(&grant.signature_hash())
-            .unwrap();
-        let tx = TempoTransaction {
-            key_authorization: Some(grant.into_signed(approval)),
-            ..aa_tx(3, vec![f.getter()])
-        };
-        let tx = delegate_keychain_signed(tx, parent, delegate, &config, &owner);
-        match expected {
-            None => {
-                let result = f.run(&tx);
-                assert!(result.status, "{label}: {result:?}");
-            }
-            Some(reason) => assert_eq!(
-                rejection(&mut f, &tx, parent),
-                TempoInvalidTransaction::KeychainValidationFailed {
-                    reason: reason.into()
-                },
-                "{label}"
-            ),
+    let key_id = if wrong_target {
+        other.address()
+    } else {
+        delegate
+    };
+    let mut f = Fixture::with_parent(false);
+    let parent = f.account;
+    let grant = KeyAuthorization::unrestricted(1, key_type, key_id).with_account(parent);
+    let grant_signer = if unrelated_signer { &other } else { &f.owner };
+    let approval = grant_signer
+        .sign_hash_sync(&grant.signature_hash())
+        .unwrap();
+    let tx = TempoTransaction {
+        key_authorization: Some(grant.into_signed(approval)),
+        ..aa_tx(3, vec![f.getter()])
+    };
+    let tx = delegate_keychain_signed(tx, parent, delegate, &config, &owner);
+    match expected {
+        None => {
+            let result = f.run(&tx);
+            assert!(result.status, "{result:?}");
         }
+        Some(reason) => assert_eq!(
+            rejection(&mut f, &tx, parent),
+            TempoInvalidTransaction::KeychainValidationFailed {
+                reason: reason.into()
+            }
+        ),
     }
 }
 

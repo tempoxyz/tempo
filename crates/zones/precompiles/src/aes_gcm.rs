@@ -106,21 +106,20 @@ mod tests {
         valid
     }
 
-    #[test]
-    fn test_aes_gcm_tampered_input() {
-        let (key, nonce, ciphertext, tag) = encrypt(b"hello world test", &[]);
-        let mut flipped_ciphertext = ciphertext.clone();
-        flipped_ciphertext[0] ^= 0x01;
-
-        for (case, ciphertext, tag) in [
-            ("bad tag", &ciphertext, [0xFFu8; 16]),
-            ("flipped ciphertext bit", &flipped_ciphertext, tag),
-        ] {
-            assert_eq!(
-                decrypt(&key, &nonce, ciphertext, &[], &tag),
-                (Vec::new(), false),
-                "{case}"
-            );
+    #[test_case(false, true; "bad_tag")]
+    #[test_case(true, false; "flipped_ciphertext_bit")]
+    fn test_aes_gcm_tampered_input(flip_ciphertext_bit: bool, bad_tag: bool) {
+        let (key, nonce, mut ciphertext, mut tag) = encrypt(b"hello world test", &[]);
+        if flip_ciphertext_bit {
+            ciphertext[0] ^= 0x01;
         }
+        if bad_tag {
+            tag = [0xFFu8; 16];
+        }
+
+        assert_eq!(
+            decrypt(&key, &nonce, &ciphertext, &[], &tag),
+            (Vec::new(), false)
+        );
     }
 }

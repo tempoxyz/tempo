@@ -153,6 +153,7 @@ fn validate_chain_id(parent_chain_id: u64, zone_id: u32) -> Result<(), ZoneChain
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn derives_domain_separated_chain_ids() {
@@ -194,22 +195,21 @@ mod tests {
         assert!(max_legacy_v < (1 << 53));
     }
 
-    #[test]
-    fn decodes_parent_chain_id() {
-        for (parent_chain_id, zone_id) in [
-            (MAINNET_CHAIN_ID, 7),
-            (MODERATO_CHAIN_ID, 8),
-            (1_337, 9),
-            (MAX_GENERIC_PARENT_CHAIN_ID, u32::MAX),
-        ] {
-            let chain_id = zone_chain_id(parent_chain_id, zone_id).unwrap();
-            assert_eq!(
-                decode_zone_chain_id(chain_id),
-                Ok((parent_chain_id, zone_id))
-            );
-            assert_eq!(decode_l1_chain_id(chain_id), Ok(parent_chain_id));
-        }
+    #[test_case(MAINNET_CHAIN_ID, 7)]
+    #[test_case(MODERATO_CHAIN_ID, 8)]
+    #[test_case(1_337, 9)]
+    #[test_case(MAX_GENERIC_PARENT_CHAIN_ID, u32::MAX)]
+    fn decodes_parent_chain_id(parent_chain_id: u64, zone_id: u32) {
+        let chain_id = zone_chain_id(parent_chain_id, zone_id).unwrap();
+        assert_eq!(
+            decode_zone_chain_id(chain_id),
+            Ok((parent_chain_id, zone_id))
+        );
+        assert_eq!(decode_l1_chain_id(chain_id), Ok(parent_chain_id));
+    }
 
+    #[test]
+    fn rejects_non_zone_chain_ids() {
         assert!(decode_l1_chain_id(ZONE_CHAIN_ID_BASE - 1).is_err());
         assert!(decode_l1_chain_id(1 << 31).is_err());
         assert!(decode_l1_chain_id((MAINNET_CHAIN_ID << 32) | 7).is_err());

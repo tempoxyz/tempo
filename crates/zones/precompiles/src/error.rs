@@ -65,31 +65,15 @@ mod tests {
     use alloy_sol_types::SolError;
     use evm2::precompiles::PrecompileHalt;
     use tempo_contracts::zones::IZoneOutbox;
+    use test_case::test_case;
 
-    #[test]
-    fn outbox_errors_revert_with_exact_abi_data() {
-        for (error, expected) in [
-            (
-                ZoneOutboxError::GasLimitTooHigh(IZoneOutbox::GasLimitTooHigh {}),
-                IZoneOutbox::GasLimitTooHigh {}.abi_encode(),
-            ),
-            (
-                ZoneOutboxError::InvalidWithdrawalCount(IZoneOutbox::InvalidWithdrawalCount {
-                    actual: U256::ONE,
-                    expected: U256::from(2),
-                }),
-                IZoneOutbox::InvalidWithdrawalCount {
-                    actual: U256::ONE,
-                    expected: U256::from(2),
-                }
-                .abi_encode(),
-            ),
-        ] {
-            assert!(matches!(
-                ZonePrecompileError::from(error).into_precompile_result(),
-                Err(PrecompileError::Revert(bytes)) if bytes == expected
-            ));
-        }
+    #[test_case(ZoneOutboxError::GasLimitTooHigh(IZoneOutbox::GasLimitTooHigh {}), IZoneOutbox::GasLimitTooHigh {}.abi_encode(); "gas_limit_too_high")]
+    #[test_case(ZoneOutboxError::InvalidWithdrawalCount(IZoneOutbox::InvalidWithdrawalCount { actual: U256::ONE, expected: U256::from(2) }), IZoneOutbox::InvalidWithdrawalCount { actual: U256::ONE, expected: U256::from(2) }.abi_encode(); "invalid_withdrawal_count")]
+    fn outbox_errors_revert_with_exact_abi_data(error: ZoneOutboxError, expected: Vec<u8>) {
+        assert!(matches!(
+            ZonePrecompileError::from(error).into_precompile_result(),
+            Err(PrecompileError::Revert(bytes)) if bytes == expected
+        ));
     }
 
     #[test]

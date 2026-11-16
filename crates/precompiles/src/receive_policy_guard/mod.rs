@@ -260,6 +260,7 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
     };
+    use test_case::test_case;
 
     fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
@@ -726,8 +727,13 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_store_rejects_invalid_metadata() -> eyre::Result<()> {
+    #[test_case(BlockedReason::NONE, InboundKind::TRANSFER)]
+    #[test_case(BlockedReason::__Invalid, InboundKind::TRANSFER)]
+    #[test_case(BlockedReason::RECEIVE_POLICY, InboundKind::__Invalid)]
+    fn test_store_rejects_invalid_metadata(
+        blocked_reason: BlockedReason,
+        kind: InboundKind,
+    ) -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
 
@@ -735,26 +741,20 @@ mod tests {
             let token = TIP20Setup::create("T", "T", admin).apply()?;
             let mut guard = ReceivePolicyGuard::new();
 
-            for (blocked_reason, kind) in [
-                (BlockedReason::NONE, InboundKind::TRANSFER),
-                (BlockedReason::__Invalid, InboundKind::TRANSFER),
-                (BlockedReason::RECEIVE_POLICY, InboundKind::__Invalid),
-            ] {
-                let result = guard.store_blocked(
-                    token.address(),
-                    Address::random(),
-                    &Recipient::direct(Address::random()),
-                    Address::ZERO,
-                    U256::ONE,
-                    blocked_reason,
-                    kind,
-                    B256::ZERO,
-                );
-                assert!(matches!(
-                    result,
-                    Err(e) if e == ReceivePolicyGuardError::invalid_receipt().into()
-                ));
-            }
+            let result = guard.store_blocked(
+                token.address(),
+                Address::random(),
+                &Recipient::direct(Address::random()),
+                Address::ZERO,
+                U256::ONE,
+                blocked_reason,
+                kind,
+                B256::ZERO,
+            );
+            assert!(matches!(
+                result,
+                Err(e) if e == ReceivePolicyGuardError::invalid_receipt().into()
+            ));
 
             Ok(())
         })

@@ -48,6 +48,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 alloy-transport.workspace = true
 tempo-chainspec.workspace = true
+test-case.workspace = true
 
 [features]
 default = ["asm-keccak", "keccak-cache-global"]

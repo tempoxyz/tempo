@@ -26,8 +26,12 @@ use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _, prob
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoConsensusContext;
+use test_case::test_case;
 
-use crate::test_utils::{dkg_fixture, make_certificate};
+use crate::{
+    config::NAMESPACE,
+    test_utils::{dkg_fixture, make_certificate},
+};
 
 use super::*;
 use harness::{
@@ -62,7 +66,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
         );
         runner.start(|mut context| async move {
             let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
-            let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+            let round = Round::from_state(&state, NAMESPACE, true);
             let (_, public, private) = dkg::Dealer::start::<commonware_utils::N3f1>(
                 &mut context,
                 round.info().clone(),
@@ -240,7 +244,7 @@ fn network_storage_failures_panic_and_allow_recovery() {
 fn invalid_acks_are_checked_once_without_penalizing_peers() {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let round = Round::from_state(&state, NAMESPACE, true);
         let mut harness = Harness::builder(context.child("actor"), "invalid_acks_checked_once")
             .initial_state(state.clone())
             .identity(keys[0].clone())
@@ -353,7 +357,7 @@ fn invalid_acks_are_checked_once_without_penalizing_peers() {
 fn duplicate_and_late_acks_do_not_penalize_peers() {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
-        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let round = Round::from_state(&state, NAMESPACE, true);
         let mut harness = Harness::builder(context.child("actor"), "duplicate_and_late_acks")
             .initial_state(state.clone())
             .identity(keys[0].clone())
@@ -419,7 +423,7 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 fn messages_from_nonparticipants_are_rejected_before_decoding() {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
-        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let round = Round::from_state(&state, NAMESPACE, true);
         let mut harness = Harness::builder(context.child("actor"), "nonparticipant_messages")
             .initial_state(state.clone())
             .identity(keys[0].clone())
@@ -475,105 +479,104 @@ fn messages_from_nonparticipants_are_rejected_before_decoding() {
     });
 }
 
-#[test]
-fn local_share_storage_failures_panic_and_allow_recovery() {
-    // Fail opening the dealing's journal section, syncing the dealing, or
-    // syncing the ACK after the dealing has already been persisted.
-    for (fail_open, seed_dealing) in [(true, false), (false, false), (false, true)] {
-        let runner = Runner::new(
-            commonware_runtime::deterministic::Config::default().with_catch_panics(true),
-        );
-        runner.start(|mut context| async move {
-            let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
-            let identity = keys[0].clone();
-            let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
-                .initial_state(state.clone())
-                .identity(identity.clone())
-                .build()
-                .await;
+// Fail opening the dealing's journal section, syncing the dealing, or
+// syncing the ACK after the dealing has already been persisted.
+#[test_case(true, false)]
+#[test_case(false, false)]
+#[test_case(false, true)]
+fn local_share_storage_failures_panic_and_allow_recovery(fail_open: bool, seed_dealing: bool) {
+    let runner =
+        Runner::new(commonware_runtime::deterministic::Config::default().with_catch_panics(true));
+    runner.start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 2, true);
+        let identity = keys[0].clone();
+        let mut harness = Harness::builder(context.child("actor"), "local_storage_failure")
+            .initial_state(state.clone())
+            .identity(identity.clone())
+            .build()
+            .await;
 
-            if seed_dealing {
-                let round = Round::from_state(&state, crate::config::NAMESPACE, true);
-                let storage = harness.storage_mut();
-                let dealer = storage
-                    .create_dealer_for_round(
-                        identity.clone(),
-                        round.clone(),
-                        state.share.clone(),
-                        state.seed,
-                    )
-                    .unwrap()
-                    .unwrap();
-                let mut player = storage
-                    .create_player_for_round(identity.clone(), &round)
-                    .unwrap()
-                    .unwrap();
-                let (_, public, private) = dealer
-                    .shares_to_distribute()
-                    .find(|(recipient, _, _)| *recipient == identity.public_key())
-                    .unwrap();
-                player
-                    .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
-                    .await
-                    .unwrap();
-            }
-
-            harness.start().await;
-            assert!(!harness.has_dealer_log(state.epoch).await);
-            let faults = context.storage_fault_config();
-            if fail_open {
-                faults.write().open_rate = Some(probability!(1.0));
-            } else {
-                faults.write().sync_rate = Some(probability!(1.0));
-            }
-
-            // An early finalized block triggers delivery of our own dealing and
-            // ACK before the block's header is persisted.
-            let (ack, waiter) = Exact::handle();
-            assert!(
-                harness
-                    .mailbox()
-                    .clone()
-                    .report(Update::Block(block(header(Height::new(10))).into(), ack))
-                    .accepted()
-            );
-            let mut harness = context
-                .timeout(Duration::from_secs(1), async move {
-                    harness.wait_for_actor_panic().await;
-                    harness
-                })
+        if seed_dealing {
+            let round = Round::from_state(&state, NAMESPACE, true);
+            let storage = harness.storage_mut();
+            let dealer = storage
+                .create_dealer_for_round(
+                    identity.clone(),
+                    round.clone(),
+                    state.share.clone(),
+                    state.seed,
+                )
+                .unwrap()
+                .unwrap();
+            let mut player = storage
+                .create_player_for_round(identity.clone(), &round)
+                .unwrap()
+                .unwrap();
+            let (_, public, private) = dealer
+                .shares_to_distribute()
+                .find(|(recipient, _, _)| *recipient == identity.public_key())
+                .unwrap();
+            player
+                .receive_dealing(storage, state.epoch, identity.public_key(), public, private)
                 .await
-                .expect("a local storage failure must panic immediately");
-            assert!(
-                waiter.await.is_err(),
-                "the failed block must not be acknowledged"
-            );
+                .unwrap();
+        }
 
-            *faults.write() = FaultConfig::default();
-            harness.stop().await;
-            assert_eq!(harness.storage().current(), state);
-            assert!(
-                harness
-                    .storage()
-                    .get_latest_finalized_block_for_epoch(&state.epoch)
-                    .is_none()
-            );
-            harness.start().await;
-            assert!(!harness.has_dealer_log(state.epoch).await);
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        let faults = context.storage_fault_config();
+        if fail_open {
+            faults.write().open_rate = Some(probability!(1.0));
+        } else {
+            faults.write().sync_rate = Some(probability!(1.0));
+        }
+
+        // An early finalized block triggers delivery of our own dealing and
+        // ACK before the block's header is persisted.
+        let (ack, waiter) = Exact::handle();
+        assert!(
             harness
-                .report_finalized_header(header(Height::new(10)))
-                .await;
-            harness.stop().await;
-            assert_eq!(
-                *harness
-                    .storage()
-                    .get_latest_finalized_block_for_epoch(&state.epoch)
-                    .unwrap()
-                    .0,
-                Height::new(10)
-            );
-        });
-    }
+                .mailbox()
+                .clone()
+                .report(Update::Block(block(header(Height::new(10))).into(), ack))
+                .accepted()
+        );
+        let mut harness = context
+            .timeout(Duration::from_secs(1), async move {
+                harness.wait_for_actor_panic().await;
+                harness
+            })
+            .await
+            .expect("a local storage failure must panic immediately");
+        assert!(
+            waiter.await.is_err(),
+            "the failed block must not be acknowledged"
+        );
+
+        *faults.write() = FaultConfig::default();
+        harness.stop().await;
+        assert_eq!(harness.storage().current(), state);
+        assert!(
+            harness
+                .storage()
+                .get_latest_finalized_block_for_epoch(&state.epoch)
+                .is_none()
+        );
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+        harness
+            .report_finalized_header(header(Height::new(10)))
+            .await;
+        harness.stop().await;
+        assert_eq!(
+            *harness
+                .storage()
+                .get_latest_finalized_block_for_epoch(&state.epoch)
+                .unwrap()
+                .0,
+            Height::new(10)
+        );
+    });
 }
 
 #[test]
@@ -691,22 +694,10 @@ fn startup_rejects_boundary_outcome_for_another_epoch() {
     });
 }
 
-#[test]
-fn startup_recovers_v0_share_without_t12() {
-    assert_startup_recovers_revealed_share(None);
-}
-
-#[test]
-fn startup_recovers_v1_share_after_t12() {
-    assert_startup_recovers_revealed_share(Some(0));
-}
-
-#[test]
-fn startup_recovers_historical_v0_share_after_t12() {
-    assert_startup_recovers_revealed_share(Some(100));
-}
-
-fn assert_startup_recovers_revealed_share(activation: Option<u64>) {
+#[test_case(None; "v0_share_without_t12")]
+#[test_case(Some(0); "v1_share_after_t12")]
+#[test_case(Some(100); "historical_v0_share_after_t12")]
+fn startup_recovers_revealed_share(activation: Option<u64>) {
     Runner::default().start(|mut context| async move {
         let ceremony_epoch = Epoch::new(1);
         let fixture =
@@ -1162,27 +1153,11 @@ fn epoch_shares_only_distributed_in_the_first_half() {
     });
 }
 
-#[test]
-fn ceremony_without_t12_uses_v0() {
-    assert_ceremony_reveal_version(None, 100, false);
-}
-
-#[test]
-fn ceremony_crossing_t12_keeps_v0() {
-    assert_ceremony_reveal_version(Some(100), 99, false);
-}
-
-#[test]
-fn ceremony_at_t12_uses_v1() {
-    assert_ceremony_reveal_version(Some(100), 100, true);
-}
-
-#[test]
-fn ceremony_after_t12_uses_v1() {
-    assert_ceremony_reveal_version(Some(100), 101, true);
-}
-
-fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u64, use_v1: bool) {
+#[test_case(None, 100, false; "without_t12_uses_v0")]
+#[test_case(Some(100), 99, false; "crossing_t12_keeps_v0")]
+#[test_case(Some(100), 100, true; "at_t12_uses_v1")]
+#[test_case(Some(100), 101, true; "after_t12_uses_v1")]
+fn ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u64, use_v1: bool) {
     Runner::default().start(|mut context| async move {
         let (mut state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 4, false);
         let mut dealers = keys.into_iter().zip(shares).collect::<Vec<_>>();
@@ -1208,7 +1183,7 @@ fn assert_ceremony_reveal_version(activation: Option<u64>, boundary_timestamp: u
         // so changing the actor's version cannot also change the expectation.
         let mut reference = |reveal| {
             let info = dkg::Info::new::<N3f1>(
-                crate::config::NAMESPACE,
+                NAMESPACE,
                 state.epoch.get(),
                 Some(state.output.clone()),
                 Mode::NonZeroCounter,
@@ -1998,7 +1973,7 @@ fn duplicate_outcome_requests_keep_all_live_waiters() {
 fn finalized_logs_of_all_dealers_conclude_the_ceremony_for_every_parent() {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let round = Round::from_state(&state, NAMESPACE, true);
         let dealers = keys
             .iter()
             .map(|key| (key.clone(), None))
@@ -2087,22 +2062,14 @@ fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
     });
 }
 
-#[test]
-fn dealer_logs_with_trailing_bytes_are_invalid_from_t15() {
-    assert_dealer_logs_with_trailing_bytes(true);
-}
-
-#[test]
-fn dealer_logs_with_trailing_bytes_are_valid_before_t15() {
-    assert_dealer_logs_with_trailing_bytes(false);
-}
-
 /// Checks a dealer log with a trailing byte against the application's
 /// verification and the ceremony that reads finalized blocks.
-fn assert_dealer_logs_with_trailing_bytes(t15: bool) {
+#[test_case(true; "invalid_from_t15")]
+#[test_case(false; "valid_before_t15")]
+fn dealer_logs_with_trailing_bytes(t15: bool) {
     Runner::default().start(|mut context| async move {
         let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
-        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let round = Round::from_state(&state, NAMESPACE, true);
         let dealers = keys
             .iter()
             .map(|key| (key.clone(), None))

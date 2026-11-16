@@ -87,6 +87,7 @@ antithesis-coverage = ["dep:antithesis-instrumentation"]
 base64.workspace = true
 zone-chainspec.workspace = true
 tempfile.workspace = true
+test-case.workspace = true
 
 [[bin]]
 name = "tempo-zone-xtask"

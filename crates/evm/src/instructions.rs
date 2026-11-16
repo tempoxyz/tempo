@@ -201,18 +201,11 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::TempoTxEnvelope;
+    use test_case::test_case;
 
-    #[test]
-    fn sstore_consumes_tip1060_storage_credit() {
-        assert_sstore_storage_credit(0, 1, 1, 0);
-    }
-
-    #[test]
-    fn sstore_mints_tip1060_storage_credit() {
-        assert_sstore_storage_credit(1, 0, 0, 1);
-    }
-
-    fn assert_sstore_storage_credit(
+    #[test_case(0, 1, 1, 0; "consumes_tip1060_storage_credit")]
+    #[test_case(1, 0, 0, 1; "mints_tip1060_storage_credit")]
+    fn sstore_storage_credit(
         initial_value: u8,
         new_value: u8,
         initial_credit: u64,

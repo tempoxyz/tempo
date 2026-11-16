@@ -364,6 +364,7 @@ mod tests {
     use portal::PortalTokenConfig;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ZonePortalCapability;
+    use test_case::test_case;
 
     const OWNER: Address = Address::with_last_byte(0x11);
     const ADMIN: Address = Address::with_last_byte(0x22);
@@ -764,60 +765,67 @@ mod tests {
         })
     }
 
-    #[test]
-    fn create_zone_rejects_invalid_closed_loop_config() -> eyre::Result<()> {
+    #[test_case(vec![ZONE_MESSENGER_ADDRESS], vec![ZONE_GATEWAY]; "messenger_as_allowed_account")]
+    #[test_case(vec![ALLOWED_ACCOUNT], vec![ALLOWED_ACCOUNT]; "allowed_account_as_gateway")]
+    #[test_case(vec![SEQUENCER_A], vec![ZONE_GATEWAY]; "sequencer_as_allowed_account")]
+    #[test_case(vec![ALLOWED_ACCOUNT], vec![SEQUENCER_A]; "sequencer_as_gateway")]
+    fn create_zone_rejects_invalid_closed_loop_config(
+        allowed_accounts: Vec<Address>,
+        zone_gateways: Vec<Address>,
+    ) -> eyre::Result<()> {
         with_storage(TempoHardfork::T10, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
 
-            for (allowed_accounts, zone_gateways) in [
-                (vec![ZONE_MESSENGER_ADDRESS], vec![ZONE_GATEWAY]),
-                (vec![ALLOWED_ACCOUNT], vec![ALLOWED_ACCOUNT]),
-                (vec![SEQUENCER_A], vec![ZONE_GATEWAY]),
-                (vec![ALLOWED_ACCOUNT], vec![SEQUENCER_A]),
-            ] {
-                let mut params = create_params(PATH_USD_ADDRESS);
-                params.allowedAccounts = allowed_accounts;
-                params.zoneGateways = zone_gateways;
-                let err = factory
-                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
-                    .unwrap_err();
-                assert_eq!(
-                    err,
-                    TempoPrecompileError::from(ZoneFactoryError::invalid_closed_loop_config())
-                );
-                assert_eq!(factory.next_zone_id()?, 1);
-            }
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.allowedAccounts = allowed_accounts;
+            params.zoneGateways = zone_gateways;
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::invalid_closed_loop_config())
+            );
+            assert_eq!(factory.next_zone_id()?, 1);
+            Ok(())
+        })
+    }
+
+    #[test_case(vec![], 1; "empty")]
+    #[test_case(vec![Address::ZERO], 1; "zero_address")]
+    #[test_case(vec![SEQUENCER_A, SEQUENCER_A], 1; "duplicate")]
+    #[test_case(vec![SEQUENCER_A], 0; "zero_threshold")]
+    #[test_case(vec![SEQUENCER_A], 2; "threshold_above_count")]
+    #[test_case((1u8..=9).map(Address::with_last_byte).collect(), 1; "nine_sequencers")]
+    fn create_zone_rejects_invalid_sequencer_sets(
+        sequencers: Vec<Address>,
+        threshold: u8,
+    ) -> eyre::Result<()> {
+        with_storage(TempoHardfork::T10, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            let mut factory = factory_with_owner(OWNER)?;
+
+            let mut params = create_params(PATH_USD_ADDRESS);
+            params.sequencers = sequencers;
+            params.threshold = threshold;
+            let err = factory
+                .create_zone(OWNER, IZoneFactory::createZoneCall { params })
+                .unwrap_err();
+            assert_eq!(
+                err,
+                TempoPrecompileError::from(ZoneFactoryError::invalid_sequencer_set())
+            );
+            assert_eq!(factory.next_zone_id()?, 1);
             Ok(())
         })
     }
 
     #[test]
-    fn create_zone_rejects_invalid_sequencer_sets() -> eyre::Result<()> {
+    fn create_zone_accepts_unsorted_sequencer_set() -> eyre::Result<()> {
         with_storage(TempoHardfork::T10, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
-
-            for (sequencers, threshold) in [
-                (vec![], 1),
-                (vec![Address::ZERO], 1),
-                (vec![SEQUENCER_A, SEQUENCER_A], 1),
-                (vec![SEQUENCER_A], 0),
-                (vec![SEQUENCER_A], 2),
-                ((1u8..=9).map(Address::with_last_byte).collect(), 1),
-            ] {
-                let mut params = create_params(PATH_USD_ADDRESS);
-                params.sequencers = sequencers;
-                params.threshold = threshold;
-                let err = factory
-                    .create_zone(OWNER, IZoneFactory::createZoneCall { params })
-                    .unwrap_err();
-                assert_eq!(
-                    err,
-                    TempoPrecompileError::from(ZoneFactoryError::invalid_sequencer_set())
-                );
-                assert_eq!(factory.next_zone_id()?, 1);
-            }
 
             let mut params = create_params(PATH_USD_ADDRESS);
             params.sequencers = vec![SEQUENCER_B, SEQUENCER_A];

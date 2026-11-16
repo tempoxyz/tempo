@@ -61,3 +61,4 @@ tracing.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-types-eth = { workspace = true, features = ["account-ext"] }
 tempo-alloy.workspace = true
+test-case.workspace = true

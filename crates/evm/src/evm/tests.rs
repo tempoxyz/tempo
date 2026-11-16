@@ -1130,155 +1130,58 @@ fn test_same_tx_key_authorization_rejects_key_type_mismatch() -> eyre::Result<()
 
 /// Test that Tempo transaction time window validation works correctly.
 /// Tests `valid_after` and `valid_before` fields against block timestamp.
-#[test]
-fn test_tempo_tx_time_window() -> eyre::Result<()> {
+// Transaction fails when block_timestamp < valid_after
+#[test_case(100, Some(200), None, Some(TempoInvalidTransaction::ValidAfter { current: 100, valid_after: 200 }); "before_valid_after")]
+// Transaction fails when block_timestamp >= valid_before
+#[test_case(200, None, Some(200), Some(TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }); "at_valid_before")]
+// Transaction fails when block_timestamp > valid_before
+#[test_case(300, None, Some(200), Some(TempoInvalidTransaction::ValidBefore { current: 300, valid_before: 200 }); "after_valid_before")]
+// Transaction succeeds when exactly at valid_after boundary
+#[test_case(200, Some(200), None, None; "at_valid_after")]
+// Transaction succeeds when within time window
+#[test_case(150, Some(100), Some(200), None; "within_window")]
+// Transaction fails when block_timestamp < valid_after in a window
+#[test_case(50, Some(100), Some(200), Some(TempoInvalidTransaction::ValidAfter { current: 50, valid_after: 100 }); "before_window")]
+// Transaction fails when block_timestamp >= valid_before in a window
+#[test_case(200, Some(100), Some(200), Some(TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }); "at_window_end")]
+fn test_tempo_tx_time_window(
+    timestamp: u64,
+    valid_after: Option<u64>,
+    valid_before: Option<u64>,
+    expected: Option<TempoInvalidTransaction>,
+) -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
     // Create signed authorization
     let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
 
-    // Helper to create and sign a transaction with time window parameters
-    let create_signed_tx = |valid_after: Option<u64>, valid_before: Option<u64>| {
-        let tx = TxBuilder::new()
-            .call_identity(&[0x01, 0x02, 0x03, 0x04])
-            .authorization(signed_auth.clone())
-            .valid_after(valid_after)
-            .valid_before(valid_before)
-            .build();
-        key_pair.sign_tx(tx)
-    };
+    let mut evm = funded_evm(TempoHardfork::Genesis, timestamp, caller);
+    let tx = TxBuilder::new()
+        .call_identity(&[0x01, 0x02, 0x03, 0x04])
+        .authorization(signed_auth)
+        .valid_after(valid_after)
+        .valid_before(valid_before)
+        .build();
+    let signed_tx = key_pair.sign_tx(tx)?;
+    let tx_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
 
-    // Test case 1: Transaction fails when block_timestamp < valid_after
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 100, caller);
-        let signed_tx = create_signed_tx(Some(200), None)?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
+    match expected {
+        None => {
+            let result = evm.transact_detach(tx_env)?;
+            assert!(result.result.status);
+        }
+        Some(expected) => {
+            let result = evm.transact_detach(tx_env);
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert_eq!(
                 err.external_ref::<TempoInvalidTransaction>(),
-                Some(TempoInvalidTransaction::ValidAfter {
-                    current: 100,
-                    valid_after: 200
-                })
-            ),
-            "Expected ValidAfter error, got: {err:?}"
-        );
-    }
-
-    // Test case 2: Transaction fails when block_timestamp >= valid_before
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 200, caller);
-        let signed_tx = create_signed_tx(None, Some(200))?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err.external_ref::<TempoInvalidTransaction>(),
-                Some(TempoInvalidTransaction::ValidBefore {
-                    current: 200,
-                    valid_before: 200
-                })
-            ),
-            "Expected ValidBefore error, got: {err:?}"
-        );
-    }
-
-    // Test case 3: Transaction fails when block_timestamp > valid_before
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 300, caller);
-        let signed_tx = create_signed_tx(None, Some(200))?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err.external_ref::<TempoInvalidTransaction>(),
-                Some(TempoInvalidTransaction::ValidBefore {
-                    current: 300,
-                    valid_before: 200
-                })
-            ),
-            "Expected ValidBefore error, got: {err:?}"
-        );
-    }
-
-    // Test case 4: Transaction succeeds when exactly at valid_after boundary
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 200, caller);
-        let signed_tx = create_signed_tx(Some(200), None)?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env)?;
-        assert!(result.result.status);
-    }
-
-    // Test case 5: Transaction succeeds when within time window
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 150, caller);
-        let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env)?;
-        assert!(result.result.status);
-    }
-
-    // Test case 6: Transaction fails when block_timestamp < valid_after in a window
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 50, caller);
-        let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err.external_ref::<TempoInvalidTransaction>(),
-                Some(TempoInvalidTransaction::ValidAfter {
-                    current: 50,
-                    valid_after: 100
-                })
-            ),
-            "Expected ValidAfter error, got: {err:?}"
-        );
-    }
-
-    // Test case 7: Transaction fails when block_timestamp >= valid_before in a window
-    {
-        let mut evm = funded_evm(TempoHardfork::Genesis, 200, caller);
-        let signed_tx = create_signed_tx(Some(100), Some(200))?;
-        let tx_env: TempoTxEnv =
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed_tx), caller).into();
-
-        let result = evm.transact_detach(tx_env);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err.external_ref::<TempoInvalidTransaction>(),
-                Some(TempoInvalidTransaction::ValidBefore {
-                    current: 200,
-                    valid_before: 200
-                })
-            ),
-            "Expected ValidBefore error, got: {err:?}"
-        );
+                Some(&expected),
+                "got: {err:?}"
+            );
+        }
     }
 
     Ok(())
@@ -3450,33 +3353,39 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
 /// CREATE state gas of every CREATE call in the batch — both the reverting
 /// CREATE itself and a successfully deployed CREATE whose state is rolled
 /// back by the atomic batch revert.
-#[test]
-fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
+// The CREATE call itself reverts.
+#[test_case(false; "create_reverts")]
+// The CREATE deploys, then a later call fails the batch.
+#[test_case(true; "batch_reverts_after_create")]
+fn test_t4_aa_reverting_create_refunds_state_gas(
+    batch_reverts_after_create: bool,
+) -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
-    // PUSH1 0 PUSH1 0 REVERT
-    let reverting_initcode = bytes!("60006000fd");
-    // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
-    let empty_initcode = bytes!("60006000f3");
     // Contract whose runtime code reverts immediately.
     let reverting_contract = Address::repeat_byte(0x42);
 
-    // Scenario 1: the CREATE call itself reverts.
-    let create_reverts = key_pair.sign_tx(
-        TxBuilder::new()
-            .create(&reverting_initcode)
-            .gas_limit(5_000_000)
-            .build(),
-    )?;
-    // Scenario 2: the CREATE deploys, then a later call fails the batch.
-    let batch_reverts_after_create = key_pair.sign_tx(
-        TxBuilder::new()
-            .create(&empty_initcode)
-            .call(reverting_contract, &[])
-            .gas_limit(5_000_000)
-            .build(),
-    )?;
+    let signed_tx = if batch_reverts_after_create {
+        // PUSH1 0 PUSH1 0 RETURN — deploys an empty contract
+        let empty_initcode = bytes!("60006000f3");
+        key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&empty_initcode)
+                .call(reverting_contract, &[])
+                .gas_limit(5_000_000)
+                .build(),
+        )?
+    } else {
+        // PUSH1 0 PUSH1 0 REVERT
+        let reverting_initcode = bytes!("60006000fd");
+        key_pair.sign_tx(
+            TxBuilder::new()
+                .create(&reverting_initcode)
+                .gas_limit(5_000_000)
+                .build(),
+        )?
+    };
 
     let run = |signed_tx: &AASigned, zero_create_state_gas: bool| -> eyre::Result<u64> {
         let mut evm = configured_evm(TempoHardfork::T4, 0, true, InMemoryDB::default());
@@ -3512,14 +3421,9 @@ fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
     };
 
     assert_eq!(
-        run(&create_reverts, false)?,
-        run(&create_reverts, true)?,
-        "a reverting AA CREATE call must refund its create_state_gas"
-    );
-    assert_eq!(
-        run(&batch_reverts_after_create, false)?,
-        run(&batch_reverts_after_create, true)?,
-        "a rolled-back deployed AA CREATE call must refund its create_state_gas"
+        run(&signed_tx, false)?,
+        run(&signed_tx, true)?,
+        "a reverted or rolled-back AA CREATE call must refund its create_state_gas"
     );
     Ok(())
 }

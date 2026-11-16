@@ -696,6 +696,7 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use crate::execution::evm::next_block_env_attributes;
+    use test_case::test_case;
 
     use super::*;
     use alloy_consensus::Header;
@@ -1322,48 +1323,44 @@ mod tests {
         assert_eq!(env.block.basefee, U256::ZERO);
     }
 
-    #[test]
-    fn rejects_portal_work_above_capacity() {
-        for (deposit_count, token_count) in [
-            (MAX_UNPROCESSED_DEPOSITS + 1, 0),
-            (0, MAX_UNPROCESSED_TOKEN_ENABLEMENTS + 1),
-        ] {
-            let block = ZoneBlock {
-                number: 1,
-                parent_hash: B256::ZERO,
-                timestamp: 0,
-                timestamp_millis_part: 0,
-                beneficiary: Address::ZERO,
-                tempo_import: TempoImport::Full {
-                    header_rlp: Bytes::from([0x01]),
-                    deposits: vec![
-                        tempo_contracts::zones::QueuedDeposit {
-                            depositType: tempo_contracts::zones::DepositType::Deposit,
-                            depositData: Bytes::new(),
-                            rejected: false,
-                        };
-                        deposit_count
-                    ],
-                    decryptions: Vec::new(),
-                    enabled_tokens: vec![
-                        tempo_contracts::zones::EnabledToken {
-                            token: Address::ZERO,
-                            name: String::new(),
-                            symbol: String::new(),
-                            currency: String::new(),
-                        };
-                        token_count
-                    ],
-                },
-                finalize_withdrawal_batch_count: None,
-                finalize_withdrawal_batch_encrypted_senders: Vec::new(),
-                transactions: Vec::new(),
-            };
-            assert_eq!(
-                validate_system_inputs(&block, 0),
-                Err(Error::PortalWorkCapacityExceeded { block_index: 0 })
-            );
-        }
+    #[test_case(MAX_UNPROCESSED_DEPOSITS + 1, 0)]
+    #[test_case(0, MAX_UNPROCESSED_TOKEN_ENABLEMENTS + 1)]
+    fn rejects_portal_work_above_capacity(deposit_count: usize, token_count: usize) {
+        let block = ZoneBlock {
+            number: 1,
+            parent_hash: B256::ZERO,
+            timestamp: 0,
+            timestamp_millis_part: 0,
+            beneficiary: Address::ZERO,
+            tempo_import: TempoImport::Full {
+                header_rlp: Bytes::from([0x01]),
+                deposits: vec![
+                    QueuedDeposit {
+                        depositType: DepositType::Deposit,
+                        depositData: Bytes::new(),
+                        rejected: false,
+                    };
+                    deposit_count
+                ],
+                decryptions: Vec::new(),
+                enabled_tokens: vec![
+                    EnabledToken {
+                        token: Address::ZERO,
+                        name: String::new(),
+                        symbol: String::new(),
+                        currency: String::new(),
+                    };
+                    token_count
+                ],
+            },
+            finalize_withdrawal_batch_count: None,
+            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
+            transactions: Vec::new(),
+        };
+        assert_eq!(
+            validate_system_inputs(&block, 0),
+            Err(Error::PortalWorkCapacityExceeded { block_index: 0 })
+        );
     }
 
     #[test]

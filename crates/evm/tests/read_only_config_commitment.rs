@@ -9,12 +9,14 @@ use tempo_precompiles::{
     storage::{ConfigCommitmentWriteGas, StorageActions, StorageCtx},
 };
 use tempo_primitives::account::encode_config_commitment;
+use test_case::test_case;
 
 const ACCOUNT: Address = Address::repeat_byte(1);
 const COMMITMENT: B256 = B256::repeat_byte(2);
 
-#[test]
-fn read_only_context_reads_commitments_and_rejects_writes() {
+#[test_case(ConfigCommitmentWriteGas::Intrinsic)]
+#[test_case(ConfigCommitmentWriteGas::Precompile)]
+fn read_only_context_reads_commitments_and_rejects_writes(gas: ConfigCommitmentWriteGas) {
     let mut info = AccountInfo::empty();
     info.extension = AccountExtension::from(encode_config_commitment(COMMITMENT));
     let mut db = InMemoryDB::default();
@@ -28,15 +30,10 @@ fn read_only_context_reads_commitments_and_rejects_writes() {
             B256::ZERO
         );
 
-        for gas in [
-            ConfigCommitmentWriteGas::Intrinsic,
-            ConfigCommitmentWriteGas::Precompile,
-        ] {
-            assert_eq!(
-                ctx.set_config_commitment(ACCOUNT, B256::repeat_byte(3), gas),
-                Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
-            );
-        }
+        assert_eq!(
+            ctx.set_config_commitment(ACCOUNT, B256::repeat_byte(3), gas),
+            Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+        );
         assert_eq!(ctx.config_commitment(ACCOUNT).unwrap(), COMMITMENT);
     });
 }

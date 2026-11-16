@@ -44,6 +44,7 @@ mod tests {
     use tempo_contracts::zones::{
         BlockTransition, DepositQueueTransition, TokenEnablementTransition,
     };
+    use test_case::test_case;
 
     fn call(proof: Vec<u8>) -> IZoneVerifier::verifyCall {
         IZoneVerifier::verifyCall {
@@ -73,21 +74,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_and_oversized_proofs_return_false() {
+    fn assert_returns_false(calldata: &[u8], portal: Address) {
+        let output = ZoneVerifier::new().call(calldata, portal).unwrap();
+        assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
+    }
+
+    #[test_case(Vec::new(); "empty")]
+    #[test_case(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE + 1]; "oversized")]
+    fn empty_and_oversized_proofs_return_false(proof: Vec<u8>) {
+        let call = call(proof);
         with_storage(TempoHardfork::T13, || {
-            for call in [
-                call(Vec::new()),
-                call(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE + 1]),
-            ] {
-                let output = ZoneVerifier::new()
-                    .call(
-                        &call.abi_encode(),
-                        crate::zone_factory::portal_address(call.zoneId),
-                    )
-                    .unwrap();
-                assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
-            }
+            assert_returns_false(
+                &call.abi_encode(),
+                crate::zone_factory::portal_address(call.zoneId),
+            );
         });
     }
 
@@ -109,8 +109,7 @@ mod tests {
             ));
 
             calldata.push(0);
-            let output = ZoneVerifier::new().call(&calldata, portal).unwrap();
-            assert!(!IZoneVerifier::verifyCall::abi_decode_returns(output.bytes()).unwrap());
+            assert_returns_false(&calldata, portal);
         });
     }
 

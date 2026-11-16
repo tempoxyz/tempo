@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, U256};
+use test_case::test_case;
 
 use super::{AccountKey, AccountingError, BalanceChange, Effect, LiabilityKind, State, TokenState};
 
@@ -257,29 +258,16 @@ fn detects_balance_and_supply_mismatches() {
     ));
 }
 
-#[test]
-fn rejects_unknown_token_changes_without_mutating_state() {
+#[test_case(Effect::Account { key: AccountKey::new(address(1), address(2)), change: BalanceChange::Credit(U256::ONE) }; "account")]
+#[test_case(Effect::Liability { token: address(1), kind: LiabilityKind::Deposit, change: BalanceChange::Credit(U256::ONE) }; "liability")]
+fn rejects_unknown_token_changes_without_mutating_state(effect: Effect) {
     let token = address(1);
-    let effects = [
-        Effect::Account {
-            key: AccountKey::new(token, address(2)),
-            change: BalanceChange::Credit(U256::ONE),
-        },
-        Effect::Liability {
-            token,
-            kind: LiabilityKind::Deposit,
-            change: BalanceChange::Credit(U256::ONE),
-        },
-    ];
-
-    for effect in effects {
-        let mut state = State::default();
-        assert_eq!(
-            state.apply(&[effect]),
-            Err(AccountingError::UnknownToken { token })
-        );
-        assert_eq!(state, State::default());
-    }
+    let mut state = State::default();
+    assert_eq!(
+        state.apply(&[effect]),
+        Err(AccountingError::UnknownToken { token })
+    );
+    assert_eq!(state, State::default());
 }
 
 #[test]

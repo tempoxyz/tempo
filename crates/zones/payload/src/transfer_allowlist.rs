@@ -128,6 +128,7 @@ mod tests {
         TempoTxEnvelope,
         transaction::{Call, TempoTransaction},
     };
+    use test_case::test_case;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
     const BOB: Address = address!("0x0000000000000000000000000000000000000b0b");
@@ -282,30 +283,30 @@ mod tests {
         assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
     }
 
-    #[test]
-    fn malformed_screened_calls_are_rejected() {
-        let truncated = |call: Call| {
-            let mut input = call.input.to_vec();
-            input.truncate(input.len() - 1);
-            Call {
-                input: input.into(),
-                ..call
-            }
-        };
-        let screened = [
-            token_transfer(BOB),
-            token_transfer_from(ALICE, BOB),
-            request_withdrawal(BOB),
-        ];
-        for call in screened {
-            let transaction = aa_transaction(ALICE, vec![truncated(call)]);
-            let err = validate_transfer_calls(&Listed(BTreeSet::from([ALICE, BOB])), &transaction)
-                .unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                transfer_error("malformed transfer calldata").to_string()
-            );
+    fn truncated(call: Call) -> Call {
+        let mut input = call.input.to_vec();
+        input.truncate(input.len() - 1);
+        Call {
+            input: input.into(),
+            ..call
         }
+    }
+
+    #[test_case(token_transfer(BOB); "transfer")]
+    #[test_case(token_transfer_from(ALICE, BOB); "transfer_from")]
+    #[test_case(request_withdrawal(BOB); "request_withdrawal")]
+    fn malformed_screened_calls_are_rejected(call: Call) {
+        let transaction = aa_transaction(ALICE, vec![truncated(call)]);
+        let err = validate_transfer_calls(&Listed(BTreeSet::from([ALICE, BOB])), &transaction)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            transfer_error("malformed transfer calldata").to_string()
+        );
+    }
+
+    #[test]
+    fn malformed_unscreened_calls_are_left_to_the_precompile() {
         // Calls the screen does not inspect are left to the precompile.
         assert!(admits_calls(
             CAROL,

@@ -726,6 +726,7 @@ mod tests {
     };
     use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use test_case::test_case;
 
     #[test]
     fn test_walk_settles_before_accumulation_overflow() {
@@ -773,54 +774,50 @@ mod tests {
         assert!(!level.has_liquidity());
     }
 
-    #[test]
-    fn test_tick_level_handler_io() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T0)]
+    #[test_case(TempoHardfork::T3)]
+    #[test_case(TempoHardfork::T10)]
+    #[test_case(TempoHardfork::T11)]
+    #[test_case(TempoHardfork::T12)]
+    fn test_tick_level_handler_io(spec: TempoHardfork) -> eyre::Result<()> {
         let slot = U256::from(7);
         let address = Address::random();
         let legacy = TickLevel::with_values(11, 22, 33);
         let updated = TickLevel::with_values(44, 55, 0);
 
-        for spec in [
-            TempoHardfork::T0,
-            TempoHardfork::T3,
-            TempoHardfork::T10,
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-        ] {
-            let is_t12 = spec.is_t12();
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
-            })?;
+        let is_t12 = spec.is_t12();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        StorageCtx::enter(&mut storage, || {
+            Handler::<TickLevel>::write(&mut TickLevelHandler::new(slot, address), legacy)
+        })?;
 
-            storage.reset_counters();
-            let level =
-                StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
-            assert_eq!(level.links, legacy.links);
-            assert_eq!(level.total_liquidity, if is_t12 { 0 } else { 33 });
-            assert_eq!(storage.counter_sload(), if is_t12 { 1 } else { 2 });
-            assert_eq!(storage.counter_sstore(), 0);
+        storage.reset_counters();
+        let level =
+            StorageCtx::enter(&mut storage, || TickLevelHandler::new(slot, address).read())?;
+        assert_eq!(level.links, legacy.links);
+        assert_eq!(level.total_liquidity, if is_t12 { 0 } else { 33 });
+        assert_eq!(storage.counter_sload(), if is_t12 { 1 } else { 2 });
+        assert_eq!(storage.counter_sstore(), 0);
 
-            storage.reset_counters();
-            StorageCtx::enter(&mut storage, || {
-                TickLevelHandler::new(slot, address).write(updated)
-            })?;
-            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
-            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            TickLevelHandler::new(slot, address).write(updated)
+        })?;
+        assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+        assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
-            storage.reset_counters();
-            StorageCtx::enter(&mut storage, || {
-                TickLevelHandler::new(slot, address).delete()
-            })?;
-            assert_eq!(storage.counter_sload(), 0);
-            assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
+        storage.reset_counters();
+        StorageCtx::enter(&mut storage, || {
+            TickLevelHandler::new(slot, address).delete()
+        })?;
+        assert_eq!(storage.counter_sload(), 0);
+        assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
-            let stored = StorageCtx::enter(&mut storage, || {
-                Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
-            })?;
-            assert_eq!(stored.links, TickLevelLinks::default());
-            assert_eq!(stored.total_liquidity, if is_t12 { 33 } else { 0 });
-        }
+        let stored = StorageCtx::enter(&mut storage, || {
+            Handler::<TickLevel>::read(&TickLevelHandler::new(slot, address))
+        })?;
+        assert_eq!(stored.links, TickLevelLinks::default());
+        assert_eq!(stored.total_liquidity, if is_t12 { 33 } else { 0 });
 
         Ok(())
     }
@@ -951,45 +948,53 @@ mod tests {
             stablecoin_dex::StablecoinDEX,
             storage::{StorageCtx, hashmap::HashMapStorageProvider},
         };
+        use test_case::test_case;
         const BOOK_KEY: B256 = B256::ZERO;
 
-        #[test]
-        fn test_tick_lifecycle() -> eyre::Result<()> {
+        // Test full lifecycle (set, check, clear, check) for positive and negative ticks
+        // Include boundary cases, word boundaries, and various representative values
+        #[test_case(MIN_TICK)]
+        #[test_case(-1000; "minus_1000")]
+        #[test_case(-500; "minus_500")]
+        #[test_case(-257; "minus_257")]
+        #[test_case(-256; "minus_256")]
+        #[test_case(-100; "minus_100")]
+        #[test_case(-1; "minus_1")]
+        #[test_case(0)]
+        #[test_case(1)]
+        #[test_case(100)]
+        #[test_case(255)]
+        #[test_case(256)]
+        #[test_case(500)]
+        #[test_case(1000)]
+        #[test_case(MAX_TICK)]
+        fn test_tick_lifecycle(tick: i16) -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::initialized()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
-                // Test full lifecycle (set, check, clear, check) for positive and negative ticks
-                // Include boundary cases, word boundaries, and various representative values
-                let test_ticks = [
-                    MIN_TICK, -1000, -500, -257, -256, -100, -1, 0, 1, 100, 255, 256, 500, 1000,
-                    MAX_TICK,
-                ];
+                // Initially not set
+                assert!(
+                    !book_handler.is_tick_initialized(tick, true)?,
+                    "should not be initialized initially"
+                );
 
-                for &tick in &test_ticks {
-                    // Initially not set
-                    assert!(
-                        !book_handler.is_tick_initialized(tick, true)?,
-                        "Tick {tick} should not be initialized initially"
-                    );
+                // Set the bit
+                book_handler.set_tick_bit(tick, true)?;
 
-                    // Set the bit
-                    book_handler.set_tick_bit(tick, true)?;
+                assert!(
+                    book_handler.is_tick_initialized(tick, true)?,
+                    "should be initialized after set"
+                );
 
-                    assert!(
-                        book_handler.is_tick_initialized(tick, true)?,
-                        "Tick {tick} should be initialized after set"
-                    );
+                // Clear the bit
+                book_handler.delete_tick_bit(tick, true)?;
 
-                    // Clear the bit
-                    book_handler.delete_tick_bit(tick, true)?;
-
-                    assert!(
-                        !book_handler.is_tick_initialized(tick, true)?,
-                        "Tick {tick} should not be initialized after clear"
-                    );
-                }
+                assert!(
+                    !book_handler.is_tick_initialized(tick, true)?,
+                    "should not be initialized after clear"
+                );
 
                 Ok(())
             })

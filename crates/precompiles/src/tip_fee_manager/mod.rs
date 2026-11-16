@@ -1204,53 +1204,50 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_collect_fee_pre_tx_two_hop_no_side_effects() -> eyre::Result<()> {
-        // (label, hop_quote_is_val, skip, direct, first_hop, second_hop)
-        let cases: &[(&str, bool, bool, u128, u128, u128)] = &[
-            ("direct pool sufficient", false, false, 100_000, 0, 0),
-            ("skip_liquidity_check bypass", false, true, 0, 0, 0),
-            ("1st hop empty", false, false, 0, 0, 100_000),
-            ("2nd hop too small", false, false, 0, 100_000, 50),
-            // `userToken.quoteToken() == validatorToken` degenerates failed direct pair.
-            ("quote == validator", true, false, 0, 100_000, 100_000),
-        ];
+    #[test_case(false, false, 100_000, 0, 0; "direct pool sufficient")]
+    #[test_case(false, true, 0, 0, 0; "skip_liquidity_check bypass")]
+    #[test_case(false, false, 0, 0, 100_000; "1st hop empty")]
+    #[test_case(false, false, 0, 100_000, 50; "2nd hop too small")]
+    // `userToken.quoteToken() == validatorToken` degenerates failed direct pair.
+    #[test_case(true, false, 0, 100_000, 100_000; "quote == validator")]
+    fn test_collect_fee_pre_tx_two_hop_no_side_effects(
+        hop_quote_is_val: bool,
+        skip: bool,
+        direct: u128,
+        first_hop: u128,
+        second_hop: u128,
+    ) -> eyre::Result<()> {
+        with_two_hop_env(
+            TempoHardfork::T5,
+            hop_quote_is_val,
+            |fm, t, user, validator, _admin| {
+                write_pool(fm, t.user, t.validator, direct)?;
+                write_pool(fm, t.user, t.hop, first_hop)?;
+                write_pool(fm, t.hop, t.validator, second_hop)?;
 
-        for &(label, hop_quote_is_val, skip, direct, r1, r2) in cases {
-            with_two_hop_env(
-                TempoHardfork::T5,
-                hop_quote_is_val,
-                |fm, t, user, validator, _admin| {
-                    write_pool(fm, t.user, t.validator, direct)?;
-                    write_pool(fm, t.user, t.hop, r1)?;
-                    write_pool(fm, t.hop, t.validator, r2)?;
+                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
+                assert_eq!(
+                    res.is_ok(),
+                    direct > 0 || skip,
+                    "succeeds iff the two-hop fallback isn't needed, got {res:?}",
+                );
 
-                    let res =
-                        fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
+                // Two-hop fallback must never half-commit: neither hop pool is
+                // reserved and no intermediate token is cached.
+                for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
                     assert_eq!(
-                        res.is_ok(),
-                        direct > 0 || skip,
-                        "{label}: succeeds iff the two-hop fallback isn't needed, got {res:?}",
+                        fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
+                        0,
+                        "hop pool reservation leaked for ({a}, {b})",
                     );
-
-                    // Two-hop fallback must never half-commit: neither hop pool is
-                    // reserved and no intermediate token is cached.
-                    for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
-                        assert_eq!(
-                            fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
-                            0,
-                            "{label}: hop pool reservation leaked for ({a}, {b})",
-                        );
-                    }
-                    assert!(
-                        fm.two_hop_intermediate.t_read()?.is_zero(),
-                        "{label}: intermediate cache leaked",
-                    );
-                    Ok(())
-                },
-            )?;
-        }
-        Ok(())
+                }
+                assert!(
+                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    "intermediate cache leaked",
+                );
+                Ok(())
+            },
+        )
     }
 
     // TIP-1033 states two-hop fee math MUST apply M = 9970/10000 sequentially.
@@ -1269,7 +1266,7 @@ mod tests {
             compute_amount_out(compute_amount_out(U256::from(amount)).unwrap()).unwrap();
         assert_ne!(
             sequential, combined,
-            "amount={amount}: pick another value for sequential to not match combined fee math"
+            "pick another value for sequential to not match combined fee math"
         );
 
         with_two_hop_env(
@@ -1290,13 +1287,13 @@ mod tests {
                 let one_hop_amount = compute_amount_out(amount_u)?;
                 assert!(
                     credited < one_hop_amount,
-                    "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
+                    "two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
                 );
 
                 assert_eq!(
                     fm.collected_fees[validator][t.validator].read()?,
                     U256::from(expected_out2),
-                    "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
+                    "post-tx MUST accumulate sequential floor(floor(N*M)*M)",
                 );
 
                 // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
@@ -1304,14 +1301,14 @@ mod tests {
                 assert_eq!(
                     (p1.reserve_user_token, p1.reserve_validator_token),
                     (reserve + amount, reserve - expected_out1),
-                    "amount={amount}: pool1 reserves must move by (amount, out1)",
+                    "pool1 reserves must move by (amount, out1)",
                 );
                 // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
                 let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
                 assert_eq!(
                     (p2.reserve_user_token, p2.reserve_validator_token),
                     (reserve + expected_out1, reserve - expected_out2),
-                    "amount={amount}: pool2 reserves must move by (out1, out2)",
+                    "pool2 reserves must move by (out1, out2)",
                 );
                 Ok(())
             },

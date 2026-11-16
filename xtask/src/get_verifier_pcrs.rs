@@ -303,6 +303,7 @@ mod tests {
         precompiles::NO_PROOF_FALLBACK_VERIFIER,
         zones::{BlockTransition, DepositQueueTransition, TokenEnablementTransition},
     };
+    use test_case::test_case;
 
     #[test]
     fn reads_pcrs_only_from_direct_nitro_batches() {
@@ -375,26 +376,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zone_id_accepts_only_canonical_portals() {
+    /// A canonical portal address with a nonzero byte in the zero padding.
+    fn wide_portal() -> Address {
         let mut wide = portal_address(1);
         wide.0[12] = 1;
-        let mut wrong_prefix = portal_address(1);
-        wrong_prefix.0[0] ^= 1;
-        for (address, expected) in [
-            (portal_address(1), Some(1)),
-            (portal_address(u32::MAX), Some(u32::MAX)),
-            (portal_address(0), None),
-            (wide, None),
-            (wrong_prefix, None),
-        ] {
-            assert_eq!(zone_id(address), expected, "{address}");
-        }
+        wide
     }
 
-    #[tokio::test]
-    async fn fork_start_follows_rpc_schedule_including_unknown_forks() {
-        let schedule: ForkSchedule = serde_json::from_value(serde_json::json!({
+    /// A canonical portal address with a flipped prefix byte.
+    fn wrong_prefix_portal() -> Address {
+        let mut wrong_prefix = portal_address(1);
+        wrong_prefix.0[0] ^= 1;
+        wrong_prefix
+    }
+
+    #[test_case(portal_address(1) => Some(1); "one")]
+    #[test_case(portal_address(u32::MAX) => Some(u32::MAX); "max")]
+    #[test_case(portal_address(0) => None; "zero")]
+    #[test_case(wide_portal() => None; "wide")]
+    #[test_case(wrong_prefix_portal() => None; "wrong_prefix")]
+    fn zone_id_accepts_only_canonical_portals(address: Address) -> Option<u32> {
+        zone_id(address)
+    }
+
+    fn rpc_schedule() -> ForkSchedule {
+        serde_json::from_value(serde_json::json!({
             "active": "T14",
             "schedule": [
                 {"name": "T13", "activationTime": 30, "active": true},
@@ -402,34 +408,42 @@ mod tests {
                 {"name": "FutureFork", "activationTime": 90, "active": false}
             ]
         }))
-        .unwrap();
-        // Ten blocks at timestamps 0, 10, ..., 90; each case lists the probed timestamps.
-        for (fork_index, timestamps, expected) in [
-            (0, vec![50, 20, 40, 30], 3),
-            (1, vec![50, 80, 70, 60], 7),
-            (2, vec![50, 80, 90], 9),
-        ] {
-            let asserter = Asserter::new();
-            for timestamp in timestamps {
-                let mut block = Block::<B256>::default();
-                block.header.inner.timestamp = timestamp;
-                let mut block = serde_json::to_value(block).unwrap();
-                block["timestampMillis"] = serde_json::json!(format!("0x{:x}", timestamp * 1000));
-                block["mainBlockGeneralGasLimit"] = serde_json::json!("0x0");
-                block["sharedGasLimit"] = serde_json::json!("0x0");
-                block["timestampMillisPart"] = serde_json::json!("0x0");
-                asserter.push_success(&block);
-            }
-            let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-                .connect_mocked_client(asserter.clone());
-            assert_eq!(
-                fork_start(&provider, &schedule, 0, 9, fork_index)
-                    .await
-                    .unwrap(),
-                expected
-            );
-            assert!(asserter.read_q().is_empty());
+        .unwrap()
+    }
+
+    // Ten blocks at timestamps 0, 10, ..., 90; each case lists the probed timestamps.
+    #[test_case(0, vec![50, 20, 40, 30] => 3)]
+    #[test_case(1, vec![50, 80, 70, 60] => 7)]
+    #[test_case(2, vec![50, 80, 90] => 9)]
+    #[tokio::test]
+    async fn fork_start_follows_rpc_schedule_including_unknown_forks(
+        fork_index: usize,
+        timestamps: Vec<u64>,
+    ) -> u64 {
+        let schedule = rpc_schedule();
+        let asserter = Asserter::new();
+        for timestamp in timestamps {
+            let mut block = Block::<B256>::default();
+            block.header.inner.timestamp = timestamp;
+            let mut block = serde_json::to_value(block).unwrap();
+            block["timestampMillis"] = serde_json::json!(format!("0x{:x}", timestamp * 1000));
+            block["mainBlockGeneralGasLimit"] = serde_json::json!("0x0");
+            block["sharedGasLimit"] = serde_json::json!("0x0");
+            block["timestampMillisPart"] = serde_json::json!("0x0");
+            asserter.push_success(&block);
         }
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone());
+        let start = fork_start(&provider, &schedule, 0, 9, fork_index)
+            .await
+            .unwrap();
+        assert!(asserter.read_q().is_empty());
+        start
+    }
+
+    #[test]
+    fn active_fork_follows_rpc_schedule() {
+        let schedule = rpc_schedule();
         assert_eq!(active_fork(&schedule, 29), None);
         assert_eq!(active_fork(&schedule, 95), Some(2));
     }

@@ -238,23 +238,14 @@ mod tests {
     use alloy_consensus::{SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
     use alloy_primitives::Signature;
     use reth_primitives_traits::InMemorySize;
+    use test_case::test_case;
 
-    #[test]
-    fn size_covers_inline_enum() {
-        let sig = Signature::test_signature();
-        let txs = [
-            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(sig)),
-            TempoTxEnvelope::Eip2930(TxEip2930::default().into_signed(sig)),
-            TempoTxEnvelope::Eip1559(TxEip1559::default().into_signed(sig)),
-            TempoTxEnvelope::Eip7702(TxEip7702::default().into_signed(sig)),
-            TempoTxEnvelope::AA(TempoTransaction::default().into_signed(TempoSignature::default())),
-        ];
-        for tx in txs {
-            assert!(
-                tx.size() >= size_of::<TempoTxEnvelope>(),
-                "{:?}",
-                tx.tx_type()
-            );
-        }
+    #[test_case(TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature())); "legacy")]
+    #[test_case(TempoTxEnvelope::Eip2930(TxEip2930::default().into_signed(Signature::test_signature())); "eip2930")]
+    #[test_case(TempoTxEnvelope::Eip1559(TxEip1559::default().into_signed(Signature::test_signature())); "eip1559")]
+    #[test_case(TempoTxEnvelope::Eip7702(TxEip7702::default().into_signed(Signature::test_signature())); "eip7702")]
+    #[test_case(TempoTxEnvelope::AA(TempoTransaction::default().into_signed(TempoSignature::default())); "aa")]
+    fn size_covers_inline_enum(tx: TempoTxEnvelope) {
+        assert!(tx.size() >= size_of::<TempoTxEnvelope>());
     }
 }

@@ -1970,6 +1970,7 @@ mod tests {
     use reth_provider::test_utils::MockEthProvider;
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
+    use test_case::test_case;
     use zone_chainspec::test_utils::set_tempo_fork;
 
     fn mock_l1(asserter: Asserter) -> DynProvider<TempoNetwork> {
@@ -2044,39 +2045,42 @@ mod tests {
         );
     }
 
+    // This also covers reorgs: a T13 proof cannot be sent while T12 is active again.
+    #[test_case(TempoHardfork::T12, 1_000)]
+    #[test_case(TempoHardfork::T13, 999)]
     #[tokio::test]
-    async fn stale_prover_policy_is_rejected_before_submission() {
-        // This also covers reorgs: a T13 proof cannot be sent while T12 is active again.
-        for (proved, timestamp) in [(TempoHardfork::T12, 1_000), (TempoHardfork::T13, 999)] {
-            let l1 = Asserter::new();
-            l1.push_success(&mock_fork_header(timestamp));
-            let proof = SettlementProof {
-                bundle: ProofBundle {
-                    verifier_config: Bytes::from_static(VerifierMode::NitroV1.config()),
-                    proof: Bytes::new(),
-                },
-                hardfork: proved,
-            };
-            let submitter = BatchSubmitter::new(
-                Address::repeat_byte(0x11),
-                mock_l1(l1.clone()),
-                chain_spec_with_t13(1_000),
-            );
-            let error = submitter
-                .submit_batch(
-                    &test_prepared_batch(120, 100),
-                    Some(&proof),
-                    None,
-                    VerifierMode::NitroV1,
-                )
-                .await
-                .unwrap_err();
-            assert!(matches!(
-                error,
-                BatchSubmitError::ProverHardforkChanged { .. }
-            ));
-            assert!(l1.read_q().is_empty());
-        }
+    async fn stale_prover_policy_is_rejected_before_submission(
+        proved: TempoHardfork,
+        timestamp: u64,
+    ) {
+        let l1 = Asserter::new();
+        l1.push_success(&mock_fork_header(timestamp));
+        let proof = SettlementProof {
+            bundle: ProofBundle {
+                verifier_config: Bytes::from_static(VerifierMode::NitroV1.config()),
+                proof: Bytes::new(),
+            },
+            hardfork: proved,
+        };
+        let submitter = BatchSubmitter::new(
+            Address::repeat_byte(0x11),
+            mock_l1(l1.clone()),
+            chain_spec_with_t13(1_000),
+        );
+        let error = submitter
+            .submit_batch(
+                &test_prepared_batch(120, 100),
+                Some(&proof),
+                None,
+                VerifierMode::NitroV1,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            BatchSubmitError::ProverHardforkChanged { .. }
+        ));
+        assert!(l1.read_q().is_empty());
     }
 
     #[test]
@@ -2895,40 +2899,20 @@ mod tests {
         assert!(asserter.read_q().is_empty());
     }
 
-    #[test]
-    fn finds_processed_withdrawal_offset() {
+    #[test_case(abi::Withdrawal::queue_hash => Some(0); "full_queue")]
+    #[test_case(|w| abi::Withdrawal::queue_hash(&w[1..]) => Some(1); "partial_queue")]
+    #[test_case(|w| abi::Withdrawal::queue_hash(&w[2..]) => Some(2); "partial_queue_suffix")]
+    #[test_case(|_| B256::ZERO => Some(3); "fully_consumed")]
+    #[test_case(|_| B256::repeat_byte(0xde) => None; "corrupted_hash")]
+    fn finds_processed_withdrawal_offset(
+        current_slot_hash: fn(&[abi::Withdrawal]) -> B256,
+    ) -> Option<usize> {
         let withdrawals = vec![
             test_withdrawal(Address::with_last_byte(1), 100),
             test_withdrawal(Address::with_last_byte(2), 200),
             test_withdrawal(Address::with_last_byte(3), 300),
         ];
-        let cases = [
-            (
-                "full queue",
-                abi::Withdrawal::queue_hash(&withdrawals),
-                Some(0),
-            ),
-            (
-                "partial queue",
-                abi::Withdrawal::queue_hash(&withdrawals[1..]),
-                Some(1),
-            ),
-            (
-                "partial queue suffix",
-                abi::Withdrawal::queue_hash(&withdrawals[2..]),
-                Some(2),
-            ),
-            ("fully consumed", B256::ZERO, Some(withdrawals.len())),
-            ("corrupted hash", B256::repeat_byte(0xde), None),
-        ];
-
-        for (case, current_slot_hash, expected) in cases {
-            assert_eq!(
-                find_processed_offset(&withdrawals, current_slot_hash),
-                expected,
-                "{case}"
-            );
-        }
+        find_processed_offset(&withdrawals, current_slot_hash(&withdrawals))
     }
 
     #[test]

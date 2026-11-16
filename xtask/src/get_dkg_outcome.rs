@@ -155,31 +155,19 @@ impl GetDkgOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Action, Args};
     use clap::Parser as _;
     use commonware_utils::NZU64;
+    use test_case::test_case;
 
-    #[test]
-    fn epoch_argument_is_optional() {
-        for (args, expected) in [
-            (vec!["xtask", "get-dkg-outcome", "--chain", "mainnet"], None),
-            (
-                vec![
-                    "xtask",
-                    "get-dkg-outcome",
-                    "--chain",
-                    "mainnet",
-                    "--epoch",
-                    "7",
-                ],
-                Some(7),
-            ),
-        ] {
-            let parsed = crate::Args::try_parse_from(args).unwrap();
-            let crate::Action::GetDkgOutcome(args) = parsed.action else {
-                panic!("expected get-dkg-outcome");
-            };
-            assert_eq!(args.epoch, expected);
-        }
+    #[test_case(&["xtask", "get-dkg-outcome", "--chain", "mainnet"] => None; "without_epoch")]
+    #[test_case(&["xtask", "get-dkg-outcome", "--chain", "mainnet", "--epoch", "7"] => Some(7); "with_epoch")]
+    fn epoch_argument_is_optional(args: &[&str]) -> Option<u64> {
+        let parsed = Args::try_parse_from(args).unwrap();
+        let Action::GetDkgOutcome(args) = parsed.action else {
+            panic!("expected get-dkg-outcome");
+        };
+        args.epoch
     }
 
     #[test]

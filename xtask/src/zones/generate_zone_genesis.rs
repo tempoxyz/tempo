@@ -523,74 +523,76 @@ mod tests {
     use clap::Parser;
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_chainspec::{TempoHardfork, TempoHardforks};
+    use test_case::test_case;
     use zone_chainspec::ZoneChainSpec;
 
+    #[test_case(None, None, None)]
+    #[test_case(Some(0), Some(0), Some(0))]
+    #[test_case(Some(0), Some(u64::MAX), Some(u64::MAX))]
+    #[test_case(Some(1789463700), None, None)]
+    #[test_case(None, Some(1789467300), None)]
+    #[test_case(Some(u64::MAX), Some(u64::MAX), Some(u64::MAX))]
     #[tokio::test]
-    async fn genesis_preserves_explicit_fork_timestamps() {
-        for (t12, t13, t14) in [
-            (None, None, None),
-            (Some(0), Some(0), Some(0)),
-            (Some(0), Some(u64::MAX), Some(u64::MAX)),
-            (Some(1789463700), None, None),
-            (None, Some(1789467300), None),
-            (Some(u64::MAX), Some(u64::MAX), Some(u64::MAX)),
+    async fn genesis_preserves_explicit_fork_timestamps(
+        t12: Option<u64>,
+        t13: Option<u64>,
+        t14: Option<u64>,
+    ) {
+        let output = tempfile::tempdir().unwrap();
+        let mut args = vec![
+            "generate-zone-genesis".to_owned(),
+            "--output".to_owned(),
+            output.path().display().to_string(),
+            "--chain-id".to_owned(),
+            "134509785776129".to_owned(),
+            "--admin".to_owned(),
+            "0x1000000000000000000000000000000000000001".to_owned(),
+            "--hardfork".to_owned(),
+            "T15".to_owned(),
+        ];
+        for (flag, timestamp) in [
+            ("--t12-time", t12),
+            ("--t13-time", t13),
+            ("--t14-time", t14),
         ] {
-            let output = tempfile::tempdir().unwrap();
-            let mut args = vec![
-                "generate-zone-genesis".to_owned(),
-                "--output".to_owned(),
-                output.path().display().to_string(),
-                "--chain-id".to_owned(),
-                "134509785776129".to_owned(),
-                "--admin".to_owned(),
-                "0x1000000000000000000000000000000000000001".to_owned(),
-                "--hardfork".to_owned(),
-                "T15".to_owned(),
-            ];
-            for (flag, timestamp) in [
-                ("--t12-time", t12),
-                ("--t13-time", t13),
-                ("--t14-time", t14),
-            ] {
-                if let Some(timestamp) = timestamp {
-                    args.extend([flag.to_owned(), timestamp.to_string()]);
-                }
+            if let Some(timestamp) = timestamp {
+                args.extend([flag.to_owned(), timestamp.to_string()]);
             }
-            GenerateZoneGenesis::try_parse_from(args)
-                .unwrap()
-                .run()
-                .await
-                .unwrap();
-            let genesis = serde_json::from_slice::<Genesis>(
-                &std::fs::read(output.path().join("genesis.json")).unwrap(),
-            )
+        }
+        GenerateZoneGenesis::try_parse_from(args)
+            .unwrap()
+            .run()
+            .await
             .unwrap();
-            let config = serde_json::to_value(&genesis.config).unwrap();
-            assert_eq!(genesis.config.chain_id, 134509785776129);
-            assert!(!genesis.alloc.is_empty());
+        let genesis = serde_json::from_slice::<Genesis>(
+            &std::fs::read(output.path().join("genesis.json")).unwrap(),
+        )
+        .unwrap();
+        let config = serde_json::to_value(&genesis.config).unwrap();
+        assert_eq!(genesis.config.chain_id, 134509785776129);
+        assert!(!genesis.alloc.is_empty());
 
-            let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
-            // Check each fork: the highest active fork can hide missing earlier ones.
-            for &fork in TempoHardfork::VARIANTS {
-                if fork == TempoHardfork::Genesis {
-                    continue;
-                }
-                let activation = match fork {
-                    TempoHardfork::T12 => t12.unwrap_or(0),
-                    TempoHardfork::T13 => t13.unwrap_or(0),
-                    TempoHardfork::T14 => t14.unwrap_or(0),
-                    _ => 0,
-                };
-                let field = format!("{}Time", fork.to_string().to_lowercase());
-                assert_eq!(config[&field], serde_json::json!(activation));
-                for timestamp in [0, activation.saturating_sub(1), activation, u64::MAX] {
-                    assert_eq!(
-                        spec.tempo_fork_activation(fork)
-                            .active_at_timestamp(timestamp),
-                        timestamp >= activation,
-                        "{fork} at {timestamp}"
-                    );
-                }
+        let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+        // Check each fork: the highest active fork can hide missing earlier ones.
+        for &fork in TempoHardfork::VARIANTS {
+            if fork == TempoHardfork::Genesis {
+                continue;
+            }
+            let activation = match fork {
+                TempoHardfork::T12 => t12.unwrap_or(0),
+                TempoHardfork::T13 => t13.unwrap_or(0),
+                TempoHardfork::T14 => t14.unwrap_or(0),
+                _ => 0,
+            };
+            let field = format!("{}Time", fork.to_string().to_lowercase());
+            assert_eq!(config[&field], serde_json::json!(activation));
+            for timestamp in [0, activation.saturating_sub(1), activation, u64::MAX] {
+                assert_eq!(
+                    spec.tempo_fork_activation(fork)
+                        .active_at_timestamp(timestamp),
+                    timestamp >= activation,
+                    "{fork} at {timestamp}"
+                );
             }
         }
     }
@@ -633,10 +635,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn genesis_writes_explicit_hardfork_profile() {
-        use TempoHardfork::{T11, T12, T13};
+    fn anchor_rlp() -> String {
+        let mut anchor = TempoHeader::default();
+        anchor.inner.timestamp = 50;
+        const_hex::encode(alloy_rlp::encode(&anchor))
+    }
 
+    #[test]
+    fn genesis_requires_l1_rpc_or_explicit_hardfork_profile() {
         let output = tempfile::tempdir().unwrap();
         let args = [
             "generate-zone-genesis",
@@ -647,9 +653,7 @@ mod tests {
             "--admin",
             "0x1000000000000000000000000000000000000001",
         ];
-        let mut anchor = TempoHeader::default();
-        anchor.inner.timestamp = 50;
-        let anchor_rlp = const_hex::encode(alloy_rlp::encode(&anchor));
+        let anchor_rlp = anchor_rlp();
         assert!(GenerateZoneGenesis::try_parse_from(args).is_err());
         assert!(ResolvedForks::offline(&TempoHardforkArgs::default()).is_err());
         let rpc_args = args
@@ -662,51 +666,68 @@ mod tests {
             )
             .is_ok()
         );
+    }
 
-        for (cap, flag, activation, active, delayed) in [
-            ("T11", "--t12-time", 200, T11, T12),
-            ("T13", "--t13-time", 100, T12, T13),
+    #[test_case("T11", "--t12-time", 200, TempoHardfork::T11, TempoHardfork::T12)]
+    #[test_case("T13", "--t13-time", 100, TempoHardfork::T12, TempoHardfork::T13)]
+    #[tokio::test]
+    async fn genesis_writes_explicit_hardfork_profile(
+        cap: &str,
+        flag: &str,
+        activation: u64,
+        active: TempoHardfork,
+        delayed: TempoHardfork,
+    ) {
+        let output = tempfile::tempdir().unwrap();
+        let args = [
+            "generate-zone-genesis",
+            "--output",
+            output.path().to_str().unwrap(),
+            "--chain-id",
+            "134509785776129",
+            "--admin",
+            "0x1000000000000000000000000000000000000001",
+        ];
+        let anchor_rlp = anchor_rlp();
+        let time = activation.to_string();
+        let command = GenerateZoneGenesis::try_parse_from(args.into_iter().chain([
+            "--hardfork",
+            cap,
+            flag,
+            &time,
+            "--tempo-genesis-header-rlp",
+            &anchor_rlp,
+        ]))
+        .unwrap();
+        let forks = ResolvedForks::offline(&command.forks).unwrap();
+        command.run().await.unwrap();
+        let genesis: Genesis =
+            serde_json::from_slice(&std::fs::read(output.path().join("genesis.json")).unwrap())
+                .unwrap();
+        assert_eq!(genesis.timestamp, 50);
+        let config = &genesis.config.extra_fields;
+        assert_eq!(config[active.genesis_key().unwrap()], serde_json::json!(0));
+        assert_eq!(
+            config[delayed.genesis_key().unwrap()],
+            serde_json::json!(activation)
+        );
+        for &fork in TempoHardfork::VARIANTS {
+            if fork > delayed {
+                assert_eq!(config[fork.genesis_key().unwrap()], serde_json::Value::Null);
+            }
+        }
+        let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+        for (timestamp, expected) in [
+            (0, active),
+            (50, active),
+            (activation - 1, active),
+            (activation, delayed),
+            (u64::MAX, delayed),
         ] {
-            let time = activation.to_string();
-            let command = GenerateZoneGenesis::try_parse_from(args.into_iter().chain([
-                "--hardfork",
-                cap,
-                flag,
-                &time,
-                "--tempo-genesis-header-rlp",
-                &anchor_rlp,
-            ]))
-            .unwrap();
-            let forks = ResolvedForks::offline(&command.forks).unwrap();
-            command.run().await.unwrap();
-            let genesis: Genesis =
-                serde_json::from_slice(&std::fs::read(output.path().join("genesis.json")).unwrap())
-                    .unwrap();
-            assert_eq!(genesis.timestamp, 50);
-            let config = &genesis.config.extra_fields;
-            assert_eq!(config[active.genesis_key().unwrap()], serde_json::json!(0));
-            assert_eq!(
-                config[delayed.genesis_key().unwrap()],
-                serde_json::json!(activation)
-            );
-            for &fork in TempoHardfork::VARIANTS {
-                if fork > delayed {
-                    assert_eq!(config[fork.genesis_key().unwrap()], serde_json::Value::Null);
-                }
-            }
-            let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
-            for (timestamp, expected) in [
-                (0, active),
-                (50, active),
-                (activation - 1, active),
-                (activation, delayed),
-                (u64::MAX, delayed),
-            ] {
-                let evm = setup_zone_evm(1337, 30_000_000, &forks, timestamp).unwrap();
-                assert_eq!(evm.config_spec_id(), expected);
-                assert_eq!(evm.block().timestamp, U256::from(timestamp));
-                assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
-            }
+            let evm = setup_zone_evm(1337, 30_000_000, &forks, timestamp).unwrap();
+            assert_eq!(evm.config_spec_id(), expected);
+            assert_eq!(evm.block().timestamp, U256::from(timestamp));
+            assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
         }
     }
 

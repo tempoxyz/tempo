@@ -811,6 +811,7 @@ mod tests {
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
     };
+    use test_case::test_case;
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
@@ -1080,67 +1081,31 @@ mod tests {
         assert!(node_cmd.ext.has_consensus_engine(false));
     }
 
-    #[test]
-    fn debug_consensus_clients_rejected_with_consensus_engine() {
+    // certified follow
+    #[test_case(&["tempo", "node", "--follow", "--debug.rpc-consensus-url", "ws://127.0.0.1:8546"]; "follow_rpc_consensus")]
+    #[test_case(&["tempo", "node", "--follow", "--debug.etherscan"]; "follow_etherscan")]
+    // validator mode
+    #[test_case(&["tempo", "node", "--consensus.signing-key", "unused-signing-key", "--debug.rpc-consensus-url", "ws://127.0.0.1:8546"]; "validator_rpc_consensus")]
+    fn debug_consensus_clients_rejected_with_consensus_engine(args: &[&str]) {
         init_defaults_once();
 
-        let rejected = [
-            // certified follow
-            &[
-                "tempo",
-                "node",
-                "--follow",
-                "--debug.rpc-consensus-url",
-                "ws://127.0.0.1:8546",
-            ][..],
-            &["tempo", "node", "--follow", "--debug.etherscan"],
-            // validator mode
-            &[
-                "tempo",
-                "node",
-                "--consensus.signing-key",
-                "unused-signing-key",
-                "--debug.rpc-consensus-url",
-                "ws://127.0.0.1:8546",
-            ],
-        ];
-        for args in rejected {
-            let cli = TempoCli::try_parse_from(args).unwrap();
-            let err = ensure_no_debug_forkchoice_driver(&cli).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("only allowed with --dev or --follow.nocertify"),
-                "{args:?}: {err}"
-            );
-        }
+        let cli = TempoCli::try_parse_from(args).unwrap();
+        let err = ensure_no_debug_forkchoice_driver(&cli).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only allowed with --dev or --follow.nocertify"),
+            "{err}"
+        );
     }
 
-    #[test]
-    fn debug_consensus_clients_allowed_without_consensus_engine() {
+    #[test_case(&["tempo", "node", "--follow", "--follow.nocertify", "--debug.rpc-consensus-url", "ws://127.0.0.1:8546"]; "uncertified_follow_rpc_consensus")]
+    #[test_case(&["tempo", "node", "--dev", "--debug.rpc-consensus-url", "ws://127.0.0.1:8546"]; "dev_rpc_consensus")]
+    #[test_case(&["tempo", "node", "--follow"]; "follow_without_debug_client")]
+    fn debug_consensus_clients_allowed_without_consensus_engine(args: &[&str]) {
         init_defaults_once();
 
-        let allowed = [
-            &[
-                "tempo",
-                "node",
-                "--follow",
-                "--follow.nocertify",
-                "--debug.rpc-consensus-url",
-                "ws://127.0.0.1:8546",
-            ][..],
-            &[
-                "tempo",
-                "node",
-                "--dev",
-                "--debug.rpc-consensus-url",
-                "ws://127.0.0.1:8546",
-            ],
-            &["tempo", "node", "--follow"],
-        ];
-        for args in allowed {
-            let cli = TempoCli::try_parse_from(args).unwrap();
-            ensure_no_debug_forkchoice_driver(&cli).unwrap();
-        }
+        let cli = TempoCli::try_parse_from(args).unwrap();
+        ensure_no_debug_forkchoice_driver(&cli).unwrap();
     }
 
     #[test]

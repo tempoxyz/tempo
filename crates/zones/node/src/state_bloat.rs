@@ -314,47 +314,36 @@ mod tests {
         assert_eq!(genesis.alloc[&TOKEN].nonce, Some(1));
     }
 
-    #[test]
-    fn apply_dump_rejects_unsafe_entries() {
+    /// Genesis that already deploys code at `TOKEN`.
+    fn deployed_genesis() -> Genesis {
         let mut deployed = genesis();
         deployed.alloc.insert(
             TOKEN,
             GenesisAccount::default().with_code(Some(Bytes::from_static(&[0xef]))),
         );
+        deployed
+    }
+
+    /// Genesis that already seeds PathUSD slot 1.
+    fn seeded_genesis() -> Genesis {
         let mut seeded = genesis();
         seeded.alloc.get_mut(&PATH_USD_ADDRESS).unwrap().storage = Some(BTreeMap::from([(
             B256::with_last_byte(1),
             B256::with_last_byte(1),
         )]));
-        let cases = [
-            (Genesis::default(), dump(&[(TOKEN, &[(1, 1)])]), "PathUSD has no genesis code".to_owned()),
-            (
-                genesis(),
-                dump(&[(NONCE_PRECOMPILE_ADDRESS, &[(1, 1)])]),
-                "Zone genesis cannot hold the expiring nonce ring; generate the dump with --no-nonce-ring".to_owned(),
-            ),
-            (genesis(), dump(&[(Address::ZERO, &[(1, 1)])]), format!("{} is not a TIP20 address", Address::ZERO)),
-            (
-                deployed,
-                dump(&[(TOKEN, &[(1, 1)])]),
-                format!("token {TOKEN} must be enabled through the portal, not deployed in genesis"),
-            ),
-            (
-                genesis(),
-                dump(&[(TOKEN, &[(1, 1), (1, 2)])]),
-                format!("duplicate dump slot {} for token {TOKEN}", B256::with_last_byte(1)),
-            ),
-            (genesis(), dump(&[(TOKEN, &[(1, 0)])]), "zero dump values are not supported".to_owned()),
-            (
-                seeded,
-                dump(&[(PATH_USD_ADDRESS, &[(1, 2)])]),
-                format!("dump conflicts with genesis slot {} for token {PATH_USD_ADDRESS}", B256::with_last_byte(1)),
-            ),
-        ];
-        for (mut genesis, dump, expected) in cases {
-            let error = apply_dump(&mut genesis, dump.as_slice()).unwrap_err();
-            assert_eq!(error.to_string(), expected);
-        }
+        seeded
+    }
+
+    #[test_case(Genesis::default(), dump(&[(TOKEN, &[(1, 1)])]), "PathUSD has no genesis code".to_owned(); "no_path_usd_code")]
+    #[test_case(genesis(), dump(&[(NONCE_PRECOMPILE_ADDRESS, &[(1, 1)])]), "Zone genesis cannot hold the expiring nonce ring; generate the dump with --no-nonce-ring".to_owned(); "nonce_ring")]
+    #[test_case(genesis(), dump(&[(Address::ZERO, &[(1, 1)])]), format!("{} is not a TIP20 address", Address::ZERO); "not_tip20")]
+    #[test_case(deployed_genesis(), dump(&[(TOKEN, &[(1, 1)])]), format!("token {TOKEN} must be enabled through the portal, not deployed in genesis"); "deployed_token")]
+    #[test_case(genesis(), dump(&[(TOKEN, &[(1, 1), (1, 2)])]), format!("duplicate dump slot {} for token {TOKEN}", B256::with_last_byte(1)); "duplicate_slot")]
+    #[test_case(genesis(), dump(&[(TOKEN, &[(1, 0)])]), "zero dump values are not supported".to_owned(); "zero_value")]
+    #[test_case(seeded_genesis(), dump(&[(PATH_USD_ADDRESS, &[(1, 2)])]), format!("dump conflicts with genesis slot {} for token {PATH_USD_ADDRESS}", B256::with_last_byte(1)); "genesis_conflict")]
+    fn apply_dump_rejects_unsafe_entries(mut genesis: Genesis, dump: Vec<u8>, expected: String) {
+        let error = apply_dump(&mut genesis, dump.as_slice()).unwrap_err();
+        assert_eq!(error.to_string(), expected);
     }
 
     #[derive(Parser)]

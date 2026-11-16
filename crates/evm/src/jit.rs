@@ -144,17 +144,21 @@ mod tests {
         db
     }
 
-    #[test]
-    fn compiled_sstore_matches_storage_credits_and_gas() {
-        // Consume a credit, mint a credit, set without credit, and modify a nonzero slot.
+    // Consume a credit.
+    #[test_case(0, 1, 1)]
+    // Mint a credit.
+    #[test_case(1, 0, 0)]
+    // Set without credit.
+    #[test_case(0, 1, 0)]
+    // Modify a nonzero slot.
+    #[test_case(1, 2, 1)]
+    fn compiled_sstore_matches_storage_credits_and_gas(initial: u8, value: u8, credit: u64) {
         // Storage credits start at T7.
         for spec in [TempoHardfork::T1B, TempoHardfork::T7] {
-            for (initial, value, credit) in [(0, 1, 1), (1, 0, 0), (0, 1, 0), (1, 2, 1)] {
-                let code = returning_top(&[op::PUSH1, value, op::PUSH0, op::SSTORE, op::GAS]);
-                let db = storage_credit_db(initial, U256::from(credit));
-                let result = assert_compiled_matches(spec, db, code);
-                assert!(result.unwrap().result.status);
-            }
+            let code = returning_top(&[op::PUSH1, value, op::PUSH0, op::SSTORE, op::GAS]);
+            let db = storage_credit_db(initial, U256::from(credit));
+            let result = assert_compiled_matches(spec, db, code);
+            assert!(result.unwrap().result.status);
         }
     }
 

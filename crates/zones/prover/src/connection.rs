@@ -264,55 +264,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn value_limit_rejects_declared_lengths_before_decoding() {
-        for (header, length) in [(0x9b, u64::MAX), (0xbb, u64::MAX), (0xbb, u64::MAX / 2)] {
-            let mut payload = vec![header];
-            payload.extend_from_slice(&length.to_be_bytes());
-            let error =
-                decode_exact::<VerifyRequest>(&payload, DEFAULT_MAX_REQUEST_BYTES).unwrap_err();
-            assert!(matches!(
-                error,
-                ProverConnectionError::TooManyValues { maximum }
-                    if maximum == DEFAULT_MAX_REQUEST_BYTES / BYTES_PER_CBOR_VALUE
-            ));
-            assert!(matches!(
-                request_error_response(&error),
-                VerifyResponse::Error {
-                    code: ErrorCode::RequestTooLarge,
-                    request_id: None,
-                    ..
-                }
-            ));
-        }
+    #[test_case(0x9b, u64::MAX)]
+    #[test_case(0xbb, u64::MAX)]
+    #[test_case(0xbb, u64::MAX / 2)]
+    fn value_limit_rejects_declared_lengths_before_decoding(header: u8, length: u64) {
+        let mut payload = vec![header];
+        payload.extend_from_slice(&length.to_be_bytes());
+        let error = decode_exact::<VerifyRequest>(&payload, DEFAULT_MAX_REQUEST_BYTES).unwrap_err();
+        assert!(matches!(
+            error,
+            ProverConnectionError::TooManyValues { maximum }
+                if maximum == DEFAULT_MAX_REQUEST_BYTES / BYTES_PER_CBOR_VALUE
+        ));
+        assert!(matches!(
+            request_error_response(&error),
+            VerifyResponse::Error {
+                code: ErrorCode::RequestTooLarge,
+                request_id: None,
+                ..
+            }
+        ));
     }
 
-    #[test]
-    fn value_limit_is_shared_between_pools() {
+    #[test_case(true, false, false, true)]
+    #[test_case(false, true, false, true)]
+    #[test_case(false, false, true, true)]
+    #[test_case(true, true, true, false)]
+    fn value_limit_is_shared_between_pools(
+        fill_zone_nodes: bool,
+        fill_bytecodes: bool,
+        fill_tempo_nodes: bool,
+        accepted: bool,
+    ) {
         const MAXIMUM: usize = 512;
-        let entries: Vec<Bytes> = (0_u32..192)
-            .map(|entry| Bytes::from(entry.to_be_bytes()))
-            .collect();
-        for ([zone_nodes, bytecodes, tempo_nodes], accepted) in [
-            ([entries.clone(), vec![], vec![]], true),
-            ([vec![], entries.clone(), vec![]], true),
-            ([vec![], vec![], entries.clone()], true),
-            ([entries.clone(), entries.clone(), entries], false),
-        ] {
-            let mut witness = empty_witness();
-            witness.zone_state_witness.node_pool = zone_nodes;
-            witness.zone_state_witness.bytecodes = bytecodes;
-            witness.tempo_state_witness.node_pool = tempo_nodes;
-            let payload = minicbor_serde::to_vec(&witness).unwrap();
-            let result = check_value_limit(&payload, MAXIMUM);
-            if accepted {
-                result.unwrap();
+        let pool = |filled: bool| -> Vec<Bytes> {
+            if filled {
+                (0_u32..192)
+                    .map(|entry| Bytes::from(entry.to_be_bytes()))
+                    .collect()
             } else {
-                assert!(matches!(
-                    result,
-                    Err(ProverConnectionError::TooManyValues { maximum: MAXIMUM })
-                ));
+                vec![]
             }
+        };
+        let mut witness = empty_witness();
+        witness.zone_state_witness.node_pool = pool(fill_zone_nodes);
+        witness.zone_state_witness.bytecodes = pool(fill_bytecodes);
+        witness.tempo_state_witness.node_pool = pool(fill_tempo_nodes);
+        let payload = minicbor_serde::to_vec(&witness).unwrap();
+        let result = check_value_limit(&payload, MAXIMUM);
+        if accepted {
+            result.unwrap();
+        } else {
+            assert!(matches!(
+                result,
+                Err(ProverConnectionError::TooManyValues { maximum: MAXIMUM })
+            ));
         }
     }
 

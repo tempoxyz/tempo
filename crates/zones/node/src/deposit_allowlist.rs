@@ -747,6 +747,7 @@ mod tests {
         transaction::{Call, TempoTransaction},
     };
     use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
+    use test_case::test_case;
     use zone_l1::abi::ChaumPedersenProof;
 
     const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
@@ -1153,24 +1154,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reject_unlisted_requires_one_decryption_per_deposit() {
+    #[test_case(&[ALICE], &[]; "sender")]
+    #[test_case(&[], &[Some(ALICE)]; "recipient")]
+    fn reject_unlisted_requires_one_decryption_per_deposit(
+        senders: &[Address],
+        recipients: &[Option<Address>],
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = alice_only(dir.path());
 
-        for (senders, recipients) in [(&[ALICE][..], &[][..]), (&[][..], &[Some(ALICE)][..])] {
-            let err = allowlist
-                .reject_unlisted(senders, recipients, &mut [])
-                .unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!(
-                    "{} deposit senders and {} recipients but 0 decryptions",
-                    senders.len(),
-                    recipients.len()
-                )
-            );
-        }
+        let err = allowlist
+            .reject_unlisted(senders, recipients, &mut [])
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} deposit senders and {} recipients but 0 decryptions",
+                senders.len(),
+                recipients.len()
+            )
+        );
     }
 
     #[tokio::test]

@@ -2879,29 +2879,27 @@ pub(crate) mod tests {
         })
     }
 
+    // Valid: empty and all allowlisted schemes (case-insensitive).
+    #[test_case("")]
+    #[test_case("https://example.com/icon.svg")]
+    #[test_case("http://example.com/icon.png")]
+    #[test_case("ipfs://QmXfzKRvjZz3u5JRgC4v5mGVbm9ahrUiB4DgzHBsnWbTMM")]
+    #[test_case("data:image/svg+xml;base64,PHN2Zy8+")]
+    #[test_case("HTTPS://example.com/ICON.svg"; "uppercase_https")]
+    #[test_case("IPFS://Qm123")]
+    fn test_validate_logo_uri_accepts(uri: &str) {
+        assert!(TIP20Token::validate_logo_uri(uri).is_ok());
+    }
+
     #[test]
-    fn test_validate_logo_uri() {
+    fn test_validate_logo_uri_length() {
         const MAX: usize = TIP20Token::MAX_LOGO_URI_BYTES;
 
-        // Valid: empty, all allowlisted schemes (case-insensitive), and exactly at the 256-byte cap.
+        // Valid: exactly at the 256-byte cap.
         let prefix = "https://example.com/";
         let at_cap = format!("{prefix}{}", "a".repeat(MAX - prefix.len()));
         assert_eq!(at_cap.len(), MAX);
-        for ok in [
-            "",
-            "https://example.com/icon.svg",
-            "http://example.com/icon.png",
-            "ipfs://QmXfzKRvjZz3u5JRgC4v5mGVbm9ahrUiB4DgzHBsnWbTMM",
-            "data:image/svg+xml;base64,PHN2Zy8+",
-            "HTTPS://example.com/ICON.svg",
-            "IPFS://Qm123",
-            &at_cap,
-        ] {
-            assert!(
-                TIP20Token::validate_logo_uri(ok).is_ok(),
-                "expected Ok for {ok:?}"
-            );
-        }
+        assert!(TIP20Token::validate_logo_uri(&at_cap).is_ok());
 
         // 257 bytes — one over the limit. Use a syntactically valid URI so
         // we exercise the length check, not the URI/scheme check.
@@ -2911,23 +2909,22 @@ pub(crate) mod tests {
             TIP20Token::validate_logo_uri(&too_long),
             Err(TIP20Error::logo_uri_too_long().into())
         );
+    }
 
-        // Disallowed schemes and malformed URIs
-        for bad in [
-            "javascript:alert(1)",
-            "file:///etc/passwd",
-            "ftp://x.test/icon.png",
-            "no-scheme-here",
-            "://missing-scheme.test",
-            "1https://digit-leading.test",
-            ":empty-scheme",
-            " https://leading-space.test",
-        ] {
-            assert_eq!(
-                TIP20Token::validate_logo_uri(bad),
-                Err(TIP20Error::invalid_logo_uri().into())
-            );
-        }
+    // Disallowed schemes and malformed URIs
+    #[test_case("javascript:alert(1)")]
+    #[test_case("file:///etc/passwd")]
+    #[test_case("ftp://x.test/icon.png")]
+    #[test_case("no-scheme-here")]
+    #[test_case("://missing-scheme.test")]
+    #[test_case("1https://digit-leading.test")]
+    #[test_case(":empty-scheme")]
+    #[test_case(" https://leading-space.test")]
+    fn test_validate_logo_uri_rejects(uri: &str) {
+        assert_eq!(
+            TIP20Token::validate_logo_uri(uri),
+            Err(TIP20Error::invalid_logo_uri().into())
+        );
     }
 
     #[test]

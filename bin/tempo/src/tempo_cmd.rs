@@ -1691,12 +1691,15 @@ mod tests {
     use alloy_primitives::U64;
     use clap::Parser;
     use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
+    use reth_ethereum::cli::Commands;
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Duration};
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_chainspec::spec::TempoChainSpecParser;
     use tempo_primitives::TempoHeader;
+    use test_case::test_case;
+    use tokio::time;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -1726,7 +1729,7 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+            Commands::Ext(TempoSubcommand::P2pProxy(_))
         ));
     }
 
@@ -1747,9 +1750,9 @@ mod tests {
             submit,
             no_fetch_verified_tokens,
         } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::SetValidatorToken(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::SetValidatorToken(
+                cmd,
+            ))) => cmd,
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
         assert_eq!(token.as_deref(), Some(TEST_VALIDATOR_TOKEN));
@@ -1764,9 +1767,9 @@ mod tests {
             .unwrap();
 
         let SetValidatorToken { token, list, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::SetValidatorToken(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::SetValidatorToken(
+                cmd,
+            ))) => cmd,
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
         assert!(token.is_none());
@@ -1788,9 +1791,9 @@ mod tests {
             no_fetch_verified_tokens,
             ..
         } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::SetValidatorToken(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::SetValidatorToken(
+                cmd,
+            ))) => cmd,
             other => panic!("expected SetValidatorToken, got `{other:?}`"),
         };
         assert!(no_fetch_verified_tokens);
@@ -1849,7 +1852,7 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::P2pProxy(_))
+            Commands::Ext(TempoSubcommand::P2pProxy(_))
         ));
     }
 
@@ -1880,9 +1883,9 @@ mod tests {
             secret,
             force,
         } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::EncryptSigningKey(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::EncryptSigningKey(
+                cmd,
+            ))) => cmd,
             other => panic!("expected variant EncryptSigningKey, got `{other:?}`"),
         };
         assert_eq!(&input, "/tmp/signing.key");
@@ -1891,18 +1894,9 @@ mod tests {
         assert!(!force);
     }
 
-    #[test]
-    fn parse_show_verification_key_with_secret() {
-        assert_parse_show_verification_key("show-verification-key");
-    }
-
-    #[test]
-    fn parse_calculate_public_key_alias_with_secret() {
-        assert_parse_show_verification_key("calculate-public-key");
-    }
-
-    #[track_caller]
-    fn assert_parse_show_verification_key(command: &str) {
+    #[test_case("show-verification-key"; "with_secret")]
+    #[test_case("calculate-public-key"; "calculate_public_key_alias_with_secret")]
+    fn parse_show_verification_key(command: &str) {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
@@ -1918,23 +1912,13 @@ mod tests {
             private_key,
             secret,
         } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+            Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::ShowVerificationKey(cmd),
             )) => cmd,
             other => panic!("expected ShowVerificationKey, got `{other:?}`"),
         };
         assert_eq!(&private_key, "/tmp/signing.key.age");
         assert_eq!(&secret.unwrap(), "/dev/fd/11");
-    }
-
-    #[test]
-    fn parse_generate_signing_key_command() {
-        assert_parse_generate_signing_key("generate-signing-key");
-    }
-
-    #[test]
-    fn parse_generate_private_key_alias() {
-        assert_parse_generate_signing_key("generate-private-key");
     }
 
     #[test]
@@ -1955,9 +1939,9 @@ mod tests {
             secret,
             force,
         } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::GenerateSigningKey(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::GenerateSigningKey(
+                cmd,
+            ))) => cmd,
             other => panic!("expected GenerateSigningKey, got `{other:?}`"),
         };
         assert!(!force);
@@ -1965,8 +1949,9 @@ mod tests {
         assert_eq!(&secret.unwrap(), "/dev/fd/11");
     }
 
-    #[track_caller]
-    fn assert_parse_generate_signing_key(command: &str) {
+    #[test_case("generate-signing-key"; "command")]
+    #[test_case("generate-private-key"; "private_key_alias")]
+    fn parse_generate_signing_key(command: &str) {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
@@ -1977,9 +1962,9 @@ mod tests {
         .unwrap();
 
         let GenerateSigningKey { output, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::GenerateSigningKey(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::GenerateSigningKey(
+                cmd,
+            ))) => cmd,
             other => panic!("expected GenerateSigningKey, got `{other:?}`"),
         };
         assert_eq!(&output, "/tmp/signing.key");
@@ -2009,7 +1994,7 @@ mod tests {
         .unwrap();
 
         let CreateAddValidatorSignatureArgs { signing_key, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+            Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::CreateAddValidatorSignature(cmd),
             )) => cmd,
             other => panic!("expected CreateAddValidatorSignature, got `{other:?}`"),
@@ -2040,7 +2025,7 @@ mod tests {
         .unwrap();
 
         let CreateRotateValidatorSignatureArgs { signing_key, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+            Commands::Ext(TempoSubcommand::Consensus(
                 ConsensusSubcommand::CreateRotateValidatorSignature(cmd),
             )) => cmd,
             other => panic!("expected CreateRotateValidatorSignature, got `{other:?}`"),
@@ -2071,9 +2056,9 @@ mod tests {
         .unwrap();
 
         let AddValidator { sig, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::AddValidator(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::AddValidator(cmd))) => {
+                cmd
+            }
             other => panic!("expected AddValidator, got `{other:?}`"),
         };
         assert!(sig.signing_key.is_none());
@@ -2129,9 +2114,9 @@ mod tests {
         .unwrap();
 
         let AddValidator { sig, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::AddValidator(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::AddValidator(cmd))) => {
+                cmd
+            }
             other => panic!("expected AddValidator, got `{other:?}`"),
         };
         let signing_key = sig.signing_key.unwrap();
@@ -2161,9 +2146,9 @@ mod tests {
         .unwrap();
 
         let RotateValidator { sig, .. } = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::RotateValidator(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::RotateValidator(
+                cmd,
+            ))) => cmd,
             other => panic!("expected RotateValidator, got `{other:?}`"),
         };
         let signing_key = sig.signing_key.unwrap();
@@ -2207,9 +2192,7 @@ mod tests {
         .unwrap();
 
         let cmd = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::ClaimFees(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::ClaimFees(cmd))) => cmd,
             other => panic!("expected ClaimFees, got `{other:?}`"),
         };
         cmd.run().await.unwrap();
@@ -2219,9 +2202,7 @@ mod tests {
     async fn info_without_rpc_url_or_chain_queries_mainnet_rpc() {
         let cli = TempoCli::try_parse_from(["tempo", "consensus", "info"]).unwrap();
         let info = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::Info(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::Info(cmd))) => cmd,
             other => panic!("expected Info, got `{other:?}`"),
         };
 
@@ -2293,12 +2274,10 @@ mod tests {
         let cli = TempoCli::try_parse_from(["tempo", "consensus", "info", "--rpc-url", &rpc_url])
             .unwrap();
         let info = match cli.command {
-            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::Info(cmd),
-            )) => cmd,
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::Info(cmd))) => cmd,
             other => panic!("expected Info, got `{other:?}`"),
         };
-        let err = tokio::time::timeout(std::time::Duration::from_secs(5), info.run())
+        let err = time::timeout(Duration::from_secs(5), info.run())
             .await
             .unwrap()
             .unwrap_err();
@@ -2310,72 +2289,28 @@ mod tests {
         );
     }
 
+    #[test_case("--at-address", TEST_FEE_RECIPIENT; "at_address")]
+    #[test_case("--of-validator", "1"; "of_validator")]
     #[tokio::test]
-    async fn claim_fees_infers_recipient_token() {
-        for (source, value) in [
-            ("--at-address", TEST_FEE_RECIPIENT),
-            ("--of-validator", "1"),
-        ] {
-            let cli = TempoCli::try_parse_from([
-                "tempo",
-                "consensus",
-                "claim-fees",
-                source,
-                value,
-                "--dry-run",
-            ])
-            .unwrap();
-            let cmd = match cli.command {
-                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                    ConsensusSubcommand::ClaimFees(cmd),
-                )) => cmd,
-                other => panic!("expected ClaimFees, got `{other:?}`"),
-            };
+    async fn claim_fees_infers_recipient_token(source: &str, value: &str) {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "claim-fees",
+            source,
+            value,
+            "--dry-run",
+        ])
+        .unwrap();
+        let cmd = match cli.command {
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::ClaimFees(cmd))) => cmd,
+            other => panic!("expected ClaimFees, got `{other:?}`"),
+        };
 
-            let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
-            let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
-            let asserter = Asserter::new();
-            if source == "--of-validator" {
-                let validator = Validator {
-                    publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
-                    validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
-                    ingress: TEST_INGRESS.to_owned(),
-                    egress: TEST_EGRESS.to_owned(),
-                    feeRecipient: recipient,
-                    index: 1,
-                    addedAtHeight: 0,
-                    deactivatedAtHeight: 0,
-                };
-                asserter.push_success(&Bytes::from(
-                    IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator),
-                ));
-            }
-            asserter.push_success(&Bytes::from(
-                IFeeManager::validatorTokensCall::abi_encode_returns(&token),
-            ));
-
-            let call = cmd
-                .resolve_call(async || {
-                    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
-                        .connect_mocked_client(asserter.clone()))
-                })
-                .await
-                .unwrap();
-
-            assert_eq!(call.validator, recipient);
-            assert_eq!(call.token, token);
-            assert!(asserter.read_q().is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn claim_fees_dry_run_resolves_recipient_and_token_without_sending() {
-        for (source, value) in [
-            ("--at-address", TEST_FEE_RECIPIENT),
-            ("--of-validator", "1"),
-        ] {
-            let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
-            let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+        let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
+        let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+        let asserter = Asserter::new();
+        if source == "--of-validator" {
             let validator = Validator {
                 publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
                 validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
@@ -2386,97 +2321,134 @@ mod tests {
                 addedAtHeight: 0,
                 deactivatedAtHeight: 0,
             };
+            asserter.push_success(&Bytes::from(
+                IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator),
+            ));
+        }
+        asserter.push_success(&Bytes::from(
+            IFeeManager::validatorTokensCall::abi_encode_returns(&token),
+        ));
 
-            let requests = Arc::new(Mutex::new(Vec::new()));
-            let submissions = Arc::new(Mutex::new(Vec::new()));
-            let mut module = RpcModule::new(requests.clone());
+        let call = cmd
+            .resolve_call(async || {
+                Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_mocked_client(asserter.clone()))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(call.validator, recipient);
+        assert_eq!(call.token, token);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[test_case("--at-address", TEST_FEE_RECIPIENT; "at_address")]
+    #[test_case("--of-validator", "1"; "of_validator")]
+    #[tokio::test]
+    async fn claim_fees_dry_run_resolves_recipient_and_token_without_sending(
+        source: &str,
+        value: &str,
+    ) {
+        let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
+        let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+        let validator = Validator {
+            publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
+            validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
+            ingress: TEST_INGRESS.to_owned(),
+            egress: TEST_EGRESS.to_owned(),
+            feeRecipient: recipient,
+            index: 1,
+            addedAtHeight: 0,
+            deactivatedAtHeight: 0,
+        };
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let submissions = Arc::new(Mutex::new(Vec::new()));
+        let mut module = RpcModule::new(requests.clone());
+        module
+            .register_method("eth_chainId", |_, _| "0xa5bf")
+            .unwrap();
+        module
+            .register_method("eth_call", move |params, requests| {
+                let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
+                let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
+                    IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
+                } else {
+                    IFeeManager::validatorTokensCall::abi_encode_returns(&token)
+                };
+                requests.lock().unwrap().push((tx, block));
+                Ok::<_, ErrorObjectOwned>(Bytes::from(response))
+            })
+            .unwrap();
+        for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
+            let submissions = submissions.clone();
             module
-                .register_method("eth_chainId", |_, _| "0xa5bf")
-                .unwrap();
-            module
-                .register_method("eth_call", move |params, requests| {
-                    let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
-                    let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
-                        IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
-                    } else {
-                        IFeeManager::validatorTokensCall::abi_encode_returns(&token)
-                    };
-                    requests.lock().unwrap().push((tx, block));
-                    Ok::<_, ErrorObjectOwned>(Bytes::from(response))
+                .register_method(method, move |_, _| {
+                    submissions.lock().unwrap().push(method);
+                    Ok::<_, ErrorObjectOwned>(B256::ZERO)
                 })
                 .unwrap();
-            for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
-                let submissions = submissions.clone();
-                module
-                    .register_method(method, move |_, _| {
-                        submissions.lock().unwrap().push(method);
-                        Ok::<_, ErrorObjectOwned>(B256::ZERO)
-                    })
-                    .unwrap();
-            }
-            let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
-            let rpc_url = format!("http://{}", server.local_addr().unwrap());
-            let handle = server.start(module);
-            let temp_dir = tempfile::tempdir().unwrap();
-            let missing_wallet = temp_dir.path().join("missing-wallet.key");
+        }
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", server.local_addr().unwrap());
+        let handle = server.start(module);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_wallet = temp_dir.path().join("missing-wallet.key");
 
-            let cli = TempoCli::try_parse_from([
-                "tempo",
-                "consensus",
-                "claim-fees",
-                source,
-                value,
-                "--rpc-url",
-                &rpc_url,
-                "--wallet-key",
-                missing_wallet.to_str().unwrap(),
-                "--dry-run",
-            ])
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "claim-fees",
+            source,
+            value,
+            "--rpc-url",
+            &rpc_url,
+            "--wallet-key",
+            missing_wallet.to_str().unwrap(),
+            "--dry-run",
+        ])
+        .unwrap();
+        let cmd = match cli.command {
+            Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::ClaimFees(cmd))) => cmd,
+            other => panic!("expected ClaimFees, got `{other:?}`"),
+        };
+
+        // Exercise lookup, transaction printing, and the dry-run exit without opening a wallet.
+        // Leave --yes unset so dry runs must also skip the confirmation prompt.
+        time::timeout(Duration::from_secs(5), cmd.run())
+            .await
+            .unwrap()
             .unwrap();
-            let cmd = match cli.command {
-                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                    ConsensusSubcommand::ClaimFees(cmd),
-                )) => cmd,
-                other => panic!("expected ClaimFees, got `{other:?}`"),
-            };
 
-            // Exercise lookup, transaction printing, and the dry-run exit without opening a wallet.
-            // Leave --yes unset so dry runs must also skip the confirmation prompt.
-            tokio::time::timeout(std::time::Duration::from_secs(5), cmd.run())
-                .await
-                .unwrap()
-                .unwrap();
-
-            let mut expected = Vec::new();
-            if source == "--of-validator" {
-                expected.push((
-                    TransactionRequest::default()
-                        .to(VALIDATOR_CONFIG_V2_ADDRESS)
-                        .input(
-                            IValidatorConfigV2::validatorByIndexCall { index: 1 }
-                                .abi_encode()
-                                .into(),
-                        ),
-                    "pending".to_owned(),
-                ));
-            }
+        let mut expected = Vec::new();
+        if source == "--of-validator" {
             expected.push((
                 TransactionRequest::default()
-                    .to(TIP_FEE_MANAGER_ADDRESS)
+                    .to(VALIDATOR_CONFIG_V2_ADDRESS)
                     .input(
-                        IFeeManager::validatorTokensCall {
-                            validator: recipient,
-                        }
-                        .abi_encode()
-                        .into(),
+                        IValidatorConfigV2::validatorByIndexCall { index: 1 }
+                            .abi_encode()
+                            .into(),
                     ),
-                "latest".to_owned(),
+                "pending".to_owned(),
             ));
-            assert_eq!(*requests.lock().unwrap(), expected);
-            assert!(submissions.lock().unwrap().is_empty());
-            handle.stop().unwrap();
-            handle.stopped().await;
         }
+        expected.push((
+            TransactionRequest::default()
+                .to(TIP_FEE_MANAGER_ADDRESS)
+                .input(
+                    IFeeManager::validatorTokensCall {
+                        validator: recipient,
+                    }
+                    .abi_encode()
+                    .into(),
+                ),
+            "latest".to_owned(),
+        ));
+        assert_eq!(*requests.lock().unwrap(), expected);
+        assert!(submissions.lock().unwrap().is_empty());
+        handle.stop().unwrap();
+        handle.stopped().await;
     }
 
     #[tokio::test]
@@ -2492,9 +2464,9 @@ mod tests {
             ])
             .unwrap();
             let cmd = match cli.command {
-                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                    ConsensusSubcommand::ClaimFees(cmd),
-                )) => cmd,
+                Commands::Ext(TempoSubcommand::Consensus(ConsensusSubcommand::ClaimFees(cmd))) => {
+                    cmd
+                }
                 other => panic!("expected ClaimFees, got `{other:?}`"),
             };
             let validator = Validator {

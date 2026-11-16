@@ -5525,63 +5525,38 @@ mod tests {
     /// Quote-vs-swap parity across fragmented book configs and all four per-order
     /// branches (bid/ask × exact-in/exact-out) under T12. The last config spans
     /// multiple ticks to exercise the tick-advancement path in `next_order_after`.
-    #[test]
-    fn test_quote_matches_swap_t12_parity() -> eyre::Result<()> {
-        // Each config is a fragmented book of (size, tick) orders.
-        let books: &[&[(u128, i16)]] = &[
-            &[(100_000_005, 10), (100_000_007, 10)],
-            &[(100_000_003, 20), (100_000_009, 20), (100_000_001, 20)],
-            &[(123_456_789, 30), (100_000_000, 30)],
-            &[(100_000_001, -10), (100_000_001, -10), (100_000_001, -10)],
-            // Multi-tick: crosses two tick levels (exercises next_order_after).
-            &[
-                (100_000_005, 10),
-                (100_000_007, 10),
-                (100_000_003, -10),
-                (100_000_009, -10),
-            ],
-        ];
+    // Each config is a fragmented book of (size, tick) orders.
+    #[test_case(&[(100_000_005, 10), (100_000_007, 10)]; "two_orders_tick_10")]
+    #[test_case(&[(100_000_003, 20), (100_000_009, 20), (100_000_001, 20)]; "three_orders_tick_20")]
+    #[test_case(&[(123_456_789, 30), (100_000_000, 30)]; "uneven_orders_tick_30")]
+    #[test_case(&[(100_000_001, -10), (100_000_001, -10), (100_000_001, -10)]; "equal_orders_tick_minus_10")]
+    // Multi-tick: crosses two tick levels (exercises next_order_after).
+    #[test_case(&[(100_000_005, 10), (100_000_007, 10), (100_000_003, -10), (100_000_009, -10)]; "multi_tick")]
+    fn test_quote_matches_swap_t12_parity(book: &'static [(u128, i16)]) -> eyre::Result<()> {
+        let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
+        let partial = book[0].0 + book.get(1).map(|(s, _)| *s).unwrap_or(0) / 2;
 
-        for book in books {
-            let total_base: u128 = book.iter().map(|(s, _)| *s).sum();
-            let partial = book[0].0 + book.get(1).map(|(s, _)| *s).unwrap_or(0) / 2;
-
-            for target_base in [total_base, partial] {
-                // bids: taker SELLS base exact-in
-                check_quote_matches_swap_t12(book, true, true, target_base)?;
-                // asks: taker BUYS base exact-out
-                check_quote_matches_swap_t12(book, false, false, target_base)?;
-            }
-
-            // asks: taker spends the (T12-exact) quote input needed to buy all base
-            check_quote_matches_swap_t12(book, false, true, total_base)?;
-            // bids: taker targets the quote output of roughly half the base liquidity
-            check_quote_matches_swap_t12(book, true, false, total_base / 2)?;
+        for target_base in [total_base, partial] {
+            // bids: taker SELLS base exact-in
+            check_quote_matches_swap_t12(book, true, true, target_base)?;
+            // asks: taker BUYS base exact-out
+            check_quote_matches_swap_t12(book, false, false, target_base)?;
         }
+
+        // asks: taker spends the (T12-exact) quote input needed to buy all base
+        check_quote_matches_swap_t12(book, false, true, total_base)?;
+        // bids: taker targets the quote output of roughly half the base liquidity
+        check_quote_matches_swap_t12(book, true, false, total_base / 2)?;
         Ok(())
     }
 
-    #[test]
-    fn test_quote_matches_swap_t12_boundary_ticks() -> eyre::Result<()> {
-        let boundary_books = [
-            [
-                (100_000_005, MAX_TICK),
-                (100_000_007, 1280),
-                (100_000_003, 1270),
-            ],
-            [
-                (100_000_005, MIN_TICK),
-                (100_000_007, -1280),
-                (100_000_003, -1270),
-            ],
-        ];
-
-        for book in &boundary_books {
-            let total_base = book.iter().map(|(size, _)| *size).sum();
-            for maker_is_bid in [true, false] {
-                for exact_in in [true, false] {
-                    check_quote_matches_swap_t12(book, maker_is_bid, exact_in, total_base)?;
-                }
+    #[test_case([(100_000_005, MAX_TICK), (100_000_007, 1280), (100_000_003, 1270)]; "max_tick")]
+    #[test_case([(100_000_005, MIN_TICK), (100_000_007, -1280), (100_000_003, -1270)]; "min_tick")]
+    fn test_quote_matches_swap_t12_boundary_ticks(book: [(u128, i16); 3]) -> eyre::Result<()> {
+        let total_base = book.iter().map(|(size, _)| *size).sum();
+        for maker_is_bid in [true, false] {
+            for exact_in in [true, false] {
+                check_quote_matches_swap_t12(&book, maker_is_bid, exact_in, total_base)?;
             }
         }
 

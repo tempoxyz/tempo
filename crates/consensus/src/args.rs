@@ -770,8 +770,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn verification_mode_resolves_t14_and_overrides() {
+    #[test_case(99, false)]
+    #[test_case(100, true)]
+    #[test_case(101, true)]
+    fn verification_mode_resolves_t14_and_overrides(timestamp: u64, deferred: bool) {
         for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
             chainspec.inner.hardforks.remove(&TempoHardfork::T14);
             // An unscheduled fork keeps the original immediate verification policy.
@@ -780,14 +782,12 @@ mod tests {
                 .inner
                 .hardforks
                 .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
-            for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
-                assert_eq!(
-                    VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
-                    deferred
-                );
-                assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
-                assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
-            }
+            assert_eq!(
+                VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
+                deferred
+            );
+            assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
+            assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
         }
     }
 
@@ -861,26 +861,29 @@ mod tests {
         assert_eq!(args.inactive_views_until_leader_skip, None);
     }
 
+    // Commonware asserts strict inequality against both at epoch entry.
+    #[test_case("10s", "wait-to-rebroadcast-nullify")]
+    #[test_case("5s", "wait-to-rebroadcast-nullify")]
+    #[test_case("2s", "wait-for-notarizations")]
+    fn inactive_time_before_leader_skip_must_exceed_notarization_and_rebroadcast_waits(
+        value: &str,
+        offending: &str,
+    ) {
+        let err = parse(&[
+            "--dev",
+            "--consensus.inactive-time-before-leader-skip",
+            value,
+        ])
+        .consensus
+        .validate_simplex_timing()
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
+        assert!(msg.contains(offending), "{msg}");
+    }
+
     #[test]
-    fn inactive_time_before_leader_skip_must_exceed_notarization_and_rebroadcast_waits() {
-        // Commonware asserts strict inequality against both at epoch entry.
-        for (value, offending) in [
-            ("10s", "wait-to-rebroadcast-nullify"),
-            ("5s", "wait-to-rebroadcast-nullify"),
-            ("2s", "wait-for-notarizations"),
-        ] {
-            let err = parse(&[
-                "--dev",
-                "--consensus.inactive-time-before-leader-skip",
-                value,
-            ])
-            .consensus
-            .validate_simplex_timing()
-            .unwrap_err();
-            let msg = err.to_string();
-            assert!(msg.contains("inactive-time-before-leader-skip"), "{msg}");
-            assert!(msg.contains(offending), "{msg}");
-        }
+    fn inactive_time_before_leader_skip_above_notarization_and_rebroadcast_waits_validates() {
         let args = parse(&[
             "--dev",
             "--consensus.inactive-time-before-leader-skip",

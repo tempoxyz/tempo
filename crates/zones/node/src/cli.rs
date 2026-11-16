@@ -783,7 +783,7 @@ mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
     use alloy_primitives::{Address, address};
-    use clap::Parser as _;
+    use clap::{Parser as _, error::ErrorKind};
     use reth_evm::ConfigureEvm as _;
     use test_case::test_case;
 
@@ -829,21 +829,17 @@ mod tests {
         }
     }
 
+    #[test_case(&["re-execute"]; "re_execute")]
+    #[test_case(&["import", "blocks.rlp"]; "import")]
+    #[test_case(&["stage", "run", "--from", "1", "--to", "2", "execution"]; "stage_run")]
+    fn block_execution_subcommands_accept_l1_offline(args: &[&str]) {
+        assert_eq!(parse_l1_access(args).unwrap(), CliL1Access::Rpc);
+        let offline = [args, &["--l1.offline"]].concat();
+        assert_eq!(parse_l1_access(&offline).unwrap(), CliL1Access::Offline);
+    }
+
     #[test]
-    fn block_execution_subcommands_accept_l1_offline() {
-        for args in [
-            &["re-execute"][..],
-            &["import", "blocks.rlp"],
-            &["stage", "run", "--from", "1", "--to", "2", "execution"],
-        ] {
-            assert_eq!(parse_l1_access(args).unwrap(), CliL1Access::Rpc, "{args:?}");
-            let offline = [args, &["--l1.offline"]].concat();
-            assert_eq!(
-                parse_l1_access(&offline).unwrap(),
-                CliL1Access::Offline,
-                "{offline:?}"
-            );
-        }
+    fn l1_offline_before_stage_subcommand_and_init_without_l1() {
         assert_eq!(
             parse_l1_access(&[
                 "stage",
@@ -861,16 +857,11 @@ mod tests {
         assert_eq!(parse_l1_access(&["init"]).unwrap(), CliL1Access::Unused);
     }
 
-    #[test]
-    fn l1_offline_is_rejected_outside_block_execution_subcommands() {
-        for args in [&["init", "--l1.offline"][..], &["node", "--l1.offline"]] {
-            let error = parse_l1_access(args).unwrap_err();
-            assert_eq!(
-                error.kind(),
-                clap::error::ErrorKind::UnknownArgument,
-                "{args:?}"
-            );
-        }
+    #[test_case(&["init", "--l1.offline"]; "init")]
+    #[test_case(&["node", "--l1.offline"]; "node")]
+    fn l1_offline_is_rejected_outside_block_execution_subcommands(args: &[&str]) {
+        let error = parse_l1_access(args).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
@@ -916,36 +907,28 @@ mod tests {
         .portal()
     }
 
+    const PROVER_ARGS: [&str; 6] = [
+        "tempo-zone",
+        "--l1.rpc-url",
+        "ws://localhost:8546",
+        "--sequencer.enable-prover",
+        "--sequencer.prover-attestation-policy",
+        "policy.json",
+    ];
+
+    #[test_case(&["--sequencer.prover-address", "T12=old:5000", "--sequencer.prover-address", "T13=new:5000", "--sequencer.prover-address", "T14=t14:5000"]; "repeated")]
+    #[test_case(&["--sequencer.prover-address", "T12=old:5000,T13=new:5000,T14=t14:5000"]; "comma_separated")]
+    fn prover_addresses_accept_repeated_and_comma_separated_assignments(flags: &[&str]) {
+        let args = ZoneArgsParser::try_parse_from(PROVER_ARGS.iter().chain(flags))
+            .unwrap()
+            .zone;
+        assert_eq!(args.prover_addresses.len(), 3);
+        assert!(args.prover_attestation_policy.is_some());
+    }
+
     #[test]
-    fn prover_addresses_accept_repeated_and_comma_separated_assignments() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--sequencer.enable-prover",
-            "--sequencer.prover-attestation-policy",
-            "policy.json",
-        ];
-        for flags in [
-            vec![
-                "--sequencer.prover-address",
-                "T12=old:5000",
-                "--sequencer.prover-address",
-                "T13=new:5000",
-                "--sequencer.prover-address",
-                "T14=t14:5000",
-            ],
-            vec![
-                "--sequencer.prover-address",
-                "T12=old:5000,T13=new:5000,T14=t14:5000",
-            ],
-        ] {
-            let args = ZoneArgsParser::try_parse_from(common.into_iter().chain(flags))
-                .unwrap()
-                .zone;
-            assert_eq!(args.prover_addresses.len(), 3);
-            assert!(args.prover_attestation_policy.is_some());
-        }
+    fn prover_addresses_default_to_local_prover_and_reject_untagged_addresses() {
+        let common = PROVER_ARGS;
         let local_prover =
             ZoneArgsParser::try_parse_from(common[..common.len() - 2].iter().copied())
                 .unwrap()
@@ -969,7 +952,7 @@ mod tests {
                 .chain(["--sequencer.prover-address", "old:5000"]),
         )
         .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
     }
 
     #[tokio::test]
@@ -1038,7 +1021,7 @@ mod tests {
     fn top_level_help_lists_dev_subcommand() {
         let result = ZoneCli::try_parse_from(["tempo-zone", "--help"]);
         let error = result.err().expect("--help exits through clap");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
         assert!(error.to_string().contains("  dev"));
     }
 
@@ -1102,7 +1085,7 @@ mod tests {
         let error =
             ZoneArgsParser::try_parse_from(common.into_iter().chain(["--sequencer-key", "0x01"]))
                 .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1203,10 +1186,7 @@ mod tests {
                 .chain(["--sequencer.manifest", "zone.toml"]),
         )
         .unwrap_err();
-        assert_eq!(
-            missing_key.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
+        assert_eq!(missing_key.kind(), ErrorKind::MissingRequiredArgument);
 
         // `--secp256k1.key` is deliberately not a parse-time requirement: an `rpc_only` node
         // holds no individual key. Whether one is expected is decided against the manifest in
@@ -1230,7 +1210,7 @@ mod tests {
             "--sequencer",
         ]))
         .unwrap_err();
-        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -1323,7 +1303,7 @@ mod tests {
             &above_limit,
         ])
         .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -1333,10 +1313,7 @@ mod tests {
         let without_manifest =
             ZoneArgsParser::try_parse_from(common.into_iter().chain(["--p2p.bypass-ip-check"]))
                 .unwrap_err();
-        assert_eq!(
-            without_manifest.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
+        assert_eq!(without_manifest.kind(), ErrorKind::MissingRequiredArgument);
 
         let default = ZoneArgsParser::try_parse_from(common).unwrap();
         assert!(!default.zone.p2p_bypass_ip_check);
@@ -1391,7 +1368,7 @@ mod tests {
             "0x5ad0000000000000000000000000000000000002",
         ])
         .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

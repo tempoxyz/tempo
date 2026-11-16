@@ -503,6 +503,7 @@ mod tests {
     use tempo_primitives::transaction::envelope::{
         TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE,
     };
+    use test_case::test_case;
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
         test_utils::MockL1Reader,
@@ -666,8 +667,12 @@ mod tests {
         assert_eq!(reader.storage_requests().len(), reads_before);
     }
 
-    #[test]
-    fn tip20_pause_flag_follows_l1_at_the_active_anchor_from_t15() {
+    #[test_case(TempoHardfork::T14, false)]
+    #[test_case(TempoHardfork::T15, true)]
+    fn tip20_pause_flag_follows_l1_at_the_active_anchor_from_t15(
+        spec: TempoHardfork,
+        paused_at_child: bool,
+    ) {
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
         let token = address!("0x20C00000000000000000000000000000000000AA");
@@ -694,12 +699,10 @@ mod tests {
             assert!(result.status, "paused() reverted: {result:?}");
             ITIP20::pausedCall::abi_decode_returns(&result.output).unwrap()
         };
-        for (spec, paused_at_child) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
-            let mut evm = genesis_zone_evm(&reader, portal, token, spec);
-            let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
-            assert!(evm.transact(&tx).unwrap().commit().status);
-            assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
-        }
+        let mut evm = genesis_zone_evm(&reader, portal, token, spec);
+        let tx = advance_tempo_tx(&child, vec![enabled_token]);
+        assert!(evm.transact(&tx).unwrap().commit().status);
+        assert_eq!(paused(&mut evm), paused_at_child);
     }
 
     /// Returns a Tempo header for checkpoint `number` whose parent hashes to `parent_hash`.

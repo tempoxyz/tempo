@@ -478,6 +478,7 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn test_error_display() {
@@ -522,22 +523,12 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_fee_token_errors_are_not_bad_transactions() {
-        let address = Address::repeat_byte(0x20);
-        let cases = [
-            TempoInvalidTransaction::InvalidFeeToken(address),
-            TempoInvalidTransaction::FeeTokenNotTip20 { address },
-            TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                address,
-                currency: "EUR".to_string(),
-            },
-            TempoInvalidTransaction::FeeTokenPaused { address },
-        ];
-
-        for err in cases {
-            assert!(!err.is_bad_transaction(), "{err} should not be bad");
-        }
+    #[test_case(TempoInvalidTransaction::InvalidFeeToken(Address::repeat_byte(0x20)); "invalid_fee_token")]
+    #[test_case(TempoInvalidTransaction::FeeTokenNotTip20 { address: Address::repeat_byte(0x20) }; "fee_token_not_tip20")]
+    #[test_case(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address: Address::repeat_byte(0x20), currency: "EUR".to_string() }; "fee_token_not_usd_currency")]
+    #[test_case(TempoInvalidTransaction::FeeTokenPaused { address: Address::repeat_byte(0x20) }; "fee_token_paused")]
+    fn test_fee_token_errors_are_not_bad_transactions(err: TempoInvalidTransaction) {
+        assert!(!err.is_bad_transaction(), "should not be bad");
     }
 
     #[test]
@@ -550,19 +541,10 @@ mod tests {
         assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
     }
 
-    #[test]
-    fn test_admin_key_dependent_errors_are_not_bad() {
-        let cases = [
-            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
-            TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                expected: Address::repeat_byte(0x01),
-                actual: Address::repeat_byte(0x02),
-            },
-        ];
-
-        for err in cases {
-            assert!(!err.is_bad_transaction(), "{err} should not be bad");
-        }
+    #[test_case(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys; "access_key_cannot_authorize_other_keys")]
+    #[test_case(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { expected: Address::repeat_byte(0x01), actual: Address::repeat_byte(0x02) }; "key_authorization_not_signed_by_root")]
+    fn test_admin_key_dependent_errors_are_not_bad(err: TempoInvalidTransaction) {
+        assert!(!err.is_bad_transaction(), "should not be bad");
     }
 
     #[test]

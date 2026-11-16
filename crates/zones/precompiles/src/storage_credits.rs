@@ -47,6 +47,7 @@ mod tests {
     use alloy_sol_types::{SolCall, SolError};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::Unauthorized;
+    use test_case::test_case;
 
     use crate::{
         storage::StorageCtx,
@@ -60,9 +61,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || StorageCreditsRules.admit(data, caller))
     }
 
-    #[test]
-    fn account_indexed_getters_allow_only_owner() {
-        let owner = Address::repeat_byte(0x11);
+    const OWNER: Address = Address::repeat_byte(0x11);
+
+    #[test_case(IStorageCredits::IStorageCreditsCalls::balanceOf(IStorageCredits::balanceOfCall { account: OWNER }); "balance_of")]
+    #[test_case(IStorageCredits::IStorageCreditsCalls::modeOf(IStorageCredits::modeOfCall { account: OWNER }); "mode_of")]
+    #[test_case(IStorageCredits::IStorageCreditsCalls::budgetOf(IStorageCredits::budgetOfCall { account: OWNER }); "budget_of")]
+    fn account_indexed_getters_allow_only_owner(call: IStorageCredits::IStorageCreditsCalls) {
         let sequencer = Address::repeat_byte(0x22);
         let outsider = Address::repeat_byte(0x33);
         let rules = StorageCreditsRules;
@@ -70,27 +74,15 @@ mod tests {
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
 
         StorageCtx::enter(&mut storage, || {
-            for call in [
-                IStorageCredits::IStorageCreditsCalls::balanceOf(IStorageCredits::balanceOfCall {
-                    account: owner,
-                }),
-                IStorageCredits::IStorageCreditsCalls::modeOf(IStorageCredits::modeOfCall {
-                    account: owner,
-                }),
-                IStorageCredits::IStorageCreditsCalls::budgetOf(IStorageCredits::budgetOfCall {
-                    account: owner,
-                }),
-            ] {
+            assert!(matches!(
+                rules.admit(&call.abi_encode(), OWNER),
+                CallCheck::Continue
+            ));
+            for caller in [sequencer, outsider] {
                 assert!(matches!(
-                    rules.admit(&call.abi_encode(), owner),
-                    CallCheck::Continue
+                    rules.admit(&call.abi_encode(), caller),
+                    CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
                 ));
-                for caller in [sequencer, outsider] {
-                    assert!(matches!(
-                        rules.admit(&call.abi_encode(), caller),
-                        CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
-                    ));
-                }
             }
         });
     }

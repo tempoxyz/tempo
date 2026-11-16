@@ -1367,6 +1367,7 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
     use zone_prover::{ErrorCode, ProofBundle};
     use zone_spf::{
         BlockTransition, DepositQueueTransition, LastBatchCommitment, TokenEnablementTransition,
@@ -1597,25 +1598,27 @@ mod tests {
         Ok(args)
     }
 
+    const BOUNDARY_HASH: B256 = B256::repeat_byte(0xab);
+
+    #[test_case(100.into(), 120.into(); "numbers")]
+    #[test_case(100.into(), BOUNDARY_HASH.into(); "number_to_hash")]
+    #[test_case(BOUNDARY_HASH.into(), 120.into(); "hash_to_number")]
+    #[test_case(BOUNDARY_HASH.into(), BOUNDARY_HASH.into(); "hashes")]
+    fn parses_number_and_hash_boundaries(from: BlockHashOrNumber, to: BlockHashOrNumber) {
+        let arg = |block: &BlockHashOrNumber| match block {
+            BlockHashOrNumber::Hash(hash) => hash.to_string(),
+            BlockHashOrNumber::Number(number) => number.to_string(),
+        };
+        let (from_arg, to_arg) = (arg(&from), arg(&to));
+        let args = parse_range_args(&["--from-block", &from_arg, "--to-block", &to_arg]).unwrap();
+        assert_eq!(args.from_block, Some(from));
+        assert_eq!(args.to_block, Some(to));
+    }
+
     #[test]
-    fn parses_number_and_hash_boundaries() {
-        let hash = B256::repeat_byte(0xab);
+    fn parses_hash_with_block_count_and_rejects_invalid_ranges() {
+        let hash = BOUNDARY_HASH;
         let hash_arg = hash.to_string();
-        for (from, to, expected_from, expected_to) in [
-            ("100", "120", 100.into(), 120.into()),
-            ("100", hash_arg.as_str(), 100.into(), hash.into()),
-            (hash_arg.as_str(), "120", hash.into(), 120.into()),
-            (
-                hash_arg.as_str(),
-                hash_arg.as_str(),
-                hash.into(),
-                hash.into(),
-            ),
-        ] {
-            let args = parse_range_args(&["--from-block", from, "--to-block", to]).unwrap();
-            assert_eq!(args.from_block, Some(expected_from));
-            assert_eq!(args.to_block, Some(expected_to));
-        }
         let args =
             parse_range_args(&["--from-block", &hash_arg, "--zone-block-count", "20"]).unwrap();
         assert_eq!(args.from_block, Some(hash.into()));

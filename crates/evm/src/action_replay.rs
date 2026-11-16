@@ -716,6 +716,7 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
     use tempo_primitives::TempoTxEnvelope;
+    use test_case::test_case;
 
     fn empty_evm(database: InMemoryDB) -> TempoEvm<'static> {
         build_tempo_evm(
@@ -889,56 +890,57 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fee_token_balance_check_replays_only_when_affordability_is_unchanged() {
+    #[test_case(100, 80, true, true)]
+    #[test_case(100, 120, true, true)]
+    #[test_case(100, 50, true, true)]
+    #[test_case(100, 49, true, false)]
+    #[test_case(20, 49, false, true)]
+    #[test_case(20, 0, false, true)]
+    #[test_case(20, 50, false, false)]
+    fn fee_token_balance_check_replays_only_when_affordability_is_unchanged(
+        observed: u64,
+        current: u64,
+        sufficient: bool,
+        succeeds: bool,
+    ) {
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let chainspec = test_chainspec();
-        for (observed, current, sufficient, succeeds) in [
-            (100, 80, true, true),
-            (100, 120, true, true),
-            (100, 50, true, true),
-            (100, 49, true, false),
-            (20, 49, false, true),
-            (20, 0, false, true),
-            (20, 50, false, false),
-        ] {
-            let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(current));
-            let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+        let mut executor = executor_with_storage(&chainspec, token, slot, U256::from(current));
+        let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+            token,
+            slot,
+            U256::from(observed),
+            U256::from(50),
+            sufficient,
+        )];
+        if sufficient {
+            actions.push(StorageAction::Sdec(
                 token,
                 slot,
                 U256::from(observed),
-                U256::from(50),
-                sufficient,
-            )];
+                U256::from(10),
+            ));
+        }
+        let result = executor.replay_actions(&[], actions, None);
+        if succeeds {
+            let state = result.unwrap();
+            let value = state
+                .account_changes()
+                .find(|changes| changes.address == token)
+                .and_then(|changes| changes.storage.slots.get(&slot).map(|slot| slot.value));
             if sufficient {
-                actions.push(StorageAction::Sdec(
-                    token,
-                    slot,
-                    U256::from(observed),
-                    U256::from(10),
-                ));
-            }
-            let result = executor.replay_actions(&[], actions, None);
-            if succeeds {
-                let state = result.unwrap();
-                let value = state
-                    .account_changes()
-                    .find(|changes| changes.address == token)
-                    .and_then(|changes| changes.storage.slots.get(&slot).map(|slot| slot.value));
-                if sufficient {
-                    let value = value.unwrap();
-                    assert_eq!(value.original, U256::from(current));
-                    assert_eq!(value.current, U256::from(current - 10));
-                } else {
-                    assert!(value.is_none());
-                }
+                let value = value.unwrap();
+                assert_eq!(value.original, U256::from(current));
+                assert_eq!(value.current, U256::from(current - 10));
             } else {
-                assert_eq!(
-                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
-                    Some(StorageActionReplayError::ActionConflict)
-                );
+                assert!(value.is_none());
             }
+        } else {
+            assert_eq!(
+                StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                Some(StorageActionReplayError::ActionConflict)
+            );
         }
     }
 

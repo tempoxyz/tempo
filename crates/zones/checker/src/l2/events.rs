@@ -1089,28 +1089,26 @@ mod tests {
         assert!(error.to_string().contains("malformed TempoAdvanced"));
     }
 
+    #[test_case(ZONE_INBOX_ADDRESS, vec![B256::repeat_byte(0x99)]; "inbox_unknown_topic")]
+    #[test_case(ZONE_OUTBOX_ADDRESS, vec![]; "outbox_no_topics")]
+    fn rejects_unknown_protocol_logs(address: Address, topics: Vec<B256>) {
+        let unsupported = Log {
+            address,
+            data: LogData::new_unchecked(topics, Bytes::new()),
+        };
+        assert!(
+            collect(
+                &[transaction()],
+                &[receipt(vec![unsupported])],
+                BlockNumHash::new(4, B256::ZERO),
+            )
+            .is_err()
+        );
+    }
+
     #[test]
-    fn rejects_unknown_protocol_logs_and_ignores_other_emitters() {
+    fn ignores_other_emitters() {
         let anchor = anchor_log(7);
-        for unsupported in [
-            Log {
-                address: ZONE_INBOX_ADDRESS,
-                data: LogData::new_unchecked(vec![B256::repeat_byte(0x99)], Bytes::new()),
-            },
-            Log {
-                address: ZONE_OUTBOX_ADDRESS,
-                data: LogData::new_unchecked(vec![], Bytes::new()),
-            },
-        ] {
-            assert!(
-                collect(
-                    &[transaction()],
-                    &[receipt(vec![unsupported])],
-                    BlockNumHash::new(4, B256::ZERO),
-                )
-                .is_err()
-            );
-        }
         let logs = vec![
             Log {
                 address: Address::repeat_byte(0x88),
@@ -1398,8 +1396,10 @@ mod tests {
         assert!(error.to_string().contains("unexplained mint"), "{error}");
     }
 
-    #[test]
-    fn rejects_token_burn_outside_withdrawal() {
+    #[test_case(true, true)]
+    #[test_case(false, true)]
+    #[test_case(true, false)]
+    fn rejects_token_burn_outside_withdrawal(with_burn_transfer: bool, with_token_burn: bool) {
         let token = Address::repeat_byte(1);
         let owner = Address::repeat_byte(2);
         let amount = U256::from(10);
@@ -1410,19 +1410,20 @@ mod tests {
         };
         let burn_transfer = transfer(token, owner, Address::ZERO, amount);
 
-        for events in [
-            vec![burn_transfer, token_burn],
-            vec![token_burn],
-            vec![burn_transfer],
-        ] {
-            let error = authenticate_withdrawals(events).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("token burn outside a withdrawal"),
-                "{error}"
-            );
+        let mut events = Vec::new();
+        if with_burn_transfer {
+            events.push(burn_transfer);
         }
+        if with_token_burn {
+            events.push(token_burn);
+        }
+        let error = authenticate_withdrawals(events).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("token burn outside a withdrawal"),
+            "{error}"
+        );
     }
 
     #[test]

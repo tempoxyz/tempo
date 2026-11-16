@@ -40,6 +40,7 @@ pub(super) mod tests {
     use super::*;
     use crate::test_util::with_storage;
 
+    use alloy::primitives::hex;
     use base64::Engine;
     use minicbor::Encoder;
     use p384::ecdsa::{DerSignature, Signature, SigningKey, signature::Signer};
@@ -50,6 +51,7 @@ pub(super) mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
+    use test_case::test_case;
     use x509_cert::{
         Certificate,
         builder::{Builder, CertificateBuilder, Profile},
@@ -276,26 +278,19 @@ pub(super) mod tests {
         }
     }
 
-    #[test]
-    fn rejects_wrong_curve_and_compressed_leaf_key() {
-        const P384_OID_DER: [u8; 7] = alloy::primitives::hex!("06052b81040022");
-        const P521_OID_DER: [u8; 7] = alloy::primitives::hex!("06052b81040023");
-        const UNCOMPRESSED_KEY_HEADER: [u8; 4] = alloy::primitives::hex!("03620004");
-        const COMPRESSED_KEY_HEADER: [u8; 4] = alloy::primitives::hex!("03620002");
+    const P384_OID_DER: [u8; 7] = hex!("06052b81040022");
+    const P521_OID_DER: [u8; 7] = hex!("06052b81040023");
+    const UNCOMPRESSED_KEY_HEADER: [u8; 4] = hex!("03620004");
+    const COMPRESSED_KEY_HEADER: [u8; 4] = hex!("03620002");
 
-        for (needle, replacement) in [
-            (P384_OID_DER.as_slice(), P521_OID_DER.as_slice()),
-            (
-                UNCOMPRESSED_KEY_HEADER.as_slice(),
-                COMPRESSED_KEY_HEADER.as_slice(),
-            ),
-        ] {
-            let mut document = production_fixture();
-            mutate_leaf_certificate(&mut document, |leaf| {
-                replace_unique(leaf, needle, replacement);
-            });
-            assert!(verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).is_none());
-        }
+    #[test_case(P384_OID_DER.as_slice(), P521_OID_DER.as_slice(); "wrong_curve")]
+    #[test_case(UNCOMPRESSED_KEY_HEADER.as_slice(), COMPRESSED_KEY_HEADER.as_slice(); "compressed_leaf_key")]
+    fn rejects_wrong_curve_and_compressed_leaf_key(needle: &[u8], replacement: &[u8]) {
+        let mut document = production_fixture();
+        mutate_leaf_certificate(&mut document, |leaf| {
+            replace_unique(leaf, needle, replacement);
+        });
+        assert!(verify_production_document_at(&document, PRODUCTION_FIXTURE_TIME).is_none());
     }
 
     #[test]

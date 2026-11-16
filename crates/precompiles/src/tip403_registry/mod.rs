@@ -1786,8 +1786,12 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_simple_policy_equivalence() -> eyre::Result<()> {
+    // For simple policies, all four authorization functions return the same result
+    #[test_case(AuthRole::Transfer)]
+    #[test_case(AuthRole::Sender)]
+    #[test_case(AuthRole::Recipient)]
+    #[test_case(AuthRole::MintRecipient)]
+    fn test_simple_policy_equivalence(role: AuthRole) -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let [admin, user] = actors();
         StorageCtx::enter(&mut storage, || {
@@ -1796,15 +1800,7 @@ mod tests {
             // Create a simple whitelist policy with user
             let policy_id = TIP403Setup::whitelist(admin).with_members([user]).apply()?;
 
-            // For simple policies, all four authorization functions return the same result
-            for role in [
-                AuthRole::Transfer,
-                AuthRole::Sender,
-                AuthRole::Recipient,
-                AuthRole::MintRecipient,
-            ] {
-                assert!(registry.is_authorized_as(policy_id, user, role)?);
-            }
+            assert!(registry.is_authorized_as(policy_id, user, role)?);
 
             Ok(())
         })
@@ -1932,30 +1928,28 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_create_policy_with_accounts_rejects_non_simple_policy_types() -> eyre::Result<()> {
+    #[test_case(ITIP403Registry::PolicyType::COMPOUND)]
+    #[test_case(ITIP403Registry::PolicyType::__Invalid)]
+    fn test_create_policy_with_accounts_rejects_non_simple_policy_types(
+        policy_type: ITIP403Registry::PolicyType,
+    ) -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let [admin, account] = actors();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            for policy_type in [
-                ITIP403Registry::PolicyType::COMPOUND,
-                ITIP403Registry::PolicyType::__Invalid,
-            ] {
-                let result = registry.create_policy_with_accounts(
+            let result = registry.create_policy_with_accounts(
+                admin,
+                ITIP403Registry::createPolicyWithAccountsCall {
                     admin,
-                    ITIP403Registry::createPolicyWithAccountsCall {
-                        admin,
-                        policyType: policy_type,
-                        accounts: vec![account],
-                    },
-                );
-                assert_eq!(
-                    result,
-                    Err(TIP403RegistryError::incompatible_policy_type().into())
-                );
-            }
+                    policyType: policy_type,
+                    accounts: vec![account],
+                },
+            );
+            assert_eq!(
+                result,
+                Err(TIP403RegistryError::incompatible_policy_type().into())
+            );
 
             Ok(())
         })
@@ -1965,35 +1959,33 @@ mod tests {
     //                Pre-T1 Backward Compatibility Tests
     // =========================================================================
 
-    #[test]
-    fn test_pre_t1_create_policy_with_invalid_type_stores_255() -> eyre::Result<()> {
+    #[test_case(ITIP403Registry::PolicyType::COMPOUND)]
+    #[test_case(ITIP403Registry::PolicyType::__Invalid)]
+    fn test_pre_t1_create_policy_with_invalid_type_stores_255(
+        policy_type: ITIP403Registry::PolicyType,
+    ) -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Pre-T1: COMPOUND and __Invalid should succeed but store as 255
-            for policy_type in [
-                ITIP403Registry::PolicyType::COMPOUND,
-                ITIP403Registry::PolicyType::__Invalid,
-            ] {
-                let policy_id = registry.create_policy(
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
                     admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: policy_type,
-                    },
-                )?;
+                    policyType: policy_type,
+                },
+            )?;
 
-                // Verify policy was created
-                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
-                    policyId: policy_id
-                })?);
+            // Verify policy was created
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: policy_id
+            })?);
 
-                // Verify the stored policy_type is 255 (__Invalid)
-                let data = registry.get_policy_data(policy_id)?;
-                assert_eq!(data.policy_type, 255u8);
-            }
+            // Verify the stored policy_type is 255 (__Invalid)
+            let data = registry.get_policy_data(policy_id)?;
+            assert_eq!(data.policy_type, 255u8);
 
             Ok(())
         })
@@ -2205,62 +2197,58 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_invalid_policy_type() -> eyre::Result<()> {
+    #[test_case(ITIP403Registry::PolicyType::COMPOUND)]
+    #[test_case(ITIP403Registry::PolicyType::__Invalid)]
+    fn test_invalid_policy_type(policy_type: ITIP403Registry::PolicyType) -> eyre::Result<()> {
         let [admin, user] = actors();
-        for policy_type in [
-            ITIP403Registry::PolicyType::COMPOUND,
-            ITIP403Registry::PolicyType::__Invalid,
-        ] {
-            // Create a policy with an invalid type on pre-T1 (stored as 255)
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-            let policy_id = StorageCtx::enter(&mut storage, || {
-                TIP403Registry::new().create_policy(
+        // Create a policy with an invalid type on pre-T1 (stored as 255)
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let policy_id = StorageCtx::enter(&mut storage, || {
+            TIP403Registry::new().create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
                     admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: policy_type,
-                    },
-                )
-            })?;
+                    policyType: policy_type,
+                },
+            )
+        })?;
 
-            // Pre-T2: should return under_overflow error
-            StorageCtx::enter(&mut storage, || {
-                let registry = TIP403Registry::new();
+        // Pre-T2: should return under_overflow error
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
 
-                let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: policy_id,
-                });
-                assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            let result = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: policy_id,
+            });
+            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
 
-                let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-                assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
+            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
 
-                Ok::<_, TempoPrecompileError>(())
-            })?;
+            Ok::<_, TempoPrecompileError>(())
+        })?;
 
-            // T2+: should return InvalidPolicyType error
-            let mut storage = storage.with_spec(TempoHardfork::T2);
-            StorageCtx::enter(&mut storage, || {
-                let registry = TIP403Registry::new();
+        // T2+: should return InvalidPolicyType error
+        let mut storage = storage.with_spec(TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
 
-                let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: policy_id,
-                });
-                assert_eq!(
-                    result.unwrap_err(),
-                    TIP403RegistryError::invalid_policy_type().into()
-                );
+            let result = registry.policy_data(ITIP403Registry::policyDataCall {
+                policyId: policy_id,
+            });
+            assert_eq!(
+                result.unwrap_err(),
+                TIP403RegistryError::invalid_policy_type().into()
+            );
 
-                let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-                assert_eq!(
-                    result.unwrap_err(),
-                    TIP403RegistryError::invalid_policy_type().into()
-                );
+            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
+            assert_eq!(
+                result.unwrap_err(),
+                TIP403RegistryError::invalid_policy_type().into()
+            );
 
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
+            Ok::<_, TempoPrecompileError>(())
+        })?;
         Ok(())
     }
 

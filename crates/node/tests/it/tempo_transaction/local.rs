@@ -1938,7 +1938,7 @@ async fn test_expiring_nonce_discriminators_across_t12(
         accepted
             .iter()
             .all(|tx| setup.node.inner.pool.contains(tx.tx_hash())),
-        "{hardfork:?} accepted discriminators must coexist in the pool"
+        "accepted discriminators must coexist in the pool"
     );
     setup
         .node

@@ -1281,6 +1281,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{IntoLogData, address};
     use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, ConfigurableAccountEvent};
+    use test_case::test_case;
 
     #[test]
     fn token_policy_updates_invalidate_the_registry() {
@@ -1306,8 +1307,9 @@ mod tests {
         assert!(!is_tip20_pause_update(Address::repeat_byte(0x11), pause));
     }
 
-    #[test]
-    fn configurable_account_logs_invalidate_their_account() {
+    #[test_case(ConfigurableAccountEvent::configurable_account_config_updated(Address::repeat_byte(0x11), B256::ZERO, 1, 1, vec![]); "config_updated")]
+    #[test_case(ConfigurableAccountEvent::account_upgraded(Address::repeat_byte(0x11), B256::repeat_byte(1), B256::ZERO, 1, vec![]); "account_upgraded")]
+    fn configurable_account_logs_invalidate_their_account(event: ConfigurableAccountEvent) {
         let account = Address::repeat_byte(0x11);
         let rpc_log = |address, event: ConfigurableAccountEvent| alloy_rpc_types_eth::Log {
             inner: alloy_primitives::Log {
@@ -1316,35 +1318,17 @@ mod tests {
             },
             ..Default::default()
         };
-        let events = [
-            ConfigurableAccountEvent::configurable_account_config_updated(
-                account,
-                B256::ZERO,
-                1,
-                1,
-                vec![],
-            ),
-            ConfigurableAccountEvent::account_upgraded(
-                account,
-                B256::repeat_byte(1),
-                B256::ZERO,
-                1,
-                vec![],
-            ),
-        ];
-        for event in events {
-            assert_eq!(
-                config_commitment_invalidation_account(&rpc_log(
-                    CONFIGURABLE_ACCOUNT_ADDRESS,
-                    event.clone()
-                )),
-                Some(account)
-            );
-            assert_eq!(
-                config_commitment_invalidation_account(&rpc_log(Address::ZERO, event)),
-                None
-            );
-        }
+        assert_eq!(
+            config_commitment_invalidation_account(&rpc_log(
+                CONFIGURABLE_ACCOUNT_ADDRESS,
+                event.clone()
+            )),
+            Some(account)
+        );
+        assert_eq!(
+            config_commitment_invalidation_account(&rpc_log(Address::ZERO, event)),
+            None
+        );
     }
 
     #[test]

@@ -535,6 +535,7 @@ mod tests {
     use alloy::primitives::address;
     use proptest::prelude::*;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use test_case::test_case;
 
     const TEST_MAKER: Address = Address::repeat_byte(0x11);
     const TEST_BASE: Address = Address::repeat_byte(0x22);
@@ -1097,51 +1098,47 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_flip_rewrite_does_not_spend_maker_storage_credits() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T7, OrderVersion::Legacy)]
+    #[test_case(TempoHardfork::T7, OrderVersion::V1)]
+    #[test_case(TempoHardfork::T7, OrderVersion::V2)]
+    #[test_case(TempoHardfork::T8, OrderVersion::V1)]
+    #[test_case(TempoHardfork::T8, OrderVersion::V2)]
+    fn test_flip_rewrite_does_not_spend_maker_storage_credits(
+        placement_fork: TempoHardfork,
+        version: OrderVersion,
+    ) -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
 
-        for (placement_fork, version) in [
-            (TempoHardfork::T7, OrderVersion::Legacy),
-            (TempoHardfork::T7, OrderVersion::V1),
-            (TempoHardfork::T7, OrderVersion::V2),
-            (TempoHardfork::T8, OrderVersion::V1),
-            (TempoHardfork::T8, OrderVersion::V2),
-        ] {
-            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(placement_fork);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                let (base_token, _) = test.pair(version);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(placement_fork);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            let (base_token, _) = test.pair(version);
 
-                let flip_id = exchange
-                    .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
-                let credit_order_id = exchange.place(test.alice, base_token, amount, true, tick)?;
-                exchange.cancel(test.alice, credit_order_id)?;
+            let flip_id = exchange
+                .place_flip(test.alice, base_token, amount, true, tick, flip_tick, false)?;
+            let credit_order_id = exchange.place(test.alice, base_token, amount, true, tick)?;
+            exchange.cancel(test.alice, credit_order_id)?;
 
-                let credits_before = exchange.storage_credits(test.alice)?;
-                assert!(
-                    credits_before > 0,
-                    "{placement_fork:?} setup must give maker credits"
-                );
+            let credits_before = exchange.storage_credits(test.alice)?;
+            assert!(credits_before > 0, "setup must give maker credits");
 
-                let rewrite_fork = DexTestSetup::hardfork_for(version);
-                StorageCtx.set_spec(rewrite_fork);
+            let rewrite_fork = DexTestSetup::hardfork_for(version);
+            StorageCtx.set_spec(rewrite_fork);
 
-                let destination_tail =
-                    exchange.place(test.carol, base_token, amount, false, flip_tick)?;
-                exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
+            let destination_tail =
+                exchange.place(test.carol, base_token, amount, false, flip_tick)?;
+            exchange.swap_exact_amount_in(test.bob, base_token, test.quote, amount, 0)?;
 
-                let flipped = exchange.get_order(flip_id)?;
-                assert!(!flipped.is_bid());
-                assert_eq!(flipped.prev(), destination_tail);
-                assert!(
-                    exchange.storage_credits(test.alice)? >= credits_before,
-                    "{placement_fork:?}->{rewrite_fork:?} flip rewrite spent maker credits"
-                );
+            let flipped = exchange.get_order(flip_id)?;
+            assert!(!flipped.is_bid());
+            assert_eq!(flipped.prev(), destination_tail);
+            assert!(
+                exchange.storage_credits(test.alice)? >= credits_before,
+                "{placement_fork:?}->{rewrite_fork:?} flip rewrite spent maker credits"
+            );
 
-                Ok::<(), TempoPrecompileError>(())
-            })?;
-        }
+            Ok::<(), TempoPrecompileError>(())
+        })?;
         Ok(())
     }
 

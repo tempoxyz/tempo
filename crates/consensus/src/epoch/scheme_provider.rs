@@ -66,6 +66,7 @@ mod tests {
     use super::*;
     use crate::{config::NAMESPACE, test_utils::dkg_fixture};
     use commonware_runtime::{Runner as _, deterministic};
+    use test_case::test_case;
 
     #[test]
     fn registered_identity_allows_scheme_upgrades() {
@@ -116,7 +117,11 @@ mod tests {
         });
     }
 
-    fn register_conflicting_identity(kind: usize) {
+    #[test_case(0; "certificate_verifier")]
+    #[test_case(1; "verifier")]
+    #[test_case(2; "signer")]
+    #[should_panic(expected = "network identity mismatch")]
+    fn conflicting_identity_panics(kind: usize) {
         deterministic::Runner::default().start(|mut context| async move {
             let epoch = Epoch::new(2);
             let fixture = dkg_fixture(&mut context, epoch);
@@ -137,23 +142,5 @@ mod tests {
             };
             provider.register(epoch, candidate);
         });
-    }
-
-    #[test]
-    #[should_panic(expected = "network identity mismatch")]
-    fn conflicting_certificate_verifier_panics() {
-        register_conflicting_identity(0);
-    }
-
-    #[test]
-    #[should_panic(expected = "network identity mismatch")]
-    fn conflicting_verifier_panics() {
-        register_conflicting_identity(1);
-    }
-
-    #[test]
-    #[should_panic(expected = "network identity mismatch")]
-    fn conflicting_signer_panics() {
-        register_conflicting_identity(2);
     }
 }

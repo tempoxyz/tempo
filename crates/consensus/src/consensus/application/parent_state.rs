@@ -150,11 +150,20 @@ mod tests {
     use commonware_utils::TryFromIterator as _;
     use rand::{SeedableRng as _, rngs::StdRng};
 
+    use test_case::test_case;
+
     use super::*;
     use crate::test_utils::dkg_fixture;
 
-    #[test]
-    fn boundary_outcome_is_for_the_next_epoch_and_uses_the_parent_state() {
+    // With an epoch length of 10, height 18 is the parent of the boundary
+    // block of epoch 1.
+    #[test_case(2, true)]
+    #[test_case(1, false)]
+    #[test_case(3, false)]
+    fn boundary_outcome_is_for_the_next_epoch_and_uses_the_parent_state(
+        next_full_dkg_epoch: u64,
+        is_next_full_dkg: bool,
+    ) {
         let epoch_strategy = FixedEpocher::new(NonZeroU64::new(10).unwrap());
         let output = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::new(2))
             .outcome
@@ -164,25 +173,20 @@ mod tests {
         )
         .unwrap();
 
-        // With an epoch length of 10, height 18 is the parent of the boundary
-        // block of epoch 1.
-        for (next_full_dkg_epoch, is_next_full_dkg) in [(2, true), (1, false), (3, false)] {
-            assert_eq!(
-                assemble_boundary_outcome(
-                    &epoch_strategy,
-                    Height::new(18),
-                    output.clone(),
-                    next_players.clone(),
-                    next_full_dkg_epoch,
-                ),
-                OnchainDkgOutcome {
-                    epoch: 2,
-                    output: output.clone(),
-                    next_players: next_players.clone(),
-                    is_next_full_dkg,
-                },
-                "full DKG scheduled for epoch {next_full_dkg_epoch}",
-            );
-        }
+        assert_eq!(
+            assemble_boundary_outcome(
+                &epoch_strategy,
+                Height::new(18),
+                output.clone(),
+                next_players.clone(),
+                next_full_dkg_epoch,
+            ),
+            OnchainDkgOutcome {
+                epoch: 2,
+                output,
+                next_players,
+                is_next_full_dkg,
+            },
+        );
     }
 }

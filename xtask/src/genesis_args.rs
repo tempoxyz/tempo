@@ -963,6 +963,7 @@ mod tests {
             ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
         },
     };
+    use test_case::test_case;
 
     #[derive(Debug, clap::Parser)]
     struct Cli {
@@ -1134,27 +1135,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn t15_genesis_installs_t15_shared_runtimes() {
-        // The block executor runs a later T10 or T13 activation as T15 from genesis.
-        for hardforks in [
-            TempoHardforkArgs::default(),
-            TempoHardforkArgs {
-                t10_time: Some(200),
-                t13_time: Some(200),
-                ..Default::default()
-            },
-        ] {
-            let mut alloc = BTreeMap::new();
-            insert_zone_state_at_genesis(&hardforks, &mut alloc);
+    #[test_case(TempoHardforkArgs::default(); "default")]
+    // The block executor runs a later T10 or T13 activation as T15 from genesis.
+    #[test_case(TempoHardforkArgs { t10_time: Some(200), t13_time: Some(200), ..Default::default() }; "later_t10_and_t13")]
+    fn t15_genesis_installs_t15_shared_runtimes(hardforks: TempoHardforkArgs) {
+        let mut alloc = BTreeMap::new();
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
-            for (destination, expected) in [
-                (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
-                (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
-                (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
-            ] {
-                assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
-            }
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T15_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
         }
     }
 

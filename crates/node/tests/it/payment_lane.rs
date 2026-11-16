@@ -19,6 +19,7 @@ use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP20ChannelReserve, tip20::MAX_PAYMENT_TRAILING_BYTES,
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
+use test_case::test_case;
 
 async fn block_base_fee<P, R>(provider: &P, receipt: &R) -> eyre::Result<u128>
 where
@@ -729,83 +730,86 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
 /// TIP-1045: static payment calls carrying up to 32 trailing bytes are payment lane eligible only
 /// from T15. The general lane is smaller than each transaction's gas limit, so only payments can be
 /// included.
+#[test_case(TempoHardfork::T14, false)]
+#[test_case(TempoHardfork::T15, true)]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_payment_lane_trailing_bytes_from_t15() -> eyre::Result<()> {
+async fn test_payment_lane_trailing_bytes_from_t15(
+    fork: TempoHardfork,
+    is_payment: bool,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     const GAS_LIMIT: u64 = 1_000_000;
 
-    for (fork, is_payment) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
-        let mut genesis: serde_json::Value = serde_json::from_str(&make_genesis_at(fork))?;
-        genesis["config"]["generalGasLimit"] = serde_json::json!(GAS_LIMIT / 2);
-        let setup = TestNodeBuilder::new()
-            .with_genesis(serde_json::to_string(&genesis)?)
-            .build_http_only()
-            .await?;
+    let mut genesis: serde_json::Value = serde_json::from_str(&make_genesis_at(fork))?;
+    genesis["config"]["generalGasLimit"] = serde_json::json!(GAS_LIMIT / 2);
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_http_only()
+        .await?;
 
-        let funder = ProviderBuilder::new()
-            .wallet(test_signer(0))
-            .connect_http(setup.http_url.clone());
-        let payer = PrivateKeySigner::random();
-        let payer_address = payer.address();
-        let payer = ProviderBuilder::new()
-            .wallet(payer)
-            .connect_http(setup.http_url.clone());
+    let funder = ProviderBuilder::new()
+        .wallet(test_signer(0))
+        .connect_http(setup.http_url.clone());
+    let payer = PrivateKeySigner::random();
+    let payer_address = payer.address();
+    let payer = ProviderBuilder::new()
+        .wallet(payer)
+        .connect_http(setup.http_url.clone());
 
-        let path_usd = ITIP20::new(PATH_USD_ADDRESS, funder.clone());
-        let calldata = || {
-            ITIP20::transferCall {
-                to: Address::random(),
-                amount: U256::ONE,
-            }
-            .abi_encode()
-        };
-        let transfer = |input: Vec<u8>| {
-            TransactionRequest::default()
-                .to(PATH_USD_ADDRESS)
-                .gas_limit(GAS_LIMIT)
-                .input(input.into())
-        };
-
-        path_usd
-            .transfer(payer_address, U256::from(10_000_000u64))
-            .gas(GAS_LIMIT)
-            .send()
-            .await?
-            .successful_receipt()
-            .await
-            .wrap_err("funding transfer is a payment")?;
-
-        let mut tagged = calldata();
-        tagged.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
-        let tagged = payer.send_transaction(transfer(tagged)).await?;
-
-        // A canonical transfer queued after the tagged one is a payment at both forks.
-        let canonical = funder
-            .send_transaction(transfer(calldata()))
-            .await?
-            .successful_receipt()
-            .await
-            .wrap_err_with(|| format!("canonical transfer is a payment at {fork:?}"))?;
-
-        if is_payment {
-            tagged
-                .successful_receipt()
-                .await
-                .wrap_err("transfer with trailing bytes is a payment at T15")?;
-        } else {
-            let included_by = canonical.block_number.expect("mined receipt has a block") + 2;
-            while funder.get_block_number().await? < included_by {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            assert!(
-                funder
-                    .get_transaction_receipt(*tagged.tx_hash())
-                    .await?
-                    .is_none(),
-                "transfer with trailing bytes is not a payment before T15"
-            );
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, funder.clone());
+    let calldata = || {
+        ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::ONE,
         }
+        .abi_encode()
+    };
+    let transfer = |input: Vec<u8>| {
+        TransactionRequest::default()
+            .to(PATH_USD_ADDRESS)
+            .gas_limit(GAS_LIMIT)
+            .input(input.into())
+    };
+
+    path_usd
+        .transfer(payer_address, U256::from(10_000_000u64))
+        .gas(GAS_LIMIT)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("funding transfer is a payment")?;
+
+    let mut tagged = calldata();
+    tagged.extend([0xab; MAX_PAYMENT_TRAILING_BYTES]);
+    let tagged = payer.send_transaction(transfer(tagged)).await?;
+
+    // A canonical transfer queued after the tagged one is a payment at both forks.
+    let canonical = funder
+        .send_transaction(transfer(calldata()))
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("canonical transfer is a payment")?;
+
+    if is_payment {
+        tagged
+            .successful_receipt()
+            .await
+            .wrap_err("transfer with trailing bytes is a payment at T15")?;
+    } else {
+        let included_by = canonical.block_number.expect("mined receipt has a block") + 2;
+        while funder.get_block_number().await? < included_by {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            funder
+                .get_transaction_receipt(*tagged.tx_hash())
+                .await?
+                .is_none(),
+            "transfer with trailing bytes is not a payment before T15"
+        );
     }
 
     Ok(())

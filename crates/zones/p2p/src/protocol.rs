@@ -259,6 +259,7 @@ pub(crate) enum EncodeError {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::B256;
+    use test_case::test_case;
 
     use super::{
         AllowlistFrame, DecodeError, EncodeError, PeerTip, RESPONSE_HEADER_LEN, RequestFrame,
@@ -387,20 +388,14 @@ mod tests {
         ));
     }
 
+    #[test_case(AllowlistFrame::Request { id: u64::MAX, payload: b"{}".to_vec() }; "request")]
+    #[test_case(AllowlistFrame::Response { id: 0, payload: Vec::new() }; "response")]
+    fn allowlist_frames_round_trip(frame: AllowlistFrame) {
+        assert_eq!(AllowlistFrame::decode(&frame.encode()), Ok(frame));
+    }
+
     #[test]
-    fn allowlist_frames_round_trip_and_reject_malformed_frames() {
-        for frame in [
-            AllowlistFrame::Request {
-                id: u64::MAX,
-                payload: b"{}".to_vec(),
-            },
-            AllowlistFrame::Response {
-                id: 0,
-                payload: Vec::new(),
-            },
-        ] {
-            assert_eq!(AllowlistFrame::decode(&frame.encode()), Ok(frame));
-        }
+    fn allowlist_frames_encode_exactly_and_reject_malformed_frames() {
         assert_eq!(
             AllowlistFrame::Response {
                 id: 0x0102,

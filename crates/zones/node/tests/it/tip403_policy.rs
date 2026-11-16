@@ -10,6 +10,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::ITIP403Registry::{self, PolicyType};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS, tip403_registry::AuthRole};
+use test_case::test_case;
 use zone_precompiles::ZONE_FEE_MANAGER_ADDRESS;
 
 use crate::utils::{
@@ -88,46 +89,45 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
 
 /// Simple policies: whitelist members are authorized and non-members are not (fail-closed);
 /// blacklist members are not authorized and non-members are.
+// Alice is the only member of each policy.
+#[test_case(PolicyType::WHITELIST, true; "whitelist")]
+#[test_case(PolicyType::BLACKLIST, false; "blacklist")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_policy_proxy_simple_policy_authorization() -> eyre::Result<()> {
+async fn test_policy_proxy_simple_policy_authorization(
+    policy_type: PolicyType,
+    alice_authorized: bool,
+) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let alice = address!("0x000000000000000000000000000000000000A11C");
     let bob = address!("0x0000000000000000000000000000000000000B0B");
 
-    // Alice is the only member of each policy.
-    for (policy_type, alice_authorized) in [
-        (PolicyType::WHITELIST, true),
-        (PolicyType::BLACKLIST, false),
-    ] {
-        let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
+    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
 
-        // Populate raw L1 state at block 1.
-        seed_raw_tip403_policy(
-            zone.l1_state_cache(),
-            1,
-            &[
-                PolicySeed::simple(5, policy_type, &[(alice, true)]),
-                PolicySeed::simple(5, policy_type, &[(bob, false)]),
-            ],
-        )?;
+    // Populate raw L1 state at block 1.
+    seed_raw_tip403_policy(
+        zone.l1_state_cache(),
+        1,
+        &[
+            PolicySeed::simple(5, policy_type, &[(alice, true)]),
+            PolicySeed::simple(5, policy_type, &[(bob, false)]),
+        ],
+    )?;
 
-        fixture.inject_empty_blocks(zone.deposit_queue(), 3);
-        zone.wait_for_tempo_block_number(3, DEFAULT_TIMEOUT).await?;
+    fixture.inject_empty_blocks(zone.deposit_queue(), 3);
+    zone.wait_for_tempo_block_number(3, DEFAULT_TIMEOUT).await?;
 
-        let registry =
-            fixture.tip403_registry_check(&zone, PATH_USD_ADDRESS, &[alice, bob], 1, 5)?;
-        assert_eq!(
-            registry.is_auth_as(alice, AuthRole::Transfer).await,
-            alice_authorized,
-            "alice is a member of the {policy_type:?} policy"
-        );
-        assert_eq!(
-            registry.is_auth_as(bob, AuthRole::Transfer).await,
-            !alice_authorized,
-            "bob is not a member of the {policy_type:?} policy"
-        );
-    }
+    let registry = fixture.tip403_registry_check(&zone, PATH_USD_ADDRESS, &[alice, bob], 1, 5)?;
+    assert_eq!(
+        registry.is_auth_as(alice, AuthRole::Transfer).await,
+        alice_authorized,
+        "alice is a member of the policy"
+    );
+    assert_eq!(
+        registry.is_auth_as(bob, AuthRole::Transfer).await,
+        !alice_authorized,
+        "bob is not a member of the policy"
+    );
 
     Ok(())
 }

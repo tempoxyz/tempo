@@ -484,6 +484,7 @@ mod tests {
 
     use alloy_primitives::B256;
     use clap::CommandFactory;
+    use test_case::test_case;
 
     fn write_test_archive(bytes: &[u8]) -> tempfile::NamedTempFile {
         let archive_file = tempfile::NamedTempFile::new().unwrap();
@@ -824,46 +825,49 @@ mod tests {
         }
     }
 
+    #[test_case(false, "engine_driver_states_metadata"; "lowercase")]
+    #[test_case(false, "ENGINE_DRIVER_states_metadata"; "uppercase_prefix")]
+    #[test_case(false, "Engine_driver_states_metadata"; "capitalized")]
+    #[test_case(true, "engine_driver_states_metadata"; "lowercase_forced")]
+    #[test_case(true, "ENGINE_DRIVER_states_metadata"; "uppercase_prefix_forced")]
+    #[test_case(true, "Engine_driver_states_metadata"; "capitalized_forced")]
     #[tokio::test]
-    async fn install_consensus_archive_rejects_driver_storage_before_changing_destination() {
-        for force in [false, true] {
-            for partition in [
-                "engine_driver_states_metadata",
-                "ENGINE_DRIVER_states_metadata",
-                "Engine_driver_states_metadata",
-            ] {
-                let target = tempfile::tempdir().unwrap();
-                let driver = target.path().join("engine_driver_states_metadata");
-                fs::create_dir_all(&driver).unwrap();
-                fs::write(driver.join("identity"), b"local identity").unwrap();
-                let malicious = format!("{partition}/identity");
-                let entries: &[(&str, &[u8])] = &[
-                    ("engine-finalizations-by-height-metadata/00", b"abc"),
-                    (&malicious, b"untrusted identity"),
-                ];
-                let archive = write_test_consensus_archive(entries);
-                let loaded = loaded_test_archive(&archive, entries);
+    async fn install_consensus_archive_rejects_driver_storage_before_changing_destination(
+        force: bool,
+        partition: &str,
+    ) {
+        let target = tempfile::tempdir().unwrap();
+        let driver = target.path().join("engine_driver_states_metadata");
+        fs::create_dir_all(&driver).unwrap();
+        fs::write(driver.join("identity"), b"local identity").unwrap();
+        let malicious = format!("{partition}/identity");
+        let entries: &[(&str, &[u8])] = &[
+            ("engine-finalizations-by-height-metadata/00", b"abc"),
+            (&malicious, b"untrusted identity"),
+        ];
+        let archive = write_test_consensus_archive(entries);
+        let loaded = loaded_test_archive(&archive, entries);
 
-                let error = install_consensus_archive(target.path(), &loaded, force)
-                    .await
-                    .unwrap_err();
+        let error = install_consensus_archive(target.path(), &loaded, force)
+            .await
+            .unwrap_err();
 
-                assert_eq!(
-                    error.to_string(),
-                    format!("unsupported consensus snapshot partition: {partition}")
-                );
-                assert_eq!(
-                    fs::read(driver.join("identity")).unwrap(),
-                    b"local identity"
-                );
-                assert!(
-                    !target
-                        .path()
-                        .join("engine-finalizations-by-height-metadata")
-                        .exists()
-                );
-            }
-        }
+        assert_eq!(
+            error
+                .to_string()
+                .strip_prefix("unsupported consensus snapshot partition: "),
+            Some(partition)
+        );
+        assert_eq!(
+            fs::read(driver.join("identity")).unwrap(),
+            b"local identity"
+        );
+        assert!(
+            !target
+                .path()
+                .join("engine-finalizations-by-height-metadata")
+                .exists()
+        );
     }
 
     #[cfg(unix)]

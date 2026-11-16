@@ -192,6 +192,7 @@ mod tests {
     };
     use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
     use tempo_evm::TempoEvmTypes;
+    use test_case::test_case;
 
     const FIXED_GAS: u64 = 123;
     type RuleRecord = Rc<RefCell<Option<(Bytes, Option<[u8; 4]>, Address)>>>;
@@ -420,41 +421,39 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn input_gas_threshold_tracks_t11() {
+    #[test_case(TempoHardfork::T10, 6)]
+    #[test_case(TempoHardfork::T11, 30)]
+    fn input_gas_threshold_tracks_t11(spec: TempoHardfork, required_gas: u64) {
         let calldata = [0u8; 32];
+        let mut ctx = test_context();
 
-        for (spec, required_gas) in [(TempoHardfork::T10, 6), (TempoHardfork::T11, 30)] {
-            let mut ctx = test_context();
+        let (insufficient, _) = call(
+            &mut ctx,
+            spec,
+            &calldata,
+            Address::ZERO,
+            required_gas - 1,
+            NoCallRules,
+            |_, _| Ok(StorageCtx::default().success_output(Bytes::new())),
+        );
+        assert!(
+            matches!(
+                insufficient,
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
+            ),
+            "one gas below the input cost must run out of gas"
+        );
 
-            let (insufficient, _) = call(
-                &mut ctx,
-                spec,
-                &calldata,
-                Address::ZERO,
-                required_gas - 1,
-                NoCallRules,
-                |_, _| Ok(StorageCtx::default().success_output(Bytes::new())),
-            );
-            assert!(
-                matches!(
-                    insufficient,
-                    Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
-                ),
-                "{spec:?} must require {required_gas} input gas"
-            );
-
-            let (sufficient, _) = call(
-                &mut ctx,
-                spec,
-                &calldata,
-                Address::ZERO,
-                required_gas,
-                NoCallRules,
-                |_, _| Ok(StorageCtx::default().success_output(Bytes::new())),
-            );
-            assert!(sufficient.is_ok(), "{spec:?} must accept its exact cost");
-        }
+        let (sufficient, _) = call(
+            &mut ctx,
+            spec,
+            &calldata,
+            Address::ZERO,
+            required_gas,
+            NoCallRules,
+            |_, _| Ok(StorageCtx::default().success_output(Bytes::new())),
+        );
+        assert!(sufficient.is_ok(), "the exact input cost must be accepted");
     }
 
     struct FatalRules;

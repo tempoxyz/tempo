@@ -3110,76 +3110,76 @@ mod tests {
         );
     }
 
-    #[test]
-    fn t13_at_genesis_preserves_zone_runtimes() {
-        // Use the actual genesis timestamp, not just t13Time == 0.
-        for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
-            let mut genesis = DEV.genesis().clone();
-            genesis.timestamp = genesis_timestamp;
+    // Use the actual genesis timestamp, not just t13Time == 0.
+    #[test_case(0, 0)]
+    #[test_case(100, 50)]
+    #[test_case(100, 100)]
+    fn t13_at_genesis_preserves_zone_runtimes(genesis_timestamp: u64, activation: u64) {
+        let mut genesis = DEV.genesis().clone();
+        genesis.timestamp = genesis_timestamp;
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t13Time".into(), activation)
+            .unwrap();
+        for fork in ["t14Time", "t15Time"] {
             genesis
                 .config
                 .extra_fields
-                .insert_value("t13Time".into(), activation)
-                .unwrap();
-            for fork in ["t14Time", "t15Time"] {
-                genesis
-                    .config
-                    .extra_fields
-                    .insert(fork.into(), serde_json::Value::Null);
-            }
-            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
-            let mut db = InMemoryDB::default();
-            let mut expected = Vec::new();
-            for (index, address) in [
-                ZONE_FACTORY_ADDRESS,
-                ZONE_PORTAL_IMPL_ADDRESS,
-                ZONE_VERIFIER_ADDRESS,
-                ZONE_MESSENGER_ADDRESS,
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let code = Bytecode::new_raw(Bytes::from(vec![0x00, index as u8]));
-                let info = AccountInfo {
-                    balance: U256::from(42),
-                    nonce: 7,
-                    code_hash: code.hash_slow(),
-                    code: Some(code),
-                    ..Default::default()
-                };
-                db.insert_account_info(&address, info.clone());
-                db.insert_account_storage(&address, &U256::from(9), &U256::from(123));
-                expected.push((address, info));
-            }
-            for block_number in [1, 2] {
-                let mut executor = TestExecutorBuilder::default()
-                    .with_spec(TempoHardfork::T13)
-                    .with_block_number(block_number)
-                    .with_parent_beacon_block_root(B256::ZERO)
-                    .build(&mut db, &chainspec);
-                let mut block = *executor.evm().block();
-                block.timestamp = U256::from(genesis_timestamp + block_number);
-                executor.evm_mut().set_block(block);
-                executor.apply_pre_execution_changes().unwrap();
-                for (address, info) in &expected {
-                    assert_eq!(
-                        &executor
-                            .evm_mut()
-                            .state_mut()
-                            .account_info_untracked(address)
-                            .unwrap()
-                            .unwrap(),
-                        info
-                    );
-                    assert_eq!(
-                        executor
-                            .evm_mut()
-                            .sload(address, &U256::from(9), false)
-                            .unwrap()
-                            .value,
-                        U256::from(123)
-                    );
-                }
+                .insert(fork.into(), serde_json::Value::Null);
+        }
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let mut db = InMemoryDB::default();
+        let mut expected = Vec::new();
+        for (index, address) in [
+            ZONE_FACTORY_ADDRESS,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let code = Bytecode::new_raw(Bytes::from(vec![0x00, index as u8]));
+            let info = AccountInfo {
+                balance: U256::from(42),
+                nonce: 7,
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            };
+            db.insert_account_info(&address, info.clone());
+            db.insert_account_storage(&address, &U256::from(9), &U256::from(123));
+            expected.push((address, info));
+        }
+        for block_number in [1, 2] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T13)
+                .with_block_number(block_number)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build(&mut db, &chainspec);
+            let mut block = *executor.evm().block();
+            block.timestamp = U256::from(genesis_timestamp + block_number);
+            executor.evm_mut().set_block(block);
+            executor.apply_pre_execution_changes().unwrap();
+            for (address, info) in &expected {
+                assert_eq!(
+                    &executor
+                        .evm_mut()
+                        .state_mut()
+                        .account_info_untracked(address)
+                        .unwrap()
+                        .unwrap(),
+                    info
+                );
+                assert_eq!(
+                    executor
+                        .evm_mut()
+                        .sload(address, &U256::from(9), false)
+                        .unwrap()
+                        .value,
+                    U256::from(123)
+                );
             }
         }
     }

@@ -255,6 +255,7 @@ mod tests {
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
+    use test_case::test_case;
 
     sol! {
         interface ITestDispatch {
@@ -284,64 +285,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn trailing_bytes_are_allowed_from_t12() -> eyre::Result<()> {
+    #[test_case(TempoHardfork::Genesis)]
+    #[test_case(TempoHardfork::T10)]
+    #[test_case(TempoHardfork::T11)]
+    #[test_case(TempoHardfork::T12)]
+    #[test_case(TempoHardfork::T13)]
+    fn trailing_bytes_are_allowed_from_t12(spec: TempoHardfork) -> eyre::Result<()> {
         let canonical = ITestMemoryDispatch::setValuesCall {
             values: vec![U256::ONE, U256::from(2)],
         }
         .abi_encode();
 
-        for spec in [
-            TempoHardfork::Genesis,
-            TempoHardfork::T10,
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-            TempoHardfork::T13,
-        ] {
-            let config = abi_decoder_config_for_spec(spec);
-            assert_eq!(config.get_strict(), spec.is_t11());
-            assert_eq!(config.get_validate(), spec.is_t11());
-            assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
-            assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
+        let config = abi_decoder_config_for_spec(spec);
+        assert_eq!(config.get_strict(), spec.is_t11());
+        assert_eq!(config.get_validate(), spec.is_t11());
+        assert_eq!(config.get_validate_allow_trailing_bytes(), spec.is_t12());
+        assert_eq!(config.get_memory_limit(), ABI_DECODER_MEMORY_LIMIT);
 
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            for suffix_len in [0, 1, 32, 33] {
-                let mut calldata = canonical.clone();
-                calldata.extend(vec![0xff; suffix_len]);
-                let output = StorageCtx::enter(&mut storage, || {
-                    dispatch!(
-                        &calldata,
-                        |call| match call {
-                            ITestMemoryDispatch::ITestMemoryDispatchCalls {
-                                setValues(_) => Ok(evm2::precompile::PrecompileOutput::new(
-                                    Bytes::new(),
-                                )),
-                            }
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        for suffix_len in [0, 1, 32, 33] {
+            let mut calldata = canonical.clone();
+            calldata.extend(vec![0xff; suffix_len]);
+            let output = StorageCtx::enter(&mut storage, || {
+                dispatch!(
+                    &calldata,
+                    |call| match call {
+                        ITestMemoryDispatch::ITestMemoryDispatchCalls {
+                            setValues(_) => Ok(evm2::precompile::PrecompileOutput::new(
+                                Bytes::new(),
+                            )),
                         }
-                    )
-                });
-                let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
-                assert_eq!(output.is_ok(), expected_success, "{spec:?}, {suffix_len}");
-            }
-
-            // Allowing a suffix must not permit gaps inside the encoding.
-            let mut gapped = canonical.clone();
-            gapped[4..36].copy_from_slice(B256::with_last_byte(64).as_slice());
-            gapped.splice(36..36, [0u8; 32]);
-            assert_eq!(
-                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
-                !spec.is_t11(),
-                "{spec:?}"
-            );
-            assert!(
-                ITestMemoryDispatch::setValuesCall::abi_decode_with_config(
-                    &canonical[..canonical.len() - 1],
-                    config,
+                    }
                 )
-                .is_err(),
-                "{spec:?}"
-            );
+            });
+            let expected_success = suffix_len == 0 || !spec.is_t11() || spec.is_t12();
+            assert_eq!(output.is_ok(), expected_success, "{suffix_len}");
         }
+
+        // Allowing a suffix must not permit gaps inside the encoding.
+        let mut gapped = canonical.clone();
+        gapped[4..36].copy_from_slice(B256::with_last_byte(64).as_slice());
+        gapped.splice(36..36, [0u8; 32]);
+        assert_eq!(
+            ITestMemoryDispatch::setValuesCall::abi_decode_with_config(&gapped, config).is_ok(),
+            !spec.is_t11()
+        );
+        assert!(
+            ITestMemoryDispatch::setValuesCall::abi_decode_with_config(
+                &canonical[..canonical.len() - 1],
+                config,
+            )
+            .is_err()
+        );
         Ok(())
     }
 

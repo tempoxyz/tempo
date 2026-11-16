@@ -478,6 +478,8 @@ mod tests {
     };
     use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
+    use std::sync::Arc;
+
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_primitives::transaction::{
@@ -756,130 +758,126 @@ mod tests {
         );
     }
 
-    #[test]
-    fn processed_deposits_require_same_block_finalization() {
-        use ZoneBlockPhase::{Executing, WithdrawalsFinalized};
-
-        for (address, deposits, phase, legacy, spec, must_reject) in [
-            (
-                ZONE_INBOX_ADDRESS,
-                1,
-                Executing,
-                false,
-                TempoHardfork::T12,
-                false,
-            ),
-            (
-                ZONE_INBOX_ADDRESS,
-                1,
-                Executing,
-                true,
-                TempoHardfork::T12,
-                false,
-            ),
-            (
-                ZONE_INBOX_ADDRESS,
-                1,
-                Executing,
-                false,
-                TempoHardfork::T13,
-                true,
-            ),
-            (
-                ZONE_INBOX_ADDRESS,
-                0,
-                Executing,
-                false,
-                TempoHardfork::T13,
-                false,
-            ),
-            (
-                ZONE_INBOX_ADDRESS,
-                1,
-                WithdrawalsFinalized,
-                false,
-                TempoHardfork::T13,
-                false,
-            ),
-            (
-                Address::ZERO,
-                1,
-                Executing,
-                false,
-                TempoHardfork::T13,
-                false,
-            ),
-        ] {
-            let mut zone_genesis = DEV.genesis().clone();
-            zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
-            let chain_spec =
-                std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
-            let config =
-                ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
-            let env = TempoEvmEnv {
-                spec,
-                ..Default::default()
-            };
-            let evm = config.evm_with_env(InMemoryDB::default(), env);
-            let ctx = TempoBlockExecutionCtx {
-                inner: EthBlockExecutionCtx {
-                    parent_hash: B256::ZERO,
-                    parent_beacon_block_root: None,
-                    ommers: &[],
-                    withdrawals: None,
-                    extra_data: Bytes::new(),
-                    tx_count_hint: Some(1),
-                    slot_number: None,
-                },
-                general_gas_limit: 0,
-                shared_gas_limit: 0,
-                consensus_context: None,
-            };
-            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
-            executor.phase = phase;
-            let event = TempoAdvanced {
-                tempoBlockHash: B256::ZERO,
-                tempoBlockNumber: 1,
-                depositsProcessed: U256::from(deposits),
-                newProcessedDepositQueueHash: B256::ZERO,
-                lastProcessedDepositNumber: deposits,
-                lastProcessedEnabledTokenCount: 0,
-            };
-            let data = if legacy {
-                LegacyTempoAdvanced {
-                    tempoBlockHash: event.tempoBlockHash,
-                    tempoBlockNumber: event.tempoBlockNumber,
-                    depositsProcessed: event.depositsProcessed,
-                    newProcessedDepositQueueHash: event.newProcessedDepositQueueHash,
-                    lastProcessedDepositNumber: event.lastProcessedDepositNumber,
-                }
-                .encode_log_data()
-            } else {
-                event.encode_log_data()
-            };
-            executor.inner.inner.receipts.push(TempoReceipt {
-                tx_type: TempoTxType::Legacy,
-                success: true,
-                cumulative_gas_used: 0,
-                logs: vec![Log { address, data }],
-            });
-
-            let result = executor.finish();
-            if must_reject {
-                let error = match result {
-                    Ok(_) => panic!("deposit block without finalization was accepted"),
-                    Err(error) => error,
-                };
-                assert_eq!(
-                    error.to_string(),
-                    "zone block with processed deposits is missing its finalizeWithdrawalBatch system transaction"
-                );
-            } else {
-                assert!(
-                    result.is_ok(),
-                    "unexpected rejection: address={address}, deposits={deposits}, phase={phase:?}, legacy={legacy}, spec={spec:?}"
-                );
+    #[test_case(
+        ZONE_INBOX_ADDRESS,
+        1,
+        ZoneBlockPhase::Executing,
+        false,
+        TempoHardfork::T12,
+        false
+    )]
+    #[test_case(
+        ZONE_INBOX_ADDRESS,
+        1,
+        ZoneBlockPhase::Executing,
+        true,
+        TempoHardfork::T12,
+        false
+    )]
+    #[test_case(
+        ZONE_INBOX_ADDRESS,
+        1,
+        ZoneBlockPhase::Executing,
+        false,
+        TempoHardfork::T13,
+        true
+    )]
+    #[test_case(
+        ZONE_INBOX_ADDRESS,
+        0,
+        ZoneBlockPhase::Executing,
+        false,
+        TempoHardfork::T13,
+        false
+    )]
+    #[test_case(
+        ZONE_INBOX_ADDRESS,
+        1,
+        ZoneBlockPhase::WithdrawalsFinalized,
+        false,
+        TempoHardfork::T13,
+        false
+    )]
+    #[test_case(
+        Address::ZERO,
+        1,
+        ZoneBlockPhase::Executing,
+        false,
+        TempoHardfork::T13,
+        false
+    )]
+    fn processed_deposits_require_same_block_finalization(
+        address: Address,
+        deposits: u64,
+        phase: ZoneBlockPhase,
+        legacy: bool,
+        spec: TempoHardfork,
+        must_reject: bool,
+    ) {
+        let mut zone_genesis = DEV.genesis().clone();
+        zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        let chain_spec = Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        let env = TempoEvmEnv {
+            spec,
+            ..Default::default()
+        };
+        let evm = config.evm_with_env(InMemoryDB::default(), env);
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: B256::ZERO,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: Some(1),
+                slot_number: None,
+            },
+            general_gas_limit: 0,
+            shared_gas_limit: 0,
+            consensus_context: None,
+        };
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        executor.phase = phase;
+        let event = TempoAdvanced {
+            tempoBlockHash: B256::ZERO,
+            tempoBlockNumber: 1,
+            depositsProcessed: U256::from(deposits),
+            newProcessedDepositQueueHash: B256::ZERO,
+            lastProcessedDepositNumber: deposits,
+            lastProcessedEnabledTokenCount: 0,
+        };
+        let data = if legacy {
+            LegacyTempoAdvanced {
+                tempoBlockHash: event.tempoBlockHash,
+                tempoBlockNumber: event.tempoBlockNumber,
+                depositsProcessed: event.depositsProcessed,
+                newProcessedDepositQueueHash: event.newProcessedDepositQueueHash,
+                lastProcessedDepositNumber: event.lastProcessedDepositNumber,
             }
+            .encode_log_data()
+        } else {
+            event.encode_log_data()
+        };
+        executor.inner.inner.receipts.push(TempoReceipt {
+            tx_type: TempoTxType::Legacy,
+            success: true,
+            cumulative_gas_used: 0,
+            logs: vec![Log { address, data }],
+        });
+
+        let result = executor.finish();
+        if must_reject {
+            let error = match result {
+                Ok(_) => panic!("deposit block without finalization was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.to_string(),
+                "zone block with processed deposits is missing its finalizeWithdrawalBatch system transaction"
+            );
+        } else {
+            assert!(result.is_ok(), "unexpected rejection");
         }
     }
 

@@ -450,6 +450,7 @@ fn map_block_execution_error(
 #[cfg(test)]
 mod tests {
     use alloy_sol_types::SolError as _;
+    use test_case::test_case;
 
     use super::*;
 
@@ -467,25 +468,26 @@ mod tests {
         assert!(decode_advance_tempo_revert(&output).contains("InvalidParentHash"));
     }
 
-    #[test]
-    fn preserves_zone_witness_database_errors() {
+    #[test_case(true; "transaction_error")]
+    #[test_case(false; "other_error")]
+    fn preserves_zone_witness_database_errors(via_transaction: bool) {
         let witness_error = crate::WitnessDatabaseError::MissingCode {
             code_hash: B256::repeat_byte(0x11),
         };
         let database_error = DatabaseError::new(witness_error, true);
-        let transaction_error = reth_evm::InternalBlockExecutionError::EVM {
-            hash: B256::ZERO,
-            error: evm2::AnyError::new(HandlerError::Database(database_error.clone())),
+        let error = if via_transaction {
+            reth_evm::InternalBlockExecutionError::EVM {
+                hash: B256::ZERO,
+                error: evm2::AnyError::new(HandlerError::Database(database_error)),
+            }
+            .into()
+        } else {
+            reth_evm::BlockExecutionError::other(database_error)
         };
-        for error in [
-            transaction_error.into(),
-            reth_evm::BlockExecutionError::other(database_error),
-        ] {
-            assert!(matches!(
-                map_block_execution_error(error, Error::BlockPreExecution { block_index: 0 }),
-                Error::WitnessDatabase(error) if error == witness_error
-            ));
-        }
+        assert!(matches!(
+            map_block_execution_error(error, Error::BlockPreExecution { block_index: 0 }),
+            Error::WitnessDatabase(error) if error == witness_error
+        ));
     }
 
     #[test]

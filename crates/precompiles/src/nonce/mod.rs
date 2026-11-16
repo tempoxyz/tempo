@@ -181,6 +181,7 @@ mod tests {
 
     use super::*;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use test_case::test_case;
 
     #[test]
     fn test_expiring_nonce_parameters_activate_at_t11() {
@@ -418,7 +419,9 @@ mod tests {
         })
     }
 
-    fn assert_ring_buffer_pointer_wraps_at_capacity(spec: TempoHardfork) -> eyre::Result<()> {
+    #[test_case(TempoHardfork::T10; "pre_t11_capacity")]
+    #[test_case(TempoHardfork::T11; "t11_capacity")]
+    fn test_ring_buffer_pointer_wraps_at_capacity(spec: TempoHardfork) -> eyre::Result<()> {
         let capacity = spec.expiring_nonce_set_capacity();
         let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
         let now = 1000u64;
@@ -447,16 +450,6 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_ring_buffer_pointer_wraps_at_pre_t11_capacity() -> eyre::Result<()> {
-        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T10)
-    }
-
-    #[test]
-    fn test_ring_buffer_pointer_wraps_at_t11_capacity() -> eyre::Result<()> {
-        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T11)
     }
 
     #[test]

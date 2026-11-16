@@ -1598,58 +1598,42 @@ mod tests {
         }
     }
 
+    // No `valid_before`, `valid_before` too small (at boundary), and `valid_before` sufficiently
+    // in the future.
+    #[test_case(None, false; "no_valid_before")]
+    #[test_case(Some(AA_VALID_BEFORE_MIN_SECS), true; "valid_before_at_boundary")]
+    #[test_case(Some(AA_VALID_BEFORE_MIN_SECS + 1), false; "valid_before_in_future")]
     #[tokio::test]
-    async fn test_aa_valid_before_check() {
+    async fn test_aa_valid_before_check(valid_before_offset: Option<u64>, rejected: bool) {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        // Test case 1: No `valid_before`
-        let tx_no_valid_before = create_aa_transaction(None, None);
-        let validator = setup_validator(&tx_no_valid_before, current_time);
+        let valid_before = valid_before_offset.map(|offset| current_time + offset);
+        let tx = create_aa_transaction(None, valid_before);
+        let validator = setup_validator(&tx, current_time);
         let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_no_valid_before)
+            .validate_transaction(TransactionOrigin::External, tx)
             .await;
 
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(!matches!(
-                err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidBefore(_))
-            ));
-        }
-
-        // Test case 2: `valid_before` too small (at boundary)
-        let tx_too_close =
-            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS));
-        let validator = setup_validator(&tx_too_close, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_too_close)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
-                    err.downcast_other_ref::<TempoPoolTransactionError>()
-                else {
-                    panic!("Expected InvalidValidBefore error, got: {err:?}");
-                };
-                assert_eq!(err.valid_before, current_time + AA_VALID_BEFORE_MIN_SECS);
-                assert_eq!(err.min_allowed, current_time + AA_VALID_BEFORE_MIN_SECS);
+        if rejected {
+            match outcome {
+                TransactionValidationOutcome::Invalid(_, ref err) => {
+                    let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
+                        err.downcast_other_ref::<TempoPoolTransactionError>()
+                    else {
+                        panic!("Expected InvalidValidBefore error, got: {err:?}");
+                    };
+                    assert_eq!(err.valid_before, current_time + AA_VALID_BEFORE_MIN_SECS);
+                    assert_eq!(err.min_allowed, current_time + AA_VALID_BEFORE_MIN_SECS);
+                }
+                _ => panic!(
+                    "Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"
+                ),
             }
-            _ => panic!("Expected Invalid outcome with InvalidValidBefore error, got: {outcome:?}"),
-        }
-
-        // Test case 3: `valid_before` sufficiently in the future
-        let tx_valid =
-            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 1));
-        let validator = setup_validator(&tx_valid, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_valid)
-            .await;
-
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+        } else if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(!matches!(
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
                 Some(TempoPoolTransactionError::InvalidValidBefore(_))
@@ -1657,60 +1641,46 @@ mod tests {
         }
     }
 
+    // No `valid_after`, `valid_after` within limit (60 seconds), and `valid_after` beyond limit
+    // (5 minutes, exceeds 120s max).
+    #[test_case(None, false; "no_valid_after")]
+    #[test_case(Some(60), false; "valid_after_within_limit")]
+    #[test_case(Some(300), true; "valid_after_beyond_limit")]
     #[tokio::test]
-    async fn test_aa_valid_after_check() {
+    async fn test_aa_valid_after_check(valid_after_offset: Option<u64>, rejected: bool) {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        // Test case 1: No `valid_after`
-        let tx_no_valid_after = create_aa_transaction(None, None);
-        let validator = setup_validator(&tx_no_valid_after, current_time);
+        let valid_after = valid_after_offset.map(|offset| current_time + offset);
+        let tx = create_aa_transaction(valid_after, None);
+        let validator = setup_validator(&tx, current_time);
         let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_no_valid_after)
+            .validate_transaction(TransactionOrigin::External, tx)
             .await;
 
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(!matches!(
-                err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter(_))
-            ));
-        }
-
-        // Test case 2: `valid_after` within limit (60 seconds)
-        let tx_within_limit = create_aa_transaction(Some(current_time + 60), None);
-        let validator = setup_validator(&tx_within_limit, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_within_limit)
-            .await;
-
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
-            assert!(!matches!(
-                err.downcast_other_ref::<TempoPoolTransactionError>(),
-                Some(TempoPoolTransactionError::InvalidValidAfter(_))
-            ));
-        }
-
-        // Test case 3: `valid_after` beyond limit (5 minutes, exceeds 120s max)
-        let tx_too_far = create_aa_transaction(Some(current_time + 300), None);
-        let validator = setup_validator(&tx_too_far, current_time);
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, tx_too_far)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                let Some(TempoPoolTransactionError::InvalidValidAfter(err)) =
-                    err.downcast_other_ref::<TempoPoolTransactionError>()
-                else {
-                    panic!("Expected InvalidValidAfter error, got: {err:?}");
-                };
-                assert_eq!(err.valid_after, current_time + 300);
-                assert!(err.max_allowed < err.valid_after);
+        if rejected {
+            match outcome {
+                TransactionValidationOutcome::Invalid(_, ref err) => {
+                    let Some(TempoPoolTransactionError::InvalidValidAfter(err)) =
+                        err.downcast_other_ref::<TempoPoolTransactionError>()
+                    else {
+                        panic!("Expected InvalidValidAfter error, got: {err:?}");
+                    };
+                    assert_eq!(err.valid_after, current_time + 300);
+                    assert!(err.max_allowed < err.valid_after);
+                }
+                _ => panic!(
+                    "Expected Invalid outcome with InvalidValidAfter error, got: {outcome:?}"
+                ),
             }
-            _ => panic!("Expected Invalid outcome with InvalidValidAfter error, got: {outcome:?}"),
+        } else if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(!matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InvalidValidAfter(_))
+            ));
         }
     }
 

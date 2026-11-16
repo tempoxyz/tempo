@@ -937,7 +937,7 @@ mod tests {
         error::InvalidPoolTransactionError,
         identifier::{SenderId, TransactionId},
     };
-    use std::{collections::VecDeque, num::NonZeroU64, sync::Arc, time::Instant};
+    use std::{collections::VecDeque, io, num::NonZeroU64, sync::Arc, time::Instant};
     use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
         TempoAddressExt as _, TempoHeader, TempoTransaction, TempoTxEnvelope,
@@ -947,6 +947,9 @@ mod tests {
         },
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
+    use test_case::test_case;
+
+    use super::{L1StateError, is_l1_storage_unavailable};
 
     use crate::{
         TransferAllowlist,
@@ -955,24 +958,11 @@ mod tests {
     };
     use zone_l1::PreparedL1Block;
 
-    #[test]
-    fn stringified_l1_unavailability_is_recognized() {
-        for error in [
-            zone_precompiles::L1StateError::StorageUnavailable {
-                account: Address::ZERO,
-                slot: B256::ZERO,
-                block_number: 1,
-                reason: "RPC unavailable".into(),
-            },
-            zone_precompiles::L1StateError::AccountUnavailable {
-                account: Address::ZERO,
-                block_number: 1,
-                reason: "RPC unavailable".into(),
-            },
-        ] {
-            let stringified = std::io::Error::other(error.to_string());
-            assert!(super::is_l1_storage_unavailable(&stringified), "{error}");
-        }
+    #[test_case(L1StateError::StorageUnavailable { account: Address::ZERO, slot: B256::ZERO, block_number: 1, reason: "RPC unavailable".into() }; "storage")]
+    #[test_case(L1StateError::AccountUnavailable { account: Address::ZERO, block_number: 1, reason: "RPC unavailable".into() }; "account")]
+    fn stringified_l1_unavailability_is_recognized(error: L1StateError) {
+        let stringified = io::Error::other(error.to_string());
+        assert!(is_l1_storage_unavailable(&stringified));
     }
 
     #[test]

@@ -132,6 +132,7 @@ mod tests {
     use alloy_primitives::Address;
     use reth_rpc_eth_api::FromEvmError;
     use tempo_evm::TempoEvmConfig;
+    use test_case::test_case;
 
     use super::*;
 
@@ -145,50 +146,22 @@ mod tests {
             .expect("rpc error data is valid json")
     }
 
-    #[test]
-    fn fee_token_errors_are_transaction_rejected_rpc_errors() {
-        let address = Address::repeat_byte(0x20);
-        let cases = [
-            (
-                TempoInvalidTransaction::FeeTokenNotTip20 { address },
-                "is not a TIP-20 token",
-                serde_json::json!({
-                    "name": "FeeTokenNotTip20Error",
-                    "token": address.to_string(),
-                }),
-            ),
-            (
-                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address,
-                    currency: "EUR".to_string(),
-                },
-                "uses currency",
-                serde_json::json!({
-                    "name": "FeeTokenNotUsdError",
-                    "token": address.to_string(),
-                    "currency": "EUR",
-                }),
-            ),
-            (
-                TempoInvalidTransaction::FeeTokenPaused { address },
-                "is paused",
-                serde_json::json!({
-                    "name": "FeeTokenPausedError",
-                    "token": address.to_string(),
-                }),
-            ),
-        ];
+    #[test_case(TempoInvalidTransaction::FeeTokenNotTip20 { address: Address::repeat_byte(0x20) }, "is not a TIP-20 token", serde_json::json!({ "name": "FeeTokenNotTip20Error", "token": Address::repeat_byte(0x20).to_string() }); "not_tip20")]
+    #[test_case(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address: Address::repeat_byte(0x20), currency: "EUR".to_string() }, "uses currency", serde_json::json!({ "name": "FeeTokenNotUsdError", "token": Address::repeat_byte(0x20).to_string(), "currency": "EUR" }); "not_usd_currency")]
+    #[test_case(TempoInvalidTransaction::FeeTokenPaused { address: Address::repeat_byte(0x20) }, "is paused", serde_json::json!({ "name": "FeeTokenPausedError", "token": Address::repeat_byte(0x20).to_string() }); "paused")]
+    fn fee_token_errors_are_transaction_rejected_rpc_errors(
+        err: TempoInvalidTransaction,
+        message: &str,
+        expected_data: serde_json::Value,
+    ) {
+        let rpc_error = into_rpc_error(err);
 
-        for (err, message, expected_data) in cases {
-            let rpc_error = into_rpc_error(err);
-
-            assert_eq!(
-                rpc_error.code(),
-                EthRpcErrorCode::TransactionRejected.code()
-            );
-            assert!(rpc_error.message().contains(message));
-            assert_eq!(rpc_error_data(&rpc_error), expected_data);
-        }
+        assert_eq!(
+            rpc_error.code(),
+            EthRpcErrorCode::TransactionRejected.code()
+        );
+        assert!(rpc_error.message().contains(message));
+        assert_eq!(rpc_error_data(&rpc_error), expected_data);
     }
 
     #[test]

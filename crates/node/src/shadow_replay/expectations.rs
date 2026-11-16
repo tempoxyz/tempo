@@ -237,6 +237,7 @@ mod tests {
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
     use tempo_primitives::{TempoTransaction, transaction::Call};
+    use test_case::test_case;
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
@@ -317,8 +318,11 @@ mod tests {
         assert!((T15_ZONE_RUNTIME_UPGRADE.check)(&ctx(&real, &upgraded), &verifier).is_none());
     }
 
-    #[test]
-    fn accepts_t15_portal_upgrade_from_any_earlier_runtime() {
+    #[test_case(ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME => true)]
+    #[test_case(T13_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME => true)]
+    #[test_case(T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME => true)]
+    #[test_case(ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME => false)]
+    fn accepts_t15_portal_upgrade_from_any_earlier_runtime(before: Bytes, after: Bytes) -> bool {
         let address = ZONE_PORTAL_IMPL_ADDRESS;
         let transition = |before: &Bytes, after: &Bytes| {
             let mut state = TransitionState::default();
@@ -363,14 +367,7 @@ mod tests {
                 &code,
             )
         };
-        for before in [
-            ZONE_PORTAL_RUNTIME,
-            T13_ZONE_PORTAL_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME,
-        ] {
-            assert!(check(&transition(&before, &T15_ZONE_PORTAL_RUNTIME)).is_some());
-        }
-        assert!(check(&transition(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME)).is_none());
+        check(&transition(&before, &after)).is_some()
     }
 
     #[test]

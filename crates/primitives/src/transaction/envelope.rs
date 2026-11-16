@@ -656,6 +656,7 @@ mod tests {
     use alloy_sol_types::SolCall;
     use core::num::NonZeroU64;
     use tempo_contracts::precompiles::ITIP20ChannelReserve;
+    use test_case::test_case;
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
@@ -974,70 +975,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_payment_v2_rejects_invalid_channel_reserve_signature_encoding() {
+    #[test_case(false; "settle")]
+    #[test_case(true; "close")]
+    fn test_payment_v2_rejects_invalid_channel_reserve_signature_encoding(close: bool) {
         let descriptor = channel_descriptor();
-        let invalid_signature = Bytes::from(vec![1, 2, 3]);
-        let calldatas = [
-            ITIP20ChannelReserve::settleCall {
-                descriptor: descriptor.clone(),
-                cumulativeAmount: U96::ONE,
-                signature: invalid_signature.clone(),
-            }
-            .abi_encode(),
+        let signature = Bytes::from(vec![1, 2, 3]);
+        let calldata = if close {
             ITIP20ChannelReserve::closeCall {
                 descriptor,
                 cumulativeAmount: U96::ONE,
                 captureAmount: U96::ONE,
-                signature: invalid_signature,
+                signature,
             }
-            .abi_encode(),
-        ];
+            .abi_encode()
+        } else {
+            ITIP20ChannelReserve::settleCall {
+                descriptor,
+                cumulativeAmount: U96::ONE,
+                signature,
+            }
+            .abi_encode()
+        };
 
-        for calldata in calldatas {
-            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
-                assert!(
-                    !envelope.is_payment_v2(),
-                    "V2 must reject invalid Tempo signature encoding"
-                );
-            }
+        for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
+            assert!(
+                !envelope.is_payment_v2(),
+                "V2 must reject invalid Tempo signature encoding"
+            );
         }
     }
 
-    #[test]
-    fn test_payment_v2_rejects_keychain_wrapped_channel_reserve_signature() {
+    #[test_case(false; "settle")]
+    #[test_case(true; "close")]
+    fn test_payment_v2_rejects_keychain_wrapped_channel_reserve_signature(close: bool) {
         let descriptor = channel_descriptor();
-        let keychain_signature = TempoSignature::Keychain(KeychainSignature::new_v1(
+        let signature = TempoSignature::Keychain(KeychainSignature::new_v1(
             Address::random(),
             PrimitiveSignature::Secp256k1(Signature::test_signature()),
         ))
         .to_bytes();
-        assert!(TempoSignature::from_bytes(&keychain_signature).is_ok());
-        assert!(PrimitiveSignature::from_bytes(&keychain_signature).is_err());
+        assert!(TempoSignature::from_bytes(&signature).is_ok());
+        assert!(PrimitiveSignature::from_bytes(&signature).is_err());
 
-        let calldatas = [
-            ITIP20ChannelReserve::settleCall {
-                descriptor: descriptor.clone(),
-                cumulativeAmount: U96::ONE,
-                signature: keychain_signature.clone(),
-            }
-            .abi_encode(),
+        let calldata = if close {
             ITIP20ChannelReserve::closeCall {
                 descriptor,
                 cumulativeAmount: U96::ONE,
                 captureAmount: U96::ONE,
-                signature: keychain_signature,
+                signature,
             }
-            .abi_encode(),
-        ];
+            .abi_encode()
+        } else {
+            ITIP20ChannelReserve::settleCall {
+                descriptor,
+                cumulativeAmount: U96::ONE,
+                signature,
+            }
+            .abi_encode()
+        };
 
-        for calldata in calldatas {
-            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
-                assert!(
-                    !envelope.is_payment_v2(),
-                    "V2 must reject Keychain-wrapped channel reserve voucher signatures"
-                );
-            }
+        for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
+            assert!(
+                !envelope.is_payment_v2(),
+                "V2 must reject Keychain-wrapped channel reserve voucher signatures"
+            );
         }
     }
 

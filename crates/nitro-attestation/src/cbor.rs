@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_tagged_fields_and_arrays_in_byte_fields() {
+    fn rejects_tagged_fields() {
         for field in default_fields() {
             let mut fields = default_fields();
             let mut tagged = encoded_value(|e| {
@@ -504,16 +504,31 @@ mod tests {
             set_field(&mut fields, field.name, tagged);
             assert_field_error(&fields, FormatError::InvalidPayload);
         }
-        for name in ["public_key", "user_data", "nonce"] {
-            for value in [
-                vec![0x81, 0x01],         // an integer array is not a byte string
-                vec![0xd8, 100, 0x41, 1], // a tag is not a byte string
-            ] {
-                let mut fields = default_fields();
-                fields.push(TestField { name, value });
-                assert_field_error(&fields, FormatError::InvalidPayload);
-            }
-        }
+    }
+
+    // An integer array is not a byte string.
+    #[test_case("public_key", &[0x81, 0x01]; "public_key_array")]
+    #[test_case("user_data", &[0x81, 0x01]; "user_data_array")]
+    #[test_case("nonce", &[0x81, 0x01]; "nonce_array")]
+    // A tag is not a byte string.
+    #[test_case("public_key", &[0xd8, 100, 0x41, 1]; "public_key_tag")]
+    #[test_case("user_data", &[0xd8, 100, 0x41, 1]; "user_data_tag")]
+    #[test_case("nonce", &[0xd8, 100, 0x41, 1]; "nonce_tag")]
+    // A bool is not a byte string or null.
+    #[test_case("public_key", &bool_value(false); "public_key_bool")]
+    #[test_case("user_data", &bool_value(false); "user_data_bool")]
+    #[test_case("nonce", &bool_value(false); "nonce_bool")]
+    // Undefined is not a byte string or null.
+    #[test_case("public_key", &[0xf7]; "public_key_undefined")]
+    #[test_case("user_data", &[0xf7]; "user_data_undefined")]
+    #[test_case("nonce", &[0xf7]; "nonce_undefined")]
+    fn rejects_wrong_types_for_optional_fields(name: &'static str, value: &[u8]) {
+        let mut fields = default_fields();
+        fields.push(TestField {
+            name,
+            value: value.to_vec(),
+        });
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
@@ -569,38 +584,19 @@ mod tests {
         }
     }
 
+    #[test_case("module_id", |e| { e.begin_str().unwrap().str("mod").unwrap().str("ule").unwrap().end().unwrap(); }; "module_id")]
+    #[test_case("certificate", |e| { e.begin_bytes().unwrap().bytes(&[0x30]).unwrap().end().unwrap(); }; "certificate")]
+    // Malformed PCR entries.
+    #[test_case("pcrs", |e| { e.map(1).unwrap().str("zero").unwrap().bytes(&[0; 48]).unwrap(); }; "pcrs_text_index")]
+    #[test_case("pcrs", |e| { e.map(1).unwrap().u8(0).unwrap().str("not bytes").unwrap(); }; "pcrs_text_value")]
+    fn rejects_malformed_field_encodings(name: &str, encode: fn(&mut Encoder<Vec<u8>>)) {
+        let mut fields = default_fields();
+        set_field(&mut fields, name, encoded_value(encode));
+        assert_field_error(&fields, FormatError::InvalidPayload);
+    }
+
     #[test]
-    fn rejects_chunked_byte_and_text_fields() {
-        for (name, value) in [
-            (
-                "module_id",
-                encoded_value(|e| {
-                    e.begin_str()
-                        .unwrap()
-                        .str("mod")
-                        .unwrap()
-                        .str("ule")
-                        .unwrap()
-                        .end()
-                        .unwrap();
-                }),
-            ),
-            (
-                "certificate",
-                encoded_value(|e| {
-                    e.begin_bytes()
-                        .unwrap()
-                        .bytes(&[0x30])
-                        .unwrap()
-                        .end()
-                        .unwrap();
-                }),
-            ),
-        ] {
-            let mut fields = default_fields();
-            set_field(&mut fields, name, value);
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
+    fn accepts_chunked_payload() {
         let payload = encode_payload(&default_fields());
         let parsed = parse_attestation(&wrap_payload(true, false, &payload)).unwrap();
         assert_eq!(parsed.payload, payload);
@@ -617,15 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_undefined_optionals_and_tagged_integers() {
-        for name in ["public_key", "user_data", "nonce"] {
-            let mut fields = default_fields();
-            fields.push(TestField {
-                name,
-                value: vec![0xf7],
-            });
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
+    fn rejects_tagged_integers() {
         let mut fields = default_fields();
         set_field(&mut fields, "timestamp", vec![0xc2, 0x41, 1]);
         assert_field_error(&fields, FormatError::InvalidPayload);
@@ -643,67 +631,53 @@ mod tests {
         assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
-    #[test]
-    fn rejects_duplicate_recognized_fields_matrix() {
-        for name in [
-            "module_id",
-            "digest",
-            "timestamp",
-            "pcrs",
-            "certificate",
-            "cabundle",
-        ] {
-            let mut fields = default_fields();
-            let duplicate = fields
-                .iter()
-                .find(|field| field.name == name)
-                .unwrap()
-                .clone();
-            fields.push(duplicate);
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
+    #[test_case("module_id")]
+    #[test_case("digest")]
+    #[test_case("timestamp")]
+    #[test_case("pcrs")]
+    #[test_case("certificate")]
+    #[test_case("cabundle")]
+    fn rejects_duplicate_mandatory_fields(name: &str) {
+        let mut fields = default_fields();
+        let duplicate = fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap()
+            .clone();
+        fields.push(duplicate);
+        assert_field_error(&fields, FormatError::InvalidPayload);
+    }
 
-        for name in ["public_key", "user_data", "nonce"] {
-            let mut fields = default_fields();
-            fields.push(TestField {
-                name,
-                value: bytes_value(&[1]),
-            });
-            fields.push(TestField {
-                name,
-                value: null_value(),
-            });
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
+    #[test_case("public_key")]
+    #[test_case("user_data")]
+    #[test_case("nonce")]
+    fn rejects_duplicate_optional_fields(name: &'static str) {
+        let mut fields = default_fields();
+        fields.push(TestField {
+            name,
+            value: bytes_value(&[1]),
+        });
+        fields.push(TestField {
+            name,
+            value: null_value(),
+        });
+        assert_field_error(&fields, FormatError::InvalidPayload);
+    }
+
+    #[test_case("module_id")]
+    #[test_case("digest")]
+    #[test_case("timestamp")]
+    #[test_case("pcrs")]
+    #[test_case("certificate")]
+    #[test_case("cabundle")]
+    fn rejects_wrong_types_for_mandatory_fields(name: &str) {
+        let mut fields = default_fields();
+        set_field(&mut fields, name, null_value());
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
-    fn rejects_wrong_types_for_all_fields() {
-        for name in [
-            "module_id",
-            "digest",
-            "timestamp",
-            "pcrs",
-            "certificate",
-            "cabundle",
-        ] {
-            let mut fields = default_fields();
-            set_field(&mut fields, name, null_value());
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
-
-        for name in ["public_key", "user_data", "nonce"] {
-            let mut fields = default_fields();
-            fields.push(TestField {
-                name,
-                value: bool_value(false),
-            });
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
-    }
-
-    #[test]
-    fn enforces_scalar_and_byte_string_bounds() {
+    fn enforces_scalar_bounds_and_accepts_empty_optionals() {
         let mut fields = default_fields();
         set_field(&mut fields, "module_id", text_value(""));
         assert_field_error(&fields, FormatError::InvalidPayload);
@@ -715,38 +689,6 @@ mod tests {
         let mut fields = default_fields();
         set_field(&mut fields, "timestamp", unsigned_value(0));
         assert_field_error(&fields, FormatError::InvalidPayload);
-
-        for (name, min, max) in [
-            ("certificate", 1, 1_024),
-            ("public_key", 1, 1_024),
-            ("user_data", 0, 512),
-            ("nonce", 0, 512),
-        ] {
-            if min > 0 {
-                let mut fields = default_fields();
-                if matches!(name, "public_key" | "user_data" | "nonce") {
-                    fields.push(TestField {
-                        name,
-                        value: bytes_value(&[]),
-                    });
-                } else {
-                    set_field(&mut fields, name, bytes_value(&[]));
-                }
-                assert_field_error(&fields, FormatError::InvalidPayload);
-            }
-
-            let mut fields = default_fields();
-            let oversized = bytes_value(&vec![0; max + 1]);
-            if matches!(name, "public_key" | "user_data" | "nonce") {
-                fields.push(TestField {
-                    name,
-                    value: oversized,
-                });
-            } else {
-                set_field(&mut fields, name, oversized);
-            }
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
 
         let mut fields = default_fields();
         fields.push(TestField {
@@ -765,6 +707,37 @@ mod tests {
         assert_eq!(parsed.public_key, vec![1]);
         assert!(parsed.user_data.is_empty());
         assert!(parsed.nonce.is_empty());
+    }
+
+    #[test_case("certificate", 1, 1_024)]
+    #[test_case("public_key", 1, 1_024)]
+    #[test_case("user_data", 0, 512)]
+    #[test_case("nonce", 0, 512)]
+    fn enforces_byte_string_bounds(name: &'static str, min: usize, max: usize) {
+        if min > 0 {
+            let mut fields = default_fields();
+            if matches!(name, "public_key" | "user_data" | "nonce") {
+                fields.push(TestField {
+                    name,
+                    value: bytes_value(&[]),
+                });
+            } else {
+                set_field(&mut fields, name, bytes_value(&[]));
+            }
+            assert_field_error(&fields, FormatError::InvalidPayload);
+        }
+
+        let mut fields = default_fields();
+        let oversized = bytes_value(&vec![0; max + 1]);
+        if matches!(name, "public_key" | "user_data" | "nonce") {
+            fields.push(TestField {
+                name,
+                value: oversized,
+            });
+        } else {
+            set_field(&mut fields, name, oversized);
+        }
+        assert_field_error(&fields, FormatError::InvalidPayload);
     }
 
     #[test]
@@ -859,31 +832,6 @@ mod tests {
             pcrs_value(&[(7, vec![0; 48]), (7, vec![1; 48])]),
         );
         assert_field_error(&fields, FormatError::InvalidPayload);
-
-        for malformed_pcrs in [
-            encoded_value(|encoder| {
-                encoder
-                    .map(1)
-                    .unwrap()
-                    .str("zero")
-                    .unwrap()
-                    .bytes(&[0; 48])
-                    .unwrap();
-            }),
-            encoded_value(|encoder| {
-                encoder
-                    .map(1)
-                    .unwrap()
-                    .u8(0)
-                    .unwrap()
-                    .str("not bytes")
-                    .unwrap();
-            }),
-        ] {
-            let mut fields = default_fields();
-            set_field(&mut fields, "pcrs", malformed_pcrs);
-            assert_field_error(&fields, FormatError::InvalidPayload);
-        }
     }
 
     #[test]
@@ -1053,28 +1001,25 @@ mod tests {
         assert_eq!(d.bytes().unwrap(), &[1, 2, 3]);
     }
 
+    #[test_case("module_id")]
+    #[test_case("digest")]
+    #[test_case("timestamp")]
+    #[test_case("pcrs")]
+    #[test_case("certificate")]
+    #[test_case("cabundle")]
+    fn rejects_nested_values_without_traversing_them(name: &str) {
+        let mut payload = encoded_value(|e| {
+            e.map(1).unwrap().str(name).unwrap();
+        });
+        let value_start = payload.len();
+        payload.extend_from_slice(&[0x81; 8_000]); // Wrong-type nested arrays, no terminal value.
+        let mut decoder = minicbor_serde::Deserializer::new(&payload);
+        assert!(AttestationDocument::deserialize(&mut decoder).is_err());
+        assert!(decoder.decoder().position() <= value_start + 2);
+    }
+
     #[test]
-    fn rejects_nested_values_without_traversing_them() {
-        for name in [
-            "module_id",
-            "digest",
-            "timestamp",
-            "pcrs",
-            "certificate",
-            "cabundle",
-        ] {
-            let mut payload = encoded_value(|e| {
-                e.map(1).unwrap().str(name).unwrap();
-            });
-            let value_start = payload.len();
-            payload.extend_from_slice(&[0x81; 8_000]); // Wrong-type nested arrays, no terminal value.
-            let mut decoder = minicbor_serde::Deserializer::new(&payload);
-            assert!(AttestationDocument::deserialize(&mut decoder).is_err());
-            assert!(
-                decoder.decoder().position() <= value_start + 2,
-                "{name} traversed the value"
-            );
-        }
+    fn rejects_oversized_protected_map_without_traversing_it() {
         let mut protected = encoded_value(|e| {
             e.map(7_400).unwrap();
         });
@@ -1115,17 +1060,16 @@ mod tests {
         }
     }
 
+    #[test_case(&[0x85]; "five_elements")]
+    #[test_case(&[0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]; "max_length")]
+    #[test_case(&[0xd2, 0xd8, 100, 0x84]; "nested_tag")]
+    fn rejects_declared_wrong_envelope_lengths_and_nested_tags(header: &[u8]) {
+        let input = [header, &document(false, false, false)[1..]].concat();
+        assert!(parse_attestation(&input).is_err());
+    }
+
     #[test]
-    fn rejects_declared_wrong_envelope_lengths_and_nested_tags() {
-        for header in [
-            vec![0x85],
-            vec![0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
-            vec![0xd2, 0xd8, 100, 0x84],
-        ] {
-            let mut input = header;
-            input.extend_from_slice(&document(false, false, false)[1..]);
-            assert!(parse_attestation(&input).is_err());
-        }
+    fn rejects_nonempty_unprotected_map_without_key() {
         let mut input = vec![0x84, 0x44, 0xa1, 1, 0x38, 0x22, 0xa1];
         input.extend_from_slice(&[0x81; 8_000]); // Nonempty unprotected map, without even a key.
         assert!(parse_attestation(&input).is_err());

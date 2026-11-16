@@ -370,6 +370,7 @@ async fn stop_child(child: &mut Child) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     #[test]
     fn full_mode_enables_faucet_for_all_canonical_tokens() {
@@ -427,15 +428,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn depleted_fee_pools_are_repaired_before_bootstrap() {
-        for (reserve, needs_repair) in [
-            (0, true),
-            (MIN_FEE_RESERVE - 1, true),
-            (MIN_FEE_RESERVE, false),
-            (FEE_LIQUIDITY, false),
-        ] {
-            assert_eq!(fee_pool_needs_repair(reserve), needs_repair);
-        }
+    #[test_case(0 => true; "empty")]
+    #[test_case(MIN_FEE_RESERVE - 1 => true; "below_min_reserve")]
+    #[test_case(MIN_FEE_RESERVE => false; "min_reserve")]
+    #[test_case(FEE_LIQUIDITY => false; "full_liquidity")]
+    fn depleted_fee_pools_are_repaired_before_bootstrap(reserve: u128) -> bool {
+        fee_pool_needs_repair(reserve)
     }
 }
