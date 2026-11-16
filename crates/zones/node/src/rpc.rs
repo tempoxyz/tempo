@@ -1017,8 +1017,7 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     filter_owners: Arc<Mutex<HashMap<FilterId, FilterOwner>>>,
 }
 
-/// The account that installed a filter, and for log filters the topics it asked for, which are
-/// applied to the backend's caller-scoped results.
+/// The account that installed a filter and, for log filters, what it asked for.
 struct FilterOwner {
     caller: Address,
     requested: Arc<RequestedTopics>,
