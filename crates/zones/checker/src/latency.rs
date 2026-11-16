@@ -21,11 +21,13 @@ const MAX_SAMPLE_AGE: Duration = Duration::from_secs(10 * 60);
 pub(crate) struct LatencySamples {
     /// From each deposit's Tempo block to the Zone block that processed it.
     pub(crate) deposits: Vec<f64>,
-    /// From each user withdrawal's Zone request to the Tempo block that processed it.
+    /// From each user withdrawal's Zone request to the Tempo block of its first payout or its
+    /// bounce back to the Zone, whichever comes first. A withdrawal paid in installments under a
+    /// TIP-1150 withdrawal limit is sampled at its first installment.
     pub(crate) withdrawals: Vec<f64>,
 }
 
-/// Tracks user withdrawals between their Zone request and their processing on Tempo.
+/// Tracks user withdrawals between their Zone request and their first payout or bounce on Tempo.
 ///
 /// Requests are matched by sender tag and kept in memory only, so withdrawals in flight across a
 /// restart are not sampled.

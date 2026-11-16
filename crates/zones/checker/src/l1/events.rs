@@ -243,6 +243,17 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
             ZonePortal::TransfersEnabledUpdated,
             "TransfersEnabledUpdated"
         ),
+        // Limit changes and queue bookkeeping move no funds. Each payout from a token queue emits
+        // its own WithdrawalProcessed, WithdrawalBounceBack or DepositBounceBack event.
+        ZonePortal::WithdrawalLimitSet::SIGNATURE_HASH => {
+            ignored!(ZonePortal::WithdrawalLimitSet, "WithdrawalLimitSet")
+        }
+        ZonePortal::WithdrawalQueued::SIGNATURE_HASH => {
+            ignored!(ZonePortal::WithdrawalQueued, "WithdrawalQueued")
+        }
+        ZonePortal::QueuedWithdrawalPaid::SIGNATURE_HASH => {
+            ignored!(ZonePortal::QueuedWithdrawalPaid, "QueuedWithdrawalPaid")
+        }
         ZonePortal::LeaderUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::LeaderUpdated, "LeaderUpdated")
         }
@@ -473,6 +484,38 @@ mod tests {
                 .expect("transfer opt-in updates must not stop the checker");
             assert!(events.is_empty());
         }
+    }
+
+    #[test]
+    fn ignores_withdrawal_limit_bookkeeping() {
+        let token = Address::repeat_byte(7);
+        let logs = vec![
+            log(ZonePortal::WithdrawalLimitSet {
+                token,
+                maxAmount: 1_000,
+                period: 100,
+            }
+            .encode_log_data()),
+            log(ZonePortal::WithdrawalQueued {
+                token,
+                queueIndex: U256::ZERO,
+                to: Address::repeat_byte(2),
+                amount: 5_000,
+                senderTag: B256::repeat_byte(3),
+                fallbackNonce: 4,
+            }
+            .encode_log_data()),
+            log(ZonePortal::QueuedWithdrawalPaid {
+                token,
+                queueIndex: U256::ZERO,
+                paid: 1_000,
+                remaining: 4_000,
+            }
+            .encode_log_data()),
+        ];
+        let events = collect(&[receipt(true, B256::ZERO, logs)])
+            .expect("withdrawal limit events must not stop the checker");
+        assert!(events.is_empty());
     }
 
     #[test]
