@@ -117,9 +117,6 @@ p256 = { workspace = true, features = ["ecdsa"] }
 sha2 = { workspace = true }
 base64.workspace = true
 
-[build-dependencies]
-smolgen.workspace = true
-
 [features]
 default = []
 asm-keccak = [
