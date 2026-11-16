@@ -599,9 +599,10 @@ mod tests {
         };
 
         for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_success(), "{result:?}");
-            assert_eq!(result.gas_used, TIP20_FIXED_TRANSFER_GAS);
+            assert_eq!(result.gas_used, gas);
         }
         assert_eq!(harness.balance_of(VIRTUAL_MASTER)?, U256::from(4_321u64));
         assert_eq!(harness.balance_of(virtual_recipient)?, U256::ZERO);
@@ -623,7 +624,8 @@ mod tests {
         harness.reject_all_receipts(VIRTUAL_MASTER)?;
 
         for (caller, calldata) in harness.transfer_calls(virtual_recipient) {
-            let result = harness.call(caller, calldata, TIP20_FIXED_TRANSFER_GAS, false)?;
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
             assert!(result.is_revert());
             assert_eq!(
                 result.bytes,
