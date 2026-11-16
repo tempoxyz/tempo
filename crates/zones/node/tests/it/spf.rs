@@ -19,10 +19,10 @@ use reth_chainspec::EthChainSpec as _;
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles, TrieAccount, proof::ProofRetainer};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS,
     storage::StorageKey as _,
     tip20::tip20_slots,
-    tip403_registry::{ALLOW_ALL_POLICY_ID, tip403_registry_slots},
+    tip403_registry::{ALLOW_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::TempoHeader;
 use zone_chainspec::ZoneChainSpec;
@@ -33,7 +33,8 @@ use zone_spf::{
 };
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, TIP20_TX_GAS, start_local_zone_with_fixture_and_withdrawal_batch_interval,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, alloc_precompile_writes,
+    start_local_zone_with_fixture_and_withdrawal_batch_interval,
 };
 
 const ZONE_ID: u32 = 1;
@@ -420,19 +421,11 @@ fn spf_config(genesis: &Genesis) -> SpfConfig {
 }
 
 fn tempo_state_with_transfer_policy(token: Address, policy_id: u64) -> (B256, Vec<Bytes>) {
-    let policy_slot = token.mapping_slot(tip403_registry_slots::TOKEN_TRANSFER_POLICIES);
-    let packed_policy = U256::from(policy_id) | (U256::ONE << u64::BITS);
-    let genesis = Genesis {
-        alloc: [(
-            TIP403_REGISTRY_ADDRESS,
-            GenesisAccount {
-                storage: Some([(policy_slot.into(), packed_policy.into())].into()),
-                ..Default::default()
-            },
-        )]
-        .into(),
-        ..Default::default()
-    };
+    let mut genesis = Genesis::default();
+    alloc_precompile_writes(&mut genesis, || {
+        TIP403Registry::new().set_token_transfer_policy(token, policy_id)
+    })
+    .expect("in-memory policy write succeeds");
 
     let (state_root, nodes, _) = genesis_state_witness(&genesis);
     (state_root, nodes)

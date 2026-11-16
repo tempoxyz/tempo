@@ -8,7 +8,8 @@
 //!
 //! 1. Direct-call-only rules reject delegate calls before storage access.
 //! 2. Reject calls that cannot cover the calldata input cost before admission rules decode it.
-//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge.
+//! 3. Decode the selector and reject calls that cannot cover a configured fixed gas charge,
+//!    (+T15) plus the calldata input cost.
 //! 4. Apply [`CallRules`] admission checks using calldata, caller metadata, and anchored state.
 //! 5. Forward the original calldata and caller, applying any configured fixed gas charge.
 //!
@@ -30,6 +31,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     CallInput, DelegateCallNotAllowed, charge_input_cost,
     error::TempoPrecompileError,
+    input_cost,
     storage::{
         PrecompileStorageProvider, StorageCtx,
         actions::StorageActions,
@@ -116,7 +118,19 @@ where
 
     let caller = message.caller;
     let call_input = CallInput::of_message(evm, message);
-    let fixed_gas = rules.fixed_gas(call_input.selector());
+    let input_gas = match input_cost(env.spec, call_input.len()) {
+        Ok(input_gas) if gas.remaining() >= input_gas => input_gas,
+        _ => return Err(PrecompileHalt::OutOfGas.into()),
+    };
+
+    let fixed_gas = match rules.fixed_gas(call_input.selector()) {
+        Some(fixed_gas) if env.spec.is_t15() => Some(
+            fixed_gas
+                .checked_add(input_gas)
+                .ok_or(PrecompileHalt::OutOfGas)?,
+        ),
+        fixed_gas => fixed_gas,
+    };
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
@@ -414,6 +428,42 @@ mod tests {
         assert!(matches!(
             rejected,
             Err(PrecompileError::Revert(bytes)) if bytes == Bytes::from_static(b"denied")
+        ));
+    }
+
+    #[test]
+    fn fixed_gas_adds_input_cost_from_t15() {
+        // 5 words at 30 gas each.
+        let padded = [0u8; 160];
+        let input_gas = 150;
+        let success = |_: &[u8], _| Ok(StorageCtx::default().success_output(Bytes::new()));
+
+        for (spec, data, expected) in [
+            (TempoHardfork::T14, &padded[..], FIXED_GAS),
+            (TempoHardfork::T15, &padded[..], FIXED_GAS + input_gas),
+            (TempoHardfork::T15, &padded[..4], FIXED_GAS + 30),
+        ] {
+            let mut ctx = test_context();
+            let rules = RecordingRules(Rc::new(RefCell::new(None)));
+            let (output, gas) = call(&mut ctx, spec, data, Address::ZERO, 1_000, rules, success);
+            assert!(output.is_ok(), "{spec:?} must succeed");
+            assert_eq!(gas.spent(), expected, "{spec:?} with {} bytes", data.len());
+        }
+
+        let mut ctx = test_context();
+        let rules = RecordingRules(Rc::new(RefCell::new(None)));
+        let (output, _) = call(
+            &mut ctx,
+            TempoHardfork::T15,
+            &padded,
+            Address::ZERO,
+            FIXED_GAS + input_gas - 1,
+            rules,
+            success,
+        );
+        assert!(matches!(
+            output,
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))
         ));
     }
 

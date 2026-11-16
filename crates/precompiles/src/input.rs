@@ -25,6 +25,18 @@ impl<'a> CallInput<'a> {
         Self(state.input())
     }
 
+    /// Returns the input length in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the input is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns the 4-byte function selector, if the input has one.
     #[inline]
     pub fn selector(&self) -> Option<[u8; 4]> {
