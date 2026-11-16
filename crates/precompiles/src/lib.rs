@@ -66,13 +66,13 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
-#[cfg(test)]
-use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
+    precompiles::{
+        MovePrecompileError, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult,
+    },
 };
 
 pub use tempo_contracts::precompiles::{
@@ -119,6 +119,12 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .div_ceil(32)
         .checked_mul(per_word_cost)
         .ok_or(error::TempoPrecompileError::OutOfGas)
+}
+
+/// Returns whether `remaining` gas covers [`input_cost`] for `calldata_len` bytes at `spec`.
+#[inline]
+pub fn has_input_gas(spec: TempoHardfork, calldata_len: usize, remaining: u64) -> bool {
+    input_cost(spec, calldata_len).is_ok_and(|cost| remaining >= cost)
 }
 
 /// Returns the additional gas cost for duplicate validation at `spec`.
@@ -323,6 +329,9 @@ where
         }
 
         let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
+            return Some(Err(PrecompileHalt::OutOfGas.into()));
+        }
         // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
         let input = evm.message_input(message).to_vec();
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
