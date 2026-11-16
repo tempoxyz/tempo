@@ -184,6 +184,8 @@ impl TipFeeManager {
     /// - `InsufficientReserves` — adding `amount_in` overflows the validator reserve
     /// - `InsufficientLiquidity` — remaining reserve would violate the pending reservation (T1C+)
     /// - `UnderOverflow` — arithmetic overflow computing `amount_in`
+    /// - `PolicyForbids` — `to`'s receive policy would divert the payout into a receipt only the
+    ///   FeeManager could claim (T15+)
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -230,6 +232,8 @@ impl TipFeeManager {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
         }
+
+        self.ensure_payout_claimable(user_token, to)?;
 
         self.pools[pool_id].write(pool)?;
 
@@ -417,6 +421,8 @@ impl TipFeeManager {
     /// - `InsufficientLiquidity` — caller's balance < `liquidity`, or remaining reserve would
     ///   violate the pending reservation (T1C+)
     /// - `InsufficientReserves` — pool reserves underflow after withdrawal
+    /// - `PolicyForbids` — `to`'s receive policy would divert either payout into a receipt only the
+    ///   FeeManager could claim (T15+)
     /// - `UnderOverflow` — supply or balance arithmetic overflows
     pub fn burn(
         &mut self,
@@ -471,6 +477,13 @@ impl TipFeeManager {
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
+        }
+
+        if !amount_user_token.is_zero() {
+            self.ensure_payout_claimable(user_token.address(), to)?;
+        }
+        if !amount_validator_token.is_zero() {
+            self.ensure_payout_claimable(validator_token.address(), to)?;
         }
 
         // Burn LP tokens
@@ -733,11 +746,19 @@ mod tests {
 
     use super::*;
     use crate::{
-        TIP_FEE_MANAGER_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        address_registry::AddressRegistry,
+        error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, TIP403Setup, with_storage},
+        test_util::{
+            TIP20Setup, TIP403Setup, VIRTUAL_MASTER, register_virtual_master, reject_all_senders,
+            with_storage,
+        },
         tip_fee_manager::TIPFeeAMMError,
         tip20::TIP20Error,
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
     use tempo_primitives::test_utils::actors;
     use test_case::test_case;
@@ -1378,5 +1399,364 @@ mod tests {
             })?;
         }
         Ok(())
+    }
+
+    /// Creates both tokens and mints `admin` liquidity into their pool. Returns
+    /// `(user_token, validator_token, liquidity)`.
+    fn setup_minted_pool(
+        amm: &mut TipFeeManager,
+        admin: Address,
+    ) -> Result<(Address, Address, U256)> {
+        let mint_amount = uint!(100000000_U256);
+        let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+            .with_issuer(admin)
+            .with_mint(admin, mint_amount)
+            .apply()?
+            .address();
+        let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+            .with_issuer(admin)
+            .with_mint(admin, mint_amount)
+            .apply()?
+            .address();
+        let liquidity = amm.mint(
+            admin,
+            user_token,
+            validator_token,
+            uint!(100000_U256),
+            admin,
+        )?;
+        Ok((user_token, validator_token, liquidity))
+    }
+
+    /// Creates both tokens and a pool funded for a rebalance swap. Returns
+    /// `(user_token, validator_token)`.
+    fn setup_rebalance_pool(amm: &mut TipFeeManager, admin: Address) -> Result<(Address, Address)> {
+        let mint_amount = uint!(10000000_U256);
+        let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+            .with_issuer(admin)
+            .with_mint(amm.address, mint_amount)
+            .apply()?
+            .address();
+        let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+            .with_issuer(admin)
+            .with_mint(admin, mint_amount)
+            .apply()?
+            .address();
+        let liquidity = uint!(100000_U256);
+        setup_pool_with_liquidity(amm, user_token, validator_token, liquidity)?;
+        Ok((user_token, validator_token))
+    }
+
+    fn balance(token: Address, account: Address) -> Result<U256> {
+        TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall { account })
+    }
+
+    #[test]
+    fn test_burn_to_receive_blocked_recipient_reverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, Address::ZERO)?;
+
+            let pool_id = amm.pool_id(user_token, validator_token);
+            let pool_before = amm.pools[pool_id].read()?;
+            let result = amm.burn(
+                admin,
+                user_token,
+                validator_token,
+                liquidity / uint!(2_U256),
+                recipient,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            assert_eq!(amm.get_liquidity_balances(pool_id, admin)?, liquidity);
+            let pool_after = amm.pools[pool_id].read()?;
+            assert_eq!(
+                pool_after.reserve_user_token,
+                pool_before.reserve_user_token
+            );
+            assert_eq!(
+                pool_after.reserve_validator_token,
+                pool_before.reserve_validator_token
+            );
+            for token in [user_token, validator_token] {
+                assert_eq!(balance(token, RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_to_receive_blocked_virtual_recipient_reverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new())?;
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            reject_all_senders(VIRTUAL_MASTER, Address::ZERO)?;
+
+            let result = amm.burn(
+                admin,
+                user_token,
+                validator_token,
+                liquidity / uint!(2_U256),
+                virtual_addr,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_to_receive_blocked_recipient_diverts_pre_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, Address::ZERO)?;
+
+            let (amount_user, amount_validator) = amm.burn(
+                admin,
+                user_token,
+                validator_token,
+                liquidity / uint!(2_U256),
+                recipient,
+            )?;
+
+            assert_eq!(balance(user_token, recipient)?, U256::ZERO);
+            assert_eq!(balance(validator_token, recipient)?, U256::ZERO);
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_user
+            );
+            assert_eq!(
+                balance(validator_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_validator
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rebalance_swap_to_receive_blocked_recipient_reverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token) = setup_rebalance_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, Address::ZERO)?;
+
+            let pool_id = amm.pool_id(user_token, validator_token);
+            let pool_before = amm.pools[pool_id].read()?;
+            let result = amm.rebalance_swap(
+                admin,
+                user_token,
+                validator_token,
+                uint!(1000_U256),
+                recipient,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            let pool_after = amm.pools[pool_id].read()?;
+            assert_eq!(
+                pool_after.reserve_user_token,
+                pool_before.reserve_user_token
+            );
+            assert_eq!(
+                pool_after.reserve_validator_token,
+                pool_before.reserve_validator_token
+            );
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rebalance_swap_to_receive_blocked_recipient_diverts_pre_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token) = setup_rebalance_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, Address::ZERO)?;
+
+            let amount_out = uint!(1000_U256);
+            amm.rebalance_swap(admin, user_token, validator_token, amount_out, recipient)?;
+
+            assert_eq!(balance(user_token, recipient)?, U256::ZERO);
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_out
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_to_self_recoverable_recipient_diverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, recipient)?;
+
+            let burned = liquidity / uint!(2_U256);
+            let (amount_user, amount_validator) =
+                amm.burn(admin, user_token, validator_token, burned, recipient)?;
+
+            let pool_id = amm.pool_id(user_token, validator_token);
+            assert_eq!(
+                amm.get_liquidity_balances(pool_id, admin)?,
+                liquidity - burned
+            );
+            assert_eq!(balance(user_token, recipient)?, U256::ZERO);
+            assert_eq!(balance(validator_token, recipient)?, U256::ZERO);
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_user
+            );
+            assert_eq!(
+                balance(validator_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_validator
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_to_third_party_recoverable_recipient_diverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, Address::random())?;
+
+            let (amount_user, amount_validator) = amm.burn(
+                admin,
+                user_token,
+                validator_token,
+                liquidity / uint!(2_U256),
+                recipient,
+            )?;
+
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_user
+            );
+            assert_eq!(
+                balance(validator_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_validator
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_burn_to_token_filtered_recipient_reverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token, liquidity) = setup_minted_pool(&mut amm, admin)?;
+            TIP403Registry::new().set_receive_policy(
+                recipient,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: ALLOW_ALL_POLICY_ID,
+                    tokenFilterId: REJECT_ALL_POLICY_ID,
+                    recoveryAuthority: Address::ZERO,
+                },
+            )?;
+
+            let pool_id = amm.pool_id(user_token, validator_token);
+            let pool_before = amm.pools[pool_id].read()?;
+            let result = amm.burn(
+                admin,
+                user_token,
+                validator_token,
+                liquidity / uint!(2_U256),
+                recipient,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
+            ));
+
+            assert_eq!(amm.get_liquidity_balances(pool_id, admin)?, liquidity);
+            let pool_after = amm.pools[pool_id].read()?;
+            assert_eq!(
+                pool_after.reserve_user_token,
+                pool_before.reserve_user_token
+            );
+            assert_eq!(
+                pool_after.reserve_validator_token,
+                pool_before.reserve_validator_token
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_rebalance_swap_to_self_recoverable_recipient_diverts_t15() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let admin = Address::random();
+        let recipient = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut amm = TipFeeManager::new();
+            let (user_token, validator_token) = setup_rebalance_pool(&mut amm, admin)?;
+            reject_all_senders(recipient, recipient)?;
+
+            let amount_out = uint!(1000_U256);
+            amm.rebalance_swap(admin, user_token, validator_token, amount_out, recipient)?;
+
+            assert_eq!(balance(user_token, recipient)?, U256::ZERO);
+            assert_eq!(
+                balance(user_token, RECEIVE_POLICY_GUARD_ADDRESS)?,
+                amount_out
+            );
+
+            Ok(())
+        })
     }
 }
