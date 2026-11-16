@@ -743,13 +743,17 @@ mod tests {
     use test_case::test_case;
 
     /// Creates a pool holding `reserve` of each token: `admin` deposits validator tokens, then a
-    /// fee swap of `reserve` user tokens, which the fee manager holds, balances it.
+    /// fee swap of `reserve` user tokens, which the fee manager holds, balances it. Leaves `admin`
+    /// `reserve` more validator tokens to rebalance with.
     fn setup_balanced_pool(admin: Address, reserve: U256) -> Result<(Address, Address)> {
         let (user_token, validator_token) = FeeAmmSetup::new(admin)
             .liquidity(admin, reserve + compute_amount_out(reserve)?)
             .apply()?;
         TIP20Setup::config(user_token)
             .with_mint(TIP_FEE_MANAGER_ADDRESS, reserve)
+            .apply()?;
+        TIP20Setup::config(validator_token)
+            .with_mint(admin, reserve)
             .apply()?;
         TipFeeManager::new().execute_fee_swap(user_token, validator_token, reserve)?;
         Ok((user_token, validator_token))
@@ -1109,9 +1113,6 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let liquidity = uint!(100000_U256);
             let (user_token, validator_token) = setup_balanced_pool(admin, liquidity)?;
-            TIP20Setup::config(validator_token)
-                .with_mint(admin, uint!(10000000_U256))
-                .apply()?;
             let mut amm = TipFeeManager::new();
             let pool_id = amm.pool_id(user_token, validator_token);
 
@@ -1326,9 +1327,6 @@ mod tests {
         for spec in [TempoHardfork::T1B, TempoHardfork::T1C] {
             with_storage(spec, || {
                 let (user_token, validator_token) = setup_balanced_pool(admin, uint!(100000_U256))?;
-                TIP20Setup::config(validator_token)
-                    .with_mint(admin, uint!(100000000_U256))
-                    .apply()?;
                 let mut amm = TipFeeManager::new();
                 let pool_id = amm.pool_id(user_token, validator_token);
 

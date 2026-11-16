@@ -1955,11 +1955,8 @@ mod tests {
 
         let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::initialized()?;
-            let (base, quote) = DexSetup::new(admin)
-                .trader(maker, amount * 4)
-                .without_pair()
-                .apply()?;
-            let book_key = exchange.create_pair(base)?;
+            let (base, quote) = DexSetup::new(admin).trader(maker, amount * 4).apply()?;
+            let book_key = compute_book_key(base, quote);
             let first_order = exchange.place(maker, base, amount, true, tick)?;
             exchange.place(maker, base, amount, true, tick)?;
 

@@ -362,7 +362,6 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_reports_pair_from_handler() ->
             TIP20Setup::config(user_token)
                 .with_admin(admin)
                 .with_mint(fee_payer, fee)
-                .with_approval(fee_payer, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
                 .apply()?;
 
             TipFeeManager::new().set_validator_token(

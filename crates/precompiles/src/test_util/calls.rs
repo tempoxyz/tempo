@@ -190,67 +190,71 @@ mod tests {
     fn calls_match_apply() {
         let [admin, alice, bob, spender] = actors();
         let [minted, approved, traded, deposited] = amounts();
-        let salt = B256::random();
+        let tokens = [
+            TIP20Setup::path_usd(admin)
+                .with_mint(alice, minted)
+                .with_approval(alice, spender, approved),
+            TIP20Setup::create("Test", "TST", admin)
+                .with_salt(B256::random())
+                .currency("EUR")
+                .with_issuer(bob)
+                .with_mint(bob, minted)
+                .with_approval(bob, spender, approved)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([alice, bob])),
+        ];
+        let compound = TIP403Setup::compound(
+            ALLOW_ALL_POLICY_ID,
+            REJECT_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
+        );
         let dex = DexSetup::new(admin).trader(alice, traded.to());
         let fee_amm = FeeAmmSetup::new(admin).liquidity(bob, deposited);
-        let setups = || {
-            let tokens = [
-                TIP20Setup::path_usd(admin)
-                    .with_mint(alice, minted)
-                    .with_approval(alice, spender, approved),
-                TIP20Setup::create("Test", "TST", admin)
-                    .with_salt(salt)
-                    .currency("EUR")
-                    .with_issuer(bob)
-                    .with_mint(bob, minted)
-                    .with_approval(bob, spender, approved)
-                    .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([alice, bob])),
-            ];
-            let compound = TIP403Setup::compound(
-                ALLOW_ALL_POLICY_ID,
-                REJECT_ALL_POLICY_ID,
-                ALLOW_ALL_POLICY_ID,
-            );
-            (tokens, compound)
-        };
-        let storage_after = |lowered: bool| {
-            // The latest fork, as on a dev node: compound policies dispatch only from T2.
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::latest());
-            storage.set_timestamp(U256::from(1));
-            StorageCtx::enter(&mut storage, || -> Result<()> {
-                // Genesis: pathUSD and the factory, which `calls` expects.
-                TIP20Setup::path_usd(admin).apply()?;
-                let (tokens, compound) = setups();
-                if !lowered {
-                    for token in tokens {
-                        token.apply()?;
-                    }
-                    compound.apply()?;
-                    dex.clone().apply()?;
-                    return fee_amm.clone().apply().map(drop);
-                }
-                for token in tokens {
-                    let next_policy_id = TIP403Registry::new().policy_id_counter()?;
-                    token
-                        .calls(next_policy_id)
-                        .1
-                        .into_iter()
-                        .try_for_each(execute)?;
-                }
-                execute(compound.call(admin))?;
-                [dex.calls().1, fee_amm.calls().1]
-                    .into_iter()
-                    .flatten()
-                    .try_for_each(execute)
-            })
-            .unwrap();
-            storage
-                .into_storage()
-                .filter(|(_, _, value)| !value.is_zero())
-                .collect::<HashSet<_>>()
-        };
 
-        assert_eq!(storage_after(false), storage_after(true));
+        let lowered = storage_after(admin, || {
+            for token in &tokens {
+                let next_policy_id = TIP403Registry::new().policy_id_counter()?;
+                token
+                    .calls(next_policy_id)
+                    .1
+                    .into_iter()
+                    .try_for_each(execute)?;
+            }
+            execute(compound.call(admin))?;
+            [dex.calls().1, fee_amm.calls().1]
+                .into_iter()
+                .flatten()
+                .try_for_each(execute)
+        });
+        let applied = storage_after(admin, || {
+            for token in tokens {
+                token.apply()?;
+            }
+            compound.apply()?;
+            dex.apply()?;
+            fee_amm.apply().map(drop)
+        });
+
+        assert_eq!(applied, lowered);
+    }
+
+    /// Runs `setup` after genesis and returns the non-zero storage it leaves.
+    fn storage_after(
+        admin: Address,
+        setup: impl FnOnce() -> Result<()>,
+    ) -> HashSet<(Address, U256, U256)> {
+        // The latest fork, as on a dev node: compound policies dispatch only from T2.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::latest());
+        storage.set_timestamp(U256::from(1));
+        StorageCtx::enter(&mut storage, || {
+            // Genesis: pathUSD and the factory, which `calls` expects.
+            TIP20Setup::path_usd(admin).apply()?;
+            setup()
+        })
+        .unwrap();
+        storage
+            .into_storage()
+            .filter(|(_, _, value)| !value.is_zero())
+            .collect()
     }
 
     /// Executes `call` through the target precompile's ABI dispatch.

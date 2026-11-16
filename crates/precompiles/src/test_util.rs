@@ -165,7 +165,7 @@ enum Action {
 ///     .with_mint(user, amount)
 ///     .apply()?;
 /// ```
-#[derive(Default, Clone)]
+#[derive(Default)]
 #[cfg(any(test, feature = "test-utils"))]
 pub struct TIP20Setup {
     action: Action,
@@ -408,7 +408,6 @@ impl TIP20Setup {
 /// ```ignore
 /// let (base, quote) = DexSetup::new(admin).trader(alice, amount).apply()?;
 /// ```
-#[derive(Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 pub struct DexSetup {
     base: TIP20Setup,
@@ -462,7 +461,6 @@ impl DexSetup {
 /// ```ignore
 /// let (user_token, validator_token) = FeeAmmSetup::new(admin).liquidity(lp, amount).apply()?;
 /// ```
-#[derive(Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 pub struct FeeAmmSetup {
     user_token: TIP20Setup,
@@ -509,7 +507,6 @@ impl FeeAmmSetup {
 ///     .with_transfer_policy(TIP403Setup::compound(policy_id, ALLOW_ALL_POLICY_ID, policy_id))
 ///     .apply()?;
 /// ```
-#[derive(Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 pub enum TIP403Setup {
     /// A whitelist or blacklist.

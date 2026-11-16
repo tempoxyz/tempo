@@ -696,6 +696,27 @@ mod tests {
         })
     }
 
+    /// Applies `pool`, mints 10000 user tokens to `user` and makes the validator token
+    /// `validator`'s fee token. Returns `(user_token, validator_token)`.
+    fn setup_fee_payment(
+        pool: FeeAmmSetup,
+        user: Address,
+        validator: Address,
+    ) -> Result<(Address, Address)> {
+        let (user_token, validator_token) = pool.apply()?;
+        TIP20Setup::config(user_token)
+            .with_mint(user, U256::from(10000))
+            .apply()?;
+        TipFeeManager::new().set_validator_token(
+            validator,
+            IFeeManager::setValidatorTokenCall {
+                token: validator_token,
+            },
+            Address::random(),
+        )?;
+        Ok((user_token, validator_token))
+    }
+
     /// Test collect_fee_pre_tx with different tokens
     /// Verifies that liquidity is checked (not reserved) and no swap happens yet
     #[test]
@@ -707,25 +728,13 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             // Create two different tokens and a pool with liquidity
-            let (user_token, validator_token) = FeeAmmSetup::new(admin)
-                .liquidity(admin, U256::from(10000))
-                .apply()?;
-            TIP20Setup::config(user_token)
-                .with_mint(user, U256::from(10000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
+            let (user_token, validator_token) = setup_fee_payment(
+                FeeAmmSetup::new(admin).liquidity(admin, U256::from(10000)),
+                user,
+                validator,
+            )?;
             let mut fee_manager = TipFeeManager::new();
             let pool_id = fee_manager.pool_id(user_token, validator_token);
-
-            // Set validator's preferred token
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token,
-                },
-                Address::random(),
-            )?;
 
             let max_amount = U256::from(1000);
 
@@ -763,24 +772,13 @@ mod tests {
         let validator = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (user_token, validator_token) = FeeAmmSetup::new(admin)
-                .liquidity(admin, U256::from(10000))
-                .apply()?;
-            TIP20Setup::config(user_token)
-                .with_mint(user, U256::from(10000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
+            let (user_token, validator_token) = setup_fee_payment(
+                FeeAmmSetup::new(admin).liquidity(admin, U256::from(10000)),
+                user,
+                validator,
+            )?;
             let mut fee_manager = TipFeeManager::new();
             let pool_id = fee_manager.pool_id(user_token, validator_token);
-
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token,
-                },
-                Address::random(),
-            )?;
 
             let max_amount = U256::from(1000);
             let actual_spending = U256::from(800);
@@ -828,23 +826,12 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             // Pool with less validator token liquidity than the fee needs
-            let (user_token, validator_token) = FeeAmmSetup::new(admin)
-                .liquidity(admin, U256::from(5000))
-                .apply()?;
-            TIP20Setup::config(user_token)
-                .with_mint(user, U256::from(10000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let mut fee_manager = TipFeeManager::new();
-
-            fee_manager.set_validator_token(
+            let (user_token, _) = setup_fee_payment(
+                FeeAmmSetup::new(admin).liquidity(admin, U256::from(5000)),
+                user,
                 validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token,
-                },
-                Address::random(),
             )?;
+            let mut fee_manager = TipFeeManager::new();
 
             // Try to collect fee that would require more liquidity than available
             // 10000 * 0.997 = 9970 output needed, but only 5000 available
@@ -869,29 +856,13 @@ mod tests {
         let validator = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(user, U256::from(10000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .apply()?;
-
+            let (user_token, _) = setup_fee_payment(FeeAmmSetup::new(admin), user, validator)?;
             let mut fee_manager = TipFeeManager::new();
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: validator_token.address(),
-                },
-                Address::random(),
-            )?;
 
             // Skip liquidity check = false should fail
             let result = fee_manager.collect_fee_pre_tx(
                 user,
-                user_token.address(),
+                user_token,
                 U256::from(1000),
                 validator,
                 false,
@@ -902,15 +873,10 @@ mod tests {
             );
 
             // Skip liquidity check = true should pass
-            let result = fee_manager.collect_fee_pre_tx(
-                user,
-                user_token.address(),
-                U256::from(1000),
-                validator,
-                true,
-            );
+            let result =
+                fee_manager.collect_fee_pre_tx(user, user_token, U256::from(1000), validator, true);
             assert!(result.is_ok());
-            assert_eq!(result?, user_token.address());
+            assert_eq!(result?, user_token);
 
             Ok(())
         })
