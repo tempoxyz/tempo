@@ -696,16 +696,19 @@ mod tests {
         })
     }
 
-    /// Applies `pool`, mints 10000 user tokens to `user` and makes the validator token
-    /// `validator`'s fee token. Returns `(user_token, validator_token)`.
+    /// User token balance [`setup_fee_payment`] gives the fee payer.
+    const USER_BALANCE: U256 = uint!(10000_U256);
+
+    /// Applies `fee_amm`, mints [`USER_BALANCE`] user tokens to `user` and makes the validator
+    /// token `validator`'s fee token. Returns `(user_token, validator_token)`.
     fn setup_fee_payment(
-        pool: FeeAmmSetup,
+        fee_amm: FeeAmmSetup,
         user: Address,
         validator: Address,
     ) -> Result<(Address, Address)> {
-        let (user_token, validator_token) = pool.apply()?;
+        let (user_token, validator_token) = fee_amm.apply()?;
         TIP20Setup::config(user_token)
-            .with_mint(user, U256::from(10000))
+            .with_mint(user, USER_BALANCE)
             .apply()?;
         TipFeeManager::new().set_validator_token(
             validator,
@@ -807,10 +810,10 @@ mod tests {
             assert_eq!(pool.reserve_user_token, 800);
             assert_eq!(pool.reserve_validator_token, 10000 - 797);
 
-            // User balance: started with 10000, paid 1000 in pre_tx, got 200 refund = 9200
+            // User balance: started with USER_BALANCE, paid 1000 in pre_tx, got 200 refund
             let tip20_token = TIP20Token::from_address(user_token)?;
             let user_balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
-            assert_eq!(user_balance, U256::from(10000) - max_amount + refund_amount);
+            assert_eq!(user_balance, USER_BALANCE - max_amount + refund_amount);
 
             Ok(())
         })
@@ -1358,7 +1361,7 @@ mod tests {
             mint_pool(fm, admin, t.user, t.hop, reserve)?;
             mint_pool(fm, admin, t.hop, t.validator, reserve)?;
             // Admin holds every LP token but the locked minimum in both hop pools.
-            let supply = fm.liquidity_balances[fm.pool_id(t.user, t.hop)][admin].read()?;
+            let admin_liquidity = fm.liquidity_balances[fm.pool_id(t.user, t.hop)][admin].read()?;
 
             // pre_tx reserves: hop1 = 9_970, hop2 = 9_940 (computed from 10_000 input).
             let amount = U256::from(10_000);
@@ -1368,7 +1371,7 @@ mod tests {
             assert!(r1 > 0 && r2 > 0, "both hop pools must be reserved");
 
             // Burning all of admin's LP on hop1 leaves the locked minimum → must trip reservation.
-            let res1 = fm.burn(admin, t.user, t.hop, supply, admin);
+            let res1 = fm.burn(admin, t.user, t.hop, admin_liquidity, admin);
             assert!(
                 matches!(
                     res1,
@@ -1380,7 +1383,7 @@ mod tests {
             );
 
             // Same for hop2.
-            let res2 = fm.burn(admin, t.hop, t.validator, supply, admin);
+            let res2 = fm.burn(admin, t.hop, t.validator, admin_liquidity, admin);
             assert!(
                 matches!(
                     res2,

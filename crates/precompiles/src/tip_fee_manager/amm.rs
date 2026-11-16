@@ -940,8 +940,8 @@ mod tests {
             let (token1, token2) = FeeAmmSetup::new(admin).liquidity(admin, amount).apply()?;
 
             let amm = TipFeeManager::new();
-            let result = amm.get_liquidity_balances(amm.pool_id(token1, token2), admin)?;
-            assert_eq!(result, amount / uint!(2_U256) - MIN_LIQUIDITY);
+            let liquidity = amm.get_liquidity_balances(amm.pool_id(token1, token2), admin)?;
+            assert_eq!(liquidity, amount / uint!(2_U256) - MIN_LIQUIDITY);
 
             Ok(())
         })

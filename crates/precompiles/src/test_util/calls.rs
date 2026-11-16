@@ -185,7 +185,7 @@ mod tests {
     };
 
     /// Applying a setup in memory and executing its lowered calls leave the same storage, so
-    /// `apply_rpc` sets up what unit tests set up.
+    /// replaying `calls()` against a node sets up what unit tests set up.
     #[test]
     fn calls_match_apply() {
         let [admin, alice, bob, spender] = actors();

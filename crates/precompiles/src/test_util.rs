@@ -417,7 +417,8 @@ pub struct DexSetup {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl DexSetup {
-    /// A new BASE token over pathUSD, both administered by `admin`, and their pair.
+    /// A new BASE token over pathUSD and their pair. `admin` administers BASE, creates pathUSD
+    /// if it's missing, and mints both to the traders.
     pub fn new(admin: Address) -> Self {
         Self {
             base: TIP20Setup::create("BASE", "BASE", admin).with_salt(B256::random()),
