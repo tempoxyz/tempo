@@ -9,6 +9,7 @@ Before writing, changing, or reviewing Rust, load the `tempo-rust-style` skill (
 ## Pull Requests
 
 - Format Rust code with `cargo +nightly fmt`.
+- Only add `.changelog/` entries for user-facing changes to the crates published on crates.io: `tempo-alloy`, `tempo-primitives`, `tempo-chainspec`, `tempo-contracts` and `tempo-hardfork`. Never add one for other crates (`tempo-evm`, `tempo-precompiles`, zones, ...) or for test-only, docs-only or internal changes.
 
 ## TIPs (Tempo Improvement Proposals)
 
