@@ -69,10 +69,7 @@ fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
 
 /// Planner-only gas reserved once per `processWithdrawals` transaction for batch-level portal
 /// work.
-///
-/// Includes three storage-slot creations without storage credits, enough for the bounce-back that
-/// bootstraps deposit-queue checkpoints or one that stores a checkpoint. A batch appends far fewer
-/// entries than the checkpoint spacing, so it pays for at most one of them.
+/// Covers three uncredited slot creations: one bounce-back that bootstraps or stores a checkpoint.
 const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 1_250_000;
 
 /// Planner-only gas reserved for a simple withdrawal.

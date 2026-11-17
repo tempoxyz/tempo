@@ -312,7 +312,7 @@ impl SpamDeposits {
             keyIndex: key_index,
             encrypted: payload,
             tempoRefundRecipient: recipient,
-            // The spam raises the congestion premium; accept any fee the amount covers.
+            // The spam raises the congestion premium, so accept any fee the amount covers.
             maxFee: self.amount,
         }
         .abi_encode())

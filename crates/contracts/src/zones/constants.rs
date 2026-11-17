@@ -14,15 +14,10 @@ pub const NO_QUEUE_INDEX: U256 = U256::MAX;
 /// `processWithdrawals` transaction well below a 30M gas block.
 pub const MAX_WITHDRAWAL_GAS_LIMIT: u64 = 10_000_000;
 
-/// Deposit-queue entries between consecutive ZonePortal checkpoints (TIP-1171).
-///
-/// A full Zone block verifies at most this many queue entries. Portal runtimes before T15 capped
-/// outstanding entries at the same count, so ranges that start before the first checkpoint fit.
+/// Deposit-queue entries between ZonePortal checkpoints, the most a full Zone block verifies.
 pub const DEPOSITS_PER_BUCKET: usize = 230;
 
-/// Most deposit-queue weight a full Zone block executes (TIP-1171).
-///
-/// The block only hashes the entries of its range past this budget; later blocks execute them.
+/// Most deposit-queue weight a full Zone block executes. It only hashes the rest of its range.
 pub const MAX_DEPOSIT_WEIGHT_PER_BLOCK: u64 = 230;
 
 /// Maximum token enablements that may remain outstanding on a ZonePortal.

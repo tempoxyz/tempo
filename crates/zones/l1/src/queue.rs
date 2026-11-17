@@ -1,11 +1,10 @@
 use super::*;
 use std::collections::VecDeque;
 
-/// Bounded portal work crossed by canonical checkpoint-only Zone blocks.
+/// Portal work owed by the next full Zone block, from checkpoint-only blocks or earlier imports.
 ///
 /// Empty L1 blocks and events already applied during ingestion are represented only by the final
-/// header. Blocks containing deposits or token enablements retain one compact event group. The
-/// protocol caps bound the total number of retained groups.
+/// header. Blocks containing deposits or token enablements retain one compact event group.
 #[derive(Debug, Clone)]
 pub(crate) struct DeferredPortalWork {
     last_header: SealedHeader<TempoHeader>,
@@ -31,17 +30,6 @@ impl DeferredPortalWork {
         self.push_events(block.events);
     }
 
-    fn aggregated_block(&self) -> L1BlockDeposits {
-        let mut events = L1PortalEvents::default();
-        for block in &self.event_blocks {
-            events.extend_operational(block.clone());
-        }
-        L1BlockDeposits {
-            header: self.last_header.clone(),
-            events,
-        }
-    }
-
     fn push_events(&mut self, events: L1PortalEvents) {
         if !events.deposits.is_empty() || !events.enabled_tokens.is_empty() {
             self.event_blocks.push(events);
@@ -63,10 +51,7 @@ impl DeferredPortalWork {
 pub(crate) struct PendingDeposits {
     /// Pending L1 blocks with their portal events, not yet processed by the Zone.
     pending: VecDeque<L1BlockDeposits>,
-    /// Queue entries left by earlier full imports (TIP-1171), owed before any deferred or pending
-    /// entry, under the anchor of the full import that left them. Holds no other events.
-    carried: Option<L1BlockDeposits>,
-    /// Portal work crossed by checkpoint-only Zone blocks and owed by the next full block.
+    /// Portal work owed by the next full block, older than every pending block.
     deferred: Option<DeferredPortalWork>,
     /// Highest L1 block ever enqueued (number + hash). Survives `confirm` /
     /// `drain` so that reconnecting subscribers know where the queue left off,
@@ -217,9 +202,8 @@ impl PendingDeposits {
         }
     }
 
-    /// Return carried entries, deferred portal work, and the current operational L1 block, in
-    /// queue order.
-    pub(crate) fn operational_work(&self, expected: NumHash) -> eyre::Result<Vec<L1BlockDeposits>> {
+    /// Return the current operational L1 block, which must be at `expected`.
+    fn operational_block(&self, expected: NumHash) -> eyre::Result<&L1BlockDeposits> {
         let current = self
             .pending
             .front()
@@ -229,34 +213,67 @@ impl PendingDeposits {
             "operational L1 work does not match the expected anchor: expected {expected:?}, front is {:?}",
             current.header.num_hash()
         );
-        Ok(self
-            .carried
-            .iter()
-            .cloned()
-            .chain(
-                self.deferred
-                    .iter()
-                    .map(DeferredPortalWork::aggregated_block),
-            )
-            .chain([current.clone()])
-            .collect())
+        Ok(current)
     }
 
-    /// Confirm a full operational import that processed the first `consumed` owed entries.
-    ///
-    /// Releases deferred work and the current block, and carries the owed entries the import left.
+    /// Return how many queue entries the next full import at `expected` owes.
+    pub(crate) fn owed_deposit_count(&self, expected: NumHash) -> eyre::Result<usize> {
+        let current = self.operational_block(expected)?;
+        Ok(self
+            .deferred
+            .iter()
+            .flat_map(|deferred| &deferred.event_blocks)
+            .chain([&current.events])
+            .map(|events| events.deposits.len())
+            .sum())
+    }
+
+    /// Return deferred work and the current operational L1 block, up to `max_deposits` entries.
+    pub(crate) fn operational_work(
+        &self,
+        expected: NumHash,
+        max_deposits: usize,
+    ) -> eyre::Result<Vec<L1BlockDeposits>> {
+        let current = self.operational_block(expected)?;
+        let mut remaining = max_deposits;
+        let mut copy = |events: &L1PortalEvents| {
+            let deposits: Vec<_> = events.deposits.iter().take(remaining).cloned().collect();
+            remaining -= deposits.len();
+            L1PortalEvents {
+                deposits,
+                enabled_tokens: events.enabled_tokens.clone(),
+                ..Default::default()
+            }
+        };
+        let mut work = Vec::with_capacity(usize::from(self.deferred.is_some()) + 1);
+        if let Some(deferred) = &self.deferred {
+            let mut events = L1PortalEvents::default();
+            for block in &deferred.event_blocks {
+                events.extend_operational(copy(block));
+            }
+            work.push(L1BlockDeposits {
+                header: deferred.last_header.clone(),
+                events,
+            });
+        }
+        work.push(L1BlockDeposits {
+            header: current.header.clone(),
+            events: copy(&current.events),
+        });
+        Ok(work)
+    }
+
+    /// Confirm a full operational import that processed `consumed` entries, deferring the rest.
     pub(crate) fn confirm_operational(
         &mut self,
         expected: NumHash,
         consumed: usize,
     ) -> eyre::Result<()> {
-        let current = self.confirm(expected)?;
-        let deferred = self.deferred.take();
-        self.carry_unconsumed(deferred, [current], consumed)
+        self.operational_block(expected)?;
+        self.confirm_operational_through(expected, consumed)
     }
 
-    /// Confirm every pending L1 block up to and including `expected`, for a canonical full import
-    /// that processed the first `consumed` owed entries.
+    /// Confirm pending L1 blocks through `expected` for a full import that processed `consumed`.
     ///
     /// Follower import calls this only after the corresponding zone block is
     /// canonical. It is therefore idempotent and tolerates stale entries before
@@ -266,7 +283,7 @@ impl PendingDeposits {
         expected: NumHash,
         consumed: usize,
     ) -> eyre::Result<()> {
-        let mut confirmed = Vec::new();
+        let mut released = false;
         while let Some(front) = self.pending.front().map(|entry| entry.header.num_hash()) {
             if front.number > expected.number {
                 break;
@@ -278,63 +295,33 @@ impl PendingDeposits {
                 front.hash,
                 expected.hash,
             );
-            confirmed.push(
-                self.confirm(front)
-                    .expect("front was just read and matches by construction"),
-            );
+            self.defer_front();
+            released = true;
         }
 
-        // A delayed duplicate of an older full block must not erase checkpoint work deferred by
-        // newer canonical blocks. Only release work at or before the full block's anchor.
-        let deferred = self
+        // A delayed duplicate must not release work deferred after, or left by, its original import.
+        let Some(deferred) = self
             .deferred
-            .take_if(|deferred| deferred.last_header.number() <= expected.number);
-        // Nothing at or before the anchor remains, so this delayed duplicate was already applied:
-        // every pending or deferred block is newer than the carried entries' anchor.
-        if confirmed.is_empty() && deferred.is_none() {
+            .take_if(|deferred| released || deferred.last_header.number() < expected.number)
+        else {
             return Ok(());
-        }
-        self.carry_unconsumed(deferred, confirmed, consumed)
-    }
-
-    /// Replaces the carried entries with every owed entry after the first `consumed`: the carried,
-    /// `deferred`, and `confirmed` entries in queue order, under the newest released anchor.
-    fn carry_unconsumed(
-        &mut self,
-        deferred: Option<DeferredPortalWork>,
-        confirmed: impl IntoIterator<Item = L1BlockDeposits>,
-        consumed: usize,
-    ) -> eyre::Result<()> {
-        let mut owed = self
-            .carried
-            .take()
-            .map(|carried| carried.events.deposits)
-            .unwrap_or_default();
-        let mut header = None;
-        if let Some(deferred) = deferred {
-            for events in deferred.event_blocks {
-                owed.extend(events.deposits);
-            }
-            header = Some(deferred.last_header);
-        }
-        for block in confirmed {
-            owed.extend(block.events.deposits);
-            header = Some(block.header);
-        }
+        };
+        let mut owed: Vec<_> = deferred
+            .event_blocks
+            .into_iter()
+            .flat_map(|events| events.deposits)
+            .collect();
         eyre::ensure!(
             consumed <= owed.len(),
             "full import processed {consumed} deposits, but only {} were owed",
             owed.len()
         );
-        let deposits = owed.split_off(consumed);
-        if let Some(header) = header.filter(|_| !deposits.is_empty()) {
-            self.carried = Some(L1BlockDeposits {
-                header,
-                events: L1PortalEvents {
-                    deposits,
-                    ..Default::default()
-                },
-            });
+        owed.drain(..consumed);
+        if !owed.is_empty() {
+            self.deferred = Some(DeferredPortalWork::new(L1BlockDeposits {
+                header: deferred.last_header,
+                events: L1PortalEvents::from_deposits(owed),
+            }));
         }
         Ok(())
     }
@@ -466,20 +453,25 @@ impl DepositQueue {
         self.inner.lock().defer_through(expected)
     }
 
-    /// Return carried entries, deferred portal work, and the current operational L1 block, in
-    /// queue order.
-    pub fn operational_work(&self, expected: NumHash) -> eyre::Result<Vec<L1BlockDeposits>> {
-        self.inner.lock().operational_work(expected)
+    /// Return how many queue entries the next full import at `expected` owes.
+    pub fn owed_deposit_count(&self, expected: NumHash) -> eyre::Result<usize> {
+        self.inner.lock().owed_deposit_count(expected)
+    }
+
+    /// Return deferred work and the current operational L1 block, up to `max_deposits` entries.
+    pub fn operational_work(
+        &self,
+        expected: NumHash,
+        max_deposits: usize,
+    ) -> eyre::Result<Vec<L1BlockDeposits>> {
+        self.inner.lock().operational_work(expected, max_deposits)
     }
 
     /// Restore portal work crossed by already-canonical checkpoint-only blocks after restart.
     pub(crate) fn restore_deferred(&self, deferred: DeferredPortalWork) -> eyre::Result<()> {
         let mut queue = self.inner.lock();
         eyre::ensure!(
-            queue.pending.is_empty()
-                && queue.carried.is_none()
-                && queue.deferred.is_none()
-                && queue.last_enqueued.is_none(),
+            queue.pending.is_empty() && queue.deferred.is_none() && queue.last_enqueued.is_none(),
             "cannot seed deferred portal work into a nonempty queue"
         );
         queue.last_enqueued = Some(deferred.last_num_hash());
@@ -487,14 +479,12 @@ impl DepositQueue {
         Ok(())
     }
 
-    /// Confirm a full operational import that processed the first `consumed` owed entries, and
-    /// carry the rest to the next full import.
+    /// Confirm a full operational import that processed `consumed` entries, deferring the rest.
     pub fn confirm_operational(&self, expected: NumHash, consumed: usize) -> eyre::Result<()> {
         self.inner.lock().confirm_operational(expected, consumed)
     }
 
-    /// Idempotently reconcile a canonical full import that processed the first `consumed` owed
-    /// entries, and carry the rest to the next full import.
+    /// Idempotently reconcile a full import that processed `consumed` entries, deferring the rest.
     pub fn confirm_operational_through(
         &self,
         expected: NumHash,

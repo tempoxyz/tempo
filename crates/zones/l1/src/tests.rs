@@ -1450,7 +1450,13 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
     queue.defer_through(second.num_hash()).unwrap();
     queue.defer_through(second.num_hash()).unwrap();
     assert_eq!(queue.peek().unwrap().header.num_hash(), third.num_hash());
-    assert_eq!(queue.operational_work(third.num_hash()).unwrap().len(), 2);
+    assert_eq!(
+        queue
+            .operational_work(third.num_hash(), usize::MAX)
+            .unwrap()
+            .len(),
+        2
+    );
 
     queue
         .confirm_operational_through(third.num_hash(), 0)
@@ -1475,7 +1481,7 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
         .confirm_operational_through(third.num_hash(), 0)
         .unwrap();
     let fifth = queue.peek().unwrap().header.num_hash();
-    assert_eq!(queue.operational_work(fifth).unwrap().len(), 2);
+    assert_eq!(queue.operational_work(fifth, usize::MAX).unwrap().len(), 2);
 }
 
 #[test]
@@ -1495,7 +1501,9 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     let second = queue.peek().unwrap();
     queue.defer_through(second.header.num_hash()).unwrap();
     let current = queue.peek().unwrap();
-    let work = queue.operational_work(current.header.num_hash()).unwrap();
+    let work = queue
+        .operational_work(current.header.num_hash(), usize::MAX)
+        .unwrap();
     assert_eq!(
         work.iter()
             .map(|block| block.header.number())
@@ -1531,7 +1539,7 @@ fn restart_can_seed_deferred_checkpoint_work() {
     let current = queue.peek().unwrap();
     assert_eq!(
         queue
-            .operational_work(current.header.num_hash())
+            .operational_work(current.header.num_hash(), usize::MAX)
             .unwrap()
             .len(),
         2
@@ -1570,11 +1578,11 @@ fn amounts<'a>(deposits: impl IntoIterator<Item = &'a L1Deposit>) -> Vec<u128> {
         .collect()
 }
 
-/// Deposit amounts of the owed entries the next full import at `anchor` receives.
-fn owed_amounts(queue: &DepositQueue, anchor: NumHash) -> Vec<u128> {
+/// Amounts of the first `max_deposits` entries the next full import at `anchor` receives.
+fn owed_amounts(queue: &DepositQueue, anchor: NumHash, max_deposits: usize) -> Vec<u128> {
     amounts(
         queue
-            .operational_work(anchor)
+            .operational_work(anchor, max_deposits)
             .unwrap()
             .iter()
             .flat_map(|block| &block.events.deposits),
@@ -1582,13 +1590,12 @@ fn owed_amounts(queue: &DepositQueue, anchor: NumHash) -> Vec<u128> {
 }
 
 fn events_with_amounts(amounts: impl IntoIterator<Item = u128>) -> L1PortalEvents {
-    L1PortalEvents {
-        deposits: amounts
+    L1PortalEvents::from_deposits(
+        amounts
             .into_iter()
             .map(make_withdrawal_bounce_back)
             .collect(),
-        ..Default::default()
-    }
+    )
 }
 
 #[test]
@@ -1604,7 +1611,12 @@ fn full_import_carries_unconsumed_deposits_ahead_of_newer_blocks() {
         .unwrap();
 
     queue.confirm_operational(first.num_hash(), 1).unwrap();
-    assert_eq!(owed_amounts(&queue, second.num_hash()), vec![2, 3, 4]);
+    assert_eq!(
+        owed_amounts(&queue, second.num_hash(), usize::MAX),
+        [2, 3, 4]
+    );
+    assert_eq!(owed_amounts(&queue, second.num_hash(), 1), [2]);
+    assert_eq!(queue.owed_deposit_count(second.num_hash()).unwrap(), 3);
 
     queue.confirm_operational(second.num_hash(), 3).unwrap();
     assert!(queue.peek().is_none());
@@ -1612,7 +1624,7 @@ fn full_import_carries_unconsumed_deposits_ahead_of_newer_blocks() {
     queue
         .try_enqueue_sealed(third.clone(), L1PortalEvents::default())
         .unwrap();
-    assert!(owed_amounts(&queue, third.num_hash()).is_empty());
+    assert!(owed_amounts(&queue, third.num_hash(), usize::MAX).is_empty());
 }
 
 #[test]
@@ -1634,7 +1646,7 @@ fn follower_reconciliation_carries_deposits_once() {
     queue
         .try_enqueue_sealed(second.clone(), events_with_amounts([4]))
         .unwrap();
-    assert_eq!(owed_amounts(&queue, second.num_hash()), vec![3, 4]);
+    assert_eq!(owed_amounts(&queue, second.num_hash(), usize::MAX), [3, 4]);
 }
 
 #[test]

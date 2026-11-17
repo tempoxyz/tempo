@@ -60,8 +60,7 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     ///
     /// Format: (address tokenOut, address targetPortal, uint256 keyIndex, DepositPayload encrypted, address tempoRefundRecipient, uint128 minAmountOut, uint128 maxFee)
     ///
-    /// Note: minAmountOut is ignored for same-token transfers (no swap). maxFee caps the target
-    /// portal's deposit fee, including its congestion premium.
+    /// Note: minAmountOut is ignored for same-token transfers (no swap). maxFee caps deposit fees.
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,

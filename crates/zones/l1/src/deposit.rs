@@ -91,33 +91,38 @@ impl L1Deposit {
 
     /// Convert the L1 event payload into its canonical `advanceTempo` queue encoding.
     pub fn to_abi_queued_deposit(&self) -> abi::QueuedDeposit {
-        let deposit_data = match self {
-            Self::WithdrawalBounceBack(d) => abi::WithdrawalBounceBackDeposit {
-                token: d.token,
-                to: d.to,
-                amount: d.amount,
-            }
-            .abi_encode(),
-            Self::Deposit(d) => AbiDeposit {
-                token: d.token,
-                sender: d.sender,
-                amount: d.amount,
-                tempoRefundRecipient: d.tempo_refund_recipient,
-                keyIndex: d.key_index,
-                encrypted: AbiDepositPayload {
-                    ephemeralPubkeyX: d.ephemeral_pubkey_x,
-                    ephemeralPubkeyYParity: d.ephemeral_pubkey_y_parity,
-                    ciphertext: d.ciphertext.clone().into(),
-                    nonce: d.nonce.into(),
-                    tag: d.tag.into(),
-                },
-            }
-            .abi_encode(),
-        };
-        abi::QueuedDeposit {
-            depositType: self.deposit_type(),
-            rejected: false,
-            depositData: deposit_data.into(),
+        match self {
+            Self::WithdrawalBounceBack(d) => abi::QueuedDeposit {
+                depositType: abi::DepositType::WithdrawalBounceBack,
+                rejected: false,
+                depositData: abi::WithdrawalBounceBackDeposit {
+                    token: d.token,
+                    to: d.to,
+                    amount: d.amount,
+                }
+                .abi_encode()
+                .into(),
+            },
+            Self::Deposit(d) => abi::QueuedDeposit {
+                depositType: abi::DepositType::Deposit,
+                rejected: false,
+                depositData: AbiDeposit {
+                    token: d.token,
+                    sender: d.sender,
+                    amount: d.amount,
+                    tempoRefundRecipient: d.tempo_refund_recipient,
+                    keyIndex: d.key_index,
+                    encrypted: AbiDepositPayload {
+                        ephemeralPubkeyX: d.ephemeral_pubkey_x,
+                        ephemeralPubkeyYParity: d.ephemeral_pubkey_y_parity,
+                        ciphertext: d.ciphertext.clone().into(),
+                        nonce: d.nonce.into(),
+                        tag: d.tag.into(),
+                    },
+                }
+                .abi_encode()
+                .into(),
+            },
         }
     }
 

@@ -28,7 +28,7 @@ use tokio_util::sync;
 use tracing::{debug, info};
 #[cfg(test)]
 use zone_l1::L1PortalEvents;
-use zone_l1::{DepositQueue, L1BlockDeposits, L1BlockTracker, TempoStateExt as _};
+use zone_l1::{DepositQueue, L1BlockTracker, TempoStateExt as _};
 use zone_p2p::{
     BackfillCommand, BackfillResponse, LeadershipSchedule, P2pCommand, P2pEvent, P2pPeerId, PeerTip,
 };
@@ -810,11 +810,7 @@ fn reconcile_canonical_import(
     }
 }
 
-/// Returns how many leading entries of a full import's range the Zone executed; it only hashed
-/// the rest, which later imports supply again.
-///
-/// Portal runtimes before T15 capped outstanding entries at the per-block budget, so before T15
-/// the prefix is the whole range, as that Inbox requires.
+/// Returns how many leading entries of a full import's range the Zone executed.
 fn executed_deposit_count(deposits: &[zone_payload::abi::QueuedDeposit]) -> usize {
     executed_count(deposits.iter().map(|deposit| deposit.depositType))
 }
@@ -825,10 +821,8 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let mut work = deposit_queue.operational_work(anchor)?;
-    // From T15 a full import's range is a prefix of the owed entries; the queue carries the rest.
-    // Calldata longer than the owed entries fails the count check below.
-    L1BlockDeposits::split_off_deposits(&mut work, deposits.len());
+    // A full import's range is a prefix of the owed entries. Longer calldata fails the count check.
+    let work = deposit_queue.operational_work(anchor, deposits.len())?;
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {
@@ -1120,7 +1114,6 @@ mod tests {
     use tokio_util::sync;
     use zone_l1::{DepositQueue, EnabledToken, L1BlockDeposits, L1BlockTracker, L1PortalEvents};
     use zone_p2p::{BackfillCommand, LeadershipSchedule, LeadershipState};
-    use zone_payload::abi::DepositType;
 
     use super::*;
 
@@ -1776,28 +1769,6 @@ mod tests {
         let error = validate_live_block_sender(&schedule, Some(&outgoing), leader_anchor, 8)
             .expect_err("the final full block must be produced by its effective leader");
         assert!(error.to_string().contains(&incoming.to_string()));
-    }
-
-    #[test]
-    fn executed_deposit_count_stops_at_the_weight_budget() {
-        let entries = |deposit_type, count| {
-            vec![
-                zone_payload::abi::QueuedDeposit {
-                    depositType: deposit_type,
-                    rejected: false,
-                    depositData: Default::default(),
-                };
-                count
-            ]
-        };
-        assert_eq!(
-            executed_deposit_count(&entries(DepositType::WithdrawalBounceBack, 231)),
-            230
-        );
-        assert_eq!(
-            executed_deposit_count(&entries(DepositType::Deposit, 230)),
-            230
-        );
     }
 
     #[test]

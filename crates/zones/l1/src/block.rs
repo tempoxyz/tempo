@@ -16,8 +16,7 @@ pub struct L1BlockDeposits {
 }
 
 impl L1BlockDeposits {
-    /// Keeps the first `at` queue entries across `blocks` and returns the rest in queue order,
-    /// keeping every block's header and other events.
+    /// Keeps the first `at` queue entries across `blocks` and returns the rest in queue order.
     pub fn split_off_deposits(blocks: &mut [Self], at: usize) -> Vec<L1Deposit> {
         let mut remaining = at;
         let mut rest = Vec::new();
@@ -31,8 +30,7 @@ impl L1BlockDeposits {
 
     /// Prepare portal work accumulated across checkpoint-only blocks for one full import.
     ///
-    /// `hashed_only` are the range entries after those in `blocks` that the Zone only hashes.
-    /// They are appended to the queued entries without decryption data.
+    /// `hashed_only` entries follow `blocks` in the range and are queued without decryption data.
     pub async fn prepare_many(
         blocks: Vec<Self>,
         hashed_only: &[L1Deposit],

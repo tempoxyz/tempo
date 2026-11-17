@@ -40,8 +40,7 @@ pub struct SwapAndDepositRouterCallback {
     ///
     /// Ignored when `tokenIn == token_out` and the router can deposit directly.
     pub min_amount_out: u128,
-    /// Most the downstream deposit may pay in fees, including the target portal's congestion
-    /// premium. The deposit, and so the callback, reverts if its fee is higher.
+    /// Most the downstream deposit may pay in fees, including the congestion premium.
     pub max_fee: u128,
 }
 

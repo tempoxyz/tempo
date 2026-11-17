@@ -558,9 +558,7 @@ fn invalid_encrypted_proof_bounces_without_mint() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Queues `pending` deposits that the Zone bounces back, as a T15 portal stores them: checkpoints
-/// start at entry `base` when set and follow every [`DEPOSITS_PER_BUCKET`] entries. Returns the
-/// entries and the queue hash after each one.
+/// Queues `pending` bounced-back deposits checkpointed from `base`. Returns entries and hashes.
 fn queue_checkpointed_deposits(
     env: &ZoneEnv,
     pending: u64,
@@ -601,9 +599,7 @@ fn queue_checkpointed_deposits(
     (entries, hashes[1..].to_vec())
 }
 
-/// Advances a T15 Zone at processed position zero with the first `supplied` of `pending` queued
-/// entries, after replacing checkpoint 1 if `corrupt_checkpoint`. Returns the processed position,
-/// or `None` if the Inbox rejects the range.
+/// Returns the processed position after advancing with `supplied` entries, or `None` on revert.
 #[test_case(5, None, 5, false => Some(5))]
 #[test_case(230, Some(0), 230, false => Some(230))]
 #[test_case(231, Some(0), 230, false => Some(230))]

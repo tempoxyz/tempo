@@ -56,9 +56,7 @@ contract ZonePortal is IZonePortal {
     uint64 public constant FIXED_DEPOSIT_GAS = 100_000;
 
     /// @notice Queue entries between consecutive deposit-queue checkpoints.
-    /// @dev A full Zone block verifies at most this many entries against a checkpoint or the
-    ///      queue head. The replaced runtime capped unsettled entries at the same count, so the
-    ///      first range after checkpoints bootstrap also fits.
+    /// @dev Matches the replaced runtime's cap, so the first range after bootstrap fits a block.
     uint64 public constant DEPOSITS_PER_BUCKET = 230;
 
     /// @notice Largest queue weight of any entry type. Every entry type currently weighs one unit.
@@ -262,8 +260,7 @@ contract ZonePortal is IZonePortal {
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
 
-    /// @notice Deposit-queue checkpoints (slot 29). Empty before bootstrap; pruned entries are
-    ///         zeroed but never removed, so indices are stable.
+    /// @notice Deposit-queue checkpoints (slot 29). Pruning zeroes entries, keeping indices stable.
     DepositBucket[] public depositBuckets;
 
     // Every append and settlement writes slot 30, so the per-block price snapshot shares it.
@@ -271,19 +268,16 @@ contract ZonePortal is IZonePortal {
     /// @notice Cumulative entry weight appended since checkpoints bootstrapped (slot 30).
     uint64 public depositWeight;
 
-    /// @notice Lower bound on the entry weight settled since checkpoints bootstrapped (slot 30).
-    ///         Never decreases.
+    /// @notice Monotonic lower bound on the entry weight settled since bootstrap (slot 30).
     uint64 public settledDepositWeight;
 
     /// @notice Tempo block whose first append or settlement fixed `depositPriceTier` (slot 30).
     uint64 public depositPriceBlock;
 
-    /// @notice Congestion tier charged to every deposit in `depositPriceBlock`: the tier at the
-    ///         start of that block, lowered by settlements within it (slot 30).
+    /// @notice Tier charged in `depositPriceBlock`: start tier, lowered by settlement (slot 30).
     uint64 public depositPriceTier;
 
     /// @notice `depositCount` when checkpoints bootstrapped (slot 31).
-    /// @dev Checkpoint `j` covers entry `depositBucketBase + j * DEPOSITS_PER_BUCKET`.
     uint64 public depositBucketBase;
 
     /// @notice First checkpoint index not yet pruned (slot 31).
@@ -936,9 +930,7 @@ contract ZonePortal is IZonePortal {
                                DEPOSITS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Total deposit fee from the current state: operational fee plus congestion premium.
-    /// @dev Exact for the next block, and never below the fee a deposit pays later in the current
-    ///      block.
+    /// @inheritdoc IZonePortal
     /// @return fee The deposit fee in zone token units
     function calculateDepositFee() external view returns (uint128 fee) {
         fee = _operationalDepositFee() + _congestionFee(_unsettledCongestionTier());
@@ -1016,9 +1008,7 @@ contract ZonePortal is IZonePortal {
         }
     }
 
-    /// @dev Returns the tier this block's deposits pay, fixing it from the current state if the
-    ///      block has none. Runs before every change to `depositWeight` or `settledDepositWeight`,
-    ///      so a newly fixed tier reflects the state at the start of the block.
+    /// @dev Returns this block's tier, fixed from the state before the block's first change.
     function _snapshotCongestionTier() internal returns (uint64 tier) {
         if (depositPriceBlock == block.number) return depositPriceTier;
         tier = _unsettledCongestionTier();
@@ -1026,8 +1016,7 @@ contract ZonePortal is IZonePortal {
         depositPriceTier = tier;
     }
 
-    /// @dev Appends one queue entry of `weight` units and stores a checkpoint every
-    ///      `DEPOSITS_PER_BUCKET` entries.
+    /// @dev Appends one entry of `weight` units, checkpointing every `DEPOSITS_PER_BUCKET` entries.
     function _recordDeposit(
         bytes32 newCurrentDepositQueueHash,
         uint64 weight
@@ -1035,10 +1024,9 @@ contract ZonePortal is IZonePortal {
         internal
         returns (uint64 thisDeposit)
     {
-        // Checkpoint writes spend TIP-1060 credits directly, so they need no refundable gas
-        // headroom while credits last. No external call happens before `Refund` is restored.
+        // Checkpoint writes spend TIP-1060 credits directly. No external call runs before `Refund`.
 
-        // Older runtimes stored no checkpoints; the first append starts them at the queue head.
+        // Older runtimes stored no checkpoints. The first append starts them at the queue head.
         if (depositBuckets.length == 0) {
             StdPrecompiles.STORAGE_CREDITS.setBudget(BOOTSTRAP_CREATED_SLOTS);
             depositBucketBase = depositCount;
@@ -1074,9 +1062,6 @@ contract ZonePortal is IZonePortal {
     }
 
     /// @dev Deletes up to `DEPOSIT_BUCKETS_PRUNED_PER_CALL` checkpoints whose successor is settled.
-    ///      The Zone reads only checkpoints above its processed position, which is at least
-    ///      `lastProcessedDepositNumber`. Settlement reads only the latest checkpoint at or below
-    ///      it, which this keeps, and the next one above it.
     function _pruneDepositBuckets() internal {
         uint64 first = nextDepositBucketToPrune;
         uint64 next = first;
@@ -1280,8 +1265,7 @@ contract ZonePortal is IZonePortal {
             nextQueue = keccak256(abi.encode(withdrawals[i - 1], nextQueue));
         }
 
-        // One pruning run covers every entry this call appends, and frees credits for their
-        // checkpoints. Settlement cannot advance during the call.
+        // One pruning run frees credits for every checkpoint this call appends.
         _pruneDepositBuckets();
         for (uint256 i; i < withdrawals.length; ++i) {
             _processWithdrawal(withdrawals[i], remainingQueues[i]);
@@ -1623,27 +1607,24 @@ contract ZonePortal is IZonePortal {
         );
     }
 
-    /// @dev Advances the settled position and the premium's settled weight, lowers this block's
-    ///      tier if settlement lowered the price, then prunes.
+    /// @dev Advances settlement and its weight bound, may lower this block's tier, then prunes.
     function _settleDeposits(uint64 settled) internal {
         _snapshotCongestionTier();
         uint64 prevSettled = lastProcessedDepositNumber;
         lastProcessedDepositNumber = settled;
 
-        // Before bootstrap, and while the settled position is at or below the base, no weight
-        // has settled since bootstrap.
+        // No weight settles since bootstrap until `settled` passes the base.
         uint64 base = depositBucketBase;
         uint256 bucketCount = depositBuckets.length;
         if (bucketCount != 0 && settled > base) {
-            // Every entry weighs at least one unit and at most `MAX_ENTRY_WEIGHT`, so the
-            // previous bound and the checkpoints on either side of `settled` each bound its
-            // weight from below. Pruning keeps both checkpoints. Settlement only advances, so the
-            // first bound keeps the weight from decreasing.
+            // Entries weigh 1 to `MAX_ENTRY_WEIGHT`, so the previous bound and both neighbouring
+            // checkpoints each bound the settled weight from below. Pruning keeps both.
             uint64 weight =
                 settledDepositWeight + (settled - (prevSettled > base ? prevSettled : base));
-            uint64 index = (settled - base) / DEPOSITS_PER_BUCKET;
+            uint64 offset = settled - base;
+            uint64 index = offset / DEPOSITS_PER_BUCKET;
             uint64 checkpointWeight =
-                depositBuckets[index].cumulativeWeight + (settled - base) % DEPOSITS_PER_BUCKET;
+                depositBuckets[index].cumulativeWeight + offset % DEPOSITS_PER_BUCKET;
             if (checkpointWeight > weight) weight = checkpointWeight;
             // The next checkpoint above `settled`, or the queue head if none is stored yet.
             (uint64 next, uint64 nextWeight) = index + 1 < bucketCount

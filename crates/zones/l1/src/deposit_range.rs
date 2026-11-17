@@ -5,13 +5,7 @@ use tempo_precompiles::{
 };
 use zone_primitives::deposit_queue::DepositRangeEnd;
 
-/// Returns how many of the `owed` queue entries fall in the range the full Zone import anchored at
-/// `anchor` receives (TIP-1171). Import executes a prefix of that range and only hashes the rest.
-///
-/// `owed` counts every entry appended through `anchor` that the Zone has not processed, so the
-/// processed position is the Portal's deposit count at `anchor` minus `owed`. Applies the
-/// [`DepositRangeEnd::new`] rule to Portal storage read at `anchor`; a Portal runtime without
-/// checkpoints reads as not bootstrapped, so the range covers every owed entry.
+/// Returns how many of the `owed` entries fall in the range of the full Zone import at `anchor`.
 pub async fn fetch_range_len(
     l1_provider: &impl Provider<TempoNetwork>,
     portal_address: Address,
@@ -36,11 +30,7 @@ pub async fn fetch_range_len(
     let processed = head
         .checked_sub(u64::try_from(owed)?)
         .ok_or_else(|| eyre::eyre!("{owed} owed entries exceed Portal deposit count {head}"))?;
-    let end = match DepositRangeEnd::new(processed, head, checkpoint_base)
-        .ok_or_else(|| eyre::eyre!("no deposit range after entry {processed}"))?
-    {
-        DepositRangeEnd::Head => head,
-        DepositRangeEnd::Checkpoint { target, .. } => target,
-    };
-    Ok(usize::try_from(end - processed)?)
+    let end = DepositRangeEnd::new(processed, head, checkpoint_base)
+        .ok_or_else(|| eyre::eyre!("no deposit range after entry {processed}"))?;
+    Ok(usize::try_from(end.target - processed)?)
 }

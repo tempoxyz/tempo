@@ -5,10 +5,8 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! From T15 (TIP-1171), each full block receives a bounded range of the portal deposit queue and
-//! binds it to a stored checkpoint or the queue head at the selected child anchor. It executes the
-//! range's longest prefix within its weight budget and only hashes the rest. Before T15 the block
-//! processes every pending entry and binds the result to the queue head.
+//! From T15 (TIP-1171), each full block binds a bounded deposit-queue range to a checkpoint or the
+//! queue head and executes its prefix within the weight budget. Before T15 it binds every entry.
 
 mod dispatch;
 
@@ -147,39 +145,34 @@ impl ZoneInbox {
 
         // Step 2: Process deposits and build hash chain
         //
-        // (+T15) the supplied entries must be exactly the range after the processed position that
-        // ends at the queue head or the next checkpoint. The block executes the range's longest
-        // prefix within its weight budget and only hashes the rest, which later blocks supply.
+        // (+T15) the entries must be exactly the range up to the head or next checkpoint.
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
         let previous_number = self.processed_deposit_number.read()?;
-        let (range_hash, executed_count) = if StorageCtx.spec().is_t15() && !portal.is_zero() {
+        let (checkpoint_hash, executed_count) = if StorageCtx.spec().is_t15() && !portal.is_zero() {
             let head = l1.read_portal(|portal| &portal.deposit_count)?;
             let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
             let checkpoint_base = (bucket_count != 0)
                 .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
                 .transpose()?;
-            let (target, range_hash) =
-                match DepositRangeEnd::new(previous_number, head, checkpoint_base) {
-                    None => return Err(ZoneInboxError::invalid_deposit_queue_hash().into()),
-                    Some(DepositRangeEnd::Head) => {
-                        (head, l1.read_portal(|p| &p.current_deposit_queue_hash)?)
-                    }
-                    Some(DepositRangeEnd::Checkpoint { index, target }) => {
-                        let index = usize::try_from(index)
-                            .map_err(|_| TempoPrecompileError::under_overflow())?;
-                        // A checkpoint more than one spacing below the head was stored, and one
-                        // above the settled position is not pruned.
-                        if index >= bucket_count {
-                            return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
-                        }
-                        (target, l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
-                    }
-                };
-            if target.checked_sub(previous_number) != Some(deposit_count) {
+            let end = DepositRangeEnd::new(previous_number, head, checkpoint_base)
+                .ok_or_else(ZoneInboxError::invalid_deposit_queue_hash)?;
+            if end.target.checked_sub(previous_number) != Some(deposit_count) {
                 return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
             }
+            let checkpoint_hash = match end.checkpoint_index {
+                None => None,
+                Some(index) => {
+                    let index = usize::try_from(index)
+                        .map_err(|_| TempoPrecompileError::under_overflow())?;
+                    // Checkpoints between the settled position and the head are never pruned.
+                    if index >= bucket_count {
+                        return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                    }
+                    Some(l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
+                }
+            };
             let executed = executed_count(deposits.iter().map(DecodedQueuedDeposit::deposit_type));
-            (Some(range_hash), executed)
+            (checkpoint_hash, executed)
         } else {
             (None, deposits.len())
         };
@@ -225,14 +218,13 @@ impl ZoneInbox {
 
         // Step 3: Bind the supplied range to its commitment on Tempo.
         //
-        // From T15 the hash chain must equal the checkpoint or queue head the range ends at.
-        // Before T15 the block processes every pending entry, so the chain must equal the head.
+        // A range ending at a checkpoint must hash to it, and every other range to the queue head.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
         if !portal.is_zero() {
-            let expected_hash = match range_hash {
-                Some(range_hash) => range_hash,
+            let expected_hash = match checkpoint_hash {
+                Some(checkpoint_hash) => checkpoint_hash,
                 None => l1.read_portal(|portal| &portal.current_deposit_queue_hash)?,
             };
             if expected_hash != current_hash {

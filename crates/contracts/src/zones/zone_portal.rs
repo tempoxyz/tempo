@@ -383,9 +383,7 @@ crate::sol! {
             address tempoRefundRecipient
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
-        /// Deposit with a cap on the total fee, including the congestion premium. Active from T15.
-        ///
-        /// The overload without `maxFee` is not bound, so this one keeps the unsuffixed name.
+        /// Deposit capped at `maxFee` total fee (T15+). The only bound overload, so unsuffixed.
         function depositEncrypted(
             address token,
             uint128 amount,

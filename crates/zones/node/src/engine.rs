@@ -383,40 +383,27 @@ impl ZoneEngine {
         let timestamp_secs = timestamp_millis / 1000;
         let timestamp_millis_part = timestamp_millis % 1000;
 
-        // `consumed` counts the owed queue entries a full import executes; the queue carries the
-        // rest.
+        // `consumed` counts the owed entries a full import executes. The queue defers the rest.
         let (tempo_import, consumed) = if checkpoint_only {
             (TempoImport::CheckpointOnly(checkpoint_headers), 0)
         } else {
+            let owed = self.deposit_queue.owed_deposit_count(l1_num_hash)?;
+            let range_len = if self.chain_spec.tempo_hardfork_at(timestamp_secs).is_t15() {
+                fetch_range_len(&self.l1_provider, self.portal_address, l1_num_hash, owed).await?
+            } else {
+                owed
+            };
             let mut portal_work = self
                 .deposit_queue
-                .operational_work(l1_block.header.num_hash())?;
-            let owed = portal_work
-                .iter()
-                .map(|block| block.events.deposits.len())
-                .sum();
-            // From T15 the Inbox takes a bounded range and executes its prefix within the block's
-            // weight budget, only hashing the rest. Before T15 it executes every owed entry.
-            let (consumed, hashed_only) =
-                if self.chain_spec.tempo_hardfork_at(timestamp_secs).is_t15() {
-                    let range_len =
-                        fetch_range_len(&self.l1_provider, self.portal_address, l1_num_hash, owed)
-                            .await?;
-                    // Entries past the range stay queued for later imports.
-                    L1BlockDeposits::split_off_deposits(&mut portal_work, range_len);
-                    let executed = executed_count(
-                        portal_work
-                            .iter()
-                            .flat_map(|block| &block.events.deposits)
-                            .map(L1Deposit::deposit_type),
-                    );
-                    (
-                        executed,
-                        L1BlockDeposits::split_off_deposits(&mut portal_work, executed),
-                    )
-                } else {
-                    (owed, Vec::new())
-                };
+                .operational_work(l1_num_hash, range_len)?;
+            // The Inbox executes the prefix within its weight budget. Pre-T15 ranges fit it whole.
+            let consumed = executed_count(
+                portal_work
+                    .iter()
+                    .flat_map(|block| &block.events.deposits)
+                    .map(L1Deposit::deposit_type),
+            );
+            let hashed_only = L1BlockDeposits::split_off_deposits(&mut portal_work, consumed);
             let senders = self.deposit_allowlist.as_ref().map(|_| {
                 portal_work
                     .iter()

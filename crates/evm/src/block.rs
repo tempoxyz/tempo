@@ -414,8 +414,7 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Installs the shared Zone runtime set for `fork`, as returned by [`zone_runtime_fork`].
-    /// T14 pause-gates refund claims, and T15 adds the zone transfer opt-in and the unbounded
-    /// deposit queue to the portal.
+    /// T14 pause-gates refund claims, and T15 adds the transfer opt-in and unbounded deposit queue.
     fn upgrade_zone_runtimes(&mut self, fork: TempoHardfork) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = if fork.is_t15() {
             t15_zone_factory_state(INITIAL_FACTORY_OWNER)

@@ -722,18 +722,16 @@ interface IZonePortal {
     /// @notice Cumulative entry weight appended since checkpoints bootstrapped.
     function depositWeight() external view returns (uint64);
 
-    /// @notice Lower bound on the entry weight settled since checkpoints bootstrapped. Never
-    ///         decreases.
+    /// @notice Monotonic lower bound on the entry weight settled since checkpoints bootstrapped.
     function settledDepositWeight() external view returns (uint64);
 
     /// @notice Tempo block whose first append or settlement fixed `depositPriceTier`.
     function depositPriceBlock() external view returns (uint64);
 
-    /// @notice Congestion tier charged to every deposit in `depositPriceBlock`: the tier at the
-    ///         start of that block, lowered by settlements within it.
+    /// @notice Tier charged in `depositPriceBlock`: its start tier, lowered by settlement.
     function depositPriceTier() external view returns (uint64);
 
-    /// @notice Checkpoint `index`; zeros once pruned. Reverts if `index` is out of range.
+    /// @notice Checkpoint `index`, zeroed once pruned. Reverts if `index` is out of range.
     function depositBuckets(uint256 index)
         external
         view
@@ -917,8 +915,7 @@ interface IZonePortal {
     function setBouncebackGas(uint64 _bouncebackGas) external;
 
     /// @notice Total deposit fee from the current state: operational fee plus congestion premium.
-    /// @dev Exact for the next block, and never below the fee a deposit pays later in the current
-    ///      block.
+    /// @dev Exact for the next block, and never below a later deposit's fee in the current block.
     function calculateDepositFee() external view returns (uint128 fee);
 
     /// @notice Calculate the reserved Tempo-side fee for a failed-deposit bounce-back
@@ -982,9 +979,7 @@ interface IZonePortal {
 
     /// @notice Deposit with a cap on the total fee.
     /// @param maxFee Most the caller accepts to pay: operational fee plus congestion premium.
-    /// @dev Reverts with `FeeTooHigh` if the fee exceeds `maxFee`. The entry points without
-    ///      `maxFee` cap the fee at the operational fee. The fee, including the congestion premium,
-    ///      is paid to the admin; the deposit reverts if that transfer fails.
+    /// @dev Reverts with `FeeTooHigh` above `maxFee`. Other overloads cap at the operational fee.
     function depositEncrypted(
         address token,
         uint128 amount,
