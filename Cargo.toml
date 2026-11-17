@@ -438,15 +438,11 @@ secrecy = "0.10"
 bitflags = "2.11.1"
 
 # build deps
-smolgen = { version = "0.1.1", features = ["build", "cargo", "emit_and_set", "gitcl"] }
+smolgen = { version = "0.1.2", features = ["build", "cargo", "emit_and_set", "gitcl"] }
 
 [patch.crates-io]
 # LLVM 23 support is not released yet.
 inkwell = { git = "https://github.com/TheDan64/inkwell", rev = "c9d9734ae17dbaf1d9902dab3b8ee9d2041781ff" }
-
-# Temporary: smolgen#2 makes VERGEN_IDEMPOTENT=0 turn idempotent mode off. Swap for a release
-# that contains it.
-smolgen = { git = "https://github.com/alloy-rs/smolgen", rev = "99abe6c759b5674db76d10ba2ea07fbb7490d57b" }
 
 # reth-core
 reth-codecs = { git = "https://github.com/paradigmxyz/reth-core", rev = "275ce4cf5befeb9f1e8acd935ff2882d2d25fc61" }
