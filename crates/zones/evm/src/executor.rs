@@ -24,6 +24,7 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
+    precompiles::RESERVATIONS_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
 use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
@@ -229,6 +230,32 @@ impl<'a> ZoneBlockExecutor<'a> {
         }
         Ok(())
     }
+
+    /// Gives the reservation core's account its native-precompile marker, as Tempo does at T15.
+    ///
+    /// Without code the account counts as empty, and its storage (holds, allowances, liens) would
+    /// be cleared with it at the end of each transaction. Runs before every T15 block and changes
+    /// nothing once the marker is there, which covers zones created before T15 and after.
+    fn deploy_t15_reservations(&mut self) -> Result<(), BlockExecutionError> {
+        let original = self
+            .inner
+            .evm_mut()
+            .state_mut()
+            .account_info_untracked(&RESERVATIONS_ADDRESS)
+            .map_err(map_database_error)?;
+        if original
+            .as_ref()
+            .is_some_and(|info| !info.is_empty_code_hash())
+        {
+            return Ok(());
+        }
+        let marker = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+        let current = original.clone().unwrap_or_default().with_code(marker);
+        let mut state = PendingState::default();
+        state.insert_account(RESERVATIONS_ADDRESS, original, Some(current));
+        self.inner.commit_pending_state(&state);
+        Ok(())
+    }
 }
 
 impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
@@ -263,6 +290,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
+                self.deploy_t15_reservations()?;
             }
             Ok(())
         } else {
@@ -432,7 +460,7 @@ mod tests {
         eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
         eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
     };
-    use alloy_primitives::{Address, B256, Bytes, Log, Signature, U256};
+    use alloy_primitives::{Address, B256, Bytes, Log, Signature, U256, keccak256};
     use alloy_sol_types::{SolCall, SolEvent};
     use evm2::{
         EvmFeatures,
@@ -1578,6 +1606,14 @@ mod tests {
                     "{address} at {fork:?}"
                 );
             }
+            // T15 also gives the reservation core its marker, so its storage outlives each
+            // transaction.
+            let core = db.get_account(&super::RESERVATIONS_ADDRESS).unwrap();
+            assert_eq!(
+                core.is_some_and(|info| info.code_hash == keccak256([0xef])),
+                removed,
+                "reservation core at {fork:?}"
+            );
         }
     }
 }
