@@ -75,7 +75,7 @@ struct PackedChannelState {
     ///
     /// This field occupies previously unused bytes in the packed slot, so channels opened before
     /// T15 decode it as false.
-    has_signer_snapshot: bool,
+    has_opening_commitment: bool,
 }
 
 impl PackedChannelState {
@@ -208,15 +208,15 @@ impl TIP20ChannelReserve {
         {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
-        let signer_snapshot = if is_t15 {
+        let opening_commitment = if is_t15 {
             self.storage.config_commitment(signer)?
         } else {
             B256::ZERO
         };
-        if !signer_snapshot.is_zero() && call.salt != signer_snapshot {
+        if !opening_commitment.is_zero() && call.salt != opening_commitment {
             return Err(TIP20ChannelReserveError::salt_not_signer_commitment(
                 signer,
-                signer_snapshot,
+                opening_commitment,
             )
             .into());
         }
@@ -244,7 +244,7 @@ impl TIP20ChannelReserve {
             deposit,
             close_requested_at: 0,
             uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
-            has_signer_snapshot: !signer_snapshot.is_zero(),
+            has_opening_commitment: !opening_commitment.is_zero(),
         };
         self.write_channel_state_spending_credit(msg_sender, channel_id, state)?;
         self.opened_this_tx[channel_id].t_write(true)?;
@@ -262,12 +262,12 @@ impl TIP20ChannelReserve {
                 deposit: call.deposit,
             },
         ))?;
-        if state.has_signer_snapshot {
-            self.emit_event(TIP20ChannelReserveEvent::SignerSnapshotCached(
-                ITIP20ChannelReserve::SignerSnapshotCached {
+        if state.has_opening_commitment {
+            self.emit_event(TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                ITIP20ChannelReserve::OpeningCommitmentRecorded {
                     channelId: channel_id,
                     signer,
-                    commitment: signer_snapshot,
+                    commitment: opening_commitment,
                 },
             ))?;
         }
@@ -389,9 +389,9 @@ impl TIP20ChannelReserve {
             if self.storage.spec().is_t15() {
                 // Old owners must not gain authority over new funds after a rotation, and an
                 // unregistered signer's registration can't be told apart from one.
-                let snapshot = signer_snapshot(&call.descriptor, state);
-                if self.storage.config_commitment(signer)? != snapshot {
-                    return Err(if snapshot.is_zero() {
+                let commitment = opening_commitment(&call.descriptor, state);
+                if self.storage.config_commitment(signer)? != commitment {
+                    return Err(if commitment.is_zero() {
                         TIP20ChannelReserveError::root_key_retired(signer)
                     } else {
                         TIP20ChannelReserveError::signer_config_changed(signer)
@@ -920,7 +920,7 @@ impl TIP20ChannelReserve {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
         let expected_signer = self.expected_signer(descriptor);
         if self.storage.spec().is_t15() {
-            let snapshot = signer_snapshot(descriptor, state);
+            let commitment = opening_commitment(descriptor, state);
             if let Ok(TempoSignature::ConfigurableAccount(signature)) =
                 TempoSignature::from_bytes(signature)
             {
@@ -929,7 +929,7 @@ impl TIP20ChannelReserve {
                         expected_signer,
                         digest,
                         &signature,
-                        snapshot,
+                        commitment,
                         true,
                     )
                     .map_err(|error| {
@@ -945,7 +945,7 @@ impl TIP20ChannelReserve {
                 return Ok(());
             }
             // A signer with a commitment at open had its root key retired (TIP-1113).
-            if !snapshot.is_zero() {
+            if !commitment.is_zero() {
                 return Err(TIP20ChannelReserveError::invalid_signature().into());
             }
         }
@@ -988,11 +988,11 @@ impl TIP20ChannelReserve {
 
 /// Returns the voucher signer's commitment at open, which the descriptor's salt holds, or zero if
 /// the signer had none (TIP-1166).
-fn signer_snapshot(
+fn opening_commitment(
     descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
     state: PackedChannelState,
 ) -> B256 {
-    if state.has_signer_snapshot {
+    if state.has_opening_commitment {
         descriptor.salt
     } else {
         B256::ZERO
@@ -3057,8 +3057,8 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let snapshot = commit(payer, &old_config)?;
-            let salt = snapshot;
+            let commitment = commit(payer, &old_config)?;
+            let salt = commitment;
             let token = TIP20Setup::path_usd(payee)
                 .with_issuer(payee)
                 .with_mint(payer, U256::from(1_000u128))
@@ -3080,7 +3080,7 @@ mod tests {
                         Address::ZERO,
                     ),
                 ),
-                Err(TIP20ChannelReserveError::salt_not_signer_commitment(payer, snapshot).into())
+                Err(TIP20ChannelReserveError::salt_not_signer_commitment(payer, commitment).into())
             );
             let channel_id = reserve.open(
                 payer,
@@ -3096,11 +3096,11 @@ mod tests {
             assert_eq!(
                 StorageCtx.get_events(TIP20_CHANNEL_RESERVE_ADDRESS).last(),
                 Some(
-                    &TIP20ChannelReserveEvent::SignerSnapshotCached(
-                        ITIP20ChannelReserve::SignerSnapshotCached {
+                    &TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                        ITIP20ChannelReserve::OpeningCommitmentRecorded {
                             channelId: channel_id,
                             signer: payer,
-                            commitment: snapshot,
+                            commitment,
                         }
                     )
                     .into_log_data()
@@ -3148,7 +3148,7 @@ mod tests {
             );
             reserve.top_up(payer, top_up_call(&descriptor, 0))?;
 
-            // Closing deletes the snapshot with the channel.
+            // Closing deletes the channel state, including its opening-commitment flag.
             let signature =
                 configurable_voucher(&reserve, channel_id, 80, payer, &old_config, &[&old_owner])?;
             reserve.close(
@@ -3190,13 +3190,13 @@ mod tests {
                 payer,
                 open_call(payee, Address::ZERO, token.address(), 100, salt, signer),
             )?;
-            // An unregistered signer has no snapshot, so any salt opens.
+            // An unregistered signer has no commitment, so any salt opens.
             assert!(
                 !StorageCtx
                     .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
                     .iter()
                     .any(|log| log.topics().first()
-                        == Some(&ITIP20ChannelReserve::SignerSnapshotCached::SIGNATURE_HASH))
+                        == Some(&ITIP20ChannelReserve::OpeningCommitmentRecorded::SIGNATURE_HASH))
             );
             let descriptor = descriptor(
                 payer,
@@ -3281,7 +3281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t15_snapshot_channel_uses_one_slot_and_withdraws_after_rotation() -> eyre::Result<()> {
+    fn test_t15_committed_channel_uses_one_slot_and_withdraws_after_rotation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let owner = PrivateKeySigner::random();
         let config = owner_config(&[&owner], 1, 0);
@@ -3289,7 +3289,7 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let snapshot = commit(payer, &config)?;
+            let commitment = commit(payer, &config)?;
             let token = TIP20Setup::path_usd(payee)
                 .with_issuer(payee)
                 .with_mint(payer, U256::from(1_000u128))
@@ -3304,7 +3304,7 @@ mod tests {
                     Address::ZERO,
                     token.address(),
                     100,
-                    snapshot,
+                    commitment,
                     Address::ZERO,
                 ),
             )?;
@@ -3313,7 +3313,7 @@ mod tests {
                 payee,
                 Address::ZERO,
                 token.address(),
-                snapshot,
+                commitment,
                 Address::ZERO,
                 expiring_nonce_hash,
             );

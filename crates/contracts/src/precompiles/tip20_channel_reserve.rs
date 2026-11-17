@@ -195,7 +195,7 @@ crate::sol! {
         /// Emitted by `open` when the voucher signer has a nonzero configuration commitment, which
         /// the channel's salt holds and its vouchers are checked against for its lifetime
         /// (TIP-1166).
-        event SignerSnapshotCached(
+        event OpeningCommitmentRecorded(
             bytes32 indexed channelId,
             address indexed signer,
             bytes32 commitment

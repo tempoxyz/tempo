@@ -144,7 +144,7 @@ interface ITIP20ChannelReserve {
         bytes32 indexed channelId, address indexed payer, address indexed payee
     );
 
-    event SignerSnapshotCached(
+    event OpeningCommitmentRecorded(
         bytes32 indexed channelId, address indexed signer, bytes32 commitment
     );
 
