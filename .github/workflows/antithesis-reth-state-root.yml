@@ -97,6 +97,19 @@ jobs:
           # branch tag pushes past the 255-byte limit, and the workload image is silently dropped.
           printf 'RETH_STATE_ROOT_IMAGE=%s/tempo-reth-state-root-antithesis@%s\n' "$REGISTRY" "$DIGEST" > "$dir/.env"
 
+      - name: Validate digest-paired configuration
+        run: |
+          dir="$RUNNER_TEMP/antithesis-reth-state-root-config"
+          snouty_dir="$RUNNER_TEMP/snouty-0.10.0"
+          mkdir -p "$snouty_dir"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$snouty_dir/snouty.tar.xz" \
+            https://github.com/antithesishq/snouty/releases/download/v0.10.0/snouty-x86_64-unknown-linux-musl.tar.xz
+          printf '%s  %s\n' d9a2cfe404cbbd82a5658dffaed3fddffb80773498b4eaac7bedb0d22cf1b7bc \
+            "$snouty_dir/snouty.tar.xz" | sha256sum --check
+          tar -xf "$snouty_dir/snouty.tar.xz" --strip-components=1 -C "$snouty_dir"
+          docker compose --project-directory "$dir" pull
+          "$snouty_dir/snouty" validate "$dir" --timeout 5m
+
       - name: Build and push config image
         id: config
         uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
