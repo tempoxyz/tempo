@@ -160,6 +160,12 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         self.orgs[org].admin.write(admin)?;
+        let epoch = self.orgs[org].admin_epoch.read()?;
+        self.orgs[org].admin_epoch.write(
+            epoch
+                .checked_add(1)
+                .ok_or_else(TempoPrecompileError::under_overflow)?,
+        )?;
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
@@ -277,7 +283,11 @@ impl ZoneIdentity {
             return Ok(false);
         }
         let admin = self.orgs[member.org].admin.read()?;
-        Ok(reader == admin || self.orgs[member.org].readers[admin][reader].read()?)
+        if reader == admin {
+            return Ok(true);
+        }
+        let epoch = self.orgs[member.org].admin_epoch.read()?;
+        Ok(self.orgs[member.org].readers[epoch][reader].read()?)
     }
 
     /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0. The
@@ -294,8 +304,8 @@ impl ZoneIdentity {
         if org == 0 || reader.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        let admin = self.orgs[org].admin.read()?;
-        self.orgs[org].readers[admin][reader].write(allowed)?;
+        let epoch = self.orgs[org].admin_epoch.read()?;
+        self.orgs[org].readers[epoch][reader].write(allowed)?;
         Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
             orgId: org,
             reader,
@@ -380,9 +390,12 @@ pub struct Org {
     /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
     /// receiving org and token.
     pub edges: Mapping<u64, Mapping<Address, Edges>>,
+    /// How many times the registrar has replaced this org's admin.
+    pub admin_epoch: u64,
     /// Addresses besides the admin that may read this org's members' account-scoped state, keyed by
-    /// the admin that named them, so replacing the admin revokes every reader at once.
-    pub readers: Mapping<Address, Mapping<Address, bool>>,
+    /// the admin epoch they were named in, so replacing the admin revokes every reader at once, even
+    /// if an earlier admin is later reappointed.
+    pub readers: Mapping<u64, Mapping<Address, bool>>,
 }
 
 /// Both halves of the three edges between two orgs for one token, packed into one slot. A move
@@ -780,6 +793,13 @@ mod tests {
             assert!(!identity.can_read(auditor, ALICE).unwrap());
             assert!(!identity.can_read(admin, ALICE).unwrap());
             assert!(identity.can_read(new_admin, ALICE).unwrap());
+            // Reappointing the earlier admin does not bring its readers back.
+            identity
+                .set_org_admin(registrar, registrar, org, admin)
+                .unwrap();
+            assert!(identity.can_read(admin, ALICE).unwrap());
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+            let new_admin = admin;
 
             for (caller, org_id, reader, error) in [
                 (admin, org, auditor, ZoneIdentityError::unauthorized()),
