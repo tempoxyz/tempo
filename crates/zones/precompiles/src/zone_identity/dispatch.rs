@@ -48,10 +48,10 @@ impl ZoneIdentity {
                         self.set_frozen(caller, registrar()?, call.account, call.frozen)
                     }),
                     setOutbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_outbound(caller, registrar()?, call.fromOrg, call.toOrg, &call.tokens, call.allowed)
+                        self.set_outbound(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
                     }),
                     setInbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_inbound(caller, registrar()?, call.toOrg, call.fromOrg, &call.tokens, call.allowed)
+                        self.set_inbound(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
@@ -63,7 +63,7 @@ impl ZoneIdentity {
                         })
                     }),
                     edge(call) => view(call, |call| {
-                        self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)
+                        self.edge(msg_sender, registrar()?, call.from, call.to, call.token)
                     }),
                 }
             },

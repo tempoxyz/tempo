@@ -5,6 +5,20 @@ use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::TempoAddressExt as _;
 
 use super::*;
+
+fn zone(org: u64) -> OrgKey {
+    OrgKey {
+        orgId: org,
+        l1: false,
+    }
+}
+
+fn tempo(org: u64) -> OrgKey {
+    OrgKey {
+        orgId: org,
+        l1: true,
+    }
+}
 use crate::error::ZonePrecompileError;
 
 fn with_identity<R>(f: impl FnOnce(&mut ZoneIdentity, Address) -> R) -> R {
@@ -43,10 +57,10 @@ fn org_with_members(
     let admin = Address::repeat_byte(1);
     let org = identity.create_org(registrar, registrar, admin).unwrap();
     identity
-        .set_outbound(admin, registrar, org, org, &[usd], true)
+        .set_outbound(admin, registrar, zone(org), zone(org), &[usd], true)
         .unwrap();
     identity
-        .set_inbound(admin, registrar, org, org, &[usd], true)
+        .set_inbound(admin, registrar, zone(org), zone(org), &[usd], true)
         .unwrap();
     identity.add_member(admin, registrar, org, ALICE).unwrap();
     identity.add_member(admin, registrar, org, BOB).unwrap();
@@ -60,15 +74,15 @@ fn admins_only_set_their_own_half() {
         let a = identity.create_org(registrar, registrar, admin_a).unwrap();
         let b = identity.create_org(registrar, registrar, admin_b).unwrap();
         assert_eq!(
-            identity.set_inbound(admin_a, registrar, b, a, &[token(1)], true),
+            identity.set_inbound(admin_a, registrar, zone(a), zone(b), &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unauthorized()))
         );
         assert_eq!(
-            identity.set_outbound(admin_b, registrar, a, b, &[token(1)], true),
+            identity.set_outbound(admin_b, registrar, zone(a), zone(b), &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unauthorized()))
         );
         assert_eq!(
-            identity.set_outbound(admin_a, registrar, a, 9, &[token(1)], true),
+            identity.set_outbound(admin_a, registrar, zone(a), zone(9), &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unknown_org(9)))
         );
     });
@@ -130,10 +144,10 @@ fn tempo_sides_are_separate_from_zone_sides() {
             .unwrap();
         // Withdrawals from the org to the exit org's Tempo addresses, not transfers to it.
         identity
-            .set_outbound(admin, registrar, org, exits | L1_SIDE, &[usd], true)
+            .set_outbound(admin, registrar, zone(org), tempo(exits), &[usd], true)
             .unwrap();
         identity
-            .set_inbound(exit_admin, registrar, exits | L1_SIDE, org, &[usd], true)
+            .set_inbound(exit_admin, registrar, zone(org), tempo(exits), &[usd], true)
             .unwrap();
         assert!(allows(usd, ALICE, offramp, TransferKind::Withdrawal));
         assert!(!allows(usd, ALICE, offramp, TransferKind::InZone));
@@ -143,10 +157,10 @@ fn tempo_sides_are_separate_from_zone_sides() {
         let stranger = Address::repeat_byte(0x44);
         assert!(!allows(usd, stranger, ALICE, TransferKind::Deposit));
         identity
-            .set_outbound(registrar, registrar, L1_SIDE, org, &[usd], true)
+            .set_outbound(registrar, registrar, tempo(0), zone(org), &[usd], true)
             .unwrap();
         identity
-            .set_inbound(admin, registrar, org, L1_SIDE, &[usd], true)
+            .set_inbound(admin, registrar, tempo(0), zone(org), &[usd], true)
             .unwrap();
         assert!(allows(usd, stranger, ALICE, TransferKind::Deposit));
         assert!(allows(usd, offramp, ALICE, TransferKind::Deposit));

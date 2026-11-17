@@ -32,24 +32,22 @@ use crate::{
     storage::{L1State, L1StorageReader},
 };
 
-/// Marks an edge side as an org's addresses on Tempo rather than its accounts on the Zone: deposits
-/// leave a Tempo side and withdrawals reach one.
-pub const L1_SIDE: u64 = 1 << 63;
+pub use tempo_contracts::zones::IZoneIdentity::OrgKey;
 
 /// Org registry and per-token edges between orgs.
 ///
 /// Field order is the storage layout; append new fields only.
 #[contract(addr = ZONE_IDENTITY_ADDRESS)]
 pub struct ZoneIdentity {
-    /// Highest org ID created. Org IDs start at 1 and stay below [`L1_SIDE`].
+    /// Highest org ID created. Org IDs start at 1.
     pub org_count: u64,
     /// Each org's configuration, keyed by org ID.
     pub orgs: Mapping<u64, Org>,
     /// Each address's membership.
     pub members: Mapping<Address, Member>,
-    /// Both halves of every edge, keyed by sending side, receiving side and token. A side is an
-    /// org ID, with [`L1_SIDE`] set for its addresses on Tempo.
-    pub edges: Mapping<u64, Mapping<u64, Mapping<Address, Edge>>>,
+    /// Both halves of the transfer, deposit and withdrawal edges between two orgs for a token,
+    /// keyed by sending org, receiving org and token.
+    pub edges: Mapping<u64, Mapping<u64, Mapping<Address, Edges>>>,
 }
 
 /// One org's configuration.
@@ -59,13 +57,55 @@ pub struct Org {
     pub admin: Address,
 }
 
-/// Both halves of one edge, packed into one slot. A move needs both.
+/// Both halves of the three edges between two orgs for one token, packed into one slot. A move
+/// needs both halves of its edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Edge {
-    /// Set by the sending side's admin.
-    pub from_ok: bool,
-    /// Set by the receiving side's admin.
-    pub to_ok: bool,
+pub struct Edges {
+    /// Zone to Zone, set by the sending org's admin.
+    pub transfer_from: bool,
+    /// Zone to Zone, set by the receiving org's admin.
+    pub transfer_to: bool,
+    /// The sending org's Tempo addresses to the Zone, set by the sending org's admin.
+    pub deposit_from: bool,
+    /// The sending org's Tempo addresses to the Zone, set by the receiving org's admin.
+    pub deposit_to: bool,
+    /// The Zone to the receiving org's Tempo addresses, set by the sending org's admin.
+    pub withdrawal_from: bool,
+    /// The Zone to the receiving org's Tempo addresses, set by the receiving org's admin.
+    pub withdrawal_to: bool,
+}
+
+impl Edges {
+    /// Whether both halves of the edge for `kind` allow the move.
+    fn allows(self, kind: TransferKind) -> bool {
+        match kind {
+            TransferKind::InZone => self.transfer_from && self.transfer_to,
+            TransferKind::Deposit => self.deposit_from && self.deposit_to,
+            TransferKind::Withdrawal => self.withdrawal_from && self.withdrawal_to,
+        }
+    }
+
+    /// The sending half (`outbound`) or receiving half of the edge for `kind`.
+    fn half(&mut self, kind: TransferKind, outbound: bool) -> &mut bool {
+        match (kind, outbound) {
+            (TransferKind::InZone, true) => &mut self.transfer_from,
+            (TransferKind::InZone, false) => &mut self.transfer_to,
+            (TransferKind::Deposit, true) => &mut self.deposit_from,
+            (TransferKind::Deposit, false) => &mut self.deposit_to,
+            (TransferKind::Withdrawal, true) => &mut self.withdrawal_from,
+            (TransferKind::Withdrawal, false) => &mut self.withdrawal_to,
+        }
+    }
+}
+
+/// The move an edge between `from` and `to` governs. Tempo to Tempo has none.
+fn edge_kind(from: &OrgKey, to: &OrgKey) -> ZoneResult<TransferKind> {
+    match (from.l1, to.l1) {
+        (false, false) => Ok(TransferKind::InZone),
+        (true, false) => Ok(TransferKind::Deposit),
+        (false, true) => Ok(TransferKind::Withdrawal),
+        (true, true) => Err(ZoneIdentityError::invalid_edge().into()),
+    }
 }
 
 /// An address's membership, packed into one slot: zero for an address in no org.
@@ -121,19 +161,19 @@ impl ZoneIdentity {
             return Ok(false);
         }
         let allowed = |from: u64, to: u64| -> ZoneResult<bool> {
-            let edge = self.edges[from][to][token].read()?;
-            Ok(edge.from_ok && edge.to_ok)
+            Ok(self.edges[from][to][token].read()?.allows(kind))
         };
+        // A deposit or withdrawal that misses falls back to org 0's Tempo side: any address there.
         Ok(match kind {
             TransferKind::InZone => allowed(sender.org, recipient.org)?,
             TransferKind::Deposit => {
-                allowed(sender.org | L1_SIDE, recipient.org)?
-                    || (sender.org != 0 && allowed(L1_SIDE, recipient.org)?)
+                allowed(sender.org, recipient.org)?
+                    || (sender.org != 0 && allowed(0, recipient.org)?)
             }
             TransferKind::Withdrawal => {
                 (sender.org == 0 && from == to)
-                    || allowed(sender.org, recipient.org | L1_SIDE)?
-                    || (recipient.org != 0 && allowed(sender.org, L1_SIDE)?)
+                    || allowed(sender.org, recipient.org)?
+                    || (recipient.org != 0 && allowed(sender.org, 0)?)
             }
         })
     }
@@ -168,7 +208,6 @@ impl ZoneIdentity {
             .org_count
             .read()?
             .checked_add(1)
-            .filter(|org| *org < L1_SIDE)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
         self.org_count.write(org)?;
         self.orgs[org].admin.write(admin)?;
@@ -243,56 +282,71 @@ impl ZoneIdentity {
         self.write_member(account, Member { frozen, ..member })
     }
 
-    /// Sets the sending half for `tokens` on the edge from side `from` to side `to`. The caller must
+    /// Sets the sending half for `tokens` on the edge from `from` to `to`. The caller must
     /// administer `from`'s org.
     pub fn set_outbound(
         &mut self,
         caller: Address,
         registrar: Address,
-        from: u64,
-        to: u64,
+        from: OrgKey,
+        to: OrgKey,
         tokens: &[Address],
         allowed: bool,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, from & !L1_SIDE)?;
-        self.ensure_org(to & !L1_SIDE)?;
-        for &token in tokens {
-            let mut edge = self.edges[from][to][token].read()?;
-            edge.from_ok = allowed;
-            self.edges[from][to][token].write(edge)?;
-            self.emit_event(IZoneIdentity::OutboundUpdated {
-                fromOrg: from,
-                toOrg: to,
-                token,
-                allowed,
-            })?;
-        }
-        Ok(())
+        self.ensure_org_admin(caller, registrar, from.orgId)?;
+        self.set_half(from, to, tokens, allowed, true)
     }
 
-    /// Sets the receiving half for `tokens` on the edge from side `from` to side `to`. The caller
-    /// must administer `to`'s org.
+    /// Sets the receiving half for `tokens` on the edge from `from` to `to`. The caller must
+    /// administer `to`'s org.
     pub fn set_inbound(
         &mut self,
         caller: Address,
         registrar: Address,
-        to: u64,
-        from: u64,
+        from: OrgKey,
+        to: OrgKey,
         tokens: &[Address],
         allowed: bool,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, to & !L1_SIDE)?;
-        self.ensure_org(from & !L1_SIDE)?;
+        self.ensure_org_admin(caller, registrar, to.orgId)?;
+        self.set_half(from, to, tokens, allowed, false)
+    }
+
+    fn set_half(
+        &mut self,
+        from: OrgKey,
+        to: OrgKey,
+        tokens: &[Address],
+        allowed: bool,
+        outbound: bool,
+    ) -> ZoneResult<()> {
+        self.ensure_org(from.orgId)?;
+        self.ensure_org(to.orgId)?;
+        let kind = edge_kind(&from, &to)?;
         for &token in tokens {
-            let mut edge = self.edges[from][to][token].read()?;
-            edge.to_ok = allowed;
-            self.edges[from][to][token].write(edge)?;
-            self.emit_event(IZoneIdentity::InboundUpdated {
-                toOrg: to,
-                fromOrg: from,
-                token,
-                allowed,
-            })?;
+            let slot = &mut self.edges[from.orgId][to.orgId][token];
+            let mut edges = slot.read()?;
+            *edges.half(kind, outbound) = allowed;
+            slot.write(edges)?;
+            if outbound {
+                self.emit_event(IZoneIdentity::OutboundUpdated {
+                    fromOrg: from.orgId,
+                    fromL1: from.l1,
+                    toOrg: to.orgId,
+                    toL1: to.l1,
+                    token,
+                    allowed,
+                })?;
+            } else {
+                self.emit_event(IZoneIdentity::InboundUpdated {
+                    fromOrg: from.orgId,
+                    fromL1: from.l1,
+                    toOrg: to.orgId,
+                    toL1: to.l1,
+                    token,
+                    allowed,
+                })?;
+            }
         }
         Ok(())
     }
@@ -320,23 +374,23 @@ impl ZoneIdentity {
         Ok(member)
     }
 
-    /// Whether `token` may move from side `from` to side `to`, for the admin of either org or the
-    /// registrar.
+    /// Whether `token` may move along the edge from `from` to `to`, for the admin of either org or
+    /// the registrar.
     pub fn edge(
         &self,
         caller: Address,
         registrar: Address,
-        from: u64,
-        to: u64,
+        from: OrgKey,
+        to: OrgKey,
         token: Address,
     ) -> ZoneResult<bool> {
-        if caller != self.org_admin(registrar, from & !L1_SIDE)?
-            && caller != self.org_admin(registrar, to & !L1_SIDE)?
+        if caller != self.org_admin(registrar, from.orgId)?
+            && caller != self.org_admin(registrar, to.orgId)?
         {
             ensure_caller(caller, registrar)?;
         }
-        let edge = self.edges[from][to][token].read()?;
-        Ok(edge.from_ok && edge.to_ok)
+        let kind = edge_kind(&from, &to)?;
+        Ok(self.edges[from.orgId][to.orgId][token].read()?.allows(kind))
     }
 
     fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
