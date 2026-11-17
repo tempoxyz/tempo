@@ -16,7 +16,16 @@ pub struct TempoBlockExt {
     pub timestamp_millis_part: u64,
     /// Number of blocks in a consensus epoch.
     pub epoch_length: NonZeroU64,
-    /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
+    /// Proposer's Ed25519 public key, taken from the block's consensus context
+    /// (`header.consensus_context` on import, the payload attributes' context
+    /// when building).
+    ///
+    /// `Some` for post-T4 blocks that go through consensus, which rejects a
+    /// block without a consensus context. `None` for pre-T4 blocks and for
+    /// blocks executed outside consensus, such as simulated blocks
+    /// (`eth_simulateV1`) and pending-block environments, which never carry a
+    /// consensus context. Checks that need the proposer, such as the boundary
+    /// outcome check, are skipped when it is `None`.
     pub proposer_public_key: Option<PublicKey>,
 }
 
