@@ -972,9 +972,18 @@ impl TIP20ChannelReserve {
                 return Err(TIP20ChannelReserveError::invalid_signature().into());
             }
         }
+        let is_t15 = self.storage.spec().is_t15();
         let signer = SignatureVerifier::new()
             .recover(digest, signature)
-            .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
+            .map_err(|error| {
+                // From T15, out-of-gas and other system errors propagate so that `verifyVoucher`
+                // never reports an unperformed check as an invalid signature.
+                if is_t15 && error.is_system_error() {
+                    error
+                } else {
+                    TIP20ChannelReserveError::invalid_signature().into()
+                }
+            })?;
         if signer != expected_signer {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
