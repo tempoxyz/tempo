@@ -43,7 +43,7 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-state-root-antithesis /out/ \
     && nm /out/reth-state-root-antithesis | grep ' T antithesis_load_libvoidstar$' \
     && nm --demangle /out/reth-state-root-antithesis \
-      | grep 'reth_trie_sparse::arena::sparse_guidance::coverage_arm' > /dev/null \
+      | grep -c 'reth_trie_sparse::arena::sparse_guidance::coverage_arm' \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_guards \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_pcs \
     && readelf -SW /out/reth-state-root-antithesis | grep .debug_info \
