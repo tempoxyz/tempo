@@ -1,0 +1,154 @@
+# Worst-case state-read gate.
+#
+# Runs the state-read benchmark presets (blocks of serial cold storage reads over
+# 100 GB of state) and checks how long validators take to execute the loaded
+# blocks. Report only by default; set enforce to fail when p99 block execution
+# exceeds the threshold.
+
+name: bench-state-read-gate
+
+on:
+  schedule:
+    - cron: "0 12 * * 0"
+  pull_request:
+    paths:
+      - crates/hardfork/src/gas_params.rs
+      - crates/evm/src/handler/**
+      - crates/precompiles/src/storage/**
+      - contrib/bench/txgen/state-read/**
+      - contrib/bench/txgen/presets/state-read-*.yml
+  workflow_dispatch:
+    inputs:
+      enforce:
+        description: Fail when p99 block execution exceeds the threshold.
+        type: boolean
+        required: false
+        default: false
+      threshold-ms:
+        description: p99 block execution threshold in milliseconds.
+        type: string
+        required: false
+        default: "500"
+
+permissions: {}
+
+concurrency:
+  group: bench-state-read-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  refs:
+    name: refs
+    # Benchmarks need cloud credentials, so pull requests from forks are skipped.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      baseline: ${{ steps.refs.outputs.baseline }}
+      feature: ${{ steps.refs.outputs.feature }}
+    steps:
+      - name: Resolve refs
+        id: refs
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo "baseline=${PR_BASE:-$SHA}" >> "$GITHUB_OUTPUT"
+          echo "feature=${PR_HEAD:-$SHA}" >> "$GITHUB_OUTPUT"
+
+  cold:
+    needs: refs
+    name: state-read-cold
+    uses: ./.github/workflows/bench-e2e-multi-region.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    with:
+      baseline: ${{ needs.refs.outputs.baseline }}
+      feature: ${{ needs.refs.outputs.feature }}
+      preset: state-read-cold
+      bloat: "100"
+      gas-limit: "500000000"
+      general-gas-limit: "500000000"
+      tps: "20"
+      max-concurrent-requests: "20"
+      accounts: "1000"
+      duration: "120"
+      results-artifact-name: state-read-cold-results
+    secrets:
+      BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
+
+  dependent:
+    # Sequential with cold: two concurrent benchmarks use most of the cloud CPU quota.
+    needs: [refs, cold]
+    if: always() && needs.refs.result == 'success'
+    name: state-read-dependent
+    uses: ./.github/workflows/bench-e2e-multi-region.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    with:
+      baseline: ${{ needs.refs.outputs.baseline }}
+      feature: ${{ needs.refs.outputs.feature }}
+      preset: state-read-dependent
+      bloat: "100"
+      gas-limit: "500000000"
+      general-gas-limit: "500000000"
+      tps: "1"
+      max-concurrent-requests: "4"
+      accounts: "1000"
+      duration: "120"
+      results-artifact-name: state-read-dependent-results
+    secrets:
+      BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VALSCOPE_CONTROL_URL: ${{ secrets.VALSCOPE_CONTROL_URL }}
+      VALSCOPE_INTERNAL_TOKEN: ${{ secrets.VALSCOPE_INTERNAL_TOKEN }}
+
+  gate:
+    needs: [cold, dependent]
+    if: always() && (needs.cold.result == 'success' || needs.dependent.result == 'success')
+    name: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          sparse-checkout: contrib/bench/txgen/state-read
+
+      - name: Download results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: state-read-*-results
+          path: results
+
+      - name: Check block execution time
+        env:
+          ENFORCE: ${{ inputs.enforce && '--enforce' || '' }}
+          THRESHOLD_MS: ${{ inputs.threshold-ms || '500' }}
+        run: |
+          # shellcheck disable=SC2086
+          python3 -I contrib/bench/txgen/state-read/gate.py results/* --threshold-ms "$THRESHOLD_MS" $ENFORCE
