@@ -1,5 +1,4 @@
 use super::*;
-use tempo_primitives::TempoAddressExt as _;
 
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
@@ -838,66 +837,4 @@ fn zone_identity_credits_deposits_along_an_edge() -> eyre::Result<()> {
     assert_eq!(env.balance(PATH_USD_ADDRESS, fixture.to), U256::from(500));
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
-}
-
-#[test]
-fn zone_identity_gives_enabled_tokens_their_position_as_bit() -> eyre::Result<()> {
-    let mut env = ZoneSpec {
-        hardfork: TempoHardfork::T15,
-        ..spec()
-    }
-    .apply()?;
-    let first = maximum_metadata_token(1);
-    let second = maximum_metadata_token(2);
-    env.queue_token_enablement(&first);
-    env.queue_token_enablement(&second);
-    let output = env.advance_tempo(Vec::new(), Vec::new(), vec![first.clone(), second.clone()])?;
-    assert!(output.is_success(), "token enablement failed: {output:?}");
-
-    env.with_storage(|| -> eyre::Result<()> {
-        let inbox = ZoneInbox::new();
-        let count = inbox.processed_enabled_token_count.read()?;
-        assert!(count >= 2);
-        assert!(inbox.token_indices_backfilled.read()?);
-        assert_eq!(inbox.token_index(first.token)?, (count - 1) as u16);
-        assert_eq!(inbox.token_index(second.token)?, count as u16);
-        Ok(())
-    })
-}
-
-#[test]
-fn token_indices_backfill_once_then_follow_positions() -> eyre::Result<()> {
-    let mut env = spec().apply()?;
-    let token = |id| Address::new_tip20(id);
-    env.with_storage(|| -> eyre::Result<()> {
-        let mut inbox = ZoneInbox::new();
-        inbox.index_enabled_tokens(2, &[token(7)], |position| Ok(token(position + 1)))?;
-        assert_eq!(inbox.token_index(token(1))?, 1);
-        assert_eq!(inbox.token_index(token(2))?, 2);
-        assert_eq!(inbox.token_index(token(7))?, 3);
-
-        // Later batches never read earlier positions again.
-        inbox.index_enabled_tokens(3, &[token(9)], |_| panic!("already backfilled"))?;
-        assert_eq!(inbox.token_index(token(9))?, 4);
-        Ok(())
-    })
-}
-
-#[test]
-fn tokens_past_the_mask_get_no_index() -> eyre::Result<()> {
-    let mut env = spec().apply()?;
-    let limit = u64::from(crate::zone_identity::MAX_IDENTITY_TOKENS);
-    env.with_storage(|| -> eyre::Result<()> {
-        let mut inbox = ZoneInbox::new();
-        let batch = [Address::new_tip20(limit + 1), Address::new_tip20(limit + 2)];
-        inbox.index_enabled_tokens(limit - 1, &batch, |position| {
-            Ok(Address::new_tip20(position + 1))
-        })?;
-        assert_eq!(
-            inbox.token_index(Address::new_tip20(limit + 1))?,
-            limit as u16
-        );
-        assert_eq!(inbox.token_index(Address::new_tip20(limit + 2))?, 0);
-        Ok(())
-    })
 }

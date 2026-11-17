@@ -8,7 +8,6 @@ use tempo_precompiles::{charge_input_cost, dispatch};
 use super::ZoneIdentity;
 use crate::{
     dispatch::{mutate, view},
-    error::ZoneResult,
     storage::{L1State, L1StorageReader},
 };
 
@@ -49,19 +48,12 @@ impl ZoneIdentity {
                         self.set_frozen(caller, registrar()?, call.account, call.frozen)
                     }),
                     setOutbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_outbound(caller, registrar()?, call.fromOrg, call.toOrg, call.tokenMask)
+                        self.set_outbound(caller, registrar()?, call.fromOrg, call.toOrg, &call.tokens, call.allowed)
                     }),
                     setInbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_inbound(caller, registrar()?, call.toOrg, call.fromOrg, call.tokenMask)
+                        self.set_inbound(caller, registrar()?, call.toOrg, call.fromOrg, &call.tokens, call.allowed)
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
-                    tokenBit(call) => view(call, |call| -> ZoneResult<_> {
-                        let stored = crate::ZoneInbox::new().token_index(call.token)?;
-                        Ok(IZoneIdentity::tokenBitReturn {
-                            bit: stored.saturating_sub(1),
-                            hasBit: stored != 0,
-                        })
-                    }),
                     orgOf(call) => view(call, |call| {
                         self.org_of(msg_sender, registrar()?, call.account).map(|member| {
                             IZoneIdentity::orgOfReturn {
@@ -71,7 +63,7 @@ impl ZoneIdentity {
                         })
                     }),
                     edge(call) => view(call, |call| {
-                        self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg)
+                        self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)
                     }),
                 }
             },

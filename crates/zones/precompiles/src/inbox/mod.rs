@@ -42,8 +42,7 @@ use crate::{
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
-    zone_identity::{MAX_IDENTITY_TOKENS, TransferKind, ZoneIdentity},
-    zone_identity_active,
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// ABI selector for the block-opening `advanceTempo` system call.
@@ -64,12 +63,6 @@ pub struct ZoneInbox {
     processed_token_enablement_hash: B256,
     /// Number of entries from the portal's append-only enabled-token array applied by this zone.
     processed_enabled_token_count: u64,
-    /// Position + 1 of each token in the portal's enabled-token list, for the first
-    /// [`MAX_IDENTITY_TOKENS`] positions; zero for tokens without one. `ZoneIdentity` edge masks name
-    /// tokens by this index.
-    pub(crate) token_indices: Mapping<Address, u16>,
-    /// Whether tokens enabled before `ZoneIdentity` activated have their index.
-    token_indices_backfilled: bool,
 }
 
 impl ZoneInbox {
@@ -128,11 +121,6 @@ impl ZoneInbox {
             None
         };
 
-        let enabled_token_addresses = call
-            .enabledTokens
-            .iter()
-            .map(|enabled| enabled.token)
-            .collect::<Vec<_>>();
         self.enable_tokens(call.enabledTokens)?;
         if has_token_enablements {
             self.processed_token_enablement_hash
@@ -155,17 +143,6 @@ impl ZoneInbox {
         } else {
             0
         };
-
-        if zone_identity_active(StorageCtx.spec()) {
-            let batch_start = processed_enabled_token_count
-                .checked_sub(enabled_token_addresses.len() as u64)
-                .ok_or_else(TempoPrecompileError::under_overflow)?;
-            self.index_enabled_tokens(batch_start, &enabled_token_addresses, |position| {
-                let index = usize::try_from(position)
-                    .map_err(|_| TempoPrecompileError::under_overflow())?;
-                Ok(l1.read_portal(|portal| &portal.enabled_tokens[index])?)
-            })?;
-        }
         let identity_enforced = ZoneIdentity::enforced(l1)?;
 
         // Step 2: Process deposits and build hash chain
@@ -262,39 +239,6 @@ impl ZoneInbox {
         }
         let mut tempo_state = TempoState::new();
         tempo_state.finalize_checkpoints(l1, &call.headers)
-    }
-
-    /// Index + 1 of `token` in the portal's enabled-token list, or zero when it has none.
-    pub(crate) fn token_index(&self, token: Address) -> ZoneResult<u16> {
-        Ok(self.token_indices[token].read()?)
-    }
-
-    /// Gives each token of the batch that starts at position `batch_start` its index: its position
-    /// plus one. The first time, it also indexes the tokens enabled before `ZoneIdentity` activated,
-    /// reading each through `earlier`. Positions from [`MAX_IDENTITY_TOKENS`] on get no index.
-    fn index_enabled_tokens(
-        &mut self,
-        batch_start: u64,
-        batch: &[Address],
-        mut earlier: impl FnMut(u64) -> ZoneResult<Address>,
-    ) -> ZoneResult<()> {
-        let limit = u64::from(MAX_IDENTITY_TOKENS);
-        if !self.token_indices_backfilled.read()? {
-            for position in 0..batch_start.min(limit) {
-                self.write_token_index(earlier(position)?, position)?;
-            }
-            self.token_indices_backfilled.write(true)?;
-        }
-        for (position, &token) in (batch_start..limit).zip(batch) {
-            self.write_token_index(token, position)?;
-        }
-        Ok(())
-    }
-
-    fn write_token_index(&mut self, token: Address, position: u64) -> ZoneResult<()> {
-        let index =
-            u16::try_from(position + 1).map_err(|_| TempoPrecompileError::under_overflow())?;
-        Ok(self.token_indices[token].write(index)?)
     }
 
     fn enable_tokens(&mut self, tokens: Vec<EnabledToken>) -> ZoneResult<()> {

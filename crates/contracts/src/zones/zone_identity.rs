@@ -8,12 +8,11 @@ crate::sol! {
     ///
     /// An address belongs to at most one org; an address in no org is in org 0, which the
     /// registrar administers. Org A may send token T to org B only when A's admin allows it
-    /// outbound and B's admin allows it inbound. The pair is stored precomputed, so a check reads a
-    /// fixed number of slots whatever the number of orgs, tokens or edges.
+    /// outbound and B's admin allows it inbound. Edges are kept per token and the pair is stored
+    /// precomputed, so a check reads three slots whatever the number of orgs, tokens or edges.
     ///
     /// The registrar and the enforcement flag are set on Tempo with
-    /// `ZonePortal.setIdentityConfig`. A token's bit is its position in the portal's enabled-token
-    /// list.
+    /// `ZonePortal.setIdentityConfig`.
     #[sol(abi)]
     #[derive(Debug, PartialEq, Eq)]
     interface IZoneIdentity {
@@ -25,14 +24,19 @@ crate::sol! {
         function addMember(uint64 orgId, address account) external;
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
-        function setOutbound(uint64 fromOrg, uint64 toOrg, uint256 tokenMask) external;
-        function setInbound(uint64 toOrg, uint64 fromOrg, uint256 tokenMask) external;
+        function setOutbound(uint64 fromOrg, uint64 toOrg, address[] calldata tokens, bool allowed) external;
+        function setInbound(uint64 toOrg, uint64 fromOrg, address[] calldata tokens, bool allowed) external;
 
         // Views. Membership is visible to the account, its org admin and the registrar.
         function orgAdmin(uint64 orgId) external view returns (address);
-        function tokenBit(address token) external view returns (uint16 bit, bool hasBit);
         function orgOf(address account) external view returns (uint64 orgId, bool frozen);
-        function edge(uint64 fromOrg, uint64 toOrg) external view returns (uint256 tokenMask);
+        function edge(uint64 fromOrg, uint64 toOrg, address token) external view returns (bool allowed);
+
+        event OrgCreated(uint64 indexed orgId, address admin);
+        event OrgAdminUpdated(uint64 indexed orgId, address admin);
+        event MemberUpdated(address indexed account, uint64 indexed orgId, bool frozen);
+        event OutboundUpdated(uint64 indexed fromOrg, uint64 indexed toOrg, address indexed token, bool allowed);
+        event InboundUpdated(uint64 indexed toOrg, uint64 indexed fromOrg, address indexed token, bool allowed);
 
         error Unauthorized();
         error UnknownOrg(uint64 orgId);

@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::ZoneIdentityError;
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
@@ -21,18 +21,6 @@ fn token(id: u64) -> Address {
 
 fn identity_error(error: ZoneIdentityError) -> ZonePrecompileError {
     error.into()
-}
-
-/// Gives `token` an index in the inbox, as enabling it does, and returns its bit. Tests name
-/// distinct tokens, so the next free index is one past the highest they hold.
-fn enable(_identity: &mut ZoneIdentity, token: Address) -> u16 {
-    let mut inbox = crate::ZoneInbox::new();
-    let mut next = 1;
-    for id in 0..16 {
-        next = next.max(inbox.token_indices[Address::new_tip20(id)].read().unwrap() + 1);
-    }
-    inbox.token_indices[token].write(next).unwrap();
-    next - 1
 }
 
 /// The verdict with enforcement on.
@@ -66,14 +54,12 @@ fn edges_need_both_halves() {
         let a = identity.create_org(registrar, registrar, admin_a).unwrap();
         let b = identity.create_org(registrar, registrar, admin_b).unwrap();
         let usd = token(1);
-        let bit = enable(identity, usd);
-        let mask = U256::from(1) << bit;
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
         identity.add_member(admin_a, registrar, a, alice).unwrap();
         identity.add_member(admin_b, registrar, b, bob).unwrap();
 
         identity
-            .set_outbound(admin_a, registrar, a, b, mask)
+            .set_outbound(admin_a, registrar, a, b, &[usd], true)
             .unwrap();
         assert_eq!(
             check(usd, alice, bob, TransferKind::InZone),
@@ -81,7 +67,7 @@ fn edges_need_both_halves() {
         );
 
         identity
-            .set_inbound(admin_b, registrar, b, a, mask)
+            .set_inbound(admin_b, registrar, b, a, &[usd], true)
             .unwrap();
         assert_eq!(
             check(usd, alice, bob, TransferKind::InZone),
@@ -94,7 +80,7 @@ fn edges_need_both_halves() {
 
         // Either side can close the edge alone.
         identity
-            .set_inbound(admin_b, registrar, b, a, U256::ZERO)
+            .set_inbound(admin_b, registrar, b, a, &[usd], false)
             .unwrap();
         assert_eq!(
             check(usd, alice, bob, TransferKind::InZone),
@@ -110,15 +96,15 @@ fn admins_only_set_their_own_half() {
         let a = identity.create_org(registrar, registrar, admin_a).unwrap();
         let b = identity.create_org(registrar, registrar, admin_b).unwrap();
         assert_eq!(
-            identity.set_inbound(admin_a, registrar, b, a, U256::MAX),
+            identity.set_inbound(admin_a, registrar, b, a, &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unauthorized()))
         );
         assert_eq!(
-            identity.set_outbound(admin_b, registrar, a, b, U256::MAX),
+            identity.set_outbound(admin_b, registrar, a, b, &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unauthorized()))
         );
         assert_eq!(
-            identity.set_outbound(admin_a, registrar, a, 9, U256::MAX),
+            identity.set_outbound(admin_a, registrar, a, 9, &[token(1)], true),
             Err(identity_error(ZoneIdentityError::unknown_org(9)))
         );
     });
@@ -130,14 +116,11 @@ fn edges_are_per_token() {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, registrar, admin).unwrap();
         let (usd, share, other) = (token(1), token(2), token(3));
-        let usd_bit = enable(identity, usd);
-        enable(identity, share);
-        let mask = U256::from(1) << usd_bit;
         identity
-            .set_outbound(admin, registrar, org, org, mask)
+            .set_outbound(admin, registrar, org, org, &[usd], true)
             .unwrap();
         identity
-            .set_inbound(admin, registrar, org, org, mask)
+            .set_inbound(admin, registrar, org, org, &[usd], true)
             .unwrap();
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
         identity.add_member(admin, registrar, org, alice).unwrap();
@@ -153,16 +136,15 @@ fn edges_are_per_token() {
         );
         assert_eq!(
             check(other, alice, bob, TransferKind::InZone),
-            TransferVerdict::UnregisteredToken
+            TransferVerdict::NoEdge
         );
     });
 }
 
 #[test]
 fn unaffiliated_addresses_are_denied_except_self_withdrawal() {
-    with_identity(|identity, _| {
+    with_identity(|_, _| {
         let usd = token(1);
-        enable(identity, usd);
         let (stray, other) = (Address::repeat_byte(0x33), Address::repeat_byte(0x44));
         assert_eq!(
             check(usd, stray, other, TransferKind::InZone),
@@ -188,17 +170,16 @@ fn endpoint_orgs_gate_deposit_senders() {
             .create_org(registrar, registrar, registrar)
             .unwrap();
         let usd = token(1);
-        let mask = U256::from(1) << enable(identity, usd);
         let (endpoint, alice) = (Address::repeat_byte(0x55), Address::repeat_byte(0x11));
         identity
             .add_member(registrar, registrar, funding, endpoint)
             .unwrap();
         identity.add_member(admin, registrar, org, alice).unwrap();
         identity
-            .set_outbound(registrar, registrar, funding, org, mask)
+            .set_outbound(registrar, registrar, funding, org, &[usd], true)
             .unwrap();
         identity
-            .set_inbound(admin, registrar, org, funding, mask)
+            .set_inbound(admin, registrar, org, funding, &[usd], true)
             .unwrap();
 
         assert_eq!(
@@ -225,12 +206,11 @@ fn frozen_and_removed_members_lose_their_edges() {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, registrar, admin).unwrap();
         let usd = token(1);
-        let mask = U256::from(1) << enable(identity, usd);
         identity
-            .set_outbound(admin, registrar, org, org, mask)
+            .set_outbound(admin, registrar, org, org, &[usd], true)
             .unwrap();
         identity
-            .set_inbound(admin, registrar, org, org, mask)
+            .set_inbound(admin, registrar, org, org, &[usd], true)
             .unwrap();
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
         identity.add_member(admin, registrar, org, alice).unwrap();
@@ -295,7 +275,6 @@ fn membership_is_visible_to_account_admin_and_registrar_only() {
 #[test]
 fn ensure_transfer_reverts_with_org_policy_forbids() {
     with_identity(|identity, _| {
-        enable(identity, token(1));
         let (a, b) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
         assert_eq!(
             identity.ensure_transfer(true, token(1), a, b, TransferKind::InZone),
@@ -326,4 +305,39 @@ fn nothing_is_read_when_not_enforced() {
                 .is_ok()
         );
     });
+}
+
+#[test]
+fn edges_have_no_token_limit_and_emit_events() {
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+    StorageCtx::enter(&mut storage, || {
+        let registrar = Address::repeat_byte(0xbb);
+        let mut identity = ZoneIdentity::new();
+        let admin = Address::repeat_byte(1);
+        let org = identity.create_org(registrar, registrar, admin).unwrap();
+        let tokens: Vec<_> = (1..=300).map(token).collect();
+        identity
+            .set_outbound(admin, registrar, org, org, &tokens, true)
+            .unwrap();
+        identity
+            .set_inbound(admin, registrar, org, org, &tokens, true)
+            .unwrap();
+        let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        identity.add_member(admin, registrar, org, alice).unwrap();
+        identity.add_member(admin, registrar, org, bob).unwrap();
+        assert_eq!(
+            check(token(300), alice, bob, TransferKind::InZone),
+            TransferVerdict::Allowed
+        );
+        assert!(
+            identity
+                .edge(admin, registrar, org, org, token(300))
+                .unwrap()
+        );
+    });
+    // OrgCreated, 300 outbound, 300 inbound and two members.
+    assert_eq!(
+        storage.events[&ZONE_IDENTITY_ADDRESS].len(),
+        1 + 300 + 300 + 2
+    );
 }
