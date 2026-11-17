@@ -676,7 +676,20 @@ def txgen-wait-for-txpool-drain [rpc_url: string, timeout_secs: int = $TXGEN_HEL
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
+# Funds every spec account from the faucet. txgen's `fund` verifies balances after the txpool drains
+# and refunds accounts still short, so a dropped faucet mint no longer leaves a sender at zero.
+# txgen refs from before `fund` existed fall back to fire-and-forget funding.
 def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
+    if ((^$txgen_bin fund --help | complete).exit_code == 0) {
+        print "  Funding txgen accounts (verifying balances)..."
+        let result = (^$txgen_bin fund -s $spec_path --rpc $rpc_url --drain-timeout-secs $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS | complete)
+        if $result.stdout != "" { print $result.stdout }
+        if $result.exit_code != 0 {
+            error make { msg: $"failed to fund txgen accounts for ($spec_path): ($result.stderr | str trim)" }
+        }
+        return
+    }
+
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
         error make { msg: $"failed to list txgen addresses for ($spec_path): ($result.stderr | str trim)" }

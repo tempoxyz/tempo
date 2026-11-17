@@ -1,8 +1,11 @@
 //! Lowers test setups to the precompile calls that perform them, so they can run against a node.
 
-use super::{Action, TIP20Setup, TIP403Setup};
+use super::{Action, DexSetup, FeeAmmSetup, TIP20Setup, TIP403Setup};
 use crate::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
+    stablecoin_dex::IStablecoinDEX,
+    tip_fee_manager::ITIPFeeAMM,
     tip20::{self, ITIP20},
     tip20_factory::{self, compute_tip20_address},
     tip403_registry::ITIP403Registry,
@@ -14,7 +17,8 @@ use alloy::{
 use tempo_contracts::precompiles::IRolesAuth;
 use tempo_primitives::transaction::Call;
 
-/// One call of a test setup lowered by [`TIP20Setup::calls`] or [`TIP403Setup::call`].
+/// One call of a test setup lowered by [`TIP20Setup::calls`], [`TIP403Setup::call`],
+/// [`DexSetup::calls`] or [`FeeAmmSetup::calls`].
 #[derive(Debug)]
 pub struct SetupCall {
     /// Account that sends it.
@@ -97,6 +101,49 @@ impl TIP20Setup {
     }
 }
 
+impl DexSetup {
+    /// Lowers the setup to `(base, quote)` and the calls that perform it, in the order
+    /// [`Self::apply`] performs it. Assumes pathUSD and the factory exist, as in
+    /// [`TIP20Setup::calls`].
+    pub fn calls(&self) -> ((Address, Address), Vec<SetupCall>) {
+        // Neither token has a transfer policy, so the next policy ID is unused.
+        let (quote, mut calls) = self.quote.calls(0);
+        let (base, base_calls) = self.base.calls(0);
+        calls.extend(base_calls);
+        if self.create_pair {
+            let admin = self
+                .base
+                .admin
+                .expect("set by every `DexSetup` constructor");
+            let create = IStablecoinDEX::createPairCall { base };
+            calls.push(SetupCall::new(STABLECOIN_DEX_ADDRESS, admin, &create));
+        }
+        ((base, quote), calls)
+    }
+}
+
+impl FeeAmmSetup {
+    /// Lowers the setup to `(user_token, validator_token)` and the calls that perform it, in the
+    /// order [`Self::apply`] performs it. Assumes pathUSD and the factory exist, as in
+    /// [`TIP20Setup::calls`].
+    pub fn calls(&self) -> ((Address, Address), Vec<SetupCall>) {
+        // Neither token has a transfer policy, so the next policy ID is unused.
+        let (user_token, mut calls) = self.user_token.calls(0);
+        let (validator_token, validator_calls) = self.validator_token.calls(0);
+        calls.extend(validator_calls);
+        calls.extend(self.liquidity.iter().map(|&(provider, amount)| {
+            let mint = ITIPFeeAMM::mintCall {
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountValidatorToken: amount,
+                to: provider,
+            };
+            SetupCall::new(TIP_FEE_MANAGER_ADDRESS, provider, &mint)
+        }));
+        ((user_token, validator_token), calls)
+    }
+}
+
 impl TIP403Setup {
     /// Lowers the policy to the call that creates it, sent by the admin, or for a compound policy
     /// by `creator`. [`Self::apply`] creates compound policies from the zero address, which no
@@ -125,7 +172,9 @@ mod tests {
     use super::*;
     use crate::{
         Precompile, Result,
+        stablecoin_dex::StablecoinDEX,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        tip_fee_manager::TipFeeManager,
         tip20::TIP20Token,
         tip20_factory::TIP20Factory,
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -135,68 +184,98 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         TempoAddressExt,
-        test_utils::{actors, amounts},
+        test_utils::{actors, amounts, salts},
     };
 
     /// Applying a setup in memory and executing its lowered calls leave the same storage, so
-    /// `apply_rpc` sets up what unit tests set up.
+    /// replaying `calls()` against a node sets up what unit tests set up.
     #[test]
     fn calls_match_apply() {
         let [admin, alice, bob, spender] = actors();
-        let [minted, approved] = amounts();
-        let salt = B256::random();
-        let setups = || {
-            let tokens = [
-                TIP20Setup::path_usd(admin)
-                    .with_mint(alice, minted)
-                    .with_approval(alice, spender, approved),
-                TIP20Setup::create("Test", "TST", admin)
-                    .with_salt(salt)
-                    .currency("EUR")
-                    .with_issuer(bob)
-                    .with_mint(bob, minted)
-                    .with_approval(bob, spender, approved)
-                    .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([alice, bob])),
-            ];
-            let compound = TIP403Setup::compound(
-                ALLOW_ALL_POLICY_ID,
-                REJECT_ALL_POLICY_ID,
-                ALLOW_ALL_POLICY_ID,
-            );
-            (tokens, compound)
-        };
-        let storage_after = |lowered: bool| {
-            // The latest fork, as on a dev node: compound policies dispatch only from T2.
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::latest());
-            storage.set_timestamp(U256::from(1));
-            StorageCtx::enter(&mut storage, || -> Result<()> {
-                // Genesis: pathUSD and the factory, which `calls` expects.
-                TIP20Setup::path_usd(admin).apply()?;
-                let (tokens, compound) = setups();
-                if !lowered {
-                    for token in tokens {
-                        token.apply()?;
-                    }
-                    return compound.apply().map(drop);
-                }
-                for token in tokens {
-                    let next_policy_id = TIP403Registry::new().policy_id_counter()?;
-                    token
-                        .calls(next_policy_id)
-                        .1
-                        .into_iter()
-                        .try_for_each(execute)?;
-                }
-                execute(compound.call(admin))
-            })
-            .unwrap();
-            storage
-                .into_storage()
-                .filter(|(_, _, value)| !value.is_zero())
-                .collect::<HashSet<_>>()
-        };
+        let [minted, approved, traded, deposited] = amounts();
+        let tokens = [
+            TIP20Setup::path_usd(admin)
+                .with_mint(alice, minted)
+                .with_approval(alice, spender, approved),
+            TIP20Setup::create("Test", "TST", admin)
+                .with_salt(B256::random())
+                .currency("EUR")
+                .with_issuer(bob)
+                .with_mint(bob, minted)
+                .with_approval(bob, spender, approved)
+                .with_transfer_policy(TIP403Setup::whitelist(admin).with_members([alice, bob])),
+        ];
+        let compound = TIP403Setup::compound(
+            ALLOW_ALL_POLICY_ID,
+            REJECT_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
+        );
+        let [dex_salt, user_salt, validator_salt] = salts();
+        let dex = DexSetup::new(admin)
+            .with_salt(dex_salt)
+            .trader(alice, traded.to());
+        let fee_amm = FeeAmmSetup::new(admin)
+            .with_salts(user_salt, validator_salt)
+            .liquidity(bob, deposited);
+        // Markets over the tokens above, as a fixture world adds them to its own tokens.
+        let ((base, quote), _) = dex.calls();
+        let ((user_token, _), _) = fee_amm.calls();
+        let existing_pair =
+            DexSetup::pair(admin, user_token, PATH_USD_ADDRESS).trader(bob, traded.to());
+        let existing_pool = FeeAmmSetup::pool(admin, base, quote).liquidity(alice, deposited);
 
-        assert_eq!(storage_after(false), storage_after(true));
+        let lowered = storage_after(admin, || {
+            for token in &tokens {
+                let next_policy_id = TIP403Registry::new().policy_id_counter()?;
+                token
+                    .calls(next_policy_id)
+                    .1
+                    .into_iter()
+                    .try_for_each(execute)?;
+            }
+            execute(compound.call(admin))?;
+            [
+                dex.calls().1,
+                fee_amm.calls().1,
+                existing_pair.calls().1,
+                existing_pool.calls().1,
+            ]
+            .into_iter()
+            .flatten()
+            .try_for_each(execute)
+        });
+        let applied = storage_after(admin, || {
+            for token in tokens {
+                token.apply()?;
+            }
+            compound.apply()?;
+            dex.apply()?;
+            fee_amm.apply()?;
+            existing_pair.apply()?;
+            existing_pool.apply().map(drop)
+        });
+
+        assert_eq!(applied, lowered);
+    }
+
+    /// Runs `setup` after genesis and returns the non-zero storage it leaves.
+    fn storage_after(
+        admin: Address,
+        setup: impl FnOnce() -> Result<()>,
+    ) -> HashSet<(Address, U256, U256)> {
+        // The latest fork, as on a dev node: compound policies dispatch only from T2.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::latest());
+        storage.set_timestamp(U256::from(1));
+        StorageCtx::enter(&mut storage, || {
+            // Genesis: pathUSD and the factory, which `calls` expects.
+            TIP20Setup::path_usd(admin).apply()?;
+            setup()
+        })
+        .unwrap();
+        storage
+            .into_storage()
+            .filter(|(_, _, value)| !value.is_zero())
+            .collect()
     }
 
     /// Executes `call` through the target precompile's ABI dispatch.
@@ -208,6 +287,10 @@ mod tests {
             TIP20Token::from_address(target)?.call(&calldata, caller)
         } else if target == TIP20_FACTORY_ADDRESS {
             TIP20Factory::new().call(&calldata, caller)
+        } else if target == STABLECOIN_DEX_ADDRESS {
+            StablecoinDEX::new().call(&calldata, caller)
+        } else if target == TIP_FEE_MANAGER_ADDRESS {
+            TipFeeManager::new().call(&calldata, caller)
         } else {
             assert_eq!(target, TIP403_REGISTRY_ADDRESS);
             TIP403Registry::new().call(&calldata, caller)

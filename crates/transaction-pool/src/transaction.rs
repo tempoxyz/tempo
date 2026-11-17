@@ -199,8 +199,8 @@ impl TempoPooledTransaction {
         self.is_payment_v3
     }
 
-    /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
+    /// Returns true if this AA transaction's nonce is tracked by the `NonceManager` rather than
+    /// by the account's protocol nonce: `nonce key != 0` (includes expiring nonce txs)
     pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
@@ -289,17 +289,19 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the unique identifier for this AA transaction.
-    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
-        let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
+    /// Returns the pool's identifier for this transaction: its sender's nonce lane and its nonce
+    /// in that lane.
+    ///
+    /// Non-AA transactions use the protocol nonce, which is the lane of nonce key 0.
+    pub fn lane_transaction_id(&self) -> AA2dTransactionId {
+        let seq_id = AASequenceId {
             address: self.sender(),
-            nonce_key,
+            nonce_key: self.nonce_key().unwrap_or_default(),
         };
-        Some(AA2dTransactionId {
-            seq_id: sender,
+        AA2dTransactionId {
+            seq_id,
             nonce: self.nonce(),
-        })
+        }
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
@@ -1587,9 +1589,10 @@ mod tests {
             "Non-AA tx should have no nonce key slot"
         );
         assert!(!tx.is_aa_2d(), "Non-AA tx should not be AA 2D");
-        assert!(
-            tx.aa_transaction_id().is_none(),
-            "Non-AA tx should have no AA transaction ID"
+        assert_eq!(
+            tx.lane_transaction_id().seq_id.nonce_key,
+            U256::ZERO,
+            "Non-AA tx should use the protocol nonce lane"
         );
     }
 
@@ -1607,10 +1610,8 @@ mod tests {
         );
         assert!(!tx.is_aa_2d(), "AA tx with nonce_key=0 should NOT be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, U256::ZERO);
         assert_eq!(aa_id.nonce, nonce);
@@ -1634,10 +1635,8 @@ mod tests {
         );
         assert!(tx.is_aa_2d(), "AA tx with nonce_key > 0 should be 2D");
 
-        // Check aa_transaction_id
-        let aa_id = tx
-            .aa_transaction_id()
-            .expect("Should have AA transaction ID");
+        // Check lane_transaction_id
+        let aa_id = tx.lane_transaction_id();
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, nonce_key);
         assert_eq!(aa_id.nonce, nonce);

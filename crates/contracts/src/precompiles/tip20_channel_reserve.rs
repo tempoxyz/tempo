@@ -192,6 +192,15 @@ crate::sol! {
             uint96 refundedToPayer
         );
 
+        /// Emitted by `open` when the voucher signer has a nonzero configuration commitment, which
+        /// the channel's salt holds and its vouchers are checked against for its lifetime
+        /// (TIP-1166).
+        event SignerSnapshotCached(
+            bytes32 indexed channelId,
+            address indexed signer,
+            bytes32 commitment
+        );
+
         /// Emitted when top-up clears a pending close request.
         event CloseRequestCancelled(
             bytes32 indexed channelId,
@@ -228,6 +237,12 @@ crate::sol! {
         /// The channel's voucher signer has a retired root key (a configuration commitment), so
         /// it cannot back a new deposit.
         error RootKeyRetired(address account);
+        /// A nonzero top-up found the voucher signer's configuration changed since the channel
+        /// opened (TIP-1166).
+        error SignerConfigChanged(address signer);
+        /// `open` was given a salt other than the voucher signer's configuration commitment
+        /// (TIP-1166).
+        error SaltNotSignerCommitment(address signer, bytes32 commitment);
     }
 }
 

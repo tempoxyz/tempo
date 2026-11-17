@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, IFeeManager, IReceivePolicyGuard, IStorageCredits, ITIP20,
     ITIP20ChannelReserve, ITIP403Registry, ITIPFeeAMM,
     account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, KeyRestrictions, SignatureType, TokenLimit, revokeKeyCall,
+        IAccountKeychainInstance, KeyRestrictions, SignatureType, revokeKeyCall,
     },
     authorizeKeyCall,
 };
@@ -107,17 +107,7 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     let authorize = authorizeKeyCall {
         keyId: access_key.address(),
         signatureType: SignatureType::Secp256k1,
-        config: KeyRestrictions {
-            expiry: u64::MAX,
-            enforceLimits: true,
-            limits: vec![TokenLimit {
-                token: DEFAULT_FEE_TOKEN,
-                amount: max_fee,
-                period: 0,
-            }],
-            allowAnyCalls: true,
-            allowedCalls: vec![],
-        },
+        config: KeyRestrictions::unrestricted().limit(DEFAULT_FEE_TOKEN, max_fee, 0),
     };
     provider
         .send_transaction(
@@ -990,17 +980,7 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     let authorize = authorizeKeyCall {
         keyId: access_key.address(),
         signatureType: SignatureType::Secp256k1,
-        config: KeyRestrictions {
-            expiry: u64::MAX,
-            enforceLimits: true,
-            limits: vec![TokenLimit {
-                token: DEFAULT_FEE_TOKEN,
-                amount: spending_limit,
-                period: 0,
-            }],
-            allowAnyCalls: true,
-            allowedCalls: vec![],
-        },
+        config: KeyRestrictions::unrestricted().limit(DEFAULT_FEE_TOKEN, spending_limit, 0),
     };
     provider
         .send_transaction(

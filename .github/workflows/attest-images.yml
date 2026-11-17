@@ -105,10 +105,10 @@ jobs:
           # for this repository's own trusted runs on main, an rc/ branch (any name, as
           # docker.yml's hold flag) or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
-          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$REPO" == tempoxyz/tempo || "$REPO" == tempoxyz/tempo-private-fork ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
           [[ "$REF" == refs/heads/main || "$REF" == refs/heads/rc/* || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
-          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "$WORKFLOW_REF" =~ ^[^/]+/[^/]+/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ && "${WORKFLOW_REF%%/.github/*}" == "$REPO" ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
 
       - name: Split the image reference

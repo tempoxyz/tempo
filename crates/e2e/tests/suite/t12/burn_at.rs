@@ -276,24 +276,9 @@ fn burn_at_bridge_enforces_access_key_limits_and_rolls_back() {
             .authorizeKey_1(
                 key.address(),
                 IAccountKeychain::SignatureType::Secp256k1,
-                IAccountKeychain::KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![
-                        IAccountKeychain::TokenLimit {
-                            token: address,
-                            amount: U256::from(100),
-                            period: 0,
-                        },
-                        IAccountKeychain::TokenLimit {
-                            token: PATH_USD_ADDRESS,
-                            amount: U256::from(u128::MAX),
-                            period: 0,
-                        },
-                    ],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
+                IAccountKeychain::KeyRestrictions::unrestricted()
+                    .limit(address, U256::from(100), 0)
+                    .limit(PATH_USD_ADDRESS, U256::from(u128::MAX), 0),
             )
             .gas(GAS)
             .gas_price(GAS_PRICE)

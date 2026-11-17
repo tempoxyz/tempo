@@ -390,8 +390,8 @@ jobs:
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
             [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
             ! gh attestation verify "oci://$TOOLCHAIN_REPOSITORY@$digest" \
-              --repo tempoxyz/tempo \
-              --signer-workflow tempoxyz/tempo/.github/workflows/zones-docker.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/zones-docker.yml" \
               --source-ref refs/heads/main \
               --predicate-type https://tempo.xyz/attestations/eif-toolchain-recipe/v1 \
               --format json 2> /dev/null |
@@ -434,10 +434,10 @@ jobs:
           # Reusable workflows sign as themselves whoever calls them, so attest only
           # for this repository's own trusted runs on main or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
-          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$REPO" == tempoxyz/tempo || "$REPO" == tempoxyz/tempo-private-fork ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
           [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
-          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "$WORKFLOW_REF" =~ ^[^/]+/[^/]+/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ && "${WORKFLOW_REF%%/.github/*}" == "$REPO" ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
           echo "trusted=true" >> "$GITHUB_OUTPUT"
 
@@ -1422,10 +1422,10 @@ jobs:
           # Reusable workflows sign as themselves whoever calls them, so attest only
           # for this repository's own trusted runs on main or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
-          [[ "$REPO" == tempoxyz/tempo ]] || fail "repository $REPO"
+          [[ "$REPO" == tempoxyz/tempo || "$REPO" == tempoxyz/tempo-private-fork ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
           [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
-          [[ "$WORKFLOW_REF" =~ ^tempoxyz/tempo/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ ]] || fail "workflow $WORKFLOW_REF"
+          [[ "$WORKFLOW_REF" =~ ^[^/]+/[^/]+/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ && "${WORKFLOW_REF%%/.github/*}" == "$REPO" ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
           echo "trusted=true" >> "$GITHUB_OUTPUT"
 

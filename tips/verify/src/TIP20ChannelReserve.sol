@@ -12,6 +12,9 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
 /// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
 /// Funding checks the payee's current TIP-1028 policy, but does not lock it against later changes.
+/// TIP-1166's signer snapshots are native-only too: account configuration commitments are not
+/// readable from Solidity, so this reference never requires the salt to be one, and vouchers and
+/// top-ups follow the rules for a channel without a snapshot.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();

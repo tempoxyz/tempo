@@ -55,6 +55,11 @@ pub fn actors_vec(n: usize) -> Vec<Address> {
     })
 }
 
+/// Returns `N` random salts from the test RNG.
+pub fn salts<const N: usize>() -> [B256; N] {
+    with_rng(|rng| core::array::from_fn(|_| B256::from(rng.random::<[u8; 32]>())))
+}
+
 /// Returns `N` random amounts, each at least 1, sorted largest first, whose total stays below
 /// `u128::MAX` (the TIP-20 supply cap).
 pub fn amounts<const N: usize>() -> [U256; N] {

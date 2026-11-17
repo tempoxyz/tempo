@@ -13,9 +13,8 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
 
 use crate::utils::{
-    RealP2pCluster, TcpChaosProxy, ZoneAccount, assert_same_block, batch_count, poll_until,
-    start_real_p2p_cluster_with_l1_proxy, start_real_p2p_cluster_with_per_node_l1_proxies,
-    wait_all_at,
+    ClusterConfig, L1ProxyMode, RealP2pCluster, TcpChaosProxy, ZoneAccount, assert_same_block,
+    batch_count, poll_until, start_real_p2p_cluster, wait_all_at,
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -325,7 +324,7 @@ async fn assert_outage_asset_flow(
     .await?;
     eyre::ensure!(receipt.status(), "{} withdrawal reverted", flow.phase);
 
-    cluster
+    let l1_balance_after = cluster
         .l1
         .wait_for_withdrawal_on_l1(
             cluster.portal_address,
@@ -334,10 +333,6 @@ async fn assert_outage_asset_flow(
             OUTAGE_WITHDRAWAL,
             NETWORK_TIMEOUT,
         )
-        .await?;
-    let l1_balance_after = cluster
-        .l1
-        .balance_of(PATH_USD_ADDRESS, account.address())
         .await?;
     assert_eq!(
         l1_balance_after,
@@ -655,7 +650,13 @@ async fn randomly_reset_active_connections(proxy: &TcpChaosProxy) -> eyre::Resul
 async fn test_three_sequencers_tolerate_random_active_l1_connection_resets() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, proxy) = start_real_p2p_cluster_with_l1_proxy(4, L1_BLOCK_TIME).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        l1_proxy: L1ProxyMode::All,
+        l1_block_time: Some(L1_BLOCK_TIME),
+        ..Default::default()
+    })
+    .await?;
+    let proxy = &cluster.l1_proxies[0];
     eyre::ensure!(
         cluster.nodes.len() == 3,
         "network-chaos fixture must start three nodes"
@@ -683,7 +684,7 @@ async fn test_three_sequencers_tolerate_random_active_l1_connection_resets() -> 
     assert_same_block(&cluster.nodes, baseline_height).await?;
 
     let target = baseline_height + OUTAGE_BLOCK_GAP;
-    let reset_connections = randomly_reset_active_connections(&proxy);
+    let reset_connections = randomly_reset_active_connections(proxy);
     let maintain_progress = cluster.nodes[0].wait_for_tempo_block_number(target, NETWORK_TIMEOUT);
     tokio::try_join!(reset_connections, maintain_progress)?;
     wait_all_at(&cluster.nodes, target, NETWORK_TIMEOUT).await?;
@@ -715,7 +716,13 @@ async fn test_three_sequencers_reconnect_and_catch_up_after_l1_network_outage() 
 {
     reth_tracing::init_test_tracing();
 
-    let (cluster, proxy) = start_real_p2p_cluster_with_l1_proxy(4, L1_BLOCK_TIME).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        l1_proxy: L1ProxyMode::All,
+        l1_block_time: Some(L1_BLOCK_TIME),
+        ..Default::default()
+    })
+    .await?;
+    let proxy = &cluster.l1_proxies[0];
     eyre::ensure!(
         cluster.nodes.len() == 3,
         "network-chaos fixture must start three nodes"
@@ -825,13 +832,19 @@ async fn test_three_sequencers_reconnect_and_catch_up_after_l1_network_outage() 
 async fn test_asymmetric_l1_fault_matrix() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (cluster, [leader_proxy, follower_one_proxy, follower_two_proxy]) =
-        start_real_p2p_cluster_with_per_node_l1_proxies(4, L1_BLOCK_TIME).await?;
+    let cluster = start_real_p2p_cluster(ClusterConfig {
+        l1_proxy: L1ProxyMode::PerNode,
+        l1_block_time: Some(L1_BLOCK_TIME),
+        ..Default::default()
+    })
+    .await?;
+    let proxies: &[TcpChaosProxy; 3] = cluster.l1_proxies.as_slice().try_into()?;
+    let [_, follower_one_proxy, follower_two_proxy] = proxies;
     eyre::ensure!(
         cluster.nodes.len() == 3,
         "network-chaos fixture must start one leader and two followers"
     );
-    for proxy in [&follower_one_proxy, &follower_two_proxy] {
+    for proxy in [follower_one_proxy, follower_two_proxy] {
         proxy
             .wait_for_connections_after(0, 1, NETWORK_TIMEOUT)
             .await?;
@@ -879,9 +892,8 @@ async fn test_asymmetric_l1_fault_matrix() -> eyre::Result<()> {
     }
     account.approve_outbox(ZONE_TOKEN_ADDRESS).await?;
 
-    let proxies = [leader_proxy, follower_one_proxy, follower_two_proxy];
     for &case in L1_OUTAGE_CASES {
-        run_l1_outage_case(&cluster, &mut account, &proxies, case).await?;
+        run_l1_outage_case(&cluster, &mut account, proxies, case).await?;
     }
 
     Ok(())
