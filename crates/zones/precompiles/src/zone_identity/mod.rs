@@ -799,13 +799,12 @@ mod tests {
                 .unwrap();
             assert!(identity.can_read(admin, ALICE).unwrap());
             assert!(!identity.can_read(auditor, ALICE).unwrap());
-            let new_admin = admin;
 
             for (caller, org_id, reader, error) in [
-                (admin, org, auditor, ZoneIdentityError::unauthorized()),
+                (new_admin, org, auditor, ZoneIdentityError::unauthorized()),
                 (registrar, 0, auditor, ZoneIdentityError::invalid_address()),
                 (
-                    new_admin,
+                    admin,
                     org,
                     Address::ZERO,
                     ZoneIdentityError::invalid_address(),
