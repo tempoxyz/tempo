@@ -695,3 +695,32 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     );
     Ok(())
 }
+
+#[test]
+fn deposit_address_fallback_recipients_are_rejected_from_t15() -> eyre::Result<()> {
+    let deposit_address = tempo_contracts::zones::ZoneDepositAddress {
+        zone_id: 1,
+        version: 1,
+        ciphertext: alloy_primitives::fixed_bytes!("010203040506"),
+    }
+    .encode();
+    let call = ZoneOutboxAbi::requestWithdrawalCall {
+        zoneFallbackRecipient: deposit_address,
+        ..withdrawal(1, BOB, 0)
+    };
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    assert_revert(
+        env.request_withdrawal(ALICE, call.clone()),
+        ZoneOutboxError::invalid_fallback_recipient(),
+    );
+    assert!(env.pending_withdrawals().is_empty());
+
+    let mut legacy = spec().apply()?;
+    assert!(legacy.request_withdrawal(ALICE, call)?.is_success());
+    Ok(())
+}
