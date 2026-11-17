@@ -4,6 +4,11 @@ Four independent real-consensus validators (3-of-4 quorum), fixed IPs/keys and
 persistent execution/consensus datadirs. No `--dev`, fake finality, process restart
 loops or Compose restart policies. A 100-block epoch exercises DKG transitions.
 
+Signing-key fixtures are plaintext hex, generated with `--unencrypted-signing-keys`.
+These disposable keys are not secrets; skipping passphrase encryption keeps
+restart testing independent of age/scrypt timing calibration under injected faults.
+Normal localnet generation remains encrypted by default.
+
 The `public-mix` preset combines token transfers, memos, MPP payments, vault
 deposits/withdrawals and synthetic zone settlement transactions.
 The Python driver uses Hegel, a state-machine testing library, to choose actions.

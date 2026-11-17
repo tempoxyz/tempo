@@ -25,6 +25,10 @@ pub(crate) struct GenerateLocalnet {
     #[arg(long)]
     force: bool,
 
+    /// Write disposable test signing keys as plaintext hex instead of encrypting them.
+    #[arg(long)]
+    unencrypted_signing_keys: bool,
+
     #[clap(flatten)]
     genesis_args: GenesisArgs,
 }
@@ -34,6 +38,7 @@ impl GenerateLocalnet {
         let Self {
             output,
             force,
+            unencrypted_signing_keys,
             genesis_args,
         } = self;
 
@@ -129,18 +134,32 @@ impl GenerateLocalnet {
             })?;
 
             let signing_key_dst = validator.dst_signing_key(&output);
-            validator
-                .signing_key
-                .write_to_file_encrypted(
-                    &signing_key_dst,
-                    tempo_consensus_config::SigningKeyPassphrase::from(LOCALNET_SIGNING_KEY_SECRET),
-                )
-                .wrap_err_with(|| {
-                    format!(
-                        "failed writing signing key to `{}`",
-                        signing_key_dst.display()
+            if unencrypted_signing_keys {
+                std::fs::File::create(&signing_key_dst)
+                    .map_err(eyre::Report::new)
+                    .and_then(|file| {
+                        validator
+                            .signing_key
+                            .to_writer_unencrypted(file)
+                            .map_err(eyre::Report::new)
+                    })
+            } else {
+                validator
+                    .signing_key
+                    .write_to_file_encrypted(
+                        &signing_key_dst,
+                        tempo_consensus_config::SigningKeyPassphrase::from(
+                            LOCALNET_SIGNING_KEY_SECRET,
+                        ),
                     )
-                })?;
+                    .map_err(eyre::Report::new)
+            }
+            .wrap_err_with(|| {
+                format!(
+                    "failed writing signing key to `{}`",
+                    signing_key_dst.display()
+                )
+            })?;
             let signing_share_dst = validator.dst_signing_share(&output);
             std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
                 .wrap_err_with(|| {
@@ -164,11 +183,15 @@ impl GenerateLocalnet {
             )?;
 
             println!("run the node with the following command:\n");
+            let secret_arg = if unencrypted_signing_keys {
+                String::new()
+            } else {
+                format!("--consensus.secret <(printf '%s\\n' '{LOCALNET_SIGNING_KEY_SECRET}') \\\n")
+            };
             let cmd = format!(
                 "cargo run --bin tempo -- node \
                 \\\n--consensus.signing-key {signing_key} \
-                \\\n--consensus.secret <(printf '%s\\n' '{signing_key_secret}') \
-                \\\n--consensus.signing-share {signing_share} \
+                \\\n{secret_arg}--consensus.signing-share {signing_share} \
                 \\\n--consensus.listen-address 127.0.0.1:{listen_port} \
                 \\\n--consensus.metrics-address 127.0.0.1:{metrics_port} \
                 \\\n--chain {genesis} \
@@ -179,7 +202,6 @@ impl GenerateLocalnet {
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
                 \\\n--authrpc.port {authrpc_port}",
                 signing_key = signing_key_dst.display(),
-                signing_key_secret = LOCALNET_SIGNING_KEY_SECRET,
                 signing_share = signing_share_dst.display(),
                 listen_port = config.consensus_p2p_port,
                 metrics_port = config.consensus_p2p_port + 2,
@@ -203,4 +225,56 @@ pub(crate) struct ConfigOutput {
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,
     execution_p2p_identity: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+    use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
+
+    #[tokio::test]
+    async fn plaintext_fixtures_preserve_encrypted_fixture_identities() {
+        let encrypted = tempfile::tempdir().unwrap();
+        let plaintext = tempfile::tempdir().unwrap();
+        for (output, unencrypted_signing_keys) in
+            [(encrypted.path(), false), (plaintext.path(), true)]
+        {
+            let mut args = vec![
+                "generate-localnet",
+                "--output",
+                output.to_str().unwrap(),
+                "--seed",
+                "42",
+                "--accounts",
+                "4",
+                "--validators",
+                "127.0.0.1:8000",
+            ];
+            if unencrypted_signing_keys {
+                args.push("--unencrypted-signing-keys");
+            }
+            GenerateLocalnet::parse_from(args).run().await.unwrap();
+        }
+        let key_path = "127.0.0.1:8000/signing.key";
+        let encrypted_key = SigningKey::read_from_file_encrypted(
+            encrypted.path().join(key_path),
+            SigningKeyPassphrase::from(LOCALNET_SIGNING_KEY_SECRET),
+        )
+        .unwrap();
+        let plaintext_key =
+            SigningKey::read_from_file_unencrypted(plaintext.path().join(key_path)).unwrap();
+        assert_eq!(encrypted_key.public_key(), plaintext_key.public_key());
+        for path in [
+            "genesis.json",
+            "127.0.0.1:8000/signing.share",
+            "127.0.0.1:8000/enode.key",
+            "127.0.0.1:8000/enode.identity",
+        ] {
+            assert_eq!(
+                std::fs::read(encrypted.path().join(path)).unwrap(),
+                std::fs::read(plaintext.path().join(path)).unwrap()
+            );
+        }
+    }
 }

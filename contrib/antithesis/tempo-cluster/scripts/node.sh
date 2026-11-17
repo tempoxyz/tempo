@@ -10,7 +10,6 @@ trusted=$(IFS=,; echo "${peers[*]}")
 # Both execution DB and consensus journal stay in this volume. Never reinitialize on restart.
 exec tempo node --chain /opt/tempo-cluster/genesis/genesis.json --datadir /data \
     --consensus.signing-key "$keys/signing.key" \
-    --consensus.secret /opt/tempo-cluster/secret \
     --consensus.signing-share "$keys/signing.share" \
     --consensus.listen-address "$ip:8000" --consensus.metrics-address "$ip:8002" \
     --consensus.use-local-defaults --consensus.bypass-ip-check \

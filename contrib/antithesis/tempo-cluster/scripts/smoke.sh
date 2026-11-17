@@ -8,21 +8,21 @@ export DISABLE_EVENTUALLY=1
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tempo-cluster-smoke}"
 artifacts="${SMOKE_ARTIFACT_DIR:-$root/.bench-tmp/tempo-cluster-smoke}"
 mkdir -p "$artifacts"
-# Debug-assertion builds must embed age's error strings instead of reading the builder's registry.
-if timeout 60s docker run --rm --network none --entrypoint /bin/bash "${TEMPO_IMAGE:?TEMPO_IMAGE required}" -c '
-    printf "%s\n" deliberately-wrong-test-passphrase > /opt/tempo-cluster/secret
-    exec /opt/tempo-cluster/node.sh 10.21.0.11
-' > "$artifacts/signing-key-error.log" 2>&1; then
-    echo 'Incorrect signing-key passphrase unexpectedly succeeded' >&2
-    exit 1
-else
-    [[ "$?" == 1 ]]
-fi
-grep -Fq 'Decryption failed' "$artifacts/signing-key-error.log"
-if grep -Eq 'panicked|LanguageNotAvailable' "$artifacts/signing-key-error.log"; then
-    echo 'Signing-key error formatting panicked' >&2
-    exit 1
-fi
+# The fixture image must not require passphrase decryption on validator restarts.
+# shellcheck disable=SC2016 # These variables expand inside the container.
+timeout 30s docker run --rm --network none --entrypoint /bin/bash "${TEMPO_IMAGE:?TEMPO_IMAGE required}" -c '
+    set -euo pipefail
+    test ! -e /opt/tempo-cluster/secret
+    if grep -Fq -- --consensus.secret /opt/tempo-cluster/node.sh; then
+        echo "Fixture launcher still requests passphrase decryption" >&2
+        exit 1
+    fi
+    keys=(/opt/tempo-cluster/genesis/*:8000/signing.key)
+    [[ "${#keys[@]}" == 4 ]]
+    for key in "${keys[@]}"; do
+        [[ "$(cat "$key")" =~ ^0x[0-9a-fA-F]{64}$ ]]
+    done
+'
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
     docker compose logs --no-color > "$artifacts/compose.log" 2>&1 || true
