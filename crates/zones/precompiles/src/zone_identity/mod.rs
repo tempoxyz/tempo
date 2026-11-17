@@ -78,9 +78,16 @@ impl ZoneIdentity {
         }
         // TIP-20 credits a TIP-1022 virtual recipient's master, so the master's org decides. The
         // registry is mirrored from Tempo, so this also resolves Tempo-side withdrawal recipients.
-        // An unregistered virtual recipient reverts with `VirtualAddressUnregistered`, as the
-        // transfer itself would.
-        let to = AddressRegistry::new().resolve_recipient(to)?;
+        // An unregistered virtual recipient is denied rather than an error, so a deposit to one
+        // bounces instead of failing the whole block.
+        let to = if to.is_virtual() {
+            match AddressRegistry::new().resolve_virtual_address(to)? {
+                master if master.is_zero() => return Ok(false),
+                master => master,
+            }
+        } else {
+            to
+        };
         let sender = self.members[from].read()?;
         let recipient = self.members[to].read()?;
         if sender.frozen || recipient.frozen {
@@ -622,16 +629,18 @@ mod tests {
                 identity.add_member(admin, registrar, org, virtual_addr),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
-            // An unregistered virtual recipient reverts as the transfer would.
+            // An unregistered virtual recipient is denied, not an error, for every kind of move.
             let unregistered = Address::new_virtual(
                 tempo_primitives::MasterId::repeat_byte(0xee),
                 alloy_primitives::FixedBytes::repeat_byte(1),
             );
-            assert!(
-                identity
-                    .allows(true, usd, ALICE, unregistered, TransferKind::InZone)
-                    .is_err()
-            );
+            for kind in [
+                TransferKind::InZone,
+                TransferKind::Deposit,
+                TransferKind::Withdrawal,
+            ] {
+                assert!(!allows(usd, ALICE, unregistered, kind));
+            }
         });
     }
 }

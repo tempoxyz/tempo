@@ -787,3 +787,32 @@ fn bridged_credits_use_recipient_policy_from_t13(
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
 }
+
+/// With org enforcement on, a deposit to an unregistered virtual address bounces like any denied
+/// deposit instead of failing `advanceTempo`.
+#[test]
+fn zone_identity_bounces_unregistered_virtual_deposits() -> eyre::Result<()> {
+    use tempo_primitives::TempoAddressExt as _;
+
+    let mut env = ZoneSpec {
+        hardfork: TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let fixture = EncryptedDepositFixture::new();
+    seed_encryption_key(&env, &fixture);
+    let unregistered = Address::new_virtual(
+        tempo_primitives::MasterId::repeat_byte(0xee),
+        alloy_primitives::FixedBytes::repeat_byte(1),
+    );
+    let (deposit, decryption) = encrypted_deposit(&fixture, unregistered, 500);
+    env.write_portal(env.child_header.inner.number, |portal| {
+        portal.identity_enforced.write(true)
+    });
+    let queued = env.queue_deposit(DepositType::Deposit, deposit);
+
+    let output = env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
+    assert!(output.is_success(), "advanceTempo failed: {output:?}");
+    assert_single_bounce_back(&mut env, 500, ALICE);
+    Ok(())
+}
