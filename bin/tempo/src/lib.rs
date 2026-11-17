@@ -359,10 +359,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let startup = futures::executor::block_on(
-            shutdown_token_clone.run_until_cancelled(consensus_startup_rx),
-        );
-        let Some(Ok((node, executed_state, args, gossip_transport, estimator))) = startup else {
+        let Some(Ok((node, executed_state, args, gossip_transport, estimator))) =
+            futures::executor::block_on(
+                shutdown_token_clone.run_until_cancelled(consensus_startup_rx),
+            )
+        else {
             // The launcher cancels before it drops the sender, so a closed channel after
             // cancellation is an aborted launch, not a failure.
             if shutdown_token_clone.is_cancelled() {
