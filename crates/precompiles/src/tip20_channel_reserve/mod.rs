@@ -75,7 +75,7 @@ struct PackedChannelState {
     ///
     /// This field occupies previously unused bytes in the packed slot, so channels opened before
     /// T15 decode it as false.
-    has_signer_snapshot: bool,
+    has_opening_commitment: bool,
 }
 
 impl PackedChannelState {
@@ -110,7 +110,7 @@ impl PackedChannelState {
 
 #[contract(addr = TIP20_CHANNEL_RESERVE_ADDRESS)]
 pub struct TIP20ChannelReserve {
-    /// Persistent channel state keyed by `compute_channel_id_inner`.
+    /// Persistent channel state keyed by [`ITIP20ChannelReserve::ChannelDescriptor::id`].
     channel_states: Mapping<B256, PackedChannelState>,
     /// Per-payer reusable credits for deleted packed channel-state slots.
     channel_storage_credits: Mapping<Address, u64>,
@@ -194,29 +194,29 @@ impl TIP20ChannelReserve {
         }
 
         let expiring_nonce_hash = self.enclosing_channel_open_context_hash()?;
-        let channel_id = self.compute_channel_id_inner(
-            msg_sender,
-            call.payee,
-            call.operator,
-            call.token,
-            call.salt,
-            call.authorizedSigner,
-            expiring_nonce_hash,
-        )?;
+        let channel_id = self.channel_id(&ITIP20ChannelReserve::ChannelDescriptor {
+            payer: msg_sender,
+            payee: call.payee,
+            operator: call.operator,
+            token: call.token,
+            salt: call.salt,
+            authorizedSigner: call.authorizedSigner,
+            expiringNonceHash: expiring_nonce_hash,
+        })?;
         if self.channel_states[channel_id].read()?.exists()
             || self.opened_this_tx[channel_id].t_read()?
         {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
-        let signer_snapshot = if is_t15 {
+        let opening_commitment = if is_t15 {
             self.storage.config_commitment(signer)?
         } else {
             B256::ZERO
         };
-        if !signer_snapshot.is_zero() && call.salt != signer_snapshot {
+        if !opening_commitment.is_zero() && call.salt != opening_commitment {
             return Err(TIP20ChannelReserveError::salt_not_signer_commitment(
                 signer,
-                signer_snapshot,
+                opening_commitment,
             )
             .into());
         }
@@ -244,7 +244,7 @@ impl TIP20ChannelReserve {
             deposit,
             close_requested_at: 0,
             uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
-            has_signer_snapshot: !signer_snapshot.is_zero(),
+            has_opening_commitment: !opening_commitment.is_zero(),
         };
         self.write_channel_state_spending_credit(msg_sender, channel_id, state)?;
         self.opened_this_tx[channel_id].t_write(true)?;
@@ -262,12 +262,12 @@ impl TIP20ChannelReserve {
                 deposit: call.deposit,
             },
         ))?;
-        if state.has_signer_snapshot {
-            self.emit_event(TIP20ChannelReserveEvent::SignerSnapshotCached(
-                ITIP20ChannelReserve::SignerSnapshotCached {
+        if state.has_opening_commitment {
+            self.emit_event(TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                ITIP20ChannelReserve::OpeningCommitmentRecorded {
                     channelId: channel_id,
                     signer,
-                    commitment: signer_snapshot,
+                    commitment: opening_commitment,
                 },
             ))?;
         }
@@ -389,9 +389,9 @@ impl TIP20ChannelReserve {
             if self.storage.spec().is_t15() {
                 // Old owners must not gain authority over new funds after a rotation, and an
                 // unregistered signer's registration can't be told apart from one.
-                let snapshot = signer_snapshot(&call.descriptor, state);
-                if self.storage.config_commitment(signer)? != snapshot {
-                    return Err(if snapshot.is_zero() {
+                let commitment = opening_commitment(&call.descriptor, state);
+                if self.storage.config_commitment(signer)? != commitment {
+                    return Err(if commitment.is_zero() {
                         TIP20ChannelReserveError::root_key_retired(signer)
                     } else {
                         TIP20ChannelReserveError::signer_config_changed(signer)
@@ -711,15 +711,15 @@ impl TIP20ChannelReserve {
         &self,
         call: ITIP20ChannelReserve::computeChannelIdCall,
     ) -> Result<B256> {
-        self.compute_channel_id_inner(
-            call.payer,
-            call.payee,
-            call.operator,
-            call.token,
-            call.salt,
-            call.authorizedSigner,
-            call.expiringNonceHash,
-        )
+        self.channel_id(&ITIP20ChannelReserve::ChannelDescriptor {
+            payer: call.payer,
+            payee: call.payee,
+            operator: call.operator,
+            token: call.token,
+            salt: call.salt,
+            authorizedSigner: call.authorizedSigner,
+            expiringNonceHash: call.expiringNonceHash,
+        })
     }
 
     /// Returns the EIP-712 digest that the payer or authorized signer must sign.
@@ -732,13 +732,7 @@ impl TIP20ChannelReserve {
 
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
-        let hash = match self.storage.chain_id() {
-            MAINNET_CHAIN_ID => DOMAIN_SEPARATOR_MAINNET,
-            MODERATO_CHAIN_ID => DOMAIN_SEPARATOR_TESTNET,
-            chain_id => domain_separator_inner(chain_id),
-        };
-
-        Ok(hash)
+        Ok(domain_separator(self.storage.chain_id()))
     }
 
     /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
@@ -825,15 +819,8 @@ impl TIP20ChannelReserve {
 
     /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
-        self.compute_channel_id_inner(
-            descriptor.payer,
-            descriptor.payee,
-            descriptor.operator,
-            descriptor.token,
-            descriptor.salt,
-            descriptor.authorizedSigner,
-            descriptor.expiringNonceHash,
-        )
+        self.storage
+            .keccak256(&descriptor.id_preimage(self.storage.chain_id()))
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.
@@ -856,34 +843,6 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::expiring_nonce_hash_not_set().into());
         }
         Ok(hash)
-    }
-
-    /// Computes the channel id including chain and precompile domain separation.
-    #[expect(clippy::too_many_arguments)]
-    fn compute_channel_id_inner(
-        &self,
-        payer: Address,
-        payee: Address,
-        operator: Address,
-        token: Address,
-        salt: B256,
-        authorized_signer: Address,
-        expiring_nonce_hash: B256,
-    ) -> Result<B256> {
-        self.storage.keccak256(
-            &(
-                payer,
-                payee,
-                operator,
-                token,
-                salt,
-                authorized_signer,
-                expiring_nonce_hash,
-                self.address,
-                U256::from(self.storage.chain_id()),
-            )
-                .abi_encode(),
-        )
     }
 
     /// Loads an active channel or returns `ChannelNotFound`.
@@ -920,7 +879,7 @@ impl TIP20ChannelReserve {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
         let expected_signer = self.expected_signer(descriptor);
         if self.storage.spec().is_t15() {
-            let snapshot = signer_snapshot(descriptor, state);
+            let commitment = opening_commitment(descriptor, state);
             if let Ok(TempoSignature::ConfigurableAccount(signature)) =
                 TempoSignature::from_bytes(signature)
             {
@@ -929,7 +888,7 @@ impl TIP20ChannelReserve {
                         expected_signer,
                         digest,
                         &signature,
-                        snapshot,
+                        commitment,
                         true,
                     )
                     .map_err(|error| {
@@ -945,7 +904,7 @@ impl TIP20ChannelReserve {
                 return Ok(());
             }
             // A signer with a commitment at open had its root key retired (TIP-1113).
-            if !snapshot.is_zero() {
+            if !commitment.is_zero() {
                 return Err(TIP20ChannelReserveError::invalid_signature().into());
             }
         }
@@ -972,27 +931,55 @@ impl TIP20ChannelReserve {
 
     /// Computes the EIP-712 voucher digest.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
-        let struct_hash = self
-            .storage
-            .keccak256(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-        let domain_separator = self.domain_separator()?;
+        voucher_digest_with(
+            channel_id,
+            cumulative_amount,
+            self.storage.chain_id(),
+            |data| self.storage.keccak256(data),
+        )
+    }
+}
 
-        let mut digest_input = [0u8; 66];
-        digest_input[0] = 0x19;
-        digest_input[1] = 0x01;
-        digest_input[2..34].copy_from_slice(domain_separator.as_slice());
-        digest_input[34..66].copy_from_slice(struct_hash.as_slice());
-        self.storage.keccak256(&digest_input)
+/// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
+pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
+    voucher_digest_with(channel_id, cumulative_amount, chain_id, |data| {
+        Ok(keccak256(data))
+    })
+    .expect("plain keccak never fails")
+}
+
+/// Returns the EIP-712 voucher digest, hashing its struct and digest input with `keccak`.
+pub fn voucher_digest_with(
+    channel_id: B256,
+    cumulative_amount: U96,
+    chain_id: u64,
+    keccak: impl Fn(&[u8]) -> Result<B256>,
+) -> Result<B256> {
+    let struct_hash = keccak(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
+    let mut input = [0u8; 66];
+    input[0] = 0x19;
+    input[1] = 0x01;
+    input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
+    input[34..66].copy_from_slice(struct_hash.as_slice());
+    keccak(&input)
+}
+
+/// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
+fn domain_separator(chain_id: u64) -> B256 {
+    match chain_id {
+        MAINNET_CHAIN_ID => DOMAIN_SEPARATOR_MAINNET,
+        MODERATO_CHAIN_ID => DOMAIN_SEPARATOR_TESTNET,
+        chain_id => domain_separator_inner(chain_id),
     }
 }
 
 /// Returns the voucher signer's commitment at open, which the descriptor's salt holds, or zero if
 /// the signer had none (TIP-1166).
-fn signer_snapshot(
+fn opening_commitment(
     descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
     state: PackedChannelState,
 ) -> B256 {
-    if state.has_signer_snapshot {
+    if state.has_opening_commitment {
         descriptor.salt
     } else {
         B256::ZERO
@@ -1056,6 +1043,7 @@ mod tests {
         ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         configurable_account_digest, tt_signature::PrimitiveSignature,
     };
+    use test_case::test_case;
 
     #[test]
     fn const_domain_separators_match_abi_encoding() {
@@ -1073,6 +1061,36 @@ mod tests {
                 domain_separator_inner(chain_id)
             );
         }
+    }
+
+    #[test_case(MAINNET_CHAIN_ID)]
+    #[test_case(MODERATO_CHAIN_ID)]
+    #[test_case(1337)]
+    fn free_channel_id_and_voucher_digest_match_the_precompile(chain_id: u64) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(chain_id);
+        let descriptor = descriptor(
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            B256::repeat_byte(0x01),
+            Address::ZERO,
+            B256::repeat_byte(0x02),
+        );
+        let cumulative_amount = U96::from(1_000);
+        StorageCtx::enter(&mut storage, || {
+            let reserve = TIP20ChannelReserve::new();
+            let channel_id = reserve.channel_id(&descriptor)?;
+            assert_eq!(descriptor.id(chain_id), channel_id);
+            assert_eq!(
+                voucher_digest(channel_id, cumulative_amount, chain_id),
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: cumulative_amount,
+                })?
+            );
+            Ok(())
+        })
     }
 
     fn descriptor(
@@ -3057,8 +3075,8 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let snapshot = commit(payer, &old_config)?;
-            let salt = snapshot;
+            let commitment = commit(payer, &old_config)?;
+            let salt = commitment;
             let token = TIP20Setup::path_usd(payee)
                 .with_issuer(payee)
                 .with_mint(payer, U256::from(1_000u128))
@@ -3080,7 +3098,7 @@ mod tests {
                         Address::ZERO,
                     ),
                 ),
-                Err(TIP20ChannelReserveError::salt_not_signer_commitment(payer, snapshot).into())
+                Err(TIP20ChannelReserveError::salt_not_signer_commitment(payer, commitment).into())
             );
             let channel_id = reserve.open(
                 payer,
@@ -3096,11 +3114,11 @@ mod tests {
             assert_eq!(
                 StorageCtx.get_events(TIP20_CHANNEL_RESERVE_ADDRESS).last(),
                 Some(
-                    &TIP20ChannelReserveEvent::SignerSnapshotCached(
-                        ITIP20ChannelReserve::SignerSnapshotCached {
+                    &TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                        ITIP20ChannelReserve::OpeningCommitmentRecorded {
                             channelId: channel_id,
                             signer: payer,
-                            commitment: snapshot,
+                            commitment,
                         }
                     )
                     .into_log_data()
@@ -3148,7 +3166,7 @@ mod tests {
             );
             reserve.top_up(payer, top_up_call(&descriptor, 0))?;
 
-            // Closing deletes the snapshot with the channel.
+            // Closing deletes the channel state, including its opening-commitment flag.
             let signature =
                 configurable_voucher(&reserve, channel_id, 80, payer, &old_config, &[&old_owner])?;
             reserve.close(
@@ -3190,13 +3208,13 @@ mod tests {
                 payer,
                 open_call(payee, Address::ZERO, token.address(), 100, salt, signer),
             )?;
-            // An unregistered signer has no snapshot, so any salt opens.
+            // An unregistered signer has no commitment, so any salt opens.
             assert!(
                 !StorageCtx
                     .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
                     .iter()
                     .any(|log| log.topics().first()
-                        == Some(&ITIP20ChannelReserve::SignerSnapshotCached::SIGNATURE_HASH))
+                        == Some(&ITIP20ChannelReserve::OpeningCommitmentRecorded::SIGNATURE_HASH))
             );
             let descriptor = descriptor(
                 payer,
@@ -3281,7 +3299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t15_snapshot_channel_uses_one_slot_and_withdraws_after_rotation() -> eyre::Result<()> {
+    fn test_t15_committed_channel_uses_one_slot_and_withdraws_after_rotation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         let owner = PrivateKeySigner::random();
         let config = owner_config(&[&owner], 1, 0);
@@ -3289,7 +3307,7 @@ mod tests {
         let payee = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let snapshot = commit(payer, &config)?;
+            let commitment = commit(payer, &config)?;
             let token = TIP20Setup::path_usd(payee)
                 .with_issuer(payee)
                 .with_mint(payer, U256::from(1_000u128))
@@ -3304,7 +3322,7 @@ mod tests {
                     Address::ZERO,
                     token.address(),
                     100,
-                    snapshot,
+                    commitment,
                     Address::ZERO,
                 ),
             )?;
@@ -3313,7 +3331,7 @@ mod tests {
                 payee,
                 Address::ZERO,
                 token.address(),
-                snapshot,
+                commitment,
                 Address::ZERO,
                 expiring_nonce_hash,
             );

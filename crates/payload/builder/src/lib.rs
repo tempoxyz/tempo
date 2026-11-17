@@ -55,10 +55,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::SYSTEM_TX_COUNT};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult,
+    TempoStateAccess, TempoTxResult, consensus::MAX_BLOCK_TRANSACTIONS,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -539,6 +539,11 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
+            }
+
+            // Leave room for the end-of-block system transactions.
+            if executor.receipts().len() + SYSTEM_TX_COUNT >= MAX_BLOCK_TRANSACTIONS {
+                break BlockBuildStopReason::TransactionCountLimit;
             }
 
             let Some(mut pool_tx) = best_txs.next() else {

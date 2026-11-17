@@ -469,6 +469,20 @@ impl<'a> TempoBlockExecutor<'a> {
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
+        // `proposer_public_key` is derived from the header's or payload attributes'
+        // `consensus_context` (`consensus_context.map(|ctx| ctx.proposer)` in the
+        // `ConfigureEvm` env builders), so it is `None` exactly when the block has no
+        // consensus context. Such blocks (RPC simulations, dev-mode blocks) carry no DKG
+        // outcome, and their backing database may hold caller-supplied state rather than the
+        // parent state, so the check is skipped for them.
+        //
+        // This relies on the consensus layer: it rejects proposals without a consensus context
+        // (see the application's verify step), and imported blocks are pinned to finalized
+        // hashes. The execution layer does not enforce the presence of a consensus context
+        // itself, the same as for the proposer fee recipient check above.
+        if self.evm().block().ext.proposer_public_key.is_none() {
+            return Ok(());
+        }
         let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
         let config = crate::TempoStateAccess::<((), ())>::dkg_ceremony_config(
             &mut parent_state,
@@ -1632,16 +1646,29 @@ mod tests {
                 rotation_epoch,
             ))
         };
+        let proposer = B256::from_slice(&validator.public_key());
+        let executor =
+            |db: InMemoryDB, fork, block_number, extra_data: Bytes, proposer: Option<B256>| {
+                let mut executor = TestExecutorBuilder::default()
+                    .with_block_number(block_number)
+                    .with_epoch_length(5)
+                    .with_extra_data(extra_data)
+                    .with_parent_beacon_block_root(B256::ZERO)
+                    .with_spec(fork)
+                    .build(db, &chainspec);
+                let mut block = *executor.evm().block();
+                block.ext.proposer_public_key = proposer.map(|key| key.try_into().unwrap());
+                executor.evm_mut().set_block(block);
+                executor
+            };
+        let execute =
+            |db: InMemoryDB, fork, block_number, extra_data: Bytes, proposer: Option<B256>| {
+                executor(db, fork, block_number, extra_data, proposer)
+                    .apply_pre_execution_changes()
+                    .map_err(|e| e.to_string())
+            };
         let run = |db: InMemoryDB, fork, block_number, extra_data: Bytes| {
-            TestExecutorBuilder::default()
-                .with_block_number(block_number)
-                .with_epoch_length(5)
-                .with_extra_data(extra_data)
-                .with_parent_beacon_block_root(B256::ZERO)
-                .with_spec(fork)
-                .build(db, &chainspec)
-                .apply_pre_execution_changes()
-                .map_err(|e| e.to_string())
+            execute(db, fork, block_number, extra_data, Some(proposer))
         };
         let full_dkg = OnchainDkgOutcome {
             is_next_full_dkg: true,
@@ -1717,19 +1744,38 @@ mod tests {
         );
 
         // Before ValidatorConfigV2 is initialized, the players came from ValidatorConfig V1.
-        assert_eq!(
-            run(
+        // The proposer check rejects such a block first, so this calls the outcome check alone.
+        assert!(
+            executor(
                 InMemoryDB::default(),
                 TempoHardfork::T15,
                 4,
-                wrong_players.encode().into()
-            ),
-            Ok(())
+                wrong_players.encode().into(),
+                Some(proposer)
+            )
+            .check_boundary_outcome()
+            .is_ok()
         );
 
         // Blocks other than the boundary carry no outcome.
         assert_eq!(
             run(config(None), TempoHardfork::T15, 3, Bytes::new()),
+            Ok(())
+        );
+
+        // Blocks without a consensus context, such as RPC simulations, are not checked.
+        assert_eq!(
+            execute(config(None), TempoHardfork::T15, 4, Bytes::new(), None),
+            Ok(())
+        );
+        assert_eq!(
+            execute(
+                config(None),
+                TempoHardfork::T15,
+                4,
+                wrong_players.encode().into(),
+                None
+            ),
             Ok(())
         );
     }
