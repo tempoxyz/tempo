@@ -43,7 +43,7 @@ use tempo_primitives::TempoTxEnvelope;
 use tracing::{debug, error, trace};
 
 /// Number of block snapshots kept. Covers the unfinalized branches a node executes on top of.
-const SNAPSHOT_CAPACITY: u32 = 64;
+const SNAPSHOT_CAPACITY: u32 = 16;
 
 /// Number of built payloads whose sets wait for assembly.
 const STAGED_CAPACITY: u32 = 16;
@@ -51,7 +51,7 @@ const STAGED_CAPACITY: u32 = 16;
 /// Number of assembled payloads whose sets are kept by hash. Kept apart from block snapshots:
 /// a node assembles far more payloads than it executes blocks (RPC pending blocks rebuild
 /// continuously), and they must not evict the sets of the chain it builds on.
-const BUILT_CAPACITY: u32 = 64;
+const BUILT_CAPACITY: u32 = 16;
 
 /// RLP value stored for every replay hash: trie leaves cannot be empty.
 const PRESENT: [u8; 1] = [0x01];
