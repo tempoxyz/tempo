@@ -20,6 +20,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use keccak_const::Keccak256;
+use std::convert::Infallible;
 use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
@@ -817,7 +818,7 @@ impl TIP20ChannelReserve {
         self.storage.timestamp().saturating_to::<u32>()
     }
 
-    /// Computes the channel id from a descriptor, charging for the hash.
+    /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
         self.storage
             .keccak256(&channel_id_preimage(descriptor, self.storage.chain_id()))
@@ -929,15 +930,14 @@ impl TIP20ChannelReserve {
         Ok(())
     }
 
-    /// Computes the EIP-712 voucher digest, charging for both hashes.
+    /// Computes the EIP-712 voucher digest.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
-        let struct_hash = self
-            .storage
-            .keccak256(&voucher_struct_preimage(channel_id, cumulative_amount))?;
-        self.storage.keccak256(&voucher_digest_preimage(
-            self.domain_separator()?,
-            struct_hash,
-        ))
+        hash_voucher(
+            channel_id,
+            cumulative_amount,
+            self.storage.chain_id(),
+            |data| self.storage.keccak256(data),
+        )
     }
 }
 
@@ -951,11 +951,10 @@ pub fn compute_channel_id(
 
 /// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
 pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
-    let struct_hash = keccak256(voucher_struct_preimage(channel_id, cumulative_amount));
-    keccak256(voucher_digest_preimage(
-        domain_separator(chain_id),
-        struct_hash,
-    ))
+    let Ok(digest) = hash_voucher(channel_id, cumulative_amount, chain_id, |data| {
+        Ok::<_, Infallible>(keccak256(data))
+    });
+    digest
 }
 
 /// Hash preimage of a channel id, domain-separated by chain and precompile address.
@@ -964,32 +963,28 @@ fn channel_id_preimage(
     chain_id: u64,
 ) -> Vec<u8> {
     (
-        descriptor.payer,
-        descriptor.payee,
-        descriptor.operator,
-        descriptor.token,
-        descriptor.salt,
-        descriptor.authorizedSigner,
-        descriptor.expiringNonceHash,
+        descriptor.clone(),
         TIP20_CHANNEL_RESERVE_ADDRESS,
         U256::from(chain_id),
     )
         .abi_encode()
 }
 
-/// Hash preimage of a voucher's EIP-712 struct hash.
-fn voucher_struct_preimage(channel_id: B256, cumulative_amount: U96) -> Vec<u8> {
-    (VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode()
-}
+/// Computes the EIP-712 voucher digest on `chain_id`, hashing its struct and digest with `keccak`.
+fn hash_voucher<E>(
+    channel_id: B256,
+    cumulative_amount: U96,
+    chain_id: u64,
+    keccak: impl Fn(&[u8]) -> std::result::Result<B256, E>,
+) -> std::result::Result<B256, E> {
+    let struct_hash = keccak(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
 
-/// Hash preimage of an EIP-712 digest: `0x1901 || domain_separator || struct_hash`.
-fn voucher_digest_preimage(domain_separator: B256, struct_hash: B256) -> [u8; 66] {
-    let mut preimage = [0u8; 66];
-    preimage[0] = 0x19;
-    preimage[1] = 0x01;
-    preimage[2..34].copy_from_slice(domain_separator.as_slice());
-    preimage[34..66].copy_from_slice(struct_hash.as_slice());
-    preimage
+    let mut digest_input = [0u8; 66];
+    digest_input[0] = 0x19;
+    digest_input[1] = 0x01;
+    digest_input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
+    digest_input[34..66].copy_from_slice(struct_hash.as_slice());
+    keccak(&digest_input)
 }
 
 /// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
@@ -1067,12 +1062,9 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
     };
-    use tempo_primitives::{
-        test_utils::actors,
-        transaction::{
-            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-            configurable_account_digest, tt_signature::PrimitiveSignature,
-        },
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        configurable_account_digest, tt_signature::PrimitiveSignature,
     };
     use test_case::test_case;
 
@@ -1099,12 +1091,11 @@ mod tests {
     #[test_case(1337)]
     fn free_channel_id_and_voucher_digest_match_the_precompile(chain_id: u64) -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(chain_id);
-        let [payer, payee, operator, token] = actors();
         let descriptor = descriptor(
-            payer,
-            payee,
-            operator,
-            token,
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            Address::random(),
             B256::repeat_byte(0x01),
             Address::ZERO,
             B256::repeat_byte(0x02),
