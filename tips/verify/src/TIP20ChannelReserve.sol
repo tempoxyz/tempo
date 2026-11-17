@@ -65,10 +65,10 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
     // and is not blocked by this persistent
     // approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
-    // Whether the channel's salt is its signer's TIP-1166 commitment snapshot. The precompile keeps
+    // Whether the channel's salt is its signer's TIP-1166 opening commitment. The precompile keeps
     // this flag in the packed channel-state slot; the reference keeps it apart so the public
     // ChannelState stays unchanged.
-    mapping(bytes32 => bool) internal _hasSignerSnapshot;
+    mapping(bytes32 => bool) internal _hasOpeningCommitment;
 
     /// @dev Reference-contract-only hook. The precompile derives this as
     /// `keccak256(abi.encodePacked(encodeForSigning, sender))` for every real transaction type.
@@ -109,10 +109,10 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         // TIP-1166: a signer with a configuration commitment must use it as the salt, which then
         // fixes the configuration that signs the channel's vouchers.
         address signer = authorizedSigner != address(0) ? authorizedSigner : msg.sender;
-        bytes32 signerSnapshot = _configCommitment(signer);
-        if (signerSnapshot != bytes32(0)) {
-            if (salt != signerSnapshot) revert SaltNotSignerCommitment(signer, signerSnapshot);
-            _hasSignerSnapshot[channelId] = true;
+        bytes32 openingCommitment = _configCommitment(signer);
+        if (openingCommitment != bytes32(0)) {
+            if (salt != openingCommitment) revert SaltNotSignerCommitment(signer, openingCommitment);
+            _hasOpeningCommitment[channelId] = true;
         }
 
         channelStates[channelId] = _encodeChannelState(
@@ -140,8 +140,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             expiringNonceHash,
             deposit
         );
-        if (signerSnapshot != bytes32(0)) {
-            emit SignerSnapshotCached(channelId, signer, signerSnapshot);
+        if (openingCommitment != bytes32(0)) {
+            emit OpeningCommitmentRecorded(channelId, signer, openingCommitment);
         }
     }
 
@@ -195,9 +195,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             address signer = descriptor.authorizedSigner != address(0)
                 ? descriptor.authorizedSigner
                 : descriptor.payer;
-            bytes32 snapshot = _hasSignerSnapshot[channelId] ? descriptor.salt : bytes32(0);
-            if (_configCommitment(signer) != snapshot) {
-                if (snapshot == bytes32(0)) revert RootKeyRetired(signer);
+            bytes32 commitment = _hasOpeningCommitment[channelId] ? descriptor.salt : bytes32(0);
+            if (_configCommitment(signer) != commitment) {
+                if (commitment == bytes32(0)) revert RootKeyRetired(signer);
                 revert SignerConfigChanged(signer);
             }
 
@@ -272,7 +272,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         uint96 refund = channel.deposit - captureAmount;
 
         delete channelStates[channelId];
-        delete _hasSignerSnapshot[channelId];
+        delete _hasOpeningCommitment[channelId];
 
         if (delta > 0) {
             bool payeeTransferSucceeded = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
@@ -304,7 +304,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
         uint96 refund = channel.deposit - channel.settled;
         delete channelStates[channelId];
-        delete _hasSignerSnapshot[channelId];
+        delete _hasOpeningCommitment[channelId];
 
         if (refund > 0) {
             // TIP-1095 bypasses TIP-403 only for this payer-only, state-derived refund and reverts

@@ -535,7 +535,7 @@ contract TIP20ChannelReserveTest is Test {
             payer, payee, address(0), address(token), commitment, address(0), lastExpiringNonceHash
         );
         vm.expectEmit(true, true, false, true, address(channel));
-        emit ITIP20ChannelReserve.SignerSnapshotCached(expectedId, payer, commitment);
+        emit ITIP20ChannelReserve.OpeningCommitmentRecorded(expectedId, payer, commitment);
         vm.prank(payer);
         bytes32 channelId =
             channel.open(payee, address(0), address(token), DEPOSIT, commitment, address(0));
@@ -582,7 +582,7 @@ contract TIP20ChannelReserveTest is Test {
         channel.topUp(descriptor, 100);
     }
 
-    function test_withdraw_snapshotChannel() public {
+    function test_withdraw_committedChannel() public {
         bytes32 commitment = keccak256("config v0");
         _commit(payer, commitment);
         _prepareNextExpiringNonceHash();
