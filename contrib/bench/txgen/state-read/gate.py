@@ -3,8 +3,12 @@
 
 Reads a bench-e2e-multi-region results directory produced with a state-read-*
 preset and reports how long validators took to execute loaded blocks in the
-feature phase. Exits 1 when --enforce is set and the p99 block execution time
-exceeds --threshold-ms (default: 500, about one block time).
+feature phase. Validators run blocks of up to --serial-txs transactions one
+after another, so the gate projects each such block to a full serial block
+(execution time x serial-txs / txs) before comparing p99 with --threshold-ms
+(default: 500, about one block time). Blocks with more transactions run in
+parallel and count as measured. Exits 1 under --enforce when p99 exceeds the
+threshold or a run has fewer than --min-blocks loaded blocks.
 """
 
 import argparse
@@ -68,11 +72,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("results", nargs="+", help="bench results directories")
     parser.add_argument("--threshold-ms", type=float, default=500.0)
+    parser.add_argument("--serial-txs", type=int, default=4, help="largest block size validators execute serially")
+    parser.add_argument("--min-blocks", type=int, default=30, help="loaded blocks a run needs to be conclusive")
     parser.add_argument("--enforce", action="store_true")
     args = parser.parse_args()
 
-    lines = ["## State-read gate", "", f"Threshold: p99 block execution <= {args.threshold_ms:.0f} ms", ""]
-    lines += ["| Run | Blocks | Gas/block p50 | Exec p50 | Exec p99 | Exec max | Mgas/s p50 | Result |", "|---|---|---|---|---|---|---|---|"]
+    lines = ["## State-read gate", "", f"Threshold: p99 worst-case block execution <= {args.threshold_ms:.0f} ms "
+             f"(blocks of <= {args.serial_txs} txs projected to {args.serial_txs} serial txs)", ""]
+    lines += ["| Run | Blocks | Txs/block p50 | Exec p50 | Worst-case p99 | Worst-case max | Mgas/s p50 | Result |", "|---|---|---|---|---|---|---|---|"]
     failed = False
     for results in args.results:
         name = os.path.basename(os.path.normpath(results))
@@ -88,13 +95,17 @@ def main():
             failed = True
             continue
         execs = [r[2] for r in rows]
-        p99 = pct(execs, 0.99)
-        ok = p99 <= args.threshold_ms
+        worst = [r[2] * args.serial_txs / r[0] if 0 < r[0] <= args.serial_txs else r[2] for r in rows]
+        p99 = pct(worst, 0.99)
+        if len(rows) < args.min_blocks:
+            result, ok = f"inconclusive (< {args.min_blocks} blocks)", False
+        else:
+            ok = p99 <= args.threshold_ms
+            result = "pass" if ok else "over threshold"
         failed |= not ok
         lines.append(
-            f"| {name} | {len(rows)} | {pct([r[1] for r in rows], 0.5) / 1e6:.0f}M | {pct(execs, 0.5):.0f} ms "
-            f"| {p99:.0f} ms | {max(execs):.0f} ms | {pct([r[1] / r[2] / 1e3 for r in rows], 0.5):.0f} "
-            f"| {'pass' if ok else 'over threshold'} |"
+            f"| {name} | {len(rows)} | {pct([r[0] for r in rows], 0.5)} | {pct(execs, 0.5):.0f} ms "
+            f"| {p99:.0f} ms | {max(worst):.0f} ms | {pct([r[1] / r[2] / 1e3 for r in rows], 0.5):.0f} | {result} |"
         )
     if failed and not args.enforce:
         lines += ["", "Report only: run with enforce to fail on this result."]

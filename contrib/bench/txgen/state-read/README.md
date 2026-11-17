@@ -24,8 +24,10 @@ can include, or the pre-measurement pool reset times out:
 | `state-read-cold-disk` | 40 | 40 |
 
 `bench-state-read-gate` (manual dispatch) runs `state-read-cold` and `state-read-dependent`
-on the chosen ref after a gas pricing change, then `gate.py` reports p99 block execution time
-for the feature phase against a 500 ms threshold (about one block time).
+on the chosen ref after a gas pricing change, then `gate.py` reports the p99
+worst-case block execution time for the feature phase against a 500 ms threshold (about
+one block time). Validators run blocks of up to 4 transactions serially, so smaller blocks
+are projected to 4 serial transactions; runs with fewer than 30 loaded blocks are inconclusive.
 
 ## Rebuild
 
