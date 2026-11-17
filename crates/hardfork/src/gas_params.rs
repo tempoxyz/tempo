@@ -45,8 +45,8 @@ const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800; //
 const PAYMENT_LANE_COLD_STORAGE_DISCOUNT: u32 = 3_200;
 
 // Bench only: general-lane cold storage surcharge from T15, so a cold SLOAD costs
-// 100 + 5,200 = 5,300 gas on the general lane while the payment lane keeps 2,100.
-const T15_GENERAL_COLD_STORAGE_ADDITIONAL: u32 = 5_200;
+// 100 + 9,900 = 10,000 gas on the general lane while the payment lane keeps 2,100.
+const T15_GENERAL_COLD_STORAGE_ADDITIONAL: u32 = 9_900;
 const PAYMENT_LANE_COLD_ACCOUNT_DISCOUNT: u32 = 1_500;
 
 /// Applies Tempo's hardfork-specific features and gas parameters to an EVM2 version.
