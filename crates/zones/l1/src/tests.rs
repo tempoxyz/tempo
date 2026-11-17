@@ -1517,28 +1517,6 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     assert!(queue.peek().is_none());
 }
 
-#[test]
-fn deferred_empty_blocks_use_constant_space() {
-    let mut queue = PendingDeposits::default();
-    let mut parent_hash = B256::ZERO;
-    for number in 1..=10_000 {
-        let header = if number == 1 {
-            make_test_header(number)
-        } else {
-            make_chained_header(number, parent_hash)
-        };
-        let header = seal(header);
-        let anchor = header.num_hash();
-        parent_hash = anchor.hash;
-        queue
-            .try_enqueue(header, L1PortalEvents::default())
-            .unwrap();
-        queue.defer_through(anchor).unwrap();
-    }
-
-    assert_eq!(queue.deferred_event_block_len(), 0);
-}
-
 fn amounts<'a>(deposits: impl IntoIterator<Item = &'a L1Deposit>) -> Vec<u128> {
     deposits
         .into_iter()
@@ -2298,11 +2276,6 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
     );
     let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(false));
-
-    // The pause is applied during ingestion and must not be carried into operational work.
-    let mut operational = L1PortalEvents::default();
-    operational.extend_operational(events);
-    assert_eq!(operational.portal_pause, None);
 }
 
 #[test]

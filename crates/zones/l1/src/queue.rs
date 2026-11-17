@@ -3,38 +3,28 @@ use std::collections::VecDeque;
 
 /// Portal work owed by the next full Zone block, from checkpoint-only blocks or earlier imports.
 ///
-/// Empty L1 blocks and events already applied during ingestion are represented only by the final
-/// header. Blocks containing deposits or token enablements retain one compact event group.
+/// Only the final header, owed queue entries and owed token enablements are kept. Key rotations and
+/// leadership transitions are applied during ingestion and must not be retained.
 #[derive(Debug, Clone)]
 pub(crate) struct DeferredPortalWork {
     last_header: SealedHeader<TempoHeader>,
-    event_blocks: Vec<L1PortalEvents>,
+    deposits: VecDeque<L1Deposit>,
+    enabled_tokens: Vec<EnabledToken>,
 }
 
 impl DeferredPortalWork {
     pub(crate) fn new(block: L1BlockDeposits) -> Self {
-        let mut work = Self {
+        Self {
             last_header: block.header,
-            event_blocks: Vec::new(),
-        };
-        work.push_events(block.events);
-        work
+            deposits: block.events.deposits.into(),
+            enabled_tokens: block.events.enabled_tokens,
+        }
     }
 
     pub(crate) fn push(&mut self, block: L1BlockDeposits) {
         self.last_header = block.header;
-        self.push_events(block.events);
-    }
-
-    fn push_events(&mut self, events: L1PortalEvents) {
-        if !events.deposits.is_empty() || !events.enabled_tokens.is_empty() {
-            self.event_blocks.push(events);
-        }
-    }
-
-    #[cfg(test)]
-    fn event_block_len(&self) -> usize {
-        self.event_blocks.len()
+        self.deposits.extend(block.events.deposits);
+        self.enabled_tokens.extend(block.events.enabled_tokens);
     }
 }
 
@@ -217,11 +207,9 @@ impl PendingDeposits {
         let current = self.operational_block(expected)?;
         Ok(self
             .deferred
-            .iter()
-            .flat_map(|deferred| &deferred.event_blocks)
-            .chain([&current.events])
-            .map(|events| events.deposits.len())
-            .sum())
+            .as_ref()
+            .map_or(0, |deferred| deferred.deposits.len())
+            + current.events.deposits.len())
     }
 
     /// Return deferred work and the current operational L1 block, up to `max_deposits` entries.
@@ -232,29 +220,32 @@ impl PendingDeposits {
     ) -> eyre::Result<Vec<L1BlockDeposits>> {
         let current = self.operational_block(expected)?;
         let mut remaining = max_deposits;
-        let mut copy = |events: &L1PortalEvents| {
-            let deposits: Vec<_> = events.deposits.iter().take(remaining).cloned().collect();
-            remaining -= deposits.len();
-            L1PortalEvents {
-                deposits,
-                enabled_tokens: events.enabled_tokens.clone(),
-                ..Default::default()
-            }
-        };
-        let mut work = Vec::with_capacity(usize::from(self.deferred.is_some()) + 1);
+        let mut work = Vec::with_capacity(2);
         if let Some(deferred) = &self.deferred {
-            let mut events = L1PortalEvents::default();
-            for block in &deferred.event_blocks {
-                events.extend_operational(copy(block));
-            }
+            let deposits: Vec<_> = deferred.deposits.iter().take(remaining).cloned().collect();
+            remaining -= deposits.len();
             work.push(L1BlockDeposits {
                 header: deferred.last_header.clone(),
-                events,
+                events: L1PortalEvents {
+                    deposits,
+                    enabled_tokens: deferred.enabled_tokens.clone(),
+                    ..Default::default()
+                },
             });
         }
         work.push(L1BlockDeposits {
             header: current.header.clone(),
-            events: copy(&current.events),
+            events: L1PortalEvents {
+                deposits: current
+                    .events
+                    .deposits
+                    .iter()
+                    .take(remaining)
+                    .cloned()
+                    .collect(),
+                enabled_tokens: current.events.enabled_tokens.clone(),
+                ..Default::default()
+            },
         });
         Ok(work)
     }
@@ -296,28 +287,22 @@ impl PendingDeposits {
         }
 
         // A delayed duplicate must not release work deferred after, or left by, its original import.
-        let Some(deferred) = self
+        let Some(mut deferred) = self
             .deferred
             .take_if(|deferred| released || deferred.last_header.number() < expected.number)
         else {
             return Ok(());
         };
-        let mut owed: Vec<_> = deferred
-            .event_blocks
-            .into_iter()
-            .flat_map(|events| events.deposits)
-            .collect();
         eyre::ensure!(
-            consumed <= owed.len(),
+            consumed <= deferred.deposits.len(),
             "full import processed {consumed} deposits, but only {} were owed",
-            owed.len()
+            deferred.deposits.len()
         );
-        owed.drain(..consumed);
-        if !owed.is_empty() {
-            self.deferred = Some(DeferredPortalWork::new(L1BlockDeposits {
-                header: deferred.last_header,
-                events: L1PortalEvents::from_deposits(owed),
-            }));
+        // A full import executes every owed token enablement and the first `consumed` entries.
+        deferred.deposits.drain(..consumed);
+        deferred.enabled_tokens.clear();
+        if !deferred.deposits.is_empty() {
+            self.deferred = Some(deferred);
         }
         Ok(())
     }
@@ -337,13 +322,6 @@ impl PendingDeposits {
     #[cfg(test)]
     pub(crate) fn pending_len(&self) -> usize {
         self.pending.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn deferred_event_block_len(&self) -> usize {
-        self.deferred
-            .as_ref()
-            .map_or(0, DeferredPortalWork::event_block_len)
     }
 }
 

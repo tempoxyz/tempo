@@ -65,13 +65,11 @@ impl DepositQueuePosition {
                 _ => {}
             }
         }
-        let entries_in_block = entries
-            .iter()
-            .position(|&entry| entry == number)
-            .ok_or_else(|| {
-                eyre::eyre!("L1 block {block_number} did not append queue entry {number}")
-            })?
-            + 1;
+        eyre::ensure!(
+            entries.contains(&number),
+            "L1 block {block_number} did not append queue entry {number}"
+        );
+        let entries_in_block = entries.iter().filter(|&&entry| entry <= number).count();
         Ok(Self {
             block_number,
             entries_in_block,
@@ -116,6 +114,7 @@ mod tests {
     use test_case::test_case;
 
     #[test_case(ENTRY_SEARCH_BLOCKS + 5, &[&[], &[(3, 7)], &[(3, 5), (3, 6), (3, 7), (3, 8)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
+    #[test_case(5, &[&[(3, 7)], &[(3, 8), (3, 6), (3, 7), (3, 5)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
     #[test_case(5, &[&[]] => Err("queue entry 7 not found at or before L1 block 5".to_owned()))]
     #[test_case(5, &[&[(3, 7)], &[(3, 6)]] => Err("L1 block 3 did not append queue entry 7".to_owned()))]
     #[tokio::test]
