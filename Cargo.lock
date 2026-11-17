@@ -17498,6 +17498,7 @@ dependencies = [
  "metrics",
  "parking_lot",
  "serde",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
