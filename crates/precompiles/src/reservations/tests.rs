@@ -1533,6 +1533,23 @@ fn test_slots_per_operation() -> eyre::Result<()> {
         3
     );
     assert_eq!(step(&mut storage, &mut f, &|f| f.hold(e, 10))?, 3);
+    // A holder's pledge is a two-slot lien; the owner's first lien also writes its shortfall slot.
+    assert_eq!(
+        step(&mut storage, &mut f, &|f| f.pledge_from(
+            ids[5],
+            100,
+            NOW + 90 * DAY
+        ))?,
+        3
+    );
+    assert_eq!(
+        step(&mut storage, &mut f, &|f| f.pledge_from(
+            ids[6],
+            100,
+            NOW + 90 * DAY
+        ))?,
+        2
+    );
     Ok(())
 }
 

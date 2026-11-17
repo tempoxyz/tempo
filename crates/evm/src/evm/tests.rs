@@ -4936,6 +4936,45 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
             IReservationCore::releaseExpiredCall { owner, id: ids[4] }.abi_encode(),
         )?,
     ));
+    // A 90-day reserve the holder places within its allowance, after the owner's holds ended.
+    let pledge_from = |id, amount| {
+        IReservationCore::pledgeFromCall {
+            owner,
+            token,
+            id,
+            amount,
+            expiresAt: 1_200 + 90 * 24 * 60 * 60,
+        }
+        .abi_encode()
+    };
+    gas.push((
+        "pledgeFrom, first for the owner",
+        send(&mut evm, holder, pledge_from(ids[5], 1_000))?,
+    ));
+    gas.push((
+        "pledgeFrom",
+        send(&mut evm, holder, pledge_from(ids[6], 1_000))?,
+    ));
+    gas.push((
+        "seizeLien, part of a pledge",
+        send(
+            &mut evm,
+            holder,
+            IReservationCore::seizeLienCall {
+                id: ids[5],
+                amount: 400,
+            }
+            .abi_encode(),
+        )?,
+    ));
+    gas.push((
+        "releaseLien, a pledge",
+        send(
+            &mut evm,
+            holder,
+            IReservationCore::releaseLienCall { id: ids[6] }.abi_encode(),
+        )?,
+    ));
 
     for (operation, used) in &gas {
         println!("{operation}: {used}");
