@@ -914,8 +914,8 @@ fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
         let mut f = Fixture::new(100)?;
         let id = B256::random();
         f.hold(id, 60)?;
-        assert_eq!(f.reserved()?, 60);
-        assert_eq!(f.balance(f.owner)?, U256::from(40));
+        assert_eq!((f.reserved()?, f.available()?), (60, 40));
+        assert_eq!(f.balance(f.owner)?, U256::from(100));
         f.capture(f.payee, id, 60, true)?;
         assert_eq!((f.reserved()?, f.balance(f.payee)?), (0, U256::from(60)));
 
