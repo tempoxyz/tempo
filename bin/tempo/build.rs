@@ -3,19 +3,19 @@
 use smolgen::{Build, Cargo, Emitter, Gitcl};
 use std::{env, error::Error};
 
+// Version metadata is stamped here, in the binary, rather than in the node library: it changes with
+// every commit, and the build timestamp with every build, and in a library it would rebuild every
+// crate that depends on it.
 fn main() -> Result<(), Box<dyn Error>> {
     let mut emitter = Emitter::default();
 
-    let build_builder = Build::builder().build_timestamp(true).build();
-
-    emitter.add_instructions(&build_builder)?;
+    emitter.add_instructions(&Build::builder().build_timestamp(true).build())?;
 
     let cargo_builder = Cargo::builder().features(true).target_triple(true).build();
 
     emitter.add_instructions(&cargo_builder)?;
 
-    // Tracking the git HEAD reruns this script, and rebuilds everything above this crate, on every
-    // commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
+    // Tracking the git HEAD reruns this script on every commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
     // Release profiles keep tracking HEAD, so their version always matches the checkout.
     let git_builder = Gitcl::builder()
         .describe(true, true, Some("tempo/v[0-9]*"))

@@ -12,13 +12,14 @@ use alloy::{
     providers::Provider as _,
 };
 use alloy_network::ReceiptResponse as _;
+use eyre::OptionExt as _;
 use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
 use test_case::test_case;
 
 use crate::utils::{
-    P2pChaosNetwork, RealP2pCluster, ZoneAccount, assert_same_block, batch_count, poll_until,
-    start_real_p2p_network_chaos_cluster, wait_all_at,
+    ClusterConfig, L1ProxyMode, P2pChaosNetwork, RealP2pCluster, ZoneAccount, assert_same_block,
+    batch_count, poll_until, start_real_p2p_cluster, wait_all_at,
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -73,10 +74,14 @@ async fn start_cluster(
     P2pChaosNetwork,
     [crate::utils::TcpChaosProxy; 3],
 )> {
-    let fixture =
-        start_real_p2p_network_chaos_cluster(withdrawal_batch_interval_blocks, L1_BLOCK_TIME)
-            .await?;
-    let cluster = &fixture.0;
+    let mut cluster = start_real_p2p_cluster(ClusterConfig {
+        withdrawal_batch_interval_blocks,
+        l1_proxy: L1ProxyMode::PerNode,
+        l1_block_time: Some(L1_BLOCK_TIME),
+        proxy_p2p: true,
+        ..Default::default()
+    })
+    .await?;
     eyre::ensure!(
         cluster.nodes.len() == 3,
         "P2P network-chaos fixture must start three nodes"
@@ -90,7 +95,14 @@ async fn start_cluster(
     let head = cluster.nodes[0].provider().get_block_number().await?;
     wait_all_at(&cluster.nodes, head, NETWORK_TIMEOUT).await?;
     assert_same_block(&cluster.nodes, head).await?;
-    Ok(fixture)
+    let network = cluster
+        .p2p_network
+        .take()
+        .ok_or_eyre("network-chaos cluster must return its P2P proxy mesh")?;
+    let proxies = std::mem::take(&mut cluster.l1_proxies)
+        .try_into()
+        .map_err(|_| eyre::eyre!("network-chaos cluster must return three L1 proxies"))?;
+    Ok((cluster, network, proxies))
 }
 
 async fn synchronized_head(cluster: &RealP2pCluster) -> eyre::Result<u64> {
