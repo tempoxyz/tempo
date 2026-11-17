@@ -3,7 +3,7 @@
 use super::{MAX_UNPROCESSED_TOKEN_ENABLEMENTS, ZonePortalStorage};
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{CallOutcome, Handler},
     tip20::{EIP712_DOMAIN_TYPEHASH, VERSION_HASH},
 };
 use alloy::{
@@ -249,19 +249,19 @@ impl ZonePortalStorage {
     /// meaning `upgradeAccount` retired its primitive root key. Fails closed on a revert or a
     /// malformed result; empty return data means the precompile is absent, so nothing is retired.
     fn is_retired_root(&mut self, signer: Address) -> Result<bool> {
-        let result = self.raw_call(
+        let CallOutcome::Success(output) = self.raw_call(
             CONFIGURABLE_ACCOUNT_ADDRESS,
             SolCall::abi_encode(&IConfigurableAccount::getConfigCommitmentCall { account: signer })
                 .into(),
             true,
-        )?;
-        if !result.success {
+        )?
+        else {
             return Ok(true);
-        }
-        if result.output.is_empty() {
+        };
+        if output.is_empty() {
             return Ok(false);
         }
-        Ok(result.output.len() != 32 || result.output.iter().any(|byte| *byte != 0))
+        Ok(output.len() != 32 || output.iter().any(|byte| *byte != 0))
     }
 
     /// Solidity `_domainSeparator`.
@@ -290,11 +290,9 @@ impl ZonePortalStorage {
     /// zero when the lookup fails or returns fewer than 32 bytes.
     fn historical_block_hash(&mut self, block_number: u64) -> Result<B256> {
         let input = Bytes::from(U256::from(block_number).to_be_bytes::<32>());
-        let result = self.raw_call(EIP2935_ADDRESS, input, true)?;
-        Ok(if result.success && result.output.len() >= 32 {
-            B256::from_slice(&result.output[..32])
-        } else {
-            B256::ZERO
+        Ok(match self.raw_call(EIP2935_ADDRESS, input, true)? {
+            CallOutcome::Success(output) if output.len() >= 32 => B256::from_slice(&output[..32]),
+            _ => B256::ZERO,
         })
     }
 }

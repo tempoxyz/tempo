@@ -21,7 +21,7 @@ mod withdrawals;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, NestedCall, Slot},
+    storage::{CallOutcome, Handler, Mapping, Slot},
 };
 use alloy::{
     primitives::{Address, B256, Bytes, FixedBytes, IntoLogData, U256, hex},
@@ -318,13 +318,8 @@ impl ZonePortalStorage {
         target: Address,
         input: Bytes,
         is_static: bool,
-    ) -> Result<crate::storage::NestedCallResult> {
-        self.storage.call(NestedCall {
-            target,
-            input,
-            gas_limit: u64::MAX,
-            is_static,
-        })
+    ) -> Result<CallOutcome> {
+        self.storage.call(target, input, u64::MAX, is_static)
     }
 
     /// A Solidity high-level external call: reverts bubble up with the callee's revert data, and
@@ -334,12 +329,11 @@ impl ZonePortalStorage {
         target: Address,
         call: &C,
     ) -> Result<C::Return> {
-        let result = self.raw_call(target, call.abi_encode().into(), false)?;
-        if !result.success {
-            return Err(TempoPrecompileError::RawRevert(result.output));
+        match self.raw_call(target, call.abi_encode().into(), false)? {
+            CallOutcome::Success(output) => C::abi_decode_returns_validate(&output)
+                .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new())),
+            CallOutcome::Failure(output) => Err(TempoPrecompileError::RawRevert(output)),
         }
-        C::abi_decode_returns_validate(&result.output)
-            .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new()))
     }
 
     /// A Solidity external call to a `view` function, made with `STATICCALL`.
@@ -348,12 +342,11 @@ impl ZonePortalStorage {
         target: Address,
         call: &C,
     ) -> Result<C::Return> {
-        let result = self.raw_call(target, call.abi_encode().into(), true)?;
-        if !result.success {
-            return Err(TempoPrecompileError::RawRevert(result.output));
+        match self.raw_call(target, call.abi_encode().into(), true)? {
+            CallOutcome::Success(output) => C::abi_decode_returns_validate(&output)
+                .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new())),
+            CallOutcome::Failure(output) => Err(TempoPrecompileError::RawRevert(output)),
         }
-        C::abi_decode_returns_validate(&result.output)
-            .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new()))
     }
 
     /// A Solidity `try` external call: `None` when the callee reverts or its return data does
@@ -364,11 +357,12 @@ impl ZonePortalStorage {
         call: &C,
         is_static: bool,
     ) -> Result<Option<C::Return>> {
-        let result = self.raw_call(target, call.abi_encode().into(), is_static)?;
-        if !result.success {
+        let CallOutcome::Success(output) =
+            self.raw_call(target, call.abi_encode().into(), is_static)?
+        else {
             return Ok(None);
-        }
-        C::abi_decode_returns_validate(&result.output)
+        };
+        C::abi_decode_returns_validate(&output)
             .map(Some)
             .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new()))
     }

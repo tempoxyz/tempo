@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
+    storage::{CallOutcome, Handler},
 };
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
@@ -340,11 +340,12 @@ impl ZonePortalStorage {
         call: &C,
         is_static: bool,
     ) -> Result<Option<C::Return>> {
-        let result = self.raw_call(target, call.abi_encode().into(), is_static)?;
-        if !result.success {
+        let CallOutcome::Success(output) =
+            self.raw_call(target, call.abi_encode().into(), is_static)?
+        else {
             return Ok(None);
-        }
-        C::abi_decode_returns_validate(&result.output)
+        };
+        C::abi_decode_returns_validate(&output)
             .map(Some)
             .map_err(|_| TempoPrecompileError::RawRevert(Bytes::new()))
     }
