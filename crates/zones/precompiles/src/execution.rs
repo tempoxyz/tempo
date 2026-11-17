@@ -29,8 +29,7 @@ use evm2::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    DelegateCallNotAllowed, charge_input_cost,
-    dispatch::selector_from_calldata,
+    CallInput, DelegateCallNotAllowed, charge_input_cost,
     error::TempoPrecompileError,
     input_cost,
     storage::{
@@ -117,13 +116,14 @@ where
         ));
     }
 
-    let (data, caller): (&[u8], Address) = (evm.message_input(message), message.caller);
-    let input_gas = match input_cost(env.spec, data.len()) {
+    let caller = message.caller;
+    let call_input = CallInput::of_message(evm, message);
+    let input_gas = match input_cost(env.spec, call_input.len()) {
         Ok(input_gas) if gas.remaining() >= input_gas => input_gas,
         _ => return Err(PrecompileHalt::OutOfGas.into()),
     };
 
-    let fixed_gas = match rules.fixed_gas(selector_from_calldata(data)) {
+    let fixed_gas = match rules.fixed_gas(call_input.selector()) {
         Some(fixed_gas) if env.spec.is_t15() => Some(
             fixed_gas
                 .checked_add(input_gas)
@@ -134,9 +134,10 @@ where
     if fixed_gas.is_some_and(|fixed_gas| gas.remaining() < fixed_gas) {
         return Err(PrecompileHalt::OutOfGas.into());
     }
-
     // Preserve input borrowed from caller memory before storage borrows the EVM.
-    let input = data.to_vec();
+    let input = call_input
+        .read(env.spec, gas)
+        .ok_or(PrecompileHalt::OutOfGas)?;
     let data = input.as_slice();
     let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
     let mut fixed_gas_tracker = GasTracker::new(u64::MAX);
@@ -201,6 +202,7 @@ mod tests {
     };
     use tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS;
     use tempo_evm::TempoEvmTypes;
+    use tempo_precompiles::dispatch::selector_from_calldata;
 
     const FIXED_GAS: u64 = 123;
     type RuleRecord = Rc<RefCell<Option<(Bytes, Option<[u8; 4]>, Address)>>>;
