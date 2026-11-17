@@ -9,7 +9,8 @@ Before writing, changing, or reviewing Rust, load the `tempo-rust-style` skill (
 ## Pull Requests
 
 - Format Rust code with `cargo +nightly fmt`.
-- Only add `.changelog/` entries for user-facing changes to the crates published on crates.io: `tempo-alloy`, `tempo-primitives`, `tempo-chainspec`, `tempo-contracts` and `tempo-hardfork`. Never add one for other crates (`tempo-evm`, `tempo-precompiles`, zones, ...) or for test-only, docs-only or internal changes.
+- Never write `.changelog/` entries for crates that are not published on crates.io. Only the crates with `publish = true` are published: `tempo-alloy`, `tempo-primitives`, `tempo-chainspec`, `tempo-contracts` and `tempo-hardfork`. Skip test-only, docs-only and internal changes too.
+- New crates are unpublished by default (`publish.workspace = true`). Add each new crate to `ignore` in `.changelog/config.toml`.
 
 ## TIPs (Tempo Improvement Proposals)
 
