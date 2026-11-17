@@ -23,11 +23,34 @@ fn identity_error(error: ZoneIdentityError) -> ZonePrecompileError {
     error.into()
 }
 
-/// The verdict with enforcement on.
-fn check(token: Address, from: Address, to: Address, kind: TransferKind) -> TransferVerdict {
+/// Whether the move is allowed with enforcement on.
+fn allows(token: Address, from: Address, to: Address, kind: TransferKind) -> bool {
     ZoneIdentity::new()
-        .verdict(true, token, from, to, kind)
+        .allows(true, token, from, to, kind)
         .unwrap()
+}
+
+const ALICE: Address = Address::repeat_byte(0x11);
+const BOB: Address = Address::repeat_byte(0x22);
+
+/// One org administered by the returned admin, with Alice and Bob as members and `usd` allowed
+/// inside it.
+fn org_with_members(
+    identity: &mut ZoneIdentity,
+    registrar: Address,
+    usd: Address,
+) -> (Address, u64) {
+    let admin = Address::repeat_byte(1);
+    let org = identity.create_org(registrar, registrar, admin).unwrap();
+    identity
+        .set_outbound(admin, registrar, org, org, &[usd], true)
+        .unwrap();
+    identity
+        .set_inbound(admin, registrar, org, org, &[usd], true)
+        .unwrap();
+    identity.add_member(admin, registrar, org, ALICE).unwrap();
+    identity.add_member(admin, registrar, org, BOB).unwrap();
+    (admin, org)
 }
 
 #[test]
@@ -54,64 +77,27 @@ fn admins_only_set_their_own_half() {
 #[test]
 fn edges_are_per_token() {
     with_identity(|identity, registrar| {
-        let admin = Address::repeat_byte(1);
-        let org = identity.create_org(registrar, registrar, admin).unwrap();
         let (usd, share, other) = (token(1), token(2), token(3));
-        identity
-            .set_outbound(admin, registrar, org, org, &[usd], true)
-            .unwrap();
-        identity
-            .set_inbound(admin, registrar, org, org, &[usd], true)
-            .unwrap();
-        let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-        identity.add_member(admin, registrar, org, alice).unwrap();
-        identity.add_member(admin, registrar, org, bob).unwrap();
-
-        assert_eq!(
-            check(usd, alice, bob, TransferKind::InZone),
-            TransferVerdict::Allowed
-        );
-        assert_eq!(
-            check(share, alice, bob, TransferKind::InZone),
-            TransferVerdict::NoEdge
-        );
-        assert_eq!(
-            check(other, alice, bob, TransferKind::InZone),
-            TransferVerdict::NoEdge
-        );
+        org_with_members(identity, registrar, usd);
+        assert!(allows(usd, ALICE, BOB, TransferKind::InZone));
+        assert!(!allows(share, ALICE, BOB, TransferKind::InZone));
+        assert!(!allows(other, ALICE, BOB, TransferKind::InZone));
     });
 }
 
 #[test]
 fn removed_members_keep_only_the_self_withdrawal_exit() {
     with_identity(|identity, registrar| {
-        let admin = Address::repeat_byte(1);
-        let org = identity.create_org(registrar, registrar, admin).unwrap();
         let usd = token(1);
-        identity
-            .set_outbound(admin, registrar, org, org, &[usd], true)
-            .unwrap();
-        identity
-            .set_inbound(admin, registrar, org, org, &[usd], true)
-            .unwrap();
-        let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-        identity.add_member(admin, registrar, org, alice).unwrap();
-        identity.add_member(admin, registrar, org, bob).unwrap();
-
+        let (admin, _) = org_with_members(identity, registrar, usd);
         // Members cannot remove themselves.
         assert_eq!(
-            identity.remove_member(bob, registrar, bob),
+            identity.remove_member(BOB, registrar, BOB),
             Err(identity_error(ZoneIdentityError::unauthorized()))
         );
-        identity.remove_member(admin, registrar, bob).unwrap();
-        assert_eq!(
-            check(usd, alice, bob, TransferKind::InZone),
-            TransferVerdict::NoEdge
-        );
-        assert_eq!(
-            check(usd, bob, bob, TransferKind::Withdrawal),
-            TransferVerdict::SelfWithdrawal
-        );
+        identity.remove_member(admin, registrar, BOB).unwrap();
+        assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
+        assert!(allows(usd, BOB, BOB, TransferKind::Withdrawal));
     });
 }
 
@@ -121,11 +107,10 @@ fn an_address_belongs_to_one_org() {
         let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
         let a = identity.create_org(registrar, registrar, admin_a).unwrap();
         let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-        let alice = Address::repeat_byte(0x11);
-        identity.add_member(admin_a, registrar, a, alice).unwrap();
+        identity.add_member(admin_a, registrar, a, ALICE).unwrap();
         assert_eq!(
-            identity.add_member(admin_b, registrar, b, alice),
-            Err(identity_error(ZoneIdentityError::already_member(alice)))
+            identity.add_member(admin_b, registrar, b, ALICE),
+            Err(identity_error(ZoneIdentityError::already_member(ALICE)))
         );
     });
 }

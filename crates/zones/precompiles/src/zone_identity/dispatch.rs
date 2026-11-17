@@ -26,7 +26,7 @@ impl ZoneIdentity {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-        let registrar = || Self::registrar(l1);
+        let registrar = || l1.read_portal(|portal| &portal.identity_registrar);
 
         dispatch!(
             calldata,

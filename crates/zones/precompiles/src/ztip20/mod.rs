@@ -66,13 +66,15 @@ impl<P: L1StorageReader> TIP20Rules<P> {
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        let enforced = match ZoneIdentity::enforced(&self.l1) {
-            Ok(enforced) => enforced,
-            Err(ZonePrecompileError::Tempo(error)) => return Err(error),
-            Err(error) => return Err(TempoPrecompileError::Fatal(error.to_string())),
-        };
-        let identity = ZoneIdentity::new();
-        match identity.ensure_transfer(enforced, self.token, from, to, TransferKind::InZone) {
+        // Past the T15 check above, so the flag is read directly.
+        let enforced = self.l1.read_portal(|portal| &portal.identity_enforced)?;
+        match ZoneIdentity::new().ensure_transfer(
+            enforced,
+            self.token,
+            from,
+            to,
+            TransferKind::InZone,
+        ) {
             Ok(()) => Ok(CallCheck::Continue),
             Err(ZonePrecompileError::Identity(error)) => {
                 Ok(CallCheck::Revert(error.abi_encode().into()))
@@ -104,19 +106,16 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                 ITIP20::ITIP20Calls::nonces(call) => {
                     check_caller(caller, &[call.owner])
                 }
-                ITIP20::ITIP20Calls::transfer(call) => {
-                    self.admit_transfer(caller, call.to).unwrap_or_else(CallCheck::Error)
-                }
-                ITIP20::ITIP20Calls::transferWithMemo(call) => {
-                    self.admit_transfer(caller, call.to).unwrap_or_else(CallCheck::Error)
-                }
+                ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. })
+                | ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                    to,
+                    ..
+                }) => self.admit_transfer(caller, to).unwrap_or_else(CallCheck::Error),
                 // Checked from the owner whose funds move, whoever the spender is.
-                ITIP20::ITIP20Calls::transferFrom(call) => {
-                    self.admit_transfer(call.from, call.to).unwrap_or_else(CallCheck::Error)
-                }
-                ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-                    self.admit_transfer(call.from, call.to).unwrap_or_else(CallCheck::Error)
-                }
+                ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall { from, to, .. })
+                | ITIP20::ITIP20Calls::transferFromWithMemo(
+                    ITIP20::transferFromWithMemoCall { from, to, .. },
+                ) => self.admit_transfer(from, to).unwrap_or_else(CallCheck::Error),
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
                 | ITIP20::ITIP20Calls::mintWithMemo(_)

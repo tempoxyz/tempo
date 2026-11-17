@@ -23,13 +23,10 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneTestNode, now_secs, signer_at,
+    DEFAULT_TIMEOUT, L1Fixture, WITHDRAWAL_TX_GAS, ZoneTestNode, now_secs, signer_at,
     start_local_zone_with_fixture_and_withdrawal_batch_interval,
 };
 
-/// New storage slots on a zone cost far more than an ordinary transfer's limit.
-const IDENTITY_GAS: u64 = WITHDRAWAL_TX_GAS;
-const GAS_PRICE: u128 = TEMPO_T0_BASE_FEE as u128;
 /// pathUSD each zone account receives before T15, for fees and transfers.
 const FUNDING: u128 = 100_000_000;
 
@@ -55,8 +52,19 @@ impl Party {
         IZoneIdentity::new(ZONE_IDENTITY_ADDRESS, self.provider.clone())
     }
 
-    fn token(&self) -> ITIP20::ITIP20Instance<DynProvider> {
-        ITIP20::new(PATH_USD_ADDRESS, self.provider.clone())
+    /// Sends `call` to `to`. New ZoneIdentity storage slots cost far more than a TIP-20 transfer's
+    /// usual limit, so every transaction gets the withdrawal limit.
+    async fn send(
+        &self,
+        to: Address,
+        call: impl SolCall,
+    ) -> eyre::Result<PendingTransactionBuilder<Ethereum>> {
+        let request = TransactionRequest::default()
+            .to(to)
+            .input(Bytes::from(call.abi_encode()).into())
+            .gas_limit(WITHDRAWAL_TX_GAS)
+            .gas_price(u128::from(TEMPO_T0_BASE_FEE));
+        Ok(self.provider.send_transaction(request).await?)
     }
 
     async fn transfer(
@@ -64,13 +72,14 @@ impl Party {
         to: Address,
         amount: u64,
     ) -> eyre::Result<PendingTransactionBuilder<Ethereum>> {
-        Ok(self
-            .token()
-            .transfer(to, U256::from(amount))
-            .gas(TIP20_TX_GAS)
-            .gas_price(GAS_PRICE)
-            .send()
-            .await?)
+        self.send(
+            PATH_USD_ADDRESS,
+            ITIP20::transferCall {
+                to,
+                amount: U256::from(amount),
+            },
+        )
+        .await
     }
 }
 
@@ -93,12 +102,12 @@ async fn revert_of(
     zone: &ZoneTestNode,
     from: Address,
     to: Address,
-    input: Vec<u8>,
+    call: impl SolCall,
 ) -> eyre::Result<Option<Bytes>> {
     let request = TransactionRequest::default()
         .from(from)
         .to(to)
-        .input(Bytes::from(input).into());
+        .input(Bytes::from(call.abi_encode()).into());
     match zone.provider().call(request.into()).await {
         Ok(_) => Ok(None),
         Err(error) => Ok(Some(
@@ -110,20 +119,29 @@ async fn revert_of(
     }
 }
 
-fn transfer_input(to: Address, amount: u64) -> Vec<u8> {
-    ITIP20::transferCall {
-        to,
-        amount: U256::from(amount),
-    }
-    .abi_encode()
+fn forbids(from: Address, to: Address) -> Bytes {
+    ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, from, to)
+        .abi_encode()
+        .into()
 }
 
-fn forbids(from: Address, to: Address) -> Option<Bytes> {
-    Some(
-        ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, from, to)
-            .abi_encode()
-            .into(),
-    )
+/// Asserts a pathUSD transfer from `from` to `to` succeeds, or reverts with `OrgPolicyForbids`.
+async fn assert_transfer(
+    zone: &ZoneTestNode,
+    from: Address,
+    to: Address,
+    allowed: bool,
+) -> eyre::Result<()> {
+    let call = ITIP20::transferCall {
+        to,
+        amount: U256::ONE,
+    };
+    assert_eq!(
+        revert_of(zone, from, PATH_USD_ADDRESS, call).await?,
+        (!allowed).then(|| forbids(from, to)),
+        "transfer {from} -> {to}"
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -180,34 +198,37 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             U256::from(FUNDING)
         );
     }
-    let block = zone
-        .provider()
-        .get_block_by_number(1.into())
-        .await?
-        .ok_or_eyre("block 1")?;
+    let block_timestamp = async |number: u64| -> eyre::Result<u64> {
+        Ok(zone
+            .provider()
+            .get_block_by_number(number.into())
+            .await?
+            .ok_or_eyre("zone block")?
+            .header
+            .timestamp())
+    };
     assert!(
-        block.header.timestamp() < activation,
+        block_timestamp(1).await? < activation,
         "block 1 must run T14"
     );
-    let org_admin_call = IZoneIdentity::orgAdminCall { orgId: 0 }.abi_encode();
+    let org_admin_request = TransactionRequest::default()
+        .to(ZONE_IDENTITY_ADDRESS)
+        .input(Bytes::from(IZoneIdentity::orgAdminCall { orgId: 0 }.abi_encode()).into());
     let before = zone
         .provider()
-        .call(
-            TransactionRequest::default()
-                .to(ZONE_IDENTITY_ADDRESS)
-                .input(Bytes::from(org_admin_call.clone()).into())
-                .into(),
-        )
+        .call(org_admin_request.clone().into())
         .await?;
     assert!(before.is_empty(), "ZoneIdentity must not exist before T15");
 
     // Approve the outbox while transfers need no edge, for the withdrawals below.
     let approve = alice
-        .token()
-        .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
-        .gas(TIP20_TX_GAS)
-        .gas_price(GAS_PRICE)
-        .send()
+        .send(
+            PATH_USD_ADDRESS,
+            ITIP20::approveCall {
+                spender: ZONE_OUTBOX_ADDRESS,
+                amount: U256::MAX,
+            },
+        )
         .await?;
 
     // T15: the predeploy answers. No registrar is set yet, so org 0's admin is zero.
@@ -215,24 +236,11 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     fixture.enqueue(&t15, zone.deposit_queue(), vec![]);
     zone.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
     assert!(approve.get_receipt().await?.status());
-    let block = zone
-        .provider()
-        .get_block_by_number(2.into())
-        .await?
-        .ok_or_eyre("block 2")?;
     assert!(
-        block.header.timestamp() >= activation,
+        block_timestamp(2).await? >= activation,
         "block 2 must run T15"
     );
-    let after = zone
-        .provider()
-        .call(
-            TransactionRequest::default()
-                .to(ZONE_IDENTITY_ADDRESS)
-                .input(Bytes::from(org_admin_call).into())
-                .into(),
-        )
-        .await?;
+    let after = zone.provider().call(org_admin_request.into()).await?;
     assert_eq!(
         IZoneIdentity::orgAdminCall::abi_decode_returns(&after)?,
         Address::ZERO
@@ -252,41 +260,30 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     // Orgs: A and B for members, and two endpoint orgs Tempo administers.
     let (org_a, org_b, funding, exits) = (1, 2, 3, 4);
-    for admin in [
-        admin_a.address,
-        admin_b.address,
-        registrar.address,
-        registrar.address,
-    ] {
-        let pending = registrar
-            .identity()
-            .createOrg(admin)
-            .gas(IDENTITY_GAS)
-            .gas_price(GAS_PRICE)
-            .send()
-            .await?;
-        assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
-    }
-    for (org, admin) in [
+    let org_admins = [
         (org_a, admin_a.address),
         (org_b, admin_b.address),
         (funding, registrar.address),
         (exits, registrar.address),
-    ] {
+    ];
+    for (_, admin) in org_admins {
+        let pending = registrar
+            .send(
+                ZONE_IDENTITY_ADDRESS,
+                IZoneIdentity::createOrgCall { admin },
+            )
+            .await?;
+        assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    }
+    for (org, admin) in org_admins {
         assert_eq!(registrar.identity().orgAdmin(org).call().await?, admin);
     }
     // Only the registrar creates orgs.
+    let create = IZoneIdentity::createOrgCall {
+        admin: alice.address,
+    };
     assert_eq!(
-        revert_of(
-            &zone,
-            alice.address,
-            ZONE_IDENTITY_ADDRESS,
-            IZoneIdentity::createOrgCall {
-                admin: alice.address
-            }
-            .abi_encode()
-        )
-        .await?,
+        revert_of(&zone, alice.address, ZONE_IDENTITY_ADDRESS, create).await?,
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
@@ -300,35 +297,37 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     ];
     for (admin, org, account) in members {
         let pending = admin
-            .identity()
-            .addMember(org, account)
-            .gas(IDENTITY_GAS)
-            .gas_price(GAS_PRICE)
-            .send()
+            .send(
+                ZONE_IDENTITY_ADDRESS,
+                IZoneIdentity::addMemberCall {
+                    orgId: org,
+                    account,
+                },
+            )
             .await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
     let alice_org = alice.identity().orgOf(alice.address).call().await?;
     assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
     // Membership is private to the account, its org's admin and the registrar.
+    let org_of = IZoneIdentity::orgOfCall {
+        account: alice.address,
+    };
     assert_eq!(
-        revert_of(
-            &zone,
-            dave.address,
-            ZONE_IDENTITY_ADDRESS,
-            IZoneIdentity::orgOfCall {
-                account: alice.address
-            }
-            .abi_encode()
-        )
-        .await?,
+        revert_of(&zone, dave.address, ZONE_IDENTITY_ADDRESS, org_of).await?,
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
     // Edges: A internally; A offers B transfers, which B has not accepted yet; deposits from the
     // approved depositor into A; withdrawals from A to the off-ramp.
     let usd = vec![PATH_USD_ADDRESS];
-    let edges: Vec<(&Party, bool, u64, u64)> = vec![
+    let set_inbound = |to, from| IZoneIdentity::setInboundCall {
+        toOrg: to,
+        fromOrg: from,
+        tokens: usd.clone(),
+        allowed: true,
+    };
+    let edges = [
         (&admin_a, true, org_a, org_a),
         (&admin_a, false, org_a, org_a),
         (&admin_a, true, org_a, org_b),
@@ -338,50 +337,33 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         (&registrar, false, exits, org_a),
     ];
     for (admin, outbound, org, other) in edges {
-        let identity = admin.identity();
         let pending = if outbound {
-            identity
-                .setOutbound(org, other, usd.clone(), true)
-                .gas(IDENTITY_GAS)
-                .gas_price(GAS_PRICE)
-                .send()
-                .await?
+            let call = IZoneIdentity::setOutboundCall {
+                fromOrg: org,
+                toOrg: other,
+                tokens: usd.clone(),
+                allowed: true,
+            };
+            admin.send(ZONE_IDENTITY_ADDRESS, call).await?
         } else {
-            identity
-                .setInbound(org, other, usd.clone(), true)
-                .gas(IDENTITY_GAS)
-                .gas_price(GAS_PRICE)
-                .send()
+            admin
+                .send(ZONE_IDENTITY_ADDRESS, set_inbound(org, other))
                 .await?
         };
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
-    assert!(
+    let edge = async |from, to| {
         admin_a
             .identity()
-            .edge(org_a, org_a, PATH_USD_ADDRESS)
+            .edge(from, to, PATH_USD_ADDRESS)
             .call()
-            .await?
-    );
-    assert!(
-        !admin_a
-            .identity()
-            .edge(org_a, org_b, PATH_USD_ADDRESS)
-            .call()
-            .await?
-    );
+            .await
+    };
+    assert!(edge(org_a, org_a).await?);
+    assert!(!edge(org_a, org_b).await?);
 
     // Until the portal enforces it, edges change nothing.
-    assert_eq!(
-        revert_of(
-            &zone,
-            alice.address,
-            PATH_USD_ADDRESS,
-            transfer_input(carol.address, 1)
-        )
-        .await?,
-        None
-    );
+    assert_transfer(&zone, alice.address, carol.address, true).await?;
 
     fixture.seed_identity_config(registrar.address, true);
 
@@ -396,22 +378,9 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         zone.balance_of(PATH_USD_ADDRESS, carol.address).await?,
         U256::from(FUNDING)
     );
-    assert_eq!(
-        revert_of(
-            &zone,
-            alice.address,
-            PATH_USD_ADDRESS,
-            transfer_input(carol.address, 1)
-        )
-        .await?,
-        forbids(alice.address, carol.address)
-    );
+    assert_transfer(&zone, alice.address, carol.address, false).await?;
     let accept = admin_b
-        .identity()
-        .setInbound(org_b, org_a, usd.clone(), true)
-        .gas(IDENTITY_GAS)
-        .gas_price(GAS_PRICE)
-        .send()
+        .send(ZONE_IDENTITY_ADDRESS, set_inbound(org_b, org_a))
         .await?;
     assert_eq!(mine(&mut fixture, &zone, vec![accept]).await?, [true]);
     let to_carol = alice.transfer(carol.address, 1_000).await?;
@@ -420,36 +389,9 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         zone.balance_of(PATH_USD_ADDRESS, carol.address).await?,
         U256::from(FUNDING + 1_000)
     );
-    assert_eq!(
-        revert_of(
-            &zone,
-            carol.address,
-            PATH_USD_ADDRESS,
-            transfer_input(alice.address, 1)
-        )
-        .await?,
-        forbids(carol.address, alice.address)
-    );
-    assert_eq!(
-        revert_of(
-            &zone,
-            dave.address,
-            PATH_USD_ADDRESS,
-            transfer_input(alice.address, 1)
-        )
-        .await?,
-        forbids(dave.address, alice.address)
-    );
-    assert_eq!(
-        revert_of(
-            &zone,
-            alice.address,
-            PATH_USD_ADDRESS,
-            transfer_input(dave.address, 1)
-        )
-        .await?,
-        forbids(alice.address, dave.address)
-    );
+    assert_transfer(&zone, carol.address, alice.address, false).await?;
+    assert_transfer(&zone, dave.address, alice.address, false).await?;
+    assert_transfer(&zone, alice.address, dave.address, false).await?;
 
     // Deposits: the approved depositor reaches A; any other sender bounces.
     let alice_before = zone.balance_of(PATH_USD_ADDRESS, alice.address).await?;
@@ -491,63 +433,28 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             &zone,
             alice.address,
             ZONE_OUTBOX_ADDRESS,
-            withdraw(dave.address).abi_encode()
+            withdraw(dave.address)
         )
         .await?,
-        forbids(alice.address, dave.address)
+        Some(forbids(alice.address, dave.address))
     );
-    let call = withdraw(offramp);
-    let pending = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, alice.provider.clone())
-        .requestWithdrawal(
-            call.token,
-            call.to,
-            call.amount,
-            call.memo,
-            call.gasLimit,
-            call.zoneFallbackRecipient,
-            call.data,
-            call.revealTo,
-        )
-        .gas(WITHDRAWAL_TX_GAS)
-        .gas_price(GAS_PRICE)
-        .send()
-        .await?;
+    let pending = alice.send(ZONE_OUTBOX_ADDRESS, withdraw(offramp)).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
 
     // Freezing a member stops transfers to it, even inside its org.
-    let freeze = admin_a
-        .identity()
-        .setFrozen(bob.address, true)
-        .gas(IDENTITY_GAS)
-        .gas_price(GAS_PRICE)
-        .send()
-        .await?;
-    assert_eq!(mine(&mut fixture, &zone, vec![freeze]).await?, [true]);
-    assert_eq!(
-        revert_of(
-            &zone,
-            alice.address,
-            PATH_USD_ADDRESS,
-            transfer_input(bob.address, 1)
-        )
-        .await?,
-        forbids(alice.address, bob.address)
-    );
+    let freeze = IZoneIdentity::setFrozenCall {
+        account: bob.address,
+        frozen: true,
+    };
+    let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, freeze).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    assert_transfer(&zone, alice.address, bob.address, false).await?;
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);
     fixture.inject_empty_block(zone.deposit_queue());
     let height = zone.provider().get_block_number().await? + 1;
     zone.wait_for_block_number(height, DEFAULT_TIMEOUT).await?;
-    assert_eq!(
-        revert_of(
-            &zone,
-            dave.address,
-            PATH_USD_ADDRESS,
-            transfer_input(alice.address, 1)
-        )
-        .await?,
-        None
-    );
+    assert_transfer(&zone, dave.address, alice.address, true).await?;
     Ok(())
 }

@@ -12,7 +12,7 @@
 //! multisig admin never has to act on the zone.
 //!
 //! Execution enforces it: zone TIP-20 transfers revert, `ZoneOutbox::requestWithdrawal` reverts and
-//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::ensure_transfer`] denies the move. The
+//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::allows`] denies the move. The
 //! enforcement flag shares a Tempo slot with the transfer opt-in TIP-20 already reads; on the zone
 //! the check reads at most three slots (both members and one per-token edge) whatever the
 //! number of orgs, tokens or edges, and a transfer inside an org costs the same as one between
@@ -81,31 +81,6 @@ pub enum TransferKind {
     Withdrawal,
 }
 
-/// Outcome of [`ZoneIdentity::verdict`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferVerdict {
-    /// The zone does not enforce orgs.
-    NotEnforced,
-    /// The edge between the two orgs includes the token.
-    Allowed,
-    /// An address in no org withdrawing to its own L1 address: the exit for removed members.
-    SelfWithdrawal,
-    /// One side is frozen.
-    Frozen,
-    /// The edge between the two orgs does not include the token.
-    NoEdge,
-}
-
-impl TransferVerdict {
-    /// Whether the transfer may proceed.
-    pub fn is_allowed(self) -> bool {
-        matches!(
-            self,
-            Self::NotEnforced | Self::Allowed | Self::SelfWithdrawal
-        )
-    }
-}
-
 impl ZoneIdentity {
     /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
     /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
@@ -116,39 +91,29 @@ impl ZoneIdentity {
         Ok(l1.read_portal(|portal| &portal.identity_enforced)?)
     }
 
-    /// The registrar the portal admin set on finalized Tempo.
-    pub fn registrar<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<Address> {
-        Ok(l1.read_portal(|portal| &portal.identity_registrar)?)
-    }
-
-    /// Decides whether `token` may move from `from` to `to`. `enforced` is the portal's flag from
-    /// [`Self::enforced`]; when it is off nothing is read. Otherwise it reads at most three slots.
-    pub fn verdict(
+    /// Whether `token` may move from `from` to `to`. `enforced` is the portal's flag; when it is off
+    /// nothing is read. Otherwise it reads at most three slots. An address in no org may always
+    /// withdraw to its own L1 address: the exit for removed members.
+    pub fn allows(
         &self,
         enforced: bool,
         token: Address,
         from: Address,
         to: Address,
         kind: TransferKind,
-    ) -> ZoneResult<TransferVerdict> {
+    ) -> ZoneResult<bool> {
         if !enforced {
-            return Ok(TransferVerdict::NotEnforced);
+            return Ok(true);
         }
-        let sender = self.member(from)?;
-        let recipient = self.member(to)?;
+        let sender = self.members[from].read()?;
+        let recipient = self.members[to].read()?;
         if sender.frozen || recipient.frozen {
-            return Ok(TransferVerdict::Frozen);
+            return Ok(false);
         }
         if kind == TransferKind::Withdrawal && sender.org == 0 && from == to {
-            return Ok(TransferVerdict::SelfWithdrawal);
+            return Ok(true);
         }
-        Ok(
-            if self.orgs[sender.org].edges[recipient.org][token].read()? {
-                TransferVerdict::Allowed
-            } else {
-                TransferVerdict::NoEdge
-            },
-        )
+        Ok(self.orgs[sender.org].edges[recipient.org][token].read()?)
     }
 
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
@@ -160,7 +125,7 @@ impl ZoneIdentity {
         to: Address,
         kind: TransferKind,
     ) -> ZoneResult<()> {
-        if !self.verdict(enforced, token, from, to, kind)?.is_allowed() {
+        if !self.allows(enforced, token, from, to, kind)? {
             return Err(ZoneIdentityError::org_policy_forbids(token, from, to).into());
         }
         Ok(())
@@ -231,7 +196,7 @@ impl ZoneIdentity {
         registrar: Address,
         account: Address,
     ) -> ZoneResult<()> {
-        let member = self.member(account)?;
+        let member = self.members[account].read()?;
         if member.org == 0 {
             return Err(ZoneIdentityError::not_member(account).into());
         }
@@ -247,7 +212,7 @@ impl ZoneIdentity {
         account: Address,
         frozen: bool,
     ) -> ZoneResult<()> {
-        let member = self.member(account)?;
+        let member = self.members[account].read()?;
         if member.org == 0 {
             return Err(ZoneIdentityError::not_member(account).into());
         }
@@ -315,11 +280,6 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// Decoded membership of `account`.
-    pub fn member(&self, account: Address) -> ZoneResult<Member> {
-        Ok(self.members[account].read()?)
-    }
-
     /// Membership of `account` for a caller that may see it: the account itself, its org's admin or
     /// the registrar.
     pub fn org_of(
@@ -328,7 +288,7 @@ impl ZoneIdentity {
         registrar: Address,
         account: Address,
     ) -> ZoneResult<Member> {
-        let member = self.member(account)?;
+        let member = self.members[account].read()?;
         if caller != account && caller != self.org_admin(registrar, member.org)? {
             ensure_caller(caller, registrar)?;
         }
