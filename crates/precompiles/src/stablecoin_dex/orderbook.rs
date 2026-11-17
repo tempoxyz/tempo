@@ -723,7 +723,6 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 /// - `TickOutOfBounds` — tick or flip_tick outside `[MIN_TICK, MAX_TICK]`
 /// - `InvalidTick` — tick is not aligned to [`TICK_SPACING`]
 /// - `InvalidFlipTick` — flip_tick is not aligned to [`TICK_SPACING`] or on the wrong side of tick
-///   (pre-T5: bids need `flip_tick > tick`, asks `flip_tick < tick`; T5+ also allows equal)
 /// - `BelowMinimumOrderSize` — amount is below [`MIN_ORDER_AMOUNT`]
 pub fn validate_order_terms(
     amount: u128,
