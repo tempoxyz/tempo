@@ -16,7 +16,8 @@ WORKDIR /work
 COPY . ./
 # Instrument target code only, not host build scripts/proc macros. Disable LTO (with it the
 # crate-local ThinLTO pass over multiple codegen units): it can optimize away compile-time
-# coverage. Keep assertions and line tables for Antithesis.
+# coverage. Enable the sparse-trie coverage bank explicitly as well as fuzz below.
+# Keep assertions and line tables for Antithesis.
 ENV CARGO_PROFILE_ANTITHESIS_DEBUG=line-tables-only \
     CARGO_PROFILE_ANTITHESIS_DEBUG_ASSERTIONS=true \
     CARGO_PROFILE_ANTITHESIS_OVERFLOW_CHECKS=true \
@@ -36,11 +37,13 @@ RUN --mount=type=cache,id=antithesis-reth-state-root-cargo-registry,target=/usr/
     && cargo build --locked --profile antithesis -p reth-state-root-antithesis \
       --features reth-state-root-antithesis/fuzz --bin reth-state-root-antithesis \
       --target x86_64-unknown-linux-gnu \
-      --config 'target.x86_64-unknown-linux-gnu.rustflags=["-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
+      --config 'target.x86_64-unknown-linux-gnu.rustflags=["--cfg","reth_sparse_trie_coverage","-Cpasses=sancov-module","-Cllvm-args=-sanitizer-coverage-level=3","-Cllvm-args=-sanitizer-coverage-trace-pc-guard","-Cllvm-args=-sanitizer-coverage-pc-table","-Clink-args=-Wl,--build-id"]' \
     && sccache --show-stats \
     && mkdir /out \
     && cp target/x86_64-unknown-linux-gnu/antithesis/reth-state-root-antithesis /out/ \
     && nm /out/reth-state-root-antithesis | grep ' T antithesis_load_libvoidstar$' \
+    && nm --demangle /out/reth-state-root-antithesis \
+      | grep 'reth_trie_sparse::arena::sparse_guidance::coverage_arm' > /dev/null \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_guards \
     && readelf -SW /out/reth-state-root-antithesis | grep __sancov_pcs \
     && readelf -SW /out/reth-state-root-antithesis | grep .debug_info \
