@@ -83,6 +83,9 @@ crate::sol! {
         function seizeLien(bytes32 id, uint128 amount) external;
         /// Ends `authority`'s lien `id` past its expiry. Anyone.
         function releaseExpiredLien(address authority, bytes32 id) external;
+        /// Liens `amount` of `owner`'s available balance as a pledge to the caller, a holder `owner`
+        /// approved for the token, within its allowance. Needs `now < expiresAt <= now + 400 days`.
+        function pledgeFrom(address owner, address token, bytes32 id, uint128 amount, uint64 expiresAt) external;
 
         function getHold(address owner, bytes32 id) external view returns (HoldRecord memory);
         function reserved(address owner, address token) external view returns (uint128);

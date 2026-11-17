@@ -13,9 +13,11 @@
 //! stand-in hold's shortfall may also reach the owner's offline cap. Debt is repaid first from the
 //! owner's incoming credits of the token.
 //!
-//! Liens reserve balance for an authority: a role lien by a holder of the token's `LIEN_ROLE`, or
-//! a pledge by the owner, which always expires. Only the authority releases, reduces or seizes a
-//! lien, and seizure pays the authority. Anyone releases an expired lien.
+//! Liens reserve balance for an authority: a role lien by a holder of the token's `LIEN_ROLE`, a
+//! pledge by the owner, or a pledge a holder places on the owner's balance within the allowance the
+//! owner approved for it. Pledges always expire. Only the authority releases, reduces or seizes a
+//! lien, and seizure pays the authority. Anyone releases an expired lien: like a hold, it keeps its
+//! funds reserved until someone does, since transfers never read the core.
 //!
 //! [TIP-1153]: <https://docs.tempo.xyz/protocol/tips/tip-1153>
 
@@ -40,6 +42,10 @@ use tempo_primitives::TempoEvmKind;
 
 /// Longest a hold may last, in seconds: 31 days.
 pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
+
+/// Longest a pledge a holder places may last, in seconds: 400 days, enough for a 90 to 120 day
+/// reserve with room to spare.
+pub const MAX_PLEDGE_DURATION: u64 = 400 * 24 * 60 * 60;
 
 /// TIP-20 role whose holders may lien balances of that token, granted by the token's
 /// administrator with `grantRole`. Computed as `keccak256("LIEN_ROLE")`.
@@ -78,7 +84,7 @@ struct Shortfall {
 struct Allowance {
     /// Most the holder may have outstanding; zero means revoked.
     allowance: u128,
-    /// Sum of what the holder's live holds still reserve.
+    /// Sum of what the holder's live holds and pledges still reserve.
     outstanding: u128,
 }
 
@@ -122,6 +128,8 @@ struct Lien {
     /// Zero means no expiry; pledges always have one.
     expires_at: u64,
     pledged: bool,
+    /// Whether the authority placed it as a holder, so it counts toward that holder's outstanding.
+    delegated: bool,
 }
 
 /// A loaded hold record.
@@ -631,6 +639,7 @@ impl Reservations {
             call.amount,
             call.expiresAt,
             false,
+            false,
         )
     }
 
@@ -648,7 +657,37 @@ impl Reservations {
             call.amount,
             call.expiresAt,
             true,
+            false,
         )
+    }
+
+    /// Places a pledge to `holder` on `owner`'s balance, within the allowance `owner` approved for
+    /// it. A revoked holder places none, but its existing pledges still release and seize.
+    fn pledge_from(
+        &mut self,
+        holder: Address,
+        call: IReservationCore::pledgeFromCall,
+    ) -> Result<()> {
+        root_only(holder)?;
+        let now = self.now();
+        if call.expiresAt <= now || call.expiresAt > now.saturating_add(MAX_PLEDGE_DURATION) {
+            return Err(ReservationsError::invalid_expiry().into());
+        }
+        let token = TIP20Token::from_address(call.token)?;
+        let mut allowance = self.allowances[call.owner][holder][call.token].read()?;
+        admit_draw(&allowance, call.amount)?;
+        self.place_lien(
+            holder,
+            call.owner,
+            token,
+            call.id,
+            call.amount,
+            call.expiresAt,
+            true,
+            true,
+        )?;
+        allowance.outstanding += call.amount;
+        self.allowances[call.owner][holder][call.token].write(allowance)
     }
 
     #[expect(clippy::too_many_arguments, reason = "the fields of one lien")]
@@ -661,6 +700,7 @@ impl Reservations {
         amount: u128,
         expires_at: u64,
         pledged: bool,
+        delegated: bool,
     ) -> Result<()> {
         let stored = amount_u96(amount)?;
         if !self.liens[authority][id].token.read()?.is_zero() {
@@ -683,6 +723,7 @@ impl Reservations {
             token: token_address,
             expires_at,
             pledged,
+            delegated,
         })?;
         self.emit_event(ReservationsEvent::liened(
             owner,
@@ -712,7 +753,7 @@ impl Reservations {
         }
         let current = lien.amount.to::<u128>();
         let reduced = call.amount.min(current);
-        self.free_lien(&lien, reduced)?;
+        self.free_lien(authority, &lien, reduced)?;
         let remaining = current - reduced;
         self.shrink_lien(authority, id, remaining)?;
         self.emit_event(ReservationsEvent::lien_reduced(
@@ -739,7 +780,7 @@ impl Reservations {
         if !lien.pledged && !token.has_role_internal(authority, LIEN_ROLE)? {
             return Err(ReservationsError::unauthorized().into());
         }
-        let backed = self.free_lien(&lien, call.amount)?;
+        let backed = self.free_lien(authority, &lien, call.amount)?;
         let remaining = current - call.amount;
         self.shrink_lien(authority, id, remaining)?;
         // Seizure pays only the authority, from what the lien still backs.
@@ -921,9 +962,12 @@ impl Reservations {
         Ok(lien)
     }
 
-    /// Frees `amount` of `lien` back to its owner's balance and returns the part reserved funds
-    /// still backed.
-    fn free_lien(&mut self, lien: &Lien, amount: u128) -> Result<u128> {
+    /// Frees `amount` of `authority`'s `lien` back to its owner's balance, returning it to the
+    /// authority's allowance for a holder's pledge, and returns the part reserved funds still backed.
+    fn free_lien(&mut self, authority: Address, lien: &Lien, amount: u128) -> Result<u128> {
+        if lien.delegated {
+            self.return_allowance(lien.owner, authority, lien.token, amount)?;
+        }
         let mut token = TIP20Token::from_address(lien.token)?;
         let backed = self.unreserve(&mut token, lien.owner, amount)?;
         let mut shortfall = self.shortfalls[lien.owner][lien.token].read()?;
@@ -945,7 +989,7 @@ impl Reservations {
 
     fn end_lien(&mut self, authority: Address, id: B256, lien: Lien, expired: bool) -> Result<()> {
         let amount = lien.amount.to::<u128>();
-        self.free_lien(&lien, amount)?;
+        self.free_lien(authority, &lien, amount)?;
         self.liens[authority][id].delete()?;
         self.emit_event(ReservationsEvent::lien_released(
             lien.owner, authority, lien.token, id, amount, expired,
@@ -962,12 +1006,7 @@ impl Reservations {
         add: u128,
     ) -> Result<()> {
         let mut allowance = self.allowances[owner][holder][token].read()?;
-        if allowance.allowance == 0 {
-            return Err(ReservationsError::unauthorized().into());
-        }
-        if allowance.outstanding.saturating_add(check) > allowance.allowance {
-            return Err(ReservationsError::allowance_exceeded().into());
-        }
+        admit_draw(&allowance, check)?;
         if add != 0 {
             allowance.outstanding += add;
             self.allowances[owner][holder][token].write(allowance)?;
@@ -975,7 +1014,7 @@ impl Reservations {
         Ok(())
     }
 
-    /// Lowers what a holder has outstanding by `amount` its holds no longer reserve.
+    /// Lowers what a holder has outstanding by `amount` its holds and pledges no longer reserve.
     fn return_allowance(
         &mut self,
         owner: Address,
@@ -1167,6 +1206,17 @@ fn ensure_payable(token: &TIP20Token, from: Address, to: Address) -> Result<()> 
 fn ensure_receivable(token: &TIP20Token, from: Address, to: Address) -> Result<()> {
     if to.is_zero() || to == from || token.paused()? || !token.is_recipient_authorized(to)? {
         return Err(ReservationsError::policy_forbids().into());
+    }
+    Ok(())
+}
+
+/// Refuses a holder drawing `check` more on `allowance`: revoked, or past its allowance.
+fn admit_draw(allowance: &Allowance, check: u128) -> Result<()> {
+    if allowance.allowance == 0 {
+        return Err(ReservationsError::unauthorized().into());
+    }
+    if allowance.outstanding.saturating_add(check) > allowance.allowance {
+        return Err(ReservationsError::allowance_exceeded().into());
     }
     Ok(())
 }

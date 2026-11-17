@@ -125,7 +125,8 @@ impl<P: L1StorageReader> ReservationRules<P> {
             | C::releaseLien(_)
             | C::reduceLien(_)
             | C::seizeLien(_)
-            | C::releaseExpiredLien(_) => self.admit_write()?,
+            | C::releaseExpiredLien(_)
+            | C::pledgeFrom(_) => self.admit_write()?,
             C::getHold(IReservationCore::getHoldCall { owner, id }) => {
                 Self::admit_hold(caller, owner, id)?
             }

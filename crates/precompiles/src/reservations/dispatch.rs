@@ -42,6 +42,7 @@ impl Precompile for Reservations {
                     releaseExpiredLien(call) => mutate(call, msg_sender, |_, c| {
                         self.release_expired_lien(c.authority, c.id)
                     }),
+                    pledgeFrom(call) => mutate(call, msg_sender, |sender, c| self.pledge_from(sender, c)),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),

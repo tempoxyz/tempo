@@ -14,6 +14,7 @@ use tempo_contracts::precompiles::IReservationCore::IReservationCoreCalls;
 
 const NOW: u64 = 1_000;
 const EXPIRY: u64 = NOW + 600;
+const DAY: u64 = 24 * 60 * 60;
 
 struct Fixture {
     admin: Address,
@@ -203,6 +204,19 @@ impl Fixture {
             self.owner,
             IReservationCore::pledgeCall {
                 authority,
+                token: self.token.address(),
+                id,
+                amount,
+                expiresAt: expires_at,
+            },
+        )
+    }
+
+    fn pledge_from(&mut self, id: B256, amount: u128, expires_at: u64) -> Result<()> {
+        self.reservations.pledge_from(
+            self.holder,
+            IReservationCore::pledgeFromCall {
+                owner: self.owner,
                 token: self.token.address(),
                 id,
                 amount,
@@ -1186,6 +1200,198 @@ fn test_pledges_expire_and_seize_to_the_authority() -> eyre::Result<()> {
 }
 
 #[test]
+fn test_holder_pledges_draw_on_the_allowance() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        let (pledge, hold) = (B256::random(), B256::random());
+        let reserve_expiry = NOW + 90 * DAY;
+        assert_eq!(
+            err!(f.pledge_from(pledge, 100, reserve_expiry)),
+            ReservationsError::unauthorized().into()
+        );
+        f.approve(300)?;
+        f.reservations.clear_emitted_events();
+        f.pledge_from(pledge, 200, reserve_expiry)?;
+        f.reservations
+            .assert_emitted_events(vec![ReservationsEvent::liened(
+                f.owner,
+                f.holder,
+                f.token.address(),
+                pledge,
+                200,
+                reserve_expiry,
+                true,
+            )]);
+        let lien = f.reservations.lien_of(f.holder, pledge)?;
+        assert_eq!(
+            (lien.owner, lien.amount, lien.expiresAt, lien.pledged),
+            (f.owner, 200, reserve_expiry, true)
+        );
+        assert_eq!(
+            (f.outstanding()?, f.reserved()?, f.available()?),
+            (200, 200, 800)
+        );
+        assert_eq!(f.reservations.liened_of(f.owner, f.token.address())?, 200);
+
+        // Holds and pledges share one allowance.
+        assert_eq!(
+            err!(f.hold_from(hold, 101)),
+            ReservationsError::allowance_exceeded().into()
+        );
+        f.hold_from(hold, 100)?;
+        assert_eq!(f.outstanding()?, 300);
+        assert_eq!(
+            err!(f.pledge_from(B256::random(), 1, reserve_expiry)),
+            ReservationsError::allowance_exceeded().into()
+        );
+        assert_eq!(
+            err!(f.pledge_from(pledge, 1, reserve_expiry)),
+            ReservationsError::allowance_exceeded().into()
+        );
+
+        // Reducing, releasing a hold and seizing each free the allowance.
+        f.reservations.reduce_lien(
+            f.holder,
+            IReservationCore::reduceLienCall {
+                id: pledge,
+                amount: 50,
+            },
+        )?;
+        assert_eq!(f.outstanding()?, 250);
+        f.release(f.holder, hold)?;
+        assert_eq!(f.outstanding()?, 150);
+        f.seize(f.holder, pledge, 100)?;
+        assert_eq!(f.outstanding()?, 50);
+        assert_eq!((f.reserved()?, f.available()?), (50, 850));
+        f.reservations.release_lien(f.holder, pledge)?;
+        assert_eq!(
+            (f.outstanding()?, f.reserved()?, f.available()?),
+            (0, 0, 900)
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_revoked_holder_pledges_still_release_and_seize() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        let (seized, released) = (B256::random(), B256::random());
+        let reserve_expiry = NOW + 120 * DAY;
+        f.approve(500)?;
+        f.pledge_from(seized, 300, reserve_expiry)?;
+        f.pledge_from(released, 100, reserve_expiry)?;
+        f.approve(0)?;
+        assert_eq!(
+            err!(f.pledge_from(B256::random(), 1, reserve_expiry)),
+            ReservationsError::unauthorized().into()
+        );
+        assert_eq!(f.outstanding()?, 400);
+
+        // Only the holder acts on its pledges, and seizure is capped by the pledge.
+        for stranger in [f.owner, f.payee, Address::random()] {
+            assert_eq!(
+                err!(f.seize(stranger, seized, 1)),
+                ReservationsError::lien_not_found().into()
+            );
+        }
+        assert_eq!(
+            err!(f.seize(f.holder, seized, 301)),
+            ReservationsError::invalid_amount().into()
+        );
+        f.reservations.clear_emitted_events();
+        f.seize(f.holder, seized, 300)?;
+        f.reservations
+            .assert_emitted_events(vec![ReservationsEvent::lien_seized(
+                f.owner,
+                f.holder,
+                f.token.address(),
+                seized,
+                300,
+                0,
+            )]);
+        // Seizure pays the holder only.
+        assert_eq!(
+            (
+                f.balance(f.holder)?,
+                f.balance(f.payee)?,
+                f.balance(f.owner)?
+            ),
+            (U256::from(300), U256::ZERO, U256::from(700))
+        );
+        // Seizing all of it ends the pledge.
+        assert_eq!(
+            err!(f.reservations.release_lien(f.holder, seized)),
+            ReservationsError::lien_not_found().into()
+        );
+        f.reservations.release_lien(f.holder, released)?;
+        assert_eq!(
+            (f.outstanding()?, f.reserved()?, f.available()?),
+            (0, 0, 700)
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_holder_pledges_expire_within_their_bound() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        f.approve(2_000)?;
+        for expires_at in [0, NOW, NOW + MAX_PLEDGE_DURATION + 1] {
+            assert_eq!(
+                err!(f.pledge_from(B256::random(), 10, expires_at)),
+                ReservationsError::invalid_expiry().into()
+            );
+        }
+        // The longest pledge may outlast any hold.
+        f.pledge_from(B256::random(), 10, NOW + MAX_PLEDGE_DURATION)?;
+        assert!(MAX_PLEDGE_DURATION > MAX_HOLD_DURATION);
+        assert_eq!(
+            err!(f.pledge_from(B256::random(), 991, NOW + DAY)),
+            ReservationsError::insufficient_available().into()
+        );
+        assert_eq!(
+            err!(f.pledge_from(B256::random(), 0, NOW + DAY)),
+            ReservationsError::invalid_amount().into()
+        );
+        assert_eq!(f.outstanding()?, 10);
+
+        // A 90-day reserve.
+        let id = B256::random();
+        let reserve_expiry = NOW + 90 * DAY;
+        f.pledge_from(id, 300, reserve_expiry)?;
+        assert_eq!(
+            err!(f.reservations.release_expired_lien(f.holder, id)),
+            ReservationsError::lien_not_expired().into()
+        );
+        StorageCtx.set_timestamp(U256::from(reserve_expiry));
+        assert_eq!(
+            err!(f.seize(f.holder, id, 1)),
+            ReservationsError::invalid_expiry().into()
+        );
+        // It stays reserved and outstanding until someone releases it.
+        assert_eq!((f.outstanding()?, f.reserved()?), (310, 310));
+        f.reservations.clear_emitted_events();
+        f.reservations.release_expired_lien(f.holder, id)?;
+        f.reservations
+            .assert_emitted_events(vec![ReservationsEvent::lien_released(
+                f.owner,
+                f.holder,
+                f.token.address(),
+                id,
+                300,
+                true,
+            )]);
+        assert_eq!(
+            (f.outstanding()?, f.reserved()?, f.available()?),
+            (10, 10, 990)
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
     at_t15(|| {
         let mut f = Fixture::new(1_000)?;
@@ -1388,6 +1594,31 @@ enum Op {
     ReleaseLien {
         id: usize,
     },
+    PledgeFrom {
+        owner: usize,
+        id: usize,
+        amount: u128,
+        ttl: u64,
+    },
+    ReducePledge {
+        id: usize,
+        amount: u128,
+    },
+    SeizePledge {
+        id: usize,
+        amount: u128,
+    },
+    ReleasePledge {
+        id: usize,
+    },
+    ReleaseExpiredLien {
+        id: usize,
+        pledge: bool,
+    },
+    Approve {
+        owner: usize,
+        revoke: bool,
+    },
     Warp {
         seconds: u64,
     },
@@ -1395,6 +1626,8 @@ enum Op {
 
 const OWNERS: usize = 2;
 const IDS: usize = 6;
+/// Pledge ids the holder places.
+const PLEDGES: usize = 3;
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     let owner = 0..OWNERS;
@@ -1416,6 +1649,12 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => (0..4usize, 0..4usize, 1..300u64).prop_map(|(from, to, amount)| Op::Transfer { from, to, amount }),
         1 => (owner, 0..2usize, 1..200u128, 0..900u64).prop_map(|(owner, id, amount, ttl)| Op::Lien { owner, id, amount, ttl }),
         1 => (0..2usize).prop_map(|id| Op::ReleaseLien { id }),
+        2 => (0..OWNERS, 0..PLEDGES, 1..300u128, 1..900u64).prop_map(|(owner, id, amount, ttl)| Op::PledgeFrom { owner, id, amount, ttl }),
+        1 => (0..PLEDGES, 1..300u128).prop_map(|(id, amount)| Op::ReducePledge { id, amount }),
+        1 => (0..PLEDGES, 1..300u128).prop_map(|(id, amount)| Op::SeizePledge { id, amount }),
+        1 => (0..PLEDGES).prop_map(|id| Op::ReleasePledge { id }),
+        1 => (0..PLEDGES, any::<bool>()).prop_map(|(id, pledge)| Op::ReleaseExpiredLien { id, pledge }),
+        1 => (0..OWNERS, any::<bool>()).prop_map(|(owner, revoke)| Op::Approve { owner, revoke }),
         2 => (0..400u64).prop_map(|seconds| Op::Warp { seconds }),
     ]
 }
@@ -1431,6 +1670,7 @@ struct World {
     stranger: Address,
     ids: Vec<B256>,
     lien_ids: Vec<B256>,
+    pledge_ids: Vec<B256>,
     /// Hold records seen settled.
     settled: BTreeSet<(usize, usize)>,
     /// Captured and held amounts first seen past expiry.
@@ -1506,6 +1746,7 @@ impl World {
             stranger,
             ids: (0..IDS).map(|_| B256::random()).collect(),
             lien_ids: (0..2).map(|_| B256::random()).collect(),
+            pledge_ids: (0..PLEDGES).map(|_| B256::random()).collect(),
             settled: BTreeSet::new(),
             expired: BTreeMap::new(),
         })
@@ -1654,6 +1895,54 @@ impl World {
             Op::ReleaseLien { id } => self
                 .reservations
                 .release_lien(self.authority, self.lien_ids[id]),
+            Op::PledgeFrom {
+                owner,
+                id,
+                amount,
+                ttl,
+            } => self.reservations.pledge_from(
+                self.holder,
+                IReservationCore::pledgeFromCall {
+                    owner: self.owners[owner],
+                    token,
+                    id: self.pledge_ids[id],
+                    amount,
+                    expiresAt: now + ttl,
+                },
+            ),
+            Op::ReducePledge { id, amount } => self.reservations.reduce_lien(
+                self.holder,
+                IReservationCore::reduceLienCall {
+                    id: self.pledge_ids[id],
+                    amount,
+                },
+            ),
+            Op::SeizePledge { id, amount } => self.reservations.seize_lien(
+                self.holder,
+                IReservationCore::seizeLienCall {
+                    id: self.pledge_ids[id],
+                    amount,
+                },
+            ),
+            Op::ReleasePledge { id } => self
+                .reservations
+                .release_lien(self.holder, self.pledge_ids[id]),
+            Op::ReleaseExpiredLien { id, pledge } => {
+                let (authority, id) = if pledge {
+                    (self.holder, self.pledge_ids[id])
+                } else {
+                    (self.authority, self.lien_ids[id % 2])
+                };
+                self.reservations.release_expired_lien(authority, id)
+            }
+            Op::Approve { owner, revoke } => self.reservations.approve_holder(
+                self.owners[owner],
+                IReservationCore::approveHolderCall {
+                    holder: self.holder,
+                    token,
+                    allowance: if revoke { 0 } else { ALLOWANCE },
+                },
+            ),
             Op::Warp { seconds } => {
                 StorageCtx.set_timestamp(U256::from(now + seconds));
                 Ok(())
@@ -1729,10 +2018,20 @@ impl World {
                     liened += lien.amount;
                 }
             }
+            for id in self.pledge_ids.clone() {
+                let lien = self.reservations.lien_of(self.holder, id)?;
+                if lien.owner == owner {
+                    // 7. A holder's pledge always expires, within the pledge bound.
+                    assert!(lien.pledged);
+                    assert!(lien.expiresAt != 0 && lien.expiresAt <= now + MAX_PLEDGE_DURATION);
+                    liened += lien.amount;
+                    delegated += lien.amount;
+                }
+            }
             // 2. Reserved is what live holds and liens hold.
             assert_eq!(self.reservations.reserved_of(owner, token)?, held + liened);
             assert_eq!(self.reservations.liened_of(owner, token)?, liened);
-            // 4. Outstanding is what the holder's live holds hold, within its allowance.
+            // 4. Outstanding is what the holder's live holds and pledges hold, within its allowance.
             let allowance = self.reservations.allowance(owner, self.holder, token)?;
             assert_eq!(allowance.outstanding, delegated);
             assert!(allowance.outstanding <= ALLOWANCE);
