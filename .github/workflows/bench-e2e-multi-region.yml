@@ -180,6 +180,7 @@ on:
           - state-read-dependent
           - state-read-cold-lowmem
           - state-read-dependent-lowmem
+          - state-read-cold-disk
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -336,7 +337,8 @@ jobs:
       # The *-lowmem state-read presets cap tempo-node at 45 GB, below the 100 GB bloat, so reads hit disk.
       # Dependent and capped state-read runs include ~1 tx per block; give the pool reset more than txgen's 300s receipt timeout.
       TEMPO_BENCH_POST_WARMUP_RESET_TIMEOUT_SECONDS: ${{ startsWith(inputs.preset, 'state-read-') && '900' || '' }}
-      BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || '' }}
+      # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk.
+      BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || (endsWith(inputs.preset, '-disk') && '16G' || '') }}
       BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
       BENCH_INPUT_ACCOUNTS: ${{ inputs.accounts || '1000' }}
@@ -436,8 +438,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          # Bench branch only: needs tempoxyz/tempo-multi-region-benchmark#504 for --node-memory-max.
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'ejh/node-memory-max' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'main' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
