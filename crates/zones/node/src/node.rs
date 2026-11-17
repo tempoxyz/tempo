@@ -809,6 +809,7 @@ where
             l1_provider.clone(),
             tokio::runtime::Handle::current(),
         );
+        let l1_state = get_code_l1_state.clone();
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
@@ -991,6 +992,7 @@ where
                 attestation,
                 settlements,
                 portal_address: self.portal_address,
+                l1_state: l1_state.clone(),
                 sequencer,
                 peer_tips,
                 status: role_status,
@@ -1027,7 +1029,7 @@ where
                     .clone()
                     .expect("sequencer mode configures deposit decryption keys"),
                 self.portal_address,
-                l1_provider.clone(),
+                l1_state.clone(),
                 proof_collector.clone(),
             )
             .with_deposit_allowlist(config.deposit_allowlist.clone());

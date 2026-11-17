@@ -1322,7 +1322,12 @@ impl ZoneTestNode {
                 sequencer_signer.address(),
                 deposit_decryption_keys,
                 portal_address,
-                l1_provider.clone(),
+                zone_l1::state::L1StateProvider::new_raw(
+                    Default::default(),
+                    l1_state_cache.clone(),
+                    l1_provider.clone(),
+                    tokio::runtime::Handle::current(),
+                ),
                 None,
             )
             .with_deposit_allowlist(deposit_allowlist);

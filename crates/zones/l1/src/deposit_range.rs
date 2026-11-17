@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::L1StateProvider;
 use alloy_rpc_types_eth::Filter;
 use eyre::OptionExt as _;
 use tempo_precompiles::{
@@ -80,16 +81,16 @@ impl DepositQueuePosition {
 
 /// Returns how many of the `owed` entries fall in the range of the full Zone import at `anchor`.
 pub async fn fetch_range_len(
-    l1_provider: &impl Provider<TempoNetwork>,
+    l1_state: &L1StateProvider,
     portal_address: Address,
     anchor: NumHash,
     owed: usize,
 ) -> eyre::Result<usize> {
-    let read = |slot: U256| {
-        l1_provider
-            .get_storage_at(portal_address, slot)
-            .block_id(BlockId::hash_canonical(anchor.hash))
-            .into_future()
+    let read = |slot: U256| async move {
+        l1_state
+            .get_storage_async(portal_address, slot.into(), anchor.number)
+            .await
+            .map(|word| word.into())
     };
     let (count_word, buckets_word, base_word) = futures::try_join!(
         read(slots::DEPOSIT_COUNT),

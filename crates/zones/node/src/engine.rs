@@ -40,7 +40,6 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256};
-use alloy_provider::DynProvider;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes as EthPayloadAttributes};
 use eyre::{OptionExt, WrapErr as _};
 use reth_chainspec::EthereumHardforks;
@@ -52,7 +51,6 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
@@ -62,7 +60,7 @@ use crate::deposit_allowlist::DepositAllowlist;
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
-    fetch_range_len,
+    fetch_range_len, state::L1StateProvider,
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
@@ -212,8 +210,8 @@ pub struct ZoneEngine {
     encryption_keys: EncryptionKeyRing,
     /// ZonePortal address on L1 — used as context in HKDF key derivation.
     portal_address: Address,
-    /// Tempo L1 RPC provider, used to read the Portal's deposit checkpoints at each full import.
-    l1_provider: DynProvider<TempoNetwork>,
+    /// Cached L1 state, used to read the Portal's deposit checkpoints at each full import.
+    l1_state: L1StateProvider,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
     /// Proof WAL writer invoked after execution and before canonicalization.
@@ -233,7 +231,7 @@ impl ZoneEngine {
         fee_recipient: Address,
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
-        l1_provider: DynProvider<TempoNetwork>,
+        l1_state: L1StateProvider,
         proof_collector: Option<ProofCollectorHandle>,
     ) -> Self {
         Self {
@@ -246,7 +244,7 @@ impl ZoneEngine {
             fee_recipient,
             encryption_keys,
             portal_address,
-            l1_provider,
+            l1_state,
             production_permit: None,
             proof_collector,
             deposit_allowlist: None,
@@ -388,8 +386,10 @@ impl ZoneEngine {
             (TempoImport::CheckpointOnly(checkpoint_headers), 0)
         } else {
             let owed = self.deposit_queue.owed_deposit_count(l1_num_hash)?;
-            let range_len = if self.chain_spec.tempo_hardfork_at(timestamp_secs).is_t15() {
-                fetch_range_len(&self.l1_provider, self.portal_address, l1_num_hash, owed).await?
+            let range_len = if self.chain_spec.tempo_hardfork_at(timestamp_secs).is_t15()
+                && !self.portal_address.is_zero()
+            {
+                fetch_range_len(&self.l1_state, self.portal_address, l1_num_hash, owed).await?
             } else {
                 owed
             };
