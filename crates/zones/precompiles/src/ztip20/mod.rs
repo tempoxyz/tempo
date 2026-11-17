@@ -565,7 +565,7 @@ mod tests {
         {
             let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || {
-                crate::zone_identity::seed_for_test(&[(alice, 1, false), (bob, 2, false)], &[])
+                crate::zone_identity::seed_for_test(&[(alice, 1), (bob, 2)], &[])
             })?;
         }
 

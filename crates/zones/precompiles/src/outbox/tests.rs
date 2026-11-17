@@ -703,9 +703,7 @@ fn request_withdrawal_follows_zone_identity_edges() -> eyre::Result<()> {
         ..spec()
     }
     .apply()?;
-    env.with_storage(|| {
-        crate::zone_identity::seed_for_test(&[(ALICE, 1, false), (BOB, 2, true)], &[])
-    })?;
+    env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 1), (BOB, 2)], &[]))?;
     assert_revert(
         env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
         tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, BOB),

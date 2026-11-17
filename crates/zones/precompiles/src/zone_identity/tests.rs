@@ -49,12 +49,10 @@ fn member_word_round_trips() {
         Member::default(),
         Member {
             org: u64::MAX,
-            l1_only: true,
             frozen: false,
         },
         Member {
             org: 7,
-            l1_only: false,
             frozen: true,
         },
     ] {
@@ -86,8 +84,8 @@ fn edges_need_both_halves() {
         let bit = identity.register_token(registrar, usd).unwrap();
         let mask = U256::from(1) << bit;
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-        identity.add_member(admin_a, a, alice, false).unwrap();
-        identity.add_member(admin_b, b, bob, false).unwrap();
+        identity.add_member(admin_a, a, alice).unwrap();
+        identity.add_member(admin_b, b, bob).unwrap();
 
         identity.set_outbound(admin_a, a, b, mask).unwrap();
         assert_eq!(
@@ -147,8 +145,8 @@ fn edges_are_per_token() {
         identity.set_outbound(admin, org, org, mask).unwrap();
         identity.set_inbound(admin, org, org, mask).unwrap();
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-        identity.add_member(admin, org, alice, false).unwrap();
-        identity.add_member(admin, org, bob, false).unwrap();
+        identity.add_member(admin, org, alice).unwrap();
+        identity.add_member(admin, org, bob).unwrap();
 
         assert_eq!(
             check(usd, alice, bob, TransferKind::InZone),
@@ -187,7 +185,7 @@ fn unaffiliated_addresses_are_denied_except_self_withdrawal() {
 }
 
 #[test]
-fn l1_only_endpoints_only_take_deposits_and_withdrawals() {
+fn endpoint_orgs_gate_deposit_senders() {
     with_identity(|identity, _, registrar| {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, admin).unwrap();
@@ -195,10 +193,8 @@ fn l1_only_endpoints_only_take_deposits_and_withdrawals() {
         let usd = token(1);
         let mask = U256::from(1) << identity.register_token(registrar, usd).unwrap();
         let (endpoint, alice) = (Address::repeat_byte(0x55), Address::repeat_byte(0x11));
-        identity
-            .add_member(registrar, funding, endpoint, true)
-            .unwrap();
-        identity.add_member(admin, org, alice, false).unwrap();
+        identity.add_member(registrar, funding, endpoint).unwrap();
+        identity.add_member(admin, org, alice).unwrap();
         identity
             .set_outbound(registrar, funding, org, mask)
             .unwrap();
@@ -208,9 +204,10 @@ fn l1_only_endpoints_only_take_deposits_and_withdrawals() {
             check(usd, endpoint, alice, TransferKind::Deposit),
             TransferVerdict::Allowed
         );
+        // The same edge allows the endpoint address on the zone; edges, not the address, decide.
         assert_eq!(
             check(usd, endpoint, alice, TransferKind::InZone),
-            TransferVerdict::L1OnlyInZone
+            TransferVerdict::Allowed
         );
         // A sender outside the endpoint org bounces.
         let stranger = Address::repeat_byte(0x66);
@@ -231,8 +228,8 @@ fn frozen_and_removed_members_lose_their_edges() {
         identity.set_outbound(admin, org, org, mask).unwrap();
         identity.set_inbound(admin, org, org, mask).unwrap();
         let (alice, bob) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
-        identity.add_member(admin, org, alice, false).unwrap();
-        identity.add_member(admin, org, bob, false).unwrap();
+        identity.add_member(admin, org, alice).unwrap();
+        identity.add_member(admin, org, bob).unwrap();
 
         identity.set_frozen(admin, bob, true).unwrap();
         assert_eq!(
@@ -265,9 +262,9 @@ fn an_address_belongs_to_one_org() {
         let a = identity.create_org(registrar, admin_a).unwrap();
         let b = identity.create_org(registrar, admin_b).unwrap();
         let alice = Address::repeat_byte(0x11);
-        identity.add_member(admin_a, a, alice, false).unwrap();
+        identity.add_member(admin_a, a, alice).unwrap();
         assert_eq!(
-            identity.add_member(admin_b, b, alice, false),
+            identity.add_member(admin_b, b, alice),
             Err(identity_error(ZoneIdentityError::already_member(alice)))
         );
     });
@@ -279,7 +276,7 @@ fn membership_is_visible_to_account_admin_and_registrar_only() {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, admin).unwrap();
         let alice = Address::repeat_byte(0x11);
-        identity.add_member(admin, org, alice, false).unwrap();
+        identity.add_member(admin, org, alice).unwrap();
         for caller in [alice, admin, registrar] {
             assert_eq!(identity.org_of(caller, alice).unwrap().org, org);
         }

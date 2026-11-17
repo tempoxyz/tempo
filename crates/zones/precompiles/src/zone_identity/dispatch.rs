@@ -50,7 +50,7 @@ impl ZoneIdentity {
                         self.register_token(caller, call.token)
                     }),
                     addMember(call) => mutate(call, msg_sender, |caller, call| {
-                        self.add_member(caller, call.orgId, call.account, call.l1Only)
+                        self.add_member(caller, call.orgId, call.account)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
                         self.remove_member(caller, call.account)
@@ -82,7 +82,6 @@ impl ZoneIdentity {
                         self.org_of(msg_sender, call.account).map(|member| {
                             IZoneIdentity::orgOfReturn {
                                 orgId: member.org,
-                                l1Only: member.l1_only,
                                 frozen: member.frozen,
                             }
                         })

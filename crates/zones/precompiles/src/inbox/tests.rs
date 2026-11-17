@@ -798,9 +798,7 @@ fn zone_identity_bounces_deposits_without_an_edge() -> eyre::Result<()> {
     let fixture = EncryptedDepositFixture::new();
     seed_encryption_key(&env, &fixture);
     let (deposit, decryption) = encrypted_deposit(&fixture, fixture.to, 500);
-    env.with_storage(|| {
-        crate::zone_identity::seed_for_test(&[(ALICE, 2, true), (fixture.to, 1, false)], &[])
-    })?;
+    env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 2), (fixture.to, 1)], &[]))?;
     let queued = env.queue_deposit(DepositType::Deposit, deposit);
 
     env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
@@ -822,7 +820,7 @@ fn zone_identity_credits_deposits_along_an_edge() -> eyre::Result<()> {
     let (deposit, decryption) = encrypted_deposit(&fixture, fixture.to, 500);
     env.with_storage(|| {
         crate::zone_identity::seed_for_test(
-            &[(ALICE, 2, true), (fixture.to, 1, false)],
+            &[(ALICE, 2), (fixture.to, 1)],
             &[(2, 1, PATH_USD_ADDRESS)],
         )
     })?;

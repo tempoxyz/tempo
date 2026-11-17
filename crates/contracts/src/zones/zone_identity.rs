@@ -23,7 +23,7 @@ crate::sol! {
         function registerToken(address token) external returns (uint16 bit);
 
         // Org admin.
-        function addMember(uint64 orgId, address account, bool l1Only) external;
+        function addMember(uint64 orgId, address account) external;
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
         function setOutbound(uint64 fromOrg, uint64 toOrg, uint256 tokenMask) external;
@@ -34,7 +34,7 @@ crate::sol! {
         function enforced() external view returns (bool);
         function orgAdmin(uint64 orgId) external view returns (address);
         function tokenBit(address token) external view returns (uint16 bit, bool registered);
-        function orgOf(address account) external view returns (uint64 orgId, bool l1Only, bool frozen);
+        function orgOf(address account) external view returns (uint64 orgId, bool frozen);
         function edge(uint64 fromOrg, uint64 toOrg) external view returns (uint256 tokenMask);
 
         error Unauthorized();
