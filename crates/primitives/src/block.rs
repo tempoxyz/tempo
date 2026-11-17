@@ -28,7 +28,7 @@ pub struct TempoBlockExt {
     ///
     /// Downstream, block execution relies on this: when it is `None`, the
     /// boundary block's DKG outcome check (`check_boundary_outcome` in
-    /// `tempo-evm`) is skipped, since only consensus verifies that outcome.
+    /// `tempo-evm`) is skipped, since such blocks never reach consensus.
     pub proposer_public_key: Option<PublicKey>,
 }
 
