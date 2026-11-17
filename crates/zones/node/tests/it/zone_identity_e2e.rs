@@ -288,24 +288,19 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
-    // Members, each added by its org's admin.
+    // Members, added in one batch per org by its admin.
     let members = [
-        (&admin_a, org_a, alice.address),
-        (&admin_a, org_a, bob.address),
-        (&admin_b, org_b, carol.address),
-        (&registrar, funding, bridge),
-        (&registrar, exits, offramp),
+        (&admin_a, org_a, vec![alice.address, bob.address]),
+        (&admin_b, org_b, vec![carol.address]),
+        (&registrar, funding, vec![bridge]),
+        (&registrar, exits, vec![offramp]),
     ];
-    for (admin, org, account) in members {
-        let pending = admin
-            .send(
-                ZONE_IDENTITY_ADDRESS,
-                IZoneIdentity::addMemberCall {
-                    orgId: org,
-                    account,
-                },
-            )
-            .await?;
+    for (admin, org, accounts) in members {
+        let call = IZoneIdentity::addMembersCall {
+            orgId: org,
+            accounts,
+        };
+        let pending = admin.send(ZONE_IDENTITY_ADDRESS, call).await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
     let alice_org = alice.identity().orgOf(alice.address).call().await?;

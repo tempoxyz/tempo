@@ -63,8 +63,7 @@ impl ZoneIdentity {
     /// nothing is read. Otherwise neither address may be frozen, and the edge between their sides
     /// must allow the token: Zone to Zone for a transfer, the sender's Tempo side to the Zone for a
     /// deposit, and the Zone to the recipient's Tempo side for a withdrawal. A deposit or
-    /// withdrawal that misses falls back to org 0's Tempo side, meaning any address on Tempo. An
-    /// address in no org may always withdraw to its own address on Tempo.
+    /// withdrawal that misses falls back to org 0's Tempo side, meaning any address on Tempo.
     pub fn allows(
         &self,
         enforced: bool,
@@ -104,8 +103,7 @@ impl ZoneIdentity {
                     || (sender.org != 0 && allowed(0, recipient.org)?)
             }
             TransferKind::Withdrawal => {
-                (sender.org == 0 && from == to)
-                    || allowed(sender.org, recipient.org)?
+                allowed(sender.org, recipient.org)?
                     || (recipient.org != 0 && allowed(sender.org, 0)?)
             }
         })
@@ -165,23 +163,32 @@ impl ZoneIdentity {
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
-    /// Adds `account`, which must be in no org, to `org`.
-    pub fn add_member(
+    /// Adds `accounts`, each in no org, to `org`. Reverts, adding none, if any is already in an org.
+    pub fn add_members(
         &mut self,
         caller: Address,
         registrar: Address,
         org: u64,
-        account: Address,
+        accounts: &[Address],
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
-        // A virtual address never holds funds; moves to it are checked as its master.
-        if org == 0 || account.is_zero() || account.is_virtual() {
+        if org == 0 {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        if self.members[account].read()? != Member::default() {
-            return Err(ZoneIdentityError::already_member(account).into());
+        // Check every account first, so a rejected batch writes nothing.
+        for &account in accounts {
+            // A virtual address never holds funds; moves to it are checked as its master.
+            if account.is_zero() || account.is_virtual() {
+                return Err(ZoneIdentityError::invalid_address().into());
+            }
+            if self.members[account].read()? != Member::default() {
+                return Err(ZoneIdentityError::already_member(account).into());
+            }
         }
-        self.write_member(account, Member { org, frozen: false })
+        for &account in accounts {
+            self.write_member(account, Member { org, frozen: false })?;
+        }
+        Ok(())
     }
 
     /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
@@ -469,8 +476,9 @@ mod tests {
                 true,
             )
             .unwrap();
-        identity.add_member(admin, registrar, org, ALICE).unwrap();
-        identity.add_member(admin, registrar, org, BOB).unwrap();
+        identity
+            .add_members(admin, registrar, org, &[ALICE, BOB])
+            .unwrap();
         (admin, org)
     }
 
@@ -529,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn removed_members_keep_only_the_self_withdrawal_exit() {
+    fn removed_members_lose_every_edge() {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, _) = org_with_members(identity, registrar, usd);
@@ -540,7 +548,8 @@ mod tests {
             );
             identity.remove_member(admin, registrar, BOB).unwrap();
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
-            assert!(allows(usd, BOB, BOB, TransferKind::Withdrawal));
+            // No exit of its own: org 0 has no edges unless the registrar sets them.
+            assert!(!allows(usd, BOB, BOB, TransferKind::Withdrawal));
         });
     }
 
@@ -550,11 +559,15 @@ mod tests {
             let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
             let a = identity.create_org(registrar, registrar, admin_a).unwrap();
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            identity.add_member(admin_a, registrar, a, ALICE).unwrap();
+            identity
+                .add_members(admin_a, registrar, a, &[ALICE])
+                .unwrap();
+            // The whole batch is refused, so BOB is not added either.
             assert_eq!(
-                identity.add_member(admin_b, registrar, b, ALICE),
+                identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
                 Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
+            assert_eq!(identity.members[BOB].read().unwrap().org, 0);
         });
     }
 
@@ -569,7 +582,7 @@ mod tests {
                 .unwrap();
             let offramp = Address::repeat_byte(0x33);
             identity
-                .add_member(exit_admin, registrar, exits, offramp)
+                .add_members(exit_admin, registrar, exits, &[offramp])
                 .unwrap();
             // Withdrawals from the org to the exit org's Tempo addresses, not transfers to it.
             for caller in [admin, exit_admin] {
@@ -617,7 +630,7 @@ mod tests {
             // A virtual address of a member's master is in the member's org.
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             identity
-                .add_member(admin, registrar, org, VIRTUAL_MASTER)
+                .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
                 .unwrap();
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             assert!(
@@ -626,7 +639,7 @@ mod tests {
             );
             // Virtual addresses themselves cannot be members.
             assert_eq!(
-                identity.add_member(admin, registrar, org, virtual_addr),
+                identity.add_members(admin, registrar, org, &[virtual_addr]),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
             // An unregistered virtual recipient is denied, not an error, for every kind of move.

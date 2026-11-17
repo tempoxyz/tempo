@@ -27,7 +27,7 @@ crate::sol! {
         function setOrgAdmin(uint64 orgId, address admin) external;
 
         // Org admin.
-        function addMember(uint64 orgId, address account) external;
+        function addMembers(uint64 orgId, address[] calldata accounts) external;
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
         function setEdge(OrgKey from, OrgKey to, address[] calldata tokens, bool allowed) external;
