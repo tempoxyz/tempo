@@ -44,6 +44,10 @@ done
 sleep 5
 docker compose kill -s SIGKILL validator-3
 docker compose start validator-3
+# The non-signing follower must reconnect and catch up from its persisted datadir.
+docker compose kill -s SIGKILL follower
+sleep 5
+docker compose start follower
 deadline=$((SECONDS + 240))
 while ((SECONDS < deadline)); do
     id=$(docker compose ps -aq driver)
@@ -51,13 +55,18 @@ while ((SECONDS < deadline)); do
     if [[ "$state" == exited ]]; then
         [[ "$(docker inspect --format '{{.State.ExitCode}}' "$id")" == 0 ]]
         docker compose cp driver:/state/recovery-result.json "$artifacts/recovery-result.json"
-        jq -e '.recovered == true and (.heights | length == 4)' "$artifacts/recovery-result.json"
+        jq -e '.recovered == true and (.heights | length == 5)' "$artifacts/recovery-result.json"
         docker compose cp driver:/state/sdk.jsonl "$artifacts/sdk.jsonl"
         cp "$artifacts/sdk.jsonl" "$artifacts/all-sdk.jsonl"
-        for node in validator-{0..3}; do
+        for node in validator-{0..3} follower; do
             docker compose cp "$node:/data/sdk.jsonl" "$artifacts/$node-sdk.jsonl"
             cat "$artifacts/$node-sdk.jsonl" >> "$artifacts/all-sdk.jsonl"
         done
+        jq -es '
+            [.[] | .antithesis_assert? | select(.hit and .condition) | .message]
+            | index("Follow mode execution never rejects a finalized block as invalid") != null
+              and index("Follow mode forkchoice never rejects a finalized tip as invalid") != null
+        ' "$artifacts/follower-sdk.jsonl"
         python3 "$root/contrib/antithesis/tempo-cluster/tests/check_sdk.py" "$artifacts/all-sdk.jsonl"
         exit 0
     fi

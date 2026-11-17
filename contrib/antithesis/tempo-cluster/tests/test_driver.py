@@ -175,6 +175,182 @@ class Checks(unittest.TestCase):
         self.assertEqual(self.cluster.successful_receipts, 1)
         self.assertEqual(self.cluster.successful_height, 8)
 
+    def test_follower_is_optional_and_not_a_transaction_endpoint(self):
+        self.assertEqual(self.cluster.observed_urls, self.cluster.urls)
+        cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+        self.assertEqual(cluster.urls, ["a", "b", "c", "d"])
+        self.assertEqual(cluster.observed_urls, ["a", "b", "c", "d", "follower"])
+        self.assertEqual(len(cluster.highest), 5)
+        for node in range(4):
+            with patch.object(driver, "command", return_value=0) as command:
+                cluster.public_mix(Mock(draw=Mock(side_effect=[node, 123])))
+            self.assertEqual(command.call_args.args[0][1:4], ["burst", cluster.urls[node], "123"])
+
+    def test_lagging_follower_participates_in_same_height_fingerprints(self):
+        self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+        self.cluster.scanned_height = 7
+        for field in (None, "hash", "stateRoot", "receiptsRoot", "transactionsRoot"):
+            with self.subTest(field=field):
+                self.calls.clear()
+                def block(url, tag):
+                    value = make_block((8 if url == "follower" else 11)
+                                       if tag == "finalized" else int(tag, 16))
+                    if url == "follower" and field is not None:
+                        value[field] = "0x" + "f" * 64
+                    return value
+                with patch.object(driver, "block", side_effect=block):
+                    self.assertTrue(self.cluster.observe())
+                self.assertEqual(self.cluster.heights, [11, 11, 11, 11, 8])
+                if field is None:
+                    self.assertTrue(all(ok for ok, _ in self.calls), self.calls)
+                else:
+                    self.assertIn((False, "Validators agree on finalized block and state roots"), self.calls)
+
+    def test_lagging_follower_cannot_change_previously_finalized_checkpoint(self):
+        self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+        self.cluster.highest[-1] = 9
+        self.cluster.anchors[9] = driver.fingerprint(make_block(9))
+        def block(url, tag):
+            return make_block(8 if tag == "finalized" else int(tag, 16),
+                              "f" if url == "follower" and tag == "0x9" else "a")
+        with patch.object(driver, "block", side_effect=block):
+            self.cluster.observe()
+        self.assertIn((False, "Finalized checkpoints remain immutable"), self.calls)
+
+    def test_unavailable_follower_does_not_fail_validator_safety(self):
+        self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+        self.cluster.scanned_height = 7
+        def block(url, tag):
+            if url == "follower":
+                raise driver.RpcError("partition")
+            return make_block(8)
+        with patch.object(driver, "block", side_effect=block):
+            self.assertFalse(self.cluster.observe())
+        self.assertEqual(self.cluster.heights, [8, 8, 8, 8, None])
+        self.assertEqual(list(self.cluster.anchors), [8])
+        self.assertTrue(all(ok for ok, _ in self.calls), self.calls)
+
+    def test_follower_does_not_replace_validator_agreement_samples(self):
+        self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+        def block(url, tag):
+            if url in ("b", "c", "d"):
+                raise driver.RpcError("partition")
+            return make_block(8)
+        with patch.object(driver, "block", side_effect=block):
+            self.assertFalse(self.cluster.observe())
+        self.assertEqual(self.calls, [])
+
+    def test_follower_receipts_are_checked_and_unknown_results_retried(self):
+        for outcome in ("mismatch", "missing", "unavailable"):
+            with self.subTest(outcome=outcome):
+                self.calls.clear()
+                self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+                self.cluster.scanned_height = 7
+                def rpc(url, method, params):
+                    if url == "follower":
+                        if outcome == "missing":
+                            return None
+                        if outcome == "unavailable":
+                            raise driver.RpcError("partition")
+                        return {"blockHash": "wrong", "status": "0x1"}
+                    return {"blockHash": make_block(8)["hash"], "status": "0x1"}
+                with patch.object(driver, "block", return_value=make_block(8, txs=["tx"])), \
+                        patch.object(driver, "rpc", side_effect=rpc) as receipts:
+                    self.cluster.observe()
+                self.assertEqual([call.args[0] for call in receipts.call_args_list],
+                                 self.cluster.observed_urls)
+                if outcome == "mismatch":
+                    self.assertIn((False, "Finalized transaction receipts match their block"), self.calls)
+                else:
+                    self.assertTrue(all(ok for ok, _ in self.calls), self.calls)
+                    self.assertEqual(self.cluster.scanned_height, 7)
+                    self.assertEqual(self.cluster.successful_receipts, 0)
+
+    def test_recovery_requires_follower_availability_and_current_catchup(self):
+        for follower in ("lagging", "unavailable", "recovers"):
+            with self.subTest(follower=follower):
+                self.calls.clear()
+                cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+                cluster.highest = [9] * 4 + [20]
+                now, rounds = [0], [0]
+                def observe():
+                    rounds[0] += 1
+                    height = 25 + rounds[0]
+                    current = height if follower == "recovers" and rounds[0] > 1 else 8
+                    if follower == "unavailable":
+                        current = None
+                    cluster.heights = [height] * 4 + [current]
+                    cluster.highest = [height] * 4 + [max(20, current or 0)]
+                    cluster.successful_height = min(h for h in cluster.heights if h is not None)
+                    cluster.successful_receipts = rounds[0]
+                    return current is not None
+                with patch.object(cluster, "observe", side_effect=observe), \
+                        patch.object(driver, "time", types.SimpleNamespace(
+                            monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
+                        patch.object(driver, "RECOVERY_TIMEOUT", 4), \
+                        patch.object(driver, "command", return_value=0) as send, \
+                        patch.object(driver.Path, "write_text"), \
+                        patch.object(driver.os, "_exit") as exit_timeline:
+                    cluster.recover(None)
+                recovered = follower == "recovers"
+                self.assertIn((recovered, "Cluster resumes finality and successful transactions after faults stop"), self.calls)
+                exit_timeline.assert_called_once_with(0 if recovered else 1)
+                if recovered:
+                    self.assertEqual(send.call_args.args[0][1:4], ["burst", "a", "99"])
+                    self.assertEqual(rounds[0], 3)
+                else:
+                    send.assert_not_called()
+
+    def test_readiness_validates_follower_chain_and_finality(self):
+        for outcome in ("wrong_chain", "unavailable", "not_finalized"):
+            with self.subTest(outcome=outcome):
+                cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
+                attempts = [0]
+                def rpc(url, method, params):
+                    if url == "follower":
+                        attempts[0] += 1
+                        if attempts[0] == 1 and outcome == "wrong_chain":
+                            return "0x1"
+                        if attempts[0] == 1 and outcome == "unavailable":
+                            raise driver.RpcError("partition")
+                    return "0x539"
+                def block(url, tag):
+                    return make_block(1 if url == "follower" and attempts[0] == 1
+                                      and outcome == "not_finalized" else 8)
+                with patch.object(driver, "rpc", side_effect=rpc), \
+                        patch.object(driver, "block", side_effect=block), \
+                        patch.object(driver.time, "sleep") as sleep:
+                    cluster.wait_ready()
+                self.assertEqual(attempts[0], 2)
+                sleep.assert_called_once_with(1)
+
+    def test_workload_prepares_validators_but_waits_for_follower_setup_tail(self):
+        urls = ["a", "b", "c", "d"]
+        cluster = driver.Cluster(urls, follower_url="follower")
+        follower_reads = [0]
+        def block(url, tag):
+            if url == "follower" and tag == "finalized":
+                follower_reads[0] += 1
+                return make_block(7 if follower_reads[0] == 1 else 8)
+            return make_block(8)
+        with patch.dict(os.environ, {"RPC_URLS": ",".join(urls), "FOLLOWER_RPC_URL": "follower"}), \
+                patch.object(driver, "Cluster", return_value=cluster) as constructor, \
+                patch.object(cluster, "wait_ready"), \
+                patch.object(driver, "block", side_effect=block) as blocks, \
+                patch.object(driver, "command", return_value=0) as command, \
+                patch.object(driver.time, "sleep") as sleep, \
+                patch.object(driver.Path, "exists", return_value=True), \
+                patch.object(driver.lifecycle, "setup_complete") as setup, \
+                patch.object(driver.assertions, "reachable"), \
+                patch.object(driver.hegel, "run_state_machine"):
+            driver.workload.__wrapped__(None)
+        constructor.assert_called_once_with(urls, follower_url="follower")
+        command.assert_called_once_with(["/driver/txgen.sh", "prepare", "a"], 300)
+        self.assertEqual(set(call.args[0] for call in blocks.call_args_list), set(urls + ["follower"]))
+        sleep.assert_called_once_with(0.2)
+        self.assertEqual(setup.call_args.args[0]["validators"], 4)
+        self.assertEqual(setup.call_args.args[0]["followers"], 1)
+
 
 class FaultPause(unittest.TestCase):
     def setUp(self):
@@ -269,9 +445,9 @@ class FaultPause(unittest.TestCase):
                     driver.pause_faults_for_recovery()
 
     def test_lease_starts_before_helper_and_covers_recovery_overrun(self):
-        # Observe can read 4 heads, 2 checkpoints/node, 4 pinned blocks and
-        # 64 (block, receipt) pairs; a final burst is bounded to 20 seconds.
-        overrun = (4 + 2 * 4 + 4 + 64 * 2) * driver.RPC_TIMEOUT + 20 + 1
+        # Four validators and a follower: heads, 2 checkpoints/node, pinned
+        # blocks, and 64 blocks with a receipt/node; a burst takes 20 seconds.
+        overrun = (5 + 2 * 5 + 5 + 64 * 6) * driver.RPC_TIMEOUT + 20 + 1
         self.assertGreater(driver.RECOVERY_PAUSE_SECONDS,
                            driver.FAULT_CONTROL_TIMEOUT + driver.RECOVERY_TIMEOUT + overrun)
         self.assertLess(driver.RECOVERY_PAUSE_SECONDS, 86400)

@@ -118,12 +118,15 @@ def command(args, timeout):
 
 
 class Cluster(hegel.StateMachine):
-    def __init__(self, urls):
+    def __init__(self, urls, follower_url=None):
+        # Transaction injection is validator-only. The follower participates in
+        # read-side safety and recovery, never in the four-validator committee.
         self.urls = urls
+        self.observed_urls = list(urls) + ([follower_url] if follower_url else [])
         self.anchors = collections.OrderedDict()
         self.anchor_cursor = 0
-        self.highest = [0] * len(urls)
-        self.heights = [None] * len(urls)
+        self.highest = [0] * len(self.observed_urls)
+        self.heights = [None] * len(self.observed_urls)
         self.start_height = 0
         self.scanned_height = 0
         self.started = time.monotonic()
@@ -136,7 +139,7 @@ class Cluster(hegel.StateMachine):
 
     def observe(self):
         heads = []
-        self.heights = [None] * len(self.urls)
+        self.heights = [None] * len(self.observed_urls)
         checkpoints = list(self.anchors.items())
         checked = checkpoints[-1:]
         if checkpoints:
@@ -144,7 +147,7 @@ class Cluster(hegel.StateMachine):
             if old not in checked:
                 checked.append(old)
             self.anchor_cursor += 1
-        for node, url in enumerate(self.urls):
+        for node, url in enumerate(self.observed_urls):
             try:
                 head = block(url, "finalized")
                 height = int(head["number"], 16)
@@ -162,16 +165,16 @@ class Cluster(hegel.StateMachine):
                                            "actual": fingerprint(actual)})
             except RpcError:
                 continue
-        if len(heads) < 2:
+        if sum(node < len(self.urls) for node, _ in heads) < 2:
             return False
         common = min(height for _, height in heads)
         samples = []
         for node, _ in heads:
             try:
-                samples.append((node, block(self.urls[node], hex(common))))
+                samples.append((node, block(self.observed_urls[node], hex(common))))
             except RpcError:
                 pass
-        if len(samples) < 2:
+        if sum(node < len(self.urls) for node, _ in samples) < 2:
             return False
         expected = fingerprint(samples[0][1])
         assertions.always(all(fingerprint(value) == expected for _, value in samples),
@@ -190,16 +193,20 @@ class Cluster(hegel.StateMachine):
         for height in range(max(self.scanned_height, self.start_height) + 1,
                             min(common, max(self.scanned_height, self.start_height) + 64) + 1):
             try:
-                finalized = block(self.urls[samples[0][0]], hex(height))
+                finalized = block(self.observed_urls[samples[0][0]], hex(height))
                 if finalized["transactions"]:
                     txhash = finalized["transactions"][0]
-                    receipt = rpc(self.urls[samples[0][0]], "eth_getTransactionReceipt", [txhash])
-                    if receipt is None:
+                    receipts = []
+                    for node, _ in samples:
+                        receipt = rpc(self.observed_urls[node], "eth_getTransactionReceipt", [txhash])
+                        if receipt is not None:
+                            assertions.always(receipt["blockHash"] == finalized["hash"],
+                                              "Finalized transaction receipts match their block",
+                                              {"node": node, "tx": txhash, "receipt": receipt})
+                            receipts.append(receipt)
+                    if len(receipts) != len(samples):
                         break
-                    assertions.always(receipt["blockHash"] == finalized["hash"],
-                                      "Finalized transaction receipts match their block",
-                                      {"tx": txhash, "receipt": receipt})
-                    if receipt.get("status") == "0x1" and txhash not in self.seen_receipts:
+                    if receipts[0].get("status") == "0x1" and txhash not in self.seen_receipts:
                         self.successful_receipts += 1
                         self.successful_height = max(self.successful_height, height)
                         self.seen_receipts[txhash] = None
@@ -210,14 +217,14 @@ class Cluster(hegel.StateMachine):
                 break
         assertions.sometimes(self.successful_receipts > 0, "Public mix transactions execute successfully",
                              {"successful_samples": self.successful_receipts, "bursts": self.bursts})
-        return len(heads) == len(self.urls) and len(samples) == len(self.urls)
+        return len(heads) == len(self.observed_urls) and len(samples) == len(self.observed_urls)
 
     def wait_ready(self):
         previous = None
         while True:
             try:
-                chains = [rpc(url, "eth_chainId", []) for url in self.urls]
-                heads = [block(url, "finalized") for url in self.urls]
+                chains = [rpc(url, "eth_chainId", []) for url in self.observed_urls]
+                heads = [block(url, "finalized") for url in self.observed_urls]
                 if all(chain == "0x539" for chain in chains) and min(int(h["number"], 16) for h in heads) > 1:
                     return
                 reason = f"waiting for chain 1337 consensus finality: {chains}, {[h['number'] for h in heads]}"
@@ -266,7 +273,7 @@ class Cluster(hegel.StateMachine):
         target = max(self.highest) + 3
         before = self.successful_receipts
         deadline = time.monotonic() + RECOVERY_TIMEOUT
-        print(f"Recovery assertions start: all validators must finalize past {target}", flush=True)
+        print(f"Recovery assertions start: all observed nodes must finalize past {target}", flush=True)
         # Rules run on one worker, so no burst overlaps the recovery window.
         sent = False
         sent_height = None
@@ -295,18 +302,20 @@ def workload(tc):
     urls = os.getenv("RPC_URLS", ",".join(URLS)).split(",")
     if len(urls) != 4:
         raise ValueError("RPC_URLS must contain exactly four validator endpoints")
-    cluster = Cluster(urls)
+    follower_url = os.getenv("FOLLOWER_RPC_URL", "").strip() or None
+    cluster = Cluster(urls, follower_url=follower_url)
     cluster.wait_ready()
     if command(["/driver/txgen.sh", "prepare", urls[0]], 300) != 0:
         raise RuntimeError("Public-mix setup failed; setup_complete was not emitted")
     cluster.wait_ready()
     # bench confirms inclusion; wait for every setup-tail block to finalize before
     # choosing the baseline, so setup receipts cannot satisfy workload progress.
-    setup_tail = max(int(block(url, "latest")["number"], 16) for url in urls)
-    while min(int(block(url, "finalized")["number"], 16) for url in urls) < setup_tail:
+    setup_tail = max(int(block(url, "latest")["number"], 16) for url in cluster.observed_urls)
+    while min(int(block(url, "finalized")["number"], 16) for url in cluster.observed_urls) < setup_tail:
         time.sleep(0.2)
-    cluster.start_height = max(int(block(url, "finalized")["number"], 16) for url in urls)
-    lifecycle.setup_complete({"validators": 4, "preset": "public-mix", "height": cluster.start_height})
+    cluster.start_height = max(int(block(url, "finalized")["number"], 16) for url in cluster.observed_urls)
+    lifecycle.setup_complete({"validators": 4, "followers": int(follower_url is not None),
+                              "preset": "public-mix", "height": cluster.start_height})
     print("setup_complete: waiting for /workload-active", flush=True)
     while not Path("/workload-active").exists():
         time.sleep(0.1)

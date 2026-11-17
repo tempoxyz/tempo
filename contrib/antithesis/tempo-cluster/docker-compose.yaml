@@ -48,6 +48,16 @@ services:
       cluster:
         ipv4_address: 10.21.0.14
         mac_address: 02:42:0a:15:00:0e
+  follower:
+    <<: *validator
+    container_name: follower
+    hostname: follower
+    command: ["10.21.0.15", "follower"]
+    volumes: [follower-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.15
+        mac_address: 02:42:0a:15:00:0f
   driver:
     image: ${WORKLOAD_IMAGE:-tempo-cluster-antithesis-workload:latest}
     platform: linux/amd64
@@ -56,6 +66,7 @@ services:
     init: true
     environment:
       RPC_URLS: http://validator-0:8545,http://validator-1:8545,http://validator-2:8545,http://validator-3:8545
+      FOLLOWER_RPC_URL: http://follower:8545
       ANTITHESIS_SDK_LOCAL_OUTPUT: /state/sdk.jsonl
       EVENTUALLY_AFTER_SECONDS: ${EVENTUALLY_AFTER_SECONDS:-0}
       DISABLE_EVENTUALLY: ${DISABLE_EVENTUALLY:-0}
@@ -70,6 +81,7 @@ volumes:
   validator-1-data:
   validator-2-data:
   validator-3-data:
+  follower-data:
   driver-state:
 
 networks:

@@ -1,8 +1,12 @@
 # Tempo consensus cluster on Antithesis
 
-Four independent real-consensus validators (3-of-4 quorum), fixed IPs/keys and
-persistent execution/consensus datadirs. No `--dev`, fake finality, process restart
-loops or Compose restart policies. A 100-block epoch exercises DKG transitions.
+Four independent real-consensus validators (3-of-4 quorum) and one non-signing,
+certified follower, with fixed IPs/keys and persistent execution/consensus datadirs.
+No `--dev`, fake finality, process restart loops or Compose restart policies.
+A 100-block epoch exercises DKG transitions. The follower uses
+`--follow ws://validator-0:8546` (certification stays enabled), has its own execution peer
+identity and datadir, and has no validator signing key or share. It remains subject
+to the same injected faults as the validators.
 
 Signing-key fixtures are plaintext hex, generated with `--unencrypted-signing-keys`.
 These disposable keys are not secrets; skipping passphrase encryption keeps
@@ -12,20 +16,22 @@ Normal localnet generation remains encrypted by default.
 The `public-mix` preset combines token transfers, memos, MPP payments, vault
 deposits/withdrawals and synthetic zone settlement transactions.
 The Python driver uses Hegel, a state-machine testing library, to choose actions.
-It is excluded from container/network fault injection and waits for all validators to finalize,
+It is excluded from container/network fault injection and waits for all validators and the follower to finalize,
 funds accounts and confirms the `public-mix` preset setup before
 reporting setup complete. Its sole `first_` command activates workload generation.
-Hegel chooses each burst's seed and RPC endpoint; the pinned real `txgen-tempo`
+Hegel chooses each burst's seed and validator RPC endpoint; no transaction traffic
+is submitted directly to the follower. `RPC_URLS` lists the four validators and
+`FOLLOWER_RPC_URL` adds the follower to observation and recovery. The pinned real `txgen-tempo`
 and `bench` tools generate/sign/send 32 transactions with eight concurrent sends.
 Failed/time-out bursts have unknown outcomes and are not safety violations.
 
-Properties: finalized RPC markers may temporarily lag after restart. Validators
+Properties: finalized RPC markers may temporarily lag after restart. Validators and the follower
 agree on block/state, transaction and receipt roots at the same finalized height.
 Retained checkpoints stay immutable, including readable checkpoints above a
 lagging marker on a node that previously finalized them. Sampled finalized receipts
 match their block; successful workload transactions and new finality are reached. A recovery action requests a bounded
 quiet period through the platform's `ANTITHESIS_STOP_FAULTS` helper, requires all
-four validators' current finalized markers to advance beyond the pre-recovery
+four validators' and the follower's current finalized markers to advance beyond the pre-recovery
 high-water mark and observes another successful finalized transaction,
 then exits. This does not prove admission of a specific recovery-burst transaction.
 The model retains 64 checkpoints and 256 receipt IDs. RPC reads time out in 2s;
@@ -51,9 +57,10 @@ contrib/antithesis/tempo-cluster/scripts/smoke.sh
 ```
 
 Smoke uses prebuilt images (`TEMPO_IMAGE`/`WORKLOAD_IMAGE` override them), fresh
-volumes, activates the test command, kills/restarts one validator and forces
+volumes, activates the test command, kills/restarts one validator and the follower, then forces
 recovery after 60s of workload.
-It checks SDK safety/progress and copies evidence to `.bench-tmp/tempo-cluster-smoke`,
+It requires five-node recovery and both certified-follower execution/forkchoice
+assertions to have run successfully. It checks SDK safety/progress and copies evidence to `.bench-tmp/tempo-cluster-smoke`,
 then removes the local cluster. Do not run alongside another copy with the same
 container names/subnet. Unit tests need `antithesis==0.4.1 hegeltest==0.4.7`:
 `python3 -m unittest discover -s contrib/antithesis/tempo-cluster/tests -v`.
