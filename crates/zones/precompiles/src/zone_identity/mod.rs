@@ -45,9 +45,6 @@ pub struct ZoneIdentity {
     pub orgs: Mapping<u64, Org>,
     /// Each address's membership.
     pub members: Mapping<Address, Member>,
-    /// Both halves of the transfer, deposit and withdrawal edges between two orgs for a token,
-    /// keyed by sending org, receiving org and token.
-    pub edges: Mapping<u64, Mapping<u64, Mapping<Address, Edges>>>,
 }
 
 /// One org's configuration.
@@ -55,6 +52,9 @@ pub struct ZoneIdentity {
 pub struct Org {
     /// Key that manages the org's members and its halves of edges.
     pub admin: Address,
+    /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
+    /// receiving org and token.
+    pub edges: Mapping<u64, Mapping<Address, Edges>>,
 }
 
 /// Both halves of the three edges between two orgs for one token, packed into one slot. A move
@@ -155,7 +155,7 @@ impl ZoneIdentity {
             return Ok(false);
         }
         let allowed = |from: u64, to: u64| -> ZoneResult<bool> {
-            Ok(self.edges[from][to][token].read()?.allows(kind))
+            Ok(self.orgs[from].edges[to][token].read()?.allows(kind))
         };
         // A deposit or withdrawal that misses falls back to org 0's Tempo side: any address there.
         Ok(match kind {
@@ -297,7 +297,7 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::unauthorized().into());
         }
         for &token in tokens {
-            let slot = &mut self.edges[from.orgId][to.orgId][token];
+            let slot = &mut self.orgs[from.orgId].edges[to.orgId][token];
             let mut edges = slot.read()?;
             let (from_ok, to_ok) = edges.halves(kind);
             if sending {
@@ -360,7 +360,9 @@ impl ZoneIdentity {
             ensure_caller(caller, registrar)?;
         }
         let kind = edge_kind(&from, &to)?;
-        Ok(self.edges[from.orgId][to.orgId][token].read()?.allows(kind))
+        Ok(self.orgs[from.orgId].edges[to.orgId][token]
+            .read()?
+            .allows(kind))
     }
 
     fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
