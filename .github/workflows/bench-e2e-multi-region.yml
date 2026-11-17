@@ -338,6 +338,8 @@ jobs:
       # Dependent and capped state-read runs include ~1 tx per block; give the pool reset more than txgen's 300s receipt timeout.
       TEMPO_BENCH_POST_WARMUP_RESET_TIMEOUT_SECONDS: ${{ startsWith(inputs.preset, 'state-read-') && '900' || '' }}
       # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk.
+      # Runs with a long consensus target block time can't cover every proposer in the auto warmup window; skip warmup.
+      BENCH_INPUT_WARMUP_TIMEOUT: ${{ contains(inputs.baseline-args, 'target-block-time') && '0' || '' }}
       BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || (endsWith(inputs.preset, '-disk') && '16G' || '') }}
       BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
@@ -626,6 +628,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
             ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
@@ -682,6 +685,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
             ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
@@ -731,6 +735,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
             ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
@@ -780,6 +785,7 @@ jobs:
             --regions "${{ steps.regions.outputs.regions }}" \
             --instance-type "$BENCH_INPUT_INSTANCE_TYPE" \
             --local-ssd-count "$BENCH_INPUT_LOCAL_SSD_COUNT" \
+            ${BENCH_INPUT_WARMUP_TIMEOUT:+--warmup-timeout "$BENCH_INPUT_WARMUP_TIMEOUT"} \
             ${BENCH_INPUT_NODE_MEMORY_MAX:+--node-memory-max "$BENCH_INPUT_NODE_MEMORY_MAX"} \
             --metrics-push-url "${{ env.BENCH_INPUT_METRICS == 'true' && secrets.BENCH_VICTORIAMETRICS_URL || '' }}" \
             --logs-push-url "${{ secrets.TEMPO_TELEMETRY_URL || secrets.BENCH_LOGS_PUSH_URL }}" \
