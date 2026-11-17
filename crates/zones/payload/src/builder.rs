@@ -351,7 +351,6 @@ where
                 pool_tx_size_budget,
                 &mut unlisted,
             );
-            drop(builder_cell);
             // Stop prewarming txs that can no longer make this block.
             drop(best_txs);
             if !unlisted.is_empty() {
