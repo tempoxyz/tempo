@@ -269,8 +269,8 @@ impl ZoneInbox {
         Ok(self.token_indices[token].read()?)
     }
 
-    /// Gives each token of the batch that starts at position `batch_start` its index, its position
-    /// + 1. The first time, it also indexes the tokens enabled before `ZoneIdentity` activated,
+    /// Gives each token of the batch that starts at position `batch_start` its index: its position
+    /// plus one. The first time, it also indexes the tokens enabled before `ZoneIdentity` activated,
     /// reading each through `earlier`. Positions from [`MAX_IDENTITY_TOKENS`] on get no index.
     fn index_enabled_tokens(
         &mut self,
