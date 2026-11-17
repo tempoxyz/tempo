@@ -3,8 +3,9 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
+    time::Duration,
 };
 
 use alloy_consensus::transaction::Recovered;
@@ -20,6 +21,10 @@ use reth_transaction_pool::{
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{AASequenceId, StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
+
+/// How long [`BestTransactionsPrewarming::next_until`] waits for the coordinator between two
+/// checks of its stop condition.
+const COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
@@ -95,6 +100,12 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                // The build is over, so do not pull from the source for advances that are still
+                // queued. All coordinators run on one named thread, and the next build's
+                // coordinator cannot start until this one returns.
+                if ctx.prewarm.is_stopped() {
+                    return;
+                }
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
@@ -258,6 +269,52 @@ impl BestTransactionsPrewarming {
             .flatten()
             .find(|tx| !invalidated.contains(&tx.tx))
     }
+
+    /// Returns the next transaction like [`Iterator::next`], but returns `None` once
+    /// `should_stop` reports true.
+    ///
+    /// The coordinator answers in its own time: it can be busy with the source iterator or a
+    /// backlog of commands, and a parallel result only arrives after its transaction executed.
+    /// `should_stop` is checked before every candidate and every [`COORDINATOR_POLL_INTERVAL`]
+    /// while waiting, so the caller decides how long a slow coordinator may hold it up.
+    pub(crate) fn next_until(
+        &mut self,
+        mut should_stop: impl FnMut() -> bool,
+    ) -> Option<PrewarmedTransaction> {
+        loop {
+            if should_stop() {
+                return None;
+            }
+            // Empty replies describe earlier source polls. Drain them before deciding
+            // whether a ready transaction exists, preserving the order of actual txs.
+            if let Some(tx) = self.next_buffered() {
+                return Some(tx);
+            }
+            self.commands_tx
+                .send(BestTransactionsCommand::Advance)
+                .ok()?;
+            // Keep waiting on this advance instead of returning empty-handed: polling again
+            // would only queue another advance behind the one the coordinator has not reached.
+            let reply = loop {
+                match self.transactions_rx.recv_timeout(COORDINATOR_POLL_INTERVAL) {
+                    Ok(reply) => break reply,
+                    Err(RecvTimeoutError::Timeout) if !should_stop() => {}
+                    // Told to stop, or the coordinator is gone.
+                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
+                }
+            };
+            // An eager advance can also reply empty while this receive is waiting.
+            // Check for buffered transactions before reporting empty to the builder,
+            // but do not wait for more replies: it must still check its build budget.
+            match reply {
+                // The source yielded a transaction on an invalidated lane before it saw the
+                // invalidation; poll again for one the builder can use.
+                Some(tx) if self.invalidated.contains(&tx.tx) => continue,
+                Some(tx) => return Some(tx),
+                None => return self.next_buffered(),
+            }
+        }
+    }
 }
 
 impl Drop for BestTransactionsPrewarming {
@@ -276,26 +333,7 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = PrewarmedTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // Empty replies describe earlier source polls. Drain them before deciding
-            // whether a ready transaction exists, preserving the order of actual txs.
-            if let Some(tx) = self.next_buffered() {
-                return Some(tx);
-            }
-            self.commands_tx
-                .send(BestTransactionsCommand::Advance)
-                .ok()?;
-            // An eager advance can also reply empty while this receive is waiting.
-            // Check for buffered transactions before reporting empty to the builder,
-            // but do not wait for more replies: it must still check its build budget.
-            match self.transactions_rx.recv().ok()? {
-                // The source yielded a transaction on an invalidated lane before it saw the
-                // invalidation; poll again for one the builder can use.
-                Some(tx) if self.invalidated.contains(&tx.tx) => continue,
-                Some(tx) => return Some(tx),
-                None => return self.next_buffered(),
-            }
-        }
+        self.next_until(|| false)
     }
 }
 
@@ -1359,5 +1397,64 @@ mod tests {
         for expected in remaining {
             assert_eq!(prewarming.next().unwrap().tx.hash(), expected.hash());
         }
+    }
+
+    #[test]
+    fn next_until_stops_waiting_for_a_stalled_coordinator() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            invalidated: InvalidatedLanes::default(),
+        };
+
+        // The coordinator never answers. Disconnect it after a timeout so a regression fails
+        // instead of hanging.
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let watchdog = thread::spawn(move || {
+            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
+            drop(transactions_tx);
+            timed_out
+        });
+
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let next = prewarming.next_until(|| Instant::now() >= deadline);
+        let _ = done_tx.send(());
+
+        assert!(
+            !watchdog.join().unwrap(),
+            "selection waited for the coordinator past its deadline"
+        );
+        assert!(next.is_none());
+        // The wait spanned many poll intervals but queued a single advance.
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(BestTransactionsCommand::Advance)
+        ));
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn stopped_coordinator_stops_polling_the_source() {
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        // The source records every poll in the log, so holding the lock stalls the coordinator
+        // inside its first poll.
+        let stalled = log.lock().unwrap();
+        let mut prewarming = prewarming(Vec::new(), log.clone());
+
+        // The build ends and drops the iterator while the coordinator is still stalled.
+        drop(prewarming.prewarming.take());
+        drop(stalled);
+        // Dropping the harness waits for the coordinator to exit.
+        drop(prewarming);
+
+        // At most the poll that was already running reached the source, not the rest of the
+        // initial batch.
+        assert!(log.lock().unwrap().empty_polls <= 1);
     }
 }
