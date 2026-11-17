@@ -508,15 +508,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         (evm_config, TempoConsensus::new(spec))
     };
 
-    let mut consensus_result = Ok(Ok(()));
-    // Reth drops the launcher before shutting down its execution tasks, including on SIGTERM.
-    let consensus_shutdown = ConsensusShutdown {
-        shutdown_token,
-        handle: Some(consensus_handle),
-        result: &mut consensus_result,
-    };
-    let execution_result = cli.run_with_components::<TempoNode>(components, async move |builder, args| {
-        let _consensus_shutdown = consensus_shutdown;
+    // Reth drops the launcher, also on SIGTERM, before its graceful shutdown terminates the engine.
+    // Cancelling here lets the consensus root's biased select exit cleanly before engine calls fail.
+    let cancel_consensus = shutdown_token.clone().drop_guard();
+    cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let _cancel_consensus = cancel_consensus;
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -773,36 +769,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         Ok(())
     })
-    .wrap_err("execution node failed");
+    .wrap_err("execution node failed")?;
 
-    // A launch failure is primary; aborted consensus startup must not replace it.
-    execution_result?;
-    match consensus_result {
+    shutdown_token.cancel();
+
+    match consensus_handle.join() {
         Ok(Ok(())) => {}
         Ok(Err(err)) => return Err(err).wrap_err("consensus task exited with error"),
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
-}
-
-// Owns consensus until the launcher's future is dropped, even if it was never polled.
-struct ConsensusShutdown<'a> {
-    /// Stops the consensus root or its startup wait.
-    shutdown_token: tokio_util::sync::CancellationToken,
-    /// Taken on drop to join consensus before execution teardown.
-    handle: Option<thread::JoinHandle<eyre::Result<()>>>,
-    /// Carries the thread's error or panic back across launcher cancellation.
-    result: &'a mut thread::Result<eyre::Result<()>>,
-}
-
-impl Drop for ConsensusShutdown<'_> {
-    fn drop(&mut self) {
-        self.shutdown_token.cancel();
-        if let Some(handle) = self.handle.take() {
-            // Consensus has its own runtime. Drain it while execution workers are still alive.
-            *self.result = handle.join();
-        }
-    }
 }
 
 fn receive_consensus_startup<T>(
@@ -838,11 +814,7 @@ pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::{
-            Arc, Once,
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        },
+        sync::{Arc, Once, mpsc},
         time::Duration,
     };
 
@@ -860,52 +832,23 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     #[test]
-    fn consensus_shutdown_drains_before_execution_shutdown() {
+    fn consensus_is_cancelled_before_execution_graceful_shutdown() {
         let runner = CliRunner::try_default_runtime().unwrap();
         let token = CancellationToken::new();
-        let drained = Arc::new(AtomicBool::new(false));
-        let mut consensus_result = Ok(Ok(()));
-        let consensus_token = token.clone();
-        let consensus_drained = drained.clone();
-        let handle = thread::spawn(move || {
-            let storage = tmpfs_tempdir();
-            let runner = commonware_runtime::tokio::Runner::new(
-                commonware_runtime::tokio::Config::default()
-                    .with_worker_threads(1)
-                    .with_storage_directory(storage.path().to_path_buf()),
-            );
-            let result = runner.start(async move |_ctx| {
-                tokio::time::timeout(Duration::from_secs(5), consensus_token.cancelled())
-                    .await
-                    .unwrap();
-                Ok(())
-            });
-            consensus_drained.store(true, Ordering::SeqCst);
-            result
-        });
-        let shutdown = ConsensusShutdown {
-            shutdown_token: token.clone(),
-            handle: Some(handle),
-            result: &mut consensus_result,
-        };
+        let cancel_consensus = token.clone().drop_guard();
         let (observed_tx, observed_rx) = mpsc::channel();
         let execution_result: eyre::Result<()> = runner.run_command_until_exit(|ctx| async move {
-            let _shutdown = shutdown;
+            let _cancel_consensus = cancel_consensus;
+            // Reth's engine terminates on this same signal.
             ctx.task_executor
                 .spawn_with_graceful_shutdown_signal(async move |exit| {
                     let _guard = exit.await;
-                    observed_tx
-                        .send((token.is_cancelled(), drained.load(Ordering::SeqCst)))
-                        .unwrap();
+                    observed_tx.send(token.is_cancelled()).unwrap();
                 });
             Ok(())
         });
         execution_result.unwrap();
-        consensus_result.unwrap().unwrap();
-        assert_eq!(
-            observed_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            (true, true)
-        );
+        assert!(observed_rx.recv_timeout(Duration::from_secs(5)).unwrap());
     }
 
     fn init_defaults_once() {
