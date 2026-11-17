@@ -28,6 +28,7 @@ mod lifecycle;
 mod model;
 mod persistence;
 mod proof;
+mod sparse_guidance;
 
 use alloy_primitives::{keccak256, B256, U256};
 use antithesis_instrumentation as _;
