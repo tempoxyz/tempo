@@ -578,6 +578,7 @@ where
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
             rocksdb,
+            reth_storage_overlay::OverlayManager::default(),
             reth_ethereum::tasks::Runtime::test(),
         )
         .expect("failed to create provider factory");

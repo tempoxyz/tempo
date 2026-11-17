@@ -6,7 +6,7 @@ use crate::{input::Operation, persistence::Persistence, Node};
 use alloy_consensus::Header;
 use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
-use reth_chain_state::ExecutedBlock;
+use reth_chain_state::{ExecutedBlock, InMemoryState};
 use reth_chainspec::ChainSpec;
 use reth_db::DatabaseEnv;
 use reth_engine_primitives::MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD;
@@ -122,7 +122,10 @@ impl Engine {
         println!("{}", json!({"recovery": "start"}));
         let factory = runtime.handle().block_on(
             context.create_provider_factory_with_recovery::<Node, EthEvmConfig>(
-                OverlayManager::new(runtime.state_trie_overlay_worker_pool()),
+                OverlayManager::with_worker_pool(
+                    InMemoryState::default(),
+                    runtime.state_trie_overlay_worker_pool(),
+                ),
                 None,
                 &[],
                 |factory| {
