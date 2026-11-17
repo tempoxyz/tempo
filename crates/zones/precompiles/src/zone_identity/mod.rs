@@ -9,8 +9,8 @@
 //!
 //! The portal admin configures it on Tempo: `ZonePortal.setIdentityConfig` sets the registrar and
 //! whether the zone enforces edges, and the zone reads both from finalized Tempo state, so a
-//! multisig admin never has to act on the zone. Token bits follow the portal's append-only list of
-//! enabled tokens: a token's bit is its position in that list.
+//! multisig admin never has to act on the zone. A token's bit in the edge masks is its position in
+//! the portal's append-only list of enabled tokens, which `ZoneInbox` records as it enables them.
 //!
 //! Execution enforces it: zone TIP-20 transfers revert, `ZoneOutbox::requestWithdrawal` reverts and
 //! `ZoneInbox` bounces a deposit when [`ZoneIdentity::ensure_transfer`] denies the move. The
@@ -31,11 +31,13 @@ use tempo_precompiles_macros::{Storable, contract};
 pub use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
 use crate::{
+    ZoneInbox,
     error::ZoneResult,
     storage::{L1State, L1StorageReader},
 };
 
-/// Number of enabled tokens that get a bit in the edge masks; later tokens can't be in an edge.
+/// Number of enabled tokens that get an index, and so a bit in the edge masks; later tokens can't
+/// be in an edge.
 pub const MAX_IDENTITY_TOKENS: u16 = 256;
 
 /// Org registry and per-token edges between orgs.
@@ -49,11 +51,6 @@ pub struct ZoneIdentity {
     pub orgs: Mapping<u64, Org>,
     /// Packed [`Member`] word of each address; zero for addresses in no org.
     pub members: Mapping<Address, U256>,
-    /// Position + 1 of each token in the portal's enabled-token list; zero for tokens without a
-    /// bit.
-    pub token_bits: Mapping<Address, u16>,
-    /// How many positions of the enabled-token list already have their bit in `token_bits`.
-    pub synced_token_count: u64,
 }
 
 /// One org's configuration. Its mappings are keyed by the other org of each edge.
@@ -172,7 +169,7 @@ impl ZoneIdentity {
         if kind == TransferKind::Withdrawal && sender.org == 0 && from == to {
             return Ok(TransferVerdict::SelfWithdrawal);
         }
-        let bit = self.token_bits[token].read()?;
+        let bit = ZoneInbox::new().token_index(token)?;
         if bit == 0 {
             return Ok(TransferVerdict::UnregisteredToken);
         }
@@ -197,27 +194,6 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::org_policy_forbids(token, from, to).into());
         }
         Ok(())
-    }
-
-    /// Gives every position of the portal's enabled-token list below `enabled_count` that has no
-    /// bit yet its bit, its position. `token_at` returns the token at a position. Positions from
-    /// [`MAX_IDENTITY_TOKENS`] on get no bit.
-    pub fn sync_token_bits(
-        &mut self,
-        enabled_count: u64,
-        mut token_at: impl FnMut(u64) -> ZoneResult<Address>,
-    ) -> ZoneResult<()> {
-        let synced = self.synced_token_count.read()?;
-        let end = enabled_count.min(u64::from(MAX_IDENTITY_TOKENS));
-        if end <= synced {
-            return Ok(());
-        }
-        for position in synced..end {
-            let bit =
-                u16::try_from(position + 1).map_err(|_| TempoPrecompileError::under_overflow())?;
-            self.token_bits[token_at(position)?].write(bit)?;
-        }
-        Ok(self.synced_token_count.write(end)?)
     }
 
     /// Creates an org administered by `admin` and returns its ID.
@@ -418,13 +394,13 @@ pub(crate) fn seed_for_test(
         identity.members[account].write(member.encode())?;
     }
     identity.org_count.write(org_count)?;
+    let mut inbox = ZoneInbox::new();
     for &(from, to, token) in edges {
-        let mut bit = identity.token_bits[token].read()?;
+        // Tests name tokens by their TIP-20 ID; give each the index that ID implies.
+        let mut bit = inbox.token_indices[token].read()?;
         if bit == 0 {
-            let synced = identity.synced_token_count.read()?;
-            bit = u16::try_from(synced + 1).expect("test tokens fit");
-            identity.token_bits[token].write(bit)?;
-            identity.synced_token_count.write(synced + 1)?;
+            bit = u16::from(token[19]) + 1;
+            inbox.token_indices[token].write(bit)?;
         }
         let edge = identity.orgs[from].edges[to].read()? | (U256::ONE << (bit - 1));
         identity.orgs[from].edges[to].write(edge)?;

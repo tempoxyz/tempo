@@ -3,7 +3,7 @@
 use alloy_primitives::Address;
 use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::IZoneIdentity;
-use tempo_precompiles::{charge_input_cost, dispatch, storage::Handler};
+use tempo_precompiles::{charge_input_cost, dispatch};
 
 use super::ZoneIdentity;
 use crate::{
@@ -56,7 +56,7 @@ impl ZoneIdentity {
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     tokenBit(call) => view(call, |call| -> ZoneResult<_> {
-                        let stored = self.token_bits[call.token].read()?;
+                        let stored = crate::ZoneInbox::new().token_index(call.token)?;
                         Ok(IZoneIdentity::tokenBitReturn {
                             bit: stored.saturating_sub(1),
                             hasBit: stored != 0,

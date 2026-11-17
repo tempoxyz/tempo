@@ -23,13 +23,16 @@ fn identity_error(error: ZoneIdentityError) -> ZonePrecompileError {
     error.into()
 }
 
-/// Enables `token` at the next position of the portal's list and returns its bit.
-fn enable(identity: &mut ZoneIdentity, token: Address) -> u16 {
-    let position = identity.synced_token_count.read().unwrap();
-    identity
-        .sync_token_bits(position + 1, |_| Ok(token))
-        .unwrap();
-    position as u16
+/// Gives `token` an index in the inbox, as enabling it does, and returns its bit. Tests name
+/// distinct tokens, so the next free index is one past the highest they hold.
+fn enable(_identity: &mut ZoneIdentity, token: Address) -> u16 {
+    let mut inbox = crate::ZoneInbox::new();
+    let mut next = 1;
+    for id in 0..16 {
+        next = next.max(inbox.token_indices[Address::new_tip20(id)].read().unwrap() + 1);
+    }
+    inbox.token_indices[token].write(next).unwrap();
+    next - 1
 }
 
 /// The verdict with enforcement on.
@@ -321,52 +324,6 @@ fn nothing_is_read_when_not_enforced() {
             identity
                 .ensure_transfer(false, token(1), a, b, TransferKind::Withdrawal)
                 .is_ok()
-        );
-    });
-}
-
-#[test]
-fn token_bits_follow_enabled_positions() {
-    with_identity(|identity, _| {
-        let list = [token(5), token(9), token(2)];
-        identity
-            .sync_token_bits(2, |position| Ok(list[position as usize]))
-            .unwrap();
-        assert_eq!(identity.token_bits[token(5)].read().unwrap(), 1);
-        assert_eq!(identity.token_bits[token(9)].read().unwrap(), 2);
-        assert_eq!(identity.token_bits[token(2)].read().unwrap(), 0);
-
-        // Only positions not yet synced are read.
-        identity
-            .sync_token_bits(3, |position| {
-                assert_eq!(position, 2);
-                Ok(list[position as usize])
-            })
-            .unwrap();
-        assert_eq!(identity.token_bits[token(2)].read().unwrap(), 3);
-        identity
-            .sync_token_bits(3, |_| panic!("nothing left to sync"))
-            .unwrap();
-    });
-}
-
-#[test]
-fn tokens_past_the_mask_get_no_bit() {
-    with_identity(|identity, _| {
-        let count = u64::from(MAX_IDENTITY_TOKENS) + 2;
-        identity
-            .sync_token_bits(count, |position| Ok(token(position + 1)))
-            .unwrap();
-        assert_eq!(
-            identity.token_bits[token(u64::from(MAX_IDENTITY_TOKENS))]
-                .read()
-                .unwrap(),
-            MAX_IDENTITY_TOKENS
-        );
-        assert_eq!(identity.token_bits[token(count)].read().unwrap(), 0);
-        assert_eq!(
-            identity.synced_token_count.read().unwrap(),
-            u64::from(MAX_IDENTITY_TOKENS)
         );
     });
 }
