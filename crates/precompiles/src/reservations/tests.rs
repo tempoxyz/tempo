@@ -408,6 +408,76 @@ fn test_hold_rejects_invalid_requests() -> eyre::Result<()> {
 }
 
 #[test]
+fn test_capture_after_the_owner_is_blocked_pays_an_allowed_payee() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        f.approve(500)?;
+        let (direct, delegated) = (B256::random(), B256::random());
+        f.hold(direct, 100)?;
+        f.hold_from(delegated, 200)?;
+        f.blacklist(vec![f.owner])?;
+        // Funds reserved under the policy in force at authorization still pay the payee.
+        f.capture(f.payee, direct, 60, false)?;
+        f.capture(f.holder, delegated, 150, true)?;
+        f.capture(f.owner, direct, 40, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(250));
+        assert_eq!((f.reserved()?, f.available()?), (0, 750));
+        assert_eq!(f.outstanding()?, 0);
+        Ok(())
+    })
+}
+
+#[test]
+fn test_blocked_owner_cannot_authorize_anything_new() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        f.approve(500)?;
+        f.set_tolerance(2_000)?;
+        let id = B256::random();
+        f.hold_from(id, 100)?;
+        f.blacklist(vec![f.owner])?;
+        let forbids: TempoPrecompileError = ReservationsError::policy_forbids().into();
+        assert_eq!(err!(f.hold(B256::random(), 10)), forbids);
+        assert_eq!(err!(f.hold_from(B256::random(), 10)), forbids);
+        assert_eq!(err!(f.charge(f.holder, B256::random(), 10, false)), forbids);
+        assert_eq!(err!(f.charge(f.owner, B256::random(), 10, false)), forbids);
+        // Raising the hold or capturing past it moves funds that were never reserved.
+        assert_eq!(err!(f.adjust(f.holder, id, 110)), forbids);
+        assert_eq!(err!(f.capture(f.holder, id, 110, true)), forbids);
+        // Lowering it and capturing within it still work.
+        f.adjust(f.holder, id, 90)?;
+        f.capture(f.holder, id, 90, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(90));
+        assert_eq!((f.reserved()?, f.outstanding()?), (0, 0));
+        Ok(())
+    })
+}
+
+#[test]
+fn test_capture_to_a_blocked_payee_fails() -> eyre::Result<()> {
+    at_t15(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 100)?;
+        f.blacklist(vec![f.owner, f.payee])?;
+        assert_eq!(
+            err!(f.capture(f.owner, id, 50, false)),
+            ReservationsError::policy_forbids().into()
+        );
+        f.blacklist(vec![f.payee])?;
+        assert_eq!(
+            err!(f.capture(f.payee, id, 50, false)),
+            ReservationsError::policy_forbids().into()
+        );
+        // The hold stays whole and can still be released.
+        assert_eq!(f.reserved()?, 100);
+        f.release(f.owner, id)?;
+        assert_eq!((f.reserved()?, f.available()?), (0, 1_000));
+        Ok(())
+    })
+}
+
+#[test]
 fn test_capture_tolerance_defaults_to_zero() -> eyre::Result<()> {
     at_t15(|| {
         let mut f = Fixture::new(1_000)?;

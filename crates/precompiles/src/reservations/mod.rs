@@ -397,6 +397,8 @@ impl Reservations {
             if raised && hold.terms.stand_in {
                 return Err(ReservationsError::invalid_amount().into());
             }
+            // Reserving more is a new authorization, so it checks the policy as a new hold does.
+            ensure_payable(&token, owner, hold.terms.payee)?;
             if u128::from(increase) > available(&token, owner)? {
                 return Err(ReservationsError::insufficient_available().into());
             }
@@ -481,7 +483,13 @@ impl Reservations {
             }
         }
         let mut token = TIP20Token::from_address(token_address)?;
-        ensure_payable(&token, owner, payee)?;
+        // Reserved funds were checked against the sender's policy when the hold was placed, so a
+        // capture from the hold checks only the payee; an excess is a new payment and checks both.
+        if excess == 0 {
+            ensure_receivable(&token, owner, payee)?;
+        } else {
+            ensure_payable(&token, owner, payee)?;
+        }
         self.unreserve(&mut token, owner, from_hold + rest)?;
         if hold.terms.delegated {
             self.return_allowance(owner, hold.placer, token_address, from_hold + rest)?;
@@ -1148,6 +1156,16 @@ fn resolve_payee(payee: Address) -> Result<Address> {
 /// or against its TIP-403 policy.
 fn ensure_payable(token: &TIP20Token, from: Address, to: Address) -> Result<()> {
     if to.is_zero() || to == from || token.paused()? || !token.is_transfer_authorized(from, to)? {
+        return Err(ReservationsError::policy_forbids().into());
+    }
+    Ok(())
+}
+
+/// Refuses a payment of funds `from` reserved under its policy: to nobody or oneself, while
+/// paused, or to a payee the token's TIP-403 policy does not let receive. A sender blocked after
+/// the hold was placed does not stop it.
+fn ensure_receivable(token: &TIP20Token, from: Address, to: Address) -> Result<()> {
+    if to.is_zero() || to == from || token.paused()? || !token.is_recipient_authorized(to)? {
         return Err(ReservationsError::policy_forbids().into());
     }
     Ok(())

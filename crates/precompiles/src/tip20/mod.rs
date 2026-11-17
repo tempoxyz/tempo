@@ -1294,6 +1294,15 @@ impl TIP20Token {
         Ok(sender_auth && recipient_auth)
     }
 
+    /// Checks whether the token's [`TIP403Registry`] policy lets `to` receive, whatever the sender.
+    pub fn is_recipient_authorized(&self, to: Address) -> Result<bool> {
+        TIP403Registry::new().is_authorized_as(
+            self.transfer_policy_id()?,
+            to,
+            AuthRole::recipient(),
+        )
+    }
+
     /// Ensures the transfer is authorized by the token's [`TIP403Registry`] policy.
     ///
     /// # Errors
