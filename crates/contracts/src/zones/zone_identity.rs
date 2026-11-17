@@ -7,9 +7,10 @@ crate::sol! {
     /// Org membership and per-token edges between orgs.
     ///
     /// An address belongs to at most one org; an address in no org is in org 0, which the
-    /// registrar administers. Org A may send token T to org B only when A's admin allows it
-    /// outbound and B's admin allows it inbound. Edges are kept per token and the pair is stored
-    /// precomputed, so a check reads three slots whatever the number of orgs, tokens or edges.
+    /// registrar administers. An edge joins two sides, each an org ID with the top bit set for the
+    /// org's addresses on Tempo instead of its accounts on the Zone. Token T may move along an edge
+    /// only when the sending side's admin allows it outbound and the receiving side's admin allows
+    /// it inbound. Both halves share one slot.
     ///
     /// The registrar and the enforcement flag are set on Tempo with
     /// `ZonePortal.setIdentityConfig`.

@@ -114,3 +114,41 @@ fn an_address_belongs_to_one_org() {
         );
     });
 }
+
+#[test]
+fn tempo_sides_are_separate_from_zone_sides() {
+    with_identity(|identity, registrar| {
+        let usd = token(1);
+        let (admin, org) = org_with_members(identity, registrar, usd);
+        let exit_admin = Address::repeat_byte(2);
+        let exits = identity
+            .create_org(registrar, registrar, exit_admin)
+            .unwrap();
+        let offramp = Address::repeat_byte(0x33);
+        identity
+            .add_member(exit_admin, registrar, exits, offramp)
+            .unwrap();
+        // Withdrawals from the org to the exit org's Tempo addresses, not transfers to it.
+        identity
+            .set_outbound(admin, registrar, org, exits | L1_SIDE, &[usd], true)
+            .unwrap();
+        identity
+            .set_inbound(exit_admin, registrar, exits | L1_SIDE, org, &[usd], true)
+            .unwrap();
+        assert!(allows(usd, ALICE, offramp, TransferKind::Withdrawal));
+        assert!(!allows(usd, ALICE, offramp, TransferKind::InZone));
+        assert!(!allows(usd, offramp, ALICE, TransferKind::Deposit));
+
+        // Org 0's Tempo side stands for any address on Tempo: the org accepts deposits from anyone.
+        let stranger = Address::repeat_byte(0x44);
+        assert!(!allows(usd, stranger, ALICE, TransferKind::Deposit));
+        identity
+            .set_outbound(registrar, registrar, L1_SIDE, org, &[usd], true)
+            .unwrap();
+        identity
+            .set_inbound(admin, registrar, org, L1_SIDE, &[usd], true)
+            .unwrap();
+        assert!(allows(usd, stranger, ALICE, TransferKind::Deposit));
+        assert!(allows(usd, offramp, ALICE, TransferKind::Deposit));
+    });
+}

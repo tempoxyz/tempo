@@ -22,6 +22,8 @@ use tempo_contracts::{
 use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
 
+use zone_precompiles::zone_identity::L1_SIDE;
+
 use crate::utils::{
     DEFAULT_TIMEOUT, L1Fixture, WITHDRAWAL_TX_GAS, ZoneTestNode, now_secs, signer_at,
     start_local_zone_with_fixture_and_withdrawal_batch_interval,
@@ -319,7 +321,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     );
 
     // Edges: A internally; A offers B transfers, which B has not accepted yet; deposits from the
-    // approved depositor into A; withdrawals from A to the off-ramp.
+    // approved depositor's Tempo address into A; withdrawals from A to the off-ramp's Tempo address.
     let usd = vec![PATH_USD_ADDRESS];
     let set_inbound = |to, from| IZoneIdentity::setInboundCall {
         toOrg: to,
@@ -331,10 +333,10 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         (&admin_a, true, org_a, org_a),
         (&admin_a, false, org_a, org_a),
         (&admin_a, true, org_a, org_b),
-        (&registrar, true, funding, org_a),
-        (&admin_a, false, org_a, funding),
-        (&admin_a, true, org_a, exits),
-        (&registrar, false, exits, org_a),
+        (&registrar, true, funding | L1_SIDE, org_a),
+        (&admin_a, false, org_a, funding | L1_SIDE),
+        (&admin_a, true, org_a, exits | L1_SIDE),
+        (&registrar, false, exits | L1_SIDE, org_a),
     ];
     for (admin, outbound, org, other) in edges {
         let pending = if outbound {
@@ -392,6 +394,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_transfer(&zone, carol.address, alice.address, false).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;
     assert_transfer(&zone, alice.address, dave.address, false).await?;
+    // The off-ramp's edge is to its Tempo address only, so a Zone transfer to it is refused.
+    assert_transfer(&zone, alice.address, offramp, false).await?;
 
     // Deposits: the approved depositor reaches A; any other sender bounces.
     let alice_before = zone.balance_of(PATH_USD_ADDRESS, alice.address).await?;
