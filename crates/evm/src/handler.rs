@@ -1188,7 +1188,13 @@ fn apply_nonce(
         let capacity = spec.expiring_nonce_set_capacity();
         return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut nonces = NonceManager::new();
-            let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
+            // Parallel execution, which defers storage writes, inserts at the index itself.
+            let deferred_index = aa
+                .expiring_nonce_idx()
+                .filter(|_| StorageCtx.defers_storage_writes());
+            let previous_pointer = if let Some(index) = aa.expiring_nonce_idx()
+                && deferred_index.is_none()
+            {
                 let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
                 nonces
                     .expiring_nonce_ring_ptr
@@ -1199,7 +1205,7 @@ fn apply_nonce(
                 None
             };
             nonces
-                .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                .check_and_mark_expiring_nonce_at(replay_hash, valid_before, deferred_index)
                 .map_err(|error| match error {
                     TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
                     TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {

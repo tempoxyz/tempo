@@ -280,7 +280,12 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        self.collected_fees[validator][token].sinc(amount)?;
+        if crate::storage::StorageCtx.defers_storage_writes() {
+            // Only fee distribution reads the accumulator: add without reading it.
+            self.collected_fees[validator][token].sadd_blind(amount)?;
+        } else {
+            self.collected_fees[validator][token].sinc(amount)?;
+        }
 
         Ok(())
     }

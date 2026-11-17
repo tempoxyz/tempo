@@ -103,6 +103,15 @@ use nix as _;
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
+/// Proof worker niceness used with `--execution.parallel-threads` unless
+/// `--engine.proof-worker-niceness` is set.
+///
+/// Parallel execution and the proof workers together keep more threads runnable than there are
+/// CPUs. Proof workers otherwise inherit the engine's priority and time-share CPUs with the
+/// execution workers; a higher niceness lets execution preempt them while they keep using idle
+/// CPUs.
+const PARALLEL_EXECUTION_PROOF_WORKER_NICENESS: i32 = 19;
+
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
@@ -111,6 +120,15 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
             .engine_disable_execution_cache_sharing_with_builder
     {
         node_cmd.engine.share_execution_cache_with_payload_builder = false;
+    }
+
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.ext.node_args.execution_parallel_threads.is_some()
+    {
+        node_cmd
+            .engine
+            .proof_worker_niceness
+            .get_or_insert(PARALLEL_EXECUTION_PROOF_WORKER_NICENESS);
     }
 
     if let Commands::Node(node_cmd) = &mut cli.command
@@ -999,6 +1017,44 @@ mod tests {
         assert_zone_factory_alloc(
             &chain_spec,
             address!("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"),
+        );
+    }
+
+    #[test]
+    fn parallel_execution_deprioritizes_proof_workers() {
+        init_defaults_once();
+
+        let niceness = |args: &[&str]| {
+            let mut cli = TempoCli::try_parse_from(args).unwrap();
+            apply_tempo_cli_overrides(&mut cli).unwrap();
+            let Commands::Node(node_cmd) = cli.command else {
+                panic!("expected node command");
+            };
+            node_cmd.engine.proof_worker_niceness
+        };
+
+        assert_eq!(niceness(&["tempo", "node", "--dev"]), None);
+        assert_eq!(
+            niceness(&[
+                "tempo",
+                "node",
+                "--dev",
+                "--execution.parallel-threads",
+                "6"
+            ]),
+            Some(19)
+        );
+        assert_eq!(
+            niceness(&[
+                "tempo",
+                "node",
+                "--dev",
+                "--execution.parallel-threads",
+                "6",
+                "--engine.proof-worker-niceness",
+                "-2",
+            ]),
+            Some(-2)
         );
     }
 

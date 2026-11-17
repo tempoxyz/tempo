@@ -11,6 +11,7 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use evm2::block::ethereum::parallel::ParallelCommit;
 use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
 use reth_ethereum::{
     network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
@@ -49,9 +50,9 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
     validate::EthTransactionValidatorBuilder,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::{ParallelExecution, TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
     ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
@@ -157,6 +158,20 @@ pub struct TempoNodeArgs {
         num_args = 0..=1
     )]
     pub shadow_replay: Option<Option<TempoHardfork>>,
+
+    /// Validate blocks by executing their transactions in parallel on this many worker threads.
+    ///
+    /// Experimental. Off by default.
+    #[arg(long = "execution.parallel-threads", value_name = "THREADS")]
+    pub execution_parallel_threads: Option<NonZeroUsize>,
+
+    /// With `--execution.parallel-threads`, commit transactions one at a time in block order,
+    /// streaming each one's state changes to the state root task, instead of in one batch.
+    #[arg(
+        long = "execution.parallel-in-order",
+        requires = "execution_parallel_threads"
+    )]
+    pub execution_parallel_in_order: bool,
 }
 
 impl Default for TempoNodeArgs {
@@ -173,6 +188,8 @@ impl Default for TempoNodeArgs {
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: BuildTimeMultiplier::default(),
             shadow_replay: None,
+            execution_parallel_threads: None,
+            execution_parallel_in_order: false,
         }
     }
 }
@@ -187,6 +204,24 @@ impl TempoNodeArgs {
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
+    }
+
+    /// Returns a [`TempoExecutorBuilder`] configured from these args.
+    pub fn executor_builder(&self) -> TempoExecutorBuilder {
+        let parallel_execution = self
+            .execution_parallel_threads
+            .map(|threads| ParallelExecution {
+                threads,
+                commit: if self.execution_parallel_in_order {
+                    ParallelCommit::InOrder
+                } else {
+                    ParallelCommit::Batched
+                },
+            });
+        if let Some(parallel) = parallel_execution {
+            warn!(?parallel, "Parallel block execution is experimental");
+        }
+        TempoExecutorBuilder { parallel_execution }
     }
 
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
@@ -268,6 +303,8 @@ pub struct TempoNode {
     pool_builder: TempoPoolBuilder,
     /// Payload builder builder.
     payload_builder_builder: TempoPayloadBuilderBuilder,
+    /// Executor builder.
+    executor_builder: TempoExecutorBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
     /// Network builder with optional `tempo/1` support.
@@ -282,6 +319,7 @@ impl TempoNode {
         Self {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
+            executor_builder: args.executor_builder(),
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
@@ -311,6 +349,7 @@ impl TempoNode {
         pool_builder: TempoPoolBuilder,
         payload_builder_builder: TempoPayloadBuilderBuilder,
         network_builder: TempoNetworkBuilder,
+        executor_builder: TempoExecutorBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -325,7 +364,7 @@ impl TempoNode {
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(pool_builder)
-            .executor(TempoExecutorBuilder::default())
+            .executor(executor_builder)
             .payload(
                 BasicPayloadServiceBuilder::new(payload_builder_builder)
                     // we can disable basic parent state caching because tempo builder always uses execution cache
@@ -527,6 +566,7 @@ where
             self.pool_builder.clone(),
             self.payload_builder_builder.clone(),
             self.network_builder.clone(),
+            self.executor_builder,
         )
     }
 
@@ -683,7 +723,10 @@ pub fn build_evm_config(
 /// A regular ethereum evm and executor builder.
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// Executes blocks the engine validates in parallel, if set.
+    pub parallel_execution: Option<ParallelExecution>,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -701,6 +744,7 @@ where
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }
+        evm_config = evm_config.with_parallel_execution(self.parallel_execution);
 
         #[cfg(not(feature = "jit"))]
         let _ = jit_metrics;

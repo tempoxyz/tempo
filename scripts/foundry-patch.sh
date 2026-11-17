@@ -171,7 +171,11 @@ done <<< "$CRATES_IO_PATCHES"
 # which Cargo treats as another source, because it rejects a patch from the same
 # source.
 EVM2_PATCH_URL="https://github.com/alloy-rs/evm2"
-EVM2_REV="$(sed -nE 's/^evm2 = \{.*rev = "([0-9a-f]+)".*/\1/p' "$TEMPO_CARGO" | head -n1)"
+# Prefer the revision Tempo itself patches evm2 to, if any.
+EVM2_REV="$(awk '/^\[patch\."https:\/\/github\.com\/alloy-rs\/evm2"\]/ { s = 1; next } /^\[/ { s = 0 } s && /^evm2 = / && match($0, /rev = "[0-9a-f]+"/) { print substr($0, RSTART + 7, RLENGTH - 8); exit }' "$TEMPO_CARGO")"
+if [[ -z "$EVM2_REV" ]]; then
+  EVM2_REV="$(sed -nE 's/^evm2 = \{.*rev = "([0-9a-f]+)".*/\1/p' "$TEMPO_CARGO" | head -n1)"
+fi
 EVM2_PATCHES=""
 if [[ -n "$EVM2_REV" ]]; then
   for crate in evm2 evm2-inspectors evm2-jit evm2-macros; do
