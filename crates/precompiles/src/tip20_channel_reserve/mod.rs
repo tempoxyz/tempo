@@ -10,7 +10,7 @@ pub mod dispatch;
 use crate::{
     error::{Result, TempoPrecompileError},
     signature_verifier::SignatureVerifier,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, keccak_cost},
     storage_credits::StorageCredits,
     tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
@@ -20,7 +20,6 @@ use alloy::{
     sol_types::SolValue,
 };
 use keccak_const::Keccak256;
-use std::convert::Infallible;
 use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
@@ -818,10 +817,10 @@ impl TIP20ChannelReserve {
         self.storage.timestamp().saturating_to::<u32>()
     }
 
-    /// Computes the channel id from a descriptor.
+    /// Computes the channel id from a descriptor, charging one keccak over its 9-word preimage.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
-        self.storage
-            .keccak256(&channel_id_preimage(descriptor, self.storage.chain_id()))
+        self.storage.deduct_gas(keccak_cost(9 * 32)?)?;
+        Ok(compute_channel_id(descriptor, self.storage.chain_id()))
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.
@@ -930,14 +929,15 @@ impl TIP20ChannelReserve {
         Ok(())
     }
 
-    /// Computes the EIP-712 voucher digest.
+    /// Computes the EIP-712 voucher digest, charging keccaks over its 3-word struct and 66-byte input.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
-        hash_voucher(
+        self.storage
+            .deduct_gas(keccak_cost(3 * 32)? + keccak_cost(66)?)?;
+        Ok(voucher_digest(
             channel_id,
             cumulative_amount,
             self.storage.chain_id(),
-            |data| self.storage.keccak256(data),
-        )
+        ))
     }
 }
 
@@ -946,45 +946,25 @@ pub fn compute_channel_id(
     descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
     chain_id: u64,
 ) -> B256 {
-    keccak256(channel_id_preimage(descriptor, chain_id))
+    keccak256(
+        (
+            descriptor.clone(),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            U256::from(chain_id),
+        )
+            .abi_encode(),
+    )
 }
 
 /// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
 pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
-    let Ok(digest) = hash_voucher(channel_id, cumulative_amount, chain_id, |data| {
-        Ok::<_, Infallible>(keccak256(data))
-    });
-    digest
-}
-
-/// Hash preimage of a channel id, domain-separated by chain and precompile address.
-fn channel_id_preimage(
-    descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
-    chain_id: u64,
-) -> Vec<u8> {
-    (
-        descriptor.clone(),
-        TIP20_CHANNEL_RESERVE_ADDRESS,
-        U256::from(chain_id),
-    )
-        .abi_encode()
-}
-
-/// Computes the EIP-712 voucher digest on `chain_id`, hashing its struct and digest with `keccak`.
-fn hash_voucher<E>(
-    channel_id: B256,
-    cumulative_amount: U96,
-    chain_id: u64,
-    keccak: impl Fn(&[u8]) -> std::result::Result<B256, E>,
-) -> std::result::Result<B256, E> {
-    let struct_hash = keccak(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-
+    let struct_hash = keccak256((VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode());
     let mut digest_input = [0u8; 66];
     digest_input[0] = 0x19;
     digest_input[1] = 0x01;
     digest_input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
     digest_input[34..66].copy_from_slice(struct_hash.as_slice());
-    keccak(&digest_input)
+    keccak256(digest_input)
 }
 
 /// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
