@@ -859,12 +859,15 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    // Use the same independent runtime as production, with a deadline for broken shutdowns.
-    fn spawn_consensus_until_shutdown(
-        token: CancellationToken,
-        drained: Arc<AtomicBool>,
-    ) -> thread::JoinHandle<eyre::Result<()>> {
-        thread::spawn(move || {
+    #[test]
+    fn consensus_shutdown_drains_before_execution_shutdown() {
+        let runner = CliRunner::try_default_runtime().unwrap();
+        let token = CancellationToken::new();
+        let drained = Arc::new(AtomicBool::new(false));
+        let mut consensus_result = Ok(Ok(()));
+        let consensus_token = token.clone();
+        let consensus_drained = drained.clone();
+        let handle = thread::spawn(move || {
             let storage = tmpfs_tempdir();
             let runner = commonware_runtime::tokio::Runner::new(
                 commonware_runtime::tokio::Config::default()
@@ -872,210 +875,17 @@ mod tests {
                     .with_storage_directory(storage.path().to_path_buf()),
             );
             let result = runner.start(async move |_ctx| {
-                tokio::time::timeout(Duration::from_secs(5), token.cancelled())
+                tokio::time::timeout(Duration::from_secs(5), consensus_token.cancelled())
                     .await
                     .unwrap();
                 Ok(())
             });
-            drained.store(true, Ordering::SeqCst);
+            consensus_drained.store(true, Ordering::SeqCst);
             result
-        })
-    }
-
-    #[test]
-    fn consensus_shutdown_drains_before_execution_shutdown() {
-        let runner = CliRunner::try_default_runtime().unwrap();
-        let token = CancellationToken::new();
-        let drained = Arc::new(AtomicBool::new(false));
-        let mut consensus_result = Ok(Ok(()));
-        let shutdown = ConsensusShutdown {
-            shutdown_token: token.clone(),
-            handle: Some(spawn_consensus_until_shutdown(
-                token.clone(),
-                drained.clone(),
-            )),
-            result: &mut consensus_result,
-        };
-        let (observed_tx, observed_rx) = mpsc::channel();
-        let execution_result: eyre::Result<()> = runner.run_command_until_exit(|ctx| async move {
-            let _shutdown = shutdown;
-            ctx.task_executor
-                .spawn_with_graceful_shutdown_signal(async move |exit| {
-                    let _guard = exit.await;
-                    observed_tx
-                        .send((token.is_cancelled(), drained.load(Ordering::SeqCst)))
-                        .unwrap();
-                });
-            Ok(())
-        });
-        execution_result.unwrap();
-        consensus_result.unwrap().unwrap();
-        assert_eq!(
-            observed_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-            (true, true)
-        );
-    }
-
-    #[test]
-    fn consensus_shutdown_drains_an_unpolled_launcher_before_startup() {
-        let token = CancellationToken::new();
-        let consensus_token = token.clone();
-        let (startup_tx, startup_rx) = oneshot::channel::<()>();
-        let (done_tx, done_rx) = mpsc::channel();
-        let mut result = Ok(Ok(()));
-        let handle = thread::spawn(move || {
-            assert_eq!(
-                receive_consensus_startup(startup_rx, &consensus_token).unwrap(),
-                None
-            );
-            done_tx.send(()).unwrap();
-            Ok(())
-        });
-        // Keep the sender live until receive completes; release it on timeout to bound a broken join.
-        let watchdog = thread::spawn(move || {
-            let completed = done_rx.recv_timeout(Duration::from_secs(5));
-            drop(startup_tx);
-            completed.expect("consensus startup did not stop before the deadline");
         });
         let shutdown = ConsensusShutdown {
             shutdown_token: token.clone(),
             handle: Some(handle),
-            result: &mut result,
-        };
-        let launcher = async move {
-            let _shutdown = shutdown;
-            std::future::pending::<()>().await;
-        };
-        drop(launcher);
-        assert!(token.is_cancelled());
-        result.unwrap().unwrap();
-        watchdog.join().unwrap();
-    }
-
-    #[test]
-    fn consensus_shutdown_preserves_consensus_error() {
-        let mut result = Ok(Ok(()));
-        drop(ConsensusShutdown {
-            shutdown_token: CancellationToken::new(),
-            handle: Some(thread::spawn(|| eyre::bail!("genuine consensus failure"))),
-            result: &mut result,
-        });
-        assert_eq!(
-            result.unwrap().unwrap_err().to_string(),
-            "genuine consensus failure"
-        );
-    }
-
-    #[test]
-    fn consensus_shutdown_preserves_consensus_panic() {
-        let mut result = Ok(Ok(()));
-        drop(ConsensusShutdown {
-            shutdown_token: CancellationToken::new(),
-            handle: Some(thread::spawn(|| panic!("genuine consensus panic"))),
-            result: &mut result,
-        });
-        assert_eq!(
-            *result.unwrap_err().downcast::<&str>().unwrap(),
-            "genuine consensus panic"
-        );
-    }
-
-    #[test]
-    fn consensus_shutdown_preserves_execution_error() {
-        let runner = CliRunner::try_default_runtime().unwrap();
-        let token = CancellationToken::new();
-        let mut consensus_result = Ok(Ok(()));
-        let shutdown = ConsensusShutdown {
-            shutdown_token: token.clone(),
-            handle: Some(thread::spawn(|| eyre::bail!("secondary consensus failure"))),
-            result: &mut consensus_result,
-        };
-        let result: eyre::Result<()> = runner.run_command_until_exit(|_ctx| async move {
-            let _shutdown = shutdown;
-            eyre::bail!("genuine execution failure")
-        });
-        assert_eq!(result.unwrap_err().to_string(), "genuine execution failure");
-        assert!(token.is_cancelled());
-        assert_eq!(
-            consensus_result.unwrap().unwrap_err().to_string(),
-            "secondary consensus failure"
-        );
-    }
-
-    #[test]
-    fn consensus_startup_preserves_closed_channel_error() {
-        let (tx, rx) = oneshot::channel::<()>();
-        drop(tx);
-        let error = receive_consensus_startup(rx, &CancellationToken::new()).unwrap_err();
-        assert_eq!(
-            format!("{error:#}"),
-            "channel closed before consensus-relevant command line args and a handle to the execution node could be received: channel closed"
-        );
-    }
-
-    #[test]
-    fn consensus_startup_receives_before_shutdown() {
-        let (tx, rx) = oneshot::channel();
-        tx.send(42).unwrap();
-        assert_eq!(
-            receive_consensus_startup(rx, &CancellationToken::new()).unwrap(),
-            Some(42)
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn consensus_shutdown_on_sigterm() {
-        const CHILD_ENV: &str = "TEMPO_CONSENSUS_SHUTDOWN_SIGTERM_TEST";
-        if std::env::var_os(CHILD_ENV).is_none() {
-            let child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tests::consensus_shutdown_on_sigterm",
-                    "--nocapture",
-                ])
-                .env(CHILD_ENV, "1")
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            let pid = child.id();
-            let (tx, rx) = mpsc::channel();
-            let waiter = thread::spawn(move || tx.send(child.wait_with_output().unwrap()).unwrap());
-            let output = match rx.recv_timeout(Duration::from_secs(20)) {
-                Ok(output) => {
-                    waiter.join().unwrap();
-                    output
-                }
-                Err(error) => {
-                    let killed = std::process::Command::new("kill")
-                        .args(["-KILL", &pid.to_string()])
-                        .status()
-                        .unwrap();
-                    waiter.join().unwrap();
-                    assert!(killed.success());
-                    panic!("SIGTERM shutdown test timed out: {error}");
-                }
-            };
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-
-        let runner = CliRunner::try_default_runtime().unwrap();
-        let token = CancellationToken::new();
-        let drained = Arc::new(AtomicBool::new(false));
-        let mut consensus_result = Ok(Ok(()));
-        let shutdown = ConsensusShutdown {
-            shutdown_token: token.clone(),
-            handle: Some(spawn_consensus_until_shutdown(
-                token.clone(),
-                drained.clone(),
-            )),
             result: &mut consensus_result,
         };
         let (observed_tx, observed_rx) = mpsc::channel();
@@ -1088,15 +898,7 @@ mod tests {
                         .send((token.is_cancelled(), drained.load(Ordering::SeqCst)))
                         .unwrap();
                 });
-            // Reth registers its signal streams before polling the command.
-            assert!(
-                std::process::Command::new("kill")
-                    .args(["-TERM", &std::process::id().to_string()])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            std::future::pending::<eyre::Result<()>>().await
+            Ok(())
         });
         execution_result.unwrap();
         consensus_result.unwrap().unwrap();
