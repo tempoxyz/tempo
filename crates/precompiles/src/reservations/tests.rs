@@ -1346,7 +1346,7 @@ fn test_holder_pledges_expire_within_their_bound() -> eyre::Result<()> {
         }
         // The longest pledge may outlast any hold.
         f.pledge_from(B256::random(), 10, NOW + MAX_PLEDGE_DURATION)?;
-        assert!(MAX_PLEDGE_DURATION > MAX_HOLD_DURATION);
+        const { assert!(MAX_PLEDGE_DURATION > MAX_HOLD_DURATION) };
         assert_eq!(
             err!(f.pledge_from(B256::random(), 991, NOW + DAY)),
             ReservationsError::insufficient_available().into()
