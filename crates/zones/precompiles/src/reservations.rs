@@ -65,13 +65,20 @@ impl<P: L1StorageReader> ReservationRules<P> {
         Ok(allowance.allowance != 0 || allowance.outstanding != 0)
     }
 
-    /// Admits a read of `owner`'s hold `id`: the owner, its placer or its payee.
+    /// Admits a read of `owner`'s hold `id`: the owner, its placer or its payee. Anyone else reads
+    /// an empty record, as for a hold that does not exist: a program checks for its leg's hold
+    /// before placing it.
     fn admit_hold(caller: Address, owner: Address, id: B256) -> Result<CallCheck> {
         if caller == owner {
             return Ok(CallCheck::Continue);
         }
         let record = Reservations::new().get_hold(owner, id)?;
-        Ok(check_caller(caller, &[record.placer, record.payee]))
+        if caller == record.placer || caller == record.payee {
+            return Ok(CallCheck::Continue);
+        }
+        Ok(CallCheck::Return(
+            alloy_sol_types::SolValue::abi_encode(&empty_hold()).into(),
+        ))
     }
 
     /// Admits a read of lien `id` of `authority`: the authority or the owner it binds.
@@ -158,6 +165,22 @@ impl<P: L1StorageReader> CallRules for ReservationRules<P> {
         };
         self.try_admit(call, caller)
             .unwrap_or_else(CallCheck::Error)
+    }
+}
+
+/// The record of a hold that does not exist.
+fn empty_hold() -> IReservationCore::HoldRecord {
+    IReservationCore::HoldRecord {
+        token: Address::ZERO,
+        placer: Address::ZERO,
+        payee: Address::ZERO,
+        held: 0,
+        approved: 0,
+        captured: 0,
+        refunded: 0,
+        expiresAt: 0,
+        standIn: false,
+        settled: false,
     }
 }
 
@@ -300,7 +323,12 @@ mod tests {
         assert!(
             matches!(&checks[6], CallCheck::Return(output) if output.as_ref() == zero.as_slice())
         );
-        assert!(matches!(&checks[3], CallCheck::Revert(_)));
+        // A stranger to a hold reads an empty record, the same as for a hold that does not exist.
+        let empty = alloy_sol_types::SolValue::abi_encode(&empty_hold());
+        assert!(
+            matches!(&checks[3], CallCheck::Return(output) if output.as_ref() == empty.as_slice())
+        );
+        assert!(matches!(&checks[9], CallCheck::Revert(_)));
     }
 
     #[test_case(TempoHardfork::T15, true, true)]
