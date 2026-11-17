@@ -65,6 +65,7 @@ impl TempoBlockExecutor<'_> {
         };
         self.validate_tx(
             *original.tx_hash(),
+            tx_env.inner().execution_context(),
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
