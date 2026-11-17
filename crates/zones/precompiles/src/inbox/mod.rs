@@ -143,7 +143,16 @@ impl ZoneInbox {
         } else {
             0
         };
-        let identity_enforced = ZoneIdentity::enforced(l1)?;
+        // Read only when a deposit needs it, so deposit-free batches stay free of L1 reads, as in
+        // offline re-execution. Deposits already read the sequencer key from L1.
+        let identity_enforced = if deposits
+            .iter()
+            .any(|queued| matches!(queued, DecodedQueuedDeposit::Deposit(_)))
+        {
+            ZoneIdentity::enforced(l1)?
+        } else {
+            false
+        };
 
         // Step 2: Process deposits and build hash chain
         let tempo_block_hash = tempo_state.tempo_block_hash()?;

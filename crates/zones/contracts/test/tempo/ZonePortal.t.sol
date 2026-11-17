@@ -2405,6 +2405,21 @@ contract ZonePortalTest is BaseTest {
         assertFalse(portal.transfersEnabled());
     }
 
+    function test_setIdentityConfig_revertsAfterAccessPolicyAbdication() public {
+        vm.prank(admin);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setIdentityConfig(admin, true);
+        assertEq(_identityWord(), 0);
+    }
+
     function test_setIdentityConfig_defaultsOffAndUpdates() public {
         assertEq(_identityWord(), 0);
 

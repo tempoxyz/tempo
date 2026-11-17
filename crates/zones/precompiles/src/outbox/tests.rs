@@ -695,3 +695,52 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     );
     Ok(())
 }
+
+/// With org enforcement on, a withdrawal needs an edge to its destination's Tempo side and, when the
+/// fallback recipient is someone else, a Zone edge to that recipient too.
+#[test]
+fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> {
+    use crate::zone_identity::ZoneIdentity;
+    use tempo_contracts::zones::{IZoneIdentity::OrgKey, ZoneIdentityError};
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let registrar = Address::with_last_byte(0xee);
+    env.with_storage(|| -> crate::ZoneResult<()> {
+        let mut identity = ZoneIdentity::new();
+        let org = identity.create_org(registrar, registrar, registrar)?;
+        let exits = identity.create_org(registrar, registrar, registrar)?;
+        identity.add_members(registrar, registrar, org, &[ALICE])?;
+        identity.add_members(registrar, registrar, exits, &[BOB])?;
+        let usd = [PATH_USD_ADDRESS];
+        identity.set_edge(
+            registrar,
+            registrar,
+            OrgKey::zone(org),
+            OrgKey::l1(exits),
+            &usd,
+            true,
+        )
+    })?;
+    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));
+
+    let stranger = Address::with_last_byte(0xf6);
+    assert_revert(
+        env.request_withdrawal(
+            ALICE,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                zoneFallbackRecipient: stranger,
+                ..withdrawal(1, BOB, 0)
+            },
+        ),
+        ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, stranger),
+    );
+    assert!(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
+            .is_success()
+    );
+    Ok(())
+}

@@ -89,7 +89,8 @@ pub use storage::{L1State, L1StateError, L1StorageReader};
 pub use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 pub use tempo_state::TempoState;
 pub use zone_fee_manager::{ZONE_FEE_MANAGER_ADDRESS, ZoneFeeManager};
-pub use zone_identity::{ZONE_IDENTITY_ADDRESS, ZoneIdentity};
+use zone_identity::ZoneIdentity;
+use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
 use alloc::rc::Rc;
 use core::cell::RefCell;

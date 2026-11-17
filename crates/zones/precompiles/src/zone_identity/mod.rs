@@ -27,14 +27,14 @@ use tempo_precompiles::{
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt as _;
-pub use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
+use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
 use crate::{
     error::ZoneResult,
     storage::{L1State, L1StorageReader},
 };
 
-pub use tempo_contracts::zones::IZoneIdentity::OrgKey;
+use tempo_contracts::zones::IZoneIdentity::OrgKey;
 
 /// Org registry and per-token edges between orgs.
 ///
@@ -664,6 +664,30 @@ mod tests {
             ] {
                 assert!(!allows(usd, ALICE, unregistered, kind));
             }
+        });
+    }
+
+    #[test]
+    fn invalid_edges_and_org_zero_admin_are_refused() {
+        with_identity(|identity, registrar| {
+            let org = identity
+                .create_org(registrar, registrar, registrar)
+                .unwrap();
+            assert_eq!(
+                identity.set_edge(
+                    registrar,
+                    registrar,
+                    OrgKey::l1(org),
+                    OrgKey::l1(0),
+                    &[token(1)],
+                    true
+                ),
+                Err(identity_error(ZoneIdentityError::invalid_edge()))
+            );
+            assert_eq!(
+                identity.set_org_admin(registrar, registrar, 0, Address::repeat_byte(1)),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
+            );
         });
     }
 }

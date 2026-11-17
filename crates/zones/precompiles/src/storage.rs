@@ -240,6 +240,17 @@ impl<P: L1StorageReader> L1State<P> {
         self.read_l1(select_slot(&portal))
     }
 
+    /// Reads the portal slot shared by the zone transfer opt-in and the ZoneIdentity enforcement
+    /// flag once, returning `(transfers_enabled, identity_enforced)`.
+    pub fn read_portal_transfer_flags(&self) -> tempo_precompiles::Result<(bool, bool)> {
+        let portal = ZonePortal::new(self.portal_address);
+        let (transfers, enforced) = (&portal.transfers_enabled, &portal.identity_enforced);
+        debug_assert_eq!(transfers.slot(), enforced.slot());
+        let word = self.read_l1(&Slot::<U256>::new(transfers.slot(), self.portal_address))?;
+        let flag = |slot: &Slot<bool>| word.byte(slot.offset().unwrap_or_default()) != 0;
+        Ok((flag(transfers), flag(enforced)))
+    }
+
     /// Selects and reads a [`VecHandler`] length slot from the configured `ZonePortal` at the active anchor.
     pub fn read_portal_vec_len<T: Storable>(
         &self,

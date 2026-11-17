@@ -232,11 +232,23 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         )
         .await?;
 
+    // Dave, who joins no org, may spend Alice's pathUSD: transferFrom is checked from the owner.
+    let approve_dave = alice
+        .send(
+            PATH_USD_ADDRESS,
+            ITIP20::approveCall {
+                spender: dave.address,
+                amount: U256::MAX,
+            },
+        )
+        .await?;
+
     // T15: the predeploy answers. No registrar is set yet, so org 0's admin is zero.
     let t15 = fixture.next_block_at(activation);
     fixture.enqueue(&t15, zone.deposit_queue(), vec![]);
     zone.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
     assert!(approve.get_receipt().await?.status());
+    assert!(approve_dave.get_receipt().await?.status());
     assert!(
         block_timestamp(2).await? >= activation,
         "block 2 must run T15"
@@ -381,6 +393,31 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_transfer(&zone, carol.address, alice.address, false).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;
     assert_transfer(&zone, alice.address, dave.address, false).await?;
+    let transfer_from = |to| ITIP20::transferFromCall {
+        from: alice.address,
+        to,
+        amount: U256::ONE,
+    };
+    assert_eq!(
+        revert_of(
+            &zone,
+            dave.address,
+            PATH_USD_ADDRESS,
+            transfer_from(bob.address)
+        )
+        .await?,
+        None
+    );
+    assert_eq!(
+        revert_of(
+            &zone,
+            dave.address,
+            PATH_USD_ADDRESS,
+            transfer_from(dave.address)
+        )
+        .await?,
+        Some(forbids(alice.address, dave.address))
+    );
     // The off-ramp's edge is to its Tempo address only, so a Zone transfer to it is refused.
     assert_transfer(&zone, alice.address, offramp, false).await?;
 
