@@ -67,11 +67,11 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
-use reth_cli_runner::CliRunner;
+use reth_cli_runner::{CliRunner, CliRunnerConfig};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
+use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{DEV, TempoChainSpec},
@@ -95,6 +95,7 @@ use tempo_node::{
     },
 };
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span, warn, warn_span};
 
 #[cfg(all(feature = "localnet", unix))]
@@ -516,11 +517,33 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         (evm_config, TempoConsensus::new(spec))
     };
 
-    // Reth drops the launcher, also on SIGTERM, before its graceful shutdown terminates the engine.
-    // Cancelling here lets the consensus root's biased select exit cleanly before engine calls fail.
+    // The node command handles SIGINT and SIGTERM in the launcher below, so that it stops consensus
+    // before Reth's graceful shutdown terminates the engine. Other commands keep Reth's handling.
+    let mut cli = cli.configure();
+    if is_node {
+        cli.set_runner_config(CliRunnerConfig::new().with_signal_handling(false));
+    }
+
+    // Reth's graceful shutdown terminates the engine once the launcher returns, also when it returns
+    // early with an error. Cancelling then lets the consensus root's biased select exit cleanly
+    // before engine calls fail.
     let cancel_consensus = shutdown_token.clone().drop_guard();
+    let launcher_token = shutdown_token.clone();
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let _cancel_consensus = cancel_consensus;
+        tokio::spawn({
+            let token = launcher_token.clone();
+            async move {
+                match shutdown_signal().await {
+                    Ok(()) => info!("received shutdown signal"),
+                    Err(err) => {
+                        warn!(%err, "failed to listen for shutdown signals");
+                        return;
+                    }
+                }
+                token.cancel();
+            }
+        });
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -625,7 +648,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let NodeHandle {
             node,
             node_exit_future,
-        } = tempo_node_launcher::launch(builder
+        } = match launch_unless_cancelled(&launcher_token, tempo_node_launcher::launch(builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
@@ -689,9 +712,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
-            }))
+            })))
             .await
-            .wrap_err("failed launching execution node")?;
+        {
+            Some(handle) => handle.wrap_err("failed launching execution node")?,
+            None => {
+                stop_consensus(&launcher_token, consensus_dead_rx).await;
+                return Ok(());
+            }
+        };
 
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
@@ -757,17 +786,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
-        tokio::select! {
+        let consensus_exited = tokio::select! {
             result = node_exit_future => {
                 result.wrap_err("execution node exited with error")?;
                 tracing::info!("execution node exited");
+                false
             }
             _ = &mut consensus_dead_rx => {
                 tracing::info!("consensus node exited");
+                true
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
-            }
+            () = launcher_token.cancelled() => false,
+        };
+        if !consensus_exited {
+            stop_consensus(&launcher_token, consensus_dead_rx).await;
         }
 
         #[cfg(feature = "pyroscope")]
@@ -787,6 +819,53 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
+}
+
+/// How long the node waits for consensus to stop before it shuts down execution anyway.
+const CONSENSUS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Resolves on the first SIGINT, or SIGTERM on unix.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
+}
+
+/// Runs `launch` to completion, or returns `None` once `token` is cancelled.
+async fn launch_unless_cancelled<T>(
+    token: &CancellationToken,
+    launch: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = token.cancelled() => None,
+        result = launch => Some(result),
+    }
+}
+
+/// Cancels consensus and waits until its thread exits, at most [`CONSENSUS_SHUTDOWN_TIMEOUT`].
+///
+/// `consensus_dead` resolves when the consensus thread exits, either by a send or by dropping its
+/// sender.
+async fn stop_consensus(token: &CancellationToken, consensus_dead: oneshot::Receiver<()>) {
+    token.cancel();
+    if tokio::time::timeout(CONSENSUS_SHUTDOWN_TIMEOUT, consensus_dead)
+        .await
+        .is_err()
+    {
+        warn!(
+            timeout = ?CONSENSUS_SHUTDOWN_TIMEOUT,
+            "consensus did not stop in time, shutting down execution anyway",
+        );
+    }
 }
 
 /// Creates a temporary directory on tmpfs where available.
