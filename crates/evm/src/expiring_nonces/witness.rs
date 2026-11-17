@@ -284,7 +284,11 @@ impl ExpiringNonceSet {
                     let Some(bucket) = self.buckets.get(v) else {
                         continue;
                     };
-                    let mut keys = bucket.keys.clone();
+                    let mut keys: Vec<B256> = bucket
+                        .keys
+                        .iter()
+                        .flat_map(|chunk| chunk.iter().copied())
+                        .collect();
                     keys.sort_unstable();
                     keys.into_iter().map(|k| (k, PRESENT.to_vec())).collect()
                 }

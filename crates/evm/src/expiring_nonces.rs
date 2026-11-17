@@ -43,7 +43,7 @@ use tempo_primitives::TempoTxEnvelope;
 use tracing::{debug, error, trace};
 
 /// Number of block snapshots kept. Covers the unfinalized branches a node executes on top of.
-const SNAPSHOT_CAPACITY: u32 = 256;
+const SNAPSHOT_CAPACITY: u32 = 64;
 
 /// Number of built payloads whose sets wait for assembly.
 const STAGED_CAPACITY: u32 = 16;
@@ -187,6 +187,21 @@ impl ExpiringNonceSet {
         timestamp: u64,
         entries: &[ExpiringNonce],
     ) -> Result<Vec<ExpiringNonce>, Error> {
+        self.apply_inner(timestamp, entries, true)
+    }
+
+    /// Like [`Self::apply`] for entries already checked against this set, as the block executor
+    /// does before each transaction: skips the per-entry lookups in the existing buckets.
+    fn apply_checked(&mut self, timestamp: u64, entries: &[ExpiringNonce]) -> Result<(), Error> {
+        self.apply_inner(timestamp, entries, false).map(|_| ())
+    }
+
+    fn apply_inner(
+        &mut self,
+        timestamp: u64,
+        entries: &[ExpiringNonce],
+        check_replays: bool,
+    ) -> Result<Vec<ExpiringNonce>, Error> {
         self.buckets = match timestamp.checked_add(1) {
             Some(first_live) => self.buckets.split_off(&first_live),
             None => BTreeMap::new(),
@@ -196,7 +211,7 @@ impl ExpiringNonceSet {
         let mut updates = BTreeMap::<u64, B256Map<LeafUpdate>>::new();
         for entry in entries {
             let pending = updates.entry(entry.valid_before).or_default();
-            if self.contains(entry) || pending.contains_key(&entry.hash) {
+            if (check_replays && self.contains(entry)) || pending.contains_key(&entry.hash) {
                 replays.push(*entry);
                 continue;
             }
@@ -209,7 +224,7 @@ impl ExpiringNonceSet {
             }
             let bucket = Arc::make_mut(self.buckets.entry(valid_before).or_default());
             bucket.len += leaves.len();
-            bucket.keys.extend(leaves.keys().copied());
+            bucket.keys.push(leaves.keys().copied().collect());
             let mut blinded = false;
             bucket
                 .trie
@@ -387,7 +402,7 @@ struct Bucket {
     root: B256,
     len: usize,
     /// The bucket's replay hashes, to build witness proofs from.
-    keys: Vec<B256>,
+    keys: Vec<Arc<[B256]>>,
 }
 
 impl Default for Bucket {
@@ -617,15 +632,9 @@ impl BlockExpiringNonces {
         }
 
         let mut set = self.base()?.clone();
-        let replays = set
-            .apply(self.timestamp, &self.entries)
+        // Every entry was checked against the set and the block before its transaction executed.
+        set.apply_checked(self.timestamp, &self.entries)
             .map_err(BlockExecutionError::other)?;
-        if !replays.is_empty() {
-            // Every entry was checked before its transaction executed.
-            return Err(BlockExecutionError::msg(
-                "expiring nonce set accepted a replay it already holds",
-            ));
-        }
         set.set_authoritative(true);
         let root = set.root();
         if self.block_hash.is_some() && self.header_root != Some(root) {
@@ -678,7 +687,7 @@ mod tests {
         let parent = B256::repeat_byte(1);
         sets.insert(parent, ExpiringNonceSet::default());
         // Far more assembled payloads (such as RPC pending blocks) than snapshots.
-        for i in 0..(SNAPSHOT_CAPACITY + BUILT_CAPACITY) as u64 * 4 {
+        for i in 0..u64::from(SNAPSHOT_CAPACITY + BUILT_CAPACITY) * 4 {
             let key = keccak256(i.to_be_bytes());
             sets.stage(key, ExpiringNonceSet::default());
             assert!(sets.promote(key, || keccak256((i + 1_000_000).to_be_bytes())));
@@ -686,7 +695,7 @@ mod tests {
         assert!(sets.get(parent).is_some());
         // The most recent payload is still known, and moves into the block snapshots on use.
         let last = keccak256(
-            ((SNAPSHOT_CAPACITY + BUILT_CAPACITY) as u64 * 4 - 1 + 1_000_000).to_be_bytes(),
+            (u64::from(SNAPSHOT_CAPACITY + BUILT_CAPACITY) * 4 - 1 + 1_000_000).to_be_bytes(),
         );
         assert!(sets.get(last).is_some());
         assert!(sets.inner.lock().by_block.peek(&last).is_some());
