@@ -181,7 +181,8 @@ impl Client {
         }
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
-            Ok(0) => Ok(None),
+            // EOF may follow a partial write when the container is killed mid-response.
+            Ok(_) if !line.ends_with('\n') => Ok(None),
             Ok(_) => Ok(Some(serde_json::from_str(&line).wrap_err("decode a response")?)),
             Err(error) if gone(&error) => Ok(None),
             Err(error) => Err(error).wrap_err("receive a response"),
@@ -358,4 +359,61 @@ fn gone(error: &io::Error) -> bool {
 
 fn socket_path() -> PathBuf {
     std::env::var_os(SOCKET_ENV).map_or_else(|| PathBuf::from(DEFAULT_SOCKET), PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response_after_disconnect(response: &'static [u8]) -> Result<Option<Response>> {
+        let (client, server) = UnixStream::pair()?;
+        client.set_read_timeout(Some(Duration::from_secs(5)))?;
+        server.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let responder = thread::spawn(move || -> Result<()> {
+            let mut reader = BufReader::new(server);
+            let mut request = String::new();
+            reader.read_line(&mut request)?;
+            assert_eq!(request, "{\"method\":\"state_summary\"}\n");
+            reader.get_mut().write_all(response)?;
+            Ok(())
+        });
+        let mut client = Client { reader: BufReader::new(client.try_clone()?), writer: client };
+        let result = client.call(&Request::StateSummary);
+        responder.join().expect("responder thread panicked")?;
+        result
+    }
+
+    #[test]
+    fn empty_response_is_unavailable() -> Result<()> {
+        assert!(response_after_disconnect(b"")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn truncated_response_is_unavailable() -> Result<()> {
+        assert!(response_after_disconnect(b"{\"result\":\"roo")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn response_without_newline_is_unavailable() -> Result<()> {
+        assert!(response_after_disconnect(b"{\"result\":\"queued\",\"pending\":3}")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn complete_response_is_decoded() -> Result<()> {
+        assert!(matches!(
+            response_after_disconnect(b"{\"result\":\"queued\",\"pending\":3}\n")?,
+            Some(Response::Queued { pending: 3 })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_complete_response_is_an_error() {
+        let error = response_after_disconnect(b"{invalid}\n").expect_err("invalid JSON must fail");
+        assert_eq!(error.to_string(), "decode a response");
+        assert_eq!(error.root_cause().to_string(), "key must be a string at line 1 column 2");
+    }
 }
