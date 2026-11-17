@@ -207,6 +207,7 @@ where
                 &self.env,
                 ztip20::TIP20Rules {
                     l1: self.l1.clone(),
+                    token: address,
                 },
                 |data, caller| {
                     TIP20Token::from_address_unchecked(address)

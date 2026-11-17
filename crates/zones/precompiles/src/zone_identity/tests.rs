@@ -309,6 +309,43 @@ fn token_bits_are_assigned_once() {
 }
 
 #[test]
+fn nothing_is_enforced_before_the_fork() {
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+    StorageCtx::enter(&mut storage, || {
+        seed_for_test(&[], &[]).unwrap();
+        let (a, b) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        let identity = ZoneIdentity::new();
+        assert_eq!(
+            identity
+                .verdict(token(1), a, b, TransferKind::InZone)
+                .unwrap(),
+            TransferVerdict::NotEnforced
+        );
+        assert!(
+            identity
+                .ensure_transfer(token(1), a, b, TransferKind::Withdrawal)
+                .is_ok()
+        );
+    });
+}
+
+#[test]
+fn ensure_transfer_reverts_with_org_policy_forbids() {
+    with_identity(|identity, _, registrar| {
+        identity.register_token(registrar, token(1)).unwrap();
+        let (a, b) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        assert_eq!(
+            identity.ensure_transfer(token(1), a, b, TransferKind::InZone),
+            Err(identity_error(ZoneIdentityError::org_policy_forbids(
+                token(1),
+                a,
+                b
+            )))
+        );
+    });
+}
+
+#[test]
 fn check_is_skipped_when_not_enforced() {
     with_identity(|identity, portal_admin, _| {
         identity

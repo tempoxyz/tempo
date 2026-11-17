@@ -7,11 +7,11 @@
 //! admin of the orgs that hold L1 endpoints (deposit senders, off-ramps) and routers, so an exit
 //! needs its half like any other edge.
 //!
-//! Until a later fork hooks [`check_transfer`] into TIP-20, the outbox and the inbox, the
-//! sequencer enforces it by leaving disallowed transactions out of blocks and bouncing disallowed
-//! deposits. The storage is laid out for that later in-EVM check: [`check_transfer`] reads at most
-//! five slots (`enforced`, both members, the token's bit and one edge) whatever the number of orgs,
-//! tokens or edges, and a transfer inside an org costs the same as one between orgs.
+//! Execution enforces it: zone TIP-20 transfers revert, `ZoneOutbox::requestWithdrawal` reverts and
+//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::ensure_transfer`] denies the move. The check
+//! reads at most five slots (`enforced`, both members, the token's bit and one edge) whatever the
+//! number of orgs, tokens or edges, and a transfer inside an org costs the same as one between
+//! orgs.
 
 mod dispatch;
 
@@ -132,10 +132,7 @@ impl TransferVerdict {
 }
 
 /// Decides whether `token` may move from `from` to `to`, reading `ZoneIdentity` storage through
-/// `sload`.
-///
-/// The sequencer calls this against the latest or in-block state; a later fork calls it from
-/// TIP-20, the outbox and the inbox over the same storage. It reads at most five slots.
+/// `sload`. It reads at most five slots.
 pub fn check_transfer<E>(
     mut sload: impl FnMut(U256) -> core::result::Result<U256, E>,
     token: Address,
@@ -173,6 +170,41 @@ pub fn check_transfer<E>(
 }
 
 impl ZoneIdentity {
+    /// Decides whether `token` may move from `from` to `to`. Before the fork that adds
+    /// `ZoneIdentity` it reads nothing and allows every move.
+    pub fn verdict(
+        &self,
+        token: Address,
+        from: Address,
+        to: Address,
+        kind: TransferKind,
+    ) -> ZoneResult<TransferVerdict> {
+        if !crate::zone_identity_active(self.storage.spec()) {
+            return Ok(TransferVerdict::NotEnforced);
+        }
+        Ok(check_transfer(
+            |slot| self.storage.sload(ZONE_IDENTITY_ADDRESS, slot),
+            token,
+            from,
+            to,
+            kind,
+        )?)
+    }
+
+    /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
+    pub fn ensure_transfer(
+        &self,
+        token: Address,
+        from: Address,
+        to: Address,
+        kind: TransferKind,
+    ) -> ZoneResult<()> {
+        if !self.verdict(token, from, to, kind)?.is_allowed() {
+            return Err(ZoneIdentityError::org_policy_forbids(token, from, to).into());
+        }
+        Ok(())
+    }
+
     /// Sets the registrar. Only the portal admin, read from finalized Tempo, may call it.
     pub fn set_registrar(
         &mut self,
@@ -370,6 +402,38 @@ impl ZoneIdentity {
 fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
     if expected.is_zero() || caller != expected {
         return Err(ZoneIdentityError::unauthorized().into());
+    }
+    Ok(())
+}
+
+/// Seeds enforced `ZoneIdentity` storage directly, for tests of the paths that enforce it.
+#[cfg(test)]
+pub(crate) fn seed_for_test(
+    members: &[(Address, u64, bool)],
+    edges: &[(u64, u64, Address)],
+) -> tempo_precompiles::Result<()> {
+    let mut identity = ZoneIdentity::new();
+    identity.enforced.write(true)?;
+    let mut org_count = identity.org_count.read()?;
+    for &(account, org, l1_only) in members {
+        org_count = org_count.max(org);
+        let member = Member {
+            org,
+            l1_only,
+            frozen: false,
+        };
+        identity.members[account].write(member.encode())?;
+    }
+    identity.org_count.write(org_count)?;
+    for &(from, to, token) in edges {
+        let mut bit = identity.token_bits[token].read()?;
+        if bit == 0 {
+            bit = identity.token_count.read()? + 1;
+            identity.token_bits[token].write(bit)?;
+            identity.token_count.write(bit)?;
+        }
+        let edge = identity.edges[from][to].read()? | (U256::ONE << (bit - 1));
+        identity.edges[from][to].write(edge)?;
     }
     Ok(())
 }

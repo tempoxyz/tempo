@@ -787,3 +787,50 @@ fn bridged_credits_use_recipient_policy_from_t13(
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
 }
+
+#[test]
+fn zone_identity_bounces_deposits_without_an_edge() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let fixture = EncryptedDepositFixture::new();
+    seed_encryption_key(&env, &fixture);
+    let (deposit, decryption) = encrypted_deposit(&fixture, fixture.to, 500);
+    env.with_storage(|| {
+        crate::zone_identity::seed_for_test(&[(ALICE, 2, true), (fixture.to, 1, false)], &[])
+    })?;
+    let queued = env.queue_deposit(DepositType::Deposit, deposit);
+
+    env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
+
+    assert_eq!(env.balance(PATH_USD_ADDRESS, fixture.to), U256::ZERO);
+    assert_single_bounce_back(&mut env, 500, ALICE);
+    Ok(())
+}
+
+#[test]
+fn zone_identity_credits_deposits_along_an_edge() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let fixture = EncryptedDepositFixture::new();
+    seed_encryption_key(&env, &fixture);
+    let (deposit, decryption) = encrypted_deposit(&fixture, fixture.to, 500);
+    env.with_storage(|| {
+        crate::zone_identity::seed_for_test(
+            &[(ALICE, 2, true), (fixture.to, 1, false)],
+            &[(2, 1, PATH_USD_ADDRESS)],
+        )
+    })?;
+    let queued = env.queue_deposit(DepositType::Deposit, deposit);
+
+    env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
+
+    assert_eq!(env.balance(PATH_USD_ADDRESS, fixture.to), U256::from(500));
+    assert!(env.pending_withdrawals().is_empty());
+    Ok(())
+}

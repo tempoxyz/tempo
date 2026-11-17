@@ -695,3 +695,43 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     );
     Ok(())
 }
+
+#[test]
+fn request_withdrawal_follows_zone_identity_edges() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    env.with_storage(|| {
+        crate::zone_identity::seed_for_test(&[(ALICE, 1, false), (BOB, 2, true)], &[])
+    })?;
+    assert_revert(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
+        tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, BOB),
+    );
+
+    env.with_storage(|| crate::zone_identity::seed_for_test(&[], &[(1, 2, PATH_USD_ADDRESS)]))?;
+    assert!(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
+            .is_success()
+    );
+
+    // The bounce-back lands on the fallback recipient, so it needs an edge too.
+    let stranger = Address::with_last_byte(0xf6);
+    assert_revert(
+        env.request_withdrawal(
+            ALICE,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                zoneFallbackRecipient: stranger,
+                ..withdrawal(1, BOB, 0)
+            },
+        ),
+        tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(
+            PATH_USD_ADDRESS,
+            ALICE,
+            stranger,
+        ),
+    );
+    Ok(())
+}

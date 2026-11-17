@@ -1075,7 +1075,7 @@ fn build_engine<P, Pool>(
     last_header: SealedHeader<TempoHeader>,
 ) -> ZoneEngine
 where
-    P: StateProviderFactory + Clone + Send + Sync + 'static,
+    P: Clone,
 {
     ZoneEngine::new(
         context.chain_spec.clone(),
@@ -1094,9 +1094,6 @@ where
         context.local_ed25519_public_key.clone(),
     ))
     .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
-    .with_identity_state(crate::engine::IdentityState::latest(
-        context.provider.clone(),
-    ))
 }
 
 #[cfg(test)]

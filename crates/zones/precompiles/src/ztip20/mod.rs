@@ -16,15 +16,16 @@ pub use tempo_contracts::zones::InsufficientBalance;
 use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     tip20::{IRolesAuth, ITIP20},
 };
 
 use crate::{
-    L1State, L1StorageReader,
+    L1State, L1StorageReader, ZonePrecompileError,
     execution::{CallCheck, CallRules},
     privacy::check_caller,
     storage::StorageCtx,
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// Fixed gas charged for TIP20 transfer and approval selectors on the zone.
@@ -47,14 +48,17 @@ pub(crate) const TIP20_FIXED_GAS_SELECTORS: &[[u8; 4]] = &[
 pub(crate) struct TIP20Rules<P> {
     /// Finalized Tempo state, used to read the portal's transfer opt-in.
     pub(crate) l1: L1State<P>,
+    /// The token the call is made to.
+    pub(crate) token: Address,
 }
 
 impl<P: L1StorageReader> TIP20Rules<P> {
     /// Admits a transfer-family call.
     ///
-    /// Transfers require T15 and the portal admin's opt-in. Upstream TIP-20 then reverts, rather
-    /// than diverts, a transfer that the recipient's receive policy blocks on a zone.
-    fn admit_transfer(&self) -> Result<CallCheck> {
+    /// Transfers require T15, the portal admin's opt-in and, once `ZoneIdentity` is active, an
+    /// org edge from `from` to `to` for the token. Upstream TIP-20 then reverts, rather than
+    /// diverts, a transfer that the recipient's receive policy blocks on a zone.
+    fn admit_transfer(&self, from: Address, to: Address) -> Result<CallCheck> {
         // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
         // paths.
         if !StorageCtx::default().spec().is_t15()
@@ -62,7 +66,14 @@ impl<P: L1StorageReader> TIP20Rules<P> {
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        Ok(CallCheck::Continue)
+        match ZoneIdentity::new().ensure_transfer(self.token, from, to, TransferKind::InZone) {
+            Ok(()) => Ok(CallCheck::Continue),
+            Err(ZonePrecompileError::Identity(error)) => {
+                Ok(CallCheck::Revert(error.abi_encode().into()))
+            }
+            Err(ZonePrecompileError::Tempo(error)) => Err(error),
+            Err(error) => Err(TempoPrecompileError::Fatal(error.to_string())),
+        }
     }
 }
 
@@ -87,11 +98,18 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                 ITIP20::ITIP20Calls::nonces(call) => {
                     check_caller(caller, &[call.owner])
                 }
-                ITIP20::ITIP20Calls::transferFrom(_)
-                | ITIP20::ITIP20Calls::transfer(_)
-                | ITIP20::ITIP20Calls::transferWithMemo(_)
-                | ITIP20::ITIP20Calls::transferFromWithMemo(_) => {
-                    self.admit_transfer().unwrap_or_else(CallCheck::Error)
+                ITIP20::ITIP20Calls::transfer(call) => {
+                    self.admit_transfer(caller, call.to).unwrap_or_else(CallCheck::Error)
+                }
+                ITIP20::ITIP20Calls::transferWithMemo(call) => {
+                    self.admit_transfer(caller, call.to).unwrap_or_else(CallCheck::Error)
+                }
+                // Checked from the owner whose funds move, whoever the spender is.
+                ITIP20::ITIP20Calls::transferFrom(call) => {
+                    self.admit_transfer(call.from, call.to).unwrap_or_else(CallCheck::Error)
+                }
+                ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
+                    self.admit_transfer(call.from, call.to).unwrap_or_else(CallCheck::Error)
                 }
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
@@ -209,6 +227,7 @@ mod tests {
     fn rules() -> Rules {
         TIP20Rules {
             l1: L1State::new(MockL1Reader::default(), PORTAL_ADDRESS),
+            token: PATH_USD_ADDRESS,
         }
     }
 
@@ -535,6 +554,48 @@ mod tests {
             assert_eq!(result.gas_used, gas);
         }
         harness.assert_no_funds_moved(harness.bob)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_follow_zone_identity_edges() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        let (alice, bob, token) = (harness.alice, harness.bob, harness.token);
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                crate::zone_identity::seed_for_test(&[(alice, 1, false), (bob, 2, false)], &[])
+            })?;
+        }
+
+        for (caller, calldata) in harness.transfer_calls(bob) {
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(
+                    tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(
+                        token, alice, bob
+                    )
+                    .abi_encode()
+                )
+            );
+        }
+        harness.assert_no_funds_moved(bob)?;
+
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                crate::zone_identity::seed_for_test(&[], &[(1, 2, token)])
+            })?;
+        }
+        for (caller, calldata) in harness.transfer_calls(bob) {
+            let gas = harness.fixed_gas(&calldata)?;
+            assert!(harness.call(caller, calldata, gas, false)?.is_success());
+        }
+        assert_ne!(harness.balance_of(bob)?, U256::ZERO);
         Ok(())
     }
 

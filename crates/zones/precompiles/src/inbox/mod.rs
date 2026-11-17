@@ -42,6 +42,7 @@ use crate::{
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// ABI selector for the block-opening `advanceTempo` system call.
@@ -276,6 +277,15 @@ impl ZoneInbox {
         else {
             return self.fail_deposit(outbox, current_hash, deposit);
         };
+
+        // Bounce a deposit whose L1 sender's org has no edge to the recipient's org.
+        let identity = ZoneIdentity::new();
+        if !identity
+            .verdict(deposit.token, deposit.sender, to, TransferKind::Deposit)?
+            .is_allowed()
+        {
+            return self.fail_deposit(outbox, current_hash, deposit);
+        }
 
         if self.try_mint(deposit.token, to, deposit.amount)? {
             self.emit_event(deposit.processed_event(current_hash, to, memo))?;

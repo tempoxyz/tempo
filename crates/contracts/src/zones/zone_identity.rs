@@ -44,5 +44,6 @@ crate::sol! {
         error NotMember(address account);
         error TokenAlreadyRegistered(address token);
         error TooManyTokens();
+        error OrgPolicyForbids(address token, address from, address to);
     }
 }

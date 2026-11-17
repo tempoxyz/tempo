@@ -26,6 +26,7 @@ use crate::{
     ZoneResult,
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, decode_compressed_public_key},
     storage::{L1State, L1StorageReader},
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// Maximum callback payload accepted by the Zone Outbox.
@@ -181,6 +182,18 @@ impl ZoneOutbox {
             return Err(TempoPrecompileError::from(TIP20Error::uninitialized()).into());
         }
         self.validate_withdrawal_policy(l1, call.token, call.to, call.gasLimit)?;
+        // The withdrawal must follow an org edge, and so must its bounce-back to the fallback
+        // recipient.
+        let identity = ZoneIdentity::new();
+        identity.ensure_transfer(call.token, caller, call.to, TransferKind::Withdrawal)?;
+        if call.zoneFallbackRecipient != caller {
+            identity.ensure_transfer(
+                call.token,
+                caller,
+                call.zoneFallbackRecipient,
+                TransferKind::InZone,
+            )?;
+        }
         self.enforce_withdrawal_block_cap()?;
 
         // If necessary, validate reveal

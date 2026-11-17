@@ -1004,8 +1004,7 @@ where
                 self.portal_address,
                 proof_collector.clone(),
             )
-            .with_deposit_allowlist(config.deposit_allowlist.clone())
-            .with_identity_state(crate::engine::IdentityState::latest(provider.clone()));
+            .with_deposit_allowlist(config.deposit_allowlist.clone());
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(
@@ -1942,30 +1941,6 @@ impl ZonePoolBuilder {
     }
 }
 
-/// Rejects a transaction whose top-level calls move funds along an edge `ZoneIdentity` does not
-/// allow at the latest state.
-fn validate_org_edges(
-    provider: &impl StateProviderFactory,
-    tx: &TempoPooledTransaction,
-) -> Result<(), InvalidPoolTransactionError> {
-    let unverifiable = |err: &dyn core::fmt::Display| {
-        warn!(%err, "Failed to read ZoneIdentity state during pool admission");
-        InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(HandlerError::External(
-            "could not verify org policy".into(),
-        )))
-    };
-    let state = provider.latest().map_err(|err| unverifiable(&err))?;
-    zone_payload::screen_identity(
-        |slot| {
-            state
-                .storage(zone_precompiles::ZONE_IDENTITY_ADDRESS, slot.into())
-                .map(Option::unwrap_or_default)
-        },
-        tx,
-    )
-    .map_err(|err| unverifiable(&err))?
-}
-
 fn validate_has_enabled_token_balance(
     provider: &impl StateProviderFactory,
     enabled_tokens: &EnabledTokenRegistry,
@@ -2032,11 +2007,10 @@ where
         let enabled_tokens = self.enabled_tokens;
         let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
-            // The in-memory allowlist check runs before the checks that read state.
+            // The in-memory allowlist check runs before the balance check, which reads state.
             if let Some(allowlist) = &transfer_allowlist {
                 validate_transfer_calls(allowlist.as_ref(), tx)?;
             }
-            validate_org_edges(&provider, tx)?;
             validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
