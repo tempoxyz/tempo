@@ -12,7 +12,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
-use reth_storage_api::{BlockReader, StageCheckpointReader, StateProviderFactory};
+use reth_storage_api::{BlockReader, StateProviderFactory};
 #[cfg(feature = "fuzz")]
 use serde_json::json;
 use std::{
@@ -38,7 +38,10 @@ use zone_payload::{
 };
 use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
 use zone_prover::VerifierMode;
-use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
+use zone_sequencer::{
+    DurableBlockReader,
+    attestation::{SettlementAttestation, SignedSettlementAttestation},
+};
 
 use crate::{
     replication::{PeerBlock, decode_peer_block},
@@ -230,7 +233,7 @@ impl<P> FollowerBlockSync<P>
 where
     P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
-        + StageCheckpointReader
+        + DurableBlockReader
         + StateProviderFactory
         + Clone
         + 'static,
@@ -418,7 +421,10 @@ where
             .zoneHeight
             .try_into()
             .wrap_err("settlement height does not fit in u64")?;
-        let persisted_head = zone_sequencer::durable_block_number(&self.context.provider)
+        let persisted_head = self
+            .context
+            .provider
+            .durable_block_number()
             .wrap_err("failed reading persisted zone head")?;
         eyre::ensure!(
             height <= persisted_head,

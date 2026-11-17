@@ -11,7 +11,7 @@ use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_transport::TransportResult;
 use reth_chain_state::{CanonStateSubscriptions, PersistedBlockSubscriptions};
-use reth_storage_api::{BlockReader, StageCheckpointReader, StateProviderFactory};
+use reth_storage_api::{BlockReader, StateProviderFactory};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use tokio::sync::Notify;
@@ -35,7 +35,7 @@ pub mod settlement;
 mod settlement_manager;
 pub mod withdrawals;
 
-pub use durable::durable_block_number;
+pub use durable::DurableBlockReader;
 pub use encryption_key::{
     EncryptionKeyProof, encryption_key_identity, prove_encryption_key_possession,
     register_encryption_key,
@@ -74,7 +74,7 @@ pub trait ZoneSequencerProvider:
         Receipt = TempoReceipt,
     > + CanonStateSubscriptions<Primitives = TempoPrimitives>
     + StateProviderFactory
-    + StageCheckpointReader
+    + DurableBlockReader
     + Clone
     + 'static
 {
@@ -88,7 +88,7 @@ impl<T> ZoneSequencerProvider for T where
             Receipt = TempoReceipt,
         > + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + StateProviderFactory
-        + StageCheckpointReader
+        + DurableBlockReader
         + Clone
         + 'static
 {

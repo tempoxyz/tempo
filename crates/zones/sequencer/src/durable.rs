@@ -3,7 +3,7 @@
 use reth_stages_types::StageId;
 use reth_storage_api::{BlockNumReader, StageCheckpointReader, errors::provider::ProviderResult};
 
-/// Returns the highest zone block this node still holds after a crash.
+/// Reads the highest zone block this node still holds after a crash.
 ///
 /// [`BlockNumReader::last_block_number`] reads the static-file tip, which reth writes before it
 /// commits the MDBX transaction for the same blocks. A block at that tip can still be lost if the
@@ -12,21 +12,24 @@ use reth_storage_api::{BlockNumReader, StageCheckpointReader, errors::provider::
 /// `partial_state_trie` frontier is the height reth unwinds to on restart, so only blocks at or
 /// below it may be signed, served to peers or settled.
 ///
+/// Implemented for every provider that can read block numbers and stage checkpoints.
 /// A database without a `Finish` checkpoint reports genesis, so callers fail closed.
-pub fn durable_block_number<P>(provider: &P) -> ProviderResult<u64>
-where
-    P: BlockNumReader + StageCheckpointReader,
-{
-    let frontier = provider
-        .get_stage_checkpoint(StageId::Finish)?
-        .map_or(0, |checkpoint| {
-            checkpoint
-                .finish_stage_checkpoint()
-                .and_then(|finish| finish.partial_state_trie())
-                .unwrap_or(checkpoint.block_number)
-        });
-    Ok(frontier.min(provider.last_block_number()?))
+pub trait DurableBlockReader: BlockNumReader + StageCheckpointReader {
+    /// Returns the highest block that survives a crash.
+    fn durable_block_number(&self) -> ProviderResult<u64> {
+        let frontier = self
+            .get_stage_checkpoint(StageId::Finish)?
+            .map_or(0, |checkpoint| {
+                checkpoint
+                    .finish_stage_checkpoint()
+                    .and_then(|finish| finish.partial_state_trie())
+                    .unwrap_or(checkpoint.block_number)
+            });
+        Ok(frontier.min(self.last_block_number()?))
+    }
 }
+
+impl<P: BlockNumReader + StageCheckpointReader + ?Sized> DurableBlockReader for P {}
 
 #[cfg(test)]
 mod tests {
@@ -54,14 +57,14 @@ mod tests {
 
     #[test]
     fn missing_checkpoint_reports_genesis() {
-        assert_eq!(durable_block_number(&provider_with_tip(5)).unwrap(), 0);
+        assert_eq!(provider_with_tip(5).durable_block_number().unwrap(), 0);
     }
 
     #[test]
     fn static_file_tip_ahead_of_commit_is_not_durable() {
         let provider = provider_with_tip(5);
         provider.add_stage_checkpoint(StageId::Finish, StageCheckpoint::new(4));
-        assert_eq!(durable_block_number(&provider).unwrap(), 4);
+        assert_eq!(provider.durable_block_number().unwrap(), 4);
     }
 
     #[test]
@@ -73,13 +76,13 @@ mod tests {
                 partial_state_trie: Some(3),
             }),
         );
-        assert_eq!(durable_block_number(&provider).unwrap(), 3);
+        assert_eq!(provider.durable_block_number().unwrap(), 3);
     }
 
     #[test]
     fn committed_tip_is_durable() {
         let provider = provider_with_tip(5);
         provider.add_stage_checkpoint(StageId::Finish, StageCheckpoint::new(5));
-        assert_eq!(durable_block_number(&provider).unwrap(), 5);
+        assert_eq!(provider.durable_block_number().unwrap(), 5);
     }
 }

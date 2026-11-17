@@ -8,14 +8,16 @@ use futures::{StreamExt as _, stream::BoxStream};
 use minicbor::data::Type;
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
-use reth_storage_api::{BlockNumReader, BlockReader, StageCheckpointReader, StateProviderFactory};
+use reth_storage_api::{BlockNumReader, BlockReader, StateProviderFactory};
 use tempo_primitives::Block;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync;
 use tracing::debug;
 use zone_l1::TempoStateExt as _;
 use zone_p2p::{BackfillCommand, BackfillRequest, EncodedBlock, P2pCommand, P2pEvent, PeerTip};
-use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
+use zone_sequencer::{
+    DurableBlockReader, ProofCollectorHandle, SettlementManager, StoredBlockProof,
+};
 
 /// A decoded block and the optional witness supplied by its peer.
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +52,7 @@ pub(crate) enum BroadcasterShutdown {
 
 /// Interface used by the replication task to keep track of blocks that are persisted vs broadcast
 pub(crate) trait PersistedBlockSource: Clone + Send + Sync + 'static {
-    /// The highest block that survives a crash; see [`zone_sequencer::durable_block_number`].
+    /// The highest block that survives a crash; see [`DurableBlockReader`].
     ///
     /// Every height this node signs, serves or broadcasts must be at or below it.
     fn durable_block_number(&self) -> eyre::Result<u64>;
@@ -69,12 +71,12 @@ impl<P> PersistedBlockSource for P
 where
     P: PersistedBlockSubscriptions
         + BlockReader<Block = Block>
-        + StageCheckpointReader
+        + DurableBlockReader
         + Clone
         + 'static,
 {
     fn durable_block_number(&self) -> eyre::Result<u64> {
-        Ok(zone_sequencer::durable_block_number(self)?)
+        Ok(DurableBlockReader::durable_block_number(self)?)
     }
 
     fn canonical_block_number(&self) -> eyre::Result<u64> {
@@ -468,11 +470,11 @@ fn serve_backfill_page<P>(
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<()>
 where
-    P: BlockReader<Block = Block> + StageCheckpointReader + StateProviderFactory,
+    P: BlockReader<Block = Block> + DurableBlockReader + StateProviderFactory,
 {
     // Never serve a block this node could still lose: a requester that imports it would
     // conflict with the block rebuilt at that height after a crash.
-    let tip = zone_sequencer::durable_block_number(provider)?;
+    let tip = provider.durable_block_number()?;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
     for number in start..=end {
         let block = provider.block_by_number(number)?.ok_or_else(|| {
@@ -528,7 +530,7 @@ pub(crate) async fn serve_backfill_requests<P>(
     mut requests: mpsc::Receiver<BackfillRequest>,
     proofs: Option<ProofCollectorHandle>,
 ) where
-    P: BlockReader<Block = Block> + StageCheckpointReader + StateProviderFactory + Clone + 'static,
+    P: BlockReader<Block = Block> + DurableBlockReader + StateProviderFactory + Clone + 'static,
 {
     // One worker deliberately serializes page construction and sending, bounding serving
     // concurrency independently of the block import loop.
