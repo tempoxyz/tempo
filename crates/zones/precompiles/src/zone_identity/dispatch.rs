@@ -50,6 +50,10 @@ impl ZoneIdentity {
                     setEdge(call) => mutate(call, msg_sender, |caller, call| {
                         self.set_edge(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
                     }),
+                    setReader(call) => mutate(call, msg_sender, |caller, call| {
+                        self.set_reader(caller, registrar()?, call.orgId, call.reader, call.allowed)
+                    }),
+                    canRead(call) => view(call, |call| self.can_read(msg_sender, call.account)),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
                         self.org_of(msg_sender, registrar()?, call.account).map(|member| {

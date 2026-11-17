@@ -64,9 +64,12 @@ use tempo_chainspec::{
     is_valid_native_account,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
-    account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
+use tempo_contracts::{
+    precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS,
+        account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
+    },
+    zones::{IZoneIdentity, ZONE_IDENTITY_ADDRESS},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{
@@ -1139,6 +1142,38 @@ where
     }
 }
 
+impl<Api> ZoneRpc<Api>
+where
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+{
+    /// Whether `reader` may read `account`'s balance and nonce: it is the account, or
+    /// `ZoneIdentity.canRead` allows it at `block`, the same rule the precompile getters apply. Before
+    /// `ZoneIdentity` exists the call returns no data, which counts as no.
+    async fn can_read(
+        &self,
+        reader: Address,
+        account: Address,
+        block: Option<BlockId>,
+    ) -> Result<bool, JsonRpcError> {
+        if reader == account {
+            return Ok(true);
+        }
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(reader),
+                to: Some(ZONE_IDENTITY_ADDRESS.into()),
+                input: IZoneIdentity::canReadCall { account }.abi_encode().into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let output = EthCall::call(&self.eth.api, request, block, EvmOverrides::default())
+            .await
+            .map_err(internal)?;
+        Ok(IZoneIdentity::canReadCall::abi_decode_returns(output.as_ref()).unwrap_or(false))
+    }
+}
+
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
@@ -1276,8 +1311,8 @@ where
         auth: AuthContext,
     ) -> BoxFut<'_> {
         Box::pin(async move {
-            // Silent dummy: non-caller addresses get "0x0" to avoid leaking account existence.
-            if address != auth.caller {
+            // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
+            if !self.can_read(auth.caller, address, block).await? {
                 return Ok(raw_zero());
             }
             let balance = EthState::balance(&self.eth.api, address, block)
@@ -1294,8 +1329,8 @@ where
         auth: AuthContext,
     ) -> BoxFut<'_> {
         Box::pin(async move {
-            // Silent dummy: non-caller addresses get "0x0" to avoid leaking account existence.
-            if address != auth.caller {
+            // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
+            if !self.can_read(auth.caller, address, block).await? {
                 return Ok(raw_zero());
             }
             let count = EthState::transaction_count(&self.eth.api, address, block)

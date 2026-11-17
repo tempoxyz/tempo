@@ -31,16 +31,19 @@ crate::sol! {
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
         function setEdge(OrgKey from, OrgKey to, address[] calldata tokens, bool allowed) external;
+        function setReader(uint64 orgId, address reader, bool allowed) external;
 
-        // Views. Membership is visible to the account, its org admin and the registrar.
+        // Views. Membership is visible to whoever may read the account, and to the registrar.
         function orgAdmin(uint64 orgId) external view returns (address);
         function orgOf(address account) external view returns (uint64 orgId, bool frozen);
         function edge(OrgKey from, OrgKey to, address token) external view returns (bool allowed);
+        function canRead(address account) external view returns (bool);
 
         event OrgCreated(uint64 indexed orgId, address admin);
         event OrgAdminUpdated(uint64 indexed orgId, address admin);
         event MemberUpdated(address indexed account, uint64 indexed orgId, bool frozen);
         event EdgeUpdated(uint64 indexed fromOrg, bool fromL1, uint64 indexed toOrg, bool toL1, address indexed token, bool fromOk, bool toOk);
+        event ReaderUpdated(uint64 indexed orgId, address indexed reader, bool allowed);
 
         error Unauthorized();
         error UnknownOrg(uint64 orgId);

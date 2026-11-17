@@ -1,6 +1,7 @@
 //! ZoneIdentity across the T14 to T15 transition: the predeploy appears at T15, the registrar and
 //! org admins configure orgs through zone transactions, and once the portal admin's L1 config turns
-//! enforcement on, org edges gate transfers, deposits and withdrawals.
+//! enforcement on, org edges gate transfers, deposits and withdrawals. An org's admin and readers
+//! can read its members' account-scoped state, through precompile getters and the redacted RPC.
 
 use alloy::network::Ethereum;
 use alloy_consensus::BlockHeader as _;
@@ -24,8 +25,8 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, L1Fixture, WITHDRAWAL_TX_GAS, ZoneTestNode, now_secs, signer_at,
-    start_local_zone_with_fixture_and_withdrawal_batch_interval,
+    DEFAULT_TIMEOUT, L1Fixture, WITHDRAWAL_TX_GAS, ZoneTestNode, build_auth_token, now_secs,
+    signer_at, start_local_zone_with_fixture_and_withdrawal_batch_interval, start_redacted_rpc_url,
 };
 
 /// pathUSD each zone account receives before T15, for fees and transfers.
@@ -477,6 +478,81 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, freeze).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     assert_transfer(&zone, alice.address, bob.address, false).await?;
+
+    // Reads: org A's admin and the reader it names may read A's members; other orgs' admins and
+    // addresses in no org may not, and nobody but the account reads an address in no org.
+    let auditor = Party::new(&zone, 170);
+    fixture.seed_no_commitment(auditor.address);
+    let add_reader = IZoneIdentity::setReaderCall {
+        orgId: org_a,
+        reader: auditor.address,
+        allowed: true,
+    };
+    let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, add_reader).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    let reads = [
+        (&admin_a, alice.address, true),
+        (&auditor, alice.address, true),
+        (&admin_b, alice.address, false),
+        (&dave, alice.address, false),
+        (&admin_a, dave.address, false),
+    ];
+    for (reader, account, allowed) in reads {
+        let balance_of = ITIP20::balanceOfCall { account };
+        let revert = revert_of(&zone, reader.address, PATH_USD_ADDRESS, balance_of).await?;
+        assert_eq!(
+            revert.is_none(),
+            allowed,
+            "{} reads {account}",
+            reader.address
+        );
+        assert_eq!(reader.identity().canRead(account).call().await?, allowed);
+    }
+
+    let chain_id = zone.provider().get_chain_id().await?;
+    let config = zone_node::rpc::RedactedRpcConfig {
+        listen_addr: ([127, 0, 0, 1], 0).into(),
+        zone_id: 0,
+        chain_id,
+        max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
+        max_response_size: 16 * 1024 * 1024,
+        zone_portal: Address::ZERO,
+    };
+    let redacted = start_redacted_rpc_url(&zone, config).await?;
+    let rpc = async |index: u32, method: &str, account: Address| -> eyre::Result<U256> {
+        let token = build_auth_token(&signer_at(index), 0, chain_id);
+        let body: serde_json::Value = reqwest::Client::new()
+            .post(redacted.as_str())
+            .header("x-authorization-token", token)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": [format!("{account:#x}"), "latest"],
+                "id": 1
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(serde_json::from_value(body["result"].clone())?)
+    };
+    // Signers: 163 Alice herself, 161 org A's admin, 170 its reader, 162 org B's admin.
+    for method in ["eth_getBalance", "eth_getTransactionCount"] {
+        let own = rpc(163, method, alice.address).await?;
+        assert_ne!(own, U256::ZERO, "{method}");
+        for (index, account, expected) in [
+            (161, alice.address, own),
+            (170, alice.address, own),
+            (162, alice.address, U256::ZERO),
+            (161, dave.address, U256::ZERO),
+        ] {
+            assert_eq!(
+                rpc(index, method, account).await?,
+                expected,
+                "{method} of {account} as signer {index}"
+            );
+        }
+    }
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);
