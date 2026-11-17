@@ -9,6 +9,7 @@ Before writing, changing, or reviewing Rust, load the `tempo-rust-style` skill (
 ## Pull Requests
 
 - Format Rust code with `cargo +nightly fmt`.
+- Once a PR has an approving review, ask its author before pushing anything more to it, including CI fixes and changes for review comments. Say what you would push and wait for a yes; a new push can dismiss the approval or make reviewers look again.
 
 ## TIPs (Tempo Improvement Proposals)
 
