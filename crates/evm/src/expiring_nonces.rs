@@ -48,6 +48,11 @@ const SNAPSHOT_CAPACITY: u32 = 256;
 /// Number of built payloads whose sets wait for assembly.
 const STAGED_CAPACITY: u32 = 16;
 
+/// Number of assembled payloads whose sets are kept by hash. Kept apart from block snapshots:
+/// a node assembles far more payloads than it executes blocks (RPC pending blocks rebuild
+/// continuously), and they must not evict the sets of the chain it builds on.
+const BUILT_CAPACITY: u32 = 64;
+
 /// RLP value stored for every replay hash: trie leaves cannot be empty.
 const PRESENT: [u8; 1] = [0x01];
 
@@ -236,6 +241,7 @@ impl Default for ExpiringNonceSets {
         Self {
             inner: Arc::new(Mutex::new(Snapshots {
                 by_block: LruMap::new(ByLength::new(SNAPSHOT_CAPACITY)),
+                built: LruMap::new(ByLength::new(BUILT_CAPACITY)),
                 staged: LruMap::new(ByLength::new(STAGED_CAPACITY)),
             })),
         }
@@ -245,7 +251,8 @@ impl Default for ExpiringNonceSets {
 impl ExpiringNonceSets {
     /// Returns whether the set at `block_hash` is known.
     pub fn contains(&self, block_hash: B256) -> bool {
-        self.inner.lock().by_block.peek(&block_hash).is_some()
+        let inner = self.inner.lock();
+        inner.by_block.peek(&block_hash).is_some() || inner.built.peek(&block_hash).is_some()
     }
 
     /// Stores `set` as the set at `block_hash`.
@@ -277,7 +284,7 @@ impl ExpiringNonceSets {
         entries: &[ExpiringNonce],
         authoritative: bool,
     ) -> Option<ExpiringNonceSet> {
-        let Some(mut set) = self.inner.lock().by_block.get(&parent_hash).cloned() else {
+        let Some(mut set) = self.inner.lock().lookup(parent_hash) else {
             debug!(target: "evm::expiring_nonces", %parent_hash, "Parent expiring nonce set unknown");
             return None;
         };
@@ -311,7 +318,7 @@ impl ExpiringNonceSets {
 
     /// Returns the set at `block_hash`, if known.
     pub fn get(&self, block_hash: B256) -> Option<ExpiringNonceSet> {
-        self.inner.lock().by_block.get(&block_hash).cloned()
+        self.inner.lock().lookup(block_hash)
     }
 
     /// Returns the root of the set staged under `key`, if any.
@@ -328,14 +335,14 @@ impl ExpiringNonceSets {
         self.inner.lock().staged.insert(key, set);
     }
 
-    /// Stores the set staged under `key` as the set at `block_hash`. Returns `false` when
-    /// nothing is staged under `key`.
+    /// Stores the set staged under `key` as the set of the assembled payload `block_hash`.
+    /// Returns `false` when nothing is staged under `key`.
     pub fn promote(&self, key: B256, block_hash: impl FnOnce() -> B256) -> bool {
         let mut inner = self.inner.lock();
         let Some(set) = inner.staged.remove(&key) else {
             return false;
         };
-        inner.by_block.insert(block_hash(), set);
+        inner.built.insert(block_hash(), set);
         true
     }
 }
@@ -355,7 +362,22 @@ pub fn staged_key(parent_hash: B256, timestamp: u64, tx_hashes: &[B256]) -> B256
 #[derive(Debug)]
 struct Snapshots {
     by_block: LruMap<B256, ExpiringNonceSet, ByLength>,
+    /// Sets of assembled payloads; one moves to `by_block` once something builds on it.
+    built: LruMap<B256, ExpiringNonceSet, ByLength>,
     staged: LruMap<B256, ExpiringNonceSet, ByLength>,
+}
+
+impl Snapshots {
+    /// Returns the set at `block_hash`, moving an assembled payload's set into the block
+    /// snapshots on first use.
+    fn lookup(&mut self, block_hash: B256) -> Option<ExpiringNonceSet> {
+        if let Some(set) = self.by_block.get(&block_hash) {
+            return Some(set.clone());
+        }
+        let set = self.built.remove(&block_hash)?;
+        self.by_block.insert(block_hash, set.clone());
+        Some(set)
+    }
 }
 
 /// One `valid_before` second's replay hashes.
@@ -649,6 +671,26 @@ fn root_of(buckets: impl IntoIterator<Item = (u64, B256)>) -> B256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assembled_payloads_do_not_evict_block_snapshots() {
+        let sets = ExpiringNonceSets::default();
+        let parent = B256::repeat_byte(1);
+        sets.insert(parent, ExpiringNonceSet::default());
+        // Far more assembled payloads (such as RPC pending blocks) than snapshots.
+        for i in 0..(SNAPSHOT_CAPACITY + BUILT_CAPACITY) as u64 * 4 {
+            let key = keccak256(i.to_be_bytes());
+            sets.stage(key, ExpiringNonceSet::default());
+            assert!(sets.promote(key, || keccak256((i + 1_000_000).to_be_bytes())));
+        }
+        assert!(sets.get(parent).is_some());
+        // The most recent payload is still known, and moves into the block snapshots on use.
+        let last = keccak256(
+            ((SNAPSHOT_CAPACITY + BUILT_CAPACITY) as u64 * 4 - 1 + 1_000_000).to_be_bytes(),
+        );
+        assert!(sets.get(last).is_some());
+        assert!(sets.inner.lock().by_block.peek(&last).is_some());
+    }
     use alloy_primitives::keccak256;
 
     fn entry(seed: u64, valid_before: u64) -> ExpiringNonce {
