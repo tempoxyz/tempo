@@ -350,6 +350,20 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         return _hashTypedData(structHash);
     }
 
+    function verifyVoucher(
+        ChannelDescriptor calldata descriptor,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+        view
+        returns (bool valid)
+    {
+        bytes32 channelId = _channelId(descriptor);
+        _loadChannelState(channelId);
+        return _isValidVoucher(descriptor, channelId, cumulativeAmount, signature);
+    }
+
     function domainSeparator() external view returns (bytes32) {
         return _domainSeparator();
     }
@@ -405,23 +419,35 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         internal
         view
     {
+        if (!_isValidVoucher(descriptor, channelId, cumulativeAmount, signature)) {
+            revert InvalidSignature();
+        }
+    }
+
+    function _isValidVoucher(
+        ChannelDescriptor calldata descriptor,
+        bytes32 channelId,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        internal
+        view
+        returns (bool)
+    {
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         bytes32 digest = _hashTypedData(structHash);
         address expectedSigner = descriptor.authorizedSigner != address(0)
             ? descriptor.authorizedSigner
             : descriptor.payer;
 
-        bool isValid;
         try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE)
             .verify(expectedSigner, digest, signature) returns (
             bool valid
         ) {
-            isValid = valid;
+            return valid;
         } catch {
-            revert InvalidSignature();
+            return false;
         }
-
-        if (!isValid) revert InvalidSignature();
     }
 
     function _domainSeparator() internal view returns (bytes32) {
