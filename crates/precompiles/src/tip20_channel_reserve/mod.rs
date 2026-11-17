@@ -931,11 +931,12 @@ impl TIP20ChannelReserve {
 
     /// Computes the EIP-712 voucher digest.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
-        let struct_hash = self
-            .storage
-            .keccak256(&voucher_struct(channel_id, cumulative_amount))?;
-        self.storage
-            .keccak256(&voucher_digest_input(struct_hash, self.storage.chain_id()))
+        voucher_digest_with(
+            channel_id,
+            cumulative_amount,
+            self.storage.chain_id(),
+            |data| self.storage.keccak256(data),
+        )
     }
 }
 
@@ -949,10 +950,26 @@ pub fn compute_channel_id(
 
 /// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
 pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
-    keccak256(voucher_digest_input(
-        keccak256(voucher_struct(channel_id, cumulative_amount)),
-        chain_id,
-    ))
+    voucher_digest_with(channel_id, cumulative_amount, chain_id, |data| {
+        Ok(keccak256(data))
+    })
+    .expect("plain keccak never fails")
+}
+
+/// Returns the EIP-712 voucher digest, hashing its struct and digest input with `keccak`.
+pub fn voucher_digest_with(
+    channel_id: B256,
+    cumulative_amount: U96,
+    chain_id: u64,
+    keccak: impl Fn(&[u8]) -> Result<B256>,
+) -> Result<B256> {
+    let struct_hash = keccak(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
+    let mut input = [0u8; 66];
+    input[0] = 0x19;
+    input[1] = 0x01;
+    input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
+    input[34..66].copy_from_slice(struct_hash.as_slice());
+    keccak(&input)
 }
 
 /// Hash preimage of a channel id, domain-separated by chain and precompile address.
@@ -966,21 +983,6 @@ fn channel_id_preimage(
         U256::from(chain_id),
     )
         .abi_encode()
-}
-
-/// ABI-encoded EIP-712 struct of a voucher.
-fn voucher_struct(channel_id: B256, cumulative_amount: U96) -> Vec<u8> {
-    (VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode()
-}
-
-/// EIP-712 digest input `0x1901 || domain separator || struct_hash` on `chain_id`.
-fn voucher_digest_input(struct_hash: B256, chain_id: u64) -> [u8; 66] {
-    let mut input = [0u8; 66];
-    input[0] = 0x19;
-    input[1] = 0x01;
-    input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
-    input[34..66].copy_from_slice(struct_hash.as_slice());
-    input
 }
 
 /// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
