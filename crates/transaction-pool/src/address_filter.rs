@@ -9,10 +9,12 @@ use std::{iter, str::FromStr};
 /// Addresses checked against every address a transaction names.
 ///
 /// These are the recovered sender, the fee payer, every direct call target, the delegate and
-/// recovered authority of every EIP-7702 or Tempo authorization, every access list entry, and
-/// every configured owner of a configurable account signing the transaction or its key grant.
-/// Keychain-signed Tempo authorizations are skipped by execution from T0, so only their
-/// delegate is checked.
+/// recovered authority of every EIP-7702 or Tempo authorization, every access list entry, the
+/// access key of a keychain signature, the signer of an inline key authorization and the key ID
+/// it grants, and every configured owner of a configurable account signing the transaction or
+/// its key grant. A configurable account acting as an access key or signing a grant is checked
+/// by its own address as well as its owners. Keychain-signed Tempo authorizations are skipped by
+/// execution from T0, so only their delegate is checked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
@@ -44,10 +46,11 @@ impl AddressFilter {
     /// Checks the addresses the transaction names without signature recovery.
     ///
     /// These are the recovered sender, every direct call target, every EIP-7702 or Tempo
-    /// authorization delegate, every access list entry, and every configured owner of a
-    /// configurable account signing directly, as a keychain access key or as an inline key grant.
-    /// Fee payer and authorization authorities need signature recovery and are checked by
-    /// [`Self::check_recovered`].
+    /// authorization delegate, every access list entry, the key ID an inline key authorization
+    /// grants (of any key type), and every configured owner of a configurable account signing
+    /// directly, as a keychain access key or as an inline key grant. The fee payer, the keychain
+    /// access key, the key authorization signer and authorization authorities need signature
+    /// recovery or approval verification and are checked by [`Self::check_recovered`].
     pub fn check(
         &self,
         transaction: &TempoPooledTransaction,
@@ -72,6 +75,10 @@ impl AddressFilter {
             .access_list()
             .into_iter()
             .flat_map(|list| list.iter().map(|item| item.address));
+        let granted_key = inner
+            .as_aa()
+            .and_then(|aa| aa.tx().key_authorization.as_ref())
+            .map(|authorization| authorization.key_id);
         // Validation rejects an approval whose signer is not a configured owner, so this covers
         // every approving owner without recovering a signature.
         let configurable_owners = inner
@@ -86,14 +93,20 @@ impl AddressFilter {
                 .chain(eip7702_delegates)
                 .chain(tempo_delegates)
                 .chain(access_list)
+                .chain(granted_key)
                 .chain(configurable_owners),
         )
     }
 
-    /// Checks the fee payer and the recovered authorization authorities.
+    /// Checks the transaction's authorities (the sender, the key authorization signer, a separate
+    /// fee payer and the keychain access key) and the recovered authorization authorities.
+    ///
+    /// The key authorization signer is the recovered primitive signer or the named configurable
+    /// account. The access key is the recovered primitive key or, for a configurable account
+    /// acting as an access key, that account's address.
     ///
     /// Called once validation has cached the transaction environment and recovered the
-    /// authorities, so neither signature is recovered again. A fee payer that fails to recover
+    /// authorities, so these signatures are not recovered again. A signer that fails to recover
     /// was already rejected by validation.
     pub fn check_recovered(
         &self,
@@ -106,9 +119,9 @@ impl AddressFilter {
 
         self.find_match(
             transaction
-                .fee_payer()
-                .ok()
+                .authorities()
                 .into_iter()
+                .flatten()
                 .chain(authorities.iter().copied()),
         )
     }
@@ -188,6 +201,7 @@ mod tests {
             TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
         },
     };
+    use test_case::test_case;
 
     fn authorization(delegate: Address) -> Authorization {
         Authorization {
@@ -364,6 +378,109 @@ mod tests {
             assert!(filter.check_recovered(&transaction, &[]).is_ok());
             assert!(unrelated.check(&transaction).is_ok());
         }
+    }
+
+    #[test]
+    fn checks_primitive_access_key_only_after_recovery() {
+        let access_key = PrivateKeySigner::random();
+        let user = Address::with_last_byte(28);
+        let transaction = TxBuilder::aa(user).build_keychain(user, &access_key);
+        let filter = AddressFilter::new([access_key.address()]);
+
+        assert!(filter.check(&transaction).is_ok());
+        assert_address_check(
+            filter.check_recovered(&transaction, &[]),
+            access_key.address(),
+        );
+    }
+
+    #[test]
+    fn checks_configurable_access_key_only_after_recovery() {
+        let owner = PrivateKeySigner::random();
+        let user = Address::with_last_byte(29);
+        let TempoTxEnvelope::AA(signed) = TxBuilder::aa(user).build().inner().clone().into_inner()
+        else {
+            panic!("expected AA transaction");
+        };
+        let tx = signed.tx().clone();
+        let unsigned = configurable_signature(owner.address());
+        let access_key = unsigned.account();
+        let digest = unsigned.digest(KeychainSignature::signing_hash(tx.signature_hash(), user));
+        let approval = owner
+            .sign_hash_sync(&digest)
+            .expect("owner signing should succeed");
+        let signature = ConfigurableAccountSignature::try_new(
+            access_key,
+            unsigned.config().clone(),
+            vec![PrimitiveSignature::Secp256k1(approval)],
+        )
+        .expect("signature should be well formed");
+        let transaction = pooled_aa(
+            tx,
+            TempoSignature::Keychain(KeychainSignature::new(user, signature)),
+            user,
+        );
+        let filter = AddressFilter::new([access_key]);
+
+        assert!(filter.check(&transaction).is_ok());
+        assert_address_check(filter.check_recovered(&transaction, &[]), access_key);
+    }
+
+    #[test_case(SignatureType::Secp256k1)]
+    #[test_case(SignatureType::P256)]
+    #[test_case(SignatureType::WebAuthn)]
+    #[test_case(SignatureType::ConfigurableAccount)]
+    fn checks_granted_key_id(key_type: SignatureType) {
+        let key_id = Address::with_last_byte(30);
+        let transaction = TxBuilder::aa(Address::with_last_byte(31))
+            .key_authorization(
+                KeyAuthorization::unrestricted(1, key_type, key_id)
+                    .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            )
+            .build();
+
+        assert_address_check(AddressFilter::new([key_id]).check(&transaction), key_id);
+    }
+
+    #[test]
+    fn checks_primitive_grant_signer_only_after_recovery() {
+        let signer = PrivateKeySigner::random();
+        let authorization = KeyAuthorization::unrestricted(
+            1,
+            SignatureType::Secp256k1,
+            Address::with_last_byte(32),
+        );
+        let signature = signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .expect("grant signing should succeed");
+        let transaction = TxBuilder::aa(Address::with_last_byte(33))
+            .key_authorization(authorization.into_signed(PrimitiveSignature::Secp256k1(signature)))
+            .build();
+        let filter = AddressFilter::new([signer.address()]);
+
+        assert!(filter.check(&transaction).is_ok());
+        assert_address_check(filter.check_recovered(&transaction, &[]), signer.address());
+    }
+
+    #[test]
+    fn checks_configurable_grant_signer_account() {
+        let grant = configurable_signature(Address::with_last_byte(34));
+        let account = grant.account();
+        let transaction = TxBuilder::aa(Address::with_last_byte(35))
+            .key_authorization(
+                KeyAuthorization::unrestricted(
+                    1,
+                    SignatureType::Secp256k1,
+                    Address::with_last_byte(36),
+                )
+                .into_signed(grant),
+            )
+            .build();
+
+        assert_address_check(
+            AddressFilter::new([account]).check_recovered(&transaction, &[]),
+            account,
+        );
     }
 
     #[test]

@@ -12,6 +12,9 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
 /// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
 /// Funding checks the payee's current TIP-1028 policy, but does not lock it against later changes.
+/// TIP-1166's opening commitments are native-only too: account configuration commitments are not
+/// readable from Solidity, so this reference never requires the salt to be one, and vouchers and
+/// top-ups follow the rules for a channel without an opening commitment.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
@@ -347,6 +350,20 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         return _hashTypedData(structHash);
     }
 
+    function verifyVoucher(
+        ChannelDescriptor calldata descriptor,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+        view
+        returns (bool valid)
+    {
+        bytes32 channelId = _channelId(descriptor);
+        _loadChannelState(channelId);
+        return _isValidVoucher(descriptor, channelId, cumulativeAmount, signature);
+    }
+
     function domainSeparator() external view returns (bytes32) {
         return _domainSeparator();
     }
@@ -402,23 +419,37 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         internal
         view
     {
+        if (!_isValidVoucher(descriptor, channelId, cumulativeAmount, signature)) {
+            revert InvalidSignature();
+        }
+    }
+
+    function _isValidVoucher(
+        ChannelDescriptor calldata descriptor,
+        bytes32 channelId,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        internal
+        view
+        returns (bool)
+    {
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         bytes32 digest = _hashTypedData(structHash);
         address expectedSigner = descriptor.authorizedSigner != address(0)
             ? descriptor.authorizedSigner
             : descriptor.payer;
 
-        bool isValid;
         try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE)
             .verify(expectedSigner, digest, signature) returns (
             bool valid
         ) {
-            isValid = valid;
-        } catch {
-            revert InvalidSignature();
+            return valid;
+        } catch (bytes memory reason) {
+            // An empty reason is out of gas or a system failure, not an invalid signature.
+            if (reason.length == 0) revert();
+            return false;
         }
-
-        if (!isValid) revert InvalidSignature();
     }
 
     function _domainSeparator() internal view returns (bytes32) {

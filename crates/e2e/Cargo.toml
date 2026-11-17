@@ -59,6 +59,7 @@ reth-prune-types.workspace = true
 reth-rpc-builder.workspace = true
 reth-stages.workspace = true
 reth-static-file.workspace = true
+reth-storage-overlay.workspace = true
 
 tempfile.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
