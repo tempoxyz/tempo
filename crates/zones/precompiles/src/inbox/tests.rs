@@ -5,7 +5,7 @@ use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
-    zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+    zones::{DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -13,7 +13,7 @@ use tempo_precompiles::{
     test_util::{TIP20Setup, TIP403Setup},
     tip20::{self, ITIP20, TIP20Token},
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry},
-    zone_factory::portal::{self, ZonePortalStorage},
+    zone_factory::portal::{self, PortalDepositBucket, ZonePortalStorage},
 };
 use test_case::test_case;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
@@ -175,8 +175,8 @@ fn encrypted_deposit(
 fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
     const BUFFERED_GAS_LIMIT: u64 = 200_000_000;
 
-    for deposits in [640, MAX_UNPROCESSED_DEPOSITS] {
-        let should_fit = deposits <= MAX_UNPROCESSED_DEPOSITS;
+    for deposits in [640, DEPOSITS_PER_BUCKET] {
+        let should_fit = deposits <= DEPOSITS_PER_BUCKET;
         let gas_used = failed_deposit_gas(deposits, 0)?;
         eprintln!("{deposits} portal deposit block: {gas_used} gas");
         assert_eq!(
@@ -192,7 +192,7 @@ fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
 fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<()> {
     const COMBINED_BUFFERED_GAS_LIMIT: u64 = 225_000_000;
 
-    let gas_used = failed_deposit_gas(MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS)?;
+    let gas_used = failed_deposit_gas(DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS)?;
     eprintln!("max portal deposit and token block: {gas_used} gas");
     assert!(
         gas_used <= COMBINED_BUFFERED_GAS_LIMIT,
@@ -556,6 +556,106 @@ fn invalid_encrypted_proof_bounces_without_mint() -> eyre::Result<()> {
     assert_eq!(env.balance(PATH_USD_ADDRESS, fixture.to), U256::ZERO);
     assert_single_bounce_back(&mut env, 333, BOB);
     Ok(())
+}
+
+/// Queues `pending` deposits that the Zone bounces back, as a T15 portal stores them: checkpoints
+/// start at entry `base` when set and follow every [`DEPOSITS_PER_BUCKET`] entries. Returns the
+/// entries and the queue hash after each one.
+fn queue_checkpointed_deposits(
+    env: &ZoneEnv,
+    pending: u64,
+    base: Option<u64>,
+) -> (Vec<QueuedDeposit>, Vec<B256>) {
+    let fixture = EncryptedDepositFixture::new();
+    seed_encryption_key(env, &fixture);
+    let deposit = encrypted_deposit(&fixture, BOB, 1).0;
+    let mut hashes = vec![B256::ZERO];
+    let entries = (0..pending)
+        .map(|_| {
+            let tail = *hashes.last().expect("starts with the empty queue hash");
+            hashes.push(keccak256(
+                (DepositType::Deposit, deposit.clone(), tail).abi_encode_params(),
+            ));
+            QueuedDeposit {
+                depositType: DepositType::Deposit,
+                rejected: false,
+                depositData: deposit.abi_encode().into(),
+            }
+        })
+        .collect();
+    env.write_portal(env.child_header.inner.number, |portal| {
+        portal.deposit_count.write(pending)?;
+        portal
+            .current_deposit_queue_hash
+            .write(hashes[pending as usize])?;
+        let Some(base) = base else { return Ok(()) };
+        portal.deposit_bucket_base.write(base)?;
+        for position in (base..=pending).step_by(DEPOSITS_PER_BUCKET) {
+            portal.deposit_buckets.push(PortalDepositBucket {
+                hash: hashes[position as usize],
+                cumulative_weight: position - base,
+            })?;
+        }
+        Ok(())
+    });
+    (entries, hashes[1..].to_vec())
+}
+
+/// Advances a T15 Zone at processed position zero with the first `supplied` of `pending` queued
+/// entries, after replacing checkpoint 1 if `corrupt_checkpoint`. Returns the processed position,
+/// or `None` if the Inbox rejects the range.
+#[test_case(5, None, 5, false => Some(5))]
+#[test_case(230, Some(0), 230, false => Some(230))]
+#[test_case(231, Some(0), 230, false => Some(230))]
+#[test_case(231, Some(0), 230, true => None)]
+#[test_case(231, Some(0), 231, false => None)]
+#[test_case(231, Some(0), 229, false => None)]
+#[test_case(331, Some(100), 100, false => Some(100))]
+#[test_case(331, Some(100), 230, false => None)]
+fn t15_range_ends_at_head_or_next_checkpoint(
+    pending: u64,
+    base: Option<u64>,
+    supplied: usize,
+    corrupt_checkpoint: bool,
+) -> Option<u64> {
+    let mut env = ZoneSpec {
+        hardfork: TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()
+    .unwrap();
+    let (entries, hashes) = queue_checkpointed_deposits(&env, pending, base);
+    if corrupt_checkpoint {
+        env.write_portal(env.child_header.inner.number, |portal| {
+            portal.deposit_buckets[1]
+                .hash
+                .write(B256::repeat_byte(0xee))
+        });
+    }
+
+    let output = env
+        .advance_tempo(
+            entries[..supplied].to_vec(),
+            vec![INVALID_DECRYPTION; supplied],
+            Vec::new(),
+        )
+        .unwrap();
+    if output.is_revert() {
+        assert_eq!(
+            output.bytes,
+            IZoneInbox::InvalidDepositQueueHash {}.abi_encode()
+        );
+        return None;
+    }
+    let inbox = env.with_storage(|| {
+        let inbox = ZoneInbox::new();
+        (
+            inbox.processed_deposit_number().unwrap(),
+            inbox.processed_deposit_queue_hash().unwrap(),
+        )
+    });
+    assert_eq!(inbox.1, hashes[supplied - 1]);
+    Some(inbox.0)
 }
 
 #[test]

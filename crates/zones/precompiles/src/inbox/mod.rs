@@ -5,11 +5,10 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! Runtime execution processes a contiguous prefix of the portal deposit queue and reads its
-//! canonical head at the selected child anchor. The batch proof, not this precompile, proves that
-//! the post-state processed hash is an ancestor of that head by validating the unprocessed suffix.
-//! Observing the head read in the execution witness is not sufficient without that explicit proof
-//! constraint.
+//! From T15 (TIP-1171), each full block receives a bounded range of the portal deposit queue and
+//! binds it to a stored checkpoint or the queue head at the selected child anchor. It executes the
+//! range's longest prefix within its weight budget and only hashes the rest. Before T15 the block
+//! processes every pending entry and binds the result to the queue head.
 
 mod dispatch;
 
@@ -34,7 +33,10 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::{
+    constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    deposit_queue::{DepositRangeEnd, executed_count},
+};
 
 use crate::{
     ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
@@ -144,12 +146,50 @@ impl ZoneInbox {
         };
 
         // Step 2: Process deposits and build hash chain
+        //
+        // (+T15) the supplied entries must be exactly the range after the processed position that
+        // ends at the queue head or the next checkpoint. The block executes the range's longest
+        // prefix within its weight budget and only hashes the rest, which later blocks supply.
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
+        let previous_number = self.processed_deposit_number.read()?;
+        let (range_hash, executed_count) = if StorageCtx.spec().is_t15() && !portal.is_zero() {
+            let head = l1.read_portal(|portal| &portal.deposit_count)?;
+            let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
+            let checkpoint_base = (bucket_count != 0)
+                .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
+                .transpose()?;
+            let (target, range_hash) =
+                match DepositRangeEnd::new(previous_number, head, checkpoint_base) {
+                    None => return Err(ZoneInboxError::invalid_deposit_queue_hash().into()),
+                    Some(DepositRangeEnd::Head) => {
+                        (head, l1.read_portal(|p| &p.current_deposit_queue_hash)?)
+                    }
+                    Some(DepositRangeEnd::Checkpoint { index, target }) => {
+                        let index = usize::try_from(index)
+                            .map_err(|_| TempoPrecompileError::under_overflow())?;
+                        // A checkpoint more than one spacing below the head was stored, and one
+                        // above the settled position is not pruned.
+                        if index >= bucket_count {
+                            return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                        }
+                        (target, l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
+                    }
+                };
+            if target.checked_sub(previous_number) != Some(deposit_count) {
+                return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+            }
+            let executed = executed_count(deposits.iter().map(DecodedQueuedDeposit::deposit_type));
+            (Some(range_hash), executed)
+        } else {
+            (None, deposits.len())
+        };
+
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
 
-        for queued in deposits {
+        let mut deposits = deposits.into_iter();
+        for queued in deposits.by_ref().take(executed_count) {
             current_hash = queued.hash_with_tail(current_hash)?;
 
             match queued {
@@ -177,25 +217,33 @@ impl ZoneInbox {
             return Err(ZoneInboxError::extra_decryption_data().into());
         }
 
-        // Step 3: Bind the canonical Tempo queue head into the execution witness.
+        // Hashed-only entries are neither decrypted nor executed.
+        let processed_hash = current_hash;
+        for queued in deposits {
+            current_hash = queued.hash_with_tail(current_hash)?;
+        }
+
+        // Step 3: Bind the supplied range to its commitment on Tempo.
         //
-        // `current_hash` may be an ancestor of this value when the sequencer processes only a
-        // bounded prefix of pending deposits. The batch proof validates that hashing the
-        // unprocessed suffix from `current_hash` reaches `tempo_current_hash`; requiring equality
-        // here would incorrectly forbid partial processing.
+        // From T15 the hash chain must equal the checkpoint or queue head the range ends at.
+        // Before T15 the block processes every pending entry, so the chain must equal the head.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
         if !portal.is_zero() {
-            let tempo_current_hash = l1.read_portal(|portal| &portal.current_deposit_queue_hash)?;
-            if tempo_current_hash != current_hash {
+            let expected_hash = match range_hash {
+                Some(range_hash) => range_hash,
+                None => l1.read_portal(|portal| &portal.current_deposit_queue_hash)?,
+            };
+            if expected_hash != current_hash {
                 return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
             }
         }
 
         // Step 4: Update state
-        self.processed_deposit_queue_hash.write(current_hash)?;
-        let previous_number = self.processed_deposit_number.read()?;
+        self.processed_deposit_queue_hash.write(processed_hash)?;
+        let deposit_count =
+            u64::try_from(executed_count).map_err(|_| TempoPrecompileError::under_overflow())?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
@@ -206,7 +254,7 @@ impl ZoneInbox {
                 tempoBlockHash: tempo_block_hash,
                 tempoBlockNumber: tempo_block_number,
                 depositsProcessed: U256::from(deposit_count),
-                newProcessedDepositQueueHash: current_hash,
+                newProcessedDepositQueueHash: processed_hash,
                 lastProcessedDepositNumber: processed_number,
                 lastProcessedEnabledTokenCount: processed_enabled_token_count,
             })?;
@@ -215,7 +263,7 @@ impl ZoneInbox {
                 tempoBlockHash: tempo_block_hash,
                 tempoBlockNumber: tempo_block_number,
                 depositsProcessed: U256::from(deposit_count),
-                newProcessedDepositQueueHash: current_hash,
+                newProcessedDepositQueueHash: processed_hash,
                 lastProcessedDepositNumber: processed_number,
             })?;
         }
@@ -427,6 +475,13 @@ enum DecodedQueuedDeposit {
 }
 
 impl DecodedQueuedDeposit {
+    fn deposit_type(&self) -> DepositType {
+        match self {
+            Self::WithdrawalBounceBack(_) => DepositType::WithdrawalBounceBack,
+            Self::Deposit(_) => DepositType::Deposit,
+        }
+    }
+
     fn hash_with_tail(&self, tail: B256) -> tempo_precompiles::Result<B256> {
         let encoded = match self {
             Self::WithdrawalBounceBack(deposit) => {

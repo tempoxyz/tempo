@@ -58,9 +58,10 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     /// @param data ABI-encoded callbackData (see format below)
     /// @return selector The function selector to confirm successful handling
     ///
-    /// Format: (address tokenOut, address targetPortal, uint256 keyIndex, DepositPayload encrypted, address tempoRefundRecipient, uint128 minAmountOut)
+    /// Format: (address tokenOut, address targetPortal, uint256 keyIndex, DepositPayload encrypted, address tempoRefundRecipient, uint128 minAmountOut, uint128 maxFee)
     ///
-    /// Note: minAmountOut is ignored for same-token transfers (no swap)
+    /// Note: minAmountOut is ignored for same-token transfers (no swap). maxFee caps the target
+    /// portal's deposit fee, including its congestion premium.
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,
@@ -87,8 +88,9 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
             uint256 keyIndex,
             DepositPayload memory encrypted,
             address tempoRefundRecipient,
-            uint128 minAmountOut
-        ) = abi.decode(data, (address, address, uint256, DepositPayload, address, uint128));
+            uint128 minAmountOut,
+            uint128 maxFee
+        ) = abi.decode(data, (address, address, uint256, DepositPayload, address, uint128, uint128));
 
         _validateTarget(targetPortal, tokenOut);
 
@@ -96,7 +98,7 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
 
         ITIP20(tokenOut).approve(targetPortal, amountOut);
         IZonePortal(targetPortal)
-            .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient);
+            .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient, maxFee);
 
         return IWithdrawalReceiver.onWithdrawalReceived.selector;
     }

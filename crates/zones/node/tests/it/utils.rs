@@ -1322,6 +1322,7 @@ impl ZoneTestNode {
                 sequencer_signer.address(),
                 deposit_decryption_keys,
                 portal_address,
+                l1_provider.clone(),
                 None,
             )
             .with_deposit_allowlist(deposit_allowlist);
@@ -2527,6 +2528,8 @@ impl WithdrawalArgs {
             encrypted: args.encrypted,
             tempo_refund_recipient: args.tempo_refund_recipient,
             min_amount_out: args.min_amount_out,
+            // Tests accept any downstream deposit fee.
+            max_fee: u128::MAX,
         }
         .abi_encode();
 

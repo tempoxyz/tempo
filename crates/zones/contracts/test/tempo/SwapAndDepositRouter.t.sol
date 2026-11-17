@@ -77,6 +77,7 @@ contract MockZonePortalForRouter {
     uint128 public lastDepositAmount;
     uint256 public lastDepositKeyIndex;
     address public lastDepositBouncebackRecipient;
+    uint128 public lastDepositMaxFee;
     bool public encryptedDepositCalled;
 
     function enableToken(address _token) external {
@@ -92,7 +93,8 @@ contract MockZonePortalForRouter {
         uint128 amount,
         uint256 keyIndex,
         DepositPayload calldata,
-        address tempoRefundRecipient
+        address tempoRefundRecipient,
+        uint128 maxFee
     )
         external
         returns (bytes32)
@@ -101,6 +103,7 @@ contract MockZonePortalForRouter {
         lastDepositAmount = amount;
         lastDepositKeyIndex = keyIndex;
         lastDepositBouncebackRecipient = tempoRefundRecipient;
+        lastDepositMaxFee = maxFee;
         encryptedDepositCalled = true;
         return bytes32(0);
     }
@@ -120,6 +123,7 @@ contract SwapAndDepositRouterTest is BaseTest {
     address public sourcePortal = address(0x501);
     address public refundBurner = address(0xb000000000000000000000000000000000000123);
     uint128 public constant AMOUNT = 1000e6;
+    uint128 public constant MAX_FEE = 12_345;
 
     function setUp() public override {
         super.setUp();
@@ -165,7 +169,7 @@ contract SwapAndDepositRouterTest is BaseTest {
         returns (bytes memory)
     {
         return abi.encode(
-            tokenOut, targetPortal, keyIndex, encrypted, tempoRefundRecipient, minAmountOut
+            tokenOut, targetPortal, keyIndex, encrypted, tempoRefundRecipient, minAmountOut, MAX_FEE
         );
     }
 
@@ -243,6 +247,7 @@ contract SwapAndDepositRouterTest is BaseTest {
         assertEq(mockPortal.lastDepositAmount(), AMOUNT);
         assertEq(mockPortal.lastDepositKeyIndex(), 0);
         assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
+        assertEq(mockPortal.lastDepositMaxFee(), MAX_FEE);
     }
 
     function test_deposit_withSwap() public {

@@ -50,7 +50,6 @@ use crate::{
     settlement::{WithdrawalPage, find_processed_offset},
 };
 use tempo_alloy::rpc::TempoCallBuilderExt;
-use zone_primitives::constants::{MAX_UNPROCESSED_DEPOSITS, WITHDRAWAL_BOUNCEBACK_RESERVE};
 
 const PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -70,7 +69,11 @@ fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
 
 /// Planner-only gas reserved once per `processWithdrawals` transaction for batch-level portal
 /// work.
-const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 500_000;
+///
+/// Includes three storage-slot creations without storage credits, enough for the bounce-back that
+/// bootstraps deposit-queue checkpoints or one that stores a checkpoint. A batch appends far fewer
+/// entries than the checkpoint spacing, so it pays for at most one of them.
+const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 1_250_000;
 
 /// Planner-only gas reserved for a simple withdrawal.
 const PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS: u64 = 1_000_000;
@@ -603,43 +606,14 @@ impl WithdrawalProcessor {
                 return Ok(());
             }
 
-            let (deposit_count, last_processed_deposit_number): (u64, u64) = self
-                .provider
-                .multicall()
-                .add(self.portal.depositCount())
-                .add(self.portal.lastProcessedDepositNumber())
-                .aggregate()
-                .await?;
-            let headroom =
-                withdrawal_deposit_headroom(deposit_count, last_processed_deposit_number)?;
-            if headroom == 0 {
-                debug!(
-                    deposit_count,
-                    last_processed_deposit_number,
-                    "Portal deposit backlog leaves no withdrawal bounce-back headroom"
-                );
-                return Ok(());
-            }
-            // Public deposits cannot consume the reserved suffix. Restricting each submission to
-            // that reserve prevents a public deposit landing after this read from racing the
-            // portal's withdrawal-capacity preflight.
-            let admitted = remaining
-                .len()
-                .min(headroom)
-                .min(WITHDRAWAL_BOUNCEBACK_RESERVE);
-            let fully_admitted = admitted == remaining.len();
-            let batches = build_withdrawal_batches(
-                &remaining[..admitted],
-                self.config.batch_limits.max_batch_gas,
-            );
+            let batches =
+                build_withdrawal_batches(remaining, self.config.batch_limits.max_batch_gas);
             let total_gas = batches
                 .iter()
                 .fold(0u64, |total, batch| total.saturating_add(batch.gas_limit));
             info!(
                 slot = head_val,
                 withdrawals = remaining.len(),
-                admitted,
-                deposit_headroom = headroom,
                 transactions = batches.len(),
                 total_gas,
                 "Processing withdrawal batches"
@@ -665,21 +639,12 @@ impl WithdrawalProcessor {
 
             match outcome {
                 SubmitOutcome::Confirmed => {
-                    if fully_admitted {
-                        self.store.lock().remove_batch(head_val);
-                        info!(
-                            slot = head_val,
-                            count = remaining.len(),
-                            "Slot fully processed and removed from store"
-                        );
-                    } else {
-                        info!(
-                            slot = head_val,
-                            processed = admitted,
-                            remaining = remaining.len() - admitted,
-                            "Processed portal-capacity-limited withdrawal prefix"
-                        );
-                    }
+                    self.store.lock().remove_batch(head_val);
+                    info!(
+                        slot = head_val,
+                        count = remaining.len(),
+                        "Slot fully processed and removed from store"
+                    );
                 }
                 SubmitOutcome::Retry => {
                     // A lower nonce may have succeeded, changing every later batch's expected
@@ -888,24 +853,6 @@ impl WithdrawalProcessor {
             .slot_processing_duration_seconds
             .record(duration.as_secs_f64());
     }
-}
-
-/// Return the number of withdrawals that can each append one deposit without exceeding the
-/// portal's unprocessed-deposit cap. This mirrors the `processWithdrawals` preflight using a live
-/// portal snapshot; the portal revalidates the bound when the transaction executes.
-fn withdrawal_deposit_headroom(
-    deposit_count: u64,
-    last_processed_deposit_number: u64,
-) -> eyre::Result<usize> {
-    let outstanding = deposit_count.checked_sub(last_processed_deposit_number).ok_or_else(|| {
-        eyre::eyre!(
-            "portal lastProcessedDepositNumber {last_processed_deposit_number} exceeds depositCount {deposit_count}"
-        )
-    })?;
-    let maximum =
-        u64::try_from(MAX_UNPROCESSED_DEPOSITS).expect("MAX_UNPROCESSED_DEPOSITS fits in u64");
-    Ok(usize::try_from(maximum.saturating_sub(outstanding))
-        .expect("withdrawal headroom fits in usize"))
 }
 
 struct SubmitBatches<'a> {
@@ -1204,30 +1151,6 @@ mod tests {
         assert_eq!(batches[0].end, 2);
         assert_eq!(batches[1].start, 2);
         assert_eq!(batches[1].end, 3);
-    }
-
-    #[test]
-    fn maximum_batch_fits_portal_bounceback_reserve() {
-        let withdrawals = simple_withdrawals(WITHDRAWAL_BOUNCEBACK_RESERVE);
-        let batches = build_withdrawal_batches(&withdrawals, MAX_WITHDRAWAL_BATCH_GAS);
-
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].len(), 19);
-        assert_eq!(batches[1].len(), 1);
-        assert!(
-            batches
-                .iter()
-                .all(|batch| batch.len() <= WITHDRAWAL_BOUNCEBACK_RESERVE)
-        );
-    }
-
-    #[test]
-    fn withdrawal_admission_respects_global_deposit_headroom() {
-        assert_eq!(withdrawal_deposit_headroom(0, 0).unwrap(), 230);
-        assert_eq!(withdrawal_deposit_headroom(229, 0).unwrap(), 1);
-        assert_eq!(withdrawal_deposit_headroom(230, 0).unwrap(), 0);
-        assert_eq!(withdrawal_deposit_headroom(300, 100).unwrap(), 30);
-        assert!(withdrawal_deposit_headroom(9, 10).is_err());
     }
 
     #[test]

@@ -75,6 +75,7 @@ fn test_router_callback_encoding_matches_tuple() {
         encrypted: encrypted.clone(),
         tempo_refund_recipient: address!("0x0000000000000000000000000000000000004002"),
         min_amount_out: 5678,
+        max_fee: 9012,
     };
 
     let tuple_encoding = (
@@ -84,6 +85,7 @@ fn test_router_callback_encoding_matches_tuple() {
         encrypted,
         callback.tempo_refund_recipient,
         callback.min_amount_out,
+        callback.max_fee,
     )
         .abi_encode_params();
 

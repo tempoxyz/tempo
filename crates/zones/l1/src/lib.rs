@@ -11,6 +11,7 @@
 //!   [`L1Deposit`]).
 //! - `event` — portal event types extracted per L1 block.
 //! - `block` — per-block deposit grouping and prepared payload types.
+//! - `deposit_range` — the share of owed deposits in the next full import's range.
 //! - `queue` — the finalized L1 block queue consumed by the engine.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -76,6 +77,7 @@ use crate::abi::{
 
 mod block;
 mod deposit;
+mod deposit_range;
 mod encryption_keys;
 mod event;
 mod pause;
@@ -87,6 +89,7 @@ mod tests;
 
 pub use block::{FAILED_DECRYPTION, L1BlockDeposits, PreparedL1Block};
 pub use deposit::{Deposit, L1Deposit, WithdrawalBounceBackDeposit};
+pub use deposit_range::fetch_range_len;
 pub use encryption_keys::{
     BoundPublicKeyFingerprint, EncryptionKeyPublicStatus, EncryptionKeyRing, PublicKeyFingerprint,
 };

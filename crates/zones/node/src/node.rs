@@ -1002,6 +1002,7 @@ where
                     .clone()
                     .expect("sequencer mode configures deposit decryption keys"),
                 self.portal_address,
+                l1_provider.clone(),
                 proof_collector.clone(),
             )
             .with_deposit_allowlist(config.deposit_allowlist.clone());

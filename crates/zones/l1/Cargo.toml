@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 # zones
 zone-precompiles = { workspace = true, features = ["std"] }
+tempo-precompiles = { workspace = true, default-features = false }
 zone-primitives = { workspace = true }
 
 # tempo

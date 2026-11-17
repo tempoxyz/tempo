@@ -28,7 +28,7 @@ use tokio_util::sync;
 use tracing::{debug, info};
 #[cfg(test)]
 use zone_l1::L1PortalEvents;
-use zone_l1::{DepositQueue, L1BlockTracker, TempoStateExt as _};
+use zone_l1::{DepositQueue, L1BlockDeposits, L1BlockTracker, TempoStateExt as _};
 use zone_p2p::{
     BackfillCommand, BackfillResponse, LeadershipSchedule, P2pCommand, P2pEvent, P2pPeerId, PeerTip,
 };
@@ -36,7 +36,7 @@ use zone_payload::{
     ZonePayloadTypes,
     abi::{IZoneInbox, ZONE_INBOX_ADDRESS},
 };
-use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
+use zone_primitives::{constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, deposit_queue::executed_count};
 use zone_prover::VerifierMode;
 use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
 
@@ -750,10 +750,10 @@ where
                 .wrap_err_with(|| {
                     format!("cannot defer checkpoint work from block {block_number}")
                 })?,
-            DecodedTempoImport::Full { .. } => self
+            DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor)
+                .confirm_operational_through(anchor, executed_deposit_count(deposits))
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -804,8 +804,19 @@ fn reconcile_canonical_import(
         .num_hash();
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
-        DecodedTempoImport::Full { .. } => deposit_queue.confirm_operational_through(anchor),
+        DecodedTempoImport::Full { deposits, .. } => {
+            deposit_queue.confirm_operational_through(anchor, executed_deposit_count(deposits))
+        }
     }
+}
+
+/// Returns how many leading entries of a full import's range the Zone executed; it only hashed
+/// the rest, which later imports supply again.
+///
+/// Portal runtimes before T15 capped outstanding entries at the per-block budget, so before T15
+/// the prefix is the whole range, as that Inbox requires.
+fn executed_deposit_count(deposits: &[zone_payload::abi::QueuedDeposit]) -> usize {
+    executed_count(deposits.iter().map(|deposit| deposit.depositType))
 }
 
 fn validate_full_portal_inputs(
@@ -814,7 +825,10 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let work = deposit_queue.operational_work(anchor)?;
+    let mut work = deposit_queue.operational_work(anchor)?;
+    // From T15 a full import's range is a prefix of the owed entries; the queue carries the rest.
+    // Calldata longer than the owed entries fails the count check below.
+    L1BlockDeposits::split_off_deposits(&mut work, deposits.len());
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {
@@ -1106,6 +1120,7 @@ mod tests {
     use tokio_util::sync;
     use zone_l1::{DepositQueue, EnabledToken, L1BlockDeposits, L1BlockTracker, L1PortalEvents};
     use zone_p2p::{BackfillCommand, LeadershipSchedule, LeadershipState};
+    use zone_payload::abi::DepositType;
 
     use super::*;
 
@@ -1761,6 +1776,28 @@ mod tests {
         let error = validate_live_block_sender(&schedule, Some(&outgoing), leader_anchor, 8)
             .expect_err("the final full block must be produced by its effective leader");
         assert!(error.to_string().contains(&incoming.to_string()));
+    }
+
+    #[test]
+    fn executed_deposit_count_stops_at_the_weight_budget() {
+        let entries = |deposit_type, count| {
+            vec![
+                zone_payload::abi::QueuedDeposit {
+                    depositType: deposit_type,
+                    rejected: false,
+                    depositData: Default::default(),
+                };
+                count
+            ]
+        };
+        assert_eq!(
+            executed_deposit_count(&entries(DepositType::WithdrawalBounceBack, 231)),
+            230
+        );
+        assert_eq!(
+            executed_deposit_count(&entries(DepositType::Deposit, 230)),
+            230
+        );
     }
 
     #[test]

@@ -92,6 +92,13 @@ struct TokenEnablementTransition {
     uint64 nextProcessedTokenCount;
 }
 
+/// @notice Deposit-queue checkpoint stored every `DEPOSITS_PER_BUCKET` entries.
+/// @dev Checkpoint `j` covers entry `depositBucketBase + j * DEPOSITS_PER_BUCKET`.
+struct DepositBucket {
+    bytes32 hash; // queue hash through the checkpoint entry
+    uint64 cumulativeWeight; // entry weight appended since bootstrap, through the checkpoint entry
+}
+
 /// @notice Deposit type discriminator for the unified deposit queue
 /// @dev Used in hash chain: keccak256(abi.encode(depositType, depositData, prevHash))
 enum DepositType {
@@ -278,6 +285,12 @@ address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 //   slot 25: _tokensEnabledInCurrentBlock (uint64) + pauseExpiry (uint64) [packed]
 //   slot 26: tokenEnablementHash (bytes32)
 //   slot 27: abdicationEffectiveAt (mapping(Capability => uint64))
+//   slot 28: lastProcessedEnabledTokenCount (uint64) + tokenEnablementCursorInitialized (bool)
+//            + transfersEnabled (bool) [packed]
+//   slot 29: depositBuckets (DepositBucket[])
+//   slot 30: depositWeight (uint64) + settledDepositWeight (uint64) + depositPriceBlock (uint64)
+//            + depositPriceTier (uint64) [packed]
+//   slot 31: depositBucketBase (uint64) + nextDepositBucketToPrune (uint64) [packed]
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneInbox and ZoneOutbox use them to read portal state via
@@ -569,7 +582,7 @@ interface IZonePortal {
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
     error InvalidProofOfPossession();
     error DepositTooSmall();
-    error DepositBlockCapacityExceeded(uint64 maximum);
+    error FeeTooHigh(uint128 fee, uint128 maxFee);
     error TokenEnablementBlockCapacityExceeded(uint64 maximum);
     error TokenMetadataTooLong();
     error GasFeeRateTooHigh();
@@ -613,8 +626,23 @@ interface IZonePortal {
     /// @notice Fixed gas value for deposit fee calculation (100,000 gas)
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
 
-    /// @notice Maximum deposits that may remain outstanding on this portal.
-    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+    /// @notice Queue entries between consecutive deposit-queue checkpoints.
+    function DEPOSITS_PER_BUCKET() external view returns (uint64);
+
+    /// @notice Checkpoints one pruning run may delete.
+    function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
+
+    /// @notice Unsettled queue weight per congestion price tier.
+    function CONGESTION_TIER_WEIGHT() external view returns (uint64);
+
+    /// @notice Price tiers over which the congestion premium rises to its cap.
+    function CONGESTION_MAX_TIER() external view returns (uint64);
+
+    /// @notice Maximum congestion premium on a deposit, in token units.
+    function CONGESTION_MAX_FEE() external view returns (uint128);
+
+    /// @notice Largest queue weight of any entry type.
+    function MAX_ENTRY_WEIGHT() external view returns (uint64);
 
     /// @notice Maximum token enablements that may remain outstanding on this portal.
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
@@ -684,6 +712,32 @@ interface IZonePortal {
     function depositCount() external view returns (uint64);
 
     function lastProcessedDepositNumber() external view returns (uint64);
+
+    /// @notice `depositCount` when checkpoints bootstrapped. Zero before bootstrap.
+    function depositBucketBase() external view returns (uint64);
+
+    /// @notice First checkpoint index not yet pruned.
+    function nextDepositBucketToPrune() external view returns (uint64);
+
+    /// @notice Cumulative entry weight appended since checkpoints bootstrapped.
+    function depositWeight() external view returns (uint64);
+
+    /// @notice Lower bound on the entry weight settled since checkpoints bootstrapped. Never
+    ///         decreases.
+    function settledDepositWeight() external view returns (uint64);
+
+    /// @notice Tempo block whose first append or settlement fixed `depositPriceTier`.
+    function depositPriceBlock() external view returns (uint64);
+
+    /// @notice Congestion tier charged to every deposit in `depositPriceBlock`: the tier at the
+    ///         start of that block, lowered by settlements within it.
+    function depositPriceTier() external view returns (uint64);
+
+    /// @notice Checkpoint `index`; zeros once pruned. Reverts if `index` is out of range.
+    function depositBuckets(uint256 index)
+        external
+        view
+        returns (bytes32 hash, uint64 cumulativeWeight);
 
     function lastSyncedTempoBlockNumber() external view returns (uint64);
 
@@ -862,7 +916,9 @@ interface IZonePortal {
     /// @param _bouncebackGas Gas amount used in the Tempo-side bounce-back fee calculation
     function setBouncebackGas(uint64 _bouncebackGas) external;
 
-    /// @notice Calculate the fee for a deposit
+    /// @notice Total deposit fee from the current state: operational fee plus congestion premium.
+    /// @dev Exact for the next block, and never below the fee a deposit pays later in the current
+    ///      block.
     function calculateDepositFee() external view returns (uint128 fee);
 
     /// @notice Calculate the reserved Tempo-side fee for a failed-deposit bounce-back
@@ -892,6 +948,18 @@ interface IZonePortal {
         external
         returns (bytes32 newCurrentDepositQueueHash);
 
+    /// @notice Alias for the `depositEncrypted` overload with `maxFee`.
+    function deposit(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
     /// @notice Deposit with encrypted recipient and memo
     /// @dev The encrypted payload contains (to, memo) encrypted to the sequencer's key
     ///      at the specified keyIndex. The user must specify which key they encrypted to,
@@ -908,6 +976,22 @@ interface IZonePortal {
         uint256 keyIndex,
         DepositPayload calldata encrypted,
         address tempoRefundRecipient
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
+    /// @notice Deposit with a cap on the total fee.
+    /// @param maxFee Most the caller accepts to pay: operational fee plus congestion premium.
+    /// @dev Reverts with `FeeTooHigh` if the fee exceeds `maxFee`. The entry points without
+    ///      `maxFee` cap the fee at the operational fee. The fee, including the congestion premium,
+    ///      is paid to the admin; the deposit reverts if that transfer fails.
+    function depositEncrypted(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
     )
         external
         returns (bytes32 newCurrentDepositQueueHash);
