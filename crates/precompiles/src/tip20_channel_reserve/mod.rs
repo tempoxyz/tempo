@@ -110,7 +110,7 @@ impl PackedChannelState {
 
 #[contract(addr = TIP20_CHANNEL_RESERVE_ADDRESS)]
 pub struct TIP20ChannelReserve {
-    /// Persistent channel state keyed by [`compute_channel_id`].
+    /// Persistent channel state keyed by [`ITIP20ChannelReserve::ChannelDescriptor::id`].
     channel_states: Mapping<B256, PackedChannelState>,
     /// Per-payer reusable credits for deleted packed channel-state slots.
     channel_storage_credits: Mapping<Address, u64>,
@@ -820,7 +820,7 @@ impl TIP20ChannelReserve {
     /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
         self.storage
-            .keccak256(&channel_id_preimage(descriptor, self.storage.chain_id()))
+            .keccak256(&descriptor.id_preimage(self.storage.chain_id()))
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.
@@ -940,14 +940,6 @@ impl TIP20ChannelReserve {
     }
 }
 
-/// Returns the channel id of `descriptor` on `chain_id`, as the precompile computes it.
-pub fn compute_channel_id(
-    descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
-    chain_id: u64,
-) -> B256 {
-    keccak256(channel_id_preimage(descriptor, chain_id))
-}
-
 /// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
 pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
     voucher_digest_with(channel_id, cumulative_amount, chain_id, |data| {
@@ -970,19 +962,6 @@ pub fn voucher_digest_with(
     input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
     input[34..66].copy_from_slice(struct_hash.as_slice());
     keccak(&input)
-}
-
-/// Hash preimage of a channel id, domain-separated by chain and precompile address.
-fn channel_id_preimage(
-    descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
-    chain_id: u64,
-) -> Vec<u8> {
-    (
-        descriptor.clone(),
-        TIP20_CHANNEL_RESERVE_ADDRESS,
-        U256::from(chain_id),
-    )
-        .abi_encode()
 }
 
 /// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
@@ -1102,7 +1081,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let reserve = TIP20ChannelReserve::new();
             let channel_id = reserve.channel_id(&descriptor)?;
-            assert_eq!(compute_channel_id(&descriptor, chain_id), channel_id);
+            assert_eq!(descriptor.id(chain_id), channel_id);
             assert_eq!(
                 voucher_digest(channel_id, cumulative_amount, chain_id),
                 reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {

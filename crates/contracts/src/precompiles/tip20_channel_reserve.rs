@@ -3,8 +3,9 @@ pub use ITIP20ChannelReserve::{
     ITIP20ChannelReserveErrors as TIP20ChannelReserveError,
     ITIP20ChannelReserveEvents as TIP20ChannelReserveEvent,
 };
-use alloy_primitives::{Address, address};
-use alloy_sol_types::SolCall;
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256, U256, address, keccak256};
+use alloy_sol_types::{SolCall, SolValue};
 
 /// Native TIP-1034 channel reserve precompile address.
 pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
@@ -243,6 +244,23 @@ crate::sol! {
         /// `open` was given a salt other than the voucher signer's configuration commitment
         /// (TIP-1166).
         error SaltNotSignerCommitment(address signer, bytes32 commitment);
+    }
+}
+
+impl ITIP20ChannelReserve::ChannelDescriptor {
+    /// Hash preimage of the channel id, domain-separated by chain and precompile address.
+    pub fn id_preimage(&self, chain_id: u64) -> Vec<u8> {
+        (
+            self.clone(),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            U256::from(chain_id),
+        )
+            .abi_encode()
+    }
+
+    /// Returns the channel id on `chain_id`, as the precompile computes it.
+    pub fn id(&self, chain_id: u64) -> B256 {
+        keccak256(self.id_preimage(chain_id))
     }
 }
 
