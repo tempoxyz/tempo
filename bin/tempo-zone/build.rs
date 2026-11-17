@@ -16,7 +16,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     emitter.add_instructions(&cargo_builder)?;
 
     // Tracking the git HEAD reruns this script on every commit and checkout. Debug builds skip it and keep the SHA from the last run of this script.
-    // Release profiles keep tracking HEAD, so their version always matches the checkout.
+    // Release profiles keep tracking HEAD, so their version always matches the checkout, unless
+    // VERGEN_IDEMPOTENT is on: .cargo/config.toml turns it on by default, which also pins the
+    // timestamps. Builds that ship set VERGEN_IDEMPOTENT=0.
     let git_builder = Gitcl::builder()
         .describe(true, true, Some("zones/v[0-9]*"))
         .dirty(true)
