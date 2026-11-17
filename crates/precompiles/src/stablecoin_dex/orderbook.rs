@@ -2,11 +2,12 @@
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    stablecoin_dex::{IStablecoinDEX, Order, TICK_SPACING},
+    stablecoin_dex::{IStablecoinDEX, MIN_ORDER_AMOUNT, Order, TICK_SPACING},
     storage::{Handler, Mapping, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::ops::Deref;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
@@ -716,6 +717,57 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
     Ok(())
 }
 
+/// The storage-free checks `place` (`flip_tick: None`) and `place_flip` run on their arguments.
+///
+/// # Errors
+/// - `TickOutOfBounds` — tick or flip_tick outside `[MIN_TICK, MAX_TICK]`
+/// - `InvalidTick` — tick is not aligned to [`TICK_SPACING`]
+/// - `InvalidFlipTick` — flip_tick is not aligned to [`TICK_SPACING`] or on the wrong side of tick
+///   (pre-T5: bids need `flip_tick > tick`, asks `flip_tick < tick`; T5+ also allows equal)
+/// - `BelowMinimumOrderSize` — amount is below [`MIN_ORDER_AMOUNT`]
+pub fn validate_order_terms(
+    amount: u128,
+    tick: i16,
+    flip_tick: Option<i16>,
+    is_bid: bool,
+    spec: TempoHardfork,
+) -> Result<()> {
+    // Validate tick is within bounds
+    if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+        return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
+    }
+
+    // Enforce that the tick adheres to tick spacing
+    validate_tick_spacing(tick)?;
+
+    if let Some(flip_tick) = flip_tick {
+        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
+            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
+        }
+
+        // Enforce that the flip tick adheres to tick spacing
+        if flip_tick % TICK_SPACING != 0 {
+            return Err(StablecoinDEXError::invalid_flip_tick().into());
+        }
+
+        // Validate flip_tick relationship to tick based on order side.
+        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
+        if (flip_tick == tick && !spec.is_t5())
+            || (is_bid && flip_tick < tick)
+            || (!is_bid && flip_tick > tick)
+        {
+            return Err(StablecoinDEXError::invalid_flip_tick().into());
+        }
+    }
+
+    // Validate order amount meets minimum requirement
+    if amount < MIN_ORDER_AMOUNT {
+        return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -725,7 +777,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use rand_08::Rng;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use test_case::test_case;
 
     #[test]
     fn test_walk_settles_before_accumulation_overflow() {
@@ -901,6 +953,39 @@ mod tests {
         // Test boundary values
         assert_eq!(tick_to_price(MIN_TICK), PRICE_SCALE - 2000);
         assert_eq!(tick_to_price(MAX_TICK), PRICE_SCALE + 2000);
+    }
+
+    #[test_case(MIN_ORDER_AMOUNT, 0, None, true, TempoHardfork::T4 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, MIN_TICK, None, false, TempoHardfork::T5 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, MAX_TICK, None, true, TempoHardfork::T5 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, MIN_TICK - 10, None, true, TempoHardfork::T5 => Err(StablecoinDEXError::tick_out_of_bounds(MIN_TICK - 10).into()))]
+    #[test_case(MIN_ORDER_AMOUNT, MAX_TICK + 10, None, false, TempoHardfork::T5 => Err(StablecoinDEXError::tick_out_of_bounds(MAX_TICK + 10).into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 5, None, true, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT - 1, 0, None, true, TempoHardfork::T5 => Err(StablecoinDEXError::below_minimum_order_size(MIN_ORDER_AMOUNT - 1).into()))]
+    #[test_case(0, MAX_TICK + 1, None, true, TempoHardfork::T5 => Err(StablecoinDEXError::tick_out_of_bounds(MAX_TICK + 1).into()))]
+    #[test_case(0, 5, Some(5), true, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(10), true, TempoHardfork::T4 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(-10), false, TempoHardfork::T4 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(0), true, TempoHardfork::T4 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(0), false, TempoHardfork::T4 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(0), true, TempoHardfork::T5 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(0), false, TempoHardfork::T5 => Ok(()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(-10), true, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(10), false, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(MAX_TICK + 10), true, TempoHardfork::T5 => Err(StablecoinDEXError::tick_out_of_bounds(MAX_TICK + 10).into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(MIN_TICK - 10), false, TempoHardfork::T5 => Err(StablecoinDEXError::tick_out_of_bounds(MIN_TICK - 10).into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(5), true, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT, 0, Some(-5), false, TempoHardfork::T5 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT - 1, 0, Some(0), true, TempoHardfork::T4 => Err(StablecoinDEXError::invalid_flip_tick().into()))]
+    #[test_case(MIN_ORDER_AMOUNT - 1, 0, Some(0), true, TempoHardfork::T5 => Err(StablecoinDEXError::below_minimum_order_size(MIN_ORDER_AMOUNT - 1).into()))]
+    fn test_validate_order_terms(
+        amount: u128,
+        tick: i16,
+        flip_tick: Option<i16>,
+        is_bid: bool,
+        spec: TempoHardfork,
+    ) -> Result<()> {
+        validate_order_terms(amount, tick, flip_tick, is_bid, spec)
     }
 
     #[test]

@@ -16,7 +16,7 @@ use orderbook::BookId;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, OrderStep, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel,
     base_to_quote, quote_to_base, step_exact_in, step_exact_out, taker_output, tick_to_price,
-    validate_tick_spacing,
+    validate_order_terms, validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -668,20 +668,7 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick is within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, None, is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
@@ -835,41 +822,10 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick and flip_tick are within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if flip_tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate flip_tick relationship to tick based on order side.
-        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
         // NOTE: `Order::new_flip` performs the same check defensively below; the early
         // check here is preserved to keep error semantics backwards-compatible
         // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
-        if (flip_tick == tick && !self.storage.spec().is_t5())
-            || (is_bid && flip_tick < tick)
-            || (!is_bid && flip_tick > tick)
-        {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, Some(flip_tick), is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
