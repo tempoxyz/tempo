@@ -138,6 +138,15 @@ crate::sol! {
             view
             returns (bytes32);
 
+        /// Returns whether `settle` and `close` would accept `signature` for the channel at
+        /// `cumulativeAmount` (TIP-1166). Reverts with `ChannelNotFound` if the channel doesn't
+        /// exist; doesn't check `cumulativeAmount` against the deposit or settled amount.
+        function verifyVoucher(
+            ChannelDescriptor calldata descriptor,
+            uint96 cumulativeAmount,
+            bytes calldata signature
+        ) external view returns (bool valid);
+
         /// Returns the EIP-712 domain separator for the current chain.
         function domainSeparator() external view returns (bytes32);
 

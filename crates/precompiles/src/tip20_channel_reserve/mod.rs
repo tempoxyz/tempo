@@ -730,6 +730,29 @@ impl TIP20ChannelReserve {
         self.get_voucher_digest_inner(call.channelId, call.cumulativeAmount)
     }
 
+    /// Returns whether `settle` and `close` would accept the voucher signature (TIP-1166).
+    ///
+    /// Runs the same signature checks as `settle`, against the channel's snapshot, and charges the
+    /// same gas. Reverts with `ChannelNotFound` if the channel doesn't exist. Doesn't check the
+    /// amount against the channel's deposit or settled amount.
+    pub fn verify_voucher(&self, call: ITIP20ChannelReserve::verifyVoucherCall) -> Result<bool> {
+        let channel_id = self.channel_id(&call.descriptor)?;
+        let state = self.load_existing_state(channel_id)?;
+        match self.validate_voucher(
+            &call.descriptor,
+            channel_id,
+            state,
+            call.cumulativeAmount,
+            &call.signature,
+        ) {
+            Ok(()) => Ok(true),
+            Err(TempoPrecompileError::TIP20ChannelReserveError(
+                TIP20ChannelReserveError::InvalidSignature(_),
+            )) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
         Ok(domain_separator(self.storage.chain_id()))
@@ -908,9 +931,18 @@ impl TIP20ChannelReserve {
                 return Err(TIP20ChannelReserveError::invalid_signature().into());
             }
         }
+        let is_t15 = self.storage.spec().is_t15();
         let signer = SignatureVerifier::new()
             .recover(digest, signature)
-            .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
+            .map_err(|error| {
+                // From T15, out-of-gas and other system errors propagate so that `verifyVoucher`
+                // never reports an unperformed check as an invalid signature.
+                if is_t15 && error.is_system_error() {
+                    error
+                } else {
+                    TIP20ChannelReserveError::invalid_signature().into()
+                }
+            })?;
         if signer != expected_signer {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
@@ -1206,7 +1238,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        with_storage(TempoHardfork::T7, || {
+        with_storage(TempoHardfork::T15, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
                 &mut reserve,
@@ -3056,6 +3088,18 @@ mod tests {
         }
     }
 
+    fn verify_call(
+        descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
+        amount: u64,
+        signature: Bytes,
+    ) -> ITIP20ChannelReserve::verifyVoucherCall {
+        ITIP20ChannelReserve::verifyVoucherCall {
+            descriptor: descriptor.clone(),
+            cumulativeAmount: U96::from(amount),
+            signature,
+        }
+    }
+
     fn top_up_call(
         descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
         amount: u64,
@@ -3141,6 +3185,7 @@ mod tests {
             commit(payer, &new_config)?;
 
             // The voucher the payee holds stays redeemable.
+            assert!(reserve.verify_voucher(verify_call(&descriptor, 60, held.clone()))?);
             reserve.settle(payee, settle_call(&descriptor, 60, held))?;
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payee })?,
@@ -3153,6 +3198,11 @@ mod tests {
                 primitive_voucher(&reserve, channel_id, 70, &old_owner)?,
             ];
             for signature in rejected {
+                assert!(!reserve.verify_voucher(verify_call(
+                    &descriptor,
+                    70,
+                    signature.clone()
+                ))?);
                 assert_eq!(
                     reserve.settle(payee, settle_call(&descriptor, 70, signature)),
                     Err(TIP20ChannelReserveError::invalid_signature().into())
@@ -3235,6 +3285,11 @@ mod tests {
                 primitive_voucher(&reserve, channel_id, 30, &owner)?,
             ];
             for signature in rejected {
+                assert!(!reserve.verify_voucher(verify_call(
+                    &descriptor,
+                    30,
+                    signature.clone()
+                ))?);
                 assert_eq!(
                     reserve.settle(payee, settle_call(&descriptor, 30, signature)),
                     Err(TIP20ChannelReserveError::invalid_signature().into())
@@ -3244,6 +3299,7 @@ mod tests {
             // The version-0 configuration deriving the signer's address signs.
             let signature =
                 configurable_voucher(&reserve, channel_id, 30, signer, &config, &[&owner, &other])?;
+            assert!(reserve.verify_voucher(verify_call(&descriptor, 30, signature.clone()))?);
             reserve.settle(payee, settle_call(&descriptor, 30, signature))?;
 
             // Registering later blocks new deposits, even with the same owners, but keeps vouchers.
@@ -3258,6 +3314,59 @@ mod tests {
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payee })?,
                 U256::from(50)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_voucher_selector_rejected_before_t15() -> eyre::Result<()> {
+        use alloy::sol_types::SolError;
+        with_storage(TempoHardfork::T14, || {
+            let calldata = verify_call(
+                &descriptor(
+                    Address::random(),
+                    Address::random(),
+                    Address::ZERO,
+                    Address::random(),
+                    B256::random(),
+                    Address::ZERO,
+                    B256::random(),
+                ),
+                1,
+                Bytes::new(),
+            )
+            .abi_encode();
+            let result = TIP20ChannelReserve::new().call(&calldata, Address::ZERO);
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(
+                    crate::test_util::revert_bytes(&result)
+                )
+                .is_ok(),
+                "verifyVoucher should be selector-gated before T15"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_verify_voucher_missing_channel() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let missing = descriptor(
+                Address::random(),
+                Address::random(),
+                Address::ZERO,
+                Address::random(),
+                B256::random(),
+                Address::ZERO,
+                B256::random(),
+            );
+            assert_eq!(
+                reserve.verify_voucher(verify_call(&missing, 1, Bytes::new())),
+                Err(TIP20ChannelReserveError::channel_not_found().into())
             );
             Ok(())
         })

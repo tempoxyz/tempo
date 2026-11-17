@@ -744,9 +744,21 @@ where
             // Got a block
             result = blocks.recv() => {
                 let (peer, bytes) = result.map_err(|err| eyre::eyre!("block channel receive failed: {err}"))?;
-                // Commonware authenticates every sender against the manifest. The importer
-                // applies the authoritative `sender == leader_for(block anchor)` fence after
-                // decoding the block and observing its Tempo anchor.
+                // Drop blocks from members that cannot lead before the importer waits on
+                // their anchor. A retained leader may still be past or future for this
+                // anchor: the importer checks `sender == leader_for(block anchor)` once the
+                // anchor is observed.
+                let may_accept = RoutingPolicy::new(
+                    &local_ed25519_public_key,
+                    &membership,
+                    &leadership,
+                )
+                .may_accept_block(&peer);
+                if !may_accept {
+                    metrics::counter!("zone_p2p_role_invalid_messages_dropped_total").increment(1);
+                    warn!(target: "zone::p2p", %peer, "Ignoring live block from non-leader");
+                    continue;
+                }
                 P2pEvent::BlockReceived { leader_ed25519_public_key: peer, block: bytes.into() }
             }
 
