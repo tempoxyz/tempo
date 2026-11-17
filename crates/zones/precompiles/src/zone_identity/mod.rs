@@ -77,23 +77,17 @@ pub struct Edges {
 
 impl Edges {
     /// Whether both halves of the edge for `kind` allow the move.
-    fn allows(self, kind: TransferKind) -> bool {
-        match kind {
-            TransferKind::InZone => self.transfer_from && self.transfer_to,
-            TransferKind::Deposit => self.deposit_from && self.deposit_to,
-            TransferKind::Withdrawal => self.withdrawal_from && self.withdrawal_to,
-        }
+    fn allows(mut self, kind: TransferKind) -> bool {
+        let (from_ok, to_ok) = self.halves(kind);
+        *from_ok && *to_ok
     }
 
-    /// The sending half (`outbound`) or receiving half of the edge for `kind`.
-    fn half(&mut self, kind: TransferKind, outbound: bool) -> &mut bool {
-        match (kind, outbound) {
-            (TransferKind::InZone, true) => &mut self.transfer_from,
-            (TransferKind::InZone, false) => &mut self.transfer_to,
-            (TransferKind::Deposit, true) => &mut self.deposit_from,
-            (TransferKind::Deposit, false) => &mut self.deposit_to,
-            (TransferKind::Withdrawal, true) => &mut self.withdrawal_from,
-            (TransferKind::Withdrawal, false) => &mut self.withdrawal_to,
+    /// The sending and receiving halves of the edge for `kind`.
+    fn halves(&mut self, kind: TransferKind) -> (&mut bool, &mut bool) {
+        match kind {
+            TransferKind::InZone => (&mut self.transfer_from, &mut self.transfer_to),
+            TransferKind::Deposit => (&mut self.deposit_from, &mut self.deposit_to),
+            TransferKind::Withdrawal => (&mut self.withdrawal_from, &mut self.withdrawal_to),
         }
     }
 }
@@ -282,9 +276,10 @@ impl ZoneIdentity {
         self.write_member(account, Member { frozen, ..member })
     }
 
-    /// Sets the sending half for `tokens` on the edge from `from` to `to`. The caller must
-    /// administer `from`'s org.
-    pub fn set_outbound(
+    /// Sets, for each of `tokens`, the halves of the edge from `from` to `to` that the caller
+    /// administers: the sending half as `from`'s org admin, the receiving half as `to`'s. An admin of
+    /// both orgs, as for an org's edge to itself, sets both.
+    pub fn set_edge(
         &mut self,
         caller: Address,
         registrar: Address,
@@ -292,61 +287,36 @@ impl ZoneIdentity {
         to: OrgKey,
         tokens: &[Address],
         allowed: bool,
-    ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, from.orgId)?;
-        self.set_half(from, to, tokens, allowed, true)
-    }
-
-    /// Sets the receiving half for `tokens` on the edge from `from` to `to`. The caller must
-    /// administer `to`'s org.
-    pub fn set_inbound(
-        &mut self,
-        caller: Address,
-        registrar: Address,
-        from: OrgKey,
-        to: OrgKey,
-        tokens: &[Address],
-        allowed: bool,
-    ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, to.orgId)?;
-        self.set_half(from, to, tokens, allowed, false)
-    }
-
-    fn set_half(
-        &mut self,
-        from: OrgKey,
-        to: OrgKey,
-        tokens: &[Address],
-        allowed: bool,
-        outbound: bool,
     ) -> ZoneResult<()> {
         self.ensure_org(from.orgId)?;
         self.ensure_org(to.orgId)?;
         let kind = edge_kind(&from, &to)?;
+        let sending = !caller.is_zero() && caller == self.org_admin(registrar, from.orgId)?;
+        let receiving = !caller.is_zero() && caller == self.org_admin(registrar, to.orgId)?;
+        if !sending && !receiving {
+            return Err(ZoneIdentityError::unauthorized().into());
+        }
         for &token in tokens {
             let slot = &mut self.edges[from.orgId][to.orgId][token];
             let mut edges = slot.read()?;
-            *edges.half(kind, outbound) = allowed;
-            slot.write(edges)?;
-            if outbound {
-                self.emit_event(IZoneIdentity::OutboundUpdated {
-                    fromOrg: from.orgId,
-                    fromL1: from.l1,
-                    toOrg: to.orgId,
-                    toL1: to.l1,
-                    token,
-                    allowed,
-                })?;
-            } else {
-                self.emit_event(IZoneIdentity::InboundUpdated {
-                    fromOrg: from.orgId,
-                    fromL1: from.l1,
-                    toOrg: to.orgId,
-                    toL1: to.l1,
-                    token,
-                    allowed,
-                })?;
+            let (from_ok, to_ok) = edges.halves(kind);
+            if sending {
+                *from_ok = allowed;
             }
+            if receiving {
+                *to_ok = allowed;
+            }
+            let (from_ok, to_ok) = (*from_ok, *to_ok);
+            slot.write(edges)?;
+            self.emit_event(IZoneIdentity::EdgeUpdated {
+                fromOrg: from.orgId,
+                fromL1: from.l1,
+                toOrg: to.orgId,
+                toL1: to.l1,
+                token,
+                fromOk: from_ok,
+                toOk: to_ok,
+            })?;
         }
         Ok(())
     }

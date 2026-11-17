@@ -322,50 +322,31 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     // Edges: A internally; A offers B transfers, which B has not accepted yet; deposits from the
     // approved depositor's Tempo address into A; withdrawals from A to the off-ramp's Tempo address.
     let usd = vec![PATH_USD_ADDRESS];
-    let zone_side = |org| OrgKey {
-        orgId: org,
-        l1: false,
-    };
-    let tempo_side = |org| OrgKey {
-        orgId: org,
-        l1: true,
-    };
-    let set_inbound = |from, to| IZoneIdentity::setInboundCall {
+    let set_edge = |from, to| IZoneIdentity::setEdgeCall {
         from,
         to,
         tokens: usd.clone(),
         allowed: true,
     };
-    // (admin, sets the outbound half, from, to)
+    // Each admin sets its own halves; A's admin sets both halves of A's edge to itself in one call.
     let edges = [
-        (&admin_a, true, zone_side(org_a), zone_side(org_a)),
-        (&admin_a, false, zone_side(org_a), zone_side(org_a)),
-        (&admin_a, true, zone_side(org_a), zone_side(org_b)),
-        (&registrar, true, tempo_side(funding), zone_side(org_a)),
-        (&admin_a, false, tempo_side(funding), zone_side(org_a)),
-        (&admin_a, true, zone_side(org_a), tempo_side(exits)),
-        (&registrar, false, zone_side(org_a), tempo_side(exits)),
+        (&admin_a, OrgKey::zone(org_a), OrgKey::zone(org_a)),
+        (&admin_a, OrgKey::zone(org_a), OrgKey::zone(org_b)),
+        (&registrar, OrgKey::l1(funding), OrgKey::zone(org_a)),
+        (&admin_a, OrgKey::l1(funding), OrgKey::zone(org_a)),
+        (&admin_a, OrgKey::zone(org_a), OrgKey::l1(exits)),
+        (&registrar, OrgKey::zone(org_a), OrgKey::l1(exits)),
     ];
-    for (admin, outbound, from, to) in edges {
-        let pending = if outbound {
-            let call = IZoneIdentity::setOutboundCall {
-                from,
-                to,
-                tokens: usd.clone(),
-                allowed: true,
-            };
-            admin.send(ZONE_IDENTITY_ADDRESS, call).await?
-        } else {
-            admin
-                .send(ZONE_IDENTITY_ADDRESS, set_inbound(from, to))
-                .await?
-        };
+    for (admin, from, to) in edges {
+        let pending = admin
+            .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
+            .await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
     let edge = async |from, to| {
         admin_a
             .identity()
-            .edge(zone_side(from), zone_side(to), PATH_USD_ADDRESS)
+            .edge(OrgKey::zone(from), OrgKey::zone(to), PATH_USD_ADDRESS)
             .call()
             .await
     };
@@ -392,7 +373,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let accept = admin_b
         .send(
             ZONE_IDENTITY_ADDRESS,
-            set_inbound(zone_side(org_a), zone_side(org_b)),
+            set_edge(OrgKey::zone(org_a), OrgKey::zone(org_b)),
         )
         .await?;
     assert_eq!(mine(&mut fixture, &zone, vec![accept]).await?, [true]);

@@ -30,8 +30,7 @@ crate::sol! {
         function addMember(uint64 orgId, address account) external;
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
-        function setOutbound(OrgKey from, OrgKey to, address[] calldata tokens, bool allowed) external;
-        function setInbound(OrgKey from, OrgKey to, address[] calldata tokens, bool allowed) external;
+        function setEdge(OrgKey from, OrgKey to, address[] calldata tokens, bool allowed) external;
 
         // Views. Membership is visible to the account, its org admin and the registrar.
         function orgAdmin(uint64 orgId) external view returns (address);
@@ -41,8 +40,7 @@ crate::sol! {
         event OrgCreated(uint64 indexed orgId, address admin);
         event OrgAdminUpdated(uint64 indexed orgId, address admin);
         event MemberUpdated(address indexed account, uint64 indexed orgId, bool frozen);
-        event OutboundUpdated(uint64 indexed fromOrg, bool fromL1, uint64 indexed toOrg, bool toL1, address indexed token, bool allowed);
-        event InboundUpdated(uint64 indexed fromOrg, bool fromL1, uint64 indexed toOrg, bool toL1, address indexed token, bool allowed);
+        event EdgeUpdated(uint64 indexed fromOrg, bool fromL1, uint64 indexed toOrg, bool toL1, address indexed token, bool fromOk, bool toOk);
 
         error Unauthorized();
         error UnknownOrg(uint64 orgId);
@@ -52,5 +50,23 @@ crate::sol! {
         error AlreadyMember(address account);
         error NotMember(address account);
         error OrgPolicyForbids(address token, address from, address to);
+    }
+}
+
+impl IZoneIdentity::OrgKey {
+    /// The Zone accounts of `org`.
+    pub const fn zone(org: u64) -> Self {
+        Self {
+            orgId: org,
+            l1: false,
+        }
+    }
+
+    /// The Tempo addresses of `org`.
+    pub const fn l1(org: u64) -> Self {
+        Self {
+            orgId: org,
+            l1: true,
+        }
     }
 }

@@ -47,11 +47,8 @@ impl ZoneIdentity {
                     setFrozen(call) => mutate(call, msg_sender, |caller, call| {
                         self.set_frozen(caller, registrar()?, call.account, call.frozen)
                     }),
-                    setOutbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_outbound(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
-                    }),
-                    setInbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_inbound(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
+                    setEdge(call) => mutate(call, msg_sender, |caller, call| {
+                        self.set_edge(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
