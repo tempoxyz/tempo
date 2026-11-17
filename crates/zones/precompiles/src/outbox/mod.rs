@@ -168,6 +168,11 @@ impl ZoneOutbox {
         {
             return Err(ZoneOutboxError::invalid_fallback_recipient().into());
         }
+        // +T15: A payout to a TIP-1094 deposit address would become a virtual deposit originated
+        // by this zone's portal, whose refund no one could claim.
+        if self.storage.spec().is_t15() && ZoneDepositAddress::is_reserved(&call.to) {
+            return Err(ZoneOutboxError::invalid_withdrawal_recipient().into());
+        }
         if call.amount == 0 {
             return Err(ZoneOutboxError::zero_amount_withdrawal().into());
         }

@@ -2234,6 +2234,7 @@ interface IZoneOutbox {
     event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
 
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TokenNotEnabled();

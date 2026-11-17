@@ -1259,6 +1259,7 @@ interface IZoneOutbox {
     error InvalidEncryptedSenderCount(uint256 actual, uint256 expected);
     error InvalidEncryptedSenderLength(uint256 actual, uint256 expected);
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TransferFailed();
