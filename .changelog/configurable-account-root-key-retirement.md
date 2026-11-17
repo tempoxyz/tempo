@@ -1,6 +1,4 @@
 ---
-tempo-evm: minor
-tempo-node: patch
 tempo-alloy: patch
 ---
 

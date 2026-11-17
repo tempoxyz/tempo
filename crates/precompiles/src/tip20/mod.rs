@@ -1752,16 +1752,14 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS, Precompile,
-        account_keychain::{
-            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, getRemainingLimitCall,
-        },
+        account_keychain::{AccountKeychain, KeyRestrictions, getRemainingLimitCall},
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
-            TIP20Setup, TIP403Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage,
-            with_storage,
+            KeychainSetup, TIP20Setup, TIP403Setup, VIRTUAL_MASTER, register_virtual_master,
+            setup_storage, with_storage,
         },
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
@@ -2612,29 +2610,14 @@ pub(crate) mod tests {
                 token: token.address,
             };
 
-            let mut keychain = AccountKeychain::initialized()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.authorize_key(
-                user,
-                access_key,
-                SignatureType::Secp256k1,
-                KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token: token.address,
-                        amount: spending_limit,
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-                None,
-            )?;
-
             // Simulate pre-tx: access key deducts max fee from spending limit
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(user)?;
+            let mut keychain = KeychainSetup::new(user)
+                .key(
+                    access_key,
+                    KeyRestrictions::unrestricted().limit(token.address, spending_limit, 0),
+                )
+                .acting_as(access_key)
+                .apply()?;
             keychain.authorize_transfer(user, token.address, max_fee)?;
             assert_eq!(
                 keychain.get_remaining_limit(remaining_limit.clone())?,
@@ -3358,27 +3341,17 @@ pub(crate) mod tests {
         token: Address,
         period: u64,
     ) -> Result<AccountKeychain> {
-        let mut keychain = AccountKeychain::initialized()?;
-        keychain.set_tx_origin(account)?;
-        keychain.authorize_key(
-            account,
-            key,
-            IAccountKeychain::SignatureType::Secp256k1,
-            IAccountKeychain::KeyRestrictions {
-                expiry: u64::MAX,
-                enforceLimits: true,
-                limits: vec![IAccountKeychain::TokenLimit {
+        KeychainSetup::new(account)
+            .key(
+                key,
+                IAccountKeychain::KeyRestrictions::unrestricted().limit(
                     token,
-                    amount: U256::from(100),
+                    U256::from(100),
                     period,
-                }],
-                allowAnyCalls: true,
-                allowedCalls: vec![],
-            },
-            None,
-        )?;
-        keychain.set_transaction_key(key)?;
-        Ok(keychain)
+                ),
+            )
+            .acting_as(key)
+            .apply()
     }
 
     #[test]

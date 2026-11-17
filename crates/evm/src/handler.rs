@@ -348,7 +348,9 @@ fn intrinsic_gas(
         regular = regular
             .saturating_add(params.get(GasId::TxEip7702PerEmptyAccountCost))
             .saturating_add(tempo_signature_verification_gas(authorization.signature()));
-        state = state.saturating_add(params.eip7702_auth_state_gas());
+        state = state
+            .saturating_add(params.new_account_state_gas())
+            .saturating_add(params.get(GasId::TxEip7702PerAuthState));
         if spec.is_t1() && authorization.nonce == 0 {
             // TIP-1000: Storage pricing updates for launch
             // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
@@ -1611,7 +1613,6 @@ fn prepare_aa(
                 gas_limit: tx.gas_limit,
                 floor_gas,
                 initial_state_gas,
-                state_refund: 0,
                 result,
             },
         )?)
@@ -1711,7 +1712,7 @@ fn execute_aa(
     result
         .gas
         .record_refund(i64::try_from(regular_refund).unwrap_or(i64::MAX));
-    TempoHandlerHooks::settle_transaction(
+    let mut result = TempoHandlerHooks::settle_transaction(
         request.host,
         request.envelope,
         GasSettlement {
@@ -1720,10 +1721,13 @@ fn execute_aa(
             gas_limit: tx.gas_limit,
             floor_gas,
             initial_state_gas,
-            state_refund,
             result,
         },
-    )
+    )?;
+    // The authorization state-gas refund was credited to the reservoir, so it is not state gas
+    // spent.
+    result.state_gas_spent = result.state_gas_spent.saturating_sub(state_refund);
+    Ok(result)
 }
 
 #[cfg(test)]

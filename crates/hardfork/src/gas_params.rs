@@ -396,9 +396,9 @@ mod tests {
             "EIP-7702 per auth regular gas per spec"
         );
         assert_eq!(gas[GasId::TxEip7702PerAuthState], 0);
-        assert_eq!(gas.eip7702_auth_state_gas(), 225_000);
+        assert_eq!(gas.new_account_state_gas(), 225_000);
         assert_eq!(
-            u64::from(gas[GasId::TxEip7702PerEmptyAccountCost]) + gas.eip7702_auth_state_gas(),
+            u64::from(gas[GasId::TxEip7702PerEmptyAccountCost]) + gas.new_account_state_gas(),
             250_000,
             "EIP-7702 per auth total = 25k regular + 225k state per spec"
         );
@@ -467,7 +467,7 @@ mod tests {
 
         // EIP-7702: 25,000 regular + 225,000 state = 250,000 per auth
         assert_eq!(
-            u64::from(gas[GasId::TxEip7702PerEmptyAccountCost]) + gas.eip7702_auth_state_gas(),
+            u64::from(gas[GasId::TxEip7702PerEmptyAccountCost]) + gas.new_account_state_gas(),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );
