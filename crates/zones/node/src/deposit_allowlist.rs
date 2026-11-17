@@ -178,6 +178,9 @@ pub enum DepositAllowlistError {
     Uninitialized,
     #[error("allowlist would hold {len} addresses; the limit is {MAX_DEPOSIT_ALLOWLIST_LEN}")]
     TooLarge { len: usize },
+    /// The Zone credits a TIP-1022 virtual address's master, which the screens can't resolve.
+    #[error("{address} is a TIP-1022 virtual address and cannot be allowlisted")]
+    VirtualAddress { address: Address },
     #[error("failed to persist the allowlist: {0}")]
     Persist(String),
     #[error("deposit allowlist is not enabled on this sequencer")]
@@ -451,8 +454,8 @@ impl DepositAllowlist {
         };
         let mut rejected = 0;
         for ((sender, recipient), decryption) in senders.iter().zip(recipients).zip(decryptions) {
-            if !is_listed(&state.addresses, sender)
-                || recipient.is_some_and(|recipient| !is_listed(&state.addresses, &recipient))
+            if !state.addresses.contains(sender)
+                || recipient.is_some_and(|recipient| !state.addresses.contains(&recipient))
             {
                 *decryption = FAILED_DECRYPTION;
                 rejected += 1;
@@ -476,6 +479,9 @@ impl DepositAllowlist {
             return Err(DepositAllowlistError::TooLarge {
                 len: next.addresses.len(),
             });
+        }
+        if let Some(&address) = next.addresses.iter().find(|address| address.is_virtual()) {
+            return Err(DepositAllowlistError::VirtualAddress { address });
         }
         persist(&self.inner.path, &next)
             .map_err(|err| DepositAllowlistError::Persist(format!("{err:#}")))?;
@@ -592,14 +598,7 @@ where
 
 /// Whether `list` holds every one of `addresses`. An unwritten list (`None`) allows everyone.
 fn allows_all(list: Option<&BTreeSet<Address>>, addresses: &[Address]) -> bool {
-    list.is_none_or(|list| addresses.iter().all(|address| is_listed(list, address)))
-}
-
-/// Whether `list` allows `address`. A TIP-1022 virtual address is never listed: from T15 the
-/// Zone credits its master, which the screens can't resolve, so listing either one must not let
-/// funds reach an unlisted account.
-fn is_listed(list: &BTreeSet<Address>, address: &Address) -> bool {
-    !address.is_virtual() && list.contains(address)
+    list.is_none_or(|list| addresses.iter().all(|address| list.contains(address)))
 }
 
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {
@@ -705,8 +704,20 @@ impl DepositAllowlistApiServer for DepositAllowlist {
 fn read_state(path: &Path) -> eyre::Result<State> {
     let file = File::open(path)
         .wrap_err_with(|| format!("failed to open deposit allowlist {}", path.display()))?;
-    let state: State = serde_json::from_reader(std::io::BufReader::new(file))
+    let mut state: State = serde_json::from_reader(std::io::BufReader::new(file))
         .wrap_err_with(|| format!("failed to parse deposit allowlist {}", path.display()))?;
+    // Writes reject virtual addresses, but a list saved by an earlier version may hold some. The
+    // Zone would credit their unlisted masters, so they are dropped rather than listed.
+    let listed = state.addresses.len();
+    state.addresses.retain(|address| !address.is_virtual());
+    if state.addresses.len() < listed {
+        warn!(
+            target: "zone::allowlist",
+            path = %path.display(),
+            dropped = listed - state.addresses.len(),
+            "Dropped TIP-1022 virtual addresses from the deposit allowlist"
+        );
+    }
     ensure!(
         state.addresses.len() <= MAX_DEPOSIT_ALLOWLIST_LEN,
         "deposit allowlist {} holds {} addresses; the limit is {MAX_DEPOSIT_ALLOWLIST_LEN}",

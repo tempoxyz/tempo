@@ -3,9 +3,12 @@
 //! From T15 the Zone reads the address registry from Tempo, so a master registered on Tempo
 //! receives Zone transfers and deposits sent to its virtual addresses.
 
-use crate::utils::{
-    AllowlistSetup, ClusterConfig, L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, poll_until,
-    spawn_sequencer, start_real_p2p_cluster,
+use crate::{
+    l1_e2e::{get_deposit_allowlist, send_set, sign_set},
+    utils::{
+        AllowlistSetup, ClusterConfig, L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode,
+        deposit_allowlist_admin, poll_until, spawn_sequencer, start_real_p2p_cluster,
+    },
 };
 use alloy::{
     primitives::{Address, B256, Bytes, FixedBytes, U256, keccak256},
@@ -236,10 +239,10 @@ async fn virtual_addresses_resolve_through_the_tempo_registry() -> eyre::Result<
     Ok(())
 }
 
-/// Sequencer allowlists never list a virtual address: the Zone credits its master, which the
-/// screens can't resolve, so a listed virtual address must not let funds through to an unlisted
-/// master. Here even a listed master is refused through its virtual address, both for transfers
-/// (screened by the P2P sequencers' pools) and deposits.
+/// Sequencer allowlists refuse virtual addresses: the Zone credits a virtual address's master,
+/// which the screens can't resolve, so the admin can't list one. Even a listed master is then
+/// unreachable through its virtual addresses, for transfers (screened by the P2P sequencers'
+/// pools) and deposits.
 #[tokio::test(flavor = "multi_thread")]
 async fn sequencer_allowlists_refuse_virtual_addresses() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -248,13 +251,37 @@ async fn sequencer_allowlists_refuse_virtual_addresses() -> eyre::Result<()> {
     let target = virtual_address(registered_master_id(), 0x01);
     let cluster = start_real_p2p_cluster(ClusterConfig {
         deposit_allowlist: Some(AllowlistSetup {
-            seed: vec![alice.address(), VIRTUAL_MASTER, target],
+            seed: vec![alice.address(), VIRTUAL_MASTER],
             rpc_relays_writes: false,
         }),
         ..Default::default()
     })
     .await?;
     let (l1, leader) = (&cluster.l1, &cluster.nodes[0]);
+
+    let write = sign_set(
+        &deposit_allowlist_admin(),
+        cluster.zone_chain_id,
+        &[target],
+        true,
+        1,
+    )?;
+    for node in &cluster.nodes {
+        let error = send_set(node, &write)
+            .await
+            .expect_err("an allowlist write must refuse a virtual address")
+            .to_string();
+        assert!(
+            error.contains("is a TIP-1022 virtual address and cannot be allowlisted"),
+            "{error}"
+        );
+        let mut listed = get_deposit_allowlist(node).await?;
+        listed.sort();
+        let mut expected = vec![alice.address(), VIRTUAL_MASTER];
+        expected.sort();
+        assert_eq!(listed, expected, "a rejected write changed the allowlist");
+    }
+
     let registered_at = register_master_on_tempo(l1).await?;
     let opt_in_block = leader.enable_transfers(true).await?;
 
