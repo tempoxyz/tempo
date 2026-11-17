@@ -108,7 +108,7 @@ jobs:
             "$snouty_dir/snouty.tar.xz" | sha256sum --check
           tar -xf "$snouty_dir/snouty.tar.xz" --strip-components=1 -C "$snouty_dir"
           docker compose --project-directory "$dir" pull
-          "$snouty_dir/snouty" validate "$dir" --timeout 5m
+          SNOUTY_CONTAINER_ENGINE=docker "$snouty_dir/snouty" validate "$dir" --timeout 5m
 
       - name: Build and push config image
         id: config
