@@ -40,6 +40,8 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Charge every SLOAD as cold, so gas does not reveal which slots were already warm.
+    cold_pricing: bool,
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -88,6 +90,7 @@ where
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
+            cold_pricing: false,
         }
     }
 
@@ -215,7 +218,7 @@ where
         }
 
         // dynamic gas
-        if result.is_cold {
+        if result.is_cold || self.cold_pricing {
             self.deduct_gas(additional_cost)?;
         }
 
@@ -638,6 +641,10 @@ where
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        core::mem::replace(&mut self.cold_pricing, enabled)
     }
 
     #[inline]
