@@ -271,7 +271,7 @@ impl ZoneIdentity {
         self.may_read_member(reader, self.members[account].read()?)
     }
 
-    /// Whether `reader` is the admin, or a reader named by the current admin, of `member's org.
+    /// Whether `reader` is the admin, or a reader named by the current admin, of `member`'s org.
     fn may_read_member(&self, reader: Address, member: Member) -> ZoneResult<bool> {
         if member.org == 0 {
             return Ok(false);

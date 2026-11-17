@@ -14,17 +14,17 @@ pub(crate) fn check_caller(caller: Address, accounts: &[Address]) -> CallCheck {
     if accounts.contains(&caller) {
         return CallCheck::Continue;
     }
-    if StorageCtx::default().spec().is_t15() {
-        if let Some(&subject) = accounts.first() {
-            match ZoneIdentity::new().can_read(caller, subject) {
-                Ok(true) => return CallCheck::Continue,
-                Ok(false) => {}
-                Err(ZonePrecompileError::Tempo(error)) => return CallCheck::Error(error),
-                Err(error) => {
-                    return CallCheck::Error(
-                        tempo_precompiles::error::TempoPrecompileError::Fatal(error.to_string()),
-                    );
-                }
+    if StorageCtx::default().spec().is_t15()
+        && let Some(&subject) = accounts.first()
+    {
+        match ZoneIdentity::new().can_read(caller, subject) {
+            Ok(true) => return CallCheck::Continue,
+            Ok(false) => {}
+            Err(ZonePrecompileError::Tempo(error)) => return CallCheck::Error(error),
+            Err(error) => {
+                return CallCheck::Error(tempo_precompiles::error::TempoPrecompileError::Fatal(
+                    error.to_string(),
+                ));
             }
         }
     }
