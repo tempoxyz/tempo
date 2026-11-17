@@ -16,3 +16,6 @@ alloy-sol-types = { workspace = true, features = ["std"] }
 invariants-core.workspace = true
 tempo-contracts.workspace = true
 tempo-primitives.workspace = true
+
+[dev-dependencies]
+test-case.workspace = true
