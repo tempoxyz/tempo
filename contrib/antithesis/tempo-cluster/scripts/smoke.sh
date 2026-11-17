@@ -8,9 +8,14 @@ export DISABLE_EVENTUALLY=1
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-tempo-cluster-smoke}"
 artifacts="${SMOKE_ARTIFACT_DIR:-$root/.bench-tmp/tempo-cluster-smoke}"
 mkdir -p "$artifacts"
+# A cold runner may spend minutes downloading/unpacking instrumented binaries.
+# Keep that separate from the short fixture execution deadline.
+if ! docker image inspect "${TEMPO_IMAGE:?TEMPO_IMAGE required}" >/dev/null 2>&1; then
+    timeout 300s docker pull "$TEMPO_IMAGE"
+fi
 # The fixture image must not require passphrase decryption on validator restarts.
 # shellcheck disable=SC2016 # These variables expand inside the container.
-timeout 30s docker run --rm --network none --entrypoint /bin/bash "${TEMPO_IMAGE:?TEMPO_IMAGE required}" -c '
+timeout 30s docker run --pull=never --rm --network none --entrypoint /bin/bash "${TEMPO_IMAGE:?TEMPO_IMAGE required}" -c '
     set -euo pipefail
     test ! -e /opt/tempo-cluster/secret
     if grep -Fq -- --consensus.secret /opt/tempo-cluster/node.sh; then
