@@ -60,17 +60,6 @@ contract MockSignatureVerifier {
 
 }
 
-/// Stands in for the configurable account precompile's commitment view.
-contract MockConfigurableAccount {
-
-    mapping(address => bytes32) public getConfigCommitment;
-
-    function setConfigCommitment(address account, bytes32 commitment) external {
-        getConfigCommitment[account] = commitment;
-    }
-
-}
-
 contract TIP20ChannelReserveTest is Test {
 
     TIP20ChannelReserve public channel;
@@ -89,9 +78,6 @@ contract TIP20ChannelReserveTest is Test {
         channel = new TIP20ChannelReserve();
         MockSignatureVerifier verifier = new MockSignatureVerifier();
         vm.etch(channel.SIGNATURE_VERIFIER_PRECOMPILE(), address(verifier).code);
-        vm.etch(
-            channel.CONFIGURABLE_ACCOUNT_PRECOMPILE(), type(MockConfigurableAccount).runtimeCode
-        );
         token = new MockTIP20("Stream Token", "STR", 20_000_000);
 
         (payer, payerKey) = makeAddrAndKey("payer");
@@ -522,9 +508,14 @@ contract TIP20ChannelReserveTest is Test {
         assertEq(channel.domainSeparator(), other.domainSeparator());
     }
 
+    /// Mocks the configurable account precompile's commitment view, which is native under the
+    /// Tempo hardfork profiles, so `vm.etch` can't replace it.
     function _commit(address account, bytes32 commitment) internal {
-        MockConfigurableAccount(channel.CONFIGURABLE_ACCOUNT_PRECOMPILE())
-            .setConfigCommitment(account, commitment);
+        vm.mockCall(
+            channel.CONFIGURABLE_ACCOUNT_PRECOMPILE(),
+            abi.encodeWithSignature("getConfigCommitment(address)", account),
+            abi.encode(commitment)
+        );
     }
 
     function test_open_committedSigner_requiresCommitmentAsSalt() public {
