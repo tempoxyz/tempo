@@ -17,6 +17,7 @@ use alloy::{
 use evm2::{
     DatabaseError, LoadError,
     evm::precompile::PrecompileOutput,
+    interpreter::InstrStop,
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     registry::HandlerError,
 };
@@ -149,6 +150,11 @@ pub enum TempoPrecompileError {
     /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS) of them running.
     #[error("Nested call unavailable")]
     NestedCallUnavailable,
+
+    /// A nested call halted the calling precompile for a reason other than out of gas or a state
+    /// change in a static call.
+    #[error("Nested call halted: {0:?}")]
+    NestedCallHalted(InstrStop),
 }
 
 impl From<LoadError> for TempoPrecompileError {
@@ -188,6 +194,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::NestedCallUnavailable
+            | TempoPrecompileError::NestedCallHalted(_)
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
@@ -261,7 +268,8 @@ impl TempoPrecompileError {
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::InvalidConfigCommitmentWrite
-            | Self::NestedCallUnavailable => [0, 0, 0, 0],
+            | Self::NestedCallUnavailable
+            | Self::NestedCallHalted(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -276,7 +284,8 @@ impl TempoPrecompileError {
             | Self::Fatal(_)
             | Self::Panic(_)
             | Self::StorageDeltaUnderflow(_)
-            | Self::NestedCallUnavailable => true,
+            | Self::NestedCallUnavailable
+            | Self::NestedCallHalted(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -355,6 +364,11 @@ impl TempoPrecompileError {
             }
             Self::StaticCallNotAllowed => {
                 return Err(PrecompileHalt::Other("state change during static call".into()).into());
+            }
+            Self::NestedCallHalted(stop) => {
+                return Err(
+                    PrecompileHalt::Other(format!("nested call halted: {stop:?}").into()).into(),
+                );
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),

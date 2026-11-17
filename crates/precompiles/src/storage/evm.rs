@@ -13,7 +13,7 @@ use evm2::{
     Evm, EvmFeatures, EvmTypes, ExecutionError, HostError, Version,
     bytecode::Bytecode,
     evm::{AccountExtension, AccountInfo, SLoad, SStore, StateCheckpoint},
-    interpreter::{GasTracker, Host, MessageExt, MessageKind, gas},
+    interpreter::{GasTracker, Host, InstrStop, MessageExt, MessageKind, gas},
     version::{GasId, GasParams},
 };
 use std::{
@@ -624,9 +624,8 @@ where
     }
 
     #[inline]
-    fn state_gas_used(&self) -> u64 {
-        // The net counter is negative when a nested callee clears state of an earlier frame.
-        self.gas_tracker.state_gas_spent().max(0).unsigned_abs()
+    fn state_gas_used(&self) -> i64 {
+        self.gas_tracker.state_gas_spent()
     }
 
     #[inline]
@@ -711,7 +710,11 @@ where
             HostError::Halt(stop) if stop.is_fatal() => {
                 TempoPrecompileError::Fatal(format!("nested call stopped fatally: {stop:?}"))
             }
-            HostError::Halt(_) => TempoPrecompileError::OutOfGas,
+            HostError::Halt(stop) if stop.is_out_of_gas() => TempoPrecompileError::OutOfGas,
+            HostError::Halt(
+                InstrStop::StateChangeDuringStaticCall | InstrStop::CallNotAllowedInsideStatic,
+            ) => TempoPrecompileError::StaticCallNotAllowed,
+            HostError::Halt(stop) => TempoPrecompileError::NestedCallHalted(stop),
             HostError::Execution(ExecutionError::Database(error)) => {
                 TempoPrecompileError::Database(error)
             }
@@ -1672,8 +1675,7 @@ mod tests {
         assert_eq!(
             provider.state_gas_used(),
             state_gas_before_code
-                + gas_params.create_state_gas()
-                + gas_params.code_deposit_state_gas(1),
+                + (gas_params.create_state_gas() + gas_params.code_deposit_state_gas(1)) as i64,
             "set_code(new account, 1 byte) should add CREATE state gas plus 2,300 code deposit state gas"
         );
 
@@ -1700,7 +1702,7 @@ mod tests {
         let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
         assert_eq!(
             provider.state_gas_used(),
-            state_gas_per_sstore,
+            state_gas_per_sstore as i64,
             "first SSTORE should consume 230k state gas"
         );
         assert_eq!(
@@ -1714,7 +1716,7 @@ mod tests {
 
         assert_eq!(
             provider.state_gas_used(),
-            2 * state_gas_per_sstore,
+            2 * state_gas_per_sstore as i64,
             "two SSTOREs should consume 460k state gas"
         );
         assert_eq!(
@@ -1730,7 +1732,7 @@ mod tests {
 
         assert_eq!(
             provider.state_gas_used(),
-            3 * state_gas_per_sstore,
+            3 * state_gas_per_sstore as i64,
             "three SSTOREs should consume 690k state gas total"
         );
         assert_eq!(
@@ -1810,7 +1812,7 @@ mod tests {
         );
         assert_eq!(
             provider.state_gas_used(),
-            expected_state_gas,
+            expected_state_gas as i64,
             "set_code on a new account should charge CREATE state gas plus code deposit state gas"
         );
 
@@ -2072,7 +2074,7 @@ mod tests {
         provider.sstore(address, slot, U256::ZERO)?;
         assert_eq!(provider.gas_refunded(), 247_800);
         let net_gas_after_refund =
-            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
+            provider.gas_used() as i64 + provider.state_gas_used() - provider.gas_refunded();
         assert_eq!(
             net_gas_after_refund, 100,
             "TIP-1016 says 0->X->0 should net to GAS_WARM_ACCESS (100)"

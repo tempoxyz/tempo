@@ -167,8 +167,10 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    ///
+    /// Negative when a nested callee clears state that an earlier frame created.
+    fn state_gas_used(&self) -> i64;
 
     /// Returns the state gas that was drawn from regular gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`).
