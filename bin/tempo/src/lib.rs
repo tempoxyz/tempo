@@ -88,7 +88,7 @@ pub use tempo_node::{
 };
 use tempo_node::{
     ShadowReplayer, TempoFullNode,
-    rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
+    rpc::consensus::{Limits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
@@ -540,9 +540,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
         let faucet_args = args.faucet_args.clone();
-        let consensus_subscription_limits = SubscriptionLimits {
+        let consensus_rpc_limits = Limits {
             max_subscriptions: args.consensus_max_subscriptions,
             max_subscriptions_per_connection: args.consensus_max_subscriptions_per_connection,
+            max_concurrent_lookups: args.consensus_max_concurrent_lookups,
         };
         let validator_key = args
             .consensus
@@ -666,7 +667,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         // the per-connection cap serves HTTP and WS only. They share one server
                         // when they share a port, and HTTP never runs subscriptions otherwise.
                         // IPC is a separate server and local, so it only gets the global cap.
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_subscription_limits);
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_rpc_limits);
                         let without_connection_cap = consensus_rpc.without_connection_cap();
                         ctx.modules.merge_http(consensus_rpc.clone().into_rpc())
                             .wrap_err("failed to register consensus rpc module on http")?;
@@ -1144,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn consensus_subscription_limit_args() {
+    fn consensus_rpc_limit_args() {
         init_defaults_once();
 
         let ext = |args: &[&str]| {
@@ -1157,6 +1158,7 @@ mod tests {
         let defaults = ext(&["tempo", "node", "--dev"]);
         assert_eq!(defaults.consensus_max_subscriptions.get(), 256);
         assert_eq!(defaults.consensus_max_subscriptions_per_connection.get(), 4);
+        assert_eq!(defaults.consensus_max_concurrent_lookups.get(), 64);
 
         let custom = ext(&[
             "tempo",
@@ -1166,20 +1168,19 @@ mod tests {
             "1024",
             "--rpc.consensus-max-subscriptions-per-connection",
             "8",
+            "--rpc.consensus-max-concurrent-lookups",
+            "128",
         ]);
         assert_eq!(custom.consensus_max_subscriptions.get(), 1024);
         assert_eq!(custom.consensus_max_subscriptions_per_connection.get(), 8);
+        assert_eq!(custom.consensus_max_concurrent_lookups.get(), 128);
 
-        assert!(
-            TempoCli::try_parse_from([
-                "tempo",
-                "node",
-                "--dev",
-                "--rpc.consensus-max-subscriptions",
-                "0"
-            ])
-            .is_err()
-        );
+        for flag in [
+            "--rpc.consensus-max-subscriptions",
+            "--rpc.consensus-max-concurrent-lookups",
+        ] {
+            assert!(TempoCli::try_parse_from(["tempo", "node", "--dev", flag, "0"]).is_err());
+        }
     }
 
     #[test]

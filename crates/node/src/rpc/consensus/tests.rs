@@ -12,7 +12,17 @@ use jsonrpsee::{
     },
 };
 use reth_primitives_traits::SealedBlock;
-use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    num::NonZeroUsize,
+    pin::pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::Poll,
+    time::Duration,
+};
 use tempo_alloy::TempoNetwork;
 use tempo_primitives::Block;
 use tokio::sync::broadcast;
@@ -112,7 +122,7 @@ async fn subscription_task_exits_on_disconnect_without_events() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -130,7 +140,7 @@ async fn unsubscribe_releases_permit_without_events() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -166,7 +176,7 @@ async fn subscription_notification_carries_event() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -223,7 +233,7 @@ async fn subscribe_is_rejected_as_busy_once_limit_is_reached() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits {
+        Limits {
             max_subscriptions: NonZeroUsize::MIN,
             ..Default::default()
         },
@@ -253,7 +263,7 @@ async fn subscriber_that_stops_reading_is_dropped() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -293,7 +303,7 @@ async fn server_ended_subscription_sends_close_notification() {
         ClosingFeed {
             rx: std::sync::Mutex::new(Some(events_rx)),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -316,7 +326,7 @@ async fn subscriptions_are_capped_per_connection() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .into_rpc();
 
@@ -360,7 +370,7 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
         IdleFeed {
             events_tx: events_tx.clone(),
         },
-        SubscriptionLimits::default(),
+        Limits::default(),
     )
     .without_connection_cap()
     .into_rpc();
@@ -375,4 +385,92 @@ async fn handler_without_connection_cap_allows_more_per_connection() {
         DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION.get() + 1,
     )
     .await;
+}
+
+/// A feed whose height lookups never finish, modelling a marshal that has not answered yet.
+#[derive(Clone, Default)]
+struct StalledFeed {
+    /// Height lookups that reached the feed.
+    started: Arc<AtomicUsize>,
+}
+
+impl ConsensusFeed for StalledFeed {
+    async fn get_finalization(&self, query: Query) -> types::Response<CertifiedBlock> {
+        match query {
+            Query::Latest => types::Response::NotReady,
+            Query::Height(_) => {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                std::future::pending().await
+            }
+        }
+    }
+
+    async fn get_latest(&self) -> ConsensusState {
+        ConsensusState::default()
+    }
+
+    async fn subscribe(&self) -> Option<broadcast::Receiver<Arc<SharedEvent>>> {
+        None
+    }
+}
+
+/// Calls `consensus_getFinalization` and returns the JSON-RPC error code it fails with.
+async fn get_finalization_error(module: &Methods, query: Query) -> i32 {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "consensus_getFinalization",
+        "params": [query],
+    });
+    let (response, _) = module
+        .raw_json_request(&request.to_string(), 1)
+        .await
+        .unwrap();
+    Success::<serde_json::Value>::try_from(
+        serde_json::from_str::<Response<'_, serde_json::Value>>(&response).unwrap(),
+    )
+    .expect_err("expected a JSON-RPC error")
+    .code()
+}
+
+#[tokio::test]
+async fn height_lookups_are_rejected_as_busy_once_limit_is_reached() {
+    let feed = StalledFeed::default();
+    let max_lookups = 3;
+    let limits = Limits {
+        max_concurrent_lookups: NonZeroUsize::new(max_lookups).unwrap(),
+        ..Default::default()
+    };
+    let rpc = TempoConsensusRpc::new(feed.clone(), limits);
+    let module = rpc.clone().into_rpc();
+    // IPC's handler shares the cap with HTTP and WS.
+    let ipc_module = rpc.without_connection_cap().into_rpc();
+
+    // A call runs its handler inline, so one poll takes it to the feed or to its answer.
+    let mut held = (0..max_lookups as u64)
+        .map(|height| Box::pin(get_finalization_error(&module, Query::Height(height))))
+        .collect::<Vec<_>>();
+    for lookup in &mut held {
+        assert!(futures::poll!(lookup).is_pending());
+    }
+    assert_eq!(feed.started.load(Ordering::SeqCst), max_lookups);
+
+    for module in [&module, &ipc_module] {
+        let rejected = pin!(get_finalization_error(module, Query::Height(0)));
+        assert_eq!(futures::poll!(rejected), Poll::Ready(SERVER_IS_BUSY_CODE));
+    }
+    assert_eq!(feed.started.load(Ordering::SeqCst), max_lookups);
+
+    // `Latest` does not go to the marshal and is not capped.
+    let latest = pin!(get_finalization_error(&module, Query::Latest));
+    assert_eq!(
+        futures::poll!(latest),
+        Poll::Ready(ErrorCode::NoContent as i32)
+    );
+
+    // A lookup that ends, here because its caller went away, frees its slot.
+    drop(held.pop());
+    let admitted = pin!(get_finalization_error(&module, Query::Height(0)));
+    assert!(futures::poll!(admitted).is_pending());
+    assert_eq!(feed.started.load(Ordering::SeqCst), max_lookups + 1);
 }
