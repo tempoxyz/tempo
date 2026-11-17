@@ -1,4 +1,4 @@
-//! Sequencer enforcement of [`ZoneIdentity`] org edges.
+//! Sequencer enforcement of [`ZoneIdentity`](zone_precompiles::ZoneIdentity) org edges.
 //!
 //! Until a fork hooks the check into execution, the sequencer leaves out of its blocks every
 //! transaction whose top-level calls move a TIP-20 along an edge `ZoneIdentity` does not allow, and
