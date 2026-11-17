@@ -16,6 +16,7 @@ use alloy_provider::Provider;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::PATH_USD_ADDRESS;
+use zone_p2p::LeadershipState;
 
 use crate::utils::{
     DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, assert_same_block,
@@ -564,6 +565,78 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
                 .call()
                 .await?,
             U256::from(approval_amount)
+        );
+    }
+    Ok(())
+}
+
+/// A follower observes a transition after the incoming leader has already produced under it.
+///
+/// The portal activates a leader in the same L1 block that announces it, so a follower whose
+/// subscriber lags can receive the incoming leader's first live block before that leader is in
+/// its schedule. The P2P transport drops it (the sender is not a retained leader), and publishing
+/// the transition must trigger backfill for the dropped block well before the 30-second
+/// inactivity probe would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_follower_backfills_incoming_leader_block_dropped_before_transition()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut cluster = start_local_p2p_cluster(24).await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Blocks 1..=3 are produced by A (the manifest bootstrap leader).
+    for height in 1..=3 {
+        cluster.inject_block(vec![])?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
+    }
+
+    // A and B observe A→B at the next anchor; follower C does not yet.
+    let handoff_anchor = cluster.next_anchor_number();
+    assert_eq!(
+        handoff_anchor, 4,
+        "test assumes 1:1 zone-height:anchor mapping"
+    );
+    let transition = LeadershipState::new(1, cluster.p2p_public_keys[1].clone(), handoff_anchor);
+    for node in &cluster.nodes[..2] {
+        assert!(node.leadership().publish(transition.clone())?);
+    }
+
+    // B produces the boundary block. A imports it live; C drops it at the transport because B is
+    // not a retained leader in C's schedule, even though C observed the anchor.
+    cluster.inject_block(vec![])?;
+    wait_all_at(&cluster.nodes[..2], handoff_anchor, HANDOFF_TIMEOUT).await?;
+    tokio::time::sleep(QUIESCENCE).await;
+    assert_eq!(
+        cluster.nodes[2].provider().get_block_number().await?,
+        handoff_anchor - 1,
+        "a follower must drop live blocks from a sender it does not know as a leader"
+    );
+
+    // C observes the transition. The schedule change starts backfill, which fetches the dropped
+    // block without waiting for the inactivity probe.
+    assert!(cluster.nodes[2].leadership().publish(transition)?);
+    cluster.nodes[2]
+        .wait_for_block_number(handoff_anchor, LIVE_PROPAGATION_TIMEOUT)
+        .await?;
+
+    // C now accepts B's live blocks.
+    cluster.inject_block(vec![])?;
+    wait_all_at(&cluster.nodes, handoff_anchor + 1, LIVE_PROPAGATION_TIMEOUT).await?;
+
+    let a_producer = cluster.sequencer_signers[0].address();
+    let b_producer = cluster.sequencer_signers[1].address();
+    for height in 1..=handoff_anchor + 1 {
+        let header = assert_same_block(&cluster.nodes, height).await?;
+        let expected = if height < handoff_anchor {
+            a_producer
+        } else {
+            b_producer
+        };
+        assert_eq!(
+            header.beneficiary(),
+            expected,
+            "block {height} has the wrong producer (boundary at {handoff_anchor})"
         );
     }
     Ok(())
