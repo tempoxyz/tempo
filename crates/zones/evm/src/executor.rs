@@ -33,7 +33,7 @@ use tempo_evm::{
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::constants::{ZONE_IDENTITY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
     ZoneEvm,
@@ -269,6 +269,9 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                 // The block cache never reads the storage of a missing account through the L1
                 // overlay, so the mirrored registry needs its account to exist.
                 deploy_precompile_at_boundary(&mut self.inner, ADDRESS_REGISTRY_ADDRESS, &[])?;
+                // An account without code is cleared after every transaction that touches it, which
+                // would drop ZoneIdentity's storage.
+                deploy_precompile_at_boundary(&mut self.inner, ZONE_IDENTITY_ADDRESS, &[])?;
             }
             Ok(())
         } else {

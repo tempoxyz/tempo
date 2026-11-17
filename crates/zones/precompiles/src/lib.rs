@@ -244,7 +244,7 @@ where
             )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
             zone_precompile!(evm, message, gas, &self.env, ZoneFeeManager)
-        } else if address == ZONE_IDENTITY_ADDRESS && zone_identity_active(self.env.spec()) {
+        } else if address == ZONE_IDENTITY_ADDRESS && self.env.spec().is_t15() {
             execution::execute_precompile(
                 evm,
                 message,
@@ -354,17 +354,9 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | STORAGE_CREDITS_ADDRESS => true,
         // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
         CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
-        ZONE_IDENTITY_ADDRESS => zone_identity_active(spec),
+        ZONE_IDENTITY_ADDRESS => spec.is_t15(),
         _ => false,
     }
-}
-
-/// Whether a Zone running `spec` has the [`ZoneIdentity`] predeploy.
-///
-/// Draft gate: T15 is the newest fork defined here. Move this to the fork the Network Upgrade
-/// Tracker schedules ZoneIdentity for before it ships.
-pub fn zone_identity_active(spec: TempoHardfork) -> bool {
-    spec.is_t15()
 }
 
 #[cfg(any(test, feature = "test-utils"))]

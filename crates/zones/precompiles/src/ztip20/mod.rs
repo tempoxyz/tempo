@@ -439,14 +439,6 @@ mod tests {
             })?)
         }
 
-        fn set_identity_enforced(&self, enforced: bool) -> eyre::Result<()> {
-            Ok(self.l1_reader.with_storage(TEMPO_BLOCK_NUMBER, || {
-                ZonePortal::new(PORTAL_ADDRESS)
-                    .identity_enforced
-                    .write(enforced)
-            })?)
-        }
-
         fn balance_of(&mut self, account: Address) -> eyre::Result<U256> {
             let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || {
@@ -568,49 +560,6 @@ mod tests {
             assert_eq!(result.gas_used, gas);
         }
         harness.assert_no_funds_moved(harness.bob)?;
-        Ok(())
-    }
-
-    #[test]
-    fn transfers_follow_zone_identity_edges() -> eyre::Result<()> {
-        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
-        harness.set_transfers_enabled(true)?;
-        harness.set_identity_enforced(true)?;
-        let (alice, bob, token) = (harness.alice, harness.bob, harness.token);
-        {
-            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || {
-                crate::zone_identity::seed_for_test(&[(alice, 1), (bob, 2)], &[])
-            })?;
-        }
-
-        for (caller, calldata) in harness.transfer_calls(bob) {
-            let gas = harness.fixed_gas(&calldata)?;
-            let result = harness.call(caller, calldata, gas, false)?;
-            assert!(result.is_revert());
-            assert_eq!(
-                result.bytes,
-                Bytes::from(
-                    tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(
-                        token, alice, bob
-                    )
-                    .abi_encode()
-                )
-            );
-        }
-        harness.assert_no_funds_moved(bob)?;
-
-        {
-            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || {
-                crate::zone_identity::seed_for_test(&[], &[(1, 2, token)])
-            })?;
-        }
-        for (caller, calldata) in harness.transfer_calls(bob) {
-            let gas = harness.fixed_gas(&calldata)?;
-            assert!(harness.call(caller, calldata, gas, false)?.is_success());
-        }
-        assert_ne!(harness.balance_of(bob)?, U256::ZERO);
         Ok(())
     }
 

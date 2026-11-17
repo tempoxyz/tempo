@@ -20,7 +20,7 @@
 
 mod dispatch;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
     error::TempoPrecompileError,
@@ -43,8 +43,8 @@ pub struct ZoneIdentity {
     pub org_count: u64,
     /// Each org's admin and edges, keyed by org ID.
     pub orgs: Mapping<u64, Org>,
-    /// Packed [`Member`] word of each address; zero for addresses in no org.
-    pub members: Mapping<Address, U256>,
+    /// Each address's membership.
+    pub members: Mapping<Address, Member>,
 }
 
 /// One org's configuration. Its mappings are keyed by the other org of each edge, then the token.
@@ -61,32 +61,13 @@ pub struct Org {
     pub edges: Mapping<u64, Mapping<Address, bool>>,
 }
 
-/// An address's packed membership: `org(64) | frozen << 64`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// An address's membership, packed into one slot: zero for an address in no org.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub struct Member {
     /// Org the address belongs to; 0 when it is in no org.
     pub org: u64,
     /// The org admin froze the address: nothing may be sent to or from it.
     pub frozen: bool,
-}
-
-impl Member {
-    const FROZEN_BIT: usize = 64;
-
-    /// Decodes a stored member word.
-    pub fn decode(word: U256) -> Self {
-        Self {
-            org: word.as_limbs()[0],
-            frozen: word.bit(Self::FROZEN_BIT),
-        }
-    }
-
-    /// Encodes the member word to store.
-    pub fn encode(self) -> U256 {
-        let mut word = U256::from(self.org);
-        word.set_bit(Self::FROZEN_BIT, self.frozen);
-        word
-    }
 }
 
 /// How funds move between `from` and `to`.
@@ -129,7 +110,7 @@ impl ZoneIdentity {
     /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
     /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
     pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<bool> {
-        if !crate::zone_identity_active(tempo_precompiles::storage::StorageCtx.spec()) {
+        if !tempo_precompiles::storage::StorageCtx.spec().is_t15() {
             return Ok(false);
         }
         Ok(l1.read_portal(|portal| &portal.identity_enforced)?)
@@ -236,7 +217,7 @@ impl ZoneIdentity {
         if org == 0 || account.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        if !self.members[account].read()?.is_zero() {
+        if self.members[account].read()? != Member::default() {
             return Err(ZoneIdentityError::already_member(account).into());
         }
         self.write_member(account, Member { org, frozen: false })
@@ -336,7 +317,7 @@ impl ZoneIdentity {
 
     /// Decoded membership of `account`.
     pub fn member(&self, account: Address) -> ZoneResult<Member> {
-        Ok(Member::decode(self.members[account].read()?))
+        Ok(self.members[account].read()?)
     }
 
     /// Membership of `account` for a caller that may see it: the account itself, its org's admin or
@@ -370,7 +351,7 @@ impl ZoneIdentity {
     }
 
     fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
-        self.members[account].write(member.encode())?;
+        self.members[account].write(member)?;
         Ok(self.emit_event(IZoneIdentity::MemberUpdated {
             account,
             orgId: member.org,
@@ -395,26 +376,6 @@ impl ZoneIdentity {
 fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
     if expected.is_zero() || caller != expected {
         return Err(ZoneIdentityError::unauthorized().into());
-    }
-    Ok(())
-}
-
-/// Seeds `ZoneIdentity` storage directly, for tests of the paths that enforce it.
-#[cfg(test)]
-pub(crate) fn seed_for_test(
-    members: &[(Address, u64)],
-    edges: &[(u64, u64, Address)],
-) -> tempo_precompiles::Result<()> {
-    let mut identity = ZoneIdentity::new();
-    let mut org_count = identity.org_count.read()?;
-    for &(account, org) in members {
-        org_count = org_count.max(org);
-        let member = Member { org, frozen: false };
-        identity.members[account].write(member.encode())?;
-    }
-    identity.org_count.write(org_count)?;
-    for &(from, to, token) in edges {
-        identity.orgs[from].edges[to][token].write(true)?;
     }
     Ok(())
 }

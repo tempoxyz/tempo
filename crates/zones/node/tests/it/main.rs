@@ -25,5 +25,6 @@ mod tip403_transfers;
 mod utils;
 mod virtual_addresses_e2e;
 mod witness_outage_e2e;
+mod zone_identity_e2e;
 
 fn main() {}
