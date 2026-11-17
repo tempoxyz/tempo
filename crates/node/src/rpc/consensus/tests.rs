@@ -474,3 +474,15 @@ async fn height_lookups_are_rejected_as_busy_once_limit_is_reached() {
     assert!(futures::poll!(admitted).is_pending());
     assert_eq!(feed.started.load(Ordering::SeqCst), max_lookups + 1);
 }
+
+#[test]
+fn lookup_limit_above_semaphore_capacity_is_clamped() {
+    let limits = Limits {
+        max_concurrent_lookups: NonZeroUsize::MAX,
+        ..Default::default()
+    };
+
+    let rpc = TempoConsensusRpc::new(StalledFeed::default(), limits);
+
+    assert_eq!(rpc.lookups.available_permits(), Semaphore::MAX_PERMITS);
+}

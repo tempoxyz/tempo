@@ -245,7 +245,13 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
     pub fn new(consensus_feed: I, limits: Limits) -> Self {
         Self {
             consensus_feed,
-            lookups: Arc::new(Semaphore::new(limits.max_concurrent_lookups.get())),
+            // A semaphore panics when created with more permits than it can hold.
+            lookups: Arc::new(Semaphore::new(
+                limits
+                    .max_concurrent_lookups
+                    .get()
+                    .min(Semaphore::MAX_PERMITS),
+            )),
             metrics: ConsensusRpcMetrics::default(),
             subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
             per_connection: Some(ConnectionCap {
