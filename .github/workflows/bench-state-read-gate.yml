@@ -2,22 +2,12 @@
 #
 # Runs the state-read benchmark presets (blocks of serial cold storage reads over
 # 100 GB of state) and checks how long validators take to execute the loaded
-# blocks. Report only by default; set enforce to fail when p99 block execution
-# exceeds the threshold.
+# blocks. Run it by hand after changing gas pricing. Report only by default; set
+# enforce to fail when p99 block execution exceeds the threshold.
 
 name: bench-state-read-gate
 
 on:
-  schedule:
-    - cron: "0 12 * * 0"
-  pull_request:
-    paths:
-      - crates/hardfork/src/gas_params.rs
-      - crates/evm/src/handler.rs
-      - crates/evm/src/handler/**
-      - crates/precompiles/src/storage/**
-      - contrib/bench/txgen/state-read/**
-      - contrib/bench/txgen/presets/state-read-*.yml
   workflow_dispatch:
     inputs:
       enforce:
@@ -34,14 +24,12 @@ on:
 permissions: {}
 
 concurrency:
-  group: bench-state-read-gate-${{ github.event.pull_request.number || github.ref }}
+  group: bench-state-read-gate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   refs:
     name: refs
-    # Benchmarks need cloud credentials, so pull requests from forks are skipped.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
@@ -54,12 +42,10 @@ jobs:
       - name: Resolve refs
         id: refs
         env:
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
           SHA: ${{ github.sha }}
         run: |
-          echo "baseline=${PR_BASE:-$SHA}" >> "$GITHUB_OUTPUT"
-          echo "feature=${PR_HEAD:-$SHA}" >> "$GITHUB_OUTPUT"
+          echo "baseline=$SHA" >> "$GITHUB_OUTPUT"
+          echo "feature=$SHA" >> "$GITHUB_OUTPUT"
 
   cold:
     needs: refs
