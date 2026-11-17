@@ -57,8 +57,6 @@ pub struct Org {
     /// `outbound[B][T] && orgs[B].inbound[this org][T]`, rewritten whenever either half changes.
     /// The transfer check reads only this.
     pub edges: Mapping<u64, Mapping<Address, bool>>,
-    /// Addresses besides the admin that may read this org's members' account-scoped state.
-    pub readers: Mapping<Address, bool>,
 }
 
 /// An address's membership, packed into one slot: zero for an address in no org.
@@ -280,53 +278,19 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// Whether `reader` may read `account`'s account-scoped state: it is the account, or the admin
-    /// or a reader of the account's org. Accounts in org 0 are readable only by themselves.
-    ///
-    /// Past the self check it always reads the same three slots, so its gas does not reveal
-    /// whether `account` is in an org.
-    pub fn can_read(&self, reader: Address, account: Address) -> ZoneResult<bool> {
-        if reader == account {
-            return Ok(true);
-        }
-        let org = self.members[account].read()?.org;
-        let admin = self.orgs[org].admin.read()?;
-        let listed = self.orgs[org].readers[reader].read()?;
-        Ok(org != 0 && (reader == admin || listed))
-    }
-
-    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0.
-    pub fn set_reader(
-        &mut self,
-        caller: Address,
-        registrar: Address,
-        org: u64,
-        reader: Address,
-        allowed: bool,
-    ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
-        if org == 0 || reader.is_zero() {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
-        self.orgs[org].readers[reader].write(allowed)?;
-        Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
-            orgId: org,
-            reader,
-            allowed,
-        })?)
-    }
-
-    /// Membership of `account` for a caller that may read it, or the registrar.
+    /// Membership of `account` for a caller that may see it: the account itself, its org's admin or
+    /// the registrar.
     pub fn org_of(
         &self,
         caller: Address,
         registrar: Address,
         account: Address,
     ) -> ZoneResult<Member> {
-        if !self.can_read(caller, account)? {
+        let member = self.members[account].read()?;
+        if caller != account && caller != self.org_admin(registrar, member.org)? {
             ensure_caller(caller, registrar)?;
         }
-        Ok(self.members[account].read()?)
+        Ok(member)
     }
 
     /// Whether `token` may move from `from` to `to`, for the admin of either org or the registrar.
