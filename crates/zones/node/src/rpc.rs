@@ -1145,19 +1145,21 @@ where
 impl<Api> ZoneRpc<Api>
 where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     /// Whether `reader` may read `account`'s balance and nonce: it is the account, or
-    /// `ZoneIdentity.canRead` allows it at `block`, the same rule the precompile getters apply. Before
-    /// `ZoneIdentity` exists the call returns no data, which counts as no.
-    async fn can_read(
-        &self,
-        reader: Address,
-        account: Address,
-        block: Option<BlockId>,
-    ) -> Result<bool, JsonRpcError> {
+    /// `ZoneIdentity.canRead` allows it at the latest block, the same rule the precompile getters
+    /// apply. Checking the latest state for every requested block means a revoked reader loses
+    /// history too. Before `ZoneIdentity` exists the call returns no data, which counts as no.
+    async fn can_read(&self, reader: Address, account: Address) -> Result<bool, JsonRpcError> {
         if reader == account {
             return Ok(true);
         }
+        // The call loads `reader`, whose Tempo commitment zone execution reads. Reading it through
+        // the bounded path first keeps the call from waiting on Tempo, as for `getKeychainKey`.
+        zone_rpc::ZoneRpcApi::get_config_commitment(self, reader)
+            .await
+            .map_err(|error| internal(format!("{error:#}")))?;
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(reader),
@@ -1167,9 +1169,13 @@ where
             },
             ..Default::default()
         };
-        let output = EthCall::call(&self.eth.api, request, block, EvmOverrides::default())
-            .await
-            .map_err(internal)?;
+        let output = tokio::time::timeout(
+            L1_COMMITMENT_READ_TIMEOUT,
+            EthCall::call(&self.eth.api, request, None, EvmOverrides::default()),
+        )
+        .await
+        .map_err(|_| internal("timed out calling ZoneIdentity.canRead"))?
+        .map_err(internal)?;
         Ok(IZoneIdentity::canReadCall::abi_decode_returns(output.as_ref()).unwrap_or(false))
     }
 }
@@ -1312,7 +1318,7 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block).await? {
+            if !self.can_read(auth.caller, address).await? {
                 return Ok(raw_zero());
             }
             let balance = EthState::balance(&self.eth.api, address, block)
@@ -1330,7 +1336,7 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block).await? {
+            if !self.can_read(auth.caller, address).await? {
                 return Ok(raw_zero());
             }
             let count = EthState::transaction_count(&self.eth.api, address, block)

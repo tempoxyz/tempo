@@ -264,20 +264,24 @@ impl ZoneIdentity {
 
     /// Whether `reader` may read `account`'s account-scoped state: it is the account, or the admin
     /// or a reader of the account's org. Accounts in org 0 are readable only by themselves.
-    ///
-    /// Past the self check it always reads the same three slots, so its gas does not reveal
-    /// whether `account` is in an org.
     pub fn can_read(&self, reader: Address, account: Address) -> ZoneResult<bool> {
         if reader == account {
             return Ok(true);
         }
-        let org = self.members[account].read()?.org;
-        let admin = self.orgs[org].admin.read()?;
-        let listed = self.orgs[org].readers[reader].read()?;
-        Ok(org != 0 && (reader == admin || listed))
+        self.may_read_member(reader, self.members[account].read()?)
     }
 
-    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0.
+    /// Whether `reader` is the admin, or a reader named by the current admin, of `member's org.
+    fn may_read_member(&self, reader: Address, member: Member) -> ZoneResult<bool> {
+        if member.org == 0 {
+            return Ok(false);
+        }
+        let admin = self.orgs[member.org].admin.read()?;
+        Ok(reader == admin || self.orgs[member.org].readers[admin][reader].read()?)
+    }
+
+    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0. The
+    /// entry belongs to the current admin and lapses when the registrar replaces it.
     pub fn set_reader(
         &mut self,
         caller: Address,
@@ -290,7 +294,8 @@ impl ZoneIdentity {
         if org == 0 || reader.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        self.orgs[org].readers[reader].write(allowed)?;
+        let admin = self.orgs[org].admin.read()?;
+        self.orgs[org].readers[admin][reader].write(allowed)?;
         Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
             orgId: org,
             reader,
@@ -305,10 +310,11 @@ impl ZoneIdentity {
         registrar: Address,
         account: Address,
     ) -> ZoneResult<Member> {
-        if !self.can_read(caller, account)? {
+        let member = self.members[account].read()?;
+        if caller != account && !self.may_read_member(caller, member)? {
             ensure_caller(caller, registrar)?;
         }
-        Ok(self.members[account].read()?)
+        Ok(member)
     }
 
     /// Whether `token` may move along the edge from `from` to `to`, for the admin of either org or
@@ -374,8 +380,9 @@ pub struct Org {
     /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
     /// receiving org and token.
     pub edges: Mapping<u64, Mapping<Address, Edges>>,
-    /// Addresses besides the admin that may read this org's members' account-scoped state.
-    pub readers: Mapping<Address, bool>,
+    /// Addresses besides the admin that may read this org's members' account-scoped state, keyed by
+    /// the admin that named them, so replacing the admin revokes every reader at once.
+    pub readers: Mapping<Address, Mapping<Address, bool>>,
 }
 
 /// Both halves of the three edges between two orgs for one token, packed into one slot. A move
@@ -724,6 +731,71 @@ mod tests {
                 identity.set_org_admin(registrar, registrar, 0, Address::repeat_byte(1)),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
+        });
+    }
+
+    #[test]
+    fn readers_follow_the_current_admin() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let auditor = Address::repeat_byte(0x77);
+            let stray = Address::repeat_byte(0x55);
+            let other_admin = Address::repeat_byte(2);
+            identity
+                .create_org(registrar, registrar, other_admin)
+                .unwrap();
+            identity
+                .set_reader(admin, registrar, org, auditor, true)
+                .unwrap();
+            for (reader, account, readable) in [
+                (ALICE, ALICE, true),
+                (stray, stray, true),
+                (admin, ALICE, true),
+                (auditor, ALICE, true),
+                (BOB, ALICE, false),
+                (other_admin, ALICE, false),
+                (admin, stray, false),
+                (registrar, stray, false),
+            ] {
+                assert_eq!(
+                    identity.can_read(reader, account).unwrap(),
+                    readable,
+                    "{reader} reads {account}"
+                );
+            }
+            identity
+                .set_reader(admin, registrar, org, auditor, false)
+                .unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+
+            // Replacing the admin revokes the readers it named.
+            identity
+                .set_reader(admin, registrar, org, auditor, true)
+                .unwrap();
+            let new_admin = Address::repeat_byte(3);
+            identity
+                .set_org_admin(registrar, registrar, org, new_admin)
+                .unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+            assert!(!identity.can_read(admin, ALICE).unwrap());
+            assert!(identity.can_read(new_admin, ALICE).unwrap());
+
+            for (caller, org_id, reader, error) in [
+                (admin, org, auditor, ZoneIdentityError::unauthorized()),
+                (registrar, 0, auditor, ZoneIdentityError::invalid_address()),
+                (
+                    new_admin,
+                    org,
+                    Address::ZERO,
+                    ZoneIdentityError::invalid_address(),
+                ),
+            ] {
+                assert_eq!(
+                    identity.set_reader(caller, registrar, org_id, reader, true),
+                    Err(identity_error(error))
+                );
+            }
         });
     }
 }
