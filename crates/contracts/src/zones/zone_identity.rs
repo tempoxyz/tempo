@@ -48,7 +48,6 @@ crate::sol! {
         /// An edge from Tempo to Tempo, which no move uses.
         error InvalidEdge();
         error AlreadyMember(address account);
-        error NotMember(address account);
         error OrgPolicyForbids(address token, address from, address to);
     }
 }

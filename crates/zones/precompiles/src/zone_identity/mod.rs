@@ -193,17 +193,8 @@ impl ZoneIdentity {
 
     /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
     /// to escape its org's outbound rules.
-    pub fn remove_member(
-        &mut self,
-        caller: Address,
-        registrar: Address,
-        account: Address,
-    ) -> ZoneResult<()> {
-        let member = self.members[account].read()?;
-        if member.org == 0 {
-            return Err(ZoneIdentityError::not_member(account).into());
-        }
-        self.ensure_org_admin(caller, registrar, member.org)?;
+    pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
+        self.ensure_member_admin(caller, account)?;
         self.write_member(account, Member::default())
     }
 
@@ -211,15 +202,10 @@ impl ZoneIdentity {
     pub fn set_frozen(
         &mut self,
         caller: Address,
-        registrar: Address,
         account: Address,
         frozen: bool,
     ) -> ZoneResult<()> {
-        let member = self.members[account].read()?;
-        if member.org == 0 {
-            return Err(ZoneIdentityError::not_member(account).into());
-        }
-        self.ensure_org_admin(caller, registrar, member.org)?;
+        let member = self.ensure_member_admin(caller, account)?;
         self.write_member(account, Member { frozen, ..member })
     }
 
@@ -319,6 +305,18 @@ impl ZoneIdentity {
             orgId: member.org,
             frozen: member.frozen,
         })?)
+    }
+
+    /// Returns `account`'s membership if the caller administers its org. Every other case,
+    /// including an account in no org, reverts with the same `Unauthorized` after the same two
+    /// reads, so the call does not reveal whether an account is a member.
+    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<Member> {
+        let member = self.members[account].read()?;
+        let admin = self.orgs[member.org].admin.read()?;
+        if member.org == 0 || admin.is_zero() || caller != admin {
+            return Err(ZoneIdentityError::unauthorized().into());
+        }
+        Ok(member)
     }
 
     fn ensure_org(&self, org: u64) -> ZoneResult<()> {
@@ -543,10 +541,22 @@ mod tests {
             let (admin, _) = org_with_members(identity, registrar, usd);
             // Members cannot remove themselves.
             assert_eq!(
-                identity.remove_member(BOB, registrar, BOB),
+                identity.remove_member(BOB, BOB),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
-            identity.remove_member(admin, registrar, BOB).unwrap();
+            // Outsiders get the same answer for a member and for an address in no org.
+            let outsider = Address::repeat_byte(9);
+            for account in [BOB, Address::repeat_byte(0x55)] {
+                assert_eq!(
+                    identity.remove_member(outsider, account),
+                    Err(identity_error(ZoneIdentityError::unauthorized()))
+                );
+                assert_eq!(
+                    identity.set_frozen(outsider, account, true),
+                    Err(identity_error(ZoneIdentityError::unauthorized()))
+                );
+            }
+            identity.remove_member(admin, BOB).unwrap();
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
             // No exit of its own: org 0 has no edges unless the registrar sets them.
             assert!(!allows(usd, BOB, BOB, TransferKind::Withdrawal));

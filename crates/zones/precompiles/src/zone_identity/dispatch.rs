@@ -42,10 +42,10 @@ impl ZoneIdentity {
                         self.add_members(caller, registrar()?, call.orgId, &call.accounts)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
-                        self.remove_member(caller, registrar()?, call.account)
+                        self.remove_member(caller, call.account)
                     }),
                     setFrozen(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_frozen(caller, registrar()?, call.account, call.frozen)
+                        self.set_frozen(caller, call.account, call.frozen)
                     }),
                     setEdge(call) => mutate(call, msg_sender, |caller, call| {
                         self.set_edge(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
