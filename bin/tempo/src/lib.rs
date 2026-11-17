@@ -359,20 +359,17 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let Some(Ok((node, executed_state, args, gossip_transport, estimator))) =
+        let Some((node, executed_state, args, gossip_transport, estimator)) =
             futures::executor::block_on(
                 shutdown_token_clone.run_until_cancelled(consensus_startup_rx),
             )
-        else {
-            // The launcher cancels before it drops the sender, so a closed channel after
-            // cancellation is an aborted launch, not a failure.
-            if shutdown_token_clone.is_cancelled() {
-                return Ok(());
-            }
-            return Err(eyre::eyre!(
+            .transpose()
+            .wrap_err(
                 "channel closed before consensus-relevant command line args \
-                and a handle to the execution node could be received"
-            ));
+                and a handle to the execution node could be received",
+            )?
+        else {
+            return Ok(());
         };
 
         let datadir = node
@@ -523,8 +520,6 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     // Cancelling here lets the consensus root's biased select exit cleanly before engine calls fail.
     let cancel_consensus = shutdown_token.clone().drop_guard();
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
-        // Locals drop in reverse order: cancel consensus before closing its startup channel.
-        let consensus_startup_tx = consensus_startup_tx;
         let _cancel_consensus = cancel_consensus;
         if let Some(value) = args.consensus.message_backlog {
             warn!(
