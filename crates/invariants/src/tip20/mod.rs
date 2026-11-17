@@ -11,7 +11,9 @@ use alloy_sol_types::{SolCall, SolEvent};
 
 use crate::{Observe, ObserveError, Replay, Views, decode, optional, or_text};
 
-pub use tempo_contracts::precompiles::ITIP20::{self, Burn, BurnAt, BurnBlocked, Mint, Transfer};
+use tempo_contracts::precompiles::ITIP20::{Burn, BurnAt, BurnBlocked, Mint};
+
+pub use tempo_contracts::precompiles::ITIP20::{self, Transfer};
 
 mod checks;
 
@@ -69,6 +71,54 @@ impl Ledger {
         }
         out.join(", ")
     }
+
+    fn mint(&mut self, amount: U256) -> Result<(), Unapplied> {
+        self.supply = self
+            .supply
+            .checked_add(amount)
+            .ok_or(Unapplied::MintOverflows {
+                amount,
+                supply: self.supply,
+            })?;
+        Ok(())
+    }
+
+    fn burn(&mut self, amount: U256) -> Result<(), Unapplied> {
+        self.supply = self
+            .supply
+            .checked_sub(amount)
+            .ok_or(Unapplied::BurnExceeds {
+                amount,
+                supply: self.supply,
+            })?;
+        Ok(())
+    }
+
+    /// Debits `from` if it is observed.
+    fn debit(&mut self, from: Address, amount: U256) -> Result<(), Unapplied> {
+        if let Some(balance) = self.balances.get_mut(&from) {
+            *balance = balance.checked_sub(amount).ok_or(Unapplied::Overspends {
+                from,
+                amount,
+                balance: *balance,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Credits `to` if it is observed.
+    fn credit(&mut self, to: Address, amount: U256) -> Result<(), Unapplied> {
+        if let Some(balance) = self.balances.get_mut(&to) {
+            *balance = balance
+                .checked_add(amount)
+                .ok_or(Unapplied::ReceiveOverflows {
+                    to,
+                    amount,
+                    balance: *balance,
+                })?;
+        }
+        Ok(())
+    }
 }
 
 impl Observe for Ledger {
@@ -118,7 +168,7 @@ impl Observe for Ledger {
 
 /// What one of a token's `Transfer` events moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Move {
+pub(crate) enum Move {
     /// A transfer, a mint (from the zero address) or a burn (to it).
     Transfer(Transfer),
     /// (-T3) A mint to the zero address, which credits its balance.
@@ -130,7 +180,7 @@ pub enum Move {
 /// The `Transfer`s in a token's `logs`, in order. A `Transfer` from and to the zero address
 /// is a mint to it or a burn from it, which only the `Mint` or `Burn*` event to or from the
 /// zero address that follows it, before the next `Transfer`, tells apart.
-pub fn moves<'a>(logs: impl IntoIterator<Item = &'a Log>) -> Vec<Move> {
+pub(crate) fn moves<'a>(logs: impl IntoIterator<Item = &'a Log>) -> Vec<Move> {
     let logs: Vec<&LogData> = logs.into_iter().map(|log| &log.data).collect();
     logs.iter()
         .enumerate()
@@ -194,56 +244,6 @@ impl Replay<Move> for Ledger {
             }
         }
         Ok(next)
-    }
-}
-
-impl Ledger {
-    fn mint(&mut self, amount: U256) -> Result<(), Unapplied> {
-        self.supply = self
-            .supply
-            .checked_add(amount)
-            .ok_or(Unapplied::MintOverflows {
-                amount,
-                supply: self.supply,
-            })?;
-        Ok(())
-    }
-
-    fn burn(&mut self, amount: U256) -> Result<(), Unapplied> {
-        self.supply = self
-            .supply
-            .checked_sub(amount)
-            .ok_or(Unapplied::BurnExceeds {
-                amount,
-                supply: self.supply,
-            })?;
-        Ok(())
-    }
-
-    /// Debits `from` if it is observed.
-    fn debit(&mut self, from: Address, amount: U256) -> Result<(), Unapplied> {
-        if let Some(balance) = self.balances.get_mut(&from) {
-            *balance = balance.checked_sub(amount).ok_or(Unapplied::Overspends {
-                from,
-                amount,
-                balance: *balance,
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Credits `to` if it is observed.
-    fn credit(&mut self, to: Address, amount: U256) -> Result<(), Unapplied> {
-        if let Some(balance) = self.balances.get_mut(&to) {
-            *balance = balance
-                .checked_add(amount)
-                .ok_or(Unapplied::ReceiveOverflows {
-                    to,
-                    amount,
-                    balance: *balance,
-                })?;
-        }
-        Ok(())
     }
 }
 
@@ -315,9 +315,10 @@ pub fn transfer(log: &LogData) -> Option<Transfer> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::address;
-
     use super::*;
+
+    use alloy_primitives::address;
+    use test_case::test_case;
 
     const TOKEN: Address = address!("0x20C0000000000000000000000000000000000000");
     const HOLDER: Address = address!("0x0000000000000000000000000000000000001234");
@@ -364,18 +365,27 @@ mod tests {
         assert_eq!(ledger(10, 0, 5).replay(&moves).unwrap(), ledger(11, 1, 5));
     }
 
-    #[test]
-    fn burn_from_zero_debits_zero() {
-        let logs = [
-            log(&transfer(Address::ZERO, Address::ZERO, 2)),
-            log(&BurnBlocked {
-                from: Address::ZERO,
-                amount: U256::from(2),
-            }),
-        ];
+    #[test_case(log(&Burn { from: Address::ZERO, amount: U256::from(2) }) ; "burn")]
+    #[test_case(log(&BurnBlocked { from: Address::ZERO, amount: U256::from(2) }) ; "burn blocked")]
+    #[test_case(log(&BurnAt { burner: HOLDER, from: Address::ZERO, amount: U256::from(2) }) ; "burn at")]
+    fn burn_from_zero_debits_zero(burn: Log) {
+        let logs = [log(&transfer(Address::ZERO, Address::ZERO, 2)), burn];
         let moves = moves(&logs);
         assert_eq!(moves, [Move::ZeroBurn(U256::from(2))]);
         assert_eq!(ledger(10, 3, 5).replay(&moves).unwrap(), ledger(8, 1, 5));
+    }
+
+    #[test]
+    fn burn_from_zero_overspends() {
+        let result = ledger(10, 1, 5).replay(&[Move::ZeroBurn(U256::from(2))]);
+        assert!(
+            matches!(
+                result,
+                Err(Unapplied::Overspends { from, amount, balance })
+                    if from.is_zero() && amount == U256::from(2) && balance == U256::from(1)
+            ),
+            "{result:?}"
+        );
     }
 
     #[test]
