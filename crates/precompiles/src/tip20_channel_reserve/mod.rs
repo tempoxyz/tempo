@@ -3302,6 +3302,59 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_voucher_selector_rejected_before_t15() -> eyre::Result<()> {
+        use alloy::sol_types::SolError;
+        with_storage(TempoHardfork::T14, || {
+            let calldata = verify_call(
+                &descriptor(
+                    Address::random(),
+                    Address::random(),
+                    Address::ZERO,
+                    Address::random(),
+                    B256::random(),
+                    Address::ZERO,
+                    B256::random(),
+                ),
+                1,
+                Bytes::new(),
+            )
+            .abi_encode();
+            let result = TIP20ChannelReserve::new().call(&calldata, Address::ZERO);
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(
+                    crate::test_util::revert_bytes(&result)
+                )
+                .is_ok(),
+                "verifyVoucher should be selector-gated before T15"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_verify_voucher_missing_channel() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let missing = descriptor(
+                Address::random(),
+                Address::random(),
+                Address::ZERO,
+                Address::random(),
+                B256::random(),
+                Address::ZERO,
+                B256::random(),
+            );
+            assert_eq!(
+                reserve.verify_voucher(verify_call(&missing, 1, Bytes::new())),
+                Err(TIP20ChannelReserveError::channel_not_found().into())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_t14_open_rejects_committed_signer() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         let owner = PrivateKeySigner::random();

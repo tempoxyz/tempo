@@ -445,7 +445,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             bool valid
         ) {
             return valid;
-        } catch {
+        } catch (bytes memory reason) {
+            // An empty reason is out of gas or a system failure, not an invalid signature.
+            if (reason.length == 0) revert();
             return false;
         }
     }
