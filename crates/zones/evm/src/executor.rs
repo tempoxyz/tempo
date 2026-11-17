@@ -24,6 +24,7 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
+    precompiles::ADDRESS_REGISTRY_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
 use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
@@ -231,6 +232,37 @@ impl<'a> ZoneBlockExecutor<'a> {
     }
 }
 
+impl ZoneBlockExecutor<'_> {
+    /// Deploys the `0xEF` marker at the TIP-1022 address registry, as Tempo does at its
+    /// activation fork, once the registry is mirrored from Tempo.
+    ///
+    /// The block cache treats the storage of an account that does not exist as zero and never
+    /// reads it through the L1 overlay, so the mirror needs the account to exist. Only the code
+    /// is written; the registry's storage stays mirrored from Tempo.
+    fn deploy_address_registry_marker(&mut self) -> Result<(), BlockExecutionError> {
+        let original = self
+            .inner
+            .evm_mut()
+            .state_mut()
+            .account_info_untracked(&ADDRESS_REGISTRY_ADDRESS)
+            .map_err(map_database_error)?;
+        if original
+            .as_ref()
+            .is_some_and(|info| !info.is_empty_code_hash())
+        {
+            return Ok(());
+        }
+        let current = original
+            .clone()
+            .unwrap_or_default()
+            .with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
+        let mut state = PendingState::default();
+        state.insert_account(ADDRESS_REGISTRY_ADDRESS, original, Some(current));
+        self.inner.commit_pending_state(&state);
+        Ok(())
+    }
+}
+
 impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
@@ -263,6 +295,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
+                self.deploy_address_registry_marker()?;
             }
             Ok(())
         } else {

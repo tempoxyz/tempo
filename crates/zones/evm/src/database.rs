@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, fmt};
 
-use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use evm2::{
     DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
@@ -176,15 +176,6 @@ impl StateChangeSink for L1WriteGuard {
 impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, DatabaseError> {
         let mut info = self.inner.get_account(address)?;
-        // Zone genesis has no address registry account. The block cache treats the storage of an
-        // account that does not exist as known zero and never reads it through this overlay, so
-        // the registry loads as the precompile placeholder Tempo genesis gives it. The account
-        // is only read, so it never reaches the Zone's state.
-        if info.is_none() && *address == ADDRESS_REGISTRY_ADDRESS && self.spec.is_t15() {
-            return Ok(Some(
-                AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
-            ));
-        }
         // Only accounts without zone code carry a Tempo commitment (TIP-1154): zones reject
         // authorization lists and contract creation, so code belongs to a protocol contract.
         // Outside a zone transaction, such as in block-level system calls, accounts load with
