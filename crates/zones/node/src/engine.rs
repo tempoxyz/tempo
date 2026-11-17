@@ -39,7 +39,7 @@
 //! to the same block.
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadAttributes as EthPayloadAttributes};
 use eyre::{OptionExt, WrapErr as _};
 use reth_chainspec::EthereumHardforks;
@@ -57,12 +57,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::deposit_allowlist::DepositAllowlist;
+use reth_storage_api::StateProviderFactory;
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
+use zone_precompiles::{
+    ZONE_IDENTITY_ADDRESS,
+    zone_identity::{TransferKind, check_transfer},
+};
 use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
@@ -214,6 +219,37 @@ pub struct ZoneEngine {
     proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
+    /// Reads `ZoneIdentity` storage at the canonical head. `None` skips org checks on deposits.
+    identity_state: Option<IdentityState>,
+}
+
+/// Reads one `ZoneIdentity` storage slot at the canonical head.
+#[derive(Clone)]
+pub struct IdentityState(Arc<dyn Fn(U256) -> eyre::Result<U256> + Send + Sync>);
+
+impl core::fmt::Debug for IdentityState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("IdentityState")
+    }
+}
+
+impl IdentityState {
+    /// Reads `ZoneIdentity` storage from `provider`'s latest state.
+    pub fn latest<P>(provider: P) -> Self
+    where
+        P: StateProviderFactory + Send + Sync + 'static,
+    {
+        Self(Arc::new(move |slot| {
+            Ok(provider
+                .latest()?
+                .storage(ZONE_IDENTITY_ADDRESS, slot.into())?
+                .unwrap_or_default())
+        }))
+    }
+
+    fn sload(&self, slot: U256) -> eyre::Result<U256> {
+        (self.0)(slot)
+    }
 }
 
 impl ZoneEngine {
@@ -242,12 +278,20 @@ impl ZoneEngine {
             production_permit: None,
             proof_collector,
             deposit_allowlist: None,
+            identity_state: None,
         }
     }
 
     /// Bounce deposits whose L1 sender is not on `allowlist`. `None` credits every deposit.
     pub fn with_deposit_allowlist(mut self, allowlist: Option<DepositAllowlist>) -> Self {
         self.deposit_allowlist = allowlist;
+        self
+    }
+
+    /// Bounce deposits whose L1 sender's org has no `ZoneIdentity` edge to the recipient's org for
+    /// the token.
+    pub fn with_identity_state(mut self, identity_state: IdentityState) -> Self {
+        self.identity_state = Some(identity_state);
         self
     }
 
@@ -381,16 +425,27 @@ impl ZoneEngine {
             let portal_work = self
                 .deposit_queue
                 .operational_work(l1_block.header.num_hash())?;
-            let senders = self.deposit_allowlist.as_ref().map(|_| {
-                portal_work
-                    .iter()
-                    .flat_map(|block| &block.events.deposits)
-                    .filter_map(|deposit| match deposit {
-                        L1Deposit::Deposit(deposit) => Some(deposit.sender),
-                        L1Deposit::WithdrawalBounceBack(_) => None,
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let deposits = (self.deposit_allowlist.is_some() || self.identity_state.is_some())
+                .then(|| {
+                    portal_work
+                        .iter()
+                        .flat_map(|block| &block.events.deposits)
+                        .filter_map(|deposit| match deposit {
+                            L1Deposit::Deposit(deposit) => Some((deposit.sender, deposit.token)),
+                            L1Deposit::WithdrawalBounceBack(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                });
+            let senders = self
+                .deposit_allowlist
+                .as_ref()
+                .and(deposits.as_ref())
+                .map(|deposits| {
+                    deposits
+                        .iter()
+                        .map(|(sender, _)| *sender)
+                        .collect::<Vec<_>>()
+                });
             let mut prepared = L1BlockDeposits::prepare_many(
                 portal_work,
                 &self.encryption_keys,
@@ -406,6 +461,19 @@ impl ZoneEngine {
                 if rejected > 0 {
                     info!(target: "zone::engine", rejected, "Bouncing deposits whose sender or recipient is not on the allowlist");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
+                        .increment(rejected as u64);
+                }
+            }
+            if let Some((identity_state, deposits)) = self.identity_state.as_ref().zip(deposits) {
+                let rejected = reject_by_identity(
+                    |slot| identity_state.sload(slot),
+                    &deposits,
+                    &prepared.recipients,
+                    &mut prepared.decryptions,
+                )?;
+                if rejected > 0 {
+                    info!(target: "zone::engine", rejected, "Bouncing deposits that no org edge allows");
+                    metrics::counter!("zone_deposit_identity_rejected_total")
                         .increment(rejected as u64);
                 }
             }
@@ -680,9 +748,101 @@ fn zone_timestamp_millis(
         .max(parent_timestamp_millis)
 }
 
+/// Bounces each encrypted deposit whose L1 sender may not send its token to its recipient under
+/// `ZoneIdentity`, by replacing its decryption with [`FAILED_DECRYPTION`]. `deposits` holds the
+/// `(sender, token)` of every encrypted deposit, aligned with `recipients` and `decryptions`.
+/// Returns how many it bounced.
+fn reject_by_identity(
+    mut sload: impl FnMut(U256) -> eyre::Result<U256>,
+    deposits: &[(Address, Address)],
+    recipients: &[Option<Address>],
+    decryptions: &mut [zone_l1::abi::DecryptionData],
+) -> eyre::Result<usize> {
+    eyre::ensure!(
+        deposits.len() == decryptions.len() && recipients.len() == decryptions.len(),
+        "{} deposits and {} recipients but {} decryptions",
+        deposits.len(),
+        recipients.len(),
+        decryptions.len()
+    );
+    let mut rejected = 0;
+    for (((sender, token), recipient), decryption) in
+        deposits.iter().zip(recipients).zip(decryptions)
+    {
+        // A deposit that failed to decrypt already bounces.
+        let Some(recipient) = recipient else {
+            continue;
+        };
+        let verdict = check_transfer(
+            &mut sload,
+            *token,
+            *sender,
+            *recipient,
+            TransferKind::Deposit,
+        )?;
+        if !verdict.is_allowed() {
+            *decryption = zone_l1::FAILED_DECRYPTION;
+            rejected += 1;
+        }
+    }
+    Ok(rejected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_bounces_deposits_without_an_edge() {
+        use alloy_primitives::address;
+        use std::collections::HashMap;
+        use tempo_primitives::TempoAddressExt as _;
+        use zone_l1::abi::{ChaumPedersenProof, DecryptionData};
+        use zone_precompiles::zone_identity::{Member, ZoneIdentity};
+
+        let token = Address::new_tip20(1);
+        let endpoint = address!("0x0000000000000000000000000000000000000b1d");
+        let stranger = address!("0x0000000000000000000000000000000000005a1e");
+        let alice = address!("0x00000000000000000000000000000000000a11ce");
+        let identity = ZoneIdentity::new();
+        let member = |org, l1_only| {
+            Member {
+                org,
+                l1_only,
+                frozen: false,
+            }
+            .encode()
+        };
+        let shift = identity.enforced.offset().unwrap_or_default() * 8;
+        let slots = HashMap::from([
+            (identity.enforced.slot(), U256::ONE << shift),
+            (identity.members[endpoint].slot(), member(2, true)),
+            (identity.members[alice].slot(), member(1, false)),
+            (identity.token_bits[token].slot(), U256::ONE),
+            (identity.edges[2][1].slot(), U256::ONE),
+        ]);
+        let valid = DecryptionData {
+            sharedSecret: B256::repeat_byte(1),
+            sharedSecretYParity: 0x03,
+            cpProof: ChaumPedersenProof {
+                s: B256::repeat_byte(2),
+                c: B256::repeat_byte(3),
+            },
+        };
+        let mut decryptions = vec![valid.clone(); 3];
+        let rejected = reject_by_identity(
+            |slot| Ok(slots.get(&slot).copied().unwrap_or_default()),
+            &[(endpoint, token), (stranger, token), (endpoint, token)],
+            &[Some(alice), Some(alice), None],
+            &mut decryptions,
+        )
+        .unwrap();
+        assert_eq!(rejected, 1);
+        assert_eq!(
+            decryptions,
+            vec![valid.clone(), zone_l1::FAILED_DECRYPTION, valid]
+        );
+    }
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec as _;
     use std::{

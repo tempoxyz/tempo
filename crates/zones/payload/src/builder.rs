@@ -6,7 +6,7 @@
 use crate::{
     TransferAllowlist, WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
-    validate_transfer_calls,
+    screen_identity, validate_transfer_calls,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
@@ -37,7 +37,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{error::Error, sync::Arc, time::Instant};
-use tempo_evm::{TempoNextBlockEnvAttributes, TempoTxEnv};
+use tempo_evm::{TempoNextBlockEnvAttributes, TempoStateAccess as _, TempoTxEnv};
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload};
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
@@ -50,7 +50,7 @@ use tracing::{error, info, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_evm::{ZoneEvm, ZoneEvmConfig};
 use zone_l1::{PreparedL1Block, TempoStateExt};
-use zone_precompiles::L1StateError;
+use zone_precompiles::{L1StateError, ZONE_IDENTITY_ADDRESS};
 use zone_primitives::constants::MAX_RLP_BLOCK_SIZE;
 
 use crate::{
@@ -322,20 +322,36 @@ where
             // Zones resolve fee tokens without a fallback list.
             let mut best_txs = StateAwareBestTransactions::new(pool_txs, &[]);
             let mut unlisted = Vec::new();
+            // Both closures use the builder: one executes, the other screens org edges against
+            // the state inside this block, so an admin's change applies from the next transaction.
+            let builder_cell = core::cell::RefCell::new(&mut builder);
+            let transfer_allowlist = self.transfer_allowlist.as_deref();
             let outcome = execute_pool_transactions(
                 |tx, best_txs| {
-                    builder
+                    builder_cell
+                        .borrow_mut()
                         .execute_transaction_with_result_closure(tx, |result| {
                             best_txs.on_new_result(result);
                         })
                         .map(|_| ())
                 },
+                |tx| {
+                    if let Some(allowlist) = transfer_allowlist
+                        && let Err(error) = validate_transfer_calls(allowlist, tx)
+                    {
+                        return Ok(Err(error));
+                    }
+                    let mut builder = builder_cell.borrow_mut();
+                    let evm = builder.evm_mut();
+                    screen_identity(|slot| evm.sload(ZONE_IDENTITY_ADDRESS, slot), tx)
+                        .map_err(PayloadBuilderError::other)
+                },
                 &mut best_txs,
                 &cancel,
                 pool_tx_size_budget,
-                self.transfer_allowlist.as_deref(),
                 &mut unlisted,
             );
+            drop(builder_cell);
             // Stop prewarming txs that can no longer make this block.
             drop(best_txs);
             if !unlisted.is_empty() {
@@ -344,7 +360,7 @@ where
                 info!(
                     target: "zone::payload",
                     count = unlisted.len(),
-                    "Dropping pool transactions that move funds outside the transfer allowlist"
+                    "Dropping pool transactions that move funds outside the transfer allowlist or org edges"
                 );
                 let pool = self.pool.clone();
                 self.task_executor
@@ -546,18 +562,21 @@ enum PoolExecutionOutcome {
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
 ///
-/// Transactions that `transfer_allowlist` rejects against its current list are skipped without
-/// executing them, and their hashes are pushed to `unlisted`. This catches list changes after
-/// pool admission.
-fn execute_pool_transactions<T, F>(
+/// Transactions that `screen` rejects (the transfer allowlist or `ZoneIdentity` org edges) are
+/// skipped without executing them, and their hashes are pushed to `unlisted`. This catches list
+/// and edge changes after pool admission.
+fn execute_pool_transactions<T, F, S>(
     mut execute_tx: F,
+    mut screen: S,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
-    transfer_allowlist: Option<&dyn TransferAllowlist>,
     unlisted: &mut Vec<TxHash>,
 ) -> Result<PoolExecutionOutcome, PayloadBuilderError>
 where
+    S: FnMut(
+        &TempoPooledTransaction,
+    ) -> Result<Result<(), InvalidPoolTransactionError>, PayloadBuilderError>,
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     F: FnMut(
         WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>>,
@@ -570,9 +589,7 @@ where
             return Ok(PoolExecutionOutcome::Cancelled);
         }
 
-        if let Some(allowlist) = transfer_allowlist
-            && let Err(error) = validate_transfer_calls(allowlist, &pool_tx.transaction)
-        {
+        if let Err(error) = screen(&pool_tx.transaction)? {
             best_txs.mark_invalid(&pool_tx, error);
             unlisted.push(*pool_tx.hash());
             continue;
@@ -1201,10 +1218,10 @@ mod tests {
                 executed += 1;
                 Ok(())
             },
+            |_tx| Ok(Ok(())),
             &mut best_txs,
             &cancel,
             budget,
-            None,
             &mut unlisted,
         )
         .expect("pool execution should not error");
@@ -1274,10 +1291,10 @@ mod tests {
                 executed += 1;
                 Ok(())
             },
+            |tx| Ok(super::validate_transfer_calls(&EmptyAllowlist, tx)),
             &mut best_txs,
             &CancelOnDrop::default(),
             2 * per_tx,
-            Some(&EmptyAllowlist),
             &mut unlisted,
         )
         .expect("pool execution should not error");

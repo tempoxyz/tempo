@@ -6,6 +6,7 @@ pub mod messenger;
 pub mod outbox;
 pub mod swap_and_deposit_router;
 pub mod tempo_state;
+pub mod zone_identity;
 pub mod zone_inbox;
 pub mod zone_portal;
 
@@ -18,6 +19,7 @@ pub use messenger::*;
 pub use outbox::*;
 pub use swap_and_deposit_router::*;
 pub use tempo_state::*;
+pub use zone_identity::*;
 pub use zone_inbox::*;
 pub use zone_portal::*;
 

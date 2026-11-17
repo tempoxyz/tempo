@@ -29,6 +29,9 @@ pub const ZONE_INBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000
 /// ZoneOutbox predeploy address on Zone L2.
 pub const ZONE_OUTBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000002");
 
+/// ZoneIdentity predeploy address on Zone L2: orgs, members and edges on shared zones.
+pub const ZONE_IDENTITY_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000003");
+
 /// Zone-native fee manager precompile address.
 ///
 /// This is adjacent to, but distinct from, Tempo L1's fee manager at `0xfeec...0000`.
