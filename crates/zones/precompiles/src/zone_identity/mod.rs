@@ -47,81 +47,6 @@ pub struct ZoneIdentity {
     pub members: Mapping<Address, Member>,
 }
 
-/// One org's configuration.
-#[derive(Debug, Clone, Storable, Default)]
-pub struct Org {
-    /// Key that manages the org's members and its halves of edges.
-    pub admin: Address,
-    /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
-    /// receiving org and token.
-    pub edges: Mapping<u64, Mapping<Address, Edges>>,
-}
-
-/// Both halves of the three edges between two orgs for one token, packed into one slot. A move
-/// needs both halves of its edge.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Edges {
-    /// Zone to Zone, set by the sending org's admin.
-    pub transfer_from: bool,
-    /// Zone to Zone, set by the receiving org's admin.
-    pub transfer_to: bool,
-    /// The sending org's Tempo addresses to the Zone, set by the sending org's admin.
-    pub deposit_from: bool,
-    /// The sending org's Tempo addresses to the Zone, set by the receiving org's admin.
-    pub deposit_to: bool,
-    /// The Zone to the receiving org's Tempo addresses, set by the sending org's admin.
-    pub withdrawal_from: bool,
-    /// The Zone to the receiving org's Tempo addresses, set by the receiving org's admin.
-    pub withdrawal_to: bool,
-}
-
-impl Edges {
-    /// Whether both halves of the edge for `kind` allow the move.
-    fn allows(mut self, kind: TransferKind) -> bool {
-        let (from_ok, to_ok) = self.halves(kind);
-        *from_ok && *to_ok
-    }
-
-    /// The sending and receiving halves of the edge for `kind`.
-    fn halves(&mut self, kind: TransferKind) -> (&mut bool, &mut bool) {
-        match kind {
-            TransferKind::InZone => (&mut self.transfer_from, &mut self.transfer_to),
-            TransferKind::Deposit => (&mut self.deposit_from, &mut self.deposit_to),
-            TransferKind::Withdrawal => (&mut self.withdrawal_from, &mut self.withdrawal_to),
-        }
-    }
-}
-
-/// The move an edge between `from` and `to` governs. Tempo to Tempo has none.
-fn edge_kind(from: &OrgKey, to: &OrgKey) -> ZoneResult<TransferKind> {
-    match (from.l1, to.l1) {
-        (false, false) => Ok(TransferKind::InZone),
-        (true, false) => Ok(TransferKind::Deposit),
-        (false, true) => Ok(TransferKind::Withdrawal),
-        (true, true) => Err(ZoneIdentityError::invalid_edge().into()),
-    }
-}
-
-/// An address's membership, packed into one slot: zero for an address in no org.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Member {
-    /// Org the address belongs to; 0 when it is in no org.
-    pub org: u64,
-    /// The org admin froze the address: nothing may be sent to or from it.
-    pub frozen: bool,
-}
-
-/// How funds move between `from` and `to`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferKind {
-    /// A TIP-20 transfer inside the zone.
-    InZone,
-    /// An L1 deposit from `from` on Tempo to `to` on the zone.
-    Deposit,
-    /// A withdrawal from `from` on the zone to `to` on Tempo.
-    Withdrawal,
-}
-
 impl ZoneIdentity {
     /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
     /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
@@ -385,6 +310,81 @@ impl ZoneIdentity {
         self.ensure_org(org)?;
         ensure_caller(caller, self.org_admin(registrar, org)?)
     }
+}
+
+/// One org's configuration.
+#[derive(Debug, Clone, Storable, Default)]
+pub struct Org {
+    /// Key that manages the org's members and its halves of edges.
+    pub admin: Address,
+    /// Both halves of the transfer, deposit and withdrawal edges from this org to another, keyed by
+    /// receiving org and token.
+    pub edges: Mapping<u64, Mapping<Address, Edges>>,
+}
+
+/// Both halves of the three edges between two orgs for one token, packed into one slot. A move
+/// needs both halves of its edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub struct Edges {
+    /// Zone to Zone, set by the sending org's admin.
+    pub transfer_from: bool,
+    /// Zone to Zone, set by the receiving org's admin.
+    pub transfer_to: bool,
+    /// The sending org's Tempo addresses to the Zone, set by the sending org's admin.
+    pub deposit_from: bool,
+    /// The sending org's Tempo addresses to the Zone, set by the receiving org's admin.
+    pub deposit_to: bool,
+    /// The Zone to the receiving org's Tempo addresses, set by the sending org's admin.
+    pub withdrawal_from: bool,
+    /// The Zone to the receiving org's Tempo addresses, set by the receiving org's admin.
+    pub withdrawal_to: bool,
+}
+
+impl Edges {
+    /// Whether both halves of the edge for `kind` allow the move.
+    fn allows(mut self, kind: TransferKind) -> bool {
+        let (from_ok, to_ok) = self.halves(kind);
+        *from_ok && *to_ok
+    }
+
+    /// The sending and receiving halves of the edge for `kind`.
+    fn halves(&mut self, kind: TransferKind) -> (&mut bool, &mut bool) {
+        match kind {
+            TransferKind::InZone => (&mut self.transfer_from, &mut self.transfer_to),
+            TransferKind::Deposit => (&mut self.deposit_from, &mut self.deposit_to),
+            TransferKind::Withdrawal => (&mut self.withdrawal_from, &mut self.withdrawal_to),
+        }
+    }
+}
+
+/// The move an edge between `from` and `to` governs. Tempo to Tempo has none.
+fn edge_kind(from: &OrgKey, to: &OrgKey) -> ZoneResult<TransferKind> {
+    match (from.l1, to.l1) {
+        (false, false) => Ok(TransferKind::InZone),
+        (true, false) => Ok(TransferKind::Deposit),
+        (false, true) => Ok(TransferKind::Withdrawal),
+        (true, true) => Err(ZoneIdentityError::invalid_edge().into()),
+    }
+}
+
+/// An address's membership, packed into one slot: zero for an address in no org.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub struct Member {
+    /// Org the address belongs to; 0 when it is in no org.
+    pub org: u64,
+    /// The org admin froze the address: nothing may be sent to or from it.
+    pub frozen: bool,
+}
+
+/// How funds move between `from` and `to`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    /// A TIP-20 transfer inside the zone.
+    InZone,
+    /// An L1 deposit from `from` on Tempo to `to` on the zone.
+    Deposit,
+    /// A withdrawal from `from` on the zone to `to` on Tempo.
+    Withdrawal,
 }
 
 /// Rejects a call unless `caller` is the nonzero `expected` address.
