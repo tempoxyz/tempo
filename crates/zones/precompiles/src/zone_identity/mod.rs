@@ -21,10 +21,12 @@ mod dispatch;
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
+    address_registry::AddressRegistry,
     error::TempoPrecompileError,
     storage::{Handler, Mapping},
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoAddressExt as _;
 pub use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
 use crate::{
@@ -74,6 +76,11 @@ impl ZoneIdentity {
         if !enforced {
             return Ok(true);
         }
+        // TIP-20 credits a TIP-1022 virtual recipient's master, so the master's org decides. The
+        // registry is mirrored from Tempo, so this also resolves Tempo-side withdrawal recipients.
+        // An unregistered virtual recipient reverts with `VirtualAddressUnregistered`, as the
+        // transfer itself would.
+        let to = AddressRegistry::new().resolve_recipient(to)?;
         let sender = self.members[from].read()?;
         let recipient = self.members[to].read()?;
         if sender.frozen || recipient.frozen {
@@ -160,7 +167,8 @@ impl ZoneIdentity {
         account: Address,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
-        if org == 0 || account.is_zero() {
+        // A virtual address never holds funds; moves to it are checked as its master.
+        if org == 0 || account.is_zero() || account.is_virtual() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         if self.members[account].read()? != Member::default() {
@@ -400,8 +408,10 @@ mod tests {
     use alloy_primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
-    use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use tempo_primitives::TempoAddressExt as _;
+    use tempo_precompiles::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{VIRTUAL_MASTER, register_virtual_master},
+    };
 
     use super::*;
 
@@ -588,6 +598,40 @@ mod tests {
             }
             assert!(allows(usd, stranger, ALICE, TransferKind::Deposit));
             assert!(allows(usd, offramp, ALICE, TransferKind::Deposit));
+        });
+    }
+
+    #[test]
+    fn virtual_recipients_are_checked_as_their_master() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
+            // A virtual address of a member's master is in the member's org.
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
+            identity
+                .add_member(admin, registrar, org, VIRTUAL_MASTER)
+                .unwrap();
+            assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
+            assert!(
+                allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal)
+                    == allows(usd, ALICE, VIRTUAL_MASTER, TransferKind::Withdrawal)
+            );
+            // Virtual addresses themselves cannot be members.
+            assert_eq!(
+                identity.add_member(admin, registrar, org, virtual_addr),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
+            );
+            // An unregistered virtual recipient reverts as the transfer would.
+            let unregistered = Address::new_virtual(
+                tempo_primitives::MasterId::repeat_byte(0xee),
+                alloy_primitives::FixedBytes::repeat_byte(1),
+            );
+            assert!(
+                identity
+                    .allows(true, usd, ALICE, unregistered, TransferKind::InZone)
+                    .is_err()
+            );
         });
     }
 }
