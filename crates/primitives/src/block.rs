@@ -24,8 +24,11 @@ pub struct TempoBlockExt {
     /// block without a consensus context. `None` for pre-T4 blocks and for
     /// blocks executed outside consensus, such as simulated blocks
     /// (`eth_simulateV1`) and pending-block environments, which never carry a
-    /// consensus context. Checks that need the proposer, such as the boundary
-    /// outcome check, are skipped when it is `None`.
+    /// consensus context.
+    ///
+    /// Downstream, block execution relies on this: when it is `None`, the
+    /// boundary block's DKG outcome check (`check_boundary_outcome` in
+    /// `tempo-evm`) is skipped, since only consensus verifies that outcome.
     pub proposer_public_key: Option<PublicKey>,
 }
 
