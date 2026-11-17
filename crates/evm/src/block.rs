@@ -469,10 +469,14 @@ impl<'a> TempoBlockExecutor<'a> {
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
-        // Consensus rejects proposals without a consensus context, so every proposed block
-        // carries a proposer key. Blocks without one, such as RPC simulations, carry no DKG
-        // outcome, and their backing database may hold caller-supplied state, not the parent
-        // state.
+        // Blocks without a consensus context, such as RPC simulations and dev-mode blocks,
+        // carry no DKG outcome, and their backing database may hold caller-supplied state
+        // rather than the parent state, so the check is skipped for them.
+        //
+        // This relies on the consensus layer: it rejects proposals without a consensus context
+        // (see the application's verify step), and imported blocks are pinned to finalized
+        // hashes. The execution layer does not enforce the presence of a consensus context
+        // itself, the same as for the proposer fee recipient check above.
         if self.evm().block().ext.proposer_public_key.is_none() {
             return Ok(());
         }
