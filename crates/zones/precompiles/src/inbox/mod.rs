@@ -347,9 +347,9 @@ impl ZoneInbox {
         }
 
         self.emit_event(ZoneInboxEvent::virtual_deposit_processed(
-            current_hash,
-            deposit.originator,
             resolved.recipient,
+            deposit.originator,
+            current_hash,
             deposit.token,
             deposit.amount,
             resolved.version,
@@ -426,9 +426,9 @@ impl ZoneInbox {
             },
         )?;
         self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
-            current_hash,
-            deposit.originator,
             to,
+            deposit.originator,
+            current_hash,
             deposit.token,
             deposit.amount,
             reason,

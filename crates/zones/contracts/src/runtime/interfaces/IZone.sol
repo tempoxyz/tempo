@@ -1161,11 +1161,11 @@ interface IZoneInbox {
     /// @notice Emitted when a TIP-20 token is enabled on the zone via advanceTempo
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
 
-    /// @notice TIP-1094: a virtual deposit credited its registered recipient (operator-visible).
+    /// @notice TIP-1094: a virtual deposit credited its registered recipient (visible to `to`).
     event VirtualDepositProcessed(
-        bytes32 indexed depositHash,
-        address indexed originator,
         address indexed to,
+        address indexed originator,
+        bytes32 indexed depositHash,
         address token,
         uint128 amount,
         uint8 version,
@@ -1176,9 +1176,9 @@ interface IZoneInbox {
 
     /// @notice TIP-1094: a virtual deposit failed and was queued as a refund to the originator.
     event VirtualDepositFailed(
-        bytes32 indexed depositHash,
-        address indexed originator,
         address indexed to,
+        address indexed originator,
+        bytes32 indexed depositHash,
         address token,
         uint128 amount,
         VirtualDepositFailureReason reason

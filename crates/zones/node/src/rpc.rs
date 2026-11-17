@@ -94,10 +94,11 @@ use zone_rpc::{
     auth::AuthContext,
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
-        DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        DecryptionKeyCandidate, DecryptionKeyStatus, DeriveDepositAddressesRequest,
+        DeriveDepositAddressesResponse, JsonRpcError, LocalSequencerInfo,
+        MAX_DERIVE_DEPOSIT_ADDRESSES, PeerTipInfo, SequencerInfoResponse, SequencerPeerInfo,
+        SequencerProgress, SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness,
+        ZoneInfoResponse, internal, raw_null, raw_zero, to_raw,
     },
 };
 
@@ -1701,6 +1702,124 @@ where
             to_raw(&key)
         })
     }
+
+    fn zone_derive_deposit_addresses(
+        &self,
+        request: DeriveDepositAddressesRequest,
+        auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async move {
+            if request.user_tags.is_empty()
+                || request.user_tags.len() > MAX_DERIVE_DEPOSIT_ADDRESSES
+            {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "userTags must hold 1 to {MAX_DERIVE_DEPOSIT_ADDRESSES} tags"
+                )));
+            }
+            // Derive only from settled state, so an address never depends on a zone block that
+            // could still be replaced.
+            let l1_block = self
+                .l1_provider
+                .get_block_number()
+                .await
+                .map_err(internal)?;
+            let portal = ZonePortal::new(self.config.zone_portal, &self.l1_provider);
+            let settled = portal
+                .blockHash()
+                .block(BlockId::number(l1_block))
+                .call()
+                .await
+                .map_err(internal)?;
+            let minimum_version = portal
+                .minimumAddressVersion()
+                .block(BlockId::number(l1_block))
+                .call()
+                .await
+                .map_err(internal)?;
+            let state = self
+                .eth
+                .api
+                .provider()
+                .state_by_block_hash(settled)
+                .map_err(|_| JsonRpcError::internal("settled zone block is not available"))?;
+            let derived = derive_deposit_addresses(
+                self.config.zone_id,
+                minimum_version,
+                auth.caller,
+                &request,
+                |address, slot| {
+                    state
+                        .storage(address, B256::from(slot))
+                        .map(Option::unwrap_or_default)
+                        .map_err(internal)
+                },
+            )?;
+            to_raw(&DeriveDepositAddressesResponse {
+                zone_block_hash: settled,
+                version: derived.0,
+                addresses: derived.1,
+            })
+        })
+    }
+}
+
+/// Derives TIP-1094 deposit addresses for `request` from zone storage read through `read`.
+///
+/// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
+/// fail alike, so the method does not reveal registrations. The version defaults to the highest
+/// initialized key version and must not be below the portal's minimum.
+fn derive_deposit_addresses(
+    zone_id: u32,
+    minimum_version: u8,
+    caller: Address,
+    request: &DeriveDepositAddressesRequest,
+    mut read: impl FnMut(Address, U256) -> Result<U256, JsonRpcError>,
+) -> Result<(u8, Vec<Address>), JsonRpcError> {
+    let recipient = Address::from_word(B256::from(read(
+        tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
+        zone_precompiles::address_registry::recipient_storage_slot(request.master_id),
+    )?));
+    if recipient.is_zero() || recipient != caller {
+        return Err(JsonRpcError::invalid_params(
+            "masterId is not registered to the caller",
+        ));
+    }
+
+    // Keys initialize in order, so the initialized versions are 1 through the first gap.
+    let mut highest = 0u8;
+    for version in 1..=u8::MAX {
+        let (flag, _) = zone_precompiles::inbox::virtual_address_key_slots(version);
+        if read(ZONE_INBOX_ADDRESS, flag)?.is_zero() {
+            break;
+        }
+        highest = version;
+    }
+    let version = request.version.unwrap_or(highest);
+    if version == 0 || version > highest || version < minimum_version {
+        return Err(JsonRpcError::invalid_params(
+            "address version is not initialized or is retired",
+        ));
+    }
+
+    let (_, key_slot) = zone_precompiles::inbox::virtual_address_key_slots(version);
+    let key = B256::from(read(ZONE_INBOX_ADDRESS, key_slot)?);
+    let addresses = request
+        .user_tags
+        .iter()
+        .map(|tag| {
+            let mut plaintext = [0u8; 6];
+            plaintext[..4].copy_from_slice(request.master_id.as_slice());
+            plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+            tempo_contracts::zones::ZoneDepositAddress {
+                zone_id,
+                version,
+                ciphertext: zone_precompiles::ff1::encrypt(&key.0, version, zone_id, plaintext)
+                    .into(),
+            }
+            .encode()
+        })
+        .collect();
+    Ok((version, addresses))
 }
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>

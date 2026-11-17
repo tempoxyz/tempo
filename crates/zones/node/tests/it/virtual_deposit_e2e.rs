@@ -7,14 +7,17 @@ use std::time::Duration;
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
-        IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_TOKEN_ADDRESS,
+        IZoneAddressRegistry, IZoneInbox, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_TOKEN_ADDRESS,
         ZoneDepositAddress, ZonePortal,
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 
+use alloy::{providers::Provider as _, sol_types::SolEvent as _};
+
 use crate::utils::{
-    L1TestNode, TIP20_TX_GAS, ZoneAccount, ZoneLaunch, ZoneTestNode, signer_at, spawn_sequencer,
+    L1TestNode, TIP20_TX_GAS, ZoneAccount, ZoneLaunch, ZoneTestNode, build_auth_token, signer_at,
+    spawn_sequencer,
 };
 use zone_node::{DepositAllowlist, DepositAllowlistAdmin};
 
@@ -254,6 +257,169 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
         L1_TIMEOUT,
     )
     .await?;
+
+    Ok(())
+}
+
+/// A registered recipient gets its deposit address from `zone_deriveDepositAddresses` once the
+/// registration settles, and reads the credit's tag from its own `eth_getLogs`, all over the
+/// authenticated zone RPC and without the address key.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let l1 = L1TestNode::start_at_t15().await?;
+    let portal_address = l1.deploy_zone().await?;
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        virtual_address_key: Some(KEY),
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
+    .await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    let zone_id = ZonePortal::new(portal_address, l1.provider())
+        .zoneId()
+        .call()
+        .await?;
+    let config = zone_node::rpc::RedactedRpcConfig {
+        listen_addr: ([127, 0, 0, 1], 0).into(),
+        zone_id,
+        chain_id: zone.provider().get_chain_id().await?,
+        max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
+        max_response_size: 16 * 1024 * 1024,
+        zone_portal: portal_address,
+    };
+    let rpc_url = format!(
+        "http://{}",
+        zone_node::rpc::start_redacted_rpc(config.clone(), zone.rpc_api(config.clone()).await?)
+            .await?
+    );
+    let recipient = alloy_signer_local::PrivateKeySigner::random();
+    let token = build_auth_token(&recipient, config.zone_id, config.chain_id);
+    let call = |method: &'static str, params: serde_json::Value| {
+        let (rpc_url, token) = (rpc_url.clone(), token.clone());
+        async move {
+            let response: serde_json::Value = reqwest::Client::new()
+                .post(rpc_url)
+                .header("x-authorization-token", token)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "method": method, "params": params, "id": 1
+                }))
+                .send()
+                .await?
+                .json()
+                .await?;
+            eyre::Ok(response)
+        }
+    };
+
+    // Someone else registers the recipient and passes on the returned master ID.
+    let mut sender = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    l1.fund_user(sender.address(), 10_000_000).await?;
+    sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
+    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
+    let master_id: FixedBytes<4> = registry
+        .registerMaster(recipient.address(), B256::repeat_byte(2))
+        .call()
+        .await?;
+    let receipt = registry
+        .registerMaster(recipient.address(), B256::repeat_byte(2))
+        .gas(TIP20_TX_GAS * 10)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(receipt.status(), "registerMaster failed");
+    let admin = l1.provider_with_signer(l1.admin_signer());
+    let receipt = ZonePortal::new(portal_address, &admin)
+        .setVirtualDepositsEnabled(true)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(receipt.status(), "setVirtualDepositsEnabled failed");
+
+    // Derivation waits for the registration to settle on Tempo.
+    let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let params = serde_json::json!([{ "masterId": master_id, "userTags": [7, 8] }]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let derived = loop {
+        let response = call("zone_deriveDepositAddresses", params.clone()).await?;
+        if let Some(result) = response.get("result") {
+            break result.clone();
+        }
+        eyre::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "registration never settled: {response}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert_eq!(derived["version"], 1);
+    let addresses: Vec<Address> = serde_json::from_value(derived["addresses"].clone())?;
+    assert_eq!(
+        addresses,
+        vec![
+            deposit_address(zone_id, master_id.0, 7),
+            deposit_address(zone_id, master_id.0, 8)
+        ]
+    );
+
+    // Another caller can't derive the recipient's addresses.
+    let other = alloy_signer_local::PrivateKeySigner::random();
+    let response: serde_json::Value = reqwest::Client::new()
+        .post(rpc_url.clone())
+        .header(
+            "x-authorization-token",
+            build_auth_token(&other, config.zone_id, config.chain_id),
+        )
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "method": "zone_deriveDepositAddresses", "params": params, "id": 1
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(response.get("result").is_none(), "{response}");
+
+    // Pay the second address and read the result as the recipient.
+    let amount = 2_000_000u128;
+    let fee = ZonePortal::new(portal_address, l1.provider())
+        .calculateDepositFee()
+        .call()
+        .await?;
+    let receipt = ITIP20::new(PATH_USD_ADDRESS, sender.l1_provider())
+        .transfer(addresses[1], U256::from(amount))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(receipt.status(), "transfer to deposit address failed");
+    zone.wait_for_balance(
+        ZONE_TOKEN_ADDRESS,
+        recipient.address(),
+        U256::from(amount - fee),
+        L1_TIMEOUT,
+    )
+    .await?;
+    let logs = call(
+        "eth_getLogs",
+        serde_json::json!([{
+            "fromBlock": "0x0",
+            "toBlock": "latest",
+            "topics": [
+                IZoneInbox::VirtualDepositProcessed::SIGNATURE_HASH,
+                recipient.address().into_word(),
+            ],
+        }]),
+    )
+    .await?;
+    let logs: Vec<alloy::rpc::types::Log> = serde_json::from_value(logs["result"].clone())?;
+    assert_eq!(logs.len(), 1);
+    let event = IZoneInbox::VirtualDepositProcessed::decode_log(&logs[0].inner)?.data;
+    assert_eq!(event.to, recipient.address());
+    assert_eq!(event.originator, sender.address());
+    assert_eq!(event.masterId, master_id);
+    assert_eq!(event.userTag, FixedBytes::from(8u16.to_be_bytes()));
+    assert_eq!(event.amount, amount - fee);
 
     Ok(())
 }

@@ -131,12 +131,12 @@ crate::sol! {
             address tempoRefundRecipient
         );
 
-        /// A virtual deposit credited its registered recipient. Inbox logs are never served by
-        /// the redacted RPC, so the decoded attribution stays operator-visible only.
+        /// A virtual deposit credited its registered recipient. The redacted RPC serves it only to
+        /// `to`, the first indexed topic.
         event VirtualDepositProcessed(
-            bytes32 indexed depositHash,
-            address indexed originator,
             address indexed to,
+            address indexed originator,
+            bytes32 indexed depositHash,
             address token,
             uint128 amount,
             uint8 version,
@@ -146,11 +146,12 @@ crate::sol! {
         );
 
         /// A virtual deposit failed and its net amount was queued as a refund to `originator`.
-        /// `to` is the resolved recipient, or zero when resolution failed before a lookup.
+        /// `to` is the resolved recipient, or zero when resolution failed before a lookup. The
+        /// redacted RPC serves it only to a nonzero `to`.
         event VirtualDepositFailed(
-            bytes32 indexed depositHash,
-            address indexed originator,
             address indexed to,
+            address indexed originator,
+            bytes32 indexed depositHash,
             address token,
             uint128 amount,
             VirtualDepositFailureReason reason
