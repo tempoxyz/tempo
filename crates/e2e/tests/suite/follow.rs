@@ -23,7 +23,11 @@ use commonware_runtime::{
 };
 use futures::{channel::oneshot, future::join_all};
 use rand_core::CryptoRng;
-use reth_ethereum::provider::BlockIdReader as _;
+use reth_db::{Database as _, DatabaseEnv};
+use reth_ethereum::provider::{
+    BlockIdReader as _, HeaderProvider as _, RocksDBProviderFactory as _,
+    providers::RocksDBProvider,
+};
 use tempo_alloy::TempoNetwork;
 use tempo_consensus::{
     feed::FeedStateHandle,
@@ -170,6 +174,8 @@ struct FollowerBuilder {
     donor: Option<TestingNode<Context>>,
     with_gossip: bool,
     silent_upstream: bool,
+    events_only_upstream: bool,
+    resume: Option<StoppedFollower>,
 }
 
 impl FollowerBuilder {
@@ -198,6 +204,25 @@ impl FollowerBuilder {
     fn silent_upstream(self) -> Self {
         Self {
             silent_upstream: true,
+            ..self
+        }
+    }
+
+    /// Keeps the upstream's finalized events flowing but answers none of the
+    /// follower's requests, so the follower archives tip finalizations and can
+    /// never backfill below them.
+    fn events_only_upstream(self) -> Self {
+        Self {
+            events_only_upstream: true,
+            ..self
+        }
+    }
+
+    /// Restarts a follower on the consensus partition and execution database
+    /// it had when it was stopped.
+    fn resume(self, stopped: StoppedFollower) -> Self {
+        Self {
+            resume: Some(stopped),
             ..self
         }
     }
@@ -232,6 +257,19 @@ impl FollowerBuilder {
     where
         TContext: Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
     {
+        self.try_follow(context, upstream)
+            .await
+            .expect("failed to initialize follow engine")
+    }
+
+    async fn try_follow<TContext>(
+        self,
+        context: &mut TContext,
+        upstream: impl FeedStateProvider,
+    ) -> eyre::Result<Follower>
+    where
+        TContext: Clock + CryptoRng + RuntimeMetrics + Pacer + Spawner + Storage,
+    {
         let Self {
             name,
             partition_prefix,
@@ -239,6 +277,8 @@ impl FollowerBuilder {
             donor,
             with_gossip,
             silent_upstream,
+            events_only_upstream,
+            resume,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -249,7 +289,11 @@ impl FollowerBuilder {
             )
         });
 
-        let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
+        let partition_prefix = resume
+            .as_ref()
+            .map(|stopped| stopped.partition_prefix.clone())
+            .or(partition_prefix)
+            .unwrap_or_else(|| name.clone());
         let feed_state = FeedStateHandle::new();
 
         let config = crate::ExecutionNodeConfig {
@@ -263,7 +307,9 @@ impl FollowerBuilder {
             estimator: None,
         };
 
-        let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
+        let (spawn_name, db, rocksdb) = if let Some(stopped) = resume {
+            (stopped.spawn_name, stopped.db, Some(stopped.rocksdb))
+        } else if let Some(donor) = donor {
             (
                 donor.execution_node_name,
                 donor
@@ -280,7 +326,7 @@ impl FollowerBuilder {
         };
 
         let mut node = runtime
-            .spawn_node(&spawn_name, config, db, rocksdb)
+            .spawn_node(&spawn_name, config, db.clone(), rocksdb)
             .await
             .expect("must be able to spawn follower execution node");
 
@@ -291,6 +337,21 @@ impl FollowerBuilder {
                 feed: upstream.feed_state(),
             },
         );
+
+        // Requests go to a mailbox whose actor is gone, so each one resolves to
+        // `None` at once, while the live actor keeps reporting events.
+        let upstream_mailbox = if events_only_upstream {
+            in_process::init(
+                context.child("withheld_upstream"),
+                in_process::Config {
+                    execution_node: node.node.clone().into(),
+                    feed: FeedStateHandle::new(),
+                },
+            )
+            .1
+        } else {
+            upstream_mailbox
+        };
 
         let upstream = if silent_upstream {
             // Dropping the actor closes the receiving end of the mailbox, so
@@ -323,7 +384,7 @@ impl FollowerBuilder {
                     verify_rate: commonware_utils::NZU32!(32),
                 }),
             feed_state: feed_state.clone(),
-            partition_prefix,
+            partition_prefix: partition_prefix.clone(),
             epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(EPOCH_LENGTH)),
             mailbox_size: commonware_utils::NZUsize!(16_384),
             upstream_request_timeout: Duration::from_secs(2),
@@ -335,29 +396,84 @@ impl FollowerBuilder {
 
         let handle = config
             .try_init(context.child(Box::leak(name.clone().into_boxed_str())))
-            .await
-            .expect("failed to initialize follow engine")
+            .await?
             .start();
 
-        Follower {
+        Ok(Follower {
             name,
+            partition_prefix,
+            spawn_name,
+            db,
             feed: feed_state,
             execution_node: node,
             _handle: handle,
-        }
+        })
     }
 }
 
 struct Follower {
     name: String,
+    partition_prefix: String,
+    spawn_name: String,
+    db: DatabaseEnv,
     feed: FeedStateHandle,
     execution_node: ExecutionNode,
     _handle: Handle<eyre::Result<()>>,
 }
 
+/// What a stopped follower leaves on disk: its consensus partition and its
+/// execution database.
+struct StoppedFollower {
+    partition_prefix: String,
+    spawn_name: String,
+    db: DatabaseEnv,
+    rocksdb: RocksDBProvider,
+}
+
 impl Follower {
     fn builder() -> FollowerBuilder {
         FollowerBuilder::new()
+    }
+
+    /// Stops the follow engine and the execution node, as a process exit would.
+    async fn stop(self) -> StoppedFollower {
+        let Self {
+            partition_prefix,
+            spawn_name,
+            db,
+            execution_node,
+            _handle: handle,
+            ..
+        } = self;
+
+        handle.abort();
+        let _ = handle.await;
+        // Storage refuses to reopen a blob that is still open: let the aborted
+        // actors, and the tasks their drops abort in turn, release theirs.
+        for _ in 0..2 {
+            let mut yielded = false;
+            std::future::poll_fn(|cx| {
+                if yielded {
+                    return std::task::Poll::Ready(());
+                }
+                yielded = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            })
+            .await;
+        }
+
+        let rocksdb = execution_node.node.provider().rocksdb_provider();
+        execution_node.shutdown().await;
+        // Blocks until any pending write transaction has completed.
+        drop(db.tx_mut().expect("failed to acquire rw transaction"));
+
+        StoppedFollower {
+            partition_prefix,
+            spawn_name,
+            db,
+            rocksdb,
+        }
     }
 
     async fn connect_peers<T: Clock>(&self, peers: &[TestingNode<T>]) {
@@ -411,6 +527,84 @@ fn follower_bootstraps_from_validator() {
             .get_finalization(Query::Height(1))
             .await
             .unwrap();
+    });
+}
+
+/// A follower stopped during its initial sync starts again.
+///
+/// A fresh follower archives the finalization of the first tip its upstream
+/// reports, verified against the network identity, before it has backfilled
+/// anything below that tip. Stopped at that point, its archive starts at a
+/// certificate whose epoch's boundary block is not stored locally. The next
+/// start must still authenticate that certificate and carry on syncing.
+#[test_traced]
+fn follower_restarts_after_stop_before_backfilling_epoch_boundary() {
+    let _ = tempo_eyre::install();
+
+    // Past the second epoch boundary, so the boundary block of the tip's epoch
+    // is not genesis.
+    let first_tip_after = 2 * EPOCH_LENGTH + 2;
+
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        wait_for_height(&context, &validators[0], first_tip_after).await;
+
+        // No devp2p peers and an upstream that only relays events: the follower
+        // archives tip finalizations and cannot backfill below them.
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .events_only_upstream()
+            .follow(&mut context, &validators[0])
+            .await;
+
+        let archived = 'archived: loop {
+            for height in first_tip_after..first_tip_after + 4 * EPOCH_LENGTH {
+                if let Response::Success(certified) =
+                    follower.feed.get_finalization(Query::Height(height)).await
+                {
+                    break 'archived certified;
+                }
+            }
+            context.sleep(Duration::from_millis(100)).await;
+        };
+        let archived_height = archived.block.number();
+        let boundary = (archived_height / EPOCH_LENGTH) * EPOCH_LENGTH - 1;
+        assert!(
+            follower
+                .execution_node()
+                .provider
+                .header_by_number(boundary)
+                .unwrap()
+                .is_none(),
+            "the follower must not have backfilled boundary block {boundary}",
+        );
+
+        let stopped = follower.stop().await;
+
+        // The operator's natural move: start again, now with a serving upstream.
+        let restarted = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .resume(stopped)
+            .try_follow(&mut context, &validators[0])
+            .await;
+        let follower = match restarted {
+            Ok(follower) => follower,
+            Err(error) => panic!(
+                "a follower stopped after archiving the finalization at height \
+                 {archived_height} must start again, but it failed with: {error:#}"
+            ),
+        };
+
+        follower.connect_peers(&validators).await;
+        wait_for_height(&context, &follower, archived_height + 5).await;
     });
 }
 

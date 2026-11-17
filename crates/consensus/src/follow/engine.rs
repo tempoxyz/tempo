@@ -128,6 +128,7 @@ impl<TUpstream> Config<TUpstream> {
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.network_identity.clone(),
             },
         )
         .await
