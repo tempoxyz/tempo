@@ -17,6 +17,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoAddressExt as _;
 use zone_primitives::constants::{
     MAX_WITHDRAWAL_GAS_LIMIT, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
@@ -156,7 +157,11 @@ impl ZoneOutbox {
         current_tx_hash: B256,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> ZoneResult<()> {
-        if call.zoneFallbackRecipient.is_zero() {
+        // +T15: A bounced withdrawal is parked under its fallback recipient when the mint fails, and
+        // only that recipient can claim it, which a TIP-1022 virtual address can never do.
+        if call.zoneFallbackRecipient.is_zero()
+            || (self.storage.spec().is_t15() && call.zoneFallbackRecipient.is_virtual())
+        {
             return Err(ZoneOutboxError::invalid_fallback_recipient().into());
         }
         if call.amount == 0 {

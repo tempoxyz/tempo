@@ -254,11 +254,15 @@ internet-facing one. Within the quorum, a node asks only the leader while it ans
 the other quorum members once the leader misses the response timeout. That fallback is what lets an
 rpc-follower catch up through a leader outage.
 
-Preferring the leader is a trust boundary, not load balancing. A live block is checked against the
-scheduled leader of the anchor it embeds, but a backfilled block has no sender to check — only
-parent linkage, L1 anchor, execution and hash. Those pass for a valid *alternative* chain too, so a
-compromised quorum member could serve pages that build a fork the quorum will never settle. Asking
-the leader first limits that to a leader outage, counted by
+Preferring the leader is a trust boundary, not load balancing. A live block is dropped at the
+transport unless its sender is a retained leader (the current, previous, or a scheduled leader, or
+the forced-recovery leader), so a non-leader member cannot make followers wait on an unobserved
+anchor. A follower that observes a transition after the incoming leader's first blocks arrive drops
+them and backfills them once the transition is published. After its anchor is observed, a live
+block is checked against the scheduled leader of the anchor it embeds, but a backfilled block has
+no sender to check — only parent linkage, L1 anchor, execution and hash. Those pass for a valid
+*alternative* chain too, so a compromised quorum member could serve pages that build a fork the
+quorum will never settle. Asking the leader first limits that to a leader outage, counted by
 `zone_p2p_backfill_requests_without_leader_total`.
 
 Removing it altogether needs the block to carry a leader signature over its own hash, which is a

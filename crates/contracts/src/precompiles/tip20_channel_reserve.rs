@@ -3,8 +3,9 @@ pub use ITIP20ChannelReserve::{
     ITIP20ChannelReserveErrors as TIP20ChannelReserveError,
     ITIP20ChannelReserveEvents as TIP20ChannelReserveEvent,
 };
-use alloy_primitives::{Address, address};
-use alloy_sol_types::SolCall;
+use alloc::vec::Vec;
+use alloy_primitives::{Address, B256, U256, address, keccak256};
+use alloy_sol_types::{SolCall, SolValue};
 
 /// Native TIP-1034 channel reserve precompile address.
 pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
@@ -137,6 +138,15 @@ crate::sol! {
             view
             returns (bytes32);
 
+        /// Returns whether `settle` and `close` would accept `signature` for the channel at
+        /// `cumulativeAmount` (TIP-1166). Reverts with `ChannelNotFound` if the channel doesn't
+        /// exist; doesn't check `cumulativeAmount` against the deposit or settled amount.
+        function verifyVoucher(
+            ChannelDescriptor calldata descriptor,
+            uint96 cumulativeAmount,
+            bytes calldata signature
+        ) external view returns (bool valid);
+
         /// Returns the EIP-712 domain separator for the current chain.
         function domainSeparator() external view returns (bytes32);
 
@@ -195,7 +205,7 @@ crate::sol! {
         /// Emitted by `open` when the voucher signer has a nonzero configuration commitment, which
         /// the channel's salt holds and its vouchers are checked against for its lifetime
         /// (TIP-1166).
-        event SignerSnapshotCached(
+        event OpeningCommitmentRecorded(
             bytes32 indexed channelId,
             address indexed signer,
             bytes32 commitment
@@ -243,6 +253,23 @@ crate::sol! {
         /// `open` was given a salt other than the voucher signer's configuration commitment
         /// (TIP-1166).
         error SaltNotSignerCommitment(address signer, bytes32 commitment);
+    }
+}
+
+impl ITIP20ChannelReserve::ChannelDescriptor {
+    /// Hash preimage of the channel id, domain-separated by chain and precompile address.
+    pub fn id_preimage(&self, chain_id: u64) -> Vec<u8> {
+        (
+            self.clone(),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            U256::from(chain_id),
+        )
+            .abi_encode()
+    }
+
+    /// Returns the channel id on `chain_id`, as the precompile computes it.
+    pub fn id(&self, chain_id: u64) -> B256 {
+        keccak256(self.id_preimage(chain_id))
     }
 }
 
