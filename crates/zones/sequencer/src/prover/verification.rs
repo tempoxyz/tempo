@@ -1,4 +1,4 @@
-//! Proof checks shared by settlement and shadow proving.
+//! On-chain proof checks for settlement proving.
 
 use alloy_contract::CallBuilder;
 use alloy_primitives::U256;
@@ -9,7 +9,7 @@ use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::IZoneVerifier;
 use tempo_precompiles::zone_factory::portal_address;
 use zone_chainspec::ZoneChainSpec;
-use zone_prover::{ProofBundle, ShadowProofVerifier};
+use zone_prover::ProofBundle;
 use zone_spf::{BatchOutput, PublicInputs};
 
 use crate::{SettlementAbi, abi::ZonePortal};
@@ -21,41 +21,31 @@ pub(super) enum ProofVerification {
     SkippedBeforeT13,
 }
 
-/// Apply the local PCR policy when supplied, otherwise simulate the deployed L1 verifier.
-/// The call's commitments were checked against the expected batch before reaching this point.
+/// Simulate the deployed L1 verifier. The call's commitments were checked against the expected
+/// batch before reaching this point.
 pub(super) async fn verify_proof(
     provider: &DynProvider<TempoNetwork>,
     chain_spec: &ZoneChainSpec,
-    local: Option<&ShadowProofVerifier>,
-    parent_chain_id: u64,
     call: IZoneVerifier::verifyCall,
 ) -> Result<ProofVerification> {
-    let accepted = if let Some(verifier) = local {
-        let verifier = verifier.clone();
-        tokio::task::spawn_blocking(move || verifier.verify(call, parent_chain_id))
-            .await
-            .wrap_err("proof verification worker panicked")?
-            .wrap_err("local proof verification failed")?
-    } else {
-        if SettlementAbi::from_l1(provider, chain_spec).await? != SettlementAbi::T13 {
-            return Ok(ProofVerification::SkippedBeforeT13);
-        }
-        let portal_address = portal_address(call.zoneId);
-        // Refresh the verifier each time: the portal's verifier can change independently of PCRs.
-        let verifier = ZonePortal::new(portal_address, provider)
-            .verifier()
-            .call()
-            .await
-            .wrap_err("failed to read portal verifier")?;
-        let output = CallBuilder::new_raw(provider, call.abi_encode().into())
-            .to(verifier)
-            .from(portal_address)
-            .call()
-            .await
-            .wrap_err("verifier call failed")?;
-        IZoneVerifier::verifyCall::abi_decode_returns(&output)
-            .wrap_err("failed to decode verifier response")?
-    };
+    if SettlementAbi::from_l1(provider, chain_spec).await? != SettlementAbi::T13 {
+        return Ok(ProofVerification::SkippedBeforeT13);
+    }
+    let portal_address = portal_address(call.zoneId);
+    // Refresh the verifier each time: the portal's verifier can change independently of PCRs.
+    let verifier = ZonePortal::new(portal_address, provider)
+        .verifier()
+        .call()
+        .await
+        .wrap_err("failed to read portal verifier")?;
+    let output = CallBuilder::new_raw(provider, call.abi_encode().into())
+        .to(verifier)
+        .from(portal_address)
+        .call()
+        .await
+        .wrap_err("verifier call failed")?;
+    let accepted = IZoneVerifier::verifyCall::abi_decode_returns(&output)
+        .wrap_err("failed to decode verifier response")?;
     Ok(if accepted {
         ProofVerification::Verified
     } else {
@@ -64,7 +54,7 @@ pub(super) async fn verify_proof(
 }
 
 /// Build the verifier call from trusted public inputs and SPF output already compared with
-/// the expected batch. Local verification and L1 simulation use this same commitment mapping.
+/// the expected batch.
 pub(super) fn verifier_call(
     inputs: &PublicInputs,
     output: &BatchOutput,
@@ -175,7 +165,7 @@ mod tests {
         let rpc = Asserter::new();
         rpc.push_success(&fork_header(999));
         assert_eq!(
-            verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call())
+            verify_proof(&provider(&rpc), &chain_spec(), call())
                 .await
                 .unwrap(),
             ProofVerification::SkippedBeforeT13,
@@ -193,7 +183,7 @@ mod tests {
             Ok(output) => rpc.push_success(&output),
             Err(message) => rpc.push_failure_msg(message),
         }
-        let result = verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call()).await;
+        let result = verify_proof(&provider(&rpc), &chain_spec(), call()).await;
         assert!(rpc.read_q().is_empty());
         result
     }
@@ -221,7 +211,7 @@ mod tests {
                 rpc.push_success(&fork_header(1_000));
             }
             rpc.push_failure_msg("L1 unavailable");
-            let error = verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call())
+            let error = verify_proof(&provider(&rpc), &chain_spec(), call())
                 .await
                 .unwrap_err();
             assert!(error.root_cause().to_string().contains("L1 unavailable"));
@@ -229,18 +219,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn proof_verification_with_pcrs_uses_local_verifier_without_l1_rpc() {
-        let rpc = Asserter::new();
-        // No responses are queued: local verification must not make any L1 RPC calls.
-        let pcr = "11".repeat(48);
-        let local: ShadowProofVerifier = format!("{pcr},{pcr},{pcr}").parse().unwrap();
-        let verdict = verify_proof(&provider(&rpc), &chain_spec(), Some(&local), 42431, call())
-            .await
-            .unwrap();
-        assert_eq!(verdict, ProofVerification::Rejected);
-        assert!(rpc.read_q().is_empty());
-        // Ensure the same native ABI carries the trusted batch and resolved anchor for both paths.
+    #[test]
+    fn verifier_call_uses_native_abi() {
+        // Ensure the native ABI carries the trusted batch and resolved anchor.
         let call = call();
         assert_eq!(
             IZoneVerifier::verifyCall::SELECTOR,
@@ -252,8 +233,9 @@ mod tests {
         );
         assert_eq!(call.nextZoneHeight, U256::from(20));
     }
+
     #[test]
-    fn verifier_maps_batch_inputs_and_rejects_fake_proof() {
+    fn verifier_maps_batch_inputs() {
         let inputs = PublicInputs {
             parent_chain_id: 4217,
             zone_id: 2,
@@ -332,8 +314,5 @@ mod tests {
         assert_eq!(call.withdrawalQueueHash, output.withdrawal_queue_hash);
         assert_eq!(call.verifierConfig, bundle.verifier_config);
         assert_eq!(call.proof, bundle.proof);
-        let pcr = "11".repeat(48);
-        let verifier: ShadowProofVerifier = format!("{pcr},{pcr},{pcr}").parse().unwrap();
-        assert!(!verifier.verify(call, inputs.parent_chain_id).unwrap());
     }
 }

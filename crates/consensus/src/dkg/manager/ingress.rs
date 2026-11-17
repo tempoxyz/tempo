@@ -77,10 +77,15 @@ impl Mailbox {
     ///
     /// This method is intended to be called by the application when verifying
     /// the dealing found in a proposal.
+    ///
+    /// `timestamp` is the proposal's, in seconds: from T15, a log with trailing
+    /// bytes is invalid.
+    ///
     /// Returns `None` for an invalid log and an error if verification is unavailable.
     pub(crate) async fn verify_dealer_log(
         &self,
         epoch: Epoch,
+        timestamp: u64,
         bytes: Bytes,
     ) -> eyre::Result<Option<PublicKey>> {
         let (response, rx) = oneshot::channel();
@@ -88,6 +93,7 @@ impl Mailbox {
             .unbounded_send(Message::in_current_span(VerifyDealerLog {
                 bytes,
                 epoch,
+                timestamp,
                 response,
             }))
             .wrap_err("failed sending message to actor")?;
@@ -156,6 +162,8 @@ pub(super) struct SubscribeDkgCeremony {
 pub(super) struct VerifyDealerLog {
     pub(super) bytes: Bytes,
     pub(super) epoch: Epoch,
+    /// The proposal's timestamp, in seconds.
+    pub(super) timestamp: u64,
     pub(super) response: oneshot::Sender<Option<PublicKey>>,
 }
 

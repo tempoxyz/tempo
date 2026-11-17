@@ -1,12 +1,12 @@
-//! Block production as the engine tree does it, shared with reth-proofs: the sparse-trie state
-//! root task computes each block's root, blocks go into the OverlayManager, and one background
-//! writer persists them with state masking. Blocks are produced only when the server is asked.
+//! Block production as the engine tree does it: the sparse-trie state root task computes each
+//! block's root, blocks go into the OverlayManager, and one background writer persists them with
+//! state masking. Blocks are produced only when the server is asked.
 
 use crate::{input::Operation, persistence::Persistence, Node};
 use alloy_consensus::Header;
 use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
-use reth_chain_state::ExecutedBlock;
+use reth_chain_state::{ExecutedBlock, InMemoryState};
 use reth_chainspec::ChainSpec;
 use reth_db::DatabaseEnv;
 use reth_engine_primitives::MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD;
@@ -36,7 +36,7 @@ use reth_trie::{bundle_state::BundleState, HashedPostState, SortedTrieData};
 use serde_json::json;
 use std::{collections::BTreeSet, fs, path::Path, sync::Arc, time::Duration};
 
-/// Engine and persistence settings both workloads take from their configuration.
+/// Engine and persistence settings the workload takes from its configuration.
 pub(crate) struct Settings {
     pub proof_workers: usize,
     pub timeout_secs: u64,
@@ -122,7 +122,10 @@ impl Engine {
         println!("{}", json!({"recovery": "start"}));
         let factory = runtime.handle().block_on(
             context.create_provider_factory_with_recovery::<Node, EthEvmConfig>(
-                OverlayManager::new(runtime.state_trie_overlay_worker_pool()),
+                OverlayManager::with_worker_pool(
+                    InMemoryState::default(),
+                    runtime.state_trie_overlay_worker_pool(),
+                ),
                 None,
                 &[],
                 |factory| {
@@ -179,11 +182,6 @@ impl Engine {
 
     pub(crate) const fn factory(&self) -> &ProviderFactory<Node> {
         &self.factory
-    }
-
-    /// The newest block's header.
-    pub(crate) const fn parent(&self) -> &SealedHeader {
-        &self.parent
     }
 
     /// The newest block's number.

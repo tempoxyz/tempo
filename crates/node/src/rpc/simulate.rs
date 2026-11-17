@@ -119,7 +119,6 @@ fn extract_tip20_targets(
     addrs
 }
 
-#[async_trait::async_trait]
 impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
 where
     EthApi: EthCall<NetworkTypes = TempoNetwork>,

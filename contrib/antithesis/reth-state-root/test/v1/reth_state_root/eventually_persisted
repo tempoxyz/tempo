@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-state-root-antithesis eventually_persisted
+exec reth-state-root-commands eventually_persisted

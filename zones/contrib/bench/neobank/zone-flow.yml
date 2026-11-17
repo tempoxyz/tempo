@@ -111,6 +111,50 @@ templates:
         - "0x"
         - "0x"
 
+  # Thirty-two zero-value calls to fresh random addresses. From T14 every account
+  # without code a Zone transaction loads reads its Tempo commitment, so each call
+  # is one uncached L1 commitment read for the builder.
+  cold_account_calls:
+    type: tempo
+    sponsor: { pool: sponsor, select: { index: 0 } }
+    expiring_nonce: true
+    valid_for_secs: 25
+    gas_limit: 3000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    calls:
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+      - { to: random, function: "0x" }
+
 sequences:
   approval_pair:
     bindings:

@@ -69,6 +69,10 @@ tower = { workspace = true, features = ["util"] }
 
 [features]
 default = []
+test-utils = [
+    "reth-primitives-traits?/test-utils",
+    "tempo-primitives/test-utils",
+]
 reth = [
     "dep:tempo-evm",
     "dep:reth-primitives-traits",

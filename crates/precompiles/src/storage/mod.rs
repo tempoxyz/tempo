@@ -167,8 +167,10 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    ///
+    /// Negative when a nested callee clears state that an earlier frame created.
+    fn state_gas_used(&self) -> i64;
 
     /// Returns the state gas that was drawn from regular gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`).
@@ -194,6 +196,21 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::NestedCallUnavailable)
+    }
 
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
@@ -262,17 +279,6 @@ pub trait PrecompileStorageProvider {
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
     }
 
-    /// Runs a nested call from the running precompile into `call.target`.
-    ///
-    /// The child sees the precompile's own address as its caller, runs one call level deeper and
-    /// commits or rolls back on its own, so the precompile can carry on after a failed child.
-    /// Providers without a live EVM reject every nested call.
-    fn call(&mut self, _call: NestedCall) -> Result<NestedCallResult> {
-        Err(TempoPrecompileError::Fatal(
-            "nested calls need an EVM-backed storage provider".into(),
-        ))
-    }
-
     /// Reads the commitment from the account extension with normal account-access gas.
     fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
@@ -291,34 +297,14 @@ pub trait PrecompileStorageProvider {
     ) -> Result<()>;
 }
 
-/// A nested call made by a native precompile into another account.
-///
-/// The caller is always the running precompile's own address. Native precompiles never send
-/// value, so the call carries none.
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NestedCall {
-    /// Account to call. Code at this address runs, or its native precompile when one is
-    /// registered there.
-    pub target: Address,
-    /// ABI-encoded call input.
-    pub input: Bytes,
-    /// Most gas to forward. The provider caps it at all but one 64th of what remains after the
-    /// account-access charge, as `CALL` does.
-    pub gas_limit: u64,
-    /// Whether the child runs as a `STATICCALL`.
-    pub is_static: bool,
-}
-
-/// Outcome of a [`NestedCall`].
-///
-/// A child that reverts, halts or runs out of gas has its state changes rolled back and reports
-/// `success: false`; only database and fatal errors surface as `Err`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NestedCallResult {
-    /// Whether the child returned or stopped normally.
-    pub success: bool,
-    /// Return or revert data.
-    pub output: Bytes,
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data.
+    Success(Bytes),
+    /// The callee reverted with this data or halted, and was rolled back.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.

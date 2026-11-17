@@ -54,5 +54,6 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 eyre.workspace = true
 serde_json = { workspace = true, default-features = true }
+test-case.workspace = true
 zone-precompiles = { workspace = true, features = ["std", "test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }

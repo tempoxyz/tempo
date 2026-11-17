@@ -57,6 +57,7 @@ antithesis_sdk = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 tempo-precompiles.workspace = true
+test-case.workspace = true
 
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]

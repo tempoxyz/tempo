@@ -30,6 +30,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
 use parking_lot::{Mutex, RwLock};
 use reth_transaction_pool::TransactionPool;
 use serde::{Deserialize, Serialize};
+use tempo_primitives::TempoAddressExt as _;
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 use tokio::sync::Notify;
 use tracing::{info, warn};
@@ -177,6 +178,9 @@ pub enum DepositAllowlistError {
     Uninitialized,
     #[error("allowlist would hold {len} addresses; the limit is {MAX_DEPOSIT_ALLOWLIST_LEN}")]
     TooLarge { len: usize },
+    /// The Zone credits a TIP-1022 virtual address's master, which the screens can't resolve.
+    #[error("{address} is a TIP-1022 virtual address and cannot be allowlisted")]
+    VirtualAddress { address: Address },
     #[error("failed to persist the allowlist: {0}")]
     Persist(String),
     #[error("deposit allowlist is not enabled on this sequencer")]
@@ -263,7 +267,7 @@ pub(crate) struct DepositAllowlistStatus {
 /// A sequencer's allowlist and its status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DepositAllowlistSnapshot {
+pub struct DepositAllowlistSnapshot {
     #[serde(flatten)]
     pub(crate) status: DepositAllowlistStatus,
     /// Addresses in ascending order.
@@ -273,7 +277,7 @@ pub(crate) struct DepositAllowlistSnapshot {
 /// One sequencer's entry in `zoneAdmin_getDepositAllowlistStatus`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SequencerAllowlistStatus {
+pub struct SequencerAllowlistStatus {
     /// The sequencer's P2P public key; omitted when a sequencer reports itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sequencer: Option<String>,
@@ -476,6 +480,9 @@ impl DepositAllowlist {
                 len: next.addresses.len(),
             });
         }
+        if let Some(&address) = next.addresses.iter().find(|address| address.is_virtual()) {
+            return Err(DepositAllowlistError::VirtualAddress { address });
+        }
         persist(&self.inner.path, &next)
             .map_err(|err| DepositAllowlistError::Persist(format!("{err:#}")))?;
         log_status(status_of(Some(&next)), "Updated deposit allowlist");
@@ -646,7 +653,6 @@ pub(crate) trait DepositAllowlistApi {
     async fn get_deposit_allowlist_status(&self) -> RpcResult<Vec<SequencerAllowlistStatus>>;
 }
 
-#[jsonrpsee::core::async_trait]
 impl DepositAllowlistApiServer for DepositAllowlist {
     async fn set_deposit_allowed(
         &self,
@@ -698,8 +704,20 @@ impl DepositAllowlistApiServer for DepositAllowlist {
 fn read_state(path: &Path) -> eyre::Result<State> {
     let file = File::open(path)
         .wrap_err_with(|| format!("failed to open deposit allowlist {}", path.display()))?;
-    let state: State = serde_json::from_reader(std::io::BufReader::new(file))
+    let mut state: State = serde_json::from_reader(std::io::BufReader::new(file))
         .wrap_err_with(|| format!("failed to parse deposit allowlist {}", path.display()))?;
+    // Writes reject virtual addresses, but a list saved by an earlier version may hold some. The
+    // Zone would credit their unlisted masters, so they are dropped rather than listed.
+    let listed = state.addresses.len();
+    state.addresses.retain(|address| !address.is_virtual());
+    if state.addresses.len() < listed {
+        warn!(
+            target: "zone::allowlist",
+            path = %path.display(),
+            dropped = listed - state.addresses.len(),
+            "Dropped TIP-1022 virtual addresses from the deposit allowlist"
+        );
+    }
     ensure!(
         state.addresses.len() <= MAX_DEPOSIT_ALLOWLIST_LEN,
         "deposit allowlist {} holds {} addresses; the limit is {MAX_DEPOSIT_ALLOWLIST_LEN}",
@@ -743,10 +761,7 @@ mod tests {
         noop::MockTransactionValidator,
     };
     use tempo_precompiles::tip20::ITIP20;
-    use tempo_primitives::{
-        TempoAddressExt as _,
-        transaction::{Call, TempoTransaction},
-    };
+    use tempo_primitives::transaction::{Call, TempoTransaction};
     use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
     use zone_l1::abi::ChaumPedersenProof;
 

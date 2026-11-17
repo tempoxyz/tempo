@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-state-root-antithesis finally_recovered
+exec reth-state-root-commands finally_recovered

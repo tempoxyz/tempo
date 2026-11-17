@@ -1,5 +1,5 @@
-//! Trie shapes for the reth Antithesis workloads: key layouts to generate, and a tracker that
-//! measures which shapes the tries actually reach.
+//! Trie shapes for the reth-state-root Antithesis workload: key layouts to generate, and a tracker
+//! that measures which shapes the tries actually reach.
 //!
 //! Keys are hashes, so uniformly random keys build tries that are wide near the root and shallow
 //! below it. A collider grinds key preimages into templates, in the account trie or in one
@@ -21,6 +21,7 @@
 //! resulting tries really have.
 
 pub mod harness;
+pub mod proofs;
 mod shape;
 
 pub use shape::{Leaves, ShapeTracker};

@@ -17,6 +17,7 @@ use alloy::{
 use evm2::{
     DatabaseError, LoadError,
     evm::precompile::PrecompileOutput,
+    interpreter::InstrStop,
     precompiles::{PrecompileError, PrecompileHalt, PrecompileResult},
     registry::HandlerError,
 };
@@ -154,6 +155,16 @@ pub enum TempoPrecompileError {
     /// A commitment write is zero, predates T14, or occurs in a read-only context.
     #[error("Invalid account commitment write")]
     InvalidConfigCommitmentWrite,
+
+    /// A nested call was made without a precompile call frame, inside a checkpoint, or with
+    /// [`MAX_NESTED_CALLS`](crate::storage::evm::MAX_NESTED_CALLS) of them running.
+    #[error("Nested call unavailable")]
+    NestedCallUnavailable,
+
+    /// A nested call halted the calling precompile for a reason other than out of gas or a state
+    /// change in a static call.
+    #[error("Nested call halted: {0:?}")]
+    NestedCallHalted(InstrStop),
 }
 
 impl From<LoadError> for TempoPrecompileError {
@@ -194,6 +205,8 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::RawRevert(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
+            | TempoPrecompileError::NestedCallUnavailable
+            | TempoPrecompileError::NestedCallHalted(_)
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
@@ -271,7 +284,9 @@ impl TempoPrecompileError {
             | Self::Database(_)
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
-            | Self::InvalidConfigCommitmentWrite => [0, 0, 0, 0],
+            | Self::InvalidConfigCommitmentWrite
+            | Self::NestedCallUnavailable
+            | Self::NestedCallHalted(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -285,7 +300,9 @@ impl TempoPrecompileError {
             | Self::StaticCallNotAllowed
             | Self::Fatal(_)
             | Self::Panic(_)
-            | Self::StorageDeltaUnderflow(_) => true,
+            | Self::StorageDeltaUnderflow(_)
+            | Self::NestedCallUnavailable
+            | Self::NestedCallHalted(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -369,6 +386,11 @@ impl TempoPrecompileError {
             Self::StaticCallNotAllowed => {
                 return Err(PrecompileHalt::Other("state change during static call".into()).into());
             }
+            Self::NestedCallHalted(stop) => {
+                return Err(
+                    PrecompileHalt::Other(format!("nested call halted: {stop:?}").into()).into(),
+                );
+            }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
             }
@@ -377,7 +399,7 @@ impl TempoPrecompileError {
             Self::Fatal(msg) => {
                 return Err(msg.into());
             }
-            Self::InvalidConfigCommitmentWrite => Bytes::new(),
+            Self::InvalidConfigCommitmentWrite | Self::NestedCallUnavailable => Bytes::new(),
         };
         Err(PrecompileError::Revert(bytes))
     }
@@ -555,6 +577,16 @@ mod tests {
     }
 
     #[test]
+    fn nested_call_unavailable_reverts_without_data_and_is_not_swallowed() {
+        let error = TempoPrecompileError::NestedCallUnavailable;
+        assert!(error.is_system_error());
+        assert!(matches!(
+            error.into_precompile_result(),
+            Err(PrecompileError::Revert(data)) if data.is_empty()
+        ));
+    }
+
+    #[test]
     fn test_add_errors_to_registry_populates_registry() {
         let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
@@ -596,10 +628,10 @@ mod tests {
         );
 
         let decoded = result.unwrap();
-        assert!(matches!(
+        assert_eq!(
             decoded.error,
-            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderDoesNotExist(_))
-        ));
+            StablecoinDEXError::order_does_not_exist().into()
+        );
     }
 
     #[test]

@@ -32,6 +32,9 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 antithesis-instrumentation = { workspace = true, optional = true }
 
+[build-dependencies]
+smolgen.workspace = true
+
 [[bin]]
 name = "tempo-zone"
 path = "src/main.rs"

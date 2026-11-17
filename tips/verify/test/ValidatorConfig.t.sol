@@ -3,8 +3,14 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import "./TempoTest.t.sol";
 import { IValidatorConfig } from "tempo-std/interfaces/IValidatorConfig.sol";
+import { IValidatorConfigV2 } from "tempo-std/interfaces/IValidatorConfigV2.sol";
 
 contract ValidatorConfigTest is TempoTest {
+
+    function setUp() public override {
+        super.setUp();
+        _pinT14ForValidatorConfigV1();
+    }
 
     address public validator1 = address(0x2000);
     address public validator2 = address(0x3000);
@@ -603,6 +609,52 @@ contract ValidatorConfigTest is TempoTest {
         }
 
         return string(buffer);
+    }
+
+}
+
+contract ValidatorConfigDisabledTest is TempoTest {
+
+    error UnknownFunctionSelector(bytes4 selector);
+
+    function test_T15_RejectsValidatorConfigV1Calls() public {
+        vm.skip(!_isTempoForkOrLater(15));
+
+        bytes4[12] memory selectors = [
+            IValidatorConfig.owner.selector,
+            IValidatorConfig.getValidators.selector,
+            IValidatorConfig.getNextFullDkgCeremony.selector,
+            IValidatorConfig.validatorsArray.selector,
+            IValidatorConfig.validators.selector,
+            IValidatorConfig.validatorCount.selector,
+            IValidatorConfig.addValidator.selector,
+            IValidatorConfig.updateValidator.selector,
+            IValidatorConfig.changeValidatorStatus.selector,
+            IValidatorConfig.changeValidatorStatusByIndex.selector,
+            IValidatorConfig.changeOwner.selector,
+            IValidatorConfig.setNextFullDkgCeremony.selector
+        ];
+        for (uint256 i = 0; i < selectors.length; i++) {
+            _assertUnknownSelector(address(validatorConfig), selectors[i]);
+        }
+    }
+
+    function test_T15_RejectsMigrationCalls() public {
+        vm.skip(!_isTempoForkOrLater(15));
+
+        _assertUnknownSelector(
+            address(validatorConfigV2), IValidatorConfigV2.migrateValidator.selector
+        );
+        _assertUnknownSelector(
+            address(validatorConfigV2), IValidatorConfigV2.initializeIfMigrated.selector
+        );
+    }
+
+    function _assertUnknownSelector(address precompile, bytes4 selector) internal {
+        vm.prank(admin);
+        (bool success, bytes memory err) = precompile.call(abi.encodePacked(selector));
+        assertFalse(success, "call should revert");
+        assertEq(err, abi.encodeWithSelector(UnknownFunctionSelector.selector, selector));
     }
 
 }

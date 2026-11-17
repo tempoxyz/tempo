@@ -385,7 +385,11 @@ where
             self.job.finish_send(request_id, &admitted);
             if admitted.is_empty() {
                 debug!(target: "zone::p2p", request_id, start, requested = request_peers.len(), leader_only = kind == RequestKind::LeaderOnly, "Block backfill request was not admitted for any peer");
-                // Try the next attempt, if one was constructed.
+                if kind == RequestKind::LeaderOnly {
+                    // Commonware admits nobody only for local refusals such as the rate limit, so
+                    // ask the leader again on the next tick instead of widening to every peer.
+                    break;
+                }
                 continue;
             }
 

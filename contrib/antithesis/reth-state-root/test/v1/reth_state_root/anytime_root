@@ -1,2 +1,2 @@
 #!/bin/sh
-exec reth-state-root-antithesis anytime_root
+exec reth-state-root-commands anytime_root
