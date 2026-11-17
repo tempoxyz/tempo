@@ -1,5 +1,4 @@
 ---
-tempo-evm: patch
 tempo-hardfork: minor
 ---
 
