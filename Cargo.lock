@@ -14237,6 +14237,7 @@ dependencies = [
  "commonware-storage",
  "commonware-stream",
  "commonware-utils",
+ "const_format",
  "derive_more",
  "eyre",
  "futures",
