@@ -174,7 +174,9 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        if prewarm.parallel && !is_parallel_candidate(&tx) {
+        if (prewarm.parallel && !is_parallel_candidate(&tx))
+            || prewarm.is_included_expiring_nonce(&tx)
+        {
             return PrewarmedTransaction::without_replay(tx);
         }
 
@@ -365,6 +367,10 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// T16+ (TIP-1173): the parent's expiring nonce set. Transactions already in it were included
+    /// by an ancestor the pool has not caught up with yet; the builder skips them, so they are not
+    /// worth prewarming.
+    parent_expiring_nonces: Option<tempo_evm::expiring_nonces::ExpiringNonceSet>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -380,6 +386,12 @@ where
         evm_config: TempoEvmConfig,
         parallel: bool,
     ) -> Self {
+        let parent_expiring_nonces = evm_env
+            .spec
+            .is_t16()
+            .then(|| evm_config.expiring_nonce_sets().get(parent_hash))
+            .flatten()
+            .filter(|set| set.is_authoritative());
         Self {
             provider,
             executor,
@@ -389,7 +401,21 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            parent_expiring_nonces,
         }
+    }
+
+    /// Returns whether `tx` is an expiring nonce transaction already in the parent's set.
+    fn is_included_expiring_nonce(&self, tx: &BestTransaction) -> bool {
+        let Some(set) = self.parent_expiring_nonces.as_ref() else {
+            return false;
+        };
+        tempo_evm::expiring_nonces::ExpiringNonce::from_tx(
+            tx.transaction.inner(),
+            tx.transaction.sender(),
+            self.evm_env.spec,
+        )
+        .is_some_and(|entry| set.contains(&entry))
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
@@ -759,6 +785,7 @@ mod tests {
             evm_config,
             stop: Arc::default(),
             parallel,
+            parent_expiring_nonces: None,
         }
     }
 

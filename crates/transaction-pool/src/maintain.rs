@@ -671,10 +671,12 @@ where
         // builder would retry every transaction of the previous block and reject it as a replay.
         if spec.is_t16() {
             removed_txs.push(
-                pool.remove_mined_expiring_nonce_txs(
-                    tip.blocks_iter()
-                        .flat_map(|block| block.body().transactions().map(|tx| *alloy_consensus::transaction::TxHashRef::tx_hash(tx))),
-                ),
+                pool.remove_mined_expiring_nonce_txs(tip.blocks_iter().flat_map(|block| {
+                    block
+                        .body()
+                        .transactions()
+                        .map(|tx| *alloy_consensus::transaction::TxHashRef::tx_hash(tx))
+                })),
             );
         }
         metrics
