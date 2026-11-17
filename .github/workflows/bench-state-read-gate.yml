@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - crates/hardfork/src/gas_params.rs
+      - crates/evm/src/handler.rs
       - crates/evm/src/handler/**
       - crates/precompiles/src/storage/**
       - contrib/bench/txgen/state-read/**

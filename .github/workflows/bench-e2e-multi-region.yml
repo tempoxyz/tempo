@@ -344,7 +344,7 @@ jobs:
       TEMPO_BENCH_POST_WARMUP_RESET_TIMEOUT_SECONDS: ${{ startsWith(inputs.preset, 'state-read-') && '900' || '' }}
       # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk.
       # Runs with a long consensus target block time can't cover every proposer in the auto warmup window; skip warmup.
-      BENCH_INPUT_WARMUP_TIMEOUT: ${{ contains(inputs.baseline-args, 'target-block-time') && '0' || '' }}
+      BENCH_INPUT_WARMUP_TIMEOUT: ${{ (contains(inputs.baseline-args, 'target-block-time') || contains(inputs.feature-args, 'target-block-time')) && '0' || '' }}
       BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || (endsWith(inputs.preset, '-disk') && '16G' || '') }}
       BENCH_INPUT_LOCAL_SSD_COUNT: '4'
       BENCH_INPUT_TPS: ${{ inputs.tps || (github.event_name == 'pull_request' && '100') || '50000' }}
