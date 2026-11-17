@@ -101,6 +101,10 @@ impl<'a> RoutingPolicy<'a> {
         self.other_peers()
     }
 
+    pub(crate) fn may_accept_block(&self, peer: &PublicKey) -> bool {
+        self.is_remote_retained_leader(peer)
+    }
+
     pub(crate) fn settlement_proposal_recipients(&self) -> Vec<PublicKey> {
         self.other_quorum_peers()
     }
@@ -195,6 +199,7 @@ mod tests {
 
     use alloy_primitives::B256;
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use test_case::test_case;
 
     use super::{RoutingMembership, RoutingPolicy};
     use crate::{LeadershipSchedule, LeadershipState, ZoneManifest};
@@ -337,6 +342,7 @@ mod tests {
             "the recovery leader must accept quorum signatures"
         );
         let follower = RoutingPolicy::new(&portal_successor, &membership, &schedule);
+        assert!(follower.may_accept_block(&recovery));
         assert!(follower.may_accept_settlement_proposal(&recovery));
         assert!(follower.may_send_settlement_signature(&recovery));
 
@@ -345,5 +351,27 @@ mod tests {
         assert!(!completed_recovery.may_broadcast_block());
         let follower = RoutingPolicy::new(&portal_successor, &membership, &schedule);
         assert!(!follower.may_send_settlement_signature(&recovery));
+    }
+
+    #[test_case(3, 1 => true; "follower accepts the outgoing leader")]
+    #[test_case(3, 2 => true; "follower accepts the incoming leader")]
+    #[test_case(4, 1 => true; "rpc-only member accepts a leader")]
+    #[test_case(2, 3 => false; "non-leader quorum member")]
+    #[test_case(1, 4 => false; "rpc-only member")]
+    #[test_case(3, 99 => false; "peer outside the manifest")]
+    #[test_case(1, 1 => false; "local key")]
+    fn live_blocks_are_accepted_only_from_remote_retained_leaders(local: u64, sender: u64) -> bool {
+        let manifest = manifest();
+        let membership = RoutingMembership::from_manifest(&manifest);
+        let schedule = LeadershipSchedule::for_membership([key(4)].into_iter().collect());
+        schedule
+            .publish(LeadershipState::new(1, key(1), 0))
+            .unwrap();
+        schedule
+            .publish(LeadershipState::new(2, key(2), 100))
+            .unwrap();
+
+        let local = key(local);
+        RoutingPolicy::new(&local, &membership, &schedule).may_accept_block(&key(sender))
     }
 }
