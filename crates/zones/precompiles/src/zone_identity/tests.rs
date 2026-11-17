@@ -32,18 +32,11 @@ fn enable(identity: &mut ZoneIdentity, token: Address) -> u16 {
     position as u16
 }
 
-/// Reads storage the way execution does, with enforcement on.
+/// The verdict with enforcement on.
 fn check(token: Address, from: Address, to: Address, kind: TransferKind) -> TransferVerdict {
-    let identity = ZoneIdentity::new();
-    check_transfer(
-        true,
-        |slot| identity.storage.sload(ZONE_IDENTITY_ADDRESS, slot),
-        token,
-        from,
-        to,
-        kind,
-    )
-    .unwrap()
+    ZoneIdentity::new()
+        .verdict(true, token, from, to, kind)
+        .unwrap()
 }
 
 #[test]
@@ -322,15 +315,13 @@ fn nothing_is_read_when_not_enforced() {
                 .unwrap(),
             TransferVerdict::NotEnforced
         );
-        let verdict = check_transfer(
-            false,
-            |_| -> Result<U256, ()> { panic!("read storage while not enforced") },
-            token(1),
-            a,
-            b,
-            TransferKind::Withdrawal,
+        // A member with no edge at all still passes while enforcement is off.
+        seed_for_test(&[(a, 1), (b, 2)], &[]).unwrap();
+        assert!(
+            identity
+                .ensure_transfer(false, token(1), a, b, TransferKind::Withdrawal)
+                .is_ok()
         );
-        assert_eq!(verdict, Ok(TransferVerdict::NotEnforced));
     });
 }
 

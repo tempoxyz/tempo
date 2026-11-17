@@ -109,7 +109,7 @@ pub enum TransferKind {
     Withdrawal,
 }
 
-/// Outcome of [`check_transfer`].
+/// Outcome of [`ZoneIdentity::verdict`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferVerdict {
     /// The zone does not enforce orgs.
@@ -136,41 +136,6 @@ impl TransferVerdict {
     }
 }
 
-/// Decides whether `token` may move from `from` to `to`, reading `ZoneIdentity` storage through
-/// `sload`. `enforced` is the portal's flag, read from finalized Tempo; when it is off nothing is
-/// read. Otherwise it reads at most four slots.
-pub fn check_transfer<E>(
-    enforced: bool,
-    mut sload: impl FnMut(U256) -> core::result::Result<U256, E>,
-    token: Address,
-    from: Address,
-    to: Address,
-    kind: TransferKind,
-) -> core::result::Result<TransferVerdict, E> {
-    if !enforced {
-        return Ok(TransferVerdict::NotEnforced);
-    }
-    let identity = ZoneIdentity::new();
-    let sender = Member::decode(sload(identity.members[from].slot())?);
-    let recipient = Member::decode(sload(identity.members[to].slot())?);
-    if sender.frozen || recipient.frozen {
-        return Ok(TransferVerdict::Frozen);
-    }
-    if kind == TransferKind::Withdrawal && sender.org == 0 && from == to {
-        return Ok(TransferVerdict::SelfWithdrawal);
-    }
-    let bit = sload(identity.token_bits[token].slot())?;
-    if bit.is_zero() {
-        return Ok(TransferVerdict::UnregisteredToken);
-    }
-    let edge = sload(identity.orgs[sender.org].edges[recipient.org].slot())?;
-    Ok(if edge.bit(bit.to::<usize>() - 1) {
-        TransferVerdict::Allowed
-    } else {
-        TransferVerdict::NoEdge
-    })
-}
-
 impl ZoneIdentity {
     /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
     /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
@@ -186,7 +151,8 @@ impl ZoneIdentity {
         Ok(l1.read_portal(|portal| &portal.identity_registrar)?)
     }
 
-    /// Decides whether `token` may move from `from` to `to` given the portal's `enforced` flag.
+    /// Decides whether `token` may move from `from` to `to`. `enforced` is the portal's flag from
+    /// [`Self::enforced`]; when it is off nothing is read. Otherwise it reads at most four slots.
     pub fn verdict(
         &self,
         enforced: bool,
@@ -195,14 +161,27 @@ impl ZoneIdentity {
         to: Address,
         kind: TransferKind,
     ) -> ZoneResult<TransferVerdict> {
-        Ok(check_transfer(
-            enforced,
-            |slot| self.storage.sload(ZONE_IDENTITY_ADDRESS, slot),
-            token,
-            from,
-            to,
-            kind,
-        )?)
+        if !enforced {
+            return Ok(TransferVerdict::NotEnforced);
+        }
+        let sender = self.member(from)?;
+        let recipient = self.member(to)?;
+        if sender.frozen || recipient.frozen {
+            return Ok(TransferVerdict::Frozen);
+        }
+        if kind == TransferKind::Withdrawal && sender.org == 0 && from == to {
+            return Ok(TransferVerdict::SelfWithdrawal);
+        }
+        let bit = self.token_bits[token].read()?;
+        if bit == 0 {
+            return Ok(TransferVerdict::UnregisteredToken);
+        }
+        let edge = self.orgs[sender.org].edges[recipient.org].read()?;
+        Ok(if edge.bit(usize::from(bit - 1)) {
+            TransferVerdict::Allowed
+        } else {
+            TransferVerdict::NoEdge
+        })
     }
 
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
