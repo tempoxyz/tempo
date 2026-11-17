@@ -13,8 +13,8 @@ use crate::{
 };
 
 impl ZoneIdentity {
-    /// Dispatches a ZoneIdentity ABI call. The portal admin is read from the finalized Tempo
-    /// anchor in `l1`.
+    /// Dispatches a ZoneIdentity ABI call. The registrar is read from the portal on the finalized
+    /// Tempo anchor in `l1`.
     pub(crate) fn call<P>(
         &mut self,
         l1: &L1State<P>,
@@ -27,59 +27,43 @@ impl ZoneIdentity {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-        let portal_admin =
-            || -> ZoneResult<Address> { Ok(l1.read_portal(|portal| &portal.admin)?) };
+        let registrar = || Self::registrar(l1);
 
         dispatch!(
             calldata,
             |call| match call {
                 IZoneIdentity::IZoneIdentityCalls {
-                    setRegistrar(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_registrar(caller, portal_admin()?, call.registrar)
-                    }),
-                    setEnforced(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_enforced(caller, portal_admin()?, call.enforced)
-                    }),
                     createOrg(call) => mutate(call, msg_sender, |caller, call| {
-                        self.create_org(caller, call.admin)
+                        self.create_org(caller, registrar()?, call.admin)
                     }),
                     setOrgAdmin(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_org_admin(caller, call.orgId, call.admin)
-                    }),
-                    registerToken(call) => mutate(call, msg_sender, |caller, call| {
-                        self.register_token(caller, call.token)
+                        self.set_org_admin(caller, registrar()?, call.orgId, call.admin)
                     }),
                     addMember(call) => mutate(call, msg_sender, |caller, call| {
-                        self.add_member(caller, call.orgId, call.account)
+                        self.add_member(caller, registrar()?, call.orgId, call.account)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
-                        self.remove_member(caller, call.account)
+                        self.remove_member(caller, registrar()?, call.account)
                     }),
                     setFrozen(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_frozen(caller, call.account, call.frozen)
+                        self.set_frozen(caller, registrar()?, call.account, call.frozen)
                     }),
                     setOutbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_outbound(caller, call.fromOrg, call.toOrg, call.tokenMask)
+                        self.set_outbound(caller, registrar()?, call.fromOrg, call.toOrg, call.tokenMask)
                     }),
                     setInbound(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_inbound(caller, call.toOrg, call.fromOrg, call.tokenMask)
+                        self.set_inbound(caller, registrar()?, call.toOrg, call.fromOrg, call.tokenMask)
                     }),
-                    registrar(call) => view(call, |_| -> ZoneResult<_> {
-                        Ok(self.registrar.read()?)
-                    }),
-                    enforced(call) => view(call, |_| -> ZoneResult<_> {
-                        Ok(self.enforced.read()?)
-                    }),
-                    orgAdmin(call) => view(call, |call| self.org_admin(call.orgId)),
+                    orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     tokenBit(call) => view(call, |call| -> ZoneResult<_> {
                         let stored = self.token_bits[call.token].read()?;
                         Ok(IZoneIdentity::tokenBitReturn {
                             bit: stored.saturating_sub(1),
-                            registered: stored != 0,
+                            hasBit: stored != 0,
                         })
                     }),
                     orgOf(call) => view(call, |call| {
-                        self.org_of(msg_sender, call.account).map(|member| {
+                        self.org_of(msg_sender, registrar()?, call.account).map(|member| {
                             IZoneIdentity::orgOfReturn {
                                 orgId: member.org,
                                 frozen: member.frozen,
@@ -87,7 +71,7 @@ impl ZoneIdentity {
                         })
                     }),
                     edge(call) => view(call, |call| {
-                        self.edge(msg_sender, call.fromOrg, call.toOrg)
+                        self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg)
                     }),
                 }
             },

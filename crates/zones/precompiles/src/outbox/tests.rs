@@ -704,6 +704,7 @@ fn request_withdrawal_follows_zone_identity_edges() -> eyre::Result<()> {
     }
     .apply()?;
     env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 1), (BOB, 2)], &[]))?;
+    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));
     assert_revert(
         env.request_withdrawal(ALICE, withdrawal(1, BOB, 0)),
         tempo_contracts::zones::ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, BOB),
@@ -730,6 +731,37 @@ fn request_withdrawal_follows_zone_identity_edges() -> eyre::Result<()> {
             ALICE,
             stranger,
         ),
+    );
+    Ok(())
+}
+
+#[test]
+fn zone_identity_is_inactive_before_its_fork() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T14,
+        ..spec()
+    }
+    .apply()?;
+    env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 1), (BOB, 2)], &[]))?;
+    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));
+    assert!(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
+            .is_success()
+    );
+    Ok(())
+}
+
+#[test]
+fn zone_identity_is_off_until_the_portal_enforces_it() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 1), (BOB, 2)], &[]))?;
+    assert!(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
+            .is_success()
     );
     Ok(())
 }

@@ -545,6 +545,9 @@ interface IZonePortal {
     /// @notice Emitted when zone-internal TIP-20 transfers are enabled or disabled.
     event TransfersEnabledUpdated(bool enabled);
 
+    /// @notice Emitted when the ZoneIdentity registrar or enforcement flag changes.
+    event IdentityConfigUpdated(address registrar, bool enforced);
+
     error NotSequencer();
     error NotAdmin();
     error NotPauseAuthority();
@@ -650,6 +653,9 @@ interface IZonePortal {
 
     /// @notice Enable or disable zone-internal TIP-20 transfers. Only callable by the admin.
     function setTransfersEnabled(bool enabled) external;
+
+    /// @notice Set the ZoneIdentity registrar and enforcement flag. Only callable by the admin.
+    function setIdentityConfig(address registrar, bool enforced) external;
 
     /// @notice Whether an account has a Portal role.
     function hasRole(address account, Role role) external view returns (bool);

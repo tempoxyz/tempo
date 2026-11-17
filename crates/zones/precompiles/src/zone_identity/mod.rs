@@ -7,9 +7,15 @@
 //! admin of the orgs that hold L1 endpoints (deposit senders, off-ramps) and routers, so an exit
 //! needs its half like any other edge.
 //!
+//! The portal admin configures it on Tempo: `ZonePortal.setIdentityConfig` sets the registrar and
+//! whether the zone enforces edges, and the zone reads both from finalized Tempo state, so a
+//! multisig admin never has to act on the zone. Token bits follow the portal's append-only list of
+//! enabled tokens: a token's bit is its position in that list.
+//!
 //! Execution enforces it: zone TIP-20 transfers revert, `ZoneOutbox::requestWithdrawal` reverts and
-//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::ensure_transfer`] denies the move. The check
-//! reads at most five slots (`enforced`, both members, the token's bit and one edge) whatever the
+//! `ZoneInbox` bounces a deposit when [`ZoneIdentity::ensure_transfer`] denies the move. The
+//! enforcement flag shares a Tempo slot with the transfer opt-in TIP-20 already reads; on the zone
+//! the check reads at most four slots (both members, the token's bit and one edge) whatever the
 //! number of orgs, tokens or edges, and a transfer inside an org costs the same as one between
 //! orgs.
 
@@ -22,12 +28,14 @@ use tempo_precompiles::{
     storage::{Handler, Mapping},
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::TempoAddressExt as _;
 pub use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
-use crate::error::ZoneResult;
+use crate::{
+    error::ZoneResult,
+    storage::{L1State, L1StorageReader},
+};
 
-/// Number of TIP-20s one edge mask can name.
+/// Number of enabled tokens that get a bit in the edge masks; later tokens can't be in an edge.
 pub const MAX_IDENTITY_TOKENS: u16 = 256;
 
 /// Org registry and per-token edges between orgs.
@@ -35,20 +43,17 @@ pub const MAX_IDENTITY_TOKENS: u16 = 256;
 /// Field order is the storage layout; append new fields only.
 #[contract(addr = ZONE_IDENTITY_ADDRESS)]
 pub struct ZoneIdentity {
-    /// Tempo's key that creates orgs, assigns org admins, registers tokens and administers org 0.
-    pub registrar: Address,
-    /// Whether the zone enforces org edges. Dedicated zones leave it off.
-    pub enforced: bool,
     /// Highest org ID created. Org IDs start at 1.
     pub org_count: u64,
     /// Each org's admin and edge masks, keyed by org ID.
     pub orgs: Mapping<u64, Org>,
     /// Packed [`Member`] word of each address; zero for addresses in no org.
     pub members: Mapping<Address, U256>,
-    /// Bit index + 1 of each registered token; zero for unregistered tokens.
+    /// Position + 1 of each token in the portal's enabled-token list; zero for tokens without a
+    /// bit.
     pub token_bits: Mapping<Address, u16>,
-    /// Number of registered tokens.
-    pub token_count: u16,
+    /// How many positions of the enabled-token list already have their bit in `token_bits`.
+    pub synced_token_count: u64,
 }
 
 /// One org's configuration. Its mappings are keyed by the other org of each edge.
@@ -115,7 +120,7 @@ pub enum TransferVerdict {
     SelfWithdrawal,
     /// One side is frozen.
     Frozen,
-    /// The token was never registered, so no edge can include it.
+    /// The token has no bit, so no edge can include it.
     UnregisteredToken,
     /// The edge between the two orgs does not include the token.
     NoEdge,
@@ -132,20 +137,20 @@ impl TransferVerdict {
 }
 
 /// Decides whether `token` may move from `from` to `to`, reading `ZoneIdentity` storage through
-/// `sload`. It reads at most five slots.
+/// `sload`. `enforced` is the portal's flag, read from finalized Tempo; when it is off nothing is
+/// read. Otherwise it reads at most four slots.
 pub fn check_transfer<E>(
+    enforced: bool,
     mut sload: impl FnMut(U256) -> core::result::Result<U256, E>,
     token: Address,
     from: Address,
     to: Address,
     kind: TransferKind,
 ) -> core::result::Result<TransferVerdict, E> {
-    let identity = ZoneIdentity::new();
-    // `enforced` shares slot 0 with `registrar`.
-    let enforced_shift = identity.enforced.offset().unwrap_or_default() * 8;
-    if !(sload(identity.enforced.slot())? >> enforced_shift).bit(0) {
+    if !enforced {
         return Ok(TransferVerdict::NotEnforced);
     }
+    let identity = ZoneIdentity::new();
     let sender = Member::decode(sload(identity.members[from].slot())?);
     let recipient = Member::decode(sload(identity.members[to].slot())?);
     if sender.frozen || recipient.frozen {
@@ -167,19 +172,31 @@ pub fn check_transfer<E>(
 }
 
 impl ZoneIdentity {
-    /// Decides whether `token` may move from `from` to `to`. Before the fork that adds
-    /// `ZoneIdentity` it reads nothing and allows every move.
+    /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
+    /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
+    pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<bool> {
+        if !crate::zone_identity_active(tempo_precompiles::storage::StorageCtx.spec()) {
+            return Ok(false);
+        }
+        Ok(l1.read_portal(|portal| &portal.identity_enforced)?)
+    }
+
+    /// The registrar the portal admin set on finalized Tempo.
+    pub fn registrar<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<Address> {
+        Ok(l1.read_portal(|portal| &portal.identity_registrar)?)
+    }
+
+    /// Decides whether `token` may move from `from` to `to` given the portal's `enforced` flag.
     pub fn verdict(
         &self,
+        enforced: bool,
         token: Address,
         from: Address,
         to: Address,
         kind: TransferKind,
     ) -> ZoneResult<TransferVerdict> {
-        if !crate::zone_identity_active(self.storage.spec()) {
-            return Ok(TransferVerdict::NotEnforced);
-        }
         Ok(check_transfer(
+            enforced,
             |slot| self.storage.sload(ZONE_IDENTITY_ADDRESS, slot),
             token,
             from,
@@ -191,42 +208,47 @@ impl ZoneIdentity {
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
     pub fn ensure_transfer(
         &self,
+        enforced: bool,
         token: Address,
         from: Address,
         to: Address,
         kind: TransferKind,
     ) -> ZoneResult<()> {
-        if !self.verdict(token, from, to, kind)?.is_allowed() {
+        if !self.verdict(enforced, token, from, to, kind)?.is_allowed() {
             return Err(ZoneIdentityError::org_policy_forbids(token, from, to).into());
         }
         Ok(())
     }
 
-    /// Sets the registrar. Only the portal admin, read from finalized Tempo, may call it.
-    pub fn set_registrar(
+    /// Gives every position of the portal's enabled-token list below `enabled_count` that has no
+    /// bit yet its bit, its position. `token_at` returns the token at a position. Positions from
+    /// [`MAX_IDENTITY_TOKENS`] on get no bit.
+    pub fn sync_token_bits(
         &mut self,
-        caller: Address,
-        portal_admin: Address,
-        registrar: Address,
+        enabled_count: u64,
+        mut token_at: impl FnMut(u64) -> ZoneResult<Address>,
     ) -> ZoneResult<()> {
-        ensure_caller(caller, portal_admin)?;
-        Ok(self.registrar.write(registrar)?)
-    }
-
-    /// Turns enforcement on or off. Only the portal admin may call it.
-    pub fn set_enforced(
-        &mut self,
-        caller: Address,
-        portal_admin: Address,
-        enforced: bool,
-    ) -> ZoneResult<()> {
-        ensure_caller(caller, portal_admin)?;
-        Ok(self.enforced.write(enforced)?)
+        let synced = self.synced_token_count.read()?;
+        let end = enabled_count.min(u64::from(MAX_IDENTITY_TOKENS));
+        if end <= synced {
+            return Ok(());
+        }
+        for position in synced..end {
+            let bit =
+                u16::try_from(position + 1).map_err(|_| TempoPrecompileError::under_overflow())?;
+            self.token_bits[token_at(position)?].write(bit)?;
+        }
+        Ok(self.synced_token_count.write(end)?)
     }
 
     /// Creates an org administered by `admin` and returns its ID.
-    pub fn create_org(&mut self, caller: Address, admin: Address) -> ZoneResult<u64> {
-        self.ensure_registrar(caller)?;
+    pub fn create_org(
+        &mut self,
+        caller: Address,
+        registrar: Address,
+        admin: Address,
+    ) -> ZoneResult<u64> {
+        ensure_caller(caller, registrar)?;
         if admin.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
@@ -241,8 +263,14 @@ impl ZoneIdentity {
     }
 
     /// Replaces an org's admin. Org 0 is always administered by the registrar.
-    pub fn set_org_admin(&mut self, caller: Address, org: u64, admin: Address) -> ZoneResult<()> {
-        self.ensure_registrar(caller)?;
+    pub fn set_org_admin(
+        &mut self,
+        caller: Address,
+        registrar: Address,
+        org: u64,
+        admin: Address,
+    ) -> ZoneResult<()> {
+        ensure_caller(caller, registrar)?;
         self.ensure_org(org)?;
         if org == 0 || admin.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
@@ -250,27 +278,15 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.write(admin)?)
     }
 
-    /// Assigns `token` the next free bit of the edge masks. Bits are never reused.
-    pub fn register_token(&mut self, caller: Address, token: Address) -> ZoneResult<u16> {
-        self.ensure_registrar(caller)?;
-        if !token.is_tip20() {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
-        if self.token_bits[token].read()? != 0 {
-            return Err(ZoneIdentityError::token_already_registered(token).into());
-        }
-        let bit = self.token_count.read()?;
-        if bit >= MAX_IDENTITY_TOKENS {
-            return Err(ZoneIdentityError::too_many_tokens().into());
-        }
-        self.token_bits[token].write(bit + 1)?;
-        self.token_count.write(bit + 1)?;
-        Ok(bit)
-    }
-
     /// Adds `account`, which must be in no org, to `org`.
-    pub fn add_member(&mut self, caller: Address, org: u64, account: Address) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, org)?;
+    pub fn add_member(
+        &mut self,
+        caller: Address,
+        registrar: Address,
+        org: u64,
+        account: Address,
+    ) -> ZoneResult<()> {
+        self.ensure_org_admin(caller, registrar, org)?;
         if org == 0 || account.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
@@ -283,12 +299,17 @@ impl ZoneIdentity {
 
     /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
     /// to escape its org's outbound rules.
-    pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
+    pub fn remove_member(
+        &mut self,
+        caller: Address,
+        registrar: Address,
+        account: Address,
+    ) -> ZoneResult<()> {
         let member = self.member(account)?;
         if member.org == 0 {
             return Err(ZoneIdentityError::not_member(account).into());
         }
-        self.ensure_org_admin(caller, member.org)?;
+        self.ensure_org_admin(caller, registrar, member.org)?;
         Ok(self.members[account].write(U256::ZERO)?)
     }
 
@@ -296,6 +317,7 @@ impl ZoneIdentity {
     pub fn set_frozen(
         &mut self,
         caller: Address,
+        registrar: Address,
         account: Address,
         frozen: bool,
     ) -> ZoneResult<()> {
@@ -303,7 +325,7 @@ impl ZoneIdentity {
         if member.org == 0 {
             return Err(ZoneIdentityError::not_member(account).into());
         }
-        self.ensure_org_admin(caller, member.org)?;
+        self.ensure_org_admin(caller, registrar, member.org)?;
         Ok(self.members[account].write(Member { frozen, ..member }.encode())?)
     }
 
@@ -311,11 +333,12 @@ impl ZoneIdentity {
     pub fn set_outbound(
         &mut self,
         caller: Address,
+        registrar: Address,
         from: u64,
         to: u64,
         mask: U256,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, from)?;
+        self.ensure_org_admin(caller, registrar, from)?;
         self.ensure_org(to)?;
         self.orgs[from].outbound[to].write(mask)?;
         let inbound = self.orgs[to].inbound[from].read()?;
@@ -326,11 +349,12 @@ impl ZoneIdentity {
     pub fn set_inbound(
         &mut self,
         caller: Address,
+        registrar: Address,
         to: u64,
         from: u64,
         mask: U256,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, to)?;
+        self.ensure_org_admin(caller, registrar, to)?;
         self.ensure_org(from)?;
         self.orgs[to].inbound[from].write(mask)?;
         let outbound = self.orgs[from].outbound[to].read()?;
@@ -338,9 +362,9 @@ impl ZoneIdentity {
     }
 
     /// Admin of `org`; the registrar for org 0.
-    pub fn org_admin(&self, org: u64) -> ZoneResult<Address> {
+    pub fn org_admin(&self, registrar: Address, org: u64) -> ZoneResult<Address> {
         if org == 0 {
-            return Ok(self.registrar.read()?);
+            return Ok(registrar);
         }
         Ok(self.orgs[org].admin.read()?)
     }
@@ -352,24 +376,31 @@ impl ZoneIdentity {
 
     /// Membership of `account` for a caller that may see it: the account itself, its org's admin or
     /// the registrar.
-    pub fn org_of(&self, caller: Address, account: Address) -> ZoneResult<Member> {
+    pub fn org_of(
+        &self,
+        caller: Address,
+        registrar: Address,
+        account: Address,
+    ) -> ZoneResult<Member> {
         let member = self.member(account)?;
-        if caller != account && caller != self.org_admin(member.org)? {
-            self.ensure_registrar(caller)?;
+        if caller != account && caller != self.org_admin(registrar, member.org)? {
+            ensure_caller(caller, registrar)?;
         }
         Ok(member)
     }
 
     /// Edge mask from `from` to `to`, for the admin of either org or the registrar.
-    pub fn edge(&self, caller: Address, from: u64, to: u64) -> ZoneResult<U256> {
-        if caller != self.org_admin(from)? && caller != self.org_admin(to)? {
-            self.ensure_registrar(caller)?;
+    pub fn edge(
+        &self,
+        caller: Address,
+        registrar: Address,
+        from: u64,
+        to: u64,
+    ) -> ZoneResult<U256> {
+        if caller != self.org_admin(registrar, from)? && caller != self.org_admin(registrar, to)? {
+            ensure_caller(caller, registrar)?;
         }
         Ok(self.orgs[from].edges[to].read()?)
-    }
-
-    fn ensure_registrar(&self, caller: Address) -> ZoneResult<()> {
-        ensure_caller(caller, self.registrar.read()?)
     }
 
     fn ensure_org(&self, org: u64) -> ZoneResult<()> {
@@ -379,9 +410,9 @@ impl ZoneIdentity {
         Ok(())
     }
 
-    fn ensure_org_admin(&self, caller: Address, org: u64) -> ZoneResult<()> {
+    fn ensure_org_admin(&self, caller: Address, registrar: Address, org: u64) -> ZoneResult<()> {
         self.ensure_org(org)?;
-        ensure_caller(caller, self.org_admin(org)?)
+        ensure_caller(caller, self.org_admin(registrar, org)?)
     }
 }
 
@@ -393,14 +424,14 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
     Ok(())
 }
 
-/// Seeds enforced `ZoneIdentity` storage directly, for tests of the paths that enforce it.
+/// Seeds `ZoneIdentity` storage directly, for tests of the paths that enforce it. Tokens named in
+/// `edges` get the next free bits.
 #[cfg(test)]
 pub(crate) fn seed_for_test(
     members: &[(Address, u64)],
     edges: &[(u64, u64, Address)],
 ) -> tempo_precompiles::Result<()> {
     let mut identity = ZoneIdentity::new();
-    identity.enforced.write(true)?;
     let mut org_count = identity.org_count.read()?;
     for &(account, org) in members {
         org_count = org_count.max(org);
@@ -411,9 +442,10 @@ pub(crate) fn seed_for_test(
     for &(from, to, token) in edges {
         let mut bit = identity.token_bits[token].read()?;
         if bit == 0 {
-            bit = identity.token_count.read()? + 1;
+            let synced = identity.synced_token_count.read()?;
+            bit = u16::try_from(synced + 1).expect("test tokens fit");
             identity.token_bits[token].write(bit)?;
-            identity.token_count.write(bit)?;
+            identity.synced_token_count.write(synced + 1)?;
         }
         let edge = identity.orgs[from].edges[to].read()? | (U256::ONE << (bit - 1));
         identity.orgs[from].edges[to].write(edge)?;

@@ -185,9 +185,17 @@ impl ZoneOutbox {
         // The withdrawal must follow an org edge, and so must its bounce-back to the fallback
         // recipient.
         let identity = ZoneIdentity::new();
-        identity.ensure_transfer(call.token, caller, call.to, TransferKind::Withdrawal)?;
+        let enforced = ZoneIdentity::enforced(l1)?;
+        identity.ensure_transfer(
+            enforced,
+            call.token,
+            caller,
+            call.to,
+            TransferKind::Withdrawal,
+        )?;
         if call.zoneFallbackRecipient != caller {
             identity.ensure_transfer(
+                enforced,
                 call.token,
                 caller,
                 call.zoneFallbackRecipient,

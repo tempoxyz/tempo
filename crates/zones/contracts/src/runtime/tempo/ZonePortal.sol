@@ -243,6 +243,18 @@ contract ZonePortal is IZonePortal {
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
 
+    /// @notice Key that creates orgs, assigns their admins and administers org 0 on the zone's
+    ///         ZoneIdentity predeploy.
+    /// @dev Packed after the transfer flag in slot 28, so the zone reads it with the flags it
+    ///      already reads. Read from finalized Tempo state by ZoneIdentity. Internal, without a
+    ///      getter, to keep the runtime under the code size limit; read it from storage.
+    address internal _identityRegistrar;
+
+    /// @notice Whether the zone enforces ZoneIdentity org edges on transfers, deposits and
+    ///         withdrawals.
+    /// @dev Packed after the registrar in slot 28. Defaults to false.
+    bool internal _identityEnforced;
+
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -532,6 +544,14 @@ contract ZonePortal is IZonePortal {
         _requireCapabilityActive(Capability.AccessPolicy);
         transfersEnabled = enabled;
         emit TransfersEnabledUpdated(enabled);
+    }
+
+    /// @notice Set the zone's ZoneIdentity registrar and whether it enforces org edges.
+    function setIdentityConfig(address registrar, bool enforced) external onlyAdmin {
+        _requireCapabilityActive(Capability.AccessPolicy);
+        _identityRegistrar = registrar;
+        _identityEnforced = enforced;
+        emit IdentityConfigUpdated(registrar, enforced);
     }
 
     /// @notice Return whether account allowlist enforcement is enabled.

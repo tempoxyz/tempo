@@ -799,6 +799,9 @@ fn zone_identity_bounces_deposits_without_an_edge() -> eyre::Result<()> {
     seed_encryption_key(&env, &fixture);
     let (deposit, decryption) = encrypted_deposit(&fixture, fixture.to, 500);
     env.with_storage(|| crate::zone_identity::seed_for_test(&[(ALICE, 2), (fixture.to, 1)], &[]))?;
+    env.write_portal(env.child_header.inner.number, |portal| {
+        portal.identity_enforced.write(true)
+    });
     let queued = env.queue_deposit(DepositType::Deposit, deposit);
 
     env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
@@ -824,6 +827,9 @@ fn zone_identity_credits_deposits_along_an_edge() -> eyre::Result<()> {
             &[(2, 1, PATH_USD_ADDRESS)],
         )
     })?;
+    env.write_portal(env.child_header.inner.number, |portal| {
+        portal.identity_enforced.write(true)
+    });
     let queued = env.queue_deposit(DepositType::Deposit, deposit);
 
     env.advance_tempo(vec![queued], vec![decryption], Vec::new())?;
@@ -831,4 +837,46 @@ fn zone_identity_credits_deposits_along_an_edge() -> eyre::Result<()> {
     assert_eq!(env.balance(PATH_USD_ADDRESS, fixture.to), U256::from(500));
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
+}
+
+#[test]
+fn zone_identity_gives_enabled_tokens_their_position_as_bit() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let first = maximum_metadata_token(1);
+    let second = maximum_metadata_token(2);
+    env.queue_token_enablement(&first);
+    env.queue_token_enablement(&second);
+    let output = env.advance_tempo(Vec::new(), Vec::new(), vec![first.clone(), second.clone()])?;
+    assert!(output.is_success(), "token enablement failed: {output:?}");
+
+    let synced = env.with_storage(|| -> eyre::Result<u64> {
+        let identity = crate::zone_identity::ZoneIdentity::new();
+        let synced = identity.synced_token_count.read()?;
+        assert!(synced >= 2);
+        assert_eq!(
+            identity.token_bits[first.token].read()?,
+            (synced - 1) as u16
+        );
+        assert_eq!(identity.token_bits[second.token].read()?, synced as u16);
+        Ok(synced)
+    })?;
+    // Tokens enabled before ZoneIdentity activated get their bits in the same sync.
+    let mut earlier = Vec::new();
+    env.write_portal(env.child_header.inner.number, |portal| {
+        for position in 0..synced - 2 {
+            earlier.push(portal.enabled_tokens[position as usize].read()?);
+        }
+        Ok(())
+    });
+    env.with_storage(|| -> eyre::Result<()> {
+        let identity = crate::zone_identity::ZoneIdentity::new();
+        for (position, token) in earlier.into_iter().enumerate() {
+            assert_eq!(identity.token_bits[token].read()?, (position + 1) as u16);
+        }
+        Ok(())
+    })
 }

@@ -66,7 +66,13 @@ impl<P: L1StorageReader> TIP20Rules<P> {
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        match ZoneIdentity::new().ensure_transfer(self.token, from, to, TransferKind::InZone) {
+        let enforced = match ZoneIdentity::enforced(&self.l1) {
+            Ok(enforced) => enforced,
+            Err(ZonePrecompileError::Tempo(error)) => return Err(error),
+            Err(error) => return Err(TempoPrecompileError::Fatal(error.to_string())),
+        };
+        let identity = ZoneIdentity::new();
+        match identity.ensure_transfer(enforced, self.token, from, to, TransferKind::InZone) {
             Ok(()) => Ok(CallCheck::Continue),
             Err(ZonePrecompileError::Identity(error)) => {
                 Ok(CallCheck::Revert(error.abi_encode().into()))
@@ -433,6 +439,14 @@ mod tests {
             })?)
         }
 
+        fn set_identity_enforced(&self, enforced: bool) -> eyre::Result<()> {
+            Ok(self.l1_reader.with_storage(TEMPO_BLOCK_NUMBER, || {
+                ZonePortal::new(PORTAL_ADDRESS)
+                    .identity_enforced
+                    .write(enforced)
+            })?)
+        }
+
         fn balance_of(&mut self, account: Address) -> eyre::Result<U256> {
             let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || {
@@ -561,6 +575,7 @@ mod tests {
     fn transfers_follow_zone_identity_edges() -> eyre::Result<()> {
         let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
         harness.set_transfers_enabled(true)?;
+        harness.set_identity_enforced(true)?;
         let (alice, bob, token) = (harness.alice, harness.bob, harness.token);
         {
             let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);

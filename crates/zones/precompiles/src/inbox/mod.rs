@@ -43,6 +43,7 @@ use crate::{
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
     zone_identity::{TransferKind, ZoneIdentity},
+    zone_identity_active,
 };
 
 /// ABI selector for the block-opening `advanceTempo` system call.
@@ -121,6 +122,11 @@ impl ZoneInbox {
             None
         };
 
+        let enabled_token_addresses = call
+            .enabledTokens
+            .iter()
+            .map(|enabled| enabled.token)
+            .collect::<Vec<_>>();
         self.enable_tokens(call.enabledTokens)?;
         if has_token_enablements {
             self.processed_token_enablement_hash
@@ -143,6 +149,23 @@ impl ZoneInbox {
         } else {
             0
         };
+
+        // Give newly enabled tokens, and any enabled before ZoneIdentity activated, their bit: their
+        // position in the portal's enabled-token list.
+        if zone_identity_active(StorageCtx.spec()) {
+            let batch_start = processed_enabled_token_count
+                .checked_sub(enabled_token_addresses.len() as u64)
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+            ZoneIdentity::new().sync_token_bits(processed_enabled_token_count, |position| {
+                if let Some(offset) = position.checked_sub(batch_start) {
+                    return Ok(enabled_token_addresses[offset as usize]);
+                }
+                let index = usize::try_from(position)
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                Ok(l1.read_portal(|portal| &portal.enabled_tokens[index])?)
+            })?;
+        }
+        let identity_enforced = ZoneIdentity::enforced(l1)?;
 
         // Step 2: Process deposits and build hash chain
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
@@ -169,6 +192,7 @@ impl ZoneInbox {
                         deposit,
                         decryption,
                         key,
+                        identity_enforced,
                     )
                 }
             }?;
@@ -272,6 +296,7 @@ impl ZoneInbox {
         deposit: Deposit,
         decryption: DecryptionData,
         key: (B256, u8),
+        identity_enforced: bool,
     ) -> ZoneResult<()> {
         let Some((to, memo)) = recover_encrypted_payload(portal, &deposit, &decryption, key)?
         else {
@@ -281,7 +306,13 @@ impl ZoneInbox {
         // Bounce a deposit whose L1 sender's org has no edge to the recipient's org.
         let identity = ZoneIdentity::new();
         if !identity
-            .verdict(deposit.token, deposit.sender, to, TransferKind::Deposit)?
+            .verdict(
+                identity_enforced,
+                deposit.token,
+                deposit.sender,
+                to,
+                TransferKind::Deposit,
+            )?
             .is_allowed()
         {
             return self.fail_deposit(outbox, current_hash, deposit);

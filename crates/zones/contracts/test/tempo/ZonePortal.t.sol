@@ -2405,6 +2405,36 @@ contract ZonePortalTest is BaseTest {
         assertFalse(portal.transfersEnabled());
     }
 
+    function test_setIdentityConfig_defaultsOffAndUpdates() public {
+        assertEq(_identityWord(), 0);
+
+        address registrar = makeAddr("identity registrar");
+        vm.expectEmit(false, false, false, true);
+        emit IZonePortal.IdentityConfigUpdated(registrar, true);
+        vm.prank(admin);
+        portal.setIdentityConfig(registrar, true);
+        assertEq(address(uint160(_identityWord())), registrar);
+        assertEq(_identityWord() >> 160, 1);
+        // The transfer flag sharing the slot is untouched.
+        assertFalse(portal.transfersEnabled());
+
+        vm.prank(admin);
+        portal.setIdentityConfig(registrar, false);
+        assertEq(address(uint160(_identityWord())), registrar);
+        assertEq(_identityWord() >> 160, 0);
+    }
+
+    /// Registrar and enforcement flag: slot 28 from byte 10 on.
+    function _identityWord() internal view returns (uint256) {
+        return uint256(vm.load(address(portal), bytes32(uint256(28)))) >> 80;
+    }
+
+    function test_setIdentityConfig_revertsIfNotAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.setIdentityConfig(alice, true);
+    }
+
     function test_setAllowedAccount_enablesAndDisablesMembership() public {
         address account = makeAddr("managed account");
 

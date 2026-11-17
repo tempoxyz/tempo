@@ -107,6 +107,10 @@ pub struct ZonePortalStorage {
     token_enablement_cursor_initialized: bool,
     /// Whether zone-internal TIP-20 transfers are enabled, packed into slot 28.
     transfers_enabled: bool,
+    /// ZoneIdentity registrar, packed into slot 28 after the transfer flag.
+    identity_registrar: Address,
+    /// Whether the zone enforces ZoneIdentity org edges, packed into slot 28.
+    identity_enforced: bool,
 }
 
 impl ZonePortalStorage {
