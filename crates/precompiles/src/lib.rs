@@ -332,13 +332,13 @@ where
         if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
             return Some(Err(PrecompileHalt::OutOfGas.into()));
         }
-        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
-        let input = evm.message_input(message).to_vec();
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
-            .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
-        Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &input, message.caller)
+        Some(evm.with_message_input(message, |evm, input| {
+            let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+                .with_actions(self.actions.clone())
+                .with_non_creditable_slots(self.non_creditable_slots.clone());
+            StorageCtx::enter(&mut storage, || {
+                self.call_tempo(message.call_target, input, message.caller)
+            })
         }))
     }
 }
