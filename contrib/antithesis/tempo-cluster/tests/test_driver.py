@@ -47,11 +47,74 @@ class Checks(unittest.TestCase):
             self.cluster.observe()
         self.assertIn((False, "Validators agree on finalized block and state roots"), self.calls)
 
-    def test_finalized_regression_is_safety_failure(self):
+    def test_lagging_finalized_marker_is_not_safety_failure(self):
         self.cluster.highest[0] = 9
-        with patch.object(driver, "block", return_value=make_block(8)):
+        self.cluster.anchors[9] = driver.fingerprint(make_block(9))
+        with patch.object(driver, "block", side_effect=lambda url, tag: make_block(8 if tag == "finalized" else int(tag, 16))):
+            self.assertTrue(self.cluster.observe())
+        self.assertTrue(all(ok for ok, _ in self.calls), self.calls)
+        self.assertEqual(self.cluster.highest, [9, 8, 8, 8])
+        self.assertEqual(self.cluster.heights, [8, 8, 8, 8])
+
+    def test_lagging_marker_does_not_hide_changed_finalized_checkpoint(self):
+        self.cluster.highest[0] = 9
+        self.cluster.anchors[9] = driver.fingerprint(make_block(9))
+        def block(url, tag):
+            return make_block(8 if tag == "finalized" else int(tag, 16),
+                              "f" if url == "a" and tag == "0x9" else "a")
+        with patch.object(driver, "block", side_effect=block):
             self.cluster.observe()
-        self.assertIn((False, "Finalized height never regresses"), self.calls)
+        self.assertIn((False, "Finalized checkpoints remain immutable"), self.calls)
+
+    def test_recovery_requires_current_catchup_not_historical_high_water(self):
+        for catches_up in (False, True):
+            with self.subTest(catches_up=catches_up):
+                cluster = driver.Cluster(["a", "b", "c", "d"])
+                cluster.highest = [9] * 4
+                now = [0]
+                rounds = [0]
+                def observe():
+                    rounds[0] += 1
+                    # High waters advance, then one node serves an older marker.
+                    cluster.highest = [20] * 4
+                    cluster.heights = ([21 if rounds[0] > 2 else 13] * 4
+                                       if catches_up and rounds[0] > 1 else [12, 12, 12, 8])
+                    cluster.successful_receipts = rounds[0]
+                    cluster.successful_height = min(cluster.heights)
+                    return True
+                with patch.object(cluster, "observe", side_effect=observe), \
+                        patch.object(driver, "time", types.SimpleNamespace(
+                            monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
+                        patch.object(driver, "RECOVERY_TIMEOUT", 4), \
+                        patch.object(driver, "command", return_value=0) as send, \
+                        patch.object(driver.Path, "write_text"), \
+                        patch.object(driver.os, "_exit") as exit_timeline:
+                    cluster.recover(None)
+                self.assertIn((catches_up, "Cluster resumes finality and successful transactions after faults stop"), self.calls)
+                exit_timeline.assert_called_once_with(0 if catches_up else 1)
+                self.assertEqual(send.call_count, 1 if catches_up else 0)
+                self.calls.clear()
+
+    def test_recovery_does_not_reuse_success_above_lagging_markers(self):
+        self.cluster.highest = [9] * 4
+        now = [0]
+        def observe():
+            self.cluster.highest = [20] * 4
+            self.cluster.heights = [13] * 4
+            self.cluster.successful_receipts = 1
+            self.cluster.successful_height = 20
+            return True
+        with patch.object(self.cluster, "observe", side_effect=observe), \
+                patch.object(driver, "time", types.SimpleNamespace(
+                    monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
+                patch.object(driver, "RECOVERY_TIMEOUT", 4), \
+                patch.object(driver, "command", return_value=0) as send, \
+                patch.object(driver.Path, "write_text"), \
+                patch.object(driver.os, "_exit") as exit_timeline:
+            self.cluster.recover(None)
+        self.assertIn((False, "Cluster resumes finality and successful transactions after faults stop"), self.calls)
+        send.assert_called_once()
+        exit_timeline.assert_called_once_with(1)
 
     def test_changed_checkpoint_is_safety_failure(self):
         self.cluster.anchors[7] = driver.fingerprint(make_block(7))
@@ -60,9 +123,11 @@ class Checks(unittest.TestCase):
         self.assertIn((False, "Finalized checkpoints remain immutable"), self.calls)
 
     def test_unavailable_nodes_do_not_imply_safety_failure(self):
+        self.cluster.heights = [8] * 4
         with patch.object(driver, "block", side_effect=driver.RpcError("partition")):
             self.assertFalse(self.cluster.observe())
         self.assertEqual(self.calls, [])
+        self.assertEqual(self.cluster.heights, [None] * 4)
 
     def test_rpc_receipt_mismatch_is_safety_failure(self):
         with patch.object(driver, "block", return_value=make_block(8, txs=["tx"])), patch.object(driver, "rpc", return_value={"blockHash": "wrong", "status": "0x1"}):

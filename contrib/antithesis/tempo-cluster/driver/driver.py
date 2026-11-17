@@ -123,6 +123,7 @@ class Cluster(hegel.StateMachine):
         self.anchors = collections.OrderedDict()
         self.anchor_cursor = 0
         self.highest = [0] * len(urls)
+        self.heights = [None] * len(urls)
         self.start_height = 0
         self.scanned_height = 0
         self.started = time.monotonic()
@@ -135,6 +136,7 @@ class Cluster(hegel.StateMachine):
 
     def observe(self):
         heads = []
+        self.heights = [None] * len(self.urls)
         checkpoints = list(self.anchors.items())
         checked = checkpoints[-1:]
         if checkpoints:
@@ -146,13 +148,13 @@ class Cluster(hegel.StateMachine):
             try:
                 head = block(url, "finalized")
                 height = int(head["number"], 16)
-                assertions.always(height >= self.highest[node], "Finalized height never regresses",
-                                  {"node": node, "before": self.highest[node], "after": height})
+                # A restarted node may serve a lagging persisted finalized marker.
+                self.heights[node] = height
                 self.highest[node] = max(self.highest[node], height)
                 heads.append((node, height))
-                # Check retained checkpoints against every node that has finalized them.
+                # Keep checking blocks this node previously finalized, even if its marker lags.
                 for checkpoint, expected in checked:
-                    if height >= checkpoint:
+                    if self.highest[node] >= checkpoint:
                         actual = block(url, hex(checkpoint))
                         assertions.always(fingerprint(actual) == expected,
                                           "Finalized checkpoints remain immutable",
@@ -271,19 +273,19 @@ class Cluster(hegel.StateMachine):
         recovered = False
         while time.monotonic() < deadline:
             available = self.observe()
-            if available and min(self.highest) >= target and not sent:
+            if available and min(self.heights) >= target and not sent:
                 sent_height = max(self.highest)
                 with tempfile.TemporaryDirectory() as directory:
                     sent = command(["/driver/txgen.sh", "burst", self.urls[0], "99", f"{directory}/report.json"], 20) == 0
-            if available and min(self.highest) >= target and sent and self.successful_height > sent_height and self.successful_receipts > before:
+            if available and min(self.heights) >= target and sent and self.successful_height > sent_height and self.successful_receipts > before:
                 recovered = True
                 break
             time.sleep(1)
         if quiet_until is not None and time.monotonic() >= quiet_until:
             raise FaultControlError("Recovery exceeded the fault-pause lease; liveness result is invalid")
         assertions.always(recovered, "Cluster resumes finality and successful transactions after faults stop",
-                          {"target": target, "heights": self.highest, "successful_samples": self.successful_receipts - before})
-        Path("/state/recovery-result.json").write_text(json.dumps({"recovered": recovered, "heights": self.highest}))
+                          {"target": target, "heights": self.heights, "highest": self.highest, "successful_samples": self.successful_receipts - before})
+        Path("/state/recovery-result.json").write_text(json.dumps({"recovered": recovered, "heights": self.heights}))
         print("Ending recovered timeline", flush=True)
         os._exit(0 if recovered else 1)
 

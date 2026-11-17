@@ -19,12 +19,14 @@ Hegel chooses each burst's seed and RPC endpoint; the pinned real `txgen-tempo`
 and `bench` tools generate/sign/send 32 transactions with eight concurrent sends.
 Failed/time-out bursts have unknown outcomes and are not safety violations.
 
-Properties: finalized heights never regress; validators agree on block/state,
-transaction and receipt roots at the same finalized height; retained checkpoints
-stay immutable; sampled finalized receipts match their block; successful workload
-transactions and new finality are reached. A recovery action requests a bounded
+Properties: finalized RPC markers may temporarily lag after restart. Validators
+agree on block/state, transaction and receipt roots at the same finalized height.
+Retained checkpoints stay immutable, including readable checkpoints above a
+lagging marker on a node that previously finalized them. Sampled finalized receipts
+match their block; successful workload transactions and new finality are reached. A recovery action requests a bounded
 quiet period through the platform's `ANTITHESIS_STOP_FAULTS` helper, requires all
-four validators to advance and observes another successful finalized transaction,
+four validators' current finalized markers to advance beyond the pre-recovery
+high-water mark and observes another successful finalized transaction,
 then exits. This does not prove admission of a specific recovery-burst transaction.
 The model retains 64 checkpoints and 256 receipt IDs. RPC reads time out in 2s;
 recovery polls for 180s inside a one-hour quiet lease; a final bounded RPC batch
