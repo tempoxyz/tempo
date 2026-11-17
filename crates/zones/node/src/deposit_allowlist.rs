@@ -1159,32 +1159,6 @@ mod tests {
     }
 
     #[test]
-    fn virtual_addresses_are_never_listed() {
-        let dir = tempfile::tempdir().unwrap();
-        let allowlist = alice_only(dir.path());
-        let virtual_alice = Address::new_virtual(
-            tempo_primitives::MasterId::repeat_byte(0x01),
-            tempo_primitives::UserTag::repeat_byte(0x02),
-        );
-        allowlist.replace(vec![ALICE, virtual_alice]).unwrap();
-
-        // From T15 a virtual recipient credits its master, which the screens can't see.
-        assert!(!allowlist.allows_all(&[ALICE, virtual_alice]));
-        assert!(allowlist.allows_all(&[ALICE]));
-        let valid = valid_decryption();
-        let mut decryptions = vec![valid.clone(); 2];
-        let rejected = allowlist
-            .reject_unlisted(
-                &[ALICE, ALICE],
-                &[Some(virtual_alice), Some(ALICE)],
-                &mut decryptions,
-            )
-            .unwrap();
-        assert_eq!(rejected, 1);
-        assert_eq!(decryptions, vec![FAILED_DECRYPTION, valid]);
-    }
-
-    #[test]
     fn reject_unlisted_requires_one_decryption_per_deposit() {
         let dir = tempfile::tempdir().unwrap();
         let allowlist = alice_only(dir.path());

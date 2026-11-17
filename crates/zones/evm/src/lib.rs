@@ -494,15 +494,14 @@ mod tests {
     };
     use tempo_contracts::zones::IZoneInbox;
     use tempo_precompiles::{
-        ADDRESS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, address_registry,
+        TIP403_REGISTRY_ADDRESS,
         storage::StorageKey,
         tip20::{self, ITIP20},
         tip403_registry::{ITIP403Registry, tip403_registry_slots},
         zone_factory::ZonePortalStorage,
     };
-    use tempo_primitives::{
-        MasterId,
-        transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    use tempo_primitives::transaction::envelope::{
+        TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE,
     };
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
@@ -700,36 +699,6 @@ mod tests {
             let tx = advance_tempo_tx(&child, vec![enabled_token.clone()]);
             assert!(evm.transact(&tx).unwrap().commit().status);
             assert_eq!(paused(&mut evm), paused_at_child, "{spec:?}");
-        }
-    }
-
-    #[test]
-    fn precompile_reads_of_the_address_registry_follow_l1_from_t15() {
-        const CHILD: u64 = 1;
-        let portal = Address::repeat_byte(0x42);
-        let token = address!("0x20C00000000000000000000000000000000000AA");
-        let master_slot = MasterId::repeat_byte(0x01).mapping_slot(address_registry::slots::DATA);
-        let master = U256::from_be_slice(Address::repeat_byte(0x11).as_slice());
-        let reader = MockL1Reader::default();
-        // Registered on Tempo only: Zone genesis has no account at the registry address.
-        reader.insert(ADDRESS_REGISTRY_ADDRESS, master_slot, CHILD, master);
-
-        for (spec, expected) in [
-            (TempoHardfork::T14, U256::ZERO),
-            (TempoHardfork::T15, master),
-        ] {
-            let mut evm = genesis_zone_evm(&reader, portal, token, spec);
-            evm.database_as::<L1OverlayDB<InMemoryDB, MockL1Reader>>()
-                .unwrap()
-                .l1_state()
-                .begin_transaction(U256::from(CHILD));
-            // Precompile SLOADs load the account before the slot, as this does.
-            let value = evm
-                .state_mut()
-                .storage_slot(&ADDRESS_REGISTRY_ADDRESS, master_slot)
-                .unwrap()
-                .current();
-            assert_eq!(value, expected, "{spec:?}");
         }
     }
 

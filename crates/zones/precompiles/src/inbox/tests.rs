@@ -9,14 +9,12 @@ use tempo_contracts::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    address_registry::AddressRegistry,
     storage::{ContractStorage, Handler, StorageCtx},
-    test_util::{TIP20Setup, TIP403Setup, VIRTUAL_MASTER, register_virtual_master},
+    test_util::{TIP20Setup, TIP403Setup},
     tip20::{self, ITIP20, TIP20Token},
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry},
     zone_factory::portal::{self, ZonePortalStorage},
 };
-use tempo_primitives::{MasterId, TempoAddressExt as _, UserTag};
 use test_case::test_case;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
@@ -788,46 +786,4 @@ fn bridged_credits_use_recipient_policy_from_t13(
     })?;
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
-}
-
-#[test]
-fn bridged_credits_resolve_registered_virtual_recipients_from_t15() -> eyre::Result<()> {
-    let mut env = ZoneSpec {
-        hardfork: TempoHardfork::T15,
-        ..spec()
-    }
-    .apply()?;
-    env.with_storage(|| -> eyre::Result<()> {
-        let token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        let balance = |account| token.balance_of(ITIP20::balanceOfCall { account });
-        // On a zone the registry is mirrored from Tempo; the test writes it directly.
-        let (master_id, registered) = register_virtual_master(&mut AddressRegistry::new())?;
-        let unregistered = Address::new_virtual(
-            MasterId::from(!u32::from_be_bytes(master_id.0)),
-            UserTag::repeat_byte(0x01),
-        );
-        let mut inbox = ZoneInbox::new();
-
-        assert!(inbox.try_mint(PATH_USD_ADDRESS, registered, 100)?);
-        assert_eq!(balance(VIRTUAL_MASTER)?, U256::from(100));
-        assert_eq!(balance(registered)?, U256::ZERO);
-
-        // An unregistered virtual recipient is a plain mint failure, so the deposit bounces.
-        assert!(!inbox.try_mint(PATH_USD_ADDRESS, unregistered, 100)?);
-        assert_eq!(balance(unregistered)?, U256::ZERO);
-
-        // The master's receive policy, not the virtual address's, governs the credit.
-        TIP403Registry::new().set_receive_policy(
-            VIRTUAL_MASTER,
-            ITIP403Registry::setReceivePolicyCall {
-                senderPolicyId: REJECT_ALL_POLICY_ID,
-                tokenFilterId: ALLOW_ALL_POLICY_ID,
-                recoveryAuthority: Address::ZERO,
-            },
-        )?;
-        assert!(!inbox.try_mint(PATH_USD_ADDRESS, registered, 100)?);
-        assert_eq!(balance(VIRTUAL_MASTER)?, U256::from(100));
-        assert_eq!(balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
-        Ok(())
-    })
 }

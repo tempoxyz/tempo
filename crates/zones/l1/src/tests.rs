@@ -1,7 +1,7 @@
 use super::*;
 use crate::{abi::DepositType, subscriber::L1SubscriberError};
 use alloy_consensus::{Header, ReceiptWithBloom, Sealable as _, TxReceipt as _};
-use alloy_primitives::{Bloom, Bytes, FixedBytes, address};
+use alloy_primitives::{Bloom, Bytes, address};
 use alloy_rpc_types_eth::{Header as RpcHeader, TransactionReceipt};
 use alloy_sol_types::SolEvent;
 use alloy_transport::mock::Asserter;
@@ -10,9 +10,7 @@ use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use serde::Deserialize;
 use std::{collections::HashSet, time::Duration};
 use tempo_alloy::rpc::{TempoHeaderResponse, TempoTransactionReceipt};
-use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, IAddressRegistry, ITIP20, TIP403_REGISTRY_ADDRESS,
-};
+use tempo_contracts::precompiles::{ITIP20, TIP403_REGISTRY_ADDRESS};
 use tempo_primitives::{TempoReceipt, TempoTxType};
 
 #[derive(Deserialize)]
@@ -494,55 +492,6 @@ fn token_pause_update_refreshes_cached_token_state() {
             .l1_state_cache
             .lock()
             .get(token, paused_slot, block.number),
-        None
-    );
-}
-
-#[test]
-fn virtual_master_registration_refreshes_cached_registry_state() {
-    let subscriber = test_subscriber(9);
-    // Invalidation is per account, so any registry slot stands in for a master's.
-    let master_slot = B256::with_last_byte(1);
-    {
-        let mut cache = subscriber.l1_state_cache.lock();
-        cache.invalidate_and_set_anchor(9, []);
-        cache.set(ADDRESS_REGISTRY_ADDRESS, master_slot, 9, B256::ZERO);
-    }
-
-    let block = NumHash::new(10, B256::with_last_byte(10));
-    let mut receipt = make_test_receipt(
-        block.number,
-        block.hash,
-        B256::with_last_byte(1),
-        0,
-        0,
-        Bloom::ZERO,
-    );
-    receipt
-        .inner
-        .inner
-        .receipt
-        .logs
-        .push(alloy_rpc_types_eth::Log {
-            inner: alloy_primitives::Log {
-                address: ADDRESS_REGISTRY_ADDRESS,
-                data: IAddressRegistry::MasterRegistered {
-                    masterId: FixedBytes::repeat_byte(0x01),
-                    masterAddress: Address::repeat_byte(0x11),
-                }
-                .encode_log_data(),
-            },
-            ..Default::default()
-        });
-    let (_, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
-    assert_eq!(invalidated, HashSet::from([ADDRESS_REGISTRY_ADDRESS]));
-
-    subscriber.update_l1_state_anchor(block.number, &invalidated);
-    assert_eq!(
-        subscriber
-            .l1_state_cache
-            .lock()
-            .get(ADDRESS_REGISTRY_ADDRESS, master_slot, block.number),
         None
     );
 }

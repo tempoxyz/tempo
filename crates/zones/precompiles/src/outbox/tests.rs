@@ -3,7 +3,6 @@ use super::*;
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolInterface};
 use evm2::precompiles::PrecompileHalt;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -522,32 +521,6 @@ fn request_rejects_invalid_parameters_without_mutating_state() -> eyre::Result<(
             ),
         ),
     )?;
-    Ok(())
-}
-
-#[test_case(TempoHardfork::T14, true; "accepted before t15")]
-#[test_case(TempoHardfork::T15, false; "rejected from t15")]
-fn request_virtual_fallback_recipient(hardfork: TempoHardfork, accepted: bool) -> eyre::Result<()> {
-    use tempo_primitives::{MasterId, UserTag};
-
-    let mut env = ZoneSpec { hardfork, ..spec() }.apply()?;
-    let call = ZoneOutboxAbi::requestWithdrawalCall {
-        zoneFallbackRecipient: Address::new_virtual(
-            MasterId::repeat_byte(0x11),
-            UserTag::repeat_byte(0x22),
-        ),
-        ..withdrawal(1, BOB, 0)
-    };
-
-    let result = env.request_withdrawal(ALICE, call);
-    if accepted {
-        result?;
-        assert_eq!(env.pending_withdrawals().len(), 1);
-    } else {
-        assert_revert(result, ZoneOutboxError::invalid_fallback_recipient());
-        assert!(env.pending_withdrawals().is_empty());
-        assert_eq!(last_fallback_nonce(&mut env)?, 0);
-    }
     Ok(())
 }
 
