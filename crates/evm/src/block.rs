@@ -469,9 +469,12 @@ impl<'a> TempoBlockExecutor<'a> {
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
             return Ok(());
         }
-        // Blocks without a consensus context, such as RPC simulations and dev-mode blocks,
-        // carry no DKG outcome, and their backing database may hold caller-supplied state
-        // rather than the parent state, so the check is skipped for them.
+        // `proposer_public_key` is derived from the header's or payload attributes'
+        // `consensus_context` (`consensus_context.map(|ctx| ctx.proposer)` in the
+        // `ConfigureEvm` env builders), so it is `None` exactly when the block has no
+        // consensus context. Such blocks (RPC simulations, dev-mode blocks) carry no DKG
+        // outcome, and their backing database may hold caller-supplied state rather than the
+        // parent state, so the check is skipped for them.
         //
         // This relies on the consensus layer: it rejects proposals without a consensus context
         // (see the application's verify step), and imported blocks are pinned to finalized
