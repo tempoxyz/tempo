@@ -21,10 +21,6 @@ impl DeferredPortalWork {
         work
     }
 
-    pub(crate) fn last_num_hash(&self) -> NumHash {
-        self.last_header.num_hash()
-    }
-
     pub(crate) fn push(&mut self, block: L1BlockDeposits) {
         self.last_header = block.header;
         self.push_events(block.events);
@@ -467,15 +463,14 @@ impl DepositQueue {
         self.inner.lock().operational_work(expected, max_deposits)
     }
 
-    /// Restore portal work crossed by already-canonical checkpoint-only blocks after restart.
-    pub(crate) fn restore_deferred(&self, deferred: DeferredPortalWork) -> eyre::Result<()> {
+    /// Replace an empty queue with recovered work.
+    pub(crate) fn restore(&self, pending: PendingDeposits) -> eyre::Result<()> {
         let mut queue = self.inner.lock();
         eyre::ensure!(
             queue.pending.is_empty() && queue.deferred.is_none() && queue.last_enqueued.is_none(),
             "cannot seed deferred portal work into a nonempty queue"
         );
-        queue.last_enqueued = Some(deferred.last_num_hash());
-        queue.deferred = Some(deferred);
+        *queue = pending;
         Ok(())
     }
 

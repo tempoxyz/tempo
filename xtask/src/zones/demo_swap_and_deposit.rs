@@ -599,10 +599,10 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     sender: Address,
     amount: u128,
 ) -> eyre::Result<()> {
-    // The fee includes the congestion premium, so quote it at deposit time.
-    let fee = portal.calculateDepositFee();
-    let ((key, key_index), max_fee) = tokio::try_join!(portal.encryption_key(), fee.call())
-        .wrap_err("failed to fetch the sequencer encryption key and deposit fee")?;
+    let (key, key_index) = portal
+        .encryption_key()
+        .await
+        .wrap_err("failed to fetch the active sequencer encryption key")?;
     let y_parity = key.normalized_y_parity().ok_or_else(|| {
         eyre!(
             "unexpected yParity {:#x}, expected 0/1 or 0x02/0x03",
@@ -620,7 +620,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
     let receipt = portal
-        .depositEncrypted(
+        .deposit(
             token,
             amount,
             key_index,
@@ -632,7 +632,6 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
                 tag: encrypted.tag.into(),
             },
             tempo_refund_recipient,
-            max_fee,
         )
         .send_sync()
         .await?;

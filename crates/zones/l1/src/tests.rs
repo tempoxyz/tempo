@@ -150,7 +150,7 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
             l1_fetch_concurrency: 1,
             retry_connection_interval: Duration::from_secs(1),
             retain_portal_evidence: false,
-            deferred_work_start: None,
+            deferred_work: None,
         },
         zone_provider,
         deposit_queue: DepositQueue::default(),
@@ -1518,35 +1518,6 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
 }
 
 #[test]
-fn restart_can_seed_deferred_checkpoint_work() {
-    let queue = DepositQueue::new();
-    let h10 = make_test_header(10);
-    let h11 = make_chained_header(11, h10.hash_slow());
-    let mut deferred = crate::queue::DeferredPortalWork::new(L1BlockDeposits {
-        header: seal(h10),
-        events: L1PortalEvents::default(),
-    });
-    deferred.push(L1BlockDeposits {
-        header: seal(h11),
-        events: L1PortalEvents::default(),
-    });
-    queue.restore_deferred(deferred).unwrap();
-
-    let h12 = make_chained_header(12, queue.last_enqueued().unwrap().hash);
-    queue
-        .try_enqueue_sealed(seal(h12), L1PortalEvents::default())
-        .unwrap();
-    let current = queue.peek().unwrap();
-    assert_eq!(
-        queue
-            .operational_work(current.header.num_hash(), usize::MAX)
-            .unwrap()
-            .len(),
-        2
-    );
-}
-
-#[test]
 fn deferred_empty_blocks_use_constant_space() {
     let mut queue = PendingDeposits::default();
     let mut parent_hash = B256::ZERO;
@@ -2495,4 +2466,66 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(tracker.latest(), Some(NumHash::new(tip, parent)));
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
+}
+
+/// Recovery through checkpoint block 11 after a full import at `start_block`. Block 10 appends
+/// entries 1-3 and block 11 entry 4.
+#[test_case::test_case(10, 2 => vec![3, 4])]
+#[test_case::test_case(11, 1 => Vec::<u128>::new())]
+#[tokio::test]
+async fn recovery_restores_owed_entries(start_block: u64, entries_in_block: usize) -> Vec<u128> {
+    let portal = address!("0x0000000000000000000000000000000000000ABC");
+    let asserter = Asserter::new();
+    let mut parent_hash = B256::ZERO;
+    let mut anchors = Vec::new();
+    for (number, amounts) in [(10, vec![1, 2, 3]), (11, vec![4])] {
+        let logs = amounts
+            .into_iter()
+            .map(|amount| Log {
+                inner: alloy_primitives::Log {
+                    address: portal,
+                    data: WithdrawalBounceBack {
+                        newCurrentDepositQueueHash: B256::ZERO,
+                        fallbackNonce: 0,
+                        token: Address::ZERO,
+                        amount,
+                        depositNumber: 0,
+                    }
+                    .encode_log_data(),
+                },
+                ..Default::default()
+            })
+            .collect();
+        let receipt = make_receipt_with_logs(number, B256::ZERO, logs);
+        let mut header = make_chained_header(number, parent_hash);
+        header.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+        header.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+        parent_hash = header.hash_slow();
+        anchors.push(NumHash::new(number, parent_hash));
+        if number >= start_block {
+            asserter.push_success(&Some(header_response(header)));
+            asserter.push_success(&Some(vec![receipt]));
+        }
+    }
+    let mut subscriber = test_subscriber_with_checkpoint(anchors[1]);
+    subscriber.config.deferred_work = Some(DeferredWorkRecovery {
+        last_operational: anchors[usize::try_from(start_block - 10).unwrap()],
+        start: DepositQueuePosition {
+            block_number: start_block,
+            entries_in_block,
+        },
+    });
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+    subscriber
+        .recover_deferred_work(&l1_provider)
+        .await
+        .unwrap();
+
+    let next = make_chained_header(12, anchors[1].hash);
+    let anchor = seal(next.clone()).num_hash();
+    subscriber
+        .deposit_queue
+        .enqueue(next, L1PortalEvents::default());
+    owed_amounts(&subscriber.deposit_queue, anchor, usize::MAX)
 }

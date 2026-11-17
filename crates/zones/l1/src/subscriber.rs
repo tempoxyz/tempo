@@ -1,4 +1,4 @@
-use crate::queue::DeferredPortalWork;
+use crate::queue::PendingDeposits;
 
 use super::*;
 use crate::{
@@ -545,9 +545,17 @@ pub struct L1SubscriberConfig {
     pub retry_connection_interval: std::time::Duration,
     /// Whether to retain authenticated Portal logs for external observers.
     pub retain_portal_evidence: bool,
-    /// First L1 block whose portal work was crossed by canonical checkpoint-only Zone blocks.
-    /// Startup reconstructs this suffix before following new finalized blocks.
-    pub deferred_work_start: Option<u64>,
+    /// Portal work owed for already-anchored L1 blocks, rebuilt on startup.
+    pub deferred_work: Option<DeferredWorkRecovery>,
+}
+
+/// Portal work a restarted node owes for already-anchored L1 blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredWorkRecovery {
+    /// L1 anchor of the latest full Zone import.
+    pub last_operational: NumHash,
+    /// Where the owed work starts.
+    pub start: DepositQueuePosition,
 }
 
 /// L1 chain subscriber that listens for new blocks and extracts deposit events.
@@ -1058,11 +1066,11 @@ where
         }
     }
 
-    async fn recover_deferred_work(
+    pub(crate) async fn recover_deferred_work(
         &self,
         l1_provider: &impl Provider<TempoNetwork>,
     ) -> Result<(), L1SubscriberError> {
-        let Some(from) = self.config.deferred_work_start else {
+        let Some(recovery) = self.config.deferred_work else {
             return Ok(());
         };
         if self.deposit_queue.last_enqueued().is_some() {
@@ -1070,33 +1078,23 @@ where
         }
         let state = self.zone_provider.latest().map_err(eyre::Report::from)?;
         let checkpoint = state.tempo_num_hash().map_err(eyre::Report::from)?;
+        let from = recovery.start.block_number;
         if from > checkpoint.number {
             return Ok(());
         }
 
+        let mut queue = PendingDeposits::default();
         let mut blocks = self.fetch_l1_blocks(l1_provider, from..=checkpoint.number);
-        let mut deferred: Option<DeferredPortalWork> = None;
         while let Some((header, (events, _, _))) = blocks.try_next().await? {
-            let block = L1BlockDeposits { header, events };
-            if let Some(deferred) = &mut deferred {
-                deferred.push(block);
-            } else {
-                deferred = Some(DeferredPortalWork::new(block));
-            }
+            queue.try_enqueue(header, events)?;
         }
-        let deferred = deferred.expect("the recovered deferred range is nonempty");
-        if deferred.last_num_hash() != checkpoint {
-            return Err(eyre::eyre!(
-                "recovered deferred L1 range ends at {:?}, but the local checkpoint is {checkpoint:?}",
-                deferred.last_num_hash()
-            ).into());
-        }
-        self.deposit_queue.restore_deferred(deferred)?;
-        info!(
-            from,
-            to = checkpoint.number,
-            "Recovered portal work crossed by checkpoint-only Zone blocks"
-        );
+        queue.confirm_operational_through(
+            recovery.last_operational,
+            recovery.start.entries_in_block,
+        )?;
+        queue.defer_through(checkpoint)?;
+        self.deposit_queue.restore(queue)?;
+        info!(from, to = checkpoint.number, "Recovered owed portal work");
         Ok(())
     }
 

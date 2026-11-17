@@ -310,6 +310,7 @@ crate::sol! {
         function initialize(uint32 zoneId, address initialToken, bool accessMode, bool gatewayMode, address[] calldata allowedAccounts, address[] calldata zoneGateways, address admin, address messenger, address[] calldata sequencers, uint8 threshold, address verifier, string calldata rpcUrl) external;
         function deliverWithdrawal(address to, address token, uint128 amount, bytes32 memo, uint64 gasLimit, bytes calldata callbackData) external;
         function MAX_DEPOSITS_PER_TEMPO_BLOCK() external view returns (uint64);
+        /// Pre-T15 only.
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function DEPOSITS_PER_BUCKET() external view returns (uint64);
         function CONGESTION_TIER_WEIGHT() external view returns (uint64);
