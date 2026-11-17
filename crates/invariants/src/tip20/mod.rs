@@ -209,10 +209,10 @@ pub(crate) fn moves<'a>(logs: impl IntoIterator<Item = &'a Log>) -> Vec<Move> {
         .collect()
 }
 
-/// The ledger after a step is the ledger before it with the step's [`Move`]s replayed: each
+/// The ledger after a step is the ledger before it with the step's `Move`s replayed: each
 /// observed balance moves by the transfers into and out of it, and the supply by the mints (from
 /// the zero address) and burns (to it). The zero address' own balance moves only by
-/// [`Move::ZeroMint`] and [`Move::ZeroBurn`]. A transfer between an observed and an unobserved
+/// `Move::ZeroMint` and `Move::ZeroBurn`. A transfer between an observed and an unobserved
 /// account moves only the observed side.
 impl Replay<Move> for Ledger {
     type Error = Unapplied;
