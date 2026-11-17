@@ -18,10 +18,12 @@ import {
     Role,
     TokenConfig,
     TokenEnablementTransition,
+    VirtualDeposit,
     Withdrawal,
     WithdrawalBounceBackDeposit,
     ZONE_FACTORY_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS
+    ZONE_PORTAL_IMPL_ADDRESS,
+    ZONE_PORTAL_PREFIX
 } from "../interfaces/IZone.sol";
 import { getBlockHash } from "../libraries/BlockHashHistory.sol";
 import { DepositQueueLib } from "../libraries/DepositQueueLib.sol";
@@ -242,6 +244,13 @@ contract ZonePortal is IZonePortal {
     /// @dev Packed after the token cursor flag in slot 28. Defaults to false, so existing zones
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
+
+    /// @notice TIP-1094: whether transfers to zone deposit addresses are accepted.
+    /// @dev Packed after `transfersEnabled` in slot 28. Starts disabled.
+    bool public virtualDepositsEnabled;
+
+    /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1.
+    uint8 internal _minimumAddressVersion;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -511,6 +520,26 @@ contract ZonePortal is IZonePortal {
         admin = pendingAdmin;
         pendingAdmin = address(0);
         emit AdminTransferred(previousAdmin, admin);
+    }
+
+    /// @notice TIP-1094: turn virtual deposits on or off. Queued deposits are unaffected.
+    function setVirtualDepositsEnabled(bool enabled) external onlyAdmin {
+        virtualDepositsEnabled = enabled;
+        emit VirtualDepositsEnabledUpdated(enabled);
+    }
+
+    /// @notice TIP-1094: lowest address key version still accepted.
+    function minimumAddressVersion() public view returns (uint8) {
+        return _minimumAddressVersion == 0 ? 1 : _minimumAddressVersion;
+    }
+
+    /// @notice TIP-1094: raise the minimum accepted address key version. Raise-only.
+    function retireAddressVersionsBelow(uint8 minimumVersion) external onlyAdmin {
+        if (minimumVersion <= minimumAddressVersion()) {
+            revert InvalidVersionRetirement(minimumVersion);
+        }
+        _minimumAddressVersion = minimumVersion;
+        emit AddressVersionsRetired(minimumVersion);
     }
 
     /// @notice Enable or disable account allowlist enforcement without discarding membership.
@@ -999,6 +1028,90 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
+    }
+
+    /// @notice TIP-1094: queue a TIP-20 transfer to a zone deposit address.
+    /// @dev Called by native TIP-20 routing after it debited `originator` and credited this
+    ///      portal with `grossAmount`; `msg.sender` is the token. The tokens are already here,
+    ///      so nothing is pulled. Any revert reverts the whole transfer.
+    function depositVirtual(
+        address originator,
+        uint128 grossAmount,
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        address token = msg.sender;
+        // Only an enabled canonical TIP-20 can call this; ordinary accounts and contracts are
+        // never enabled tokens.
+        if (bytes12(bytes20(token)) != bytes12(0x20c000000000000000000000)) {
+            revert TokenNotEnabled();
+        }
+        if (!hasMemo && memo != bytes32(0)) revert InvalidVirtualDeposit();
+        if (
+            bytes9(bytes20(destination) << 32) != bytes9(0xfcfcfcfcfcfcfcfcfc)
+                || uint32(bytes4(bytes20(destination))) != zoneId
+        ) {
+            revert InvalidVirtualDeposit();
+        }
+        if (!virtualDepositsEnabled) revert VirtualDepositsDisabled();
+        uint8 version = uint8(bytes20(destination)[13]);
+        if (version < minimumAddressVersion()) revert AddressVersionRetired(version);
+
+        // Existing deposit checks, applied to the debited account.
+        // A portal is the originator when a zone withdrawal pays out to a deposit address. A refund
+        // to a portal would credit no one, so revert and let the withdrawal bounce back instead.
+        if (originator == address(0) || bytes12(bytes20(originator)) == ZONE_PORTAL_PREFIX) {
+            revert InvalidBouncebackRecipient();
+        }
+        _requireAllowedDepositor(originator);
+        _requireAllowed(originator);
+        _validateDepositsActive(token);
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (!TIP403_REGISTRY.isAuthorizedRecipient(policyId, originator)) {
+            revert ITIP20.PolicyForbids();
+        }
+
+        uint128 fee = calculateDepositFee();
+        if (grossAmount < fee + calculateBouncebackFee()) revert DepositTooSmall();
+        uint128 netAmount = grossAmount - fee;
+        if (fee > 0) {
+            ITIP20(token).transfer(admin, fee);
+        }
+
+        VirtualDeposit memory depositData = VirtualDeposit({
+            token: token,
+            originator: originator,
+            amount: netAmount,
+            destination: destination,
+            hasMemo: hasMemo,
+            memo: memo
+        });
+        newCurrentDepositQueueHash =
+            DepositQueueLib.enqueueVirtual(currentDepositQueueHash, depositData);
+
+        uint64 maximum = MAX_UNPROCESSED_DEPOSITS - WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE;
+        if (_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE) {
+            _withdrawalReentrancyStatus = CALLBACK_DEPOSIT_CONSUMED;
+            maximum = MAX_UNPROCESSED_DEPOSITS;
+        }
+        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash, maximum);
+
+        emit VirtualDepositMade(
+            newCurrentDepositQueueHash,
+            originator,
+            token,
+            destination,
+            netAmount,
+            fee,
+            thisDeposit,
+            hasMemo,
+            memo
+        );
     }
 
     function _deposit(

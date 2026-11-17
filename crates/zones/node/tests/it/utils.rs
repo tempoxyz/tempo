@@ -1127,6 +1127,7 @@ impl ZoneTestNode {
             prover_addresses,
             deposit_allowlist,
             deposit_allowlist_relay,
+            virtual_address_key,
         } = config;
         let tasks = Runtime::test();
         let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub(_));
@@ -1193,6 +1194,10 @@ impl ZoneTestNode {
         if portal_address.is_zero() {
             zone_node = zone_node
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
+        }
+        if let Some(key) = virtual_address_key {
+            zone_node =
+                zone_node.with_virtual_address_key(zone_payload::VirtualAddressKey::new(key));
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -1324,7 +1329,8 @@ impl ZoneTestNode {
                 portal_address,
                 None,
             )
-            .with_deposit_allowlist(deposit_allowlist);
+            .with_deposit_allowlist(deposit_allowlist)
+            .with_zone_storage(zone_node::engine::zone_storage_reader(provider.clone()));
             node_handle
                 .node
                 .task_executor
@@ -1405,6 +1411,8 @@ pub(crate) struct ZoneLaunch {
     pub(crate) deposit_allowlist: Option<zone_node::DepositAllowlist>,
     /// Relays `zoneAdmin` allowlist writes signed by this admin (P2P nodes only).
     pub(crate) deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
+    /// TIP-1094 address key the sequencer initializes as version 1 once T15 is active.
+    pub(crate) virtual_address_key: Option<B256>,
 }
 
 impl ZoneLaunch {
@@ -1436,6 +1444,7 @@ impl Default for ZoneLaunch {
             prover_addresses: None,
             deposit_allowlist: None,
             deposit_allowlist_relay: None,
+            virtual_address_key: None,
         }
     }
 }
@@ -2203,7 +2212,12 @@ impl L1TestNode {
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, false).await
+        Self::launch(f, false, None).await
+    }
+
+    /// Start an L1 dev node with every hardfork through T15 active at genesis.
+    pub(crate) async fn start_at_t15() -> eyre::Result<Self> {
+        Self::launch(|_| {}, false, Some(TempoHardfork::T15)).await
     }
 
     /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
@@ -2211,17 +2225,23 @@ impl L1TestNode {
     pub(crate) async fn start_without_state_proofs(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, true).await
+        Self::launch(f, true, None).await
     }
 
+    /// Launches the L1 from `test-genesis.json`, or with every fork through `latest_fork` active
+    /// at genesis when given.
     async fn launch(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
         refuse_state_proofs: bool,
+        latest_fork: Option<TempoHardfork>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
         let mut genesis: Genesis =
             serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+        if let Some(fork) = latest_fork {
+            set_tempo_fork(&mut genesis, fork, 0);
+        }
         install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
         let chain_spec = TempoChainSpec::from_genesis(genesis);
 
@@ -2592,6 +2612,11 @@ pub(crate) struct ZoneAccount {
 }
 
 impl ZoneAccount {
+    /// Wallet-attached provider for the zone.
+    pub(crate) fn l2_provider(&self) -> &alloy_provider::DynProvider {
+        &self.l2_provider
+    }
+
     /// Create a new `ZoneAccount` from an [`L1TestNode`] and [`ZoneTestNode`].
     ///
     /// Uses the L1's **user** signer (mnemonic index 1) as the account key,
@@ -3638,6 +3663,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         prover_addresses: prover_addresses.clone(),
                         deposit_allowlist: deposit_allowlists[index].clone(),
                         deposit_allowlist_relay: None,
+                        virtual_address_key: None,
                     })
                 },
             )),
@@ -3664,6 +3690,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         .as_ref()
                         .is_some_and(|setup| setup.rpc_relays_writes)
                         .then_some(allowlist_admin),
+                    virtual_address_key: None,
                 })
                 .await
                 .map(Some)
@@ -4809,6 +4836,8 @@ impl L1Fixture {
                     self.seed_transfer_recipient_at(block_number, deposit.to)
                         .expect("event recipient fixture seed must be admitted");
                 }
+                // The recipient is only known after zone-side decryption.
+                L1Deposit::ZoneVirtual(_) => {}
                 L1Deposit::Deposit(deposit) => {
                     if let Some(decrypted) = zone_precompiles::ecies::decrypt_deposit(
                         &Self::encryption_key(),

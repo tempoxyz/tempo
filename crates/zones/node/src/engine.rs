@@ -57,6 +57,36 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use crate::deposit_allowlist::DepositAllowlist;
+
+/// Builds a [`ZoneStorageReader`] over the node's state provider.
+pub fn zone_storage_reader<P>(provider: P) -> ZoneStorageReader
+where
+    P: reth_storage_api::StateProviderFactory + Send + Sync + 'static,
+{
+    use reth_storage_api::StateProvider as _;
+    ZoneStorageReader(Arc::new(move |block_hash, address, slot| {
+        Ok(provider
+            .state_by_block_hash(block_hash)?
+            .storage(address, slot.into())?
+            .unwrap_or_default())
+    }))
+}
+
+/// Reads one storage slot of committed zone state at the given block hash.
+#[derive(Clone)]
+pub struct ZoneStorageReader(
+    Arc<
+        dyn Fn(B256, Address, alloy_primitives::U256) -> eyre::Result<alloy_primitives::U256>
+            + Send
+            + Sync,
+    >,
+);
+
+impl std::fmt::Debug for ZoneStorageReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZoneStorageReader").finish_non_exhaustive()
+    }
+}
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
@@ -214,6 +244,8 @@ pub struct ZoneEngine {
     proof_collector: Option<ProofCollectorHandle>,
     /// Depositors whose L1 deposits are credited. `None` credits every deposit.
     deposit_allowlist: Option<DepositAllowlist>,
+    /// Committed zone state, read to resolve virtual deposit recipients for the allowlist.
+    zone_storage: Option<ZoneStorageReader>,
 }
 
 impl ZoneEngine {
@@ -242,6 +274,7 @@ impl ZoneEngine {
             production_permit: None,
             proof_collector,
             deposit_allowlist: None,
+            zone_storage: None,
         }
     }
 
@@ -252,6 +285,12 @@ impl ZoneEngine {
     }
 
     /// Enforce the per-anchor leadership permit before every advance.
+    /// Sets the zone state reader the deposit allowlist uses for virtual deposits.
+    pub fn with_zone_storage(mut self, zone_storage: ZoneStorageReader) -> Self {
+        self.zone_storage = Some(zone_storage);
+        self
+    }
+
     pub fn with_production_permit(mut self, permit: ProductionPermit) -> Self {
         self.production_permit = Some(permit);
         self
@@ -347,6 +386,26 @@ impl ZoneEngine {
         }
     }
 
+    /// Flags unlisted virtual deposits; see [`reject_unlisted_virtual`].
+    fn reject_unlisted_virtual(
+        &self,
+        allowlist: &DepositAllowlist,
+        prepared: &mut zone_l1::PreparedL1Block,
+    ) -> eyre::Result<usize> {
+        let parent = self.last_header.hash();
+        reject_unlisted_virtual(
+            allowlist,
+            self.portal_address,
+            &mut prepared.queued_deposits,
+            |address, slot| match &self.zone_storage {
+                Some(read) => (read.0)(parent, address, slot),
+                None => {
+                    eyre::bail!("the deposit allowlist needs zone state to check virtual deposits")
+                }
+            },
+        )
+    }
+
     /// Advance the chain by one block.
     ///
     /// Wraps the given L1 block into [`ZonePayloadAttributes`], sends FCU
@@ -387,7 +446,8 @@ impl ZoneEngine {
                     .flat_map(|block| &block.events.deposits)
                     .filter_map(|deposit| match deposit {
                         L1Deposit::Deposit(deposit) => Some(deposit.sender),
-                        L1Deposit::WithdrawalBounceBack(_) => None,
+                        // Virtual deposits are rejected through `QueuedDeposit.rejected` below.
+                        L1Deposit::WithdrawalBounceBack(_) | L1Deposit::ZoneVirtual(_) => None,
                     })
                     .collect::<Vec<_>>()
             });
@@ -403,6 +463,7 @@ impl ZoneEngine {
                     &prepared.recipients,
                     &mut prepared.decryptions,
                 )?;
+                let rejected = rejected + self.reject_unlisted_virtual(allowlist, &mut prepared)?;
                 if rejected > 0 {
                     info!(target: "zone::engine", rejected, "Bouncing deposits whose sender or recipient is not on the allowlist");
                     metrics::counter!("zone_deposit_allowlist_rejected_total")
@@ -680,6 +741,38 @@ fn zone_timestamp_millis(
         .max(parent_timestamp_millis)
 }
 
+/// Sets `rejected` on every virtual deposit whose originator or resolved recipient the allowlist
+/// does not admit, so `advanceTempo` refunds it. `read` reads committed zone storage at the parent
+/// block, which is what `advanceTempo` (the block's first call) sees. Deposits the inbox refunds on
+/// its own (unresolvable address) are only checked by originator. Returns the number rejected.
+fn reject_unlisted_virtual(
+    allowlist: &DepositAllowlist,
+    portal: Address,
+    queued_deposits: &mut [zone_l1::abi::QueuedDeposit],
+    mut read: impl FnMut(Address, alloy_primitives::U256) -> eyre::Result<alloy_primitives::U256>,
+) -> eyre::Result<usize> {
+    let mut rejected = 0;
+    for queued in queued_deposits {
+        if queued.depositType != zone_l1::abi::DepositType::ZoneVirtual {
+            continue;
+        }
+        let deposit = <zone_l1::abi::VirtualDeposit as alloy_sol_types::SolValue>::abi_decode(
+            &queued.depositData,
+        )
+        .wrap_err("decode queued virtual deposit")?;
+        let recipient = zone_precompiles::inbox::virtual_deposit_recipient(
+            portal,
+            deposit.destination,
+            &mut read,
+        )?;
+        if !allowlist.admits(deposit.originator, recipient) {
+            queued.rejected = true;
+            rejected += 1;
+        }
+    }
+    Ok(rejected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +786,129 @@ mod tests {
     use tokio::sync::oneshot;
     use zone_chainspec::test_utils::set_tempo_fork;
     use zone_p2p::LeadershipState;
+
+    mod virtual_allowlist {
+        use super::*;
+        use alloy_primitives::{FixedBytes, U256};
+        use alloy_sol_types::SolValue as _;
+        use std::collections::HashMap;
+        use tempo_contracts::zones::{ZONE_ADDRESS_REGISTRY_ADDRESS, ZoneDepositAddress};
+        use zone_l1::abi::{DepositType, QueuedDeposit, VirtualDeposit};
+        use zone_primitives::constants::ZONE_INBOX_ADDRESS;
+
+        const KEY: B256 = B256::repeat_byte(0x5a);
+        const LISTED: Address = Address::repeat_byte(0xa1);
+        const UNLISTED: Address = Address::repeat_byte(0xb2);
+
+        /// Zone storage with key version 1 initialized and master IDs 0 → LISTED, 1 → UNLISTED.
+        fn zone_storage() -> HashMap<(Address, U256), U256> {
+            let (flag, key) = zone_precompiles::inbox::virtual_address_key_slots(1);
+            let registry = |id: u32, recipient: Address| {
+                (
+                    (
+                        ZONE_ADDRESS_REGISTRY_ADDRESS,
+                        zone_precompiles::address_registry::recipient_storage_slot(
+                            FixedBytes::from(id.to_be_bytes()),
+                        ),
+                    ),
+                    U256::from_be_slice(recipient.as_slice()),
+                )
+            };
+            HashMap::from([
+                ((ZONE_INBOX_ADDRESS, flag), U256::ONE),
+                ((ZONE_INBOX_ADDRESS, key), KEY.into()),
+                registry(0, LISTED),
+                registry(1, UNLISTED),
+            ])
+        }
+
+        fn address(master_id: u32) -> Address {
+            let mut plaintext = [0u8; 6];
+            plaintext[..4].copy_from_slice(&master_id.to_be_bytes());
+            ZoneDepositAddress {
+                zone_id: 0,
+                version: 1,
+                ciphertext: zone_precompiles::ff1::encrypt(&KEY.0, 1, 0, plaintext).into(),
+            }
+            .encode()
+        }
+
+        fn queued(originator: Address, destination: Address) -> QueuedDeposit {
+            QueuedDeposit {
+                depositType: DepositType::ZoneVirtual,
+                rejected: false,
+                depositData: VirtualDeposit {
+                    token: Address::repeat_byte(0x20),
+                    originator,
+                    amount: 1,
+                    destination,
+                    hasMemo: false,
+                    memo: B256::ZERO,
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        #[test]
+        fn flags_virtual_deposits_with_an_unlisted_originator_or_recipient() {
+            let dir = tempfile::tempdir().unwrap();
+            let allowlist = DepositAllowlist::load(
+                dir.path().join("deposit-allowlist.json"),
+                crate::deposit_allowlist::DepositAllowlistAdmin {
+                    address: Address::repeat_byte(0xad),
+                    zone_chain_id: 1,
+                },
+            )
+            .unwrap();
+            allowlist.replace(vec![LISTED]).unwrap();
+            let storage = zone_storage();
+
+            let mut deposits = vec![
+                queued(LISTED, address(0)),   // listed → listed: credited
+                queued(UNLISTED, address(0)), // unlisted originator
+                queued(LISTED, address(1)),   // unlisted recipient
+                queued(LISTED, address(7)),   // unregistered master: the inbox refunds it
+                queued(UNLISTED, address(7)), // unresolvable, but unlisted originator
+            ];
+            let rejected = reject_unlisted_virtual(
+                &allowlist,
+                Address::ZERO,
+                &mut deposits,
+                |address, slot| Ok(storage.get(&(address, slot)).copied().unwrap_or_default()),
+            )
+            .unwrap();
+            assert_eq!(rejected, 3);
+            assert_eq!(
+                deposits.iter().map(|d| d.rejected).collect::<Vec<_>>(),
+                vec![false, true, true, false, true]
+            );
+        }
+
+        #[test]
+        fn uninitialized_allowlist_flags_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let allowlist = DepositAllowlist::load(
+                dir.path().join("deposit-allowlist.json"),
+                crate::deposit_allowlist::DepositAllowlistAdmin {
+                    address: Address::repeat_byte(0xad),
+                    zone_chain_id: 1,
+                },
+            )
+            .unwrap();
+            let storage = zone_storage();
+            let mut deposits = vec![queued(UNLISTED, address(1))];
+            let rejected = reject_unlisted_virtual(
+                &allowlist,
+                Address::ZERO,
+                &mut deposits,
+                |address, slot| Ok(storage.get(&(address, slot)).copied().unwrap_or_default()),
+            )
+            .unwrap();
+            assert_eq!(rejected, 0);
+            assert!(!deposits[0].rejected);
+        }
+    }
 
     #[test]
     fn zone_timestamp_uses_l1_timestamp_as_a_lower_bound() {

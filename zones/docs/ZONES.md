@@ -914,6 +914,7 @@ Zones inherit the Tempo L1 EVM but replace, disable, or pass through each precom
 | Precompile | Address | Description |
 |------------|---------|-------------|
 | TempoStateReader | `0x1c00…0004` | Reads L1 contract storage from zone contracts via the L1 state cache. |
+| ZoneAddressRegistry | `0x1c00…0005` | TIP-1094 zone recipient registry from T15: maps zone master IDs to recipients for virtual deposits. Separate from the TIP-1022 `AddressRegistry` at `0xFDC0…0000`. |
 
 ## Configuration
 

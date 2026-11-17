@@ -104,7 +104,12 @@ impl AddressRegistry {
         call: IAddressRegistry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
         // Validate master address
-        if !msg_sender.is_valid_master() {
+        // TIP-1094 reserves zone deposit addresses from T15; neither resolver forwards into the
+        // other.
+        if !msg_sender.is_valid_master()
+            || (self.storage.spec().is_t15()
+                && tempo_contracts::zones::ZoneDepositAddress::is_reserved(&msg_sender))
+        {
             return Err(AddrRegistryError::invalid_master_address().into());
         }
 

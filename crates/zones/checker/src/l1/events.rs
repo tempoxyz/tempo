@@ -124,6 +124,23 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
                 net_amount: e.netAmount,
             }
         }
+        // TIP-1094: a transfer to a zone deposit address escrows new external backing exactly
+        // like an encrypted deposit.
+        ZonePortal::VirtualDepositMade::SIGNATURE_HASH => {
+            let e =
+                decode_event::<ZonePortal::VirtualDepositMade>(log, "VirtualDepositMade", block)?;
+            L1PortalEvent::DepositMade {
+                token: e.token,
+                net_amount: e.netAmount,
+            }
+        }
+        ZonePortal::VirtualDepositsEnabledUpdated::SIGNATURE_HASH => ignored!(
+            ZonePortal::VirtualDepositsEnabledUpdated,
+            "VirtualDepositsEnabledUpdated"
+        ),
+        ZonePortal::AddressVersionsRetired::SIGNATURE_HASH => {
+            ignored!(ZonePortal::AddressVersionsRetired, "AddressVersionsRetired")
+        }
         ZonePortal::TokenEnabled::SIGNATURE_HASH => {
             let e = decode_event::<ZonePortal::TokenEnabled>(log, "TokenEnabled", block)?;
             L1PortalEvent::TokenEnabled { token: e.token }

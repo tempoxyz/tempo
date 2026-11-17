@@ -3,8 +3,8 @@
 pub use IZoneInbox::{
     ChaumPedersenProof, DecryptionData, DepositType, EnabledToken,
     IZoneInboxErrors as ZoneInboxError, IZoneInboxEvents as ZoneInboxEvent, QueuedDeposit,
-    TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced,
-    WithdrawalBounceBackDeposit,
+    TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced, VirtualDeposit,
+    VirtualDepositFailureReason, WithdrawalBounceBackDeposit,
 };
 
 use alloy_primitives::{Address, B256, keccak256};
@@ -36,6 +36,34 @@ crate::sol! {
             WithdrawalBounceBack,
             /// User deposit with an encrypted recipient and memo.
             Deposit,
+            /// TIP-1094 transfer to a zone deposit address. Active from T15.
+            ZoneVirtual,
+        }
+
+        /// TIP-1094 queue payload for a TIP-20 transfer to a zone deposit address.
+        struct VirtualDeposit {
+            address token;
+            /// The Tempo account debited by the transfer; refunds go here.
+            address originator;
+            /// Net of the portal deposit fee.
+            uint128 amount;
+            /// The 20-byte zone deposit address the transfer was sent to.
+            address destination;
+            bool hasMemo;
+            /// Zero when `hasMemo` is false.
+            bytes32 memo;
+        }
+
+        /// Private failure reasons recorded for a virtual deposit.
+        enum VirtualDepositFailureReason {
+            InvalidAddress,
+            KeyUnconfigured,
+            UnregisteredMaster,
+            InvalidMaster,
+            MintFailed,
+            /// The sequencer rejected the deposit (`QueuedDeposit.rejected`), for example because
+            /// its originator or recipient is not on the sequencer's deposit allowlist.
+            Rejected,
         }
 
         /// A user deposit or internal withdrawal bounce-back passed to `advanceTempo`.
@@ -103,6 +131,34 @@ crate::sol! {
             address tempoRefundRecipient
         );
 
+        /// A virtual deposit credited its registered recipient. Inbox logs are never served by
+        /// the redacted RPC, so the decoded attribution stays operator-visible only.
+        event VirtualDepositProcessed(
+            bytes32 indexed depositHash,
+            address indexed originator,
+            address indexed to,
+            address token,
+            uint128 amount,
+            uint8 version,
+            bytes4 masterId,
+            bytes2 userTag,
+            bytes32 memo
+        );
+
+        /// A virtual deposit failed and its net amount was queued as a refund to `originator`.
+        /// `to` is the resolved recipient, or zero when resolution failed before a lookup.
+        event VirtualDepositFailed(
+            bytes32 indexed depositHash,
+            address indexed originator,
+            address indexed to,
+            address token,
+            uint128 amount,
+            VirtualDepositFailureReason reason
+        );
+
+        /// Emitted when a TIP-1094 address key version is initialized. Carries no key material.
+        event VirtualAddressKeyInitialized(uint8 version);
+
         event WithdrawalBounceBackProcessed(address indexed zoneFallbackRecipient, address token, uint128 amount);
 
         event WithdrawalBounceBackPending(address indexed zoneFallbackRecipient, address token, uint128 amount);
@@ -121,6 +177,7 @@ crate::sol! {
         error InvalidSharedSecretProof();
         error Unauthorized();
         error NoRefund();
+        error InvalidAddressKeyVersion(uint8 version);
 
         function processedDepositQueueHash() external view returns (bytes32);
         function processedDepositNumber() external view returns (uint64);
@@ -141,6 +198,8 @@ crate::sol! {
         /// Advance only the authenticated Tempo checkpoint. A block opened by this call may not
         /// contain any other transaction.
         function advanceTempoHeaders(bytes[] calldata headers) external;
+        /// TIP-1094: initialize the next address key version. System-only, active from T15.
+        function initializeVirtualAddressKey(uint8 version, bytes32 key) external;
     }
 }
 
