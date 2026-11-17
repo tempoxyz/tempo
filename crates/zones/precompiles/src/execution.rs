@@ -76,6 +76,9 @@ pub(crate) enum CallCheck {
     Revert(Bytes),
     /// Return an error raised while evaluating an admission rule.
     Error(TempoPrecompileError),
+    /// Answer with ABI-encoded data in place of the precompile, for a read the rules redact. The
+    /// execution wrapper applies input gas as for a revert.
+    Return(Bytes),
 }
 
 /// Selector and caller dependent precompile call rules evaluated after storage setup.
@@ -155,6 +158,11 @@ where
         CallCheck::Error(error) => {
             let s = StorageCtx::default();
             let result = s.error_result(error);
+            add_input_cost(s, data, result)
+        }
+        CallCheck::Return(output) => {
+            let s = StorageCtx::default();
+            let result = Ok(s.success_output(output));
             add_input_cost(s, data, result)
         }
     });

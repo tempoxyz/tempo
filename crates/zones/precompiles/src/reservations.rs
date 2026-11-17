@@ -48,17 +48,21 @@ impl<P: L1StorageReader> ReservationRules<P> {
     }
 
     /// Admits a read of `owner`'s position in `token`: the owner, or a holder it approved for the
-    /// token that still has an allowance or outstanding holds.
+    /// token that still has an allowance or outstanding holds. Anyone else reads zero, all it could
+    /// hold: a program asks about every token in an owner's funding order, approved or not.
     fn admit_position(caller: Address, owner: Address, token: Address) -> Result<CallCheck> {
-        if caller == owner {
+        if caller == owner || Self::holds_for(caller, owner, token)? {
             return Ok(CallCheck::Continue);
         }
+        Ok(CallCheck::Return(
+            alloy_sol_types::SolValue::abi_encode(&0u128).into(),
+        ))
+    }
+
+    /// Whether `owner` approved `caller` as a holder of `token`, or it still holds some.
+    fn holds_for(caller: Address, owner: Address, token: Address) -> Result<bool> {
         let allowance = Reservations::new().allowance(owner, caller, token)?;
-        Ok(if allowance.allowance != 0 || allowance.outstanding != 0 {
-            CallCheck::Continue
-        } else {
-            unauthorized()
-        })
+        Ok(allowance.allowance != 0 || allowance.outstanding != 0)
     }
 
     /// Admits a read of `owner`'s hold `id`: the owner, its placer or its payee.
@@ -85,10 +89,12 @@ impl<P: L1StorageReader> ReservationRules<P> {
             return Ok(CallCheck::Continue);
         }
         let debt = Reservations::new().debt_of(owner, token)?;
-        if !debt.creditor.is_zero() && debt.creditor == caller {
+        if (!debt.creditor.is_zero() && debt.creditor == caller)
+            || Self::holds_for(caller, owner, token)?
+        {
             return Ok(CallCheck::Continue);
         }
-        Self::admit_position(caller, owner, token)
+        Ok(unauthorized())
     }
 
     fn try_admit(&self, call: IReservationCoreCalls, caller: Address) -> Result<CallCheck> {
@@ -226,7 +232,8 @@ mod tests {
                 token: PATH_USD_ADDRESS,
                 allowance: 500,
             };
-            core.call(&approve.abi_encode(), OWNER).expect("approve the holder");
+            core.call(&approve.abi_encode(), OWNER)
+                .expect("approve the holder");
             let expires_at = StorageCtx::default().timestamp().saturating_to::<u64>() + 3600;
             let hold = IReservationCore::holdFromCall {
                 owner: OWNER,
@@ -239,7 +246,8 @@ mod tests {
                     standIn: false,
                 },
             };
-            core.call(&hold.abi_encode(), HOLDER).expect("place the hold");
+            core.call(&hold.abi_encode(), HOLDER)
+                .expect("place the hold");
             calls
                 .iter()
                 .map(|(data, caller)| rules.admit(data, *caller))
@@ -287,6 +295,12 @@ mod tests {
                 true, true, true, false, true, true, false, false, true, false
             ]
         );
+        // A stranger to the position reads zero rather than the owner's balance.
+        let zero = alloy_sol_types::SolValue::abi_encode(&0u128);
+        assert!(
+            matches!(&checks[6], CallCheck::Return(output) if output.as_ref() == zero.as_slice())
+        );
+        assert!(matches!(&checks[3], CallCheck::Revert(_)));
     }
 
     #[test_case(TempoHardfork::T15, true, true)]
