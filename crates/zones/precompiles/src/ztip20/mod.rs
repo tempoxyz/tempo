@@ -61,14 +61,13 @@ impl<P: L1StorageReader> TIP20Rules<P> {
     fn admit_transfer(&self, from: Address, to: Address) -> Result<CallCheck> {
         // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
         // paths.
-        if !StorageCtx::default().spec().is_t15() {
+        if !StorageCtx::default().spec().is_t15()
+            || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
+        {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        // Both flags share one portal slot, so one L1 read answers both.
-        let (transfers_enabled, enforced) = self.l1.read_portal_transfer_flags()?;
-        if !transfers_enabled {
-            return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
-        }
+        // Shares the slot just read, so this read is warm.
+        let enforced = self.l1.read_portal(|portal| &portal.identity_enforced)?;
         match ZoneIdentity::new().ensure_transfer(
             enforced,
             self.token,
