@@ -111,7 +111,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         address signer = authorizedSigner != address(0) ? authorizedSigner : msg.sender;
         bytes32 openingCommitment = _configCommitment(signer);
         if (openingCommitment != bytes32(0)) {
-            if (salt != openingCommitment) revert SaltNotSignerCommitment(signer, openingCommitment);
+            if (salt != openingCommitment) {
+                revert SaltNotSignerCommitment(signer, openingCommitment);
+            }
             _hasOpeningCommitment[channelId] = true;
         }
 
