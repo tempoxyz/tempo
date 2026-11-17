@@ -53,7 +53,7 @@ def samples(results, windows):
                 # Skip empty blocks and the proposer's own (near-zero) insert of a block it built.
                 if gas < 9e6 or secs < 2e-3:
                     continue
-                if windows and not any(a <= ts(when) <= b for a, b in windows):
+                if not any(a <= ts(when) <= b for a, b in windows):
                     continue
                 out.append((int(txs), gas, secs * 1000))
     return out
@@ -75,8 +75,14 @@ def main():
     lines += ["| Run | Blocks | Gas/block p50 | Exec p50 | Exec p99 | Exec max | Mgas/s p50 | Result |", "|---|---|---|---|---|---|---|---|"]
     failed = False
     for results in args.results:
-        rows = samples(results, feature_windows(results))
         name = os.path.basename(os.path.normpath(results))
+        windows = feature_windows(results)
+        if not windows:
+            # Without the feature phase window the result would mix in baseline blocks.
+            lines.append(f"| {name} | - | - | - | - | - | - | no feature phase in summary.md |")
+            failed = True
+            continue
+        rows = samples(results, windows)
         if not rows:
             lines.append(f"| {name} | 0 | - | - | - | - | - | no loaded blocks |")
             failed = True
