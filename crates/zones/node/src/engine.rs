@@ -749,7 +749,7 @@ fn zone_timestamp_millis(
 }
 
 /// Bounces each encrypted deposit whose L1 sender may not send its token to its recipient under
-/// `ZoneIdentity`, by replacing its decryption with [`FAILED_DECRYPTION`]. `deposits` holds the
+/// `ZoneIdentity`, by replacing its decryption with [`FAILED_DECRYPTION`](zone_l1::FAILED_DECRYPTION). `deposits` holds the
 /// `(sender, token)` of every encrypted deposit, aligned with `recipients` and `decryptions`.
 /// Returns how many it bounced.
 fn reject_by_identity(
