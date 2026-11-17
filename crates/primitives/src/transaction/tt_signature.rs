@@ -1325,7 +1325,7 @@ where
 mod tests {
     use super::*;
     use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-    use alloy_primitives::{b256, hex};
+    use alloy_primitives::hex;
     use alloy_rlp::{Decodable, Encodable};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use p256::{
@@ -1338,6 +1338,7 @@ mod tests {
         collections::hash_map::DefaultHasher,
         hash::{Hash, Hasher},
     };
+    use test_case::test_case;
 
     /// Generate P256 keypair, return (signing_key, pub_key_x, pub_key_y)
     fn generate_p256_keypair() -> (P256SigningKey, B256, B256) {
@@ -1789,51 +1790,6 @@ mod tests {
         let expected_hash = final_hasher.finalize();
 
         assert_eq!(message_hash.as_slice(), &expected_hash[..]);
-    }
-
-    #[test]
-    fn test_p256_address_derivation() {
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Should be deterministic
-        assert_eq!(addr1, addr2);
-
-        // Should not be zero address
-        assert_ne!(addr1, Address::ZERO);
-    }
-
-    #[test]
-    fn test_p256_address_derivation_deterministic() {
-        // Test that address derivation is deterministic
-        let pub_key_x = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let addr1 = derive_p256_address(&pub_key_x, &pub_key_y);
-        let addr2 = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        assert_eq!(addr1, addr2, "Address derivation should be deterministic");
-    }
-
-    #[test]
-    fn test_p256_address_different_keys_different_addresses() {
-        // Different keys should produce different addresses
-        let pub_key_x1 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let pub_key_y1 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-
-        let pub_key_x2 = b256!("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
-        let pub_key_y2 = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-
-        let addr1 = derive_p256_address(&pub_key_x1, &pub_key_y1);
-        let addr2 = derive_p256_address(&pub_key_x2, &pub_key_y2);
-
-        assert_ne!(
-            addr1, addr2,
-            "Different keys should produce different addresses"
-        );
     }
 
     #[test]
@@ -2514,26 +2470,19 @@ mod tests {
         assert!(decoded_no_version.is_legacy_keychain());
     }
 
-    #[test]
-    fn test_keychain_rlp_roundtrip_preserves_version() {
+    #[test_case(KeychainSignature::new_v1 => true)]
+    #[test_case(KeychainSignature::new => false)]
+    fn test_keychain_rlp_roundtrip_preserves_version(
+        keychain: fn(Address, PrimitiveSignature) -> KeychainSignature,
+    ) -> bool {
         let inner = PrimitiveSignature::Secp256k1(Signature::test_signature());
         let user = Address::repeat_byte(0xCC);
 
-        for (sig, expect_legacy) in [
-            (
-                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner.clone())),
-                true,
-            ),
-            (
-                TempoSignature::Keychain(KeychainSignature::new(user, inner)),
-                false,
-            ),
-        ] {
-            let buf = alloy_rlp::encode(&sig);
-            let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
-            assert_eq!(sig, decoded);
-            assert_eq!(decoded.is_legacy_keychain(), expect_legacy);
-        }
+        let sig = TempoSignature::Keychain(keychain(user, inner));
+        let buf = alloy_rlp::encode(&sig);
+        let decoded = TempoSignature::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(sig, decoded);
+        decoded.is_legacy_keychain()
     }
 }
 

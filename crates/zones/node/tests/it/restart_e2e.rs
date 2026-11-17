@@ -8,7 +8,8 @@
 //! - Multiple restart cycles don't corrupt state
 
 use crate::utils::{
-    L1_TIMEOUT, L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer,
+    L1_TIMEOUT, L1TestNode, Network, ZoneAccount, ZoneLaunch, ZoneTestNode, batch_count,
+    spawn_sequencer,
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -83,88 +84,82 @@ async fn abort_task(handle: tokio::task::JoinHandle<()>) -> eyre::Result<()> {
     }
 }
 
-/// Sequencer restart after a successful batch + withdrawal cycle.
+/// Repeated sequencer restarts resume batch submission from the portal's `blockHash()`.
 ///
-/// 1. Start L1 + zone, deposit, spawn sequencer, withdraw, wait for L1 processing.
-/// 2. Abort the sequencer (simulating a restart).
-/// 3. Respawn the sequencer — it should resume from the portal's `blockHash()`.
-/// 4. Perform another withdrawal and verify it completes on L1.
-///
-/// This proves the monitor correctly reads `blockHash()` on startup and doesn't
-/// attempt to scan from block 0 (which would hit the max block range error).
+/// The first restart happens before any withdrawal, so the portal's `blockHash()` is the only
+/// anchor; each later cycle restarts and then completes a withdrawal on L1. This proves the
+/// monitor reads `blockHash()` on startup instead of scanning from block 0 (which would hit the
+/// max block range error) and that repeated restarts don't corrupt state.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_sequencer_restart_resumes_batch_submission() -> eyre::Result<()> {
+async fn test_sequencer_restarts_resume_batch_submission() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    let (l1, [zone], [user]) = &Network::default().fund(6_000_000).start().await?;
+    let deposit_amount: u128 = 5_000_000;
+    zone.deposit(user, deposit_amount).await?;
 
-    // --- Phase 1: Deposit + first withdrawal ---
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let deposit_amount: u128 = 2_000_000; // 2 pathUSD
-    l1.fund_user(account.address(), deposit_amount).await?;
-    account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
-
-    let seq_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    let first_withdrawal: u128 = 500_000;
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(first_withdrawal).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        first_withdrawal,
+    let mut seq = zone.spawn_sequencer().await;
+    crate::utils::poll_until(
         WITHDRAWAL_TIMEOUT,
+        std::time::Duration::from_millis(200),
+        "at least one BatchSubmitted",
+        || async move {
+            let count = batch_submitted_count(l1, zone.portal_address()).await?;
+            if count > 0 { Ok(Some(count)) } else { Ok(None) }
+        },
     )
     .await?;
-
-    // Verify portal state advanced
-    let hash_after_first = portal_block_hash(&l1, portal_address).await?;
     assert!(
-        !hash_after_first.is_zero(),
+        !portal_block_hash(l1, zone.portal_address())
+            .await?
+            .is_zero(),
         "portal blockHash should be non-zero after first batch"
     );
-    let batches_before_restart = batch_submitted_count(&l1, portal_address).await?;
+
+    // `None` restarts without a withdrawal; each later cycle withdraws after the restart.
+    let withdrawals = [None, Some(200_000u128), Some(300_000), Some(400_000)];
+    for withdrawal in withdrawals {
+        let hash_before = portal_block_hash(l1, zone.portal_address()).await?;
+        let batches_before = batch_submitted_count(l1, zone.portal_address()).await?;
+
+        abort_task(seq.monitor_handle).await?;
+        abort_task(seq.withdrawal_handle).await?;
+        seq = zone.spawn_sequencer().await;
+
+        if let Some(amount) = withdrawal {
+            zone.withdraw(user, PATH_USD_ADDRESS, amount).await?;
+        }
+
+        // The zone produces blocks as L1 blocks arrive (every 250ms in dev mode), so the
+        // restarted monitor has new blocks to batch.
+        crate::utils::poll_until(
+            L1_TIMEOUT,
+            std::time::Duration::from_millis(200),
+            "new batches should be submitted after restart",
+            || async move {
+                let count = batch_submitted_count(l1, zone.portal_address()).await?;
+                Ok((count > batches_before).then_some(()))
+            },
+        )
+        .await?;
+        assert_ne!(
+            hash_before,
+            portal_block_hash(l1, zone.portal_address()).await?,
+            "portal blockHash should advance after restart (withdrawal: {withdrawal:?})"
+        );
+    }
+
+    let total_batches = batch_submitted_count(l1, zone.portal_address()).await?;
     assert!(
-        batches_before_restart > 0,
-        "should have at least one batch submitted"
+        total_batches >= 3,
+        "should have at least 3 batches across the restart cycles (got {total_batches})"
     );
 
-    // --- Phase 2: Restart sequencer ---
-    abort_task(seq_handle.monitor_handle).await?;
-    abort_task(seq_handle.withdrawal_handle).await?;
-
-    // Respawn — should resume from portal's blockHash, not block 0
-    let _seq_handle2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    // --- Phase 3: Second withdrawal after restart ---
-    let second_withdrawal: u128 = 300_000;
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(second_withdrawal).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        second_withdrawal,
-        WITHDRAWAL_TIMEOUT,
-    )
-    .await?;
-
-    // More batches should have been submitted
-    let batches_after_restart = batch_submitted_count(&l1, portal_address).await?;
+    let total_withdrawn: u128 = withdrawals.into_iter().flatten().sum();
+    let l2_balance = zone.balance_of(ZONE_TOKEN_ADDRESS, user.address()).await?;
     assert!(
-        batches_after_restart > batches_before_restart,
-        "new batches should be submitted after restart (before={batches_before_restart}, after={batches_after_restart})"
-    );
-
-    // Portal block hash should have advanced
-    let hash_after_second = portal_block_hash(&l1, portal_address).await?;
-    assert_ne!(
-        hash_after_first, hash_after_second,
-        "portal blockHash should advance after second batch"
+        l2_balance <= U256::from(deposit_amount - total_withdrawn),
+        "L2 balance should reflect all withdrawals (got {l2_balance})"
     );
 
     Ok(())
@@ -182,20 +177,14 @@ async fn test_sequencer_restart_resumes_batch_submission() -> eyre::Result<()> {
 async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let deposit_amount: u128 = 3_000_000;
-    l1.fund_user(account.address(), deposit_amount).await?;
-    account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
+    let (l1, [zone], [user]) = &Network::default().fund(4_000_000).start().await?;
+    let mut account = zone.account(user);
+    zone.deposit(user, 3_000_000).await?;
 
     let zone_sequencer::ZoneSequencerHandle {
         withdrawal_handle,
         monitor_handle,
-    } = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    } = zone.spawn_sequencer().await;
 
     // Keep batch submission running, but stop L1 processing so the portal queue
     // is guaranteed to remain pending until after the restart.
@@ -204,24 +193,21 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     // Request withdrawal — wait for the batch to be submitted to L1
     let withdrawal_amount: u128 = 500_000;
     account.withdraw(withdrawal_amount).await?;
-    wait_for_withdrawal_requested(&zone, account.address(), withdrawal_amount).await?;
+    wait_for_withdrawal_requested(zone, account.address(), withdrawal_amount).await?;
 
     // Wait for the batch to land on L1 (portal tail advances)
     crate::utils::poll_until(
         WITHDRAWAL_TIMEOUT,
         std::time::Duration::from_millis(200),
         "portal withdrawal queue tail > 0",
-        || {
-            let l1 = &l1;
-            async move {
-                let (_, tail) = portal_queue_state(l1, portal_address).await?;
-                if tail > 0 { Ok(Some(tail)) } else { Ok(None) }
-            }
+        || async move {
+            let (_, tail) = portal_queue_state(l1, zone.portal_address()).await?;
+            if tail > 0 { Ok(Some(tail)) } else { Ok(None) }
         },
     )
     .await?;
 
-    let (head_before, tail_before) = portal_queue_state(&l1, portal_address).await?;
+    let (head_before, tail_before) = portal_queue_state(l1, zone.portal_address()).await?;
     assert!(
         tail_before > head_before,
         "expected pending withdrawal slot: tail={tail_before} head={head_before}"
@@ -231,7 +217,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     abort_task(monitor_handle).await?;
 
     // --- Respawn sequencer (fetch_pending_withdrawals runs during init) ---
-    let seq_handle2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let seq_handle2 = zone.spawn_sequencer().await;
 
     // The OLD withdrawal from before the restart should be processed via
     // restored data (withdrawal processor was aborted before head advanced).
@@ -240,7 +226,6 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
         std::time::Duration::from_millis(200),
         "portal head advances past first withdrawal",
         || {
-            let l1 = &l1;
             let seq_handle2 = &seq_handle2;
             async move {
                 if seq_handle2.monitor_handle.is_finished() {
@@ -251,7 +236,7 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
                         "restarted withdrawal processor exited before processing the pending withdrawal"
                     );
                 }
-                let (head, _) = portal_queue_state(l1, portal_address).await?;
+                let (head, _) = portal_queue_state(l1, zone.portal_address()).await?;
                 if head >= tail_before {
                     Ok(Some(head))
                 } else {
@@ -263,20 +248,10 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     .await?;
 
     // Request a NEW withdrawal after restart to verify normal operation continues.
-    let second_withdrawal: u128 = 400_000;
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(second_withdrawal).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        second_withdrawal,
-        WITHDRAWAL_TIMEOUT,
-    )
-    .await?;
+    zone.withdraw(user, PATH_USD_ADDRESS, 400_000).await?;
 
     // Portal queue should have advanced further
-    let (head_after, tail_after) = portal_queue_state(&l1, portal_address).await?;
+    let (head_after, tail_after) = portal_queue_state(l1, zone.portal_address()).await?;
     assert!(
         tail_after > tail_before,
         "portal tail should advance after second withdrawal (before={tail_before}, after={tail_after})"
@@ -284,162 +259,6 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     assert!(
         head_after >= tail_before,
         "portal head should have processed at least the first withdrawal"
-    );
-
-    Ok(())
-}
-
-/// Double restart: verify the sequencer survives two consecutive restart cycles.
-///
-/// Each cycle: deposit → withdraw → restart. After the final restart, a new
-/// withdrawal should still complete successfully.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_double_sequencer_restart() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    let deposit_amount: u128 = 5_000_000;
-    l1.fund_user(account.address(), deposit_amount).await?;
-    account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
-
-    // --- Cycle 1 ---
-    let seq1 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(200_000).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        200_000,
-        WITHDRAWAL_TIMEOUT,
-    )
-    .await?;
-
-    abort_task(seq1.monitor_handle).await?;
-    abort_task(seq1.withdrawal_handle).await?;
-
-    // --- Cycle 2 ---
-    let seq2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(300_000).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        300_000,
-        WITHDRAWAL_TIMEOUT,
-    )
-    .await?;
-
-    abort_task(seq2.monitor_handle).await?;
-    abort_task(seq2.withdrawal_handle).await?;
-
-    // --- Cycle 3 (final) ---
-    let _seq3 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
-    account.withdraw(400_000).await?;
-    l1.wait_for_withdrawal_on_l1(
-        portal_address,
-        account.address(),
-        l1_balance_before,
-        400_000,
-        WITHDRAWAL_TIMEOUT,
-    )
-    .await?;
-
-    // Verify all batches are on L1
-    let total_batches = batch_submitted_count(&l1, portal_address).await?;
-    assert!(
-        total_batches >= 3,
-        "should have at least 3 batches across 3 restart cycles (got {total_batches})"
-    );
-
-    // Verify L2 balance decreased by total withdrawals (200k + 300k + 400k = 900k)
-    let l2_balance = zone
-        .balance_of(ZONE_TOKEN_ADDRESS, account.address())
-        .await?;
-    assert!(
-        l2_balance <= U256::from(deposit_amount - 900_000u128),
-        "L2 balance should reflect all withdrawals (got {l2_balance})"
-    );
-
-    Ok(())
-}
-
-/// Batch-only restart (no withdrawals).
-///
-/// Verifies the monitor resumes batch submission after restart even when no
-/// withdrawals are involved — the portal's `blockHash()` is the critical
-/// anchor, not the withdrawal queue.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_batch_only_restart_no_withdrawals() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let l1 = L1TestNode::start().await?;
-    let portal_address = l1.deploy_zone().await?;
-    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
-    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
-
-    // Deposit to generate L2 activity but don't withdraw
-    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
-    l1.fund_user(account.address(), 1_000_000).await?;
-    account.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
-
-    // Spawn sequencer, wait for at least one batch
-    let seq1 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    crate::utils::poll_until(
-        WITHDRAWAL_TIMEOUT,
-        std::time::Duration::from_millis(200),
-        "at least one BatchSubmitted",
-        || {
-            let l1 = &l1;
-            async move {
-                let count = batch_submitted_count(l1, portal_address).await?;
-                if count > 0 { Ok(Some(count)) } else { Ok(None) }
-            }
-        },
-    )
-    .await?;
-
-    let hash_before = portal_block_hash(&l1, portal_address).await?;
-    let batches_before = batch_submitted_count(&l1, portal_address).await?;
-
-    // Restart
-    abort_task(seq1.monitor_handle).await?;
-    abort_task(seq1.withdrawal_handle).await?;
-
-    let _seq2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
-
-    // The zone produces blocks as L1 blocks arrive (every 250ms in dev mode), so the restarted
-    // monitor has new blocks to batch.
-    crate::utils::poll_until(
-        L1_TIMEOUT,
-        std::time::Duration::from_millis(200),
-        "new batches should be submitted after restart",
-        || {
-            let l1 = &l1;
-            async move {
-                let count = batch_submitted_count(l1, portal_address).await?;
-                Ok((count > batches_before).then_some(()))
-            }
-        },
-    )
-    .await?;
-
-    // Portal block hash should have advanced
-    let hash_after = portal_block_hash(&l1, portal_address).await?;
-    assert_ne!(
-        hash_before, hash_after,
-        "portal blockHash should advance after restart"
     );
 
     Ok(())
@@ -457,12 +276,10 @@ async fn test_finalized_withdrawal_survives_sequencer_restart() -> eyre::Result<
     let portal_address = l1.deploy_zone().await?;
     // Use a long withdrawal batch interval so this live L1 restart test knows
     // finalization was triggered by the withdrawal rather than an empty-batch boundary.
-    let zone = ZoneTestNode::start_from_l1_with_withdrawal_batch_interval(
-        l1.http_url(),
-        l1.ws_url(),
-        portal_address,
-        10_000,
-    )
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        withdrawal_batch_interval_blocks: 10_000,
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
     .await?;
     zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
 

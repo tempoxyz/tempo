@@ -603,6 +603,7 @@ mod tests {
     use tempo_primitives::{
         AASigned, TempoSignature, TempoTransaction, transaction::tt_signature::PrimitiveSignature,
     };
+    use test_case::test_case;
 
     fn legacy_env(caller: Address, to: TxKind, input: Bytes) -> TempoTxEnv {
         Recovered::new_unchecked(
@@ -876,47 +877,25 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_is_tip20_usd() -> eyre::Result<()> {
+    // Short string encoding: left-aligned data + length*2 in LSB
+    // "USD" = 0x555344, len=3, LSB=6 -> true
+    #[test_case(uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256) => true; "USD")]
+    // "EUR" = 0x455552, len=3, LSB=6 -> false (wrong content)
+    #[test_case(uint!(0x4555520000000000000000000000000000000000000000000000000000000006_U256) => false; "EUR")]
+    // "US" = 0x5553, len=2, LSB=4 -> false (wrong length)
+    #[test_case(uint!(0x5553000000000000000000000000000000000000000000000000000000000004_U256) => false; "US")]
+    // empty -> false
+    #[test_case(U256::ZERO => false; "empty")]
+    fn test_is_tip20_usd(currency_value: U256) -> bool {
         let fee_token = PATH_USD_ADDRESS;
-
-        // Short string encoding: left-aligned data + length*2 in LSB
-        let cases: &[(U256, bool, &str)] = &[
-            // "USD" = 0x555344, len=3, LSB=6 -> true
-            (
-                uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
-                true,
-                "USD",
-            ),
-            // "EUR" = 0x455552, len=3, LSB=6 -> false (wrong content)
-            (
-                uint!(0x4555520000000000000000000000000000000000000000000000000000000006_U256),
-                false,
-                "EUR",
-            ),
-            // "US" = 0x5553, len=2, LSB=4 -> false (wrong length)
-            (
-                uint!(0x5553000000000000000000000000000000000000000000000000000000000004_U256),
-                false,
-                "US",
-            ),
-            // empty -> false
-            (U256::ZERO, false, "empty"),
-        ];
-
-        for (currency_value, expected, label) in cases {
-            let mut db = InMemoryDB::default();
-            db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, currency_value);
-
-            let is_usd = db.is_tip20_usd(
-                TempoHardfork::Genesis,
-                fee_token,
-                StorageActions::disabled(),
-            )?;
-            assert_eq!(is_usd, *expected, "currency '{label}' failed");
-        }
-
-        Ok(())
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&fee_token, &tip20_slots::CURRENCY, &currency_value);
+        db.is_tip20_usd(
+            TempoHardfork::Genesis,
+            fee_token,
+            StorageActions::disabled(),
+        )
+        .unwrap()
     }
 
     #[test]

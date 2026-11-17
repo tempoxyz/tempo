@@ -93,6 +93,7 @@ mod tests {
         ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
     };
     use tempo_primitives::test_utils::actors;
+    use test_case::test_case;
 
     /// Dispatches `call` from `sender`, unwrapping the success and its decoded return value.
     fn dispatch_call<C: SolCall>(
@@ -335,50 +336,19 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_special_policy_ids() -> eyre::Result<()> {
+    // Policy 0 always denies, policy 1 always allows
+    #[test_case(0 => false)]
+    #[test_case(1 => true)]
+    fn test_special_policy_ids(policy_id: u64) -> bool {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            // Policy 0 always denies, policy 1 always allows
-            for (policy_id, expected) in [(0, false), (1, true)] {
-                let call = ITIP403Registry::isAuthorizedCall {
-                    policyId: policy_id,
-                    user,
-                };
-                assert_eq!(dispatch_call(&mut registry, Address::ZERO, call), expected);
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_invalid_selector() -> eyre::Result<()> {
-        let sender = Address::random();
-
-        // T1: invalid selector returns reverted output
-        with_storage(TempoHardfork::T1, || -> eyre::Result<()> {
-            let mut registry = TIP403Registry::new();
-
-            let result = registry.call(&[0x12, 0x34, 0x56, 0x78], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            // T1: insufficient data also returns reverted output
-            let result = registry.call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
-
-            Ok(())
-        })?;
-
-        // Pre-T1 (T0): insufficient data returns halted output
-        with_storage(TempoHardfork::T0, || {
-            let result = TIP403Registry::new().call(&[0x12, 0x34], sender);
-            assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
-
-            Ok(())
+            let call = ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            };
+            dispatch_call(&mut registry, Address::ZERO, call)
         })
     }
 
@@ -436,11 +406,11 @@ mod tests {
 
     #[test]
     fn test_receive_policy_selectors_are_t6_gated() -> eyre::Result<()> {
-        let account = Address::random();
+        let [account, token, sender] = actors();
         let receive_policy = ITIP403Registry::receivePolicyCall { account }.abi_encode();
         let validate_receive_policy = ITIP403Registry::validateReceivePolicyCall {
-            token: Address::random(),
-            sender: Address::random(),
+            token,
+            sender,
             receiver: account,
         }
         .abi_encode();

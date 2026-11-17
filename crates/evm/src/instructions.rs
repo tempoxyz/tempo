@@ -11,6 +11,7 @@ use evm2::{
 use evm2_macros::instruction;
 use tempo_precompiles::{
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, shim},
+    has_input_gas,
     storage::{
         SstoreTransitionFlags, StorageCtx, account_config_commitment,
         evm::EvmPrecompileStorageProvider,
@@ -158,6 +159,9 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
+    if !has_input_gas(spec, cx.state.input().len(), cx.gas.tracker().remaining()) {
+        return Err(InstrStop::PrecompileOOG);
+    }
     let input = cx.state.input().to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);

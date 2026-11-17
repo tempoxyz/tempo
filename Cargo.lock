@@ -14042,7 +14042,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14115,6 +14115,7 @@ dependencies = [
  "secp256k1 0.33.1",
  "serde",
  "serde_json",
+ "smolgen",
  "tar",
  "tempfile",
  "tempo-alloy",
@@ -14217,11 +14218,12 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-hardfork",
  "tempo-primitives",
+ "test-case",
 ]
 
 [[package]]
 name = "tempo-consensus"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "age",
  "alloy-consensus",
@@ -14288,6 +14290,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-telemetry-util",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -14299,7 +14302,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "age",
  "commonware-codec",
@@ -14333,7 +14336,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-corpus"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -14377,7 +14380,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -14391,7 +14394,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-genesis",
@@ -14446,7 +14449,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928",
@@ -14509,7 +14512,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "clap",
  "dirs-next",
@@ -14528,7 +14531,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "eyre",
  "indenter",
@@ -14536,7 +14539,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "clap",
@@ -14548,7 +14551,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-harness"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14578,7 +14581,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-fuzz-types"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-primitives",
  "evm2",
@@ -14602,7 +14605,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-invariants"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -14613,7 +14616,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "arrayvec",
  "aws-lc-rs",
@@ -14623,6 +14626,7 @@ dependencies = [
  "minicbor-serde",
  "serde",
  "serde_with",
+ "test-case",
  "x509-cert",
 ]
 
@@ -14638,7 +14642,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -14701,7 +14705,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "smolgen",
  "sysinfo 0.38.4",
  "tempo-alloy",
  "tempo-chainspec",
@@ -14721,7 +14724,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node-launcher"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "eyre",
  "futures",
@@ -14732,7 +14735,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14766,13 +14769,14 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
+ "test-case",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -14796,7 +14800,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-json-abi",
@@ -14825,13 +14829,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
  "tempo-nitro-attestation",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tracing",
  "x509-cert",
@@ -14839,7 +14843,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -14883,12 +14887,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempo-contracts",
+ "test-case",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "tempo-state-bloat"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14919,7 +14924,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "eyre",
  "jiff",
@@ -14928,7 +14933,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14971,7 +14976,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -14999,7 +15004,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -15071,6 +15076,7 @@ dependencies = [
  "reth-cli-util",
  "reth-node-core",
  "rustls",
+ "smolgen",
  "zone-node",
 ]
 
@@ -15139,7 +15145,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zones-antithesis"
-version = "1.18.3"
+version = "1.18.4"
 dependencies = [
  "alloy",
  "antithesis_sdk",
@@ -17279,6 +17285,7 @@ dependencies = [
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -17317,6 +17324,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "zone-chainspec",
@@ -17437,7 +17445,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "smolgen",
  "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
@@ -17505,12 +17512,14 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "evm2",
  "eyre",
+ "futures",
  "metrics",
  "reth-basic-payload-builder",
  "reth-chainspec",
@@ -17526,12 +17535,14 @@ dependencies = [
  "reth-tasks",
  "reth-transaction-pool",
  "serde",
+ "tempo-alloy",
  "tempo-contracts",
  "tempo-evm",
  "tempo-node",
  "tempo-payload-types",
  "tempo-primitives",
  "tempo-transaction-pool",
+ "tokio",
  "tracing",
  "zone-chainspec",
  "zone-evm",
@@ -17565,6 +17576,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-precompiles-macros",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "zone-primitives",
 ]
@@ -17604,6 +17616,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-nitro-attestation",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
@@ -17641,6 +17654,7 @@ dependencies = [
  "tempo-alloy",
  "tempo-contracts",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",

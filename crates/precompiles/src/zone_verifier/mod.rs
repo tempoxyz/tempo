@@ -227,6 +227,7 @@ mod tests {
     use tempo_contracts::zones::{
         BlockTransition, DepositQueueTransition, TokenEnablementTransition,
     };
+    use test_case::test_case;
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -398,32 +399,23 @@ mod tests {
         });
     }
 
-    #[test]
-    fn future_skew_boundary_is_inclusive() {
+    #[test_case(MAX_FUTURE_SKEW_MILLIS => true)]
+    #[test_case(MAX_FUTURE_SKEW_MILLIS + 1 => false)]
+    fn future_skew_boundary_is_inclusive(skew: u64) -> bool {
         let call = call();
         let portal = portal_address(call.zoneId);
         let commitment = batch_commitment(1, &call);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         storage.set_timestamp(U256::from(BLOCK_TIMESTAMP));
         StorageCtx::enter(&mut storage, || {
-            for (skew, expected) in [
-                (MAX_FUTURE_SKEW_MILLIS, true),
-                (MAX_FUTURE_SKEW_MILLIS + 1, false),
-            ] {
-                let (proof, root, pcrs) = attestation::tests::fixture_at(
-                    commitment.as_ref(),
-                    BLOCK_TIMESTAMP * 1_000 + skew,
-                );
-                let mut candidate = call.clone();
-                candidate.proof = proof.into();
-                assert_eq!(
-                    ZoneVerifier::new()
-                        .verify_with_policy(portal, candidate, &root, Some(pcrs))
-                        .unwrap(),
-                    expected
-                );
-            }
-        });
+            let (proof, root, pcrs) =
+                attestation::tests::fixture_at(commitment.as_ref(), BLOCK_TIMESTAMP * 1_000 + skew);
+            let mut candidate = call.clone();
+            candidate.proof = proof.into();
+            ZoneVerifier::new()
+                .verify_with_policy(portal, candidate, &root, Some(pcrs))
+                .unwrap()
+        })
     }
 
     #[test]

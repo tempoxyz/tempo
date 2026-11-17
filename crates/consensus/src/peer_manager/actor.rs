@@ -504,6 +504,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
     };
+    use test_case::test_case;
 
     use super::*;
 
@@ -757,51 +758,48 @@ mod tests {
         execution
     }
 
-    #[test]
-    fn constructor_registers_available_execution_peers_before_actor_start() {
-        // EL behind consensus, unset finalized marker at genesis, an exact
-        // boundary, and EL ahead of the consensus tip (which still caps reads).
-        for (finalized, available, consensus_tip) in [
-            (Some(7), 7, 100),
-            (None, 0, 100),
-            (Some(19), 19, 100),
-            (Some(27), 12, 12),
-        ] {
-            Runner::default().start(|context| async move {
-                let mut execution = bootstrap_execution(available, 1);
-                execution.finalized = finalized;
-                let execution = Arc::new(execution);
-                let oracle = RecordingOracle::default();
-                let (_actor, _mailbox) = crate::peer_manager::init(
-                    context,
-                    crate::peer_manager::Config {
-                        execution_node: execution.clone(),
-                        oracle: oracle.clone(),
-                        epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                        finalized_tip: (
-                            Height::new(consensus_tip),
-                            Digest(B256::repeat_byte(0xFF)),
-                        ),
-                        max_peers: commonware_utils::NZU32!(128),
-                    },
-                )
-                .unwrap();
-                // No actor has started and no marshal update has been delivered.
-                let tracked = oracle.tracked.lock().unwrap();
-                assert_eq!(tracked.len(), 1);
-                assert_eq!(tracked[0].0, available);
-                assert_peer(&tracked[0].1.primary, &peer(1));
-                assert_peer(&tracked[0].1.secondary, &peer(2));
-                assert!(
-                    execution
-                        .header_reads
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .all(|height| *height <= available)
-                );
-            });
-        }
+    // EL behind consensus, unset finalized marker at genesis, an exact
+    // boundary, and EL ahead of the consensus tip (which still caps reads).
+    #[test_case(Some(7), 7, 100)]
+    #[test_case(None, 0, 100)]
+    #[test_case(Some(19), 19, 100)]
+    #[test_case(Some(27), 12, 12)]
+    fn constructor_registers_available_execution_peers_before_actor_start(
+        finalized: Option<u64>,
+        available: u64,
+        consensus_tip: u64,
+    ) {
+        Runner::default().start(|context| async move {
+            let mut execution = bootstrap_execution(available, 1);
+            execution.finalized = finalized;
+            let execution = Arc::new(execution);
+            let oracle = RecordingOracle::default();
+            let (_actor, _mailbox) = crate::peer_manager::init(
+                context,
+                crate::peer_manager::Config {
+                    execution_node: execution.clone(),
+                    oracle: oracle.clone(),
+                    epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
+                    finalized_tip: (Height::new(consensus_tip), Digest(B256::repeat_byte(0xFF))),
+                    max_peers: commonware_utils::NZU32!(128),
+                },
+            )
+            .unwrap();
+            // No actor has started and no marshal update has been delivered.
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(tracked.len(), 1);
+            assert_eq!(tracked[0].0, available);
+            assert_peer(&tracked[0].1.primary, &peer(1));
+            assert_peer(&tracked[0].1.secondary, &peer(2));
+            assert!(
+                execution
+                    .header_reads
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|height| *height <= available)
+            );
+        });
     }
 
     #[test]

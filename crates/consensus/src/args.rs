@@ -149,8 +149,14 @@ pub struct Args {
     ///
     /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
     /// immediate before T14, deferred from T14.
-    /// Immediate and deferred override the schedule.
-    #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
+    /// Immediate and deferred override the schedule; the flag is hidden and kept for
+    /// compatibility and testing.
+    #[arg(
+        long = "consensus.verification-mode",
+        value_enum,
+        default_value_t,
+        hide = true
+    )]
     pub verification_mode: VerificationMode,
 
     /// Deprecated compatibility flag. P2P queue capacities are derived from
@@ -718,12 +724,13 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
     use commonware_codec::Encode as _;
 
     use super::*;
     use reth_ethereum::chainspec::ForkCondition;
     use tempo_chainspec::TempoHardfork;
+    use test_case::test_case;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -770,6 +777,21 @@ mod tests {
     }
 
     #[test]
+    fn verification_mode_is_hidden_from_help() {
+        let help = TestCli::command().render_long_help().to_string();
+        assert!(!help.contains("--consensus.verification-mode"));
+    }
+
+    #[test_case("immediate" => VerificationMode::Immediate)]
+    #[test_case("deferred" => VerificationMode::Deferred)]
+    #[test_case("hardfork" => VerificationMode::Hardfork)]
+    fn hidden_verification_mode_parses(value: &str) -> VerificationMode {
+        parse(&["--dev", "--consensus.verification-mode", value])
+            .consensus
+            .verification_mode
+    }
+
+    #[test]
     fn verification_mode_resolves_t14_and_overrides() {
         for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
             chainspec.inner.hardforks.remove(&TempoHardfork::T14);
@@ -790,15 +812,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deprecated_proposal_timing_flags_parse() {
-        for flag in [
-            "--consensus.time-to-prepare-proposal-transactions",
-            "--consensus.minimum-time-before-propose",
-            "--consensus.time-to-build-proposal",
-        ] {
-            parse(&["--dev", flag, "1ms"]);
-        }
+    #[test_case("--consensus.time-to-prepare-proposal-transactions")]
+    #[test_case("--consensus.minimum-time-before-propose")]
+    #[test_case("--consensus.time-to-build-proposal")]
+    fn deprecated_proposal_timing_flags_parse(flag: &str) {
+        parse(&["--dev", flag, "1ms"]);
     }
 
     #[test]

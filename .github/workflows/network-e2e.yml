@@ -178,19 +178,17 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$IMAGE_TAG" =~ ^ci-[0-9]{1,20}-[0-9]{1,5}$ ]]
-          # The Argo replays only update statuses this run owns, so create them first, as the
-          # Tempo Network E2E status is. Unless the event is sent, the exit trap marks them
-          # errored, so a failure anywhere in this step never leaves them pending.
+          # The Argo replay only updates a status this run owns, so create it first, as the
+          # Tempo Network E2E status is. Unless the event is sent, the exit trap marks it
+          # errored, so a failure anywhere in this step never leaves it pending.
           dispatched=false
+          # One status covers every network's replay: Argo's corpus-replay-all runs them all.
           corpus_status() {
-            local chain
-            for chain in mainnet moderato; do
-              gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
-                -f state="$1" -f context="Workflows / $chain-corpus-replay-cmin" \
-                -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: $2" \
-                -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent \
-                || echo "::warning::Could not set the $chain corpus replay status to $1"
-            done
+            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+              -f state="$1" -f context="Workflows / corpus-replay-cmin" \
+              -f description="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT: $2" \
+              -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent \
+              || echo "::warning::Could not set the corpus replay status to $1"
           }
           cleanup() {
             rm -f "$RUNNER_TEMP/corpus-replay.key" "$RUNNER_TEMP/corpus-replay.crt"

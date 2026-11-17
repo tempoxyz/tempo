@@ -416,6 +416,66 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 }
 
 #[test]
+fn messages_from_nonparticipants_are_rejected_before_decoding() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "nonparticipant_messages")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let outsider = PrivateKey::from_seed(u64::MAX).public_key();
+        assert!(round.dealers().position(&outsider).is_none());
+        assert!(round.players().position(&outsider).is_none());
+        let mut sender = harness.sender().clone();
+
+        // The payloads are not decodable: reaching the decoder would fail
+        // with a decoding error instead.
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::ACK_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received an ACK from a non-player"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone()]);
+
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::DEALER_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received a dealing from a non-dealer"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone(), outsider]);
+    });
+}
+
+#[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
@@ -2457,5 +2517,35 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         assert_eq!(cached_first_output, first_output);
         assert_eq!(harness.marshal.subscriptions(), subscriptions);
+    });
+}
+
+#[test]
+fn boundary_outcome_must_be_for_the_next_epoch() {
+    Runner::timed(Duration::from_secs(10)).start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let (skipped, _, _) = dkg_state(&mut context, Epoch::new(3), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "boundary_skips_an_epoch")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        // Height 19 ends epoch 1, but its outcome claims epoch 3.
+        let boundary = outcome_header(Height::new(19), &skipped);
+        harness.execution.add_header(boundary.clone());
+        let (acknowledgement, _waiter) = commonware_utils::acknowledgement::Exact::handle();
+        let _ = commonware_consensus::Reporter::report(
+            &mut harness.mailbox().clone(),
+            commonware_consensus::marshal::Update::Block(block(boundary).into(), acknowledgement),
+        );
+        harness.wait_for_exit().await;
+
+        assert_eq!(harness.storage().current().epoch, state.epoch);
+        assert!(!harness.epoch_manager.events().iter().any(
+            |event| matches!(event, EpochEvent::Enter { epoch, .. } if *epoch == skipped.epoch)
+        ));
     });
 }

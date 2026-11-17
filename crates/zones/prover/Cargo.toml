@@ -41,3 +41,4 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 tempo-primitives.workspace = true
+test-case.workspace = true
