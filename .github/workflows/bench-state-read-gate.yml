@@ -47,6 +47,9 @@ jobs:
       baseline: ${{ steps.refs.outputs.baseline }}
       feature: ${{ steps.refs.outputs.feature }}
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Resolve refs
         id: refs
         env:
@@ -133,6 +136,9 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
