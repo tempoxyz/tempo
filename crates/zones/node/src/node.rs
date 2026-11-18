@@ -26,7 +26,7 @@ use crate::{
 use alloy_chains::Chain;
 use alloy_consensus::{BlockHeader as _, TxReceipt as _};
 use alloy_eips::{BlockNumberOrTag, NumHash};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolEvent as _;
@@ -651,7 +651,7 @@ where
                 .filter(|_| !self.portal_address.is_zero()),
         )
         .await
-        .wrap_err("failed to locate the last executed deposit queue entry on L1")?;
+        .wrap_err("failed to locate the first owed deposit queue entry on L1")?;
         if start.block_number <= tempo_block_number {
             self.l1_config.deferred_work = Some(DeferredWorkRecovery {
                 last_operational,
@@ -2098,8 +2098,8 @@ where
 struct LatestImport {
     /// L1 block it imported.
     l1_num_hash: NumHash,
-    /// Number and queue hash of its last executed entry, if it may have left entries owed.
-    last_processed_deposit: Option<(u64, B256)>,
+    /// Number of its last executed entry, if it may have left entries owed.
+    last_processed_deposit: Option<u64>,
 }
 
 impl LatestImport {
@@ -2130,10 +2130,8 @@ impl LatestImport {
                             && chain_spec.tempo_hardfork_at(timestamp).is_t15();
                         return Ok(Self {
                             l1_num_hash: NumHash::new(event.tempoBlockNumber, event.tempoBlockHash),
-                            last_processed_deposit: may_leave_entries_owed.then_some((
-                                event.lastProcessedDepositNumber,
-                                event.newProcessedDepositQueueHash,
-                            )),
+                            last_processed_deposit: may_leave_entries_owed
+                                .then_some(event.lastProcessedDepositNumber),
                         });
                     }
                     Some(topic) if topic == &LegacyTempoAdvanced::SIGNATURE_HASH => {
@@ -2165,7 +2163,7 @@ mod tests {
 
     use super::*;
     use alloy_consensus::{SignableTransaction, TxEip1559};
-    use alloy_primitives::{Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
@@ -2360,11 +2358,11 @@ mod tests {
 
     #[test_case::test_case(0, 0 => None)]
     #[test_case::test_case(2, 999 => None)]
-    #[test_case::test_case(2, 1_000 => Some((5, B256::repeat_byte(5))))]
+    #[test_case::test_case(2, 1_000 => Some(5))]
     fn latest_import_reports_the_last_executed_entry(
         deposits_processed: u64,
         timestamp: u64,
-    ) -> Option<(u64, B256)> {
+    ) -> Option<u64> {
         let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
         zone_chainspec::test_utils::set_tempo_fork(
             &mut genesis,

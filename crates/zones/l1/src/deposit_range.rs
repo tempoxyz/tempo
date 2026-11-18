@@ -21,19 +21,19 @@ pub struct DepositQueuePosition {
 }
 
 impl DepositQueuePosition {
-    /// Returns the position after the last executed entry `(number, queue_hash)`, searching back
+    /// Returns the position of the first entry after the last executed entry, searching back
     /// from L1 block `through`, or the start of `through + 1` if no later entry was appended.
     pub async fn find(
         l1_provider: &impl Provider<TempoNetwork>,
         portal_address: Address,
         through: u64,
-        last_processed: Option<(u64, B256)>,
+        last_processed: Option<u64>,
     ) -> eyre::Result<Self> {
         let after_through = Self {
             block_number: through.saturating_add(1),
             entries_in_block: 0,
         };
-        let Some((number, queue_hash)) = last_processed else {
+        let Some(last_processed) = last_processed else {
             return Ok(after_through);
         };
         let deposit_count = ZonePortal::new(portal_address, l1_provider)
@@ -41,54 +41,47 @@ impl DepositQueuePosition {
             .block(BlockId::number(through))
             .call()
             .await?;
-        if deposit_count <= number {
+        if deposit_count <= last_processed {
             return Ok(after_through);
         }
+        let first_owed = last_processed + 1;
 
+        // Search for the first owed entry, so recovery never reads blocks without owed work.
         let entry_events = Filter::new().address(portal_address).event_signature(vec![
             DepositMade::SIGNATURE_HASH,
             WithdrawalBounceBack::SIGNATURE_HASH,
         ]);
         let mut to = through;
-        let block_number = loop {
+        loop {
             let from = to.saturating_sub(ENTRY_SEARCH_BLOCKS - 1);
-            let logs = l1_provider
-                .get_logs(
-                    &entry_events
-                        .clone()
-                        .topic1(queue_hash)
-                        .from_block(from)
-                        .to_block(to),
-                )
+            let logs = &l1_provider
+                .get_logs(&entry_events.clone().from_block(from).to_block(to))
                 .await?;
-            if let Some(log) = logs.last() {
-                break log.block_number.ok_or_eyre("log without block number")?;
+
+            let mut entries = Vec::new();
+            for log in logs {
+                let entry = match ZonePortalEvents::decode_log(&log.inner)?.data {
+                    ZonePortalEvents::DepositMade(event) => event.depositNumber,
+                    ZonePortalEvents::WithdrawalBounceBack(event) => event.depositNumber,
+                    // TODO: match against forced exits when added
+                    _ => continue,
+                };
+                entries.push((log.block_number.ok_or_eyre("missing block number")?, entry));
+            }
+            if let Some(&(block_number, _)) = entries.iter().find(|(_, e)| *e == first_owed) {
+                let entries_in_block = entries
+                    .iter()
+                    .filter(|&&(b, e)| b == block_number && e < first_owed)
+                    .count();
+                return Ok(Self {
+                    block_number,
+                    entries_in_block,
+                });
             }
             to = from.checked_sub(1).ok_or_else(|| {
-                eyre::eyre!("queue entry {number} not found at or before L1 block {through}")
+                eyre::eyre!("queue entry {first_owed} not found at or before L1 block {through}")
             })?;
-        };
-
-        let mut entries = Vec::new();
-        for log in &l1_provider
-            .get_logs(&entry_events.from_block(block_number).to_block(block_number))
-            .await?
-        {
-            match ZonePortalEvents::decode_log(&log.inner)?.data {
-                ZonePortalEvents::DepositMade(event) => entries.push(event.depositNumber),
-                ZonePortalEvents::WithdrawalBounceBack(event) => entries.push(event.depositNumber),
-                _ => {}
-            }
         }
-        eyre::ensure!(
-            entries.contains(&number),
-            "L1 block {block_number} did not append queue entry {number}"
-        );
-        let entries_in_block = entries.iter().filter(|&&entry| entry <= number).count();
-        Ok(Self {
-            block_number,
-            entries_in_block,
-        })
     }
 }
 
@@ -130,12 +123,11 @@ mod tests {
     use alloy_transport::mock::Asserter;
     use test_case::test_case;
 
-    #[test_case(ENTRY_SEARCH_BLOCKS + 5, Some(7), 8, &[&[], &[(3, 7)], &[(3, 5), (3, 6), (3, 7), (3, 8)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
-    #[test_case(5, Some(7), 8, &[&[(3, 7)], &[(3, 8), (3, 6), (3, 7), (3, 5)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
+    #[test_case(ENTRY_SEARCH_BLOCKS + 5, Some(7), 10, &[&[(9, 10)], &[(2, 6), (2, 7), (4, 8), (4, 9)]] => Ok(DepositQueuePosition { block_number: 4, entries_in_block: 0 }))]
+    #[test_case(5, Some(7), 8, &[&[(3, 5), (3, 6), (3, 7), (3, 8)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
     #[test_case(5, Some(7), 7, &[] => Ok(DepositQueuePosition { block_number: 6, entries_in_block: 0 }))]
     #[test_case(5, None, 0, &[] => Ok(DepositQueuePosition { block_number: 6, entries_in_block: 0 }))]
-    #[test_case(5, Some(7), 8, &[&[]] => Err("queue entry 7 not found at or before L1 block 5".to_owned()))]
-    #[test_case(5, Some(7), 8, &[&[(3, 7)], &[(3, 6)]] => Err("L1 block 3 did not append queue entry 7".to_owned()))]
+    #[test_case(5, Some(7), 8, &[&[(3, 7)]] => Err("queue entry 8 not found at or before L1 block 5".to_owned()))]
     #[tokio::test]
     async fn find(
         through: u64,
@@ -171,7 +163,6 @@ mod tests {
         let provider =
             ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
 
-        let last_processed = last_processed.map(|number| (number, B256::ZERO));
         DepositQueuePosition::find(&provider, Address::ZERO, through, last_processed)
             .await
             .map_err(|error| error.to_string())
