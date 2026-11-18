@@ -31,7 +31,7 @@ impl DepositRangeEnd {
 }
 
 /// Returns how many leading entries of a range fit [`MAX_DEPOSIT_WEIGHT_PER_BLOCK`].
-pub fn executed_count(deposit_types: impl IntoIterator<Item = DepositType>) -> usize {
+pub fn executable_len(deposit_types: impl IntoIterator<Item = DepositType>) -> usize {
     let mut weight = 0;
     deposit_types
         .into_iter()
@@ -70,7 +70,7 @@ mod tests {
     #[test_case(115, 115 => 230; "mixed entries fill the budget")]
     #[test_case(200, 31 => 230; "entry past the budget waits")]
     fn executes_weighted_prefix(deposits: usize, bounce_backs: usize) -> usize {
-        executed_count(core::iter::repeat_n(DepositType::Deposit, deposits).chain(
+        executable_len(core::iter::repeat_n(DepositType::Deposit, deposits).chain(
             core::iter::repeat_n(DepositType::WithdrawalBounceBack, bounce_backs),
         ))
     }

@@ -5,7 +5,7 @@ use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
-    zones::{DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+    zones::{DEPOSITS_PER_BUCKET, MAX_DEPOSIT_WEIGHT_PER_BLOCK, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -558,14 +558,15 @@ fn invalid_encrypted_proof_bounces_without_mint() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Queues `pending` bounced-back deposits checkpointed from `base`. Returns entries and hashes.
+/// Queues `pending` bounced-back deposits checkpointed from `base`. Returns entries, hashes and
+/// the encryption key's L1 slot.
 fn queue_checkpointed_deposits(
     env: &ZoneEnv,
     pending: u64,
     base: Option<u64>,
-) -> (Vec<QueuedDeposit>, Vec<B256>) {
+) -> (Vec<QueuedDeposit>, Vec<B256>, U256) {
     let fixture = EncryptedDepositFixture::new();
-    seed_encryption_key(env, &fixture);
+    let key_slot = seed_encryption_key(env, &fixture);
     let deposit = encrypted_deposit(&fixture, BOB, 1).0;
     let mut hashes = vec![B256::ZERO];
     let entries = (0..pending)
@@ -596,7 +597,7 @@ fn queue_checkpointed_deposits(
         }
         Ok(())
     });
-    (entries, hashes[1..].to_vec())
+    (entries, hashes[1..].to_vec(), key_slot)
 }
 
 /// Returns the processed position after advancing with `supplied` entries, or `None` on revert.
@@ -620,7 +621,7 @@ fn t15_range_ends_at_head_or_next_checkpoint(
     }
     .apply()
     .unwrap();
-    let (entries, hashes) = queue_checkpointed_deposits(&env, pending, base);
+    let (entries, hashes, key_slot) = queue_checkpointed_deposits(&env, pending, base);
     if corrupt_checkpoint {
         env.write_portal(env.child_header.inner.number, |portal| {
             portal.deposit_buckets[1]
@@ -632,7 +633,8 @@ fn t15_range_ends_at_head_or_next_checkpoint(
     let output = env
         .advance_tempo(
             entries[..supplied].to_vec(),
-            vec![INVALID_DECRYPTION; supplied],
+            // Only the entries within the weight budget execute and consume decryption data.
+            vec![INVALID_DECRYPTION; supplied.min(MAX_DEPOSIT_WEIGHT_PER_BLOCK as usize)],
             Vec::new(),
         )
         .unwrap();
@@ -640,6 +642,13 @@ fn t15_range_ends_at_head_or_next_checkpoint(
         assert_eq!(
             output.bytes,
             IZoneInbox::InvalidDepositQueueHash {}.abi_encode()
+        );
+        // The range is bound after processing, so single-entry prewarm simulations still warm.
+        let block = env.child_header.inner.number;
+        assert!(
+            env.l1
+                .storage_requests()
+                .contains(&(PORTAL, B256::from(key_slot), block))
         );
         return None;
     }

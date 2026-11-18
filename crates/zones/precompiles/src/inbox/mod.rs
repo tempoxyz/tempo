@@ -33,7 +33,7 @@ use tempo_precompiles::{
 use tempo_precompiles_macros::contract;
 use zone_primitives::{
     constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
-    deposit_queue::{DepositRangeEnd, executed_count},
+    deposit_queue::{DepositRangeEnd, executable_len},
 };
 
 use crate::{
@@ -145,36 +145,13 @@ impl ZoneInbox {
 
         // Step 2: Process deposits and build hash chain
         //
-        // (+T15) the entries must be exactly the range up to the head or next checkpoint.
+        // (+T15) only the prefix within the weight budget executes, the rest is only hashed.
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
         let previous_number = self.processed_deposit_number.read()?;
-        let (checkpoint_hash, executed_count) = if StorageCtx.spec().is_t15() && !portal.is_zero() {
-            let head = l1.read_portal(|portal| &portal.deposit_count)?;
-            let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
-            let checkpoint_base = (bucket_count != 0)
-                .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
-                .transpose()?;
-            let end = DepositRangeEnd::new(previous_number, head, checkpoint_base)
-                .ok_or_else(ZoneInboxError::invalid_deposit_queue_hash)?;
-            if end.target.checked_sub(previous_number) != Some(deposit_count) {
-                return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
-            }
-            let checkpoint_hash = match end.checkpoint_index {
-                None => None,
-                Some(index) => {
-                    let index = usize::try_from(index)
-                        .map_err(|_| TempoPrecompileError::under_overflow())?;
-                    // Checkpoints between the settled position and the head are never pruned.
-                    if index >= bucket_count {
-                        return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
-                    }
-                    Some(l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
-                }
-            };
-            let executed = executed_count(deposits.iter().map(DecodedQueuedDeposit::deposit_type));
-            (checkpoint_hash, executed)
+        let executable_count = if StorageCtx.spec().is_t15() && !portal.is_zero() {
+            executable_len(deposits.iter().map(DecodedQueuedDeposit::deposit_type))
         } else {
-            (None, deposits.len())
+            deposits.len()
         };
 
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
@@ -182,7 +159,7 @@ impl ZoneInbox {
         let mut outbox = ZoneOutbox::new();
 
         let mut deposits = deposits.into_iter();
-        for queued in deposits.by_ref().take(executed_count) {
+        for queued in deposits.by_ref().take(executable_count) {
             current_hash = queued.hash_with_tail(current_hash)?;
 
             match queued {
@@ -219,10 +196,37 @@ impl ZoneInbox {
         // Step 3: Bind the supplied range to its commitment on Tempo.
         //
         // A range ending at a checkpoint must hash to it, and every other range to the queue head.
+        // (+T15) the entries must be exactly the range up to the head or next checkpoint.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
         if !portal.is_zero() {
+            let checkpoint_hash = if StorageCtx.spec().is_t15() {
+                let head = l1.read_portal(|portal| &portal.deposit_count)?;
+                let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
+                let checkpoint_base = (bucket_count != 0)
+                    .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
+                    .transpose()?;
+                let end = DepositRangeEnd::new(previous_number, head, checkpoint_base)
+                    .ok_or_else(ZoneInboxError::invalid_deposit_queue_hash)?;
+                if end.target.checked_sub(previous_number) != Some(deposit_count) {
+                    return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                }
+                match end.checkpoint_index {
+                    None => None,
+                    Some(index) => {
+                        let index = usize::try_from(index)
+                            .map_err(|_| TempoPrecompileError::under_overflow())?;
+                        // Checkpoints between the settled position and the head are never pruned.
+                        if index >= bucket_count {
+                            return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                        }
+                        Some(l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
+                    }
+                }
+            } else {
+                None
+            };
             let expected_hash = match checkpoint_hash {
                 Some(checkpoint_hash) => checkpoint_hash,
                 None => l1.read_portal(|portal| &portal.current_deposit_queue_hash)?,
@@ -235,7 +239,7 @@ impl ZoneInbox {
         // Step 4: Update state
         self.processed_deposit_queue_hash.write(processed_hash)?;
         let deposit_count =
-            u64::try_from(executed_count).map_err(|_| TempoPrecompileError::under_overflow())?;
+            u64::try_from(executable_count).map_err(|_| TempoPrecompileError::under_overflow())?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;

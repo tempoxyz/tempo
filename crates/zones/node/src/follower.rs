@@ -36,7 +36,7 @@ use zone_payload::{
     ZonePayloadTypes,
     abi::{IZoneInbox, ZONE_INBOX_ADDRESS},
 };
-use zone_primitives::{constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, deposit_queue::executed_count};
+use zone_primitives::{constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, deposit_queue::executable_len};
 use zone_prover::VerifierMode;
 use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
 
@@ -812,7 +812,7 @@ fn reconcile_canonical_import(
 
 /// Returns how many leading entries of a full import's range the Zone executed.
 fn executed_deposit_count(deposits: &[zone_payload::abi::QueuedDeposit]) -> usize {
-    executed_count(deposits.iter().map(|deposit| deposit.depositType))
+    executable_len(deposits.iter().map(|deposit| deposit.depositType))
 }
 
 fn validate_full_portal_inputs(

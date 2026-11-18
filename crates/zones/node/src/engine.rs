@@ -64,7 +64,7 @@ use zone_l1::{
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
-use zone_primitives::deposit_queue::executed_count;
+use zone_primitives::deposit_queue::executable_len;
 use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
@@ -397,7 +397,7 @@ impl ZoneEngine {
                 .deposit_queue
                 .operational_work(l1_num_hash, range_len)?;
             // The Inbox executes the prefix within its weight budget. Pre-T15 ranges fit it whole.
-            let consumed = executed_count(
+            let consumed = executable_len(
                 portal_work
                     .iter()
                     .flat_map(|block| &block.events.deposits)
