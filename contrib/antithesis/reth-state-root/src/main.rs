@@ -137,7 +137,7 @@ struct Server {
     /// The campaign database every round resets and reuses.
     db: Arc<DatabaseEnv>,
     snapshotter: Snapshotter,
-    /// None only while one round is retired and the next opens.
+    /// None while switching rounds, or after a fatal mutation error.
     round: Mutex<Option<Round>>,
     /// The active round's view, which proof requests read without waiting for block production.
     /// Retiring a round takes it out, which waits for the proof requests reading it.
@@ -154,52 +154,64 @@ impl Server {
             return prove(view, round, block, &targets);
         }
         let mut guard = self.round.lock().map_err(|_| eyre!("round lock poisoned"))?;
-        let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
-        match request {
-            Request::StateSummary => round.summary(),
-            Request::SubmitWrites { round: id, writes, collider } => {
-                if id != round.id {
-                    return Ok(Response::Rejected { reason: format!("round {id} is over") });
-                }
-                if round.pending.len() + writes.len() > MAX_PENDING {
-                    return Ok(Response::Rejected { reason: "too many queued writes".into() });
-                }
-                round.collider.merge(collider);
-                round.pending.extend(writes);
-                Ok(Response::Queued { pending: round.pending.len() })
-            }
-            Request::BuildBlock => {
-                if round.engine.head() == self.config.blocks {
-                    let finished = guard.take().expect("active round");
-                    let number = finished.number + 1;
-                    // Wait for proof requests at this round to release its database handles.
-                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
-                    finished.finish(&self.snapshotter)?;
-                    invariant!(
-                        Arc::strong_count(&self.db) == 1,
-                        "round releases all database handles"
-                    );
-                    assert_sometimes!(true, "Trie workload completes a round");
-                    // Only a verified, fully flushed round can authorize resetting its database
-                    // and journal.
-                    self.campaign.retire()?;
-                    if self.config.rounds.is_some_and(|rounds| number >= rounds) {
-                        std::process::exit(0);
+        let result = (|| {
+            let Some(round) = guard.as_mut() else {
+                // Only the original failure may report an error and terminate the server.
+                return Ok(Response::Rejected { reason: "no active round".into() });
+            };
+            match request {
+                Request::StateSummary => round.summary(),
+                Request::SubmitWrites { round: id, writes, collider } => {
+                    if id != round.id {
+                        return Ok(Response::Rejected { reason: format!("round {id} is over") });
                     }
-                    let next = Round::open(self, number)?;
-                    *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
-                        Some(Arc::clone(&next.view));
-                    *guard = Some(next);
+                    if round.pending.len() + writes.len() > MAX_PENDING {
+                        return Ok(Response::Rejected { reason: "too many queued writes".into() });
+                    }
+                    round.collider.merge(collider);
+                    round.pending.extend(writes);
+                    Ok(Response::Queued { pending: round.pending.len() })
                 }
-                guard.as_mut().expect("active round").build_block(&self.config)
+                Request::BuildBlock => {
+                    if round.engine.head() == self.config.blocks {
+                        let finished = guard.take().expect("active round");
+                        let number = finished.number + 1;
+                        // Wait for proof requests at this round to release its database handles.
+                        *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
+                        finished.finish(&self.snapshotter)?;
+                        invariant!(
+                            Arc::strong_count(&self.db) == 1,
+                            "round releases all database handles"
+                        );
+                        assert_sometimes!(true, "Trie workload completes a round");
+                        // Only a verified, fully flushed round can authorize resetting its database
+                        // and journal.
+                        self.campaign.retire()?;
+                        if self.config.rounds.is_some_and(|rounds| number >= rounds) {
+                            std::process::exit(0);
+                        }
+                        let next = Round::open(self, number)?;
+                        *self.view.write().map_err(|_| eyre!("view lock poisoned"))? =
+                            Some(Arc::clone(&next.view));
+                        *guard = Some(next);
+                    }
+                    guard.as_mut().expect("active round").build_block(&self.config)
+                }
+                Request::GetProof { .. } => unreachable!("served above"),
+                Request::CheckRoot => round.check_root(),
+                Request::Flush => {
+                    round.persist(true)?;
+                    Ok(Response::Flushed { round: round.id, head: round.engine.head() })
+                }
             }
-            Request::GetProof { .. } => unreachable!("served above"),
-            Request::CheckRoot => round.check_root(),
-            Request::Flush => {
-                round.persist(true)?;
-                Ok(Response::Flushed { round: round.id, head: round.engine.head() })
-            }
+        })();
+        if result.is_err() {
+            // Production may already have changed engine internals. Disable retries before
+            // releasing the lock, rather than racing another connection against process exit.
+            *guard = None;
+            *self.view.write().map_err(|_| eyre!("view lock poisoned"))? = None;
         }
+        result
     }
 }
 
@@ -341,6 +353,7 @@ impl Round {
     fn build_block(&mut self, config: &Config) -> Result<Response> {
         self.persist(false)?;
         let number = self.engine.head() + 1;
+        let mut collider = self.collider.clone();
         // A block journaled before a restart is produced again exactly; queued writes wait.
         let operations = match self.journal.recorded(number) {
             Some(operations) => operations,
@@ -358,15 +371,12 @@ impl Round {
                 updates.extend(generate::writes(
                     &mut rng,
                     &scratch,
-                    &mut self.collider,
+                    &mut collider,
                     config.accounts,
                     padding,
                 ));
                 let operations = input::operations(&mut rng, updates);
-                // Sync the replay record before mutating the model or starting production tasks.
-                // Save the collider first: a kill before the journal record regenerates the block,
-                // and groups for keys never written are harmless to revisit.
-                persist_json(&self.collider_path, &self.collider)?;
+                // Sync the replay record before starting production tasks.
                 self.journal.record(number, &operations)?;
                 operations
             }
@@ -391,8 +401,9 @@ impl Round {
                 ),
             }
         }
-        let (bundle, updates) = apply(&mut self.state, number, &updates_input);
-        self.shapes.observe(model::tries(&self.state));
+        // A failed production must not turn a replay's original account into its final account.
+        let mut state = self.state.clone();
+        let (bundle, updates) = apply(&mut state, number, &updates_input);
         let (db_tip, state_tip) = self.engine.tips();
         // The full operations are in the journal before production tasks run.
         println!(
@@ -401,14 +412,16 @@ impl Round {
             "state_tip": state_tip, "operations": operations.len()})
         );
         // Rebuild from the plain model, independently of production hashed state and trie updates.
-        let expected_root = root(&self.state);
+        let expected_root = root(&state);
         let hash = self.engine.produce(&operations, bundle, updates, expected_root)?;
-        // Publish the block only once the overlay manager can serve it.
-        self.view
-            .blocks
-            .write()
-            .map_err(|_| eyre!("block list poisoned"))?
-            .push((hash, expected_root));
+        // Collider groups guide exploration, not replay; a kill here only loses recent groups.
+        persist_json(&self.collider_path, &collider)?;
+        // Publish the model and block only once the overlay manager can serve them.
+        self.state = state;
+        self.collider = collider;
+        self.shapes.observe(model::tries(&self.state));
+        let mut blocks = self.view.blocks.write().map_err(|_| eyre!("block list poisoned"))?;
+        blocks.push((hash, expected_root));
         Ok(Response::Block { round: self.id, number, root: expected_root })
     }
 

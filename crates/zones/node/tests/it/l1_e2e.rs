@@ -2199,7 +2199,7 @@ async fn wait_for_deposit_bounce<P: Provider>(
     .await
 }
 
-async fn get_deposit_allowlist(node: &ZoneTestNode) -> eyre::Result<Vec<Address>> {
+pub(crate) async fn get_deposit_allowlist(node: &ZoneTestNode) -> eyre::Result<Vec<Address>> {
     let snapshot: serde_json::Value = node
         .provider()
         .raw_request("zoneAdmin_getDepositAllowlist".into(), ())
@@ -2219,7 +2219,7 @@ mod allowlist_admin {
 }
 
 /// `zoneAdmin_setDepositAllowed` parameters, signed independently of the node's encoding.
-struct SignedSet {
+pub(crate) struct SignedSet {
     addresses: Vec<Address>,
     allowed: bool,
     nonce: u64,
@@ -2228,7 +2228,7 @@ struct SignedSet {
 }
 
 /// A write `signer` authorizes for the next minute.
-fn sign_set(
+pub(crate) fn sign_set(
     signer: &alloy::signers::local::PrivateKeySigner,
     zone_chain_id: u64,
     addresses: &[Address],
@@ -2260,7 +2260,7 @@ fn sign_set(
     })
 }
 
-async fn send_set(node: &ZoneTestNode, write: &SignedSet) -> eyre::Result<()> {
+pub(crate) async fn send_set(node: &ZoneTestNode, write: &SignedSet) -> eyre::Result<()> {
     node.provider()
         .raw_request::<_, ()>(
             "zoneAdmin_setDepositAllowed".into(),

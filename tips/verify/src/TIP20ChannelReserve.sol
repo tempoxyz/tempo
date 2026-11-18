@@ -12,9 +12,18 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// TIP-403 to the logical payer-payee path, bypasses TIP-403 only for descriptor-bound refunds,
 /// and reverts TIP-1028-rejected channel movements instead of creating guarded receipts.
 /// Funding checks the payee's current TIP-1028 policy, but does not lock it against later changes.
-/// TIP-1166's signer snapshots are native-only too: account configuration commitments are not
-/// readable from Solidity, so this reference never requires the salt to be one, and vouchers and
-/// top-ups follow the rules for a channel without a snapshot.
+/// TIP-1166's open and top-up rules are mirrored by reading the signer's configuration commitment
+/// from the configurable account precompile. Voucher checks are not: this reference delegates them
+/// to the signature verifier, which checks a configurable account signature against the account's
+/// current configuration, while the precompile checks it against the opening commitment the
+/// channel's salt holds, so the two differ once the signer's owners rotate after open.
+/// The configurable account precompile's commitment view (TIP-1107).
+interface IConfigurableAccountCommitment {
+
+    function getConfigCommitment(address account) external view returns (bytes32 commitment);
+
+}
+
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     error TransferFailed();
@@ -22,6 +31,8 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
     address public constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
     address public constant SIGNATURE_VERIFIER_PRECOMPILE =
         0x5165300000000000000000000000000000000000;
+    address public constant CONFIGURABLE_ACCOUNT_PRECOMPILE =
+        0xAACC000000000000000000000000000000000000;
 
     bytes32 public constant VOUCHER_TYPEHASH =
         keccak256("Voucher(bytes32 channelId,uint96 cumulativeAmount)");
@@ -54,6 +65,10 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
     // and is not blocked by this persistent
     // approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
+    // Whether the channel's salt is its signer's TIP-1166 opening commitment. The precompile keeps
+    // this flag in the packed channel-state slot; the reference keeps it apart so the public
+    // ChannelState stays unchanged.
+    mapping(bytes32 => bool) internal _hasOpeningCommitment;
 
     /// @dev Reference-contract-only hook. The precompile derives this as
     /// `keccak256(abi.encodePacked(encodeForSigning, sender))` for every real transaction type.
@@ -91,6 +106,17 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         // top-level transaction.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
+        // TIP-1166: a signer with a configuration commitment must use it as the salt, which then
+        // fixes the configuration that signs the channel's vouchers.
+        address signer = authorizedSigner != address(0) ? authorizedSigner : msg.sender;
+        bytes32 openingCommitment = _configCommitment(signer);
+        if (openingCommitment != bytes32(0)) {
+            if (salt != openingCommitment) {
+                revert SaltNotSignerCommitment(signer, openingCommitment);
+            }
+            _hasOpeningCommitment[channelId] = true;
+        }
+
         channelStates[channelId] = _encodeChannelState(
             ChannelState({ settled: 0, deposit: deposit, closeRequestedAt: 0 })
         );
@@ -116,6 +142,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
             expiringNonceHash,
             deposit
         );
+        if (openingCommitment != bytes32(0)) {
+            emit OpeningCommitmentRecorded(channelId, signer, openingCommitment);
+        }
     }
 
     function settle(
@@ -163,6 +192,17 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         if (additionalDeposit > type(uint96).max - channel.deposit) revert DepositOverflow();
 
         if (additionalDeposit > 0) {
+            // TIP-1166: old owners must not gain authority over new funds after a rotation, and a
+            // signer that registered after open can't be told apart from one.
+            address signer = descriptor.authorizedSigner != address(0)
+                ? descriptor.authorizedSigner
+                : descriptor.payer;
+            bytes32 commitment = _hasOpeningCommitment[channelId] ? descriptor.salt : bytes32(0);
+            if (_configCommitment(signer) != commitment) {
+                if (commitment == bytes32(0)) revert RootKeyRetired(signer);
+                revert SignerConfigChanged(signer);
+            }
+
             channel.deposit += additionalDeposit;
 
             // The reference contract keeps ERC-20-style allowance flow for local verification.
@@ -234,6 +274,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         uint96 refund = channel.deposit - captureAmount;
 
         delete channelStates[channelId];
+        delete _hasOpeningCommitment[channelId];
 
         if (delta > 0) {
             bool payeeTransferSucceeded = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
@@ -265,6 +306,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
         uint96 refund = channel.deposit - channel.settled;
         delete channelStates[channelId];
+        delete _hasOpeningCommitment[channelId];
 
         if (refund > 0) {
             // TIP-1095 bypasses TIP-403 only for this payer-only, state-derived refund and reverts
@@ -350,8 +392,31 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         return _hashTypedData(structHash);
     }
 
+    function verifyVoucher(
+        ChannelDescriptor calldata descriptor,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+        view
+        returns (bool valid)
+    {
+        bytes32 channelId = _channelId(descriptor);
+        _loadChannelState(channelId);
+        return _isValidVoucher(descriptor, channelId, cumulativeAmount, signature);
+    }
+
     function domainSeparator() external view returns (bytes32) {
         return _domainSeparator();
+    }
+
+    /// Returns `account`'s configuration commitment, or zero if it has none or the configurable
+    /// account precompile isn't deployed.
+    function _configCommitment(address account) internal view returns (bytes32 commitment) {
+        (bool success, bytes memory data) = CONFIGURABLE_ACCOUNT_PRECOMPILE.staticcall(
+            abi.encodeCall(IConfigurableAccountCommitment.getConfigCommitment, (account))
+        );
+        if (success && data.length == 32) commitment = abi.decode(data, (bytes32));
     }
 
     function _channelId(ChannelDescriptor calldata descriptor) internal view returns (bytes32) {
@@ -405,23 +470,37 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         internal
         view
     {
+        if (!_isValidVoucher(descriptor, channelId, cumulativeAmount, signature)) {
+            revert InvalidSignature();
+        }
+    }
+
+    function _isValidVoucher(
+        ChannelDescriptor calldata descriptor,
+        bytes32 channelId,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        internal
+        view
+        returns (bool)
+    {
         bytes32 structHash = keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount));
         bytes32 digest = _hashTypedData(structHash);
         address expectedSigner = descriptor.authorizedSigner != address(0)
             ? descriptor.authorizedSigner
             : descriptor.payer;
 
-        bool isValid;
         try ISignatureVerifier(SIGNATURE_VERIFIER_PRECOMPILE)
             .verify(expectedSigner, digest, signature) returns (
             bool valid
         ) {
-            isValid = valid;
-        } catch {
-            revert InvalidSignature();
+            return valid;
+        } catch (bytes memory reason) {
+            // An empty reason is out of gas or a system failure, not an invalid signature.
+            if (reason.length == 0) revert();
+            return false;
         }
-
-        if (!isValid) revert InvalidSignature();
     }
 
     function _domainSeparator() internal view returns (bytes32) {

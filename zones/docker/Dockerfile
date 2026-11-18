@@ -10,6 +10,9 @@ ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 ARG EXTRA_RUSTFLAGS=""
 
+# .cargo/config.toml makes smolgen idempotent by default; images keep the real build timestamp.
+ENV VERGEN_IDEMPOTENT=0
+
 COPY . .
 
 # Keep the shared dependency layer, but compile only the requested executable.
