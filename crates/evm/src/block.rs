@@ -965,11 +965,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             inner.result().result.tx_gas_used()
         };
 
-        // Reject before the result is observed; `commit_transaction` derives the section again
-        // from the committing executor's state.
-        self.validate_tx(
+        // Reject ordering violations before the result is observed; `commit_transaction` derives
+        // the section again from the committing executor's state. Lane overflow is only rejected
+        // on commit, so callers that never commit this result (such as shadow replay) can still
+        // inspect it.
+        Self::next_section(
+            self.section,
+            self.non_shared_gas_left,
+            self.non_payment_gas_left,
             tx_hash,
-            execution_context,
+            false,
             is_system_tx,
             is_payment,
             block_gas_used,
@@ -2853,16 +2858,39 @@ mod tests {
             .with_section(BlockSection::GasIncentive)
             .with_spec(TempoHardfork::T4)
             .build(&mut db, &chainspec);
-        assert!(
+        assert_eq!(
             executor
                 .validate_tx(B256::ZERO, SIGNED, false, false, 1)
-                .is_err()
+                .unwrap_err()
+                .to_string(),
+            "incentive gas limit exceeded"
         );
         assert_eq!(
             executor
                 .validate_tx(B256::ZERO, ExecutionContext::Simulation, false, false, 1)
                 .unwrap(),
             BlockSection::GasIncentive
+        );
+    }
+
+    /// T4+: committing a result that overflows the general lane fails, even when it was
+    /// produced by an executor that does not reject lane overflow before commit.
+    #[test]
+    fn test_t4_commit_rejects_general_lane_overflow() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T4)
+            .build(&mut db, &chainspec);
+        executor.apply_pre_execution_changes().unwrap();
+        assert_eq!(
+            executor
+                .commit_transaction(create_precomputed_result(false, 30_001))
+                .unwrap_err()
+                .to_string(),
+            "incentive gas limit exceeded"
         );
     }
 
