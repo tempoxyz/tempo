@@ -414,10 +414,10 @@ impl Round {
         // Collider groups guide exploration, not replay; a kill here only loses recent groups.
         persist_json(&self.collider_path, &collider)?;
         // Publish the model and block only once the overlay manager can serve them.
-        let mut blocks = self.view.blocks.write().map_err(|_| eyre!("block list poisoned"))?;
         self.state = state;
         self.collider = collider;
         self.shapes.observe(model::tries(&self.state));
+        let mut blocks = self.view.blocks.write().map_err(|_| eyre!("block list poisoned"))?;
         blocks.push((hash, expected_root));
         Ok(Response::Block { round: self.id, number, root: expected_root })
     }
