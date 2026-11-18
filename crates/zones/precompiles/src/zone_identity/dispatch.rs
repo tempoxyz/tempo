@@ -3,7 +3,7 @@
 use alloy_primitives::Address;
 use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::IZoneIdentity;
-use tempo_precompiles::{charge_input_cost, dispatch};
+use tempo_precompiles::{charge_input_cost, dispatch, storage::StorageCtx};
 
 use super::ZoneIdentity;
 use crate::{
@@ -28,7 +28,9 @@ impl ZoneIdentity {
         }
         let registrar = || l1.read_portal(|portal| &portal.identity_registrar);
 
-        dispatch!(
+        // Every read is priced as cold, so a call's gas does not reveal which slots earlier calls
+        // warmed, such as the admin slot of an account's org.
+        StorageCtx::default().with_cold_pricing(|| dispatch!(
             calldata,
             |call| match call {
                 IZoneIdentity::IZoneIdentityCalls {
@@ -64,6 +66,6 @@ impl ZoneIdentity {
                     }),
                 }
             },
-        )
+        ))
     }
 }

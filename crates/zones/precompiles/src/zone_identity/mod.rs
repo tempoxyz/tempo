@@ -424,6 +424,7 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::Address;
+    use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
     use tempo_precompiles::{
@@ -701,7 +702,7 @@ mod tests {
     /// whether its slots were already warm, so gas cannot reveal an account's org.
     #[test]
     fn org_checks_cost_the_same_whatever_the_state() {
-        use crate::test_utils::{test_context_with_hardfork, test_storage_provider};
+        use crate::test_utils::{MockL1Reader, test_context_with_hardfork, test_storage_provider};
 
         let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
         let registrar = Address::repeat_byte(0xbb);
@@ -712,7 +713,7 @@ mod tests {
             Address::repeat_byte(0x66),
             Address::repeat_byte(0x77),
         );
-        {
+        let (org, other) = {
             let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
             StorageCtx::enter(&mut storage, || {
                 let mut identity = ZoneIdentity::new();
@@ -739,8 +740,9 @@ mod tests {
                         )
                         .unwrap();
                 }
-            });
-        }
+                (org, other)
+            })
+        };
 
         let scenarios = [
             // Allowed in an org, denied across orgs, from org 0, and with a frozen party.
@@ -807,5 +809,30 @@ mod tests {
             costs.iter().all(|cost| *cost == costs[0]),
             "orgOf: {costs:?}"
         );
+
+        // After an outsider's orgOf(Alice) warms her org's admin slot, orgAdmin costs the same for
+        // her org as for another, so it cannot tell which slot was warmed. A new transaction
+        // starts with every slot cold.
+        ctx.evm().state_mut().commit_transaction();
+        let l1 = L1State::new(MockL1Reader::default(), Address::ZERO);
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        let costs = StorageCtx::enter(&mut storage, || {
+            let mut identity = ZoneIdentity::new();
+            let outsider = Address::repeat_byte(0x99);
+            assert_eq!(
+                identity.org_of(outsider, registrar, ALICE),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            let mut cost = |org_id| {
+                let before = identity.storage.gas_used();
+                let call = IZoneIdentity::orgAdminCall { orgId: org_id }.abi_encode();
+                identity.call(&l1, &call, outsider).unwrap();
+                identity.storage.gas_used() - before
+            };
+            // Warms the registrar's Tempo slot, which every orgAdmin call reads.
+            cost(0);
+            [cost(other), cost(org)]
+        });
+        assert_eq!(costs[0], costs[1], "orgAdmin: {costs:?}");
     }
 }
