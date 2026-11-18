@@ -167,6 +167,10 @@ fn only_height_queries_count_against_the_finalization_limit() {
     let params = |json: &str| RawValue::from_string(json.to_string()).unwrap();
     assert!(!is_height_query(Some(&params(r#"["latest"]"#))));
     assert!(is_height_query(Some(&params(r#"[{"height":7}]"#))));
+    // Named params, which the handler accepts too.
+    assert!(!is_height_query(Some(&params(r#"{"query":"latest"}"#))));
+    assert!(is_height_query(Some(&params(r#"{"query":{"height":7}}"#))));
+    assert!(is_height_query(Some(&params(r#"{"other":"latest"}"#))));
     // Params that don't decode are limited too.
     assert!(is_height_query(Some(&params(r#"["nonsense"]"#))));
     assert!(is_height_query(None));

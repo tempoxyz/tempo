@@ -64,12 +64,24 @@ impl CallLimits {
 
 /// Whether `consensus_getFinalization` params ask for a height, which goes to the marshal.
 ///
-/// Params that don't decode count as a height query, so the limit is never skipped by accident.
+/// Reads params the way the handler does: positional (`["latest"]`) or named
+/// (`{"query": "latest"}`). Params that don't decode count as a height query, so the limit is
+/// never skipped by accident.
 fn is_height_query(params: Option<&RawValue>) -> bool {
-    !matches!(
-        Params::new(params.map(RawValue::get)).one::<Query>(),
-        Ok(Query::Latest)
-    )
+    /// Named params of `consensus_getFinalization`.
+    #[derive(serde::Deserialize)]
+    struct Named {
+        query: Query,
+    }
+
+    let raw = params.map(RawValue::get);
+    let params = Params::new(raw);
+    let query = if raw.is_some_and(|raw| raw.trim_start().starts_with('{')) {
+        params.parse::<Named>().map(|named| named.query)
+    } else {
+        params.one::<Query>()
+    };
+    !matches!(query, Ok(Query::Latest))
 }
 
 /// Decides from a call's params whether the method's limit applies to it.
@@ -86,7 +98,8 @@ pub struct ConcurrencyLimitLayer {
 
 impl ConcurrencyLimitLayer {
     /// Allows at most `max` calls of `method` at once.
-    pub fn limit(self, method: &'static str, max: NonZeroUsize) -> Self {
+    #[cfg(test)]
+    fn limit(self, method: &'static str, max: NonZeroUsize) -> Self {
         self.limit_when(method, max, |_| true)
     }
 
