@@ -132,6 +132,7 @@ impl Inner {
         context: Context<Digest, PublicKey>,
         parent: &Digested<Block>,
         propose_start: Instant,
+        speculative: bool,
     ) -> eyre::Result<OpenBuild> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
@@ -228,9 +229,12 @@ impl Inner {
             leader,
             parent: (parent_view, parent_digest),
         };
-        let payload = self
-            .executor
-            .build_proposal(context.clone(), attrs, ceremony_output)?;
+        let payload = if speculative {
+            self.executor.build_speculative(context.clone(), attrs)?
+        } else {
+            self.executor
+                .build_proposal(context.clone(), attrs, ceremony_output)?
+        };
         Ok(OpenBuild {
             context,
             window_opened,
@@ -386,7 +390,7 @@ impl Inner {
         {
             return;
         }
-        match self.open_build(runtime, next, block, Instant::now()).await {
+        match self.open_build(runtime, next, block, Instant::now(), true).await {
             Ok(open) => {
                 let mut speculative = self.speculative.lock().expect("not poisoned");
                 if speculative.0 < round {
@@ -578,19 +582,26 @@ where
         let propose_start = Instant::now();
         let speculative = self.take_speculative(context.round);
         let parent = ancestry.next().await?;
-        let open = match speculative.filter(|open| open.context == context) {
-            Some(open) => {
-                info!("reusing the build opened on the verified parent");
-                Ok(open)
-            }
-            None => {
-                self.open_build(&runtime, context, &parent, propose_start)
-                    .await
-            }
+        let reused = match speculative.filter(|open| open.context == context) {
+            Some(open) => self
+                .finish_build(&runtime, open)
+                .await
+                .inspect_err(|error| warn!(%error, "speculative build failed; building again"))
+                .ok(),
+            None => None,
         };
-        let block = match open {
-            Ok(open) => self.finish_build(&runtime, open).await,
-            Err(error) => Err(error),
+        let block = match reused {
+            Some(block) => {
+                info!("reused the build opened on the verified parent");
+                Ok(block)
+            }
+            None => match self
+                .open_build(&runtime, context, &parent, propose_start, false)
+                .await
+            {
+                Ok(open) => self.finish_build(&runtime, open).await,
+                Err(error) => Err(error),
+            },
         };
         match block {
             Ok(block) => {

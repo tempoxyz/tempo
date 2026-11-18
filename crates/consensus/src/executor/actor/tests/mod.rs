@@ -185,6 +185,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
     fn build(view: u64) -> Box<Build> {
         let (response, _rx) = futures::channel::oneshot::channel();
         Box::new(Build {
+            speculative: false,
             context: Context {
                 round: round(view),
                 leader: tempo_primitives::ed25519::PublicKey::from_seed(42).to_inner(),

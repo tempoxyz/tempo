@@ -87,12 +87,33 @@ impl Mailbox {
         attributes: TempoPayloadAttributes,
         deferred_ceremony_output: Option<DeferredCeremonyOutput>,
     ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
+        self.build(context, attributes, deferred_ceremony_output, false)
+    }
+
+    /// Builds on `context`'s parent without making it the execution layer's
+    /// head or a convergence target, because consensus may still skip it.
+    pub(crate) fn build_speculative(
+        &self,
+        context: Context<Digest, PublicKey>,
+        attributes: TempoPayloadAttributes,
+    ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
+        self.build(context, attributes, None, true)
+    }
+
+    fn build(
+        &self,
+        context: Context<Digest, PublicKey>,
+        attributes: TempoPayloadAttributes,
+        deferred_ceremony_output: Option<DeferredCeremonyOutput>,
+        speculative: bool,
+    ) -> eyre::Result<oneshot::Receiver<TempoBuiltPayload>> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(Build {
                 context,
                 attributes: Box::new(attributes),
                 deferred_ceremony_output,
+                speculative,
                 response,
             }))
             .wrap_err(
@@ -138,6 +159,8 @@ pub(super) struct Build {
     pub(super) attributes: Box<TempoPayloadAttributes>,
     /// Set for a boundary proposal, which carries the DKG ceremony output.
     pub(super) deferred_ceremony_output: Option<DeferredCeremonyOutput>,
+    /// Builds on the parent without a forkchoice update.
+    pub(super) speculative: bool,
     pub(super) response: oneshot::Sender<TempoBuiltPayload>,
 }
 
