@@ -4,7 +4,9 @@
 
 use crate::node::{DEV_FIXED_TIME_SECS, DEV_TIME_OFFSET_SECS};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use reth_chainspec::EthChainSpec;
 use std::sync::atomic::Ordering;
+use tempo_chainspec::spec::DEV;
 
 #[rpc(server, namespace = "tempo")]
 pub trait TempoDevClockApi {
@@ -25,9 +27,19 @@ pub trait TempoDevClockApi {
     async fn dev_set_time(&self, seconds: u64) -> RpcResult<u64>;
 }
 
-/// The `tempo_dev*` clock methods, registered only on a `--dev` node.
-#[derive(Debug, Clone, Default)]
-pub struct TempoDevClock;
+/// The `tempo_dev*` clock methods, which only [`TempoDevClock::for_node`] creates.
+#[derive(Debug, Clone)]
+pub struct TempoDevClock {
+    _private: (),
+}
+
+impl TempoDevClock {
+    /// Returns the clock for a node that may serve it: a `--dev` node running the dev chain.
+    /// Any other node, including one started with `--dev` on another chain's spec, gets none.
+    pub fn for_node(dev: bool, chain_id: u64) -> Option<Self> {
+        (dev && chain_id == DEV.chain_id()).then_some(Self { _private: () })
+    }
+}
 
 impl TempoDevClockApiServer for TempoDevClock {
     async fn dev_increase_time(&self, seconds: u64) -> RpcResult<u64> {
@@ -42,5 +54,22 @@ impl TempoDevClockApiServer for TempoDevClock {
     async fn dev_set_time(&self, seconds: u64) -> RpcResult<u64> {
         DEV_FIXED_TIME_SECS.store(seconds, Ordering::SeqCst);
         Ok(seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempo_chainspec::spec::{MODERATO, PRESTO};
+
+    #[test]
+    fn test_dev_clock_only_on_dev_chain_in_dev_mode() {
+        assert!(TempoDevClock::for_node(true, DEV.chain_id()).is_some());
+        assert!(TempoDevClock::for_node(false, DEV.chain_id()).is_none());
+        for spec in [&*MODERATO, &*PRESTO] {
+            assert_ne!(spec.chain_id(), DEV.chain_id());
+            assert!(TempoDevClock::for_node(true, spec.chain_id()).is_none());
+            assert!(TempoDevClock::for_node(false, spec.chain_id()).is_none());
+        }
     }
 }

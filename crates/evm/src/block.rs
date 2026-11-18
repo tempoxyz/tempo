@@ -3178,7 +3178,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            for fork in ["t14Time", "t15Time"] {
+            for fork in ["t14Time", "t15Time", "t16Time"] {
                 genesis
                     .config
                     .extra_fields
@@ -3259,6 +3259,10 @@ mod tests {
             .config
             .extra_fields
             .insert("t15Time".into(), serde_json::Value::Null);
+        genesis
+            .config
+            .extra_fields
+            .insert("t16Time".into(), serde_json::Value::Null);
         for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
             genesis
                 .config
@@ -3320,6 +3324,10 @@ mod tests {
                 .insert_value(fork.into(), activation)
                 .unwrap();
         }
+        genesis
+            .config
+            .extra_fields
+            .insert("t16Time".into(), serde_json::Value::Null);
         let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()

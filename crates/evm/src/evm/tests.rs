@@ -4337,8 +4337,9 @@ fn create_fee_fallback_evm(
     balances: [u64; 2],
     validator_token_index: usize,
 ) -> eyre::Result<(TempoEvm<'static>, Address, [Address; 2])> {
-    let payer = Address::random();
-    let validator = Address::random();
+    // Fixed accounts keep calldata, and so gas snapshots, the same on every run.
+    let payer = Address::repeat_byte(0xa1);
+    let validator = Address::repeat_byte(0xa2);
     let mut evm = funded_evm(spec, 1_000, payer);
     let mut block = *evm.block();
     block.beneficiary = validator;
@@ -4760,15 +4761,17 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
     Ok(())
 }
 
-/// Transaction gas of each reservation core operation, for TIP-1153's gas table. Run with
-/// `--nocapture` to print it.
+/// Transaction gas of each reservation core operation against its budget, snapshotted for
+/// TIP-1153's gas table. A new storage slot costs 250,000 gas, so a hold within budget writes at
+/// most its two record slots, and settling deletes them.
 #[test]
 fn test_reservation_core_gas() -> eyre::Result<()> {
     use tempo_contracts::precompiles::IReservationCore::{self, HoldRequest};
 
     let (mut evm, owner, tokens) =
         create_fee_fallback_evm(TempoHardfork::T16, [100_000_000, 100_000_000], 0)?;
-    let (payee, holder) = (Address::random(), Address::random());
+    // Fixed accounts and ids keep calldata, and so the snapshot, the same on every run.
+    let (payee, holder) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
     fund_account(&mut evm, payee);
     fund_account(&mut evm, holder);
     let token = tokens[1];
@@ -4828,7 +4831,7 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         payee,
         standIn: false,
     };
-    let ids: Vec<B256> = (0..8).map(|_| B256::random()).collect();
+    let ids: Vec<B256> = (1..=8).map(B256::repeat_byte).collect();
     let mut gas = Vec::new();
 
     send(
@@ -4837,12 +4840,18 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         IReservationCore::approveHolderCall {
             holder,
             token,
-            allowance: 1_000_000,
+            limit: 1_000_000,
+            period: 0,
         }
         .abi_encode(),
     )?;
     let view = IReservationCore::reservedCall { owner, token }.abi_encode();
-    gas.push(("reserved (view, baseline)", send(&mut evm, owner, view)?));
+    let baseline = send(&mut evm, owner, view.clone())?;
+    gas.push(("reserved (view, baseline)", baseline));
+    // A sender's first transaction creates its nonce, so the payee and holder send one first.
+    for account in [payee, holder] {
+        send(&mut evm, account, view.clone())?;
+    }
     let hold = |id, amount, expires_at| {
         IReservationCore::holdCall {
             request: request(id, amount, expires_at),
@@ -4866,9 +4875,10 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
             .abi_encode(),
         )?,
     ));
-    let capture = |id, amount, is_final| {
+    let capture = |placer, id, amount, is_final| {
         IReservationCore::captureCall {
             owner,
+            placer,
             id,
             amount,
             isFinal: is_final,
@@ -4876,23 +4886,28 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         .abi_encode()
     };
     gas.push((
-        "capture, part (first capture)",
-        send(&mut evm, payee, capture(ids[0], 400, false))?,
+        "capture, part",
+        send(&mut evm, payee, capture(owner, ids[0], 400, false))?,
     ));
     gas.push((
-        "capture, final (after a part)",
-        send(&mut evm, payee, capture(ids[0], 600, true))?,
+        "capture, final after a part",
+        send(&mut evm, payee, capture(owner, ids[0], 600, true))?,
     ));
     gas.push((
-        "capture, final (first capture)",
-        send(&mut evm, payee, capture(ids[2], 1_000, true))?,
+        "capture, final of a holder's hold",
+        send(&mut evm, payee, capture(holder, ids[2], 1_000, true))?,
     ));
     gas.push((
         "release",
         send(
             &mut evm,
             owner,
-            IReservationCore::releaseCall { owner, id: ids[1] }.abi_encode(),
+            IReservationCore::releaseCall {
+                owner,
+                placer: owner,
+                id: ids[1],
+            }
+            .abi_encode(),
         )?,
     ));
     gas.push((
@@ -4902,6 +4917,8 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
             payee,
             IReservationCore::refundCall {
                 owner,
+                token,
+                placer: owner,
                 id: ids[0],
                 amount: 100,
             }
@@ -4933,10 +4950,15 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         send(
             &mut evm,
             payee,
-            IReservationCore::releaseExpiredCall { owner, id: ids[4] }.abi_encode(),
+            IReservationCore::releaseExpiredCall {
+                owner,
+                placer: owner,
+                id: ids[4],
+            }
+            .abi_encode(),
         )?,
     ));
-    // A 90-day reserve the holder places within its allowance, after the owner's holds ended.
+    // A 90-day reserve the holder places within its budget, after the owner's holds ended.
     let pledge_from = |id, amount| {
         IReservationCore::pledgeFromCall {
             owner,
@@ -4948,36 +4970,65 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         .abi_encode()
     };
     gas.push((
-        "pledgeFrom, first for the owner",
+        "pledgeFrom, first for the owner, on storage credits",
         send(&mut evm, holder, pledge_from(ids[5], 1_000))?,
     ));
     gas.push((
-        "pledgeFrom",
+        "pledgeFrom, on storage credits",
         send(&mut evm, holder, pledge_from(ids[6], 1_000))?,
     ));
     gas.push((
-        "seizeLien, part of a pledge",
+        "seize part of a pledge, creating the holder's token balance",
+        send(&mut evm, holder, capture(holder, ids[5], 400, false))?,
+    ));
+    gas.push((
+        "release a pledge",
         send(
             &mut evm,
             holder,
-            IReservationCore::seizeLienCall {
-                id: ids[5],
-                amount: 400,
+            IReservationCore::releaseCall {
+                owner,
+                placer: holder,
+                id: ids[6],
             }
             .abi_encode(),
         )?,
     ));
+
+    // Settled records left storage credits (TIP-1060) on the core's account, which new records
+    // consume instead of paying for new slots.
     gas.push((
-        "releaseLien, a pledge",
-        send(
-            &mut evm,
-            holder,
-            IReservationCore::releaseLienCall { id: ids[6] }.abi_encode(),
-        )?,
+        "hold, on storage credits settled records left",
+        send(&mut evm, owner, hold(ids[7], 1_000, 1_800))?,
     ));
 
+    // Budgets above the baseline call: a hold may write its two record slots and the owner's
+    // position, and every settlement deletes, so none writes a new slot.
+    const NEW_SLOT: u64 = 250_000;
+    let budget = |operation: &str| -> u64 {
+        match operation {
+            "reserved (view, baseline)" => 0,
+            "hold, first for the owner" | "pledgeFrom, first for the owner, on storage credits" => {
+                3 * NEW_SLOT + 60_000
+            }
+            "hold"
+            | "holdFrom"
+            | "pledgeFrom, on storage credits"
+            | "hold, on storage credits settled records left" => 2 * NEW_SLOT + 60_000,
+            // The holder's first receipt of the token creates its TIP-20 balance slot.
+            "seize part of a pledge, creating the holder's token balance" => NEW_SLOT + 60_000,
+            _ => 60_000,
+        }
+    };
+    let mut table = String::new();
     for (operation, used) in &gas {
-        println!("{operation}: {used}");
+        assert!(
+            used - baseline <= budget(operation),
+            "{operation} used {used} gas, over its budget of {} above the baseline {baseline}",
+            budget(operation)
+        );
+        table.push_str(&format!("{operation}: {used}\n"));
     }
+    insta::assert_snapshot!("reservation_core_gas", table);
     Ok(())
 }

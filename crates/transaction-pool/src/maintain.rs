@@ -237,12 +237,14 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
-            // Every reservation core event except `DebtRepaid` indexes the owner and token as topics 1
-            // and 3. Holds and liens move funds in or out of the owner's balance slot without a
-            // TIP-20 `Transfer`, which can change a fee-token choice. Repayments emit a `Transfer`.
+            // A placed or raised hold moves funds out of the owner's balance slot without a TIP-20
+            // `Transfer`, which can change a fee-token choice; both index the owner and token as
+            // topics 1 and 3. Every other reservation movement emits a `Transfer` or only
+            // returns funds to the balance slot.
             else if log.address == RESERVATIONS_ADDRESS {
                 if let [topic0, owner, _, token] = log.topics()
-                    && *topic0 != IReservationCore::DebtRepaid::SIGNATURE_HASH
+                    && (*topic0 == IReservationCore::HoldPlaced::SIGNATURE_HASH
+                        || *topic0 == IReservationCore::HoldAdjusted::SIGNATURE_HASH)
                 {
                     updates
                         .reservation_changes
@@ -1519,8 +1521,8 @@ mod tests {
         fn extracts_reservation_changes_from_core_logs() {
             let token = tempo_precompiles::PATH_USD_ADDRESS;
             let placed_owner = Address::random();
+            let adjusted_owner = Address::random();
             let captured_owner = Address::random();
-            let liened_owner = Address::random();
             let debtor = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
@@ -1530,40 +1532,42 @@ mod tests {
                 logs: [
                     IReservationCore::HoldPlaced {
                         owner: placed_owner,
-                        id,
-                        token,
                         placer: placed_owner,
+                        token,
+                        id,
+                        kind: 1,
                         payee: Address::random(),
                         amount: 1,
                         held: 1,
+                        captureLimit: 1,
                         expiresAt: 1,
                         standIn: false,
                     }
                     .into_log_data(),
+                    IReservationCore::HoldAdjusted {
+                        owner: adjusted_owner,
+                        placer: Address::random(),
+                        token,
+                        id,
+                        held: 5,
+                        captureLimit: 5,
+                    }
+                    .into_log_data(),
                     IReservationCore::HoldCaptured {
                         owner: captured_owner,
-                        id,
+                        placer: captured_owner,
                         token,
+                        id,
                         payee: Address::random(),
                         amount: 2,
                         debt: 0,
                         isFinal: true,
                     }
                     .into_log_data(),
-                    IReservationCore::Liened {
-                        owner: liened_owner,
-                        authority: Address::random(),
-                        token,
-                        id,
-                        amount: 3,
-                        expiresAt: 0,
-                        pledged: false,
-                    }
-                    .into_log_data(),
                     IReservationCore::DebtRepaid {
                         owner: debtor,
-                        token,
                         creditor: Address::random(),
+                        token,
                         amount: 4,
                     }
                     .into_log_data(),
@@ -1581,11 +1585,7 @@ mod tests {
 
             assert_eq!(
                 updates.reservation_changes.get(&token),
-                Some(&AddressSet::from_iter([
-                    placed_owner,
-                    captured_owner,
-                    liened_owner
-                ]))
+                Some(&AddressSet::from_iter([placed_owner, adjusted_owner]))
             );
             assert!(updates.fee_balance_changes.is_empty());
             assert!(updates.has_invalidation_events());

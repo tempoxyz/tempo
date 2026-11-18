@@ -632,11 +632,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 let has_consensus_engine =
                     args.has_consensus_engine(builder.config().dev.dev);
 
-                let dev = builder.config().dev.dev;
+                // Only a `--dev` node on the dev chain can move its block clock.
+                let dev_clock = TempoDevClock::for_node(
+                    builder.config().dev.dev,
+                    builder.config().chain.chain().id(),
+                );
 
                 builder.extend_rpc_modules(move |ctx| {
-                    if dev {
-                        ctx.modules.merge_configured(TempoDevClock.into_rpc())
+                    if let Some(dev_clock) = dev_clock {
+                        ctx.modules.merge_configured(dev_clock.into_rpc())
                             .wrap_err("failed to register dev clock rpc module")?;
                     }
 

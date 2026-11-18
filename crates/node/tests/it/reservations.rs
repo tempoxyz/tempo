@@ -13,8 +13,8 @@ use tempo_contracts::precompiles::{
 use crate::utils::{TestNodeBuilder, setup_test_token};
 
 /// Holds placed by the owner and by an approved holder, captured above the hold within the
-/// owner's tolerance, captured in parts by the payee, refunded, and a charge, all through
-/// transactions.
+/// tolerance fixed at placement, captured in parts by the payee naming the placer, refunded, and
+/// a charge within the holder's budget, all through transactions.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_hold_capture_refund() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -101,16 +101,21 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         ))
     );
 
-    // Without a tolerance, a capture above the hold is refused.
-    let Err(err) = reservations.capture(owner, id, 650, true).call().await else {
+    // Without a tolerance, a capture above the hold is refused; the tolerance is fixed when a hold
+    // is placed.
+    let Err(err) = reservations
+        .capture(owner, owner, id, 650, true)
+        .call()
+        .await
+    else {
         panic!("a capture above the hold must revert without a tolerance");
     };
     assert_eq!(
         err.as_decoded_interface_error::<ReservationsError>(),
-        Some(ReservationsError::tolerance_exceeded())
+        Some(ReservationsError::capture_limit_exceeded())
     );
     let receipt = reservations
-        .setCaptureTolerance(payee, token_address, 1_000)
+        .release(owner, owner, id)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -118,9 +123,45 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     assert!(receipt.status());
+    let receipt = reservations
+        .setPayeeTerms(
+            payee,
+            token_address,
+            IReservationCore::PayeeTerms {
+                debtCap: 0,
+                offlineCap: 0,
+                toleranceBps: 1_000,
+                debtTerm: 0,
+            },
+        )
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    // The id is free again once its hold settled.
+    let receipt = reservations
+        .hold(request(id, 600))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(3_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    assert_eq!(
+        reservations
+            .getHold(owner, owner, id)
+            .call()
+            .await?
+            .captureLimit,
+        660
+    );
 
     let receipt = reservations
-        .capture(owner, id, 650, true)
+        .capture(owner, owner, id, 650, true)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(3_000_000)
         .send()
@@ -140,7 +181,7 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
 
     let payee_reservations = IReservationCore::new(RESERVATIONS_ADDRESS, payee_provider);
     let receipt = payee_reservations
-        .refund(owner, id, 100)
+        .refund(owner, token_address, owner, id, 100)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -149,11 +190,9 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .await?;
     assert!(receipt.status());
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(450));
-    let record = reservations.getHold(owner, id).call().await?;
-    assert_eq!(
-        (record.captured, record.refunded, record.settled),
-        (650, 100, true)
-    );
+    // A settled hold leaves no record.
+    let record = reservations.getHold(owner, owner, id).call().await?;
+    assert_eq!((record.kind, record.held), (0, 0));
     let transfers: Vec<_> = receipt
         .logs()
         .iter()
@@ -164,7 +203,7 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
 
     // An approved holder places a hold; the payee captures it in parts.
     let receipt = reservations
-        .approveHolder(holder, token_address, 300)
+        .approveHolder(holder, token_address, 300, 0)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -183,15 +222,15 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .get_receipt()
         .await?;
     assert!(receipt.status());
-    let allowance = reservations
-        .allowance(owner, holder, token_address)
+    let budget = reservations
+        .budget(owner, holder, token_address)
         .call()
         .await?;
-    assert_eq!((allowance.allowance, allowance.outstanding), (300, 200));
+    assert_eq!((budget.limit, budget.outstanding), (300, 200));
 
     for (amount, is_final) in [(120, false), (50, true)] {
         let receipt = payee_reservations
-            .capture(owner, second, amount, is_final)
+            .capture(owner, holder, second, amount, is_final)
             .gas_price(TEMPO_T1_BASE_FEE as u128)
             .gas(3_000_000)
             .send()
@@ -203,13 +242,14 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
     assert_eq!(token.balanceOf(payee).call().await?, U256::from(720));
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(280));
     assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
-    let allowance = reservations
-        .allowance(owner, holder, token_address)
+    // Captures stay spent; the rest of the hold returned to the budget.
+    let budget = reservations
+        .budget(owner, holder, token_address)
         .call()
         .await?;
-    assert_eq!(allowance.outstanding, 0);
+    assert_eq!((budget.spent, budget.outstanding), (170, 0));
 
-    // The holder charges without a hold, within its allowance.
+    // The holder charges without a hold, within its budget.
     let receipt = holder_reservations
         .charge(owner, token_address, B256::random(), 80, payee, false)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
@@ -226,6 +266,17 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .expect("charge emits Charged");
     assert_eq!((charged.amount, charged.debt), (80, 0));
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(200));
+    let Err(err) = holder_reservations
+        .charge(owner, token_address, B256::random(), 51, payee, false)
+        .call()
+        .await
+    else {
+        panic!("a charge past the budget must revert");
+    };
+    assert_eq!(
+        err.as_decoded_interface_error::<ReservationsError>(),
+        Some(ReservationsError::budget_exceeded())
+    );
 
     Ok(())
 }

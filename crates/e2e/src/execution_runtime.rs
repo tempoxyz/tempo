@@ -185,6 +185,11 @@ impl Builder {
                 .extra_fields
                 .insert_value("t15Time".to_string(), t15_time)
                 .unwrap();
+            // T16 follows T15, so a test moving T15 leaves T16 inactive.
+            genesis
+                .config
+                .extra_fields
+                .insert("t16Time".to_string(), serde_json::Value::Null);
         }
 
         genesis.extra_data = initial_dkg_outcome.encode().into();
@@ -603,6 +608,10 @@ impl ExecutionRuntime {
                                 .extra_fields
                                 .insert_value("t15Time".to_string(), t15_time)
                                 .unwrap();
+                            genesis
+                                .config
+                                .extra_fields
+                                .insert("t16Time".to_string(), serde_json::Value::Null);
                             chain_spec = TempoChainSpec::from_genesis(genesis);
                         }
                         Message::RunAsync(fut) => {
