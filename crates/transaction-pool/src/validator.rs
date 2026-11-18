@@ -3382,6 +3382,69 @@ mod tests {
         }
     }
 
+    /// From T15, pool validation runs a payment-lane transaction with the payment lane's gas
+    /// schedule, so it charges the intrinsic gas block execution charges.
+    #[test]
+    fn pool_validation_prices_payment_lane_from_t15() {
+        static COLD_ACCOUNT_COST: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
+        let validated_cold_account_cost = |tx: TempoPooledTransaction| {
+            let validator = setup_validator(&tx, 10);
+            let mut evm = build_tempo_evm(
+                TempoHardfork::T15,
+                MODERATO.chain_id(),
+                TempoBlockEnv::default(),
+                InMemoryDB::default(),
+                NoPrecompiles::default(),
+                TempoEvmExt::default(),
+            );
+            let mut registry = TxRegistry::new();
+            registry.register(TempoTxType::AA as u8, |tx: &TempoTxEnv| Some(tx), handler(
+                |request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<()> {
+                    let cost = request.host.version().gas_params.get(evm2::version::GasId::ColdAccountAdditionalCost);
+                    COLD_ACCOUNT_COST.store(cost, Ordering::Relaxed);
+                    Err(HandlerError::external(TempoInvalidTransaction::CallsValidation("recorded")))
+                },
+                |_, ()| -> HandlerResult<TxResult<TempoEvmTypes>> { panic!("pool validation must not execute calls") },
+            ));
+            evm.set_execution_config(
+                tempo_evm::tempo_execution_config(TempoHardfork::T15, MODERATO.chain_id()),
+                TempoHardfork::T15,
+                registry,
+                NoPrecompiles::default(),
+            );
+            COLD_ACCOUNT_COST.store(0, Ordering::Relaxed);
+            let _ = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
+            COLD_ACCOUNT_COST.load(Ordering::Relaxed)
+        };
+
+        let sender = Address::repeat_byte(0x55);
+        let transfer = tempo_contracts::precompiles::ITIP20::transferCall {
+            to: Address::repeat_byte(0x22),
+            amount: U256::ONE,
+        };
+        let payment = TxBuilder::aa(sender)
+            .calls(vec![Call::new(
+                PATH_USD_ADDRESS,
+                Bytes::from(alloy_sol_types::SolCall::abi_encode(&transfer)),
+            )])
+            .build();
+        assert!(payment.is_payment_v3());
+        let general = TxBuilder::aa(sender)
+            .calls(vec![Call::new(Address::repeat_byte(0x42), Bytes::new())])
+            .build();
+        assert!(!general.is_payment_v3());
+
+        let general_cost = validated_cold_account_cost(general);
+        let payment_cost = validated_cold_account_cost(payment);
+        assert_ne!(general_cost, 0, "validation reached the handler");
+        assert!(
+            payment_cost < general_cost,
+            "payment {payment_cost} >= general {general_cost}"
+        );
+    }
+
     #[test_case(HandlerError::Fatal("injected fatal error".into()) => true)]
     #[test_case(HandlerError::Database(DatabaseError::new(std::io::Error::other("injected database failure"), true)) => true)]
     #[test_case(HandlerError::Database(DatabaseError::new(std::io::Error::other("injected input failure"), false)) => false)]
