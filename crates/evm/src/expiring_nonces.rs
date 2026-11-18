@@ -31,11 +31,12 @@ use std::{
 
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{Address, B256, Keccak256, U256, map::B256Map};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use reth_evm::{BlockExecutionError, BlockValidationError};
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles};
 use reth_trie_sparse::{
-    ArenaParallelSparseTrie, LeafUpdate, SparseTrie, TrieNodeEpoch, errors::SparseTrieError,
+    LeafUpdate, PersistentArenaParallelSparseTrie, SparseTrie, TrieNodeEpoch,
+    errors::SparseTrieError,
 };
 use schnellru::{ByLength, LruMap};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -188,6 +189,7 @@ impl ExpiringNonceSet {
         self.buckets.get(&entry.valid_before).is_some_and(|bucket| {
             bucket
                 .trie
+                .read()
                 .get_leaf_value(&Nibbles::unpack(entry.hash))
                 .is_some()
         })
@@ -276,13 +278,12 @@ impl ExpiringNonceSet {
                 bucket.keys.push(leaves.keys().copied().collect());
             }
             let mut blinded = false;
-            bucket
-                .trie
-                .update_leaves(&mut leaves, |_, _| blinded = true)?;
+            let trie = bucket.trie.get_mut();
+            trie.update_leaves(&mut leaves, |_, _| blinded = true)?;
             if blinded || !leaves.is_empty() {
                 return Err(Error::BlindedBucket { valid_before });
             }
-            bucket.root = bucket.trie.root(TrieNodeEpoch::UNMODIFIED);
+            bucket.root = trie.root(TrieNodeEpoch::UNMODIFIED);
         }
 
         self.refresh_root();
@@ -569,9 +570,15 @@ impl Snapshots {
 }
 
 /// One `valid_before` second's replay hashes.
-#[derive(Debug, Clone)]
+///
+/// Sets share buckets through `Arc`; a block that inserts into a shared bucket copies it with
+/// [`Clone`], which takes a persistent snapshot of the trie: the copy shares every node the
+/// insert does not touch, so it costs about the changed paths, not the whole bucket.
+#[derive(Debug)]
 struct Bucket {
-    trie: ArenaParallelSparseTrie,
+    /// Behind a lock because [`SparseTrie::snapshot`] prepares the source for sharing through
+    /// `&mut self` while other sets may read the same bucket.
+    trie: RwLock<PersistentArenaParallelSparseTrie>,
     root: B256,
     len: usize,
     /// The bucket's replay hashes, one chunk per update, to build witness proofs from. Empty
@@ -579,10 +586,21 @@ struct Bucket {
     keys: Vec<Arc<[B256]>>,
 }
 
+impl Clone for Bucket {
+    fn clone(&self) -> Self {
+        Self {
+            trie: RwLock::new(self.trie.write().snapshot()),
+            root: self.root,
+            len: self.len,
+            keys: self.keys.clone(),
+        }
+    }
+}
+
 impl Default for Bucket {
     fn default() -> Self {
         Self {
-            trie: ArenaParallelSparseTrie::default(),
+            trie: RwLock::new(PersistentArenaParallelSparseTrie::default()),
             root: EMPTY_ROOT_HASH,
             len: 0,
             keys: Vec::new(),
