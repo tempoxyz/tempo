@@ -12,7 +12,7 @@ use reth_node_api::{
     InvalidPayloadAttributesError, NewPayloadError, PayloadTypes, PayloadValidator,
 };
 use reth_payload_primitives::PayloadAttributes;
-use reth_primitives_traits::{AlloyBlockHeader, SealedBlock, SealedHeader};
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use serde::{Deserialize, Serialize};
 use tempo_node::engine::TempoEngineValidator;
 use tempo_payload_types::{TempoBuiltPayload, TempoExecutionData};
@@ -157,9 +157,68 @@ impl PayloadValidator<ZonePayloadTypes> for TempoEngineValidator {
         attr: &ZonePayloadAttributes,
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
-        if PayloadAttributes::timestamp(attr) < AlloyBlockHeader::timestamp(header) {
+        // Zone consensus allows equal millisecond timestamps but rejects regressions.
+        let attr_millis = PayloadAttributes::timestamp(attr)
+            .saturating_mul(1000)
+            .saturating_add(attr.timestamp_millis_part());
+        if attr_millis < header.timestamp_millis() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reth_primitives_traits::Header;
+
+    fn header(timestamp: u64, timestamp_millis_part: u64) -> TempoHeader {
+        TempoHeader {
+            timestamp_millis_part,
+            inner: Header {
+                timestamp,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn attributes(timestamp: u64, timestamp_millis_part: u64) -> ZonePayloadAttributes {
+        ZonePayloadAttributes {
+            inner: EthPayloadAttributes {
+                timestamp,
+                ..Default::default()
+            },
+            timestamp_millis_part,
+            tempo_import: TempoImport::CheckpointOnly(Vec::new()),
+        }
+    }
+
+    fn validate(parent: (u64, u64), attr: (u64, u64)) -> Result<(), InvalidPayloadAttributesError> {
+        PayloadValidator::<ZonePayloadTypes>::validate_payload_attributes_against_header(
+            &TempoEngineValidator::new(),
+            &attributes(attr.0, attr.1),
+            &header(parent.0, parent.1),
+        )
+    }
+
+    #[test]
+    fn rejects_same_second_lower_millis() {
+        assert!(matches!(
+            validate((10, 500), (10, 499)),
+            Err(InvalidPayloadAttributesError::InvalidTimestamp)
+        ));
+    }
+
+    #[test]
+    fn accepts_equal_millis() {
+        assert!(validate((10, 500), (10, 500)).is_ok());
+    }
+
+    #[test]
+    fn accepts_higher_millis() {
+        assert!(validate((10, 500), (10, 501)).is_ok());
+        assert!(validate((10, 999), (11, 0)).is_ok());
     }
 }
