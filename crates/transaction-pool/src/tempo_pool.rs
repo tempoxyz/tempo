@@ -434,7 +434,7 @@ where
             }
 
             // Check 3b: Fee payer balance changes.
-            // When a TIP20 transfer changes a fee payer's balance, or (+T15) a hold changes its
+            // When a TIP20 transfer changes a fee payer's balance, or (+T16) a hold changes its
             // reserved amount, pending transactions for that (fee_token, fee_payer) pair may no
             // longer be executable. The balance read is the available balance.
             if has_fee_balance_changes && let Some(ref mut provider) = state_provider {
@@ -2827,7 +2827,7 @@ mod tests {
             .build();
         let fee = pooled.fee_token_cost();
 
-        // DEV activates T15 at genesis, where fees are paid from the available balance only.
+        // DEV activates T16 at genesis, where fees are paid from the available balance only.
         let provider = crate::test_utils::create_mock_provider();
         provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
         provider.add_block(

@@ -298,7 +298,7 @@ where
             )
         } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
             zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
-        } else if address == RESERVATIONS_ADDRESS && self.env.spec().is_t15() {
+        } else if address == RESERVATIONS_ADDRESS && self.env.spec().is_t16() {
             zone_precompile!(
                 evm,
                 message,
@@ -354,8 +354,8 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | STORAGE_CREDITS_ADDRESS => true,
         // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
         CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
-        // Zones run the reservation core over their private balances from T15, as Tempo does.
-        RESERVATIONS_ADDRESS => spec.is_t15(),
+        // Zones run the reservation core over their private balances from T16, as Tempo does.
+        RESERVATIONS_ADDRESS => spec.is_t16(),
         _ => false,
     }
 }

@@ -3,7 +3,7 @@
 //! A zone runs the same core as Tempo L1 over its private TIP-20 balances, so private cards hold,
 //! capture and refund as public ones do. Two zone rules sit in front of it:
 //!
-//! - Every state change moves or reserves funds inside the zone, so it needs T15 and the portal
+//! - Every state change moves or reserves funds inside the zone, so it needs T16 and the portal
 //!   admin's transfer opt-in, as a zone-internal TIP-20 transfer does.
 //! - Reads are private. A view about an owner answers only the owner and the counterparties that
 //!   owner chose: a hold's placer and payee, a holder the owner approved, a creditor or payee the
@@ -37,9 +37,9 @@ pub(crate) struct ReservationRules<P> {
 }
 
 impl<P: L1StorageReader> ReservationRules<P> {
-    /// Admits a state change: T15 and the portal admin's transfer opt-in.
+    /// Admits a state change: T16 and the portal admin's transfer opt-in.
     fn admit_write(&self) -> Result<CallCheck> {
-        if !StorageCtx::default().spec().is_t15()
+        if !StorageCtx::default().spec().is_t16()
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
             return Ok(unauthorized());
@@ -311,7 +311,7 @@ mod tests {
             (terms.clone(), PAYEE),
             (terms, OUTSIDER),
         ];
-        let checks = admit_all(&rules(true), TempoHardfork::T15, &calls);
+        let checks = admit_all(&rules(true), TempoHardfork::T16, &calls);
         let admitted: Vec<bool> = checks.iter().map(allowed).collect();
         assert_eq!(
             admitted,
@@ -332,8 +332,8 @@ mod tests {
         assert!(matches!(&checks[9], CallCheck::Revert(_)));
     }
 
-    #[test_case(TempoHardfork::T15, true, true)]
-    #[test_case(TempoHardfork::T15, false, false)]
+    #[test_case(TempoHardfork::T16, true, true)]
+    #[test_case(TempoHardfork::T16, false, false)]
     fn writes_require_the_portal_transfer_opt_in(
         spec: TempoHardfork,
         transfers_enabled: bool,

@@ -254,7 +254,7 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Returns the balance of `token` that `account` can spend, which is what fee collection may
-    /// debit. From T15 it excludes reserved funds (TIP-1153), which sit outside the balance slot.
+    /// debit. From T16 it excludes reserved funds (TIP-1153), which sit outside the balance slot.
     ///
     /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
     fn get_token_balance(

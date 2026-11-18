@@ -446,8 +446,8 @@ impl GenesisArgs {
             with_genesis_storage(&mut evm, || ConfigurableAccount::new().initialize())?;
         }
 
-        if self.hardforks.active_at_genesis(TempoHardfork::T15) {
-            println!("Initializing the reservation core (T15 active at genesis)");
+        if self.hardforks.active_at_genesis(TempoHardfork::T16) {
+            println!("Initializing the reservation core (T16 active at genesis)");
             with_genesis_storage(&mut evm, || Reservations::new().initialize())?;
         }
 

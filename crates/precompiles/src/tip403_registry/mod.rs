@@ -99,7 +99,7 @@ struct ReceivePolicyConfig {
     token_filter_type: u8,
     /// Recovery authority for blocked inbound funds.
     recovery_mode: RecoveryMode,
-    /// (+T15) Number of tokens in which the account owes [`Reservations`] debt. Every TIP-20
+    /// (+T16) Number of tokens in which the account owes [`Reservations`] debt. Every TIP-20
     /// credit reads this slot, so non-debtors skip the debt lookup at no extra cost.
     ///
     /// [`Reservations`]: crate::reservations::Reservations
@@ -551,7 +551,7 @@ impl TIP403Registry {
         let token_filter_type = self.validate_receive_policy_id(call.tokenFilterId)?;
 
         // The debt count belongs to the reservations precompile and survives policy changes.
-        let reservation_debts = if self.storage.spec().is_t15() {
+        let reservation_debts = if self.storage.spec().is_t16() {
             self.receive_policies[msg_sender]
                 .config
                 .read()?

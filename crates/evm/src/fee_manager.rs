@@ -314,7 +314,7 @@ where
     let mut highest_balance = U256::ZERO;
     // Replay depends on affordability, not the exact balance.
     for &token in candidates {
-        // (+T15) Reserved funds sit outside the balance slot, so it is already the spendable amount.
+        // (+T16) Reserved funds sit outside the balance slot, so it is already the spendable amount.
         let balance = state.with_read_only_storage_ctx(spec, actions.clone(), || {
             let token = TIP20Token::from_address_unchecked(token);
             actions.unrecorded(|| token.balances[fee_payer].read())

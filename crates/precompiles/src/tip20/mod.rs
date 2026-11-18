@@ -265,7 +265,7 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     ///
-    /// (+T15) Includes the amount `account` holds through [`Reservations`], which is kept outside
+    /// (+T16) Includes the amount `account` holds through [`Reservations`], which is kept outside
     /// the spendable balance.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.balances[call.account]
@@ -1405,7 +1405,7 @@ impl TIP20Token {
     }
 
     /// Emits the forwarding `Transfer(virtual, master)` for a virtual recipient, then
-    /// (+T15) repays the master's debt from the credit. Does nothing for direct recipients, which
+    /// (+T16) repays the master's debt from the credit. Does nothing for direct recipients, which
     /// `Self::_transfer` and `Self::_mint` already settled.
     fn emit_virtual_hop(&mut self, to: &Recipient, amount: U256) -> Result<()> {
         let Some(hop) = to.build_virtual_transfer_event(amount) else {
@@ -1415,14 +1415,14 @@ impl TIP20Token {
         self.repay_debt(to.target, amount)
     }
 
-    /// Whether debits and credits consult the [`Reservations`] precompile: from T15, on L1 and on
+    /// Whether debits and credits consult the [`Reservations`] precompile: from T16, on L1 and on
     /// zones, which run the same reservation core over their private balances.
     fn reservations_active(&self) -> bool {
-        self.storage.spec().is_t15()
+        self.storage.spec().is_t16()
     }
 
     /// Returns the amount of this token `account` has reserved through [`Reservations`]: zero
-    /// before T15.
+    /// before T16.
     ///
     /// Reserved funds sit outside `balances`, so debits never read this; only `balanceOf` adds it.
     pub fn reserved_balance(&self, account: Address) -> Result<U256> {
@@ -1434,7 +1434,7 @@ impl TIP20Token {
         ))
     }
 
-    /// (+T15) Returns reserved funds to `from`'s spendable balance when a compliance burn of
+    /// (+T16) Returns reserved funds to `from`'s spendable balance when a compliance burn of
     /// `amount` exceeds it, so the burn may take them.
     ///
     /// Compliance burns ignore reservations: holds are owner commitments, not claims that can
@@ -1477,7 +1477,7 @@ impl TIP20Token {
         self.increment_balance(owner, amount)
     }
 
-    /// (+T15) Moves up to `received` of `owner`'s balance to the creditor of its debt in this
+    /// (+T16) Moves up to `received` of `owner`'s balance to the creditor of its debt in this
     /// token, emitting `DebtRepaid` and a `Transfer` to the creditor.
     ///
     /// Called after every credit. Only accounts flagged as debtors in their TIP-1028 receive

@@ -301,13 +301,13 @@ impl Fixture {
 }
 
 fn new_storage() -> HashMapStorageProvider {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T16);
     storage.set_timestamp(U256::from(NOW));
     storage
 }
 
-/// Runs `f` at T15 with the block timestamp at [`NOW`].
-fn at_t15(f: impl FnOnce() -> eyre::Result<()>) -> eyre::Result<()> {
+/// Runs `f` at T16 with the block timestamp at [`NOW`].
+fn at_fork(f: impl FnOnce() -> eyre::Result<()>) -> eyre::Result<()> {
     let mut storage = new_storage();
     StorageCtx::enter(&mut storage, f)
 }
@@ -332,7 +332,7 @@ macro_rules! err {
 
 #[test]
 fn test_selector_coverage() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut reservations = Reservations::new();
         let unsupported = check_selector_coverage(
             &mut reservations,
@@ -347,7 +347,7 @@ fn test_selector_coverage() -> eyre::Result<()> {
 
 #[test]
 fn test_hold_reserves_in_place() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 600)?;
@@ -383,7 +383,7 @@ fn test_hold_reserves_in_place() -> eyre::Result<()> {
 
 #[test]
 fn test_hold_rejects_invalid_requests() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         for amount in [0, u128::from(u64::MAX) + 1] {
@@ -423,7 +423,7 @@ fn test_hold_rejects_invalid_requests() -> eyre::Result<()> {
 
 #[test]
 fn test_capture_after_the_owner_is_blocked_pays_an_allowed_payee() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         f.approve(500)?;
         let (direct, delegated) = (B256::random(), B256::random());
@@ -443,7 +443,7 @@ fn test_capture_after_the_owner_is_blocked_pays_an_allowed_payee() -> eyre::Resu
 
 #[test]
 fn test_blocked_owner_cannot_authorize_anything_new() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         f.approve(500)?;
         f.set_tolerance(2_000)?;
@@ -469,7 +469,7 @@ fn test_blocked_owner_cannot_authorize_anything_new() -> eyre::Result<()> {
 
 #[test]
 fn test_capture_to_a_blocked_payee_fails() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 100)?;
@@ -493,7 +493,7 @@ fn test_capture_to_a_blocked_payee_fails() -> eyre::Result<()> {
 
 #[test]
 fn test_capture_tolerance_defaults_to_zero() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 100)?;
@@ -528,7 +528,7 @@ fn test_capture_tolerance_defaults_to_zero() -> eyre::Result<()> {
 
 #[test]
 fn test_part_captures_and_final_release_the_rest() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 300)?;
@@ -572,7 +572,7 @@ fn test_part_captures_and_final_release_the_rest() -> eyre::Result<()> {
 
 #[test]
 fn test_settled_id_is_terminal() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let (captured, released, charged) = (B256::random(), B256::random(), B256::random());
         f.hold(captured, 100)?;
@@ -616,7 +616,7 @@ fn test_settled_id_is_terminal() -> eyre::Result<()> {
 
 #[test]
 fn test_adjust_by_placer() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 300)?;
@@ -650,7 +650,7 @@ fn test_adjust_by_placer() -> eyre::Result<()> {
 
 #[test]
 fn test_hard_expiry() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 300)?;
@@ -710,7 +710,7 @@ fn test_hard_expiry() -> eyre::Result<()> {
 
 #[test]
 fn test_holder_allowance_bounds_outstanding() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let (first, second) = (B256::random(), B256::random());
         assert_eq!(
@@ -769,7 +769,7 @@ fn test_holder_allowance_bounds_outstanding() -> eyre::Result<()> {
 
 #[test]
 fn test_holder_charges_and_captures_beyond_the_hold_within_its_allowance() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         f.approve(100)?;
         assert_eq!(
@@ -802,7 +802,7 @@ fn test_holder_charges_and_captures_beyond_the_hold_within_its_allowance() -> ey
 
 #[test]
 fn test_approve_holder_requires_root_key() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         assert_eq!(
             err!(f.reservations.approve_holder(
@@ -856,7 +856,7 @@ fn test_approve_holder_requires_root_key() -> eyre::Result<()> {
 
 #[test]
 fn test_stand_in_capture_is_capped_at_the_approval() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(100)?;
         let id = B256::random();
         f.hold_stand_in(id, 200)?;
@@ -893,7 +893,7 @@ fn test_stand_in_capture_is_capped_at_the_approval() -> eyre::Result<()> {
 
 #[test]
 fn test_stand_in_debt_reaches_the_offline_cap_only() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(100)?;
         f.set_debt_cap(50)?;
         f.set_offline_cap(150)?;
@@ -920,7 +920,7 @@ fn test_stand_in_debt_reaches_the_offline_cap_only() -> eyre::Result<()> {
 
 #[test]
 fn test_charge_shortfall_is_capped_debt_repaid_on_receive() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(100)?;
         assert_eq!(
             err!(f.charge(f.owner, B256::random(), 101, false)),
@@ -1021,7 +1021,7 @@ fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
 
 #[test]
 fn test_refund_bounds() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         f.hold(id, 300)?;
@@ -1069,7 +1069,7 @@ fn test_refund_bounds() -> eyre::Result<()> {
 
 #[test]
 fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
         let stranger = Address::random();
@@ -1149,7 +1149,7 @@ fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
 
 #[test]
 fn test_pledges_expire_and_seize_to_the_authority() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let lender = Address::random();
         let id = B256::random();
@@ -1201,7 +1201,7 @@ fn test_pledges_expire_and_seize_to_the_authority() -> eyre::Result<()> {
 
 #[test]
 fn test_holder_pledges_draw_on_the_allowance() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let (pledge, hold) = (B256::random(), B256::random());
         let reserve_expiry = NOW + 90 * DAY;
@@ -1274,7 +1274,7 @@ fn test_holder_pledges_draw_on_the_allowance() -> eyre::Result<()> {
 
 #[test]
 fn test_revoked_holder_pledges_still_release_and_seize() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let (seized, released) = (B256::random(), B256::random());
         let reserve_expiry = NOW + 120 * DAY;
@@ -1335,7 +1335,7 @@ fn test_revoked_holder_pledges_still_release_and_seize() -> eyre::Result<()> {
 
 #[test]
 fn test_holder_pledges_expire_within_their_bound() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         f.approve(2_000)?;
         for expires_at in [0, NOW, NOW + MAX_PLEDGE_DURATION + 1] {
@@ -1393,7 +1393,7 @@ fn test_holder_pledges_expire_within_their_bound() -> eyre::Result<()> {
 
 #[test]
 fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
-    at_t15(|| {
+    at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let (captured, released) = (B256::random(), B256::random());
         f.hold(captured, 600)?;
