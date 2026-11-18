@@ -1,34 +1,9 @@
-# Supply the pinned txgen checkout as --build-context txgen-src=/path/to/txgen.
 ARG NODE_IMAGE=tempo-cluster-antithesis:latest
-FROM rust:1.96-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc AS txgen
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev clang libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /src
-COPY --from=txgen-src Cargo.toml Cargo.lock ./
-COPY --from=txgen-src crates/ crates/
-RUN --mount=type=cache,id=antithesis-cluster-txgen-registry,target=/usr/local/cargo/registry,sharing=private \
-    --mount=type=cache,id=antithesis-cluster-txgen-git,target=/usr/local/cargo/git,sharing=private \
-    --mount=type=cache,id=antithesis-cluster-txgen-target,target=/src/target,sharing=private \
-    cargo build --locked --release -p txgen-tempo -p bench-cli \
-    && mkdir /out && cp target/release/txgen-tempo target/release/bench /out/
 FROM ${NODE_IMAGE}
-COPY --from=txgen /out/ /usr/local/bin/
-# helpers.nu probes git and falls back to /app when Git metadata is absent.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://github.com/nushell/nushell/releases/download/0.117.0/nu-0.117.0-x86_64-unknown-linux-gnu.tar.gz -o /nu.tar.gz \
-    && echo '33b907da92b0e80bd10fea9fa0e8a1624cabfebd89ee2568e365da3c492ffc68  /nu.tar.gz' | sha256sum -c - \
-    && tar -xzf /nu.tar.gz --strip-components=1 -C /usr/local/bin --wildcards '*/nu' \
-    && rm /nu.tar.gz \
-    && python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir antithesis==0.4.1 hegeltest==0.4.7 yq==3.4.3
-WORKDIR /app
-COPY contrib/bench/txgen/ /app/contrib/bench/txgen/
-# Install renderer dependencies at build time; no network/package resolution during simulation.
-RUN sed -i 's/\^uv run --no-project --with yq==3.4.3 yq/^yq/g' /app/contrib/bench/txgen/helpers.nu
+# Install the driver's dependencies at build time; no package resolution during simulation.
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir antithesis==0.4.1 hegeltest==0.4.7 eth-account==0.13.7
 COPY contrib/antithesis/tempo-cluster/driver/ /driver/
-RUN /opt/venv/bin/python /driver/configure_recipients.py /app/contrib/bench/txgen/presets/public-mix.yml
-COPY --chmod=755 contrib/antithesis/tempo-cluster/scripts/txgen.sh /driver/txgen.sh
 COPY --chmod=755 contrib/antithesis/tempo-cluster/test/ /opt/antithesis/test/
 RUN mkdir -p /opt/antithesis /state && ln -s /driver /opt/antithesis/catalog
 ENV PATH="/opt/venv/bin:${PATH}" PYTHONUNBUFFERED=1

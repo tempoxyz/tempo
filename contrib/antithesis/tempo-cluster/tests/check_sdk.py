@@ -9,7 +9,8 @@ failures = [check for check in checks if check.get("hit") and check.get("assert_
 required = {
     "The tempo cluster workload starts",
     "Consensus finalizes new blocks",
-    "Public mix transactions execute successfully",
+    "Workload transactions execute successfully",
+    "Finalized transfers and mints settle in the ledger",
     "Cluster resumes finality and successful transactions after faults stop",
 }
 passed = {check["message"] for check in checks if check.get("hit") and check.get("condition")}

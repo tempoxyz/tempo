@@ -86,7 +86,7 @@ class Checks(unittest.TestCase):
                         patch.object(driver, "time", types.SimpleNamespace(
                             monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
                         patch.object(driver, "RECOVERY_TIMEOUT", 4), \
-                        patch.object(driver, "command", return_value=0) as send, \
+                        patch.object(driver.Cluster, "submit", return_value=True) as send, \
                         patch.object(driver.Path, "write_text"), \
                         patch.object(driver.os, "_exit") as exit_timeline:
                     cluster.recover(None)
@@ -108,7 +108,7 @@ class Checks(unittest.TestCase):
                 patch.object(driver, "time", types.SimpleNamespace(
                     monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
                 patch.object(driver, "RECOVERY_TIMEOUT", 4), \
-                patch.object(driver, "command", return_value=0) as send, \
+                patch.object(driver.Cluster, "submit", return_value=True) as send, \
                 patch.object(driver.Path, "write_text"), \
                 patch.object(driver.os, "_exit") as exit_timeline:
             self.cluster.recover(None)
@@ -181,10 +181,10 @@ class Checks(unittest.TestCase):
         self.assertEqual(cluster.urls, ["a", "b", "c", "d"])
         self.assertEqual(cluster.observed_urls, ["a", "b", "c", "d", "follower"])
         self.assertEqual(len(cluster.highest), 5)
+        cluster.ledger = Mock(submit=Mock(return_value=True))
         for node in range(4):
-            with patch.object(driver, "command", return_value=0) as command:
-                cluster.public_mix(Mock(draw=Mock(side_effect=[node, 123])))
-            self.assertEqual(command.call_args.args[0][1:4], ["burst", cluster.urls[node], "123"])
+            cluster.transfers(Mock(draw=Mock(side_effect=[node, 1, 2, 5, 3])))
+            self.assertEqual(cluster.ledger.submit.call_args.args, (cluster.urls[node], "transfer", 3, 2, 5))
 
     def test_lagging_follower_participates_in_same_height_fingerprints(self):
         self.cluster = driver.Cluster(self.cluster.urls, follower_url="follower")
@@ -288,7 +288,7 @@ class Checks(unittest.TestCase):
                         patch.object(driver, "time", types.SimpleNamespace(
                             monotonic=lambda: now[0], sleep=lambda _: now.__setitem__(0, now[0] + 1))), \
                         patch.object(driver, "RECOVERY_TIMEOUT", 4), \
-                        patch.object(driver, "command", return_value=0) as send, \
+                        patch.object(driver.Cluster, "submit", return_value=True) as send, \
                         patch.object(driver.Path, "write_text"), \
                         patch.object(driver.os, "_exit") as exit_timeline:
                     cluster.recover(None)
@@ -296,7 +296,7 @@ class Checks(unittest.TestCase):
                 self.assertIn((recovered, "Cluster resumes finality and successful transactions after faults stop"), self.calls)
                 exit_timeline.assert_called_once_with(0 if recovered else 1)
                 if recovered:
-                    self.assertEqual(send.call_args.args[0][1:4], ["burst", "a", "99"])
+                    self.assertEqual(send.call_args.args[0:2], (0, "transfer"))
                     self.assertEqual(rounds[0], 3)
                 else:
                     send.assert_not_called()
@@ -324,7 +324,7 @@ class Checks(unittest.TestCase):
                 self.assertEqual(attempts[0], 2)
                 sleep.assert_called_once_with(1)
 
-    def test_workload_prepares_validators_but_waits_for_follower_setup_tail(self):
+    def test_workload_baselines_ledger_after_follower_setup_tail(self):
         urls = ["a", "b", "c", "d"]
         cluster = driver.Cluster(urls, follower_url="follower")
         follower_reads = [0]
@@ -337,19 +337,98 @@ class Checks(unittest.TestCase):
                 patch.object(driver, "Cluster", return_value=cluster) as constructor, \
                 patch.object(cluster, "wait_ready"), \
                 patch.object(driver, "block", side_effect=block) as blocks, \
-                patch.object(driver, "command", return_value=0) as command, \
+                patch.object(driver, "Ledger") as ledger, \
                 patch.object(driver.time, "sleep") as sleep, \
                 patch.object(driver.Path, "exists", return_value=True), \
+                patch.object(driver.Path, "touch"), \
                 patch.object(driver.lifecycle, "setup_complete") as setup, \
                 patch.object(driver.assertions, "reachable"), \
                 patch.object(driver.hegel, "run_state_machine"):
             driver.workload.__wrapped__(None)
-        constructor.assert_called_once_with(urls, follower_url="follower")
-        command.assert_called_once_with(["/driver/txgen.sh", "prepare", "a"], 300)
+        constructor.assert_called_once_with(urls, follower_url="follower", ledger=ledger.return_value)
+        ledger.return_value.baseline.assert_called_once_with("a", 8)
         self.assertEqual(set(call.args[0] for call in blocks.call_args_list), set(urls + ["follower"]))
         sleep.assert_called_once_with(0.2)
         self.assertEqual(setup.call_args.args[0]["validators"], 4)
         self.assertEqual(setup.call_args.args[0]["followers"], 1)
+
+
+
+class LedgerModel(unittest.TestCase):
+    def setUp(self):
+        self.checks = []
+        for name in ("always", "sometimes"):
+            patcher = patch.object(driver.assertions, name, side_effect=lambda ok, msg, details=None: self.checks.append((ok, msg)))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        keys = {index: Mock(address="0x" + format(index, "040x")) for index in (driver.ISSUER, *driver.TRACKED)}
+        self.ledger = driver.Ledger(keys)
+        self.ledger.expected = {index: 100 for index in driver.TRACKED}
+        self.ledger.supply = 10_000
+        self.ledger.height = 10
+        self.receipts = {}
+        self.chain = {"balances": dict(self.ledger.expected), "supply": 10_000}
+
+    def rpc(self, url, method, params):
+        if method == "eth_getTransactionReceipt":
+            return self.receipts.get(params[0])
+        raise AssertionError(method)
+
+    def check(self, height):
+        with patch.object(driver, "rpc", side_effect=self.rpc), \
+                patch.object(self.ledger, "read", return_value=(dict(self.chain["balances"]), self.chain["supply"])):
+            self.ledger.check("a", height)
+
+    def test_finalized_transfer_and_mint_are_applied(self):
+        self.ledger.pending = {"t": dict(kind="transfer", sender=1, nonce=0, recipient=2, amount=30),
+                               "m": dict(kind="mint", sender=0, nonce=0, recipient=3, amount=5)}
+        self.receipts = {"t": {"blockNumber": "0xb", "status": "0x1"}, "m": {"blockNumber": "0xb", "status": "0x1"}}
+        self.chain["balances"].update({1: 70, 2: 130, 3: 105})
+        self.chain["supply"] = 10_005
+        self.check(11)
+        self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+        self.assertEqual(self.ledger.pending, {})
+
+    def test_receipt_above_finalized_height_waits(self):
+        self.ledger.pending = {"t": dict(kind="transfer", sender=1, nonce=0, recipient=2, amount=30)}
+        self.receipts = {"t": {"blockNumber": "0xc", "status": "0x1"}}
+        self.check(11)
+        self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+        self.assertIn("t", self.ledger.pending)
+
+    def test_lost_balance_is_a_safety_failure(self):
+        self.chain["balances"][4] = 99
+        self.check(11)
+        self.assertIn((False, "Token balances and supply match the finalized ledger"), self.checks)
+
+    def test_unminted_supply_is_a_safety_failure(self):
+        self.chain["supply"] = 10_001
+        self.check(11)
+        self.assertIn((False, "Token balances and supply match the finalized ledger"), self.checks)
+
+    def test_replaced_nonce_is_dropped_not_applied(self):
+        self.ledger.pending = {"a": dict(kind="transfer", sender=1, nonce=3, recipient=2, amount=30),
+                               "b": dict(kind="transfer", sender=1, nonce=3, recipient=4, amount=7)}
+        self.receipts = {"b": {"blockNumber": "0xb", "status": "0x1"}}
+        self.chain["balances"].update({1: 93, 4: 107})
+        self.check(11)
+        self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+        self.assertEqual(self.ledger.pending, {})
+
+    def test_reverted_transaction_changes_nothing(self):
+        self.ledger.pending = {"t": dict(kind="transfer", sender=1, nonce=0, recipient=2, amount=30)}
+        self.receipts = {"t": {"blockNumber": "0xb", "status": "0x0"}}
+        self.check(11)
+        self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+
+    def test_old_height_is_not_rechecked(self):
+        self.check(10)
+        self.assertEqual(self.checks, [])
+
+    def test_genesis_accounts_derive_from_localnet_mnemonic(self):
+        keys = driver.Ledger.derive()
+        self.assertEqual(keys[0].address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
+        self.assertEqual(keys[1].address, "0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
 
 
 class FaultPause(unittest.TestCase):

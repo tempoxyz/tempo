@@ -6,11 +6,9 @@ permissions:
 
 on:
   push:
-    branches: [main, antithesis/tempo-cluster]
+    branches: [main, antithesis/tempo-cluster, antithesis/planted-bugs]
     paths:
       - "contrib/antithesis/tempo-cluster/**"
-      # Keep the shared benchmark public-mix presets in sync with the driver.
-      - "contrib/bench/txgen/**"
       - "contrib/antithesis/reth-state-root/**"
       - "contrib/antithesis/trie-shapes/**"
       - "bin/**"
@@ -36,7 +34,7 @@ env:
 
 jobs:
   build-and-push:
-    name: Build and push instrumented node and public-mix workload
+    name: Build and push instrumented node and ledger workload
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 120
     permissions:
@@ -100,31 +98,16 @@ jobs:
           NODE_DIGEST: ${{ steps.node.outputs.digest }}
         run: '[[ "$NODE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]'
 
-      # Public source pinned to a revision supporting public-mix's setup-state and funding CLI.
-      - name: Checkout pinned txgen source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          repository: tempoxyz/txgen
-          ref: ca437320c94baf64b05b1e31fde576e6e493479d
-          path: .antithesis-txgen-source
-          persist-credentials: false
-
-      - name: Isolate txgen build context
-        run: mv .antithesis-txgen-source "$RUNNER_TEMP/antithesis-txgen-source"
-
       # The uninstrumented driver extends this exact node image, never a moving tag.
-      - name: Build and push public-mix workload image
+      - name: Build and push ledger workload image
         id: workload
         uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           project: 0c6tg19qsp
           context: .
           file: contrib/antithesis/tempo-cluster/Dockerfile.workload
-          build-contexts: |
-            txgen-src=${{ runner.temp }}/antithesis-txgen-source
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-            xyz.tempo.txgen.revision=ca437320c94baf64b05b1e31fde576e6e493479d
           platforms: linux/amd64
           push: true
           tags: ${{ env.REGISTRY }}/tempo-cluster-antithesis-workload:${{ steps.tags.outputs.tag }}
@@ -137,7 +120,7 @@ jobs:
         run: '[[ "$WORKLOAD_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]'
 
   smoke:
-    name: Smoke four validators and public-mix transactions
+    name: Smoke four validators and ledger transactions
     needs: build-and-push
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 20
@@ -267,10 +250,9 @@ jobs:
         run: |
           [[ "$CONFIG_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           {
-            echo '### Antithesis four-validator public-mix images'
+            echo '### Antithesis four-validator ledger images'
             echo ''
             echo "Tag: \`$TAG\`"
-            echo "Txgen revision: \`ca437320c94baf64b05b1e31fde576e6e493479d\`"
             echo '| Image | Immutable reference |'
             echo '|---|---|'
             echo "| Node | \`$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST\` |"

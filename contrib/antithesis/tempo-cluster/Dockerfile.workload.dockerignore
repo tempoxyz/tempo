@@ -7,7 +7,6 @@ contrib/
 !contrib/antithesis/trie-shapes/Cargo.toml
 !contrib/antithesis/trie-shapes/src/**
 !contrib/antithesis/tempo-cluster/**
-!contrib/bench/txgen/**
 docs/
 localnet/
 target/
