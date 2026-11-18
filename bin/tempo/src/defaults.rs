@@ -216,6 +216,9 @@ fn init_engine_defaults() {
         .with_suppress_persistence_during_build(true)
         .with_share_sparse_trie_with_payload_builder(true)
         .with_share_execution_cache_with_payload_builder(true)
+        // Keep the sparse trie resident across persists instead of pruning it to the
+        // unpersisted range, so hot read-only paths aren't reloaded from disk.
+        .with_disable_sparse_trie_cache_pruning(true)
         .try_init()
         .expect("failed to initialize engine defaults");
 }
