@@ -38,6 +38,8 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "state-read-cold-lowmem"
     "state-read-dependent-lowmem"
     "state-read-cold-disk"
+    "state-write-cold"
+    "state-write-dependent"
 ]
 # Presets composed by txgen-prepare-public-mix-preset from the public-mix fixtures.
 const TXGEN_HELPER_PUBLIC_MIX_PRESETS = ["public-mix" "vault-throughput" "zone-portal-throughput" "zone-earn-mix" "zone-earn-hot" "zone-earn-serial" "zone-portal-hot" "card-settlement" "neobank-generic" "neobank-multi" "projected-pipeline" "batch-payout"]

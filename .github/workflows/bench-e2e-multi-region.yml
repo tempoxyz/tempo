@@ -186,6 +186,8 @@ on:
           - state-read-cold-lowmem
           - state-read-dependent-lowmem
           - state-read-cold-disk
+          - state-write-cold
+          - state-write-dependent
       duration:
         description: Benchmark duration in seconds.
         type: string
