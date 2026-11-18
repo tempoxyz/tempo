@@ -47,6 +47,10 @@ jobs:
       - id: shortsha
         run: echo "shortsha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      # Published images start from empty cache mounts that no earlier build wrote to.
+      - name: Choose a fresh cache-mount scope
+        run: echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+
       - name: Build and push Docker images
         id: build-and-push
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
