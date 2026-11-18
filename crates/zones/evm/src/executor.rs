@@ -24,12 +24,9 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    precompiles::ADDRESS_REGISTRY_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
-use tempo_evm::{
-    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, deploy_precompile_at_boundary,
-};
+use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
@@ -266,9 +263,6 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
-                // The block cache never reads the storage of a missing account through the L1
-                // overlay, so the mirrored registry needs its account to exist.
-                deploy_precompile_at_boundary(&mut self.inner, ADDRESS_REGISTRY_ADDRESS, &[])?;
             }
             Ok(())
         } else {
@@ -291,11 +285,8 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             .execute_transaction_without_commit((tx_env, recovered));
 
         let inner = result?;
-        validate_pending_state(
-            &inner.result().pending_state,
-            self.inner.evm().config_spec_id(),
-        )
-        .map_err(BlockExecutionError::other)?;
+        validate_pending_state(&inner.result().pending_state)
+            .map_err(BlockExecutionError::other)?;
 
         Ok(ZoneTxResult { inner, next_phase })
     }
