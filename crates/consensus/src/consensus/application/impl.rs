@@ -256,6 +256,8 @@ impl Inner {
             payload,
         } = open;
         let round = context.round;
+        #[cfg(feature = "fuzz")]
+        let parent_view = context.parent.0;
         let return_budget = proposal_budget.return_budget();
         let payload_build_start = Instant::now();
         let payload = payload.await.wrap_err(
