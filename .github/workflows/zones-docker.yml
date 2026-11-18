@@ -588,10 +588,12 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           fi
-          # Releases come from main or a protected release/* branch.
+          # zones/v* releases come from main or a protected release/* branch;
+          # prover/v* releases stay on main.
           on_protected_branch() {
-            [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
-              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
+            local refs=(refs/remotes/origin/main)
+            if [[ "$component" == zones ]]; then refs+=('refs/remotes/origin/release/*'); fi
+            [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' "${refs[@]}")" ]]
           }
           if ! on_protected_branch "$commit_sha"; then
             # Prepare Zones Release tags the commit on its pre-release branch,
