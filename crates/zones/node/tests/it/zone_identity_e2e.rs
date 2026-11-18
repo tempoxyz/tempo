@@ -483,6 +483,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     // addresses in no org may not, and nobody but the account reads an address in no org.
     let auditor = Party::new(&zone, 170);
     fixture.seed_no_commitment(auditor.address);
+    let before_reader = format!("{:#x}", zone.provider().get_block_number().await?);
     let add_reader = IZoneIdentity::setReaderCall {
         orgId: org_a,
         reader: auditor.address,
@@ -519,26 +520,27 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         zone_portal: Address::ZERO,
     };
     let redacted = start_redacted_rpc_url(&zone, config).await?;
-    let rpc = async |index: u32, method: &str, account: Address| -> eyre::Result<U256> {
-        let token = build_auth_token(&signer_at(index), 0, chain_id);
-        let body: serde_json::Value = reqwest::Client::new()
-            .post(redacted.as_str())
-            .header("x-authorization-token", token)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": [format!("{account:#x}"), "latest"],
-                "id": 1
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(serde_json::from_value(body["result"].clone())?)
-    };
+    let rpc =
+        async |index: u32, method: &str, account: Address, block: &str| -> eyre::Result<U256> {
+            let token = build_auth_token(&signer_at(index), 0, chain_id);
+            let body: serde_json::Value = reqwest::Client::new()
+                .post(redacted.as_str())
+                .header("x-authorization-token", token)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": method,
+                    "params": [format!("{account:#x}"), block],
+                    "id": 1
+                }))
+                .send()
+                .await?
+                .json()
+                .await?;
+            Ok(serde_json::from_value(body["result"].clone())?)
+        };
     // Signers: 163 Alice herself, 161 org A's admin, 170 its reader, 162 org B's admin.
     for method in ["eth_getBalance", "eth_getTransactionCount"] {
-        let own = rpc(163, method, alice.address).await?;
+        let own = rpc(163, method, alice.address, "latest").await?;
         assert_ne!(own, U256::ZERO, "{method}");
         for (index, account, expected) in [
             (161, alice.address, own),
@@ -547,12 +549,24 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             (161, dave.address, U256::ZERO),
         ] {
             assert_eq!(
-                rpc(index, method, account).await?,
+                rpc(index, method, account, "latest").await?,
                 expected,
                 "{method} of {account} as signer {index}"
             );
         }
     }
+    // Reads are checked at the requested block: the reader may not read Alice from before it was
+    // named, while the admin already could.
+    let own = rpc(163, "eth_getBalance", alice.address, &before_reader).await?;
+    assert_ne!(own, U256::ZERO);
+    assert_eq!(
+        rpc(161, "eth_getBalance", alice.address, &before_reader).await?,
+        own
+    );
+    assert_eq!(
+        rpc(170, "eth_getBalance", alice.address, &before_reader).await?,
+        U256::ZERO
+    );
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);
