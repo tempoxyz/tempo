@@ -12,8 +12,8 @@ use evm2::{
     evm::{AccountInfo, SystemTx},
 };
 use invariants_core::Views;
-use reth_evm::{ConfigureEvm as _, Database};
-use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
+use reth_evm::Database;
+use tempo_evm::{TempoEvm, TempoEvmEnv};
 
 use crate::state::{Net, PreStateDb, Reader};
 
@@ -30,9 +30,9 @@ pub(super) struct EvmViews<'a> {
 }
 
 impl<'a> EvmViews<'a> {
-    pub(super) fn new(
+    pub(super) fn new<C: crate::engine::EvmConfig>(
         db: impl Database + 'a,
-        evm_config: &TempoEvmConfig,
+        evm_config: &C,
         env: TempoEvmEnv,
         pre_state: &'a PreStateDb,
         view_cache: &'a ViewCache,
@@ -44,7 +44,7 @@ impl<'a> EvmViews<'a> {
             reads: Rc::clone(&reads),
         };
         Self {
-            evm: evm_config.evm_with_env(db, env),
+            evm: reth_evm::ConfigureEvm::evm_with_env(evm_config, db, env),
             reads,
             pre_state,
             view_cache,
@@ -67,7 +67,7 @@ impl<'a> EvmViews<'a> {
         self.pre_state.restore_missed(false);
         let result = self
             .evm
-            .system_call(SystemTx::new(*target, input.clone()).with_caller(Address::ZERO));
+            .system_call(SystemTx::new(*target, input.clone()).with_caller(caller(input)));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
@@ -276,5 +276,30 @@ impl ViewFailed {
 impl Display for ViewFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
+    }
+}
+
+/// The account a view runs as: the account it reads, for a TIP-20 `balanceOf`, `allowance` or
+/// `nonces`, and `Address::ZERO` otherwise.
+///
+/// Tempo L1 answers these views for any caller. A zone answers them only for the account they read,
+/// since its balances are private, so calling as that account reads the same value on either.
+fn caller(input: &[u8]) -> Address {
+    use alloy_sol_types::SolCall as _;
+    use tempo_contracts::precompiles::ITIP20;
+    let Some(selector) = input.get(..4) else {
+        return Address::ZERO;
+    };
+    match <[u8; 4]>::try_from(selector).expect("four bytes") {
+        ITIP20::balanceOfCall::SELECTOR => {
+            ITIP20::balanceOfCall::abi_decode(input).map_or(Address::ZERO, |call| call.account)
+        }
+        ITIP20::allowanceCall::SELECTOR => {
+            ITIP20::allowanceCall::abi_decode(input).map_or(Address::ZERO, |call| call.owner)
+        }
+        ITIP20::noncesCall::SELECTOR => {
+            ITIP20::noncesCall::abi_decode(input).map_or(Address::ZERO, |call| call.owner)
+        }
+        _ => Address::ZERO,
     }
 }

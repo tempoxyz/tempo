@@ -1,138 +1,94 @@
-//! Fuzz harness for Tempo Zone block execution.
+//! Tempo Zone's stateless block executor for fuzzing and replay, loaded as a cdylib.
 //!
-//! A [`ZoneCase`] describes a zone on one Tempo hardfork, the Tempo L1 state it reads at its
-//! anchor (the portal's transfer opt-in, pathUSD's pause flag and registered TIP-1022 masters)
-//! and the user transactions of up to [`input::MAX_BLOCKS`] zone blocks. [`run`] builds the
-//! complete witness for that batch, executes it with the stateless proof function
-//! ([`zone_spf::prove_zone_batch_with_observer`]), the same code that proves zone batches, and
-//! checks the receipts and state changes against the T15 invariants in [`invariants`].
-//!
-//! The proof function only sees state the witness proves, so a missing L1 or zone read surfaces
-//! as an error instead of a silent default.
+//! The same harness as `tempo-fuzz-harness`, on a zone: an input is a [`ZoneHarnessInput`], a
+//! [`tempo_fuzz_types::TempoHarnessInput`] with the Tempo L1 state the zone reads. Its blocks
+//! execute with the zone node's EVM and block executor on an in-memory state, opened and closed by
+//! the system transactions the sequencer adds, and the outcome is a
+//! [`tempo_fuzz_types::TempoHarnessOutcome`] with Tempo's protocol invariants checked after every
+//! step. It exports the Tempo harness's C ABI, so the same loader runs either.
 
-pub mod input;
-pub mod invariants;
-pub mod witness;
+mod engine;
+mod types;
 
-use alloy_primitives::{Address, B256, U256};
-use tempo_primitives::TempoReceipt;
-use zone_spf::{BatchObserver, BatchOutput, Error as SpfError};
+use core::ffi::c_int;
 
-pub use input::ZoneCase;
-pub use invariants::Violation;
-pub use witness::Fixture;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_fuzz_engine::ffi;
+use tempo_fuzz_types::{
+    HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION, TempoHarnessCapabilities, TempoHarnessOutcome,
+};
 
-/// What one executed zone block left behind.
-#[derive(Debug, Clone)]
-pub struct BlockRecord {
-    /// The block's receipts, including its system transactions.
-    pub receipts: Vec<TempoReceipt>,
-    /// pathUSD balances whose storage the block changed, keyed by account, with their new values.
-    pub balances: Vec<(Address, U256)>,
+pub use engine::{L1, Zone};
+pub use types::{L1StateInput, ZoneHarnessInput};
+
+/// The hardforks a zone runs: zones launched on T13.
+const HARDFORKS: &[TempoHardfork] = &[TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15];
+
+/// Executes `input` on a zone that reads its L1 state.
+pub fn run(input: ZoneHarnessInput) -> TempoHarnessOutcome {
+    tempo_fuzz_engine::run(&Zone::new(&input.l1), input.input)
 }
 
-/// The result of running one case.
-#[derive(Debug)]
-pub struct Outcome {
-    /// What the proof function returned.
-    pub result: Result<BatchOutput, SpfError>,
-    /// Each executed block, in order.
-    pub blocks: Vec<BlockRecord>,
-    /// The calls that were sent, block by block, after dropping those the batch could not include.
-    pub sent: Vec<Vec<witness::SentCall>>,
-    /// Broken invariants. Empty for a passing case.
-    pub violations: Vec<Violation>,
-}
-
-impl Outcome {
-    /// Whether any invariant broke.
-    pub fn failed(&self) -> bool {
-        !self.violations.is_empty()
-    }
-}
-
-/// Most times [`run`] drops a user transaction the batch could not include and retries.
-const MAX_RETRIES: usize = 16;
-
-/// Runs `case` as one proven batch and checks its invariants.
+/// Executes a bincode-encoded [`ZoneHarnessInput`] and writes the bincode-encoded
+/// [`TempoHarnessOutcome`] to `out_ptr`, with the Tempo harness's return values.
 ///
-/// A user transaction the zone would refuse to include (such as one whose fee the sender can no
-/// longer pay) makes the whole batch invalid, as it would for a sequencer. The harness drops it
-/// and runs the batch again, so one refused transaction does not hide the rest of the case.
-pub fn run(case: &ZoneCase) -> Outcome {
-    let mut dropped = Vec::new();
-    loop {
-        let fixture = Fixture::new(case, &dropped);
-        let mut observer = Recorder::new(&fixture);
-        let result = zone_spf::prove_zone_batch_with_observer(
-            fixture.config(),
-            fixture.witness(),
-            &mut observer,
-        );
-        if let Err(SpfError::TransactionExecution {
-            block_index,
-            transaction_index,
-        }) = &result
-            && dropped.len() < MAX_RETRIES
-            && let Some(call) = fixture.call_at(*block_index, *transaction_index)
-        {
-            dropped.push(call);
-            continue;
-        }
-        let sent = fixture.sent().to_vec();
-        let violations = invariants::check(case, &fixture, &result, &observer.blocks);
-        return Outcome {
-            result,
-            blocks: observer.blocks,
-            sent,
-            violations,
-        };
+/// # Safety
+///
+/// `in_ptr` must be readable for `in_len` bytes, `out_ptr` writable for `out_len` bytes, and
+/// `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+    in_ptr: *const u8,
+    in_len: usize,
+) -> c_int {
+    if in_ptr.is_null() {
+        return ffi::reject_null();
     }
+    let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
+    unsafe { ffi::execute(out_ptr, out_len, out_written, input, run) }
 }
 
-/// Records each block's receipts and changed pathUSD balances.
-struct Recorder {
-    /// Every account whose balance an invariant reads, with its balance slot.
-    tracked: Vec<(Address, U256)>,
-    blocks: Vec<BlockRecord>,
+/// Writes the bincode-encoded [`TempoHarnessCapabilities`] to `out_ptr`.
+///
+/// # Safety
+///
+/// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    let capabilities = TempoHarnessCapabilities {
+        schema_version: TYPED_HARNESS_SCHEMA_VERSION,
+        implementation: "tempo-zone".to_string(),
+        git_revision: option_env!("TEMPO_GIT_REVISION")
+            .unwrap_or("unknown")
+            .to_string(),
+        supported_hardforks: HARDFORKS.to_vec().try_into().expect("there are hardforks"),
+        supported_inputs: vec![HarnessInputKind::State, HarnessInputKind::Blockchain]
+            .try_into()
+            .expect("the harness supports inputs"),
+    };
+    unsafe { ffi::write_encoded(out_ptr, out_len, out_written, &capabilities) }
 }
 
-impl Recorder {
-    fn new(fixture: &Fixture) -> Self {
-        Self {
-            tracked: fixture
-                .tracked_accounts()
-                .into_iter()
-                .map(|account| (account, witness::balance_slot(account)))
-                .collect(),
-            blocks: Vec::new(),
-        }
-    }
+/// Writes why the last input this thread executed stopped short, as the Tempo harness does.
+///
+/// # Safety
+///
+/// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    unsafe { ffi::last_rejection(out_ptr, out_len, out_written) }
 }
 
-impl BatchObserver for Recorder {
-    fn on_block(
-        &mut self,
-        _block_index: usize,
-        output: &reth_execution_types::BlockExecutionOutput<TempoReceipt>,
-    ) {
-        let balances = self
-            .tracked
-            .iter()
-            .filter_map(|(account, slot)| {
-                output
-                    .storage(&tempo_precompiles::PATH_USD_ADDRESS, *slot)
-                    .map(|value| (*account, value))
-            })
-            .collect();
-        self.blocks.push(BlockRecord {
-            receipts: output.result.receipts.clone(),
-            balances,
-        });
-    }
-}
-
-/// The key `index` signs with.
-fn signer_key(index: usize) -> B256 {
-    B256::with_last_byte(u8::try_from(index + 1).expect("few signers"))
-}
+#[cfg(test)]
+mod tests;

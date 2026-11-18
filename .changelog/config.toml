@@ -19,6 +19,7 @@ ignore = [
     "tempo-ext",
     "tempo-eyre",
     "tempo-faucet",
+    "tempo-fuzz-engine",
     "tempo-fuzz-harness",
     "tempo-fuzz-types",
     "tempo-invariants",

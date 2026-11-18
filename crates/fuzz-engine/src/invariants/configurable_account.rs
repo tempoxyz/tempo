@@ -89,7 +89,12 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
 }
 
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
-pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, report: &mut Report) {
+pub(super) fn check(
+    reader: &Reader<'_, impl crate::engine::EvmConfig>,
+    db: &Db,
+    effects: &StepEffects<'_>,
+    report: &mut Report,
+) {
     let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, effects.logs, &effects.tx);
     let mut accounts: Vec<Address> = effects
         .net

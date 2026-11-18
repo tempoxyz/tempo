@@ -1,6 +1,6 @@
 [package]
 name = "zone-fuzz-harness"
-description = "Fuzz harness for Tempo Zone batches: proves fuzzed zone blocks with the stateless proof function and checks T15 invariants"
+description = "Tempo Zone's stateless block executor for fuzzing and replay, loaded as a cdylib"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,32 +10,33 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts = { workspace = true, features = ["std"] }
-tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-primitives.workspace = true
-zone-chainspec = { workspace = true, features = ["test-utils"] }
+tempo-evm.workspace = true
+tempo-fuzz-engine.workspace = true
+tempo-fuzz-types.workspace = true
+tempo-precompiles.workspace = true
+tempo-primitives = { workspace = true, features = ["reth"] }
+zone-chainspec.workspace = true
+zone-evm.workspace = true
+zone-precompiles = { workspace = true, features = ["std"] }
 zone-primitives = { workspace = true, features = ["std"] }
-zone-spf.workspace = true
-
-reth-chainspec = { workspace = true, default-features = true }
-reth-execution-types.workspace = true
-reth-trie-common = { workspace = true, features = ["std"] }
 
 alloy-consensus.workspace = true
-alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
-
-arbitrary = { workspace = true, features = ["derive"] }
+evm2.workspace = true
+reth-evm.workspace = true
+serde.workspace = true
 serde_json = { workspace = true, default-features = true }
 
 [dev-dependencies]
-alloy-consensus.workspace = true
-arbitrary = { workspace = true, features = ["derive"] }
-proptest.workspace = true
+alloy-eips.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
