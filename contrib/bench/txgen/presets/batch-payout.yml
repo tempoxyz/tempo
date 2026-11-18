@@ -64,7 +64,8 @@ templates:
     gas_limit: 1800000 # per recipient
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
-    nonce: { uniform: [0, 9223372036854775807] } # TIP-1106, requires T12+
+    # No explicit nonce: general-lane transactions need txgen's per-transaction fee bump to
+    # compete with the vault and zone transactions it also bumps.
     valid_for_secs: 25
     calls:
       - to: "0x20c0000000000000000000000000000000000000"

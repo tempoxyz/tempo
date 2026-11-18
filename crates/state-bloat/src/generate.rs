@@ -341,7 +341,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::B256;
+    use alloy::{primitives::B256, signers::local::MnemonicBuilder};
     use clap::Parser;
     use std::io::{BufReader, Seek};
     use tempo_precompiles::storage::{
@@ -385,7 +385,7 @@ mod tests {
                     );
                     assert_eq!(value, U256::ONE);
                 }
-                storage.sstore(address, U256::from_be_bytes(slot.0), value)?;
+                storage.sstore(address, slot.into(), value)?;
                 entry += 1;
                 Ok(())
             })?;
@@ -426,8 +426,6 @@ mod tests {
 
     #[test]
     fn test_derive_parent_key_matches_mnemonic_builder() {
-        use alloy::signers::local::MnemonicBuilder;
-
         let mnemonic = "test test test test test test test test test test test junk";
         let parent_key = derive_parent_key(mnemonic).unwrap();
 

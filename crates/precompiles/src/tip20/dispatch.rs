@@ -118,9 +118,11 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, revert_bytes, setup_storage},
+        test_util::{
+            TIP20Setup, TIP403Setup, assert_full_coverage, check_selector_coverage, revert_bytes,
+            setup_storage, with_storage,
+        },
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
         primitives::{B256, Bytes, U256, address},
@@ -128,7 +130,9 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
+        IRolesAuth::{self, IRolesAuthCalls},
+        ITIP20::ITIP20Calls,
+        RolesAuthError, TIP20Error, UnknownFunctionSelector,
     };
 
     #[test]
@@ -136,8 +140,7 @@ mod tests {
         let (_, sender) = setup_storage();
 
         // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        with_storage(TempoHardfork::T1, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
@@ -151,8 +154,7 @@ mod tests {
         })?;
 
         // Pre-T1 (T0): insufficient calldata returns halt
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T0, || {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34]), sender);
@@ -555,18 +557,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-            // Initialize TIP403 registry
-            let mut registry = TIP403Registry::new();
-            registry.initialize()?;
-
-            // Create a valid policy
-            let new_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
+            let new_policy_id = TIP403Setup::whitelist(admin).apply()?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: new_policy_id,
@@ -576,13 +567,7 @@ mod tests {
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
             // Create another valid policy for the unauthorized test
-            let another_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let another_policy_id = TIP403Setup::blacklist(admin).apply()?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: another_policy_id,
@@ -621,9 +606,6 @@ mod tests {
 
     #[test]
     fn tip20_test_selector_coverage() -> eyre::Result<()> {
-        use crate::test_util::{assert_full_coverage, check_selector_coverage};
-        use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
-
         // Use T12 so the TIP-1006 selectors are active too.
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
         let admin = Address::random();

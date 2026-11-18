@@ -1086,7 +1086,9 @@ def generate-summary [
     mut baseline_builder_invalid_tx_skips = []
     mut feature_builder_invalid_tx_skips = []
     mut baseline_builder_nonce_too_low_skips = []
+    mut baseline_builder_expiring_nonce_replay_skips = []
     mut feature_builder_nonce_too_low_skips = []
+    mut feature_builder_expiring_nonce_replay_skips = []
     mut baseline_builder_stop_rlp_size = []
     mut feature_builder_stop_rlp_size = []
     mut baseline_builder_stop_gas_limit = []
@@ -1386,6 +1388,7 @@ def generate-summary [
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
+        let builder_expiring_nonce_replay_skips = do $builder_pool_tx_skips_for_reason "expiring_nonce_replay"
         let builder_stop_samples = ($metric_samples | where name == "reth_tempo_payload_builder_block_build_stop_total")
         let builder_stops_for_reason = { |reason: string|
             let samples = (
@@ -1420,6 +1423,7 @@ def generate-summary [
             $baseline_builder_reverted_txs = ($baseline_builder_reverted_txs | append $builder_reverted_txs)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $baseline_builder_expiring_nonce_replay_skips = ($baseline_builder_expiring_nonce_replay_skips | append $builder_expiring_nonce_replay_skips)
             $baseline_builder_stop_rlp_size = ($baseline_builder_stop_rlp_size | append $builder_stop_rlp_size)
             $baseline_builder_stop_gas_limit = ($baseline_builder_stop_gas_limit | append $builder_stop_gas_limit)
             $baseline_builder_stop_pool_empty = ($baseline_builder_stop_pool_empty | append $builder_stop_pool_empty)
@@ -1441,6 +1445,7 @@ def generate-summary [
             $feature_builder_reverted_txs = ($feature_builder_reverted_txs | append $builder_reverted_txs)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $feature_builder_expiring_nonce_replay_skips = ($feature_builder_expiring_nonce_replay_skips | append $builder_expiring_nonce_replay_skips)
             $feature_builder_stop_rlp_size = ($feature_builder_stop_rlp_size | append $builder_stop_rlp_size)
             $feature_builder_stop_gas_limit = ($feature_builder_stop_gas_limit | append $builder_stop_gas_limit)
             $feature_builder_stop_pool_empty = ($feature_builder_stop_pool_empty | append $builder_stop_pool_empty)
@@ -1551,7 +1556,9 @@ def generate-summary [
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_expiring_nonce_replay_skips = if ($baseline_builder_expiring_nonce_replay_skips | length) > 0 { $baseline_builder_expiring_nonce_replay_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_expiring_nonce_replay_skips = if ($feature_builder_expiring_nonce_replay_skips | length) > 0 { $feature_builder_expiring_nonce_replay_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_stop_rlp_size = if ($baseline_builder_stop_rlp_size | length) > 0 { $baseline_builder_stop_rlp_size | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_stop_rlp_size = if ($feature_builder_stop_rlp_size | length) > 0 { $feature_builder_stop_rlp_size | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_stop_gas_limit = if ($baseline_builder_stop_gas_limit | length) > 0 { $baseline_builder_stop_gas_limit | math sum | math round --precision 0 } else { 0.0 }
@@ -1750,6 +1757,7 @@ def generate-summary [
         (do $count_row "Reverted Txs" $b_builder_reverted_txs $f_builder_reverted_txs)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
         (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+        (do $nonzero_count_row "Expiring Nonce Replay Skips" $b_builder_expiring_nonce_replay_skips $f_builder_expiring_nonce_replay_skips)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
         (do $nonzero_stat_row "Fill Idle P99 [ms]" $b_builder_fill_idle $f_builder_fill_idle p99)
         ""
@@ -1818,6 +1826,7 @@ def generate-summary [
                 builder_reverted_txs: $b_builder_reverted_txs
                 builder_invalid_tx_skips: $b_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
+                builder_expiring_nonce_replay_skips: $b_builder_expiring_nonce_replay_skips
                 builder_stop_rlp_size: $b_builder_stop_rlp_size
                 builder_stop_gas_limit: $b_builder_stop_gas_limit
                 builder_stop_pool_empty: $b_builder_stop_pool_empty
@@ -1861,6 +1870,7 @@ def generate-summary [
                 builder_reverted_txs: $f_builder_reverted_txs
                 builder_invalid_tx_skips: $f_builder_invalid_tx_skips
                 builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
+                builder_expiring_nonce_replay_skips: $f_builder_expiring_nonce_replay_skips
                 builder_stop_rlp_size: $f_builder_stop_rlp_size
                 builder_stop_gas_limit: $f_builder_stop_gas_limit
                 builder_stop_pool_empty: $f_builder_stop_pool_empty
@@ -1904,6 +1914,7 @@ def generate-summary [
                 builder_reverted_txs: (do $delta $b_builder_reverted_txs $f_builder_reverted_txs)
                 builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
                 builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+                builder_expiring_nonce_replay_skips: (do $delta $b_builder_expiring_nonce_replay_skips $f_builder_expiring_nonce_replay_skips)
                 builder_stop_rlp_size: (do $delta $b_builder_stop_rlp_size $f_builder_stop_rlp_size)
                 builder_stop_gas_limit: (do $delta $b_builder_stop_gas_limit $f_builder_stop_gas_limit)
                 builder_stop_pool_empty: (do $delta $b_builder_stop_pool_empty $f_builder_stop_pool_empty)

@@ -12,12 +12,12 @@ use evm2::{
 use scoped_tls::scoped_thread_local;
 use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        CallOutcome, ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -47,7 +47,8 @@ impl StorageCtx {
     /// # IMPORTANT
     ///
     /// The caller must ensure that:
-    /// 1. Only one `enter` call is active at a time, in the same thread.
+    /// 1. Only one `enter` call is active at a time, in the same thread. The exception is a
+    ///    callee of [`StorageCtx::call`], which enters its own context while the caller waits.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
@@ -117,6 +118,22 @@ impl StorageCtx {
             })
         })?;
         result.unwrap()
+    }
+
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub(crate) fn with_warm_caller_info<T>(
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
     }
 
     /// Returns the chain ID.
@@ -204,8 +221,8 @@ impl StorageCtx {
         Self::with_storage(|s| s.gas_used())
     }
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    pub fn state_gas_used(&self) -> u64 {
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    pub fn state_gas_used(&self) -> i64 {
         Self::with_storage(|s| s.state_gas_used())
     }
 
@@ -246,6 +263,20 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// Calls `target` from the running precompile, see [`PrecompileStorageProvider::call`].
+    ///
+    /// A callee that is a Tempo precompile, the caller included, runs in its own storage context
+    /// over the same state, so write state before the call and read it again afterwards.
+    pub fn call(
+        &mut self,
+        target: Address,
+        input: Bytes,
+        gas_limit: u64,
+        is_static: bool,
+    ) -> Result<CallOutcome> {
+        Self::try_with_storage(|s| s.call(target, input, gas_limit, is_static))
+    }
+
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     pub fn set_tip1060_storage_credits(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credits(enabled))
@@ -254,6 +285,12 @@ impl StorageCtx {
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.
     pub fn set_tip1060_storage_credit_minting(&mut self, enabled: bool) {
         Self::with_storage(|s| s.set_tip1060_storage_credit_minting(enabled))
+    }
+
+    /// Returns the kind of EVM this context executes over. See
+    /// [`PrecompileStorageProvider::kind`].
+    pub fn kind(&self) -> TempoEvmKind {
+        Self::with_storage(|s| s.kind())
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.
@@ -343,7 +380,7 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
 
-    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// Returns whether `address` is a retired root key (TIP-1113): from T14, an address with a
     /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
     /// at call time, so a migration earlier in the block counts.
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {

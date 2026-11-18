@@ -110,3 +110,27 @@ fn rejects_block_body_that_does_not_match_header() {
         ));
     });
 }
+
+#[test_traced]
+fn rejects_unrepresentable_height_before_verifying() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let trusted = dkg_fixture(&mut context, Epoch::zero());
+        let untrusted = dkg_fixture(&mut context, Epoch::new(7));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *trusted.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        // A block in the final partial epoch, certified with keys the verifier does not trust.
+        let block = make_block(u64::MAX, None);
+        let finalization = make_finalization(&block, Epoch::new(7), &untrusted.schemes);
+        let certified = make_certified_block(block, &finalization);
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &certified),
+            Err(Error::HeightOutOfRange { height }) if height == u64::MAX
+        ));
+    });
+}

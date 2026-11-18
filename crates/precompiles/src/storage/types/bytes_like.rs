@@ -281,7 +281,7 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
 /// For long strings (≥32 bytes), data is stored starting at `keccak256(base_slot)`.
 #[inline]
 fn calc_data_slot(base_slot: U256) -> U256 {
-    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0)
+    keccak256(base_slot.to_be_bytes::<32>()).into()
 }
 
 /// Check if a storage slot value represents a long string.

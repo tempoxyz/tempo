@@ -61,7 +61,7 @@ impl Packable for Address {}
 impl FromWord for Address {
     #[inline]
     fn to_word(&self) -> U256 {
-        U256::from_be_slice(self.as_slice())
+        self.into_word().into()
     }
 
     #[inline]

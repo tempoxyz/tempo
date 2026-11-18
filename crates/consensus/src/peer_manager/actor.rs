@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
+    num::NonZeroU32,
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -13,7 +14,7 @@ use commonware_consensus::{
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{Digestible as _, ed25519::PublicKey};
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
@@ -51,6 +52,7 @@ where
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
     latest_observed_finalized_tip: (Height, Digest),
+    max_peers: NonZeroU32,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
@@ -73,6 +75,7 @@ where
             execution_node,
             epoch_strategy,
             finalized_tip,
+            max_peers,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> eyre::Result<Self> {
@@ -88,6 +91,7 @@ where
             execution_node,
             epoch_strategy,
             latest_observed_finalized_tip: finalized_tip,
+            max_peers,
             mailbox,
             peers,
             last_tracked_peer_set: None,
@@ -130,12 +134,6 @@ where
     #[instrument(parent = &cause, skip_all)]
     async fn handle_message(&mut self, cause: Span, message: Message) -> eyre::Result<()> {
         match message {
-            Message::Track { id, peers } => {
-                AddressableManager::track(&mut self.oracle, id, peers);
-            }
-            Message::Overwrite { peers } => {
-                AddressableManager::overwrite(&mut self.oracle, peers);
-            }
             Message::PeerSet { id, response } => {
                 let result = Provider::peer_set(&mut self.oracle, id).await;
                 let _ = response.send(result);
@@ -214,13 +212,12 @@ where
             read_header_at_height(self.execution_node.as_ref(), highest_finalized)
                 .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+            latest_boundary_header.extra_data().as_ref(),
+        ))
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(
@@ -253,6 +250,17 @@ where
     }
 
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
+        // The P2P network panics on a set larger than `max_peers`. Warn with
+        // a third of the budget left.
+        let size = peers.len();
+        if size > self.max_peers.get() as usize * 2 / 3 {
+            warn!(
+                peers = size,
+                max_peers = self.max_peers,
+                "peer set is above 2/3 of the max peers per set; the node will halt at the limit",
+            );
+        }
+
         if let Some(tracked) = &self.last_tracked_peer_set {
             match peers.what_has_changed_compared_to(&tracked.peers) {
                 WhatHasChanged::Nothing => {}
@@ -496,6 +504,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
     };
+    use test_case::test_case;
 
     use super::*;
 
@@ -749,50 +758,48 @@ mod tests {
         execution
     }
 
-    #[test]
-    fn constructor_registers_available_execution_peers_before_actor_start() {
-        // EL behind consensus, unset finalized marker at genesis, an exact
-        // boundary, and EL ahead of the consensus tip (which still caps reads).
-        for (finalized, available, consensus_tip) in [
-            (Some(7), 7, 100),
-            (None, 0, 100),
-            (Some(19), 19, 100),
-            (Some(27), 12, 12),
-        ] {
-            Runner::default().start(|context| async move {
-                let mut execution = bootstrap_execution(available, 1);
-                execution.finalized = finalized;
-                let execution = Arc::new(execution);
-                let oracle = RecordingOracle::default();
-                let (_actor, _mailbox) = crate::peer_manager::init(
-                    context,
-                    crate::peer_manager::Config {
-                        execution_node: execution.clone(),
-                        oracle: oracle.clone(),
-                        epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                        finalized_tip: (
-                            Height::new(consensus_tip),
-                            Digest(B256::repeat_byte(0xFF)),
-                        ),
-                    },
-                )
-                .unwrap();
-                // No actor has started and no marshal update has been delivered.
-                let tracked = oracle.tracked.lock().unwrap();
-                assert_eq!(tracked.len(), 1);
-                assert_eq!(tracked[0].0, available);
-                assert_peer(&tracked[0].1.primary, &peer(1));
-                assert_peer(&tracked[0].1.secondary, &peer(2));
-                assert!(
-                    execution
-                        .header_reads
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .all(|height| *height <= available)
-                );
-            });
-        }
+    // EL behind consensus, unset finalized marker at genesis, an exact
+    // boundary, and EL ahead of the consensus tip (which still caps reads).
+    #[test_case(Some(7), 7, 100)]
+    #[test_case(None, 0, 100)]
+    #[test_case(Some(19), 19, 100)]
+    #[test_case(Some(27), 12, 12)]
+    fn constructor_registers_available_execution_peers_before_actor_start(
+        finalized: Option<u64>,
+        available: u64,
+        consensus_tip: u64,
+    ) {
+        Runner::default().start(|context| async move {
+            let mut execution = bootstrap_execution(available, 1);
+            execution.finalized = finalized;
+            let execution = Arc::new(execution);
+            let oracle = RecordingOracle::default();
+            let (_actor, _mailbox) = crate::peer_manager::init(
+                context,
+                crate::peer_manager::Config {
+                    execution_node: execution.clone(),
+                    oracle: oracle.clone(),
+                    epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
+                    finalized_tip: (Height::new(consensus_tip), Digest(B256::repeat_byte(0xFF))),
+                    max_peers: commonware_utils::NZU32!(128),
+                },
+            )
+            .unwrap();
+            // No actor has started and no marshal update has been delivered.
+            let tracked = oracle.tracked.lock().unwrap();
+            assert_eq!(tracked.len(), 1);
+            assert_eq!(tracked[0].0, available);
+            assert_peer(&tracked[0].1.primary, &peer(1));
+            assert_peer(&tracked[0].1.secondary, &peer(2));
+            assert!(
+                execution
+                    .header_reads
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|height| *height <= available)
+            );
+        });
     }
 
     #[test]
@@ -808,6 +815,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    max_peers: commonware_utils::NZU32!(128),
                 },
             );
             let error = result
@@ -830,6 +838,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    max_peers: commonware_utils::NZU32!(128),
                 },
             )
             .unwrap();

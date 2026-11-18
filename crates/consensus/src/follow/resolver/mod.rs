@@ -31,7 +31,6 @@ use reth_provider::{
     BlockReader as _, BlockSource,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::{node::TempoNode, rpc::consensus::CertifiedBlock};
 use tempo_primitives::Block as TempoBlock;
 use tokio::select;
@@ -271,23 +270,18 @@ async fn resolve_block<P: BlockProvider, U: Upstream, N: BlockNetwork>(
 async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<Bytes> {
     let certified_block = upstream.get_finalization(height).await?;
 
-    if let Err(error) =
-        validate_body_against_header(certified_block.block.body(), certified_block.block.header())
-    {
-        warn!(%error, "upstream finalized block body does not match its header");
-        return None;
-    }
+    let consensus_block = Block::try_from_execution_block(certified_block.block)
+        .inspect_err(|error| warn!(%error, "upstream finalized block failed validation"))
+        .ok()?;
 
     let finalization = alloy_primitives::hex::decode(&certified_block.certificate)
         .map_err(Report::new)
         .and_then(|bytes| {
-            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(&*bytes).map_err(Report::new)
+            <Finalization<Scheme<PublicKey, MinSig>, Digest>>::decode(bytes).map_err(Report::new)
         })
         .inspect_err(|error| warn!(%error, "failed decoding certificate"))
         .ok()?;
 
-    // Reconstruct the consensus block from the persisted execution-layer block.
-    let consensus_block = Block::from_execution_block_unchecked(certified_block.block);
     Some((finalization, consensus_block).encode())
 }
 

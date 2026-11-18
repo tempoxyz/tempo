@@ -222,6 +222,11 @@ where
                         }
                         Err(err) => err,
                     };
+                    #[cfg(feature = "fuzz")]
+                    antithesis_sdk::assert_unreachable!(
+                        "Shadow replay control re-execution diverges from the canonical chain",
+                        &serde_json::json!({ "block_number": number, "error": err })
+                    );
                     error!(target: "shadow_replay", %err, "Control re-execution diverged from canonical chain");
                     panic!("shadow replay control failure at block {number}: {err}");
                 }

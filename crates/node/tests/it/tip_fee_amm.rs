@@ -10,6 +10,7 @@ use reth_e2e_test_utils::{
     receipt::{PendingTransactionExt, await_successful_receipts},
     wallet::test_signer,
 };
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth,
@@ -43,9 +44,7 @@ where
             B256::random(),
         )
         .gas(5_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
     let token = ITIP20::new(event.token, provider.clone());
@@ -53,9 +52,7 @@ where
     IRolesAuth::new(*token.address(), provider)
         .grantRole(ISSUER_ROLE, caller)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     Ok(token)
@@ -461,9 +458,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
             liquidity,
             user_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     fee_amm
         .mint(
@@ -472,9 +467,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
             liquidity,
             user_address,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     if direct_pool_exists {
@@ -486,17 +479,13 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
                 U256::from(3_000),
                 user_address,
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
     }
 
     fee_manager
         .setUserToken(*user_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let direct_before = fee_amm
@@ -814,9 +803,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
 
     IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
         .setUserToken(*user_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?
         .status();
 
@@ -831,9 +818,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128 * 100)
         .max_priority_fee_per_gas(TEMPO_T1_BASE_FEE as u128 * 99)
         .gas(1000000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(!burn_receipt.status());
 

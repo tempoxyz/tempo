@@ -299,23 +299,28 @@ class ZonesReleaseTagTests(unittest.TestCase):
                 self.assertEqual(output, '')
 
     def test_commit_dry_run_input_validation(self):
+        main = "refs/heads/main"
         cases = [
-            ("", "a" * 40, "true", True),
-            ("zones/v0.3.5", "", "true", True),
-            ("zones/v0.3.5", "", "false", True),
-            ("", "a" * 40, "false", False),
-            ("zones/v0.3.5", "a" * 40, "true", False),
-            ("", "main", "true", False),
-            ("", "a" * 7, "true", False),
-            ("", "A" * 40, "true", False),
-            ("", "", "true", True),
-            ("", "", "false", False),
+            ("", "a" * 40, "true", main, True),
+            ("zones/v0.3.5", "", "true", main, True),
+            # A publishing dispatch must run from the tag it releases, since
+            # VK picks the approving code owners from the dispatched ref.
+            ("zones/v0.3.5", "", "false", "refs/tags/zones/v0.3.5", True),
+            ("zones/v0.3.5", "", "false", "refs/tags/prover/v0.4.0", False),
+            ("zones/v0.3.5", "", "false", main, False),
+            ("", "a" * 40, "false", main, False),
+            ("zones/v0.3.5", "a" * 40, "true", main, False),
+            ("", "main", "true", main, False),
+            ("", "a" * 7, "true", main, False),
+            ("", "A" * 40, "true", main, False),
+            ("", "", "true", main, True),
+            ("", "", "false", main, False),
         ]
-        for tag, sha, dry_run, accepted in cases:
-            with self.subTest(tag=tag, sha=sha, dry_run=dry_run):
+        for tag, sha, dry_run, ref, accepted in cases:
+            with self.subTest(tag=tag, sha=sha, dry_run=dry_run, ref=ref):
                 result = subprocess.run(
                     ['bash', '-eu', '-c', script('resolve-release', 'Validate commit dry-run inputs')],
-                    env=dict(os.environ, INPUT_TAG=tag, INPUT_SHA=sha, DRY_RUN=dry_run),
+                    env=dict(os.environ, INPUT_TAG=tag, INPUT_SHA=sha, DRY_RUN=dry_run, GITHUB_REF=ref),
                     text=True, capture_output=True,
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)

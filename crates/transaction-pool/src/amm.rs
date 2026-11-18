@@ -427,7 +427,13 @@ impl AmmLiquidityCache {
 mod tests {
     use super::*;
     use crate::test_utils::create_mock_provider;
+    use alloy_consensus::Header;
     use alloy_primitives::address;
+    use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot};
+    use test_case::test_case;
+
+    const ACTIVE: Address = Address::repeat_byte(0x11);
+    const INACTIVE: Address = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
@@ -679,9 +685,6 @@ mod tests {
 
     #[test]
     fn test_on_new_state_early_return_no_fee_manager_account() {
-        use reth_provider::ExecutionOutcome;
-        use tempo_primitives::TempoReceipt;
-
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
@@ -697,12 +700,6 @@ mod tests {
 
     #[test]
     fn test_on_new_state_invalidates_stale_quote_token_cache() {
-        use reth_provider::ExecutionOutcome;
-        use reth_trie_common::bundle_state::{
-            AccountStatus, BundleAccount, BundleState, StorageSlot,
-        };
-        use tempo_primitives::TempoReceipt;
-
         // TIP-20-prefixed addresses so `from_address_unchecked`'s debug_assert holds.
         let user_token = address!("20c0000000000000000000000000000000000001");
         let hop_old = address!("20c0000000000000000000000000000000000002");
@@ -987,8 +984,6 @@ mod tests {
 
     #[test]
     fn test_repopulate_clears_stale_data_and_rebuilds_from_canonical_chain() {
-        use alloy_consensus::Header;
-
         let stale_validator = Address::random();
         let stale_token = Address::random();
         let stale_user_token = Address::random();
@@ -1083,26 +1078,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_active_validator() {
-        let active = Address::repeat_byte(0x11);
-        let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
-
-        let cases = [
-            (vec![active], active, true, "active validator in set"),
-            (
-                vec![active],
-                inactive,
-                false,
-                "inactive validator not in set",
-            ),
-            (vec![], active, false, "empty set"),
-        ];
-
-        for (unique_validators, query, expected, desc) in cases {
-            let cache = AmmLiquidityCache::with_unique_validators(unique_validators);
-            assert_eq!(cache.is_active_validator(&query), expected, "{desc}");
-        }
+    #[test_case(vec![ACTIVE], ACTIVE => true)]
+    #[test_case(vec![ACTIVE], INACTIVE => false)]
+    #[test_case(vec![], ACTIVE => false)]
+    fn test_is_active_validator(unique_validators: Vec<Address>, query: Address) -> bool {
+        AmmLiquidityCache::with_unique_validators(unique_validators).is_active_validator(&query)
     }
 
     #[test]

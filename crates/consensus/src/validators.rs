@@ -185,7 +185,7 @@ impl DecodedValidatorV2 {
             ..
         }: IValidatorConfigV2::Validator,
     ) -> eyre::Result<Self> {
-        let public_key = PublicKey::decode(publicKey.as_ref())
+        let public_key = PublicKey::decode(commonware_codec::Copying(publicKey.as_ref()))
             .wrap_err("failed decoding publicKey field as ed25519 public key")?;
         let ingress = ingress.parse().wrap_err("ingress was not valid")?;
         let egress = egress.parse().wrap_err("egress was not valid")?;

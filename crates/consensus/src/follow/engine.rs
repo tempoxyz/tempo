@@ -20,8 +20,8 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{
-    BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
-    buffer::paged::CacheRef, spawn_cell,
+    Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
+    spawn_cell,
 };
 use commonware_utils::NZUsize;
 use eyre::{WrapErr as _, eyre};
@@ -94,16 +94,7 @@ impl<TUpstream> Config<TUpstream> {
         context: TContext,
     ) -> eyre::Result<Engine<TContext, TUpstream>>
     where
-        TContext: Clock
-            + Rng
-            + CryptoRng
-            + Metrics
-            + Pacer
-            + Spawner
-            + Storage
-            + BufferPooler
-            + Send
-            + 'static,
+        TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Send + 'static,
     {
         let scheme_provider = SchemeProvider::new();
         // Pin the binary's identity before marshal or any actor registers an epoch scheme.
@@ -112,8 +103,7 @@ impl<TUpstream> Config<TUpstream> {
             Scheme::certificate_verifier(crate::config::NAMESPACE, self.network_identity.identity),
         );
 
-        let page_cache_ref = CacheRef::from_pooler(
-            &context,
+        let page_cache_ref = CacheRef::new(
             storage::BUFFER_POOL_PAGE_SIZE,
             storage::BUFFER_POOL_CAPACITY,
         );
@@ -124,7 +114,8 @@ impl<TUpstream> Config<TUpstream> {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
             finalized_floor: last_finalized_height,
-            ..
+            finalized_tip,
+            finalized_tip_certificate,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,
@@ -203,10 +194,14 @@ impl<TUpstream> Config<TUpstream> {
                 scheme_provider: scheme_provider.clone(),
                 network_identity: self.network_identity,
                 last_finalized_height,
+                finalized_tip: finalized_tip_certificate
+                    .map(|certificate| (finalized_tip.1, certificate)),
+                partition_prefix: format!("{}_driver", self.partition_prefix),
                 marshal: marshal_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
             },
         )
+        .await
         .wrap_err("failed initializing driver actor")?;
 
         let (gossip_actor, gossip_mailbox) = self
@@ -253,7 +248,7 @@ type FollowExecutionProvider =
 
 pub struct Engine<TContext, TUpstreamActor>
 where
-    TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + BufferPooler,
+    TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage,
     TUpstreamActor:,
 {
     context: ContextCell<TContext>,
@@ -280,16 +275,7 @@ where
 
 impl<TContext, TUpstreamActor> Engine<TContext, TUpstreamActor>
 where
-    TContext: Clock
-        + Rng
-        + CryptoRng
-        + Metrics
-        + Pacer
-        + Spawner
-        + Storage
-        + BufferPooler
-        + Send
-        + 'static,
+    TContext: Clock + Rng + CryptoRng + Metrics + Pacer + Spawner + Storage + Send + 'static,
     TUpstreamActor: upstream::UpstreamActor,
 {
     pub fn start(mut self) -> Handle<eyre::Result<()>> {
@@ -327,7 +313,7 @@ where
                         // boundary block, any certificate retry it submits must be
                         // queued after the driver update that installs its scheme.
                         driver_mailbox.to_marshal_reporter(),
-                        Reporters::<_, feed::Mailbox, crate::gossip::Mailbox>::from((
+                        Reporters::<feed::Mailbox, crate::gossip::Mailbox>::from((
                             feed_mailbox,
                             gossip_mailbox,
                         )),

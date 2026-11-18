@@ -4,6 +4,7 @@
 //! storage patterns like primitive types, arrays, mappings, structs, and enums.
 
 use super::*;
+use crate::storage_tests::{PackedThreeSlot, PackedTwoSlot};
 use alloy_primitives::{
     Address, FixedBytes,
     aliases::{I96, U96},
@@ -201,8 +202,6 @@ fn test_double_mappings_layout() {
 
 #[test]
 fn test_multi_slot_arrays_layout() {
-    use crate::storage_tests::{PackedThreeSlot, PackedTwoSlot};
-
     #[contract]
     struct MultiSlotArrays {
         dyn_two_slot: Vec<PackedTwoSlot>,

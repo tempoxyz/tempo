@@ -5,8 +5,13 @@ use p256::{
     ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
 };
 use sha2::{Digest, Sha256};
-use tempo_primitives::transaction::tt_signature::{
-    KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature, normalize_p256_s,
+use tempo_primitives::transaction::{
+    ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+    configurable_account_digest,
+    tt_signature::{
+        KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature,
+        derive_p256_address, normalize_p256_s,
+    },
 };
 
 pub(crate) fn now_secs() -> u64 {
@@ -31,12 +36,19 @@ pub(crate) fn sign_p256_signature(
     digest: B256,
     signing_key: &P256SigningKey,
 ) -> eyre::Result<TempoSignature> {
+    sign_p256_primitive(digest, signing_key).map(TempoSignature::Primitive)
+}
+
+fn sign_p256_primitive(
+    digest: B256,
+    signing_key: &P256SigningKey,
+) -> eyre::Result<PrimitiveSignature> {
     let pre_hashed = Sha256::digest(digest);
     let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = signature.to_bytes();
     let (pub_key_x, pub_key_y) = p256_public_key(signing_key);
 
-    Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
+    Ok(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::from_slice(&sig_bytes[0..32]),
             s: normalize_p256_s(&sig_bytes[32..64]).map_err(|err| eyre::eyre!(err))?,
@@ -44,7 +56,7 @@ pub(crate) fn sign_p256_signature(
             pub_key_y,
             pre_hash: true,
         },
-    )))
+    ))
 }
 
 pub(crate) fn sign_webauthn_signature(
@@ -93,10 +105,7 @@ pub(crate) fn sign_keychain_signature(
             eyre::bail!("unsupported keychain version");
         }
     };
-    let primitive = match sign_p256_signature(signing_hash, signing_key)? {
-        TempoSignature::Primitive(primitive) => primitive,
-        TempoSignature::Keychain(_) => unreachable!("primitive signature expected"),
-    };
+    let primitive = sign_p256_primitive(signing_hash, signing_key)?;
     let signature = if version == 0x03 {
         TempoSignature::Keychain(KeychainSignature::new_v1(root_account, primitive))
     } else {
@@ -106,13 +115,48 @@ pub(crate) fn sign_keychain_signature(
         TempoSignature::Keychain(keychain) => keychain
             .key_id(&digest)
             .map_err(|err| eyre::eyre!("inner key recovery failed: {err}"))?,
-        TempoSignature::Primitive(_) => unreachable!("keychain signature expected"),
+        TempoSignature::Primitive(_) | TempoSignature::ConfigurableAccount(_) => {
+            unreachable!("keychain signature expected")
+        }
     };
 
     Ok((signature, key_id))
 }
 
-fn p256_public_key(signing_key: &P256SigningKey) -> (B256, B256) {
+/// Signs `digest` for the configurable account whose version-zero configuration has
+/// `signing_key` as its sole owner, returning the signature and the account with that
+/// configuration.
+pub(crate) fn sign_configurable_account_signature(
+    digest: B256,
+    signing_key: &P256SigningKey,
+) -> eyre::Result<(TempoSignature, Address, ConfigurableAccountConfig)> {
+    let (pub_key_x, pub_key_y) = p256_public_key(signing_key);
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: derive_p256_address(&pub_key_x, &pub_key_y),
+            weight: 1,
+        }],
+    };
+    let account = config
+        .derive_account()
+        .map_err(|err| eyre::eyre!("{err:?}"))?;
+    let approval = sign_p256_primitive(
+        configurable_account_digest(digest, account, config.version),
+        signing_key,
+    )?;
+    let signature = ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval])
+        .map_err(|err| eyre::eyre!("{err:?}"))?;
+    Ok((
+        TempoSignature::ConfigurableAccount(signature),
+        account,
+        config,
+    ))
+}
+
+pub(crate) fn p256_public_key(signing_key: &P256SigningKey) -> (B256, B256) {
     let encoded = EncodedPoint::from(signing_key.verifying_key());
     (
         B256::from_slice(encoded.x().expect("x coordinate present")),

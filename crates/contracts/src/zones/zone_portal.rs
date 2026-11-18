@@ -9,7 +9,7 @@ pub use ZonePortal::{
 
 use super::{IZoneOutbox, ZoneInboxEvent};
 #[cfg(feature = "rpc")]
-use alloc::{format, string::ToString};
+use alloc::format;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::SolValue;
 
@@ -201,6 +201,7 @@ crate::sol! {
 
         event RoleUpdated(address indexed account, Role prev, Role next);
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+        event TransfersEnabledUpdated(bool enabled);
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
 
         /// Emitted when block-production leadership transitions to a new sequencer.
@@ -270,6 +271,8 @@ crate::sol! {
         function setAccessMode(bool enforced) external;
         function isGatewayOpen() external view returns (bool);
         function setGatewayMode(bool enforced) external;
+        function transfersEnabled() external view returns (bool);
+        function setTransfersEnabled(bool enabled) external;
         function hasRole(address account, Role role) external view returns (bool);
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;
@@ -486,13 +489,7 @@ impl<P: alloy_provider::Provider<N>, N: alloy_network::Network>
         for i in 0..count {
             multicall = multicall.add_dynamic(self.enabledTokenAt(alloy_primitives::U256::from(i)));
         }
-        multicall.aggregate().await.map_err(|err| match err {
-            alloy_provider::MulticallError::TransportError(err) => err.into(),
-            alloy_provider::MulticallError::DecodeError(err) => err.into(),
-            err => {
-                alloy_provider::transport::TransportErrorKind::custom_str(&err.to_string()).into()
-            }
-        })
+        Ok(multicall.aggregate().await?)
     }
 
     /// Returns all sequencer addresses currently registered on this [`ZonePortal`].
@@ -531,13 +528,7 @@ impl<P: alloy_provider::Provider<N>, N: alloy_network::Network>
         for i in 0..count {
             multicall = multicall.add_dynamic(self.sequencerAt(alloy_primitives::U256::from(i)));
         }
-        multicall.aggregate().await.map_err(|err| match err {
-            alloy_provider::MulticallError::TransportError(err) => err.into(),
-            alloy_provider::MulticallError::DecodeError(err) => err.into(),
-            err => {
-                alloy_provider::transport::TransportErrorKind::custom_str(&err.to_string()).into()
-            }
-        })
+        Ok(multicall.aggregate().await?)
     }
 
     /// Fetches the active sequencer encryption key and its index from one L1 snapshot.

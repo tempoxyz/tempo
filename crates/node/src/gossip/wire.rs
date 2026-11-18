@@ -86,7 +86,8 @@ where
         return Err(FrameError::UnknownMessage(id));
     }
 
-    Finalization::decode(payload).map_err(FrameError::InvalidFinalization)
+    Finalization::decode(commonware_codec::Copying(payload))
+        .map_err(FrameError::InvalidFinalization)
 }
 
 #[cfg(test)]

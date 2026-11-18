@@ -1,0 +1,19 @@
+# Pipeline instances: the live and near-term programs' flows side by side. Each
+# share is the flow's share of pipeline gas (internal planning sheet); names are
+# traffic shapes. Select with TXGEN_NEOBANK_INSTANCES (see README).
+instances:
+  - name: card-heavy
+    share: 64
+    modules: [account, earn, spend, cashout]
+  - name: earn-app
+    share: 17
+    modules: [account, deposit, earn]
+  - name: remittance
+    share: 6
+    modules: [account, deposit, transfer, cashout]
+  - name: payroll-earn
+    share: 6
+    modules: [deposit, earn, cashout]
+  - name: settlement
+    share: 7
+    modules: [transfer, cashout]

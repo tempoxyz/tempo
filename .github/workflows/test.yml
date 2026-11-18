@@ -41,6 +41,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') }}
+      node: ${{ contains(fromJSON(steps.filter.outputs.changes), 'node') }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -58,6 +59,20 @@ jobs:
               - '{.cargo,.config,.github/actions}/**'
               - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
               - '.github/workflows/{test,lint,bench}.yml'
+            # Rust changes that can reach the node, xtask or e2e binaries. The fuzzer and corpus crates can't.
+            node:
+              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
+              - 'Cargo.lock'
+              - '*-network-identity.json'
+              - '*.toml'
+              - '{.cargo,.config,.github/actions}/**'
+              - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
+              - '.github/workflows/{test,lint,bench}.yml'
+              - '!crates/corpus/**'
+              - '!crates/fuzz-harness/**'
+              - '!crates/fuzz-types/**'
+              - '!crates/invariants/**'
+              - '!crates/nitro-attestation/fuzz/**'
 
   zones-artifacts:
     name: Build Zones test artifacts
@@ -79,7 +94,7 @@ jobs:
       - name: Check out Earn contracts
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: tempoxyz/earn
+          repository: tempoxyz/contracts
           ref: main
           path: earn
           persist-credentials: false
@@ -133,7 +148,7 @@ jobs:
   genesis:
     name: Genesis generation
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.node == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -216,7 +231,7 @@ jobs:
   e2e:
     name: e2e (${{ matrix.partition }}/4)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.node == 'true'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -313,7 +328,7 @@ jobs:
   cli:
     name: CLI smoke tests
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.node == 'true'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -418,5 +433,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
-          allowed-skips: ${{ needs.changes.outputs.rust != 'true' && 'genesis,test,e2e,cli,msrv' || '' }}
+          allowed-skips: ${{ needs.changes.outputs.rust != 'true' && 'genesis,test,e2e,cli,msrv' || needs.changes.outputs.node != 'true' && 'genesis,e2e,cli' || '' }}
           jobs: ${{ toJSON(needs) }}

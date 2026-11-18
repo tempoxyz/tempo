@@ -26,7 +26,7 @@ pub use tempo_contracts::precompiles::{
     TIP20ChannelReserveEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{TempoAddressExt, transaction::tt_signature::TempoSignature};
 
 /// 15 minute grace period between `requestClose` and `withdraw`.
 pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
@@ -70,6 +70,12 @@ struct PackedChannelState {
     /// This field occupies previously unused bytes in the packed slot. Channels created before
     /// T12 decode it as false and retain the reserve sender accepted when they were funded.
     uses_logical_receive_policy_sender: bool,
+    /// Whether the descriptor's `salt` is the voucher signer's configuration commitment from
+    /// `open` (TIP-1166).
+    ///
+    /// This field occupies previously unused bytes in the packed slot, so channels opened before
+    /// T15 decode it as false.
+    has_opening_commitment: bool,
 }
 
 impl PackedChannelState {
@@ -104,7 +110,7 @@ impl PackedChannelState {
 
 #[contract(addr = TIP20_CHANNEL_RESERVE_ADDRESS)]
 pub struct TIP20ChannelReserve {
-    /// Persistent channel state keyed by `compute_channel_id_inner`.
+    /// Persistent channel state keyed by [`ITIP20ChannelReserve::ChannelDescriptor::id`].
     channel_states: Mapping<B256, PackedChannelState>,
     /// Per-payer reusable credits for deleted packed channel-state slots.
     channel_storage_credits: Mapping<Address, u64>,
@@ -121,6 +127,14 @@ impl TIP20ChannelReserve {
     /// Initializes the precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
+    }
+
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
     }
 
     /// Seeds the enclosing transaction's replay-protected context hash for `open` calls.
@@ -145,6 +159,11 @@ impl TIP20ChannelReserve {
     ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
+    ///
+    /// At T14, reverts with `RootKeyRetired` when the voucher signer has a configuration
+    /// commitment. From T15 (TIP-1166), `salt` must equal that commitment instead, or the call
+    /// reverts with `SaltNotSignerCommitment`, and the channel's vouchers are checked against
+    /// it for the channel's lifetime.
     pub fn open(
         &mut self,
         msg_sender: Address,
@@ -164,20 +183,42 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::zero_deposit().into());
         }
 
+        let signer = if call.authorizedSigner.is_zero() {
+            msg_sender
+        } else {
+            call.authorizedSigner
+        };
+        let is_t15 = self.storage.spec().is_t15();
+        if !is_t15 {
+            self.ensure_voucher_signer_active(signer)?;
+        }
+
         let expiring_nonce_hash = self.enclosing_channel_open_context_hash()?;
-        let channel_id = self.compute_channel_id_inner(
-            msg_sender,
-            call.payee,
-            call.operator,
-            call.token,
-            call.salt,
-            call.authorizedSigner,
-            expiring_nonce_hash,
-        )?;
+        let channel_id = self.channel_id(&ITIP20ChannelReserve::ChannelDescriptor {
+            payer: msg_sender,
+            payee: call.payee,
+            operator: call.operator,
+            token: call.token,
+            salt: call.salt,
+            authorizedSigner: call.authorizedSigner,
+            expiringNonceHash: expiring_nonce_hash,
+        })?;
         if self.channel_states[channel_id].read()?.exists()
             || self.opened_this_tx[channel_id].t_read()?
         {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
+        }
+        let opening_commitment = if is_t15 {
+            self.storage.config_commitment(signer)?
+        } else {
+            B256::ZERO
+        };
+        if !opening_commitment.is_zero() && call.salt != opening_commitment {
+            return Err(TIP20ChannelReserveError::salt_not_signer_commitment(
+                signer,
+                opening_commitment,
+            )
+            .into());
         }
 
         if self.storage.spec().is_t12() {
@@ -198,16 +239,14 @@ impl TIP20ChannelReserve {
             token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
         }
 
-        self.write_channel_state_spending_credit(
-            msg_sender,
-            channel_id,
-            PackedChannelState {
-                settled: U96::ZERO,
-                deposit,
-                close_requested_at: 0,
-                uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
-            },
-        )?;
+        let state = PackedChannelState {
+            settled: U96::ZERO,
+            deposit,
+            close_requested_at: 0,
+            uses_logical_receive_policy_sender: self.storage.spec().is_t12(),
+            has_opening_commitment: !opening_commitment.is_zero(),
+        };
+        self.write_channel_state_spending_credit(msg_sender, channel_id, state)?;
         self.opened_this_tx[channel_id].t_write(true)?;
 
         self.emit_event(TIP20ChannelReserveEvent::ChannelOpened(
@@ -223,6 +262,15 @@ impl TIP20ChannelReserve {
                 deposit: call.deposit,
             },
         ))?;
+        if state.has_opening_commitment {
+            self.emit_event(TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                ITIP20ChannelReserve::OpeningCommitmentRecorded {
+                    channelId: channel_id,
+                    signer,
+                    commitment: opening_commitment,
+                },
+            ))?;
+        }
 
         Ok(channel_id)
     }
@@ -255,6 +303,7 @@ impl TIP20ChannelReserve {
         self.validate_voucher(
             &call.descriptor,
             channel_id,
+            state,
             call.cumulativeAmount,
             &call.signature,
         )?;
@@ -311,6 +360,11 @@ impl TIP20ChannelReserve {
     /// Adds deposit to an existing channel and cancels a pending close request.
     ///
     /// A zero top-up is allowed and only cancels a pending close request.
+    ///
+    /// At T14, a nonzero top-up reverts with `RootKeyRetired` when the voucher signer has a
+    /// configuration commitment. From T15 (TIP-1166), it reverts when the signer's commitment
+    /// differs from the one saved at open: with `SignerConfigChanged` when one was saved, and
+    /// with `RootKeyRetired` when the signer had none at open.
     pub fn top_up(
         &mut self,
         msg_sender: Address,
@@ -331,6 +385,22 @@ impl TIP20ChannelReserve {
         }
 
         if !additional.is_zero() {
+            let signer = self.expected_signer(&call.descriptor);
+            if self.storage.spec().is_t15() {
+                // Old owners must not gain authority over new funds after a rotation, and an
+                // unregistered signer's registration can't be told apart from one.
+                let commitment = opening_commitment(&call.descriptor, state);
+                if self.storage.config_commitment(signer)? != commitment {
+                    return Err(if commitment.is_zero() {
+                        TIP20ChannelReserveError::root_key_retired(signer)
+                    } else {
+                        TIP20ChannelReserveError::signer_config_changed(signer)
+                    }
+                    .into());
+                }
+            } else {
+                self.ensure_voucher_signer_active(signer)?;
+            }
             let next_deposit = state
                 .deposit
                 .checked_add(additional)
@@ -457,6 +527,7 @@ impl TIP20ChannelReserve {
             self.validate_voucher(
                 &call.descriptor,
                 channel_id,
+                state,
                 call.cumulativeAmount,
                 &call.signature,
             )?;
@@ -640,15 +711,15 @@ impl TIP20ChannelReserve {
         &self,
         call: ITIP20ChannelReserve::computeChannelIdCall,
     ) -> Result<B256> {
-        self.compute_channel_id_inner(
-            call.payer,
-            call.payee,
-            call.operator,
-            call.token,
-            call.salt,
-            call.authorizedSigner,
-            call.expiringNonceHash,
-        )
+        self.channel_id(&ITIP20ChannelReserve::ChannelDescriptor {
+            payer: call.payer,
+            payee: call.payee,
+            operator: call.operator,
+            token: call.token,
+            salt: call.salt,
+            authorizedSigner: call.authorizedSigner,
+            expiringNonceHash: call.expiringNonceHash,
+        })
     }
 
     /// Returns the EIP-712 digest that the payer or authorized signer must sign.
@@ -659,15 +730,32 @@ impl TIP20ChannelReserve {
         self.get_voucher_digest_inner(call.channelId, call.cumulativeAmount)
     }
 
+    /// Returns whether `settle` and `close` would accept the voucher signature (TIP-1166).
+    ///
+    /// Runs the same signature checks as `settle`, against the channel's snapshot, and charges the
+    /// same gas. Reverts with `ChannelNotFound` if the channel doesn't exist. Doesn't check the
+    /// amount against the channel's deposit or settled amount.
+    pub fn verify_voucher(&self, call: ITIP20ChannelReserve::verifyVoucherCall) -> Result<bool> {
+        let channel_id = self.channel_id(&call.descriptor)?;
+        let state = self.load_existing_state(channel_id)?;
+        match self.validate_voucher(
+            &call.descriptor,
+            channel_id,
+            state,
+            call.cumulativeAmount,
+            &call.signature,
+        ) {
+            Ok(()) => Ok(true),
+            Err(TempoPrecompileError::TIP20ChannelReserveError(
+                TIP20ChannelReserveError::InvalidSignature(_),
+            )) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
-        let hash = match self.storage.chain_id() {
-            MAINNET_CHAIN_ID => DOMAIN_SEPARATOR_MAINNET,
-            MODERATO_CHAIN_ID => DOMAIN_SEPARATOR_TESTNET,
-            chain_id => domain_separator_inner(chain_id),
-        };
-
-        Ok(hash)
+        Ok(domain_separator(self.storage.chain_id()))
     }
 
     /// Deletes a packed channel-state slot and credits its payer for any minted storage credits.
@@ -754,15 +842,8 @@ impl TIP20ChannelReserve {
 
     /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelReserve::ChannelDescriptor) -> Result<B256> {
-        self.compute_channel_id_inner(
-            descriptor.payer,
-            descriptor.payee,
-            descriptor.operator,
-            descriptor.token,
-            descriptor.salt,
-            descriptor.authorizedSigner,
-            descriptor.expiringNonceHash,
-        )
+        self.storage
+            .keccak256(&descriptor.id_preimage(self.storage.chain_id()))
     }
 
     /// Ensures the caller is the payee or the descriptor's nonzero operator.
@@ -787,34 +868,6 @@ impl TIP20ChannelReserve {
         Ok(hash)
     }
 
-    /// Computes the channel id including chain and precompile domain separation.
-    #[expect(clippy::too_many_arguments)]
-    fn compute_channel_id_inner(
-        &self,
-        payer: Address,
-        payee: Address,
-        operator: Address,
-        token: Address,
-        salt: B256,
-        authorized_signer: Address,
-        expiring_nonce_hash: B256,
-    ) -> Result<B256> {
-        self.storage.keccak256(
-            &(
-                payer,
-                payee,
-                operator,
-                token,
-                salt,
-                authorized_signer,
-                expiring_nonce_hash,
-                self.address,
-                U256::from(self.storage.chain_id()),
-            )
-                .abi_encode(),
-        )
-    }
-
     /// Loads an active channel or returns `ChannelNotFound`.
     fn load_existing_state(&self, channel_id: B256) -> Result<PackedChannelState> {
         let state = self.channel_states[channel_id].read()?;
@@ -834,21 +887,74 @@ impl TIP20ChannelReserve {
     }
 
     /// Validates a voucher signature against the descriptor's expected signer.
+    ///
+    /// From T15 (TIP-1166), a configurable account signature of the signer is checked against the
+    /// commitment the descriptor's salt holds, or against its version-0 address derivation when the
+    /// signer had no commitment at open. A primitive signature is accepted only in that case.
     fn validate_voucher(
         &self,
         descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
         channel_id: B256,
+        state: PackedChannelState,
         cumulative_amount: U96,
         signature: &alloy::primitives::Bytes,
     ) -> Result<()> {
         let digest = self.get_voucher_digest_inner(channel_id, cumulative_amount)?;
+        let expected_signer = self.expected_signer(descriptor);
+        if self.storage.spec().is_t15() {
+            let commitment = opening_commitment(descriptor, state);
+            if let Ok(TempoSignature::ConfigurableAccount(signature)) =
+                TempoSignature::from_bytes(signature)
+            {
+                let valid = SignatureVerifier::new()
+                    .verify_configurable_signature_against(
+                        expected_signer,
+                        digest,
+                        &signature,
+                        commitment,
+                        true,
+                    )
+                    .map_err(|error| {
+                        if error.is_system_error() {
+                            error
+                        } else {
+                            TIP20ChannelReserveError::invalid_signature().into()
+                        }
+                    })?;
+                if !valid {
+                    return Err(TIP20ChannelReserveError::invalid_signature().into());
+                }
+                return Ok(());
+            }
+            // A signer with a commitment at open had its root key retired (TIP-1113).
+            if !commitment.is_zero() {
+                return Err(TIP20ChannelReserveError::invalid_signature().into());
+            }
+        }
+        let is_t15 = self.storage.spec().is_t15();
         let signer = SignatureVerifier::new()
-            .recover(digest, signature.clone())
-            .map_err(|_| TIP20ChannelReserveError::invalid_signature())?;
-        if signer != self.expected_signer(descriptor) {
+            .recover(digest, signature)
+            .map_err(|error| {
+                // From T15, out-of-gas and other system errors propagate so that `verifyVoucher`
+                // never reports an unperformed check as an invalid signature.
+                if is_t15 && error.is_system_error() {
+                    error
+                } else {
+                    TIP20ChannelReserveError::invalid_signature().into()
+                }
+            })?;
+        if signer != expected_signer {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
-        // The signature proves the signer's root key.
+        // No retirement check: migrating must not let the payer void vouchers the payee holds.
+        Ok(())
+    }
+
+    /// Rejects a retired root key (TIP-1113) as the voucher signer for new deposit.
+    ///
+    /// Vouchers stay valid after their signer migrates, so a retired key keeps authority over
+    /// funds already in its channels but must not gain authority over new funds.
+    fn ensure_voucher_signer_active(&self, signer: Address) -> Result<()> {
         if self.storage.is_retired_root(signer)? {
             return Err(TIP20ChannelReserveError::root_key_retired(signer).into());
         }
@@ -857,17 +963,58 @@ impl TIP20ChannelReserve {
 
     /// Computes the EIP-712 voucher digest.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
-        let struct_hash = self
-            .storage
-            .keccak256(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-        let domain_separator = self.domain_separator()?;
+        voucher_digest_with(
+            channel_id,
+            cumulative_amount,
+            self.storage.chain_id(),
+            |data| self.storage.keccak256(data),
+        )
+    }
+}
 
-        let mut digest_input = [0u8; 66];
-        digest_input[0] = 0x19;
-        digest_input[1] = 0x01;
-        digest_input[2..34].copy_from_slice(domain_separator.as_slice());
-        digest_input[34..66].copy_from_slice(struct_hash.as_slice());
-        self.storage.keccak256(&digest_input)
+/// Returns the EIP-712 digest of a `cumulative_amount` voucher on `channel_id` for `chain_id`.
+pub fn voucher_digest(channel_id: B256, cumulative_amount: U96, chain_id: u64) -> B256 {
+    voucher_digest_with(channel_id, cumulative_amount, chain_id, |data| {
+        Ok(keccak256(data))
+    })
+    .expect("plain keccak never fails")
+}
+
+/// Returns the EIP-712 voucher digest, hashing its struct and digest input with `keccak`.
+pub fn voucher_digest_with(
+    channel_id: B256,
+    cumulative_amount: U96,
+    chain_id: u64,
+    keccak: impl Fn(&[u8]) -> Result<B256>,
+) -> Result<B256> {
+    let struct_hash = keccak(&(VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
+    let mut input = [0u8; 66];
+    input[0] = 0x19;
+    input[1] = 0x01;
+    input[2..34].copy_from_slice(domain_separator(chain_id).as_slice());
+    input[34..66].copy_from_slice(struct_hash.as_slice());
+    keccak(&input)
+}
+
+/// Returns the EIP-712 domain separator for chain `chain_id`, precomputed for mainnet and testnet.
+fn domain_separator(chain_id: u64) -> B256 {
+    match chain_id {
+        MAINNET_CHAIN_ID => DOMAIN_SEPARATOR_MAINNET,
+        MODERATO_CHAIN_ID => DOMAIN_SEPARATOR_TESTNET,
+        chain_id => domain_separator_inner(chain_id),
+    }
+}
+
+/// Returns the voucher signer's commitment at open, which the descriptor's salt holds, or zero if
+/// the signer had none (TIP-1166).
+fn opening_commitment(
+    descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
+    state: PackedChannelState,
+) -> B256 {
+    if state.has_opening_commitment {
+        descriptor.salt
+    } else {
+        B256::ZERO
     }
 }
 
@@ -909,14 +1056,14 @@ mod tests {
         address_registry::AddressRegistry,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{
-            TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
-            register_virtual_master,
+            TIP20Setup, TIP403Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
+            register_virtual_master, with_storage,
         },
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, TIP403Registry},
     };
     use alloy::{
-        primitives::{Bytes, Signature},
-        sol_types::SolCall,
+        primitives::{Bytes, IntoLogData, Signature},
+        sol_types::{SolCall, SolEvent},
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -924,6 +1071,11 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
     };
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        configurable_account_digest, tt_signature::PrimitiveSignature,
+    };
+    use test_case::test_case;
 
     #[test]
     fn const_domain_separators_match_abi_encoding() {
@@ -941,6 +1093,36 @@ mod tests {
                 domain_separator_inner(chain_id)
             );
         }
+    }
+
+    #[test_case(MAINNET_CHAIN_ID)]
+    #[test_case(MODERATO_CHAIN_ID)]
+    #[test_case(1337)]
+    fn free_channel_id_and_voucher_digest_match_the_precompile(chain_id: u64) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(chain_id);
+        let descriptor = descriptor(
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            Address::random(),
+            B256::repeat_byte(0x01),
+            Address::ZERO,
+            B256::repeat_byte(0x02),
+        );
+        let cumulative_amount = U96::from(1_000);
+        StorageCtx::enter(&mut storage, || {
+            let reserve = TIP20ChannelReserve::new();
+            let channel_id = reserve.channel_id(&descriptor)?;
+            assert_eq!(descriptor.id(chain_id), channel_id);
+            assert_eq!(
+                voucher_digest(channel_id, cumulative_amount, chain_id),
+                reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+                    channelId: channel_id,
+                    cumulativeAmount: cumulative_amount,
+                })?
+            );
+            Ok(())
+        })
     }
 
     fn descriptor(
@@ -987,48 +1169,30 @@ mod tests {
         Ok(hash)
     }
 
-    fn install_blacklist_policy(
-        token: &mut TIP20Token,
-        admin: Address,
-    ) -> Result<(TIP403Registry, u64, u64)> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let blacklist = |registry: &mut TIP403Registry| {
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )
-        };
-        let sender_policy = blacklist(&mut registry)?;
-        let recipient_policy = blacklist(&mut registry)?;
-        let compound_policy = registry.create_compound_policy(
-            admin,
-            ITIP403Registry::createCompoundPolicyCall {
-                senderPolicyId: sender_policy,
-                recipientPolicyId: recipient_policy,
-                mintRecipientPolicyId: 1,
-            },
-        )?;
+    fn install_blacklist_policy(token: &mut TIP20Token, admin: Address) -> Result<(u64, u64)> {
+        let sender_policy = TIP403Setup::blacklist(admin).apply()?;
+        let recipient_policy = TIP403Setup::blacklist(admin).apply()?;
         token.change_transfer_policy_id(
             admin,
             ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: compound_policy,
+                newPolicyId: TIP403Setup::compound(
+                    sender_policy,
+                    recipient_policy,
+                    ALLOW_ALL_POLICY_ID,
+                )
+                .apply()?,
             },
         )?;
-        Ok((registry, sender_policy, recipient_policy))
+        Ok((sender_policy, recipient_policy))
     }
 
     fn set_blacklisted(
-        registry: &mut TIP403Registry,
         admin: Address,
         policy_id: u64,
         account: Address,
         restricted: bool,
     ) -> Result<()> {
-        registry.modify_policy_blacklist(
+        TIP403Registry::new().modify_policy_blacklist(
             admin,
             ITIP403Registry::modifyPolicyBlacklistCall {
                 policyId: policy_id,
@@ -1043,24 +1207,12 @@ mod tests {
         admin: Address,
         recipients: &[Address],
     ) -> Result<()> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let recipient_policy = registry.create_policy_with_accounts(
-            admin,
-            ITIP403Registry::createPolicyWithAccountsCall {
-                admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-                accounts: recipients.to_vec(),
-            },
-        )?;
-        let compound_policy = registry.create_compound_policy(
-            admin,
-            ITIP403Registry::createCompoundPolicyCall {
-                senderPolicyId: ALLOW_ALL_POLICY_ID,
-                recipientPolicyId: recipient_policy,
-                mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
-            },
-        )?;
+        let recipient_policy = TIP403Setup::whitelist(admin)
+            .with_members(recipients.iter().copied())
+            .apply()?;
+        let compound_policy =
+            TIP403Setup::compound(ALLOW_ALL_POLICY_ID, recipient_policy, ALLOW_ALL_POLICY_ID)
+                .apply()?;
         token.change_transfer_policy_id(
             admin,
             ITIP20::changeTransferPolicyIdCall {
@@ -1069,21 +1221,11 @@ mod tests {
         )
     }
 
-    fn install_receive_sender_blacklist(
-        receiver: Address,
-        blocked_sender: Address,
-    ) -> Result<(TIP403Registry, u64)> {
-        let mut registry = TIP403Registry::new();
-        registry.initialize()?;
-        let sender_policy = registry.create_policy_with_accounts(
-            receiver,
-            ITIP403Registry::createPolicyWithAccountsCall {
-                admin: receiver,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                accounts: vec![blocked_sender],
-            },
-        )?;
-        registry.set_receive_policy(
+    fn install_receive_sender_blacklist(receiver: Address, blocked_sender: Address) -> Result<u64> {
+        let sender_policy = TIP403Setup::blacklist(receiver)
+            .with_members([blocked_sender])
+            .apply()?;
+        TIP403Registry::new().set_receive_policy(
             receiver,
             ITIP403Registry::setReceivePolicyCall {
                 senderPolicyId: sender_policy,
@@ -1091,13 +1233,12 @@ mod tests {
                 recoveryAuthority: Address::ZERO,
             },
         )?;
-        Ok((registry, sender_policy))
+        Ok(sender_policy)
     }
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T15, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
                 &mut reserve,
@@ -1121,8 +1262,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let result = reserve.open(
                 payer,
@@ -1154,8 +1294,7 @@ mod tests {
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             seed_expiring_nonce_hash(&mut reserve)?;
 
             for invalid_payee in &[token.address(), virtual_payee] {
@@ -1206,14 +1345,12 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let (mut registry, _sender_policy, recipient_policy) =
-                install_blacklist_policy(&mut token, admin)?;
+            let (_sender_policy, recipient_policy) = install_blacklist_policy(&mut token, admin)?;
             let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // Admission must check the effective recipient, not just the virtual alias.
-            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
                 payer,
@@ -1229,13 +1366,7 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Top-ups must enforce the same resolved-recipient admission check.
-            set_blacklisted(
-                &mut registry,
-                admin,
-                recipient_policy,
-                VIRTUAL_MASTER,
-                false,
-            )?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, false)?;
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
@@ -1259,7 +1390,7 @@ mod tests {
                 expiring_nonce_hash,
             );
 
-            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            set_blacklisted(admin, recipient_policy, VIRTUAL_MASTER, true)?;
             let res = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1285,13 +1416,11 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let (mut registry, sender_policy, recipient_policy) =
-                install_blacklist_policy(&mut token, admin)?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let (sender_policy, recipient_policy) = install_blacklist_policy(&mut token, admin)?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // A blocked recipient cannot be used as the payee for a new channel.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            set_blacklisted(admin, recipient_policy, payee, true)?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let res = reserve.open(
                 payer,
@@ -1307,7 +1436,7 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Unblock the payee so we can fund a channel for later sender-side checks.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
+            set_blacklisted(admin, recipient_policy, payee, false)?;
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
@@ -1332,7 +1461,7 @@ mod tests {
             );
 
             // Top-ups also reject channels whose payee can no longer receive.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            set_blacklisted(admin, recipient_policy, payee, true)?;
             let res = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1343,8 +1472,8 @@ mod tests {
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
             // Once funded, vouchers cannot transmit new value if the payer is blocked.
-            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
-            set_blacklisted(&mut registry, admin, sender_policy, payer, true)?;
+            set_blacklisted(admin, recipient_policy, payee, false)?;
+            set_blacklisted(admin, sender_policy, payer, true)?;
             let digest =
                 reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
                     channelId: channel_id,
@@ -1395,8 +1524,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // The reserve is not an authorized recipient, but the logical payer -> payee path is.
             let salt = B256::random();
@@ -1518,10 +1646,9 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
-            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
+            let sender_policy = install_receive_sender_blacklist(payee, payer)?;
 
             let salt = B256::random();
             seed_expiring_nonce_hash(&mut reserve)?;
@@ -1542,7 +1669,7 @@ mod tests {
                 U256::from(1_000u128)
             );
 
-            set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
+            set_blacklisted(payee, sender_policy, payer, false)?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
                 payer,
@@ -1565,7 +1692,7 @@ mod tests {
                 expiring_nonce_hash,
             );
 
-            set_blacklisted(&mut registry, payee, sender_policy, payer, true)?;
+            set_blacklisted(payee, sender_policy, payer, true)?;
             let result = reserve.top_up(
                 payer,
                 ITIP20ChannelReserve::topUpCall {
@@ -1604,8 +1731,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             // This payee accepts the reserve but not the individual payer, matching the policy
             // under which pre-T12 channel captures were funded.
@@ -1710,8 +1836,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -1738,7 +1863,7 @@ mod tests {
 
             // Receive policies remain mutable after funding. The payee now rejects only the
             // logical payer, while the physical reserve sender remains authorized.
-            let (mut registry, sender_policy) = install_receive_sender_blacklist(payee, payer)?;
+            let sender_policy = install_receive_sender_blacklist(payee, payer)?;
 
             let cumulative = U96::from(40);
             let digest =
@@ -1806,7 +1931,7 @@ mod tests {
             assert_eq!(state.settled, U96::ZERO);
 
             // Once the payee accepts the logical payer, the same voucher can settle.
-            set_blacklisted(&mut registry, payee, sender_policy, payer, false)?;
+            set_blacklisted(payee, sender_policy, payer, false)?;
             reserve.settle(
                 payee,
                 ITIP20ChannelReserve::settleCall {
@@ -1845,8 +1970,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -1907,8 +2031,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             reserve.storage.set_timestamp(U256::from(1_000u64));
 
             let salt = B256::random();
@@ -1945,7 +2068,7 @@ mod tests {
 
             // Originator recovery would make a guarded reserve-originated refund unclaimable.
             // Channel refunds reject the policy instead and leave channel state intact.
-            let (mut registry, sender_policy) =
+            let sender_policy =
                 install_receive_sender_blacklist(payer, TIP20_CHANNEL_RESERVE_ADDRESS)?;
 
             let close_result = reserve.close(
@@ -1988,13 +2111,7 @@ mod tests {
                 U256::ZERO
             );
 
-            set_blacklisted(
-                &mut registry,
-                payer,
-                sender_policy,
-                TIP20_CHANNEL_RESERVE_ADDRESS,
-                false,
-            )?;
+            set_blacklisted(payer, sender_policy, TIP20_CHANNEL_RESERVE_ADDRESS, false)?;
             reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall { account: payer })?,
@@ -2026,8 +2143,7 @@ mod tests {
                 .apply()?;
             install_recipient_whitelist_policy(&mut token, payer, &[payee])?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             seed_expiring_nonce_hash(&mut reserve)?;
             let result = reserve.open(
                 payer,
@@ -2058,8 +2174,7 @@ mod tests {
                 .with_role(payer, TIP20Token::pause_role())
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2130,8 +2245,7 @@ mod tests {
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
 
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
 
             let channel_id = reserve.open(
@@ -2302,8 +2416,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let hash = seed_expiring_nonce_hash(&mut reserve)?;
             let first = reserve.open(
@@ -2362,8 +2475,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(200u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2452,8 +2564,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(300u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
@@ -2545,8 +2656,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2605,8 +2715,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(1_000u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
 
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
@@ -2661,8 +2770,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_rejects_static_mutation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let mut reserve = TIP20ChannelReserve::new();
             let result = reserve.call(
                 &ITIP20ChannelReserve::openCall {
@@ -2693,8 +2801,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
                 payer,
@@ -2746,8 +2853,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             reserve.open(
                 payer,
@@ -2802,8 +2908,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let channel_id = reserve.open(
                 payer,
@@ -2861,8 +2966,7 @@ mod tests {
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
-            let mut reserve = TIP20ChannelReserve::new();
-            reserve.initialize()?;
+            let mut reserve = TIP20ChannelReserve::initialized()?;
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
             let descriptor = descriptor(
                 payer,
@@ -2890,6 +2994,476 @@ mod tests {
                 result.unwrap_err(),
                 TIP20ChannelReserveError::close_not_ready().into()
             );
+            Ok(())
+        })
+    }
+
+    /// A configuration of `owners` at `version`, each of weight one.
+    fn owner_config(
+        owners: &[&PrivateKeySigner],
+        threshold: u8,
+        version: u64,
+    ) -> ConfigurableAccountConfig {
+        let mut owners: Vec<_> = owners
+            .iter()
+            .map(|owner| ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: 1,
+            })
+            .collect();
+        owners.sort_by_key(|owner| owner.owner);
+        ConfigurableAccountConfig {
+            salt: B256::ZERO,
+            version,
+            threshold,
+            owners,
+        }
+    }
+
+    /// Registers or rotates `account` to `config`.
+    fn commit(account: Address, config: &ConfigurableAccountConfig) -> eyre::Result<B256> {
+        let commitment = config.commitment().unwrap();
+        StorageCtx.set_config_commitment(
+            account,
+            commitment,
+            crate::storage::ConfigCommitmentWriteGas::Precompile,
+        )?;
+        Ok(commitment)
+    }
+
+    /// A configurable account voucher of `account` under `config`, approved by `approvers`.
+    fn configurable_voucher(
+        reserve: &TIP20ChannelReserve,
+        channel_id: B256,
+        amount: u64,
+        account: Address,
+        config: &ConfigurableAccountConfig,
+        approvers: &[&PrivateKeySigner],
+    ) -> eyre::Result<Bytes> {
+        let digest = reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+            channelId: channel_id,
+            cumulativeAmount: U96::from(amount),
+        })?;
+        let digest = configurable_account_digest(digest, account, config.version);
+        // Owner approvals must be in ascending owner order.
+        let mut approvers = approvers.to_vec();
+        approvers.sort_by_key(|approver| approver.address());
+        let approvals = approvers
+            .iter()
+            .map(|approver| {
+                Ok(PrimitiveSignature::Secp256k1(
+                    approver.sign_hash_sync(&digest)?,
+                ))
+            })
+            .collect::<eyre::Result<_>>()?;
+        Ok(TempoSignature::ConfigurableAccount(
+            ConfigurableAccountSignature::try_new(account, config.clone(), approvals).unwrap(),
+        )
+        .to_bytes())
+    }
+
+    /// A primitive voucher of `key`.
+    fn primitive_voucher(
+        reserve: &TIP20ChannelReserve,
+        channel_id: B256,
+        amount: u64,
+        key: &PrivateKeySigner,
+    ) -> eyre::Result<Bytes> {
+        let digest = reserve.get_voucher_digest(ITIP20ChannelReserve::getVoucherDigestCall {
+            channelId: channel_id,
+            cumulativeAmount: U96::from(amount),
+        })?;
+        Ok(Bytes::from(key.sign_hash_sync(&digest)?.as_bytes()))
+    }
+
+    fn settle_call(
+        descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
+        amount: u64,
+        signature: Bytes,
+    ) -> ITIP20ChannelReserve::settleCall {
+        ITIP20ChannelReserve::settleCall {
+            descriptor: descriptor.clone(),
+            cumulativeAmount: U96::from(amount),
+            signature,
+        }
+    }
+
+    fn verify_call(
+        descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
+        amount: u64,
+        signature: Bytes,
+    ) -> ITIP20ChannelReserve::verifyVoucherCall {
+        ITIP20ChannelReserve::verifyVoucherCall {
+            descriptor: descriptor.clone(),
+            cumulativeAmount: U96::from(amount),
+            signature,
+        }
+    }
+
+    fn top_up_call(
+        descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
+        amount: u64,
+    ) -> ITIP20ChannelReserve::topUpCall {
+        ITIP20ChannelReserve::topUpCall {
+            descriptor: descriptor.clone(),
+            additionalDeposit: U96::from(amount),
+        }
+    }
+
+    #[test]
+    fn test_t15_configurable_payer_vouchers_survive_owner_rotation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let (old_owner, new_owner) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+        let old_config = owner_config(&[&old_owner], 1, 0);
+        let payer = old_config.derive_account().unwrap();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let commitment = commit(payer, &old_config)?;
+            let salt = commitment;
+            let token = TIP20Setup::path_usd(payee)
+                .with_issuer(payee)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+
+            // From T15 a committed payer can open a channel whose salt is its commitment.
+            assert_eq!(
+                reserve.open(
+                    payer,
+                    open_call(
+                        payee,
+                        Address::ZERO,
+                        token.address(),
+                        100,
+                        B256::random(),
+                        Address::ZERO,
+                    ),
+                ),
+                Err(TIP20ChannelReserveError::salt_not_signer_commitment(payer, commitment).into())
+            );
+            let channel_id = reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            assert_eq!(
+                StorageCtx.get_events(TIP20_CHANNEL_RESERVE_ADDRESS).last(),
+                Some(
+                    &TIP20ChannelReserveEvent::OpeningCommitmentRecorded(
+                        ITIP20ChannelReserve::OpeningCommitmentRecorded {
+                            channelId: channel_id,
+                            signer: payer,
+                            commitment,
+                        }
+                    )
+                    .into_log_data()
+                )
+            );
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            // The old owners sign a voucher, then the payer rotates them out.
+            let held =
+                configurable_voucher(&reserve, channel_id, 60, payer, &old_config, &[&old_owner])?;
+            let new_config = owner_config(&[&new_owner], 1, 1);
+            commit(payer, &new_config)?;
+
+            // The voucher the payee holds stays redeemable.
+            assert!(reserve.verify_voucher(verify_call(&descriptor, 60, held.clone()))?);
+            reserve.settle(payee, settle_call(&descriptor, 60, held))?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                U256::from(60)
+            );
+
+            // Neither the new configuration nor a bare owner key signs for the channel.
+            let rejected = [
+                configurable_voucher(&reserve, channel_id, 70, payer, &new_config, &[&new_owner])?,
+                primitive_voucher(&reserve, channel_id, 70, &old_owner)?,
+            ];
+            for signature in rejected {
+                assert!(!reserve.verify_voucher(verify_call(
+                    &descriptor,
+                    70,
+                    signature.clone()
+                ))?);
+                assert_eq!(
+                    reserve.settle(payee, settle_call(&descriptor, 70, signature)),
+                    Err(TIP20ChannelReserveError::invalid_signature().into())
+                );
+            }
+
+            // Old owners gain no authority over new funds; a zero top-up still works.
+            assert_eq!(
+                reserve.top_up(payer, top_up_call(&descriptor, 10)),
+                Err(TIP20ChannelReserveError::signer_config_changed(payer).into())
+            );
+            reserve.top_up(payer, top_up_call(&descriptor, 0))?;
+
+            // Closing deletes the channel state, including its opening-commitment flag.
+            let signature =
+                configurable_voucher(&reserve, channel_id, 80, payer, &old_config, &[&old_owner])?;
+            reserve.close(
+                payee,
+                ITIP20ChannelReserve::closeCall {
+                    descriptor,
+                    cumulativeAmount: U96::from(80),
+                    captureAmount: U96::from(80),
+                    signature,
+                },
+            )?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                U256::from(80)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_unregistered_signer_vouchers() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let payer = Address::random();
+        let payee = Address::random();
+        let salt = B256::random();
+        let (owner, other) = (PrivateKeySigner::random(), PrivateKeySigner::random());
+        let config = owner_config(&[&owner, &other], 2, 0);
+        let signer = config.derive_account().unwrap();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payee)
+                .with_issuer(payee)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let channel_id = reserve.open(
+                payer,
+                open_call(payee, Address::ZERO, token.address(), 100, salt, signer),
+            )?;
+            // An unregistered signer has no commitment, so any salt opens.
+            assert!(
+                !StorageCtx
+                    .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
+                    .iter()
+                    .any(|log| log.topics().first()
+                        == Some(&ITIP20ChannelReserve::OpeningCommitmentRecorded::SIGNATURE_HASH))
+            );
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                signer,
+                expiring_nonce_hash,
+            );
+
+            // Below the threshold, under a configuration that doesn't derive the signer, or from
+            // an owner key alone, the voucher is invalid.
+            let other_config = owner_config(&[&owner], 1, 0);
+            let rejected = [
+                configurable_voucher(&reserve, channel_id, 30, signer, &config, &[&owner])?,
+                configurable_voucher(&reserve, channel_id, 30, signer, &other_config, &[&owner])?,
+                primitive_voucher(&reserve, channel_id, 30, &owner)?,
+            ];
+            for signature in rejected {
+                assert!(!reserve.verify_voucher(verify_call(
+                    &descriptor,
+                    30,
+                    signature.clone()
+                ))?);
+                assert_eq!(
+                    reserve.settle(payee, settle_call(&descriptor, 30, signature)),
+                    Err(TIP20ChannelReserveError::invalid_signature().into())
+                );
+            }
+
+            // The version-0 configuration deriving the signer's address signs.
+            let signature =
+                configurable_voucher(&reserve, channel_id, 30, signer, &config, &[&owner, &other])?;
+            assert!(reserve.verify_voucher(verify_call(&descriptor, 30, signature.clone()))?);
+            reserve.settle(payee, settle_call(&descriptor, 30, signature))?;
+
+            // Registering later blocks new deposits, even with the same owners, but keeps vouchers.
+            commit(signer, &config)?;
+            assert_eq!(
+                reserve.top_up(payer, top_up_call(&descriptor, 10)),
+                Err(TIP20ChannelReserveError::root_key_retired(signer).into())
+            );
+            let signature =
+                configurable_voucher(&reserve, channel_id, 50, signer, &config, &[&owner, &other])?;
+            reserve.settle(payee, settle_call(&descriptor, 50, signature))?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                U256::from(50)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_voucher_selector_rejected_before_t15() -> eyre::Result<()> {
+        use alloy::sol_types::SolError;
+        with_storage(TempoHardfork::T14, || {
+            let calldata = verify_call(
+                &descriptor(
+                    Address::random(),
+                    Address::random(),
+                    Address::ZERO,
+                    Address::random(),
+                    B256::random(),
+                    Address::ZERO,
+                    B256::random(),
+                ),
+                1,
+                Bytes::new(),
+            )
+            .abi_encode();
+            let result = TIP20ChannelReserve::new().call(&calldata, Address::ZERO);
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(
+                    crate::test_util::revert_bytes(&result)
+                )
+                .is_ok(),
+                "verifyVoucher should be selector-gated before T15"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_verify_voucher_missing_channel() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let missing = descriptor(
+                Address::random(),
+                Address::random(),
+                Address::ZERO,
+                Address::random(),
+                B256::random(),
+                Address::ZERO,
+                B256::random(),
+            );
+            assert_eq!(
+                reserve.verify_voucher(verify_call(&missing, 1, Bytes::new())),
+                Err(TIP20ChannelReserveError::channel_not_found().into())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t14_open_rejects_committed_signer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let owner = PrivateKeySigner::random();
+        let config = owner_config(&[&owner], 1, 0);
+        let payer = config.derive_account().unwrap();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            commit(payer, &config)?;
+            let token = TIP20Setup::path_usd(payee)
+                .with_issuer(payee)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            seed_expiring_nonce_hash(&mut reserve)?;
+            assert_eq!(
+                reserve.open(
+                    payer,
+                    open_call(
+                        payee,
+                        Address::ZERO,
+                        token.address(),
+                        100,
+                        B256::random(),
+                        Address::ZERO
+                    ),
+                ),
+                Err(TIP20ChannelReserveError::root_key_retired(payer).into())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_committed_channel_uses_one_slot_and_withdraws_after_rotation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        let owner = PrivateKeySigner::random();
+        let config = owner_config(&[&owner], 1, 0);
+        let payer = config.derive_account().unwrap();
+        let payee = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let commitment = commit(payer, &config)?;
+            let token = TIP20Setup::path_usd(payee)
+                .with_issuer(payee)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    commitment,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                commitment,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            // After a rotation the unchanged descriptor still finds the channel, so the payer
+            // can withdraw, and deleting it returns the single slot's credit.
+            commit(payer, &owner_config(&[&PrivateKeySigner::random()], 1, 1))?;
+            reserve.storage.set_timestamp(U256::from(1_000u64));
+            reserve.request_close(
+                payer,
+                ITIP20ChannelReserve::requestCloseCall {
+                    descriptor: descriptor.clone(),
+                },
+            )?;
+            reserve
+                .storage
+                .set_timestamp(U256::from(1_000u64 + CLOSE_GRACE_PERIOD));
+            reserve.withdraw(payer, ITIP20ChannelReserve::withdrawCall { descriptor })?;
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                U256::from(1_000)
+            );
+            assert_eq!(reserve.storage_credits(payer)?, 1);
             Ok(())
         })
     }

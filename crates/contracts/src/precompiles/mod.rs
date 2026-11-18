@@ -85,4 +85,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
+    (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
 ];

@@ -551,7 +551,12 @@ where
             }
             Err(CertificateError::Invalid) => {
                 self.metrics.invalid.inc();
-                for peer in self.remove_frame_slots(pending.id) {
+                let mut peers = self.remove_frame_slots(pending.id);
+                // The source may have disconnected, which already dropped its slot.
+                if !peers.contains(&pending.peer) {
+                    peers.push(pending.peer);
+                }
+                for peer in peers {
                     self.penalize(peer);
                 }
             }

@@ -74,7 +74,7 @@ test('bench presets confirm setup and use gas weighting without opt-in', async (
     const { tempo, bench } = writeMocks(directory);
     for (const [preset, extraArgs, pipelineArgs = ''] of [
       ['tip20', ''], ['mix', ''], ['dex', '--gas-weighted-mix'], ['mpp', ''],
-      ['batch-payout', '', '--bloat-mib 1024'], ['access-key-mix', ''],
+      ['batch-payout', '', '--bloat-mib 1024'], ['access-key-mix', ''], ['agentic', ''],
     ]) {
       const callsPath = path.join(directory, `${preset}.calls`);
       const report = path.join(directory, `${preset}.json`);

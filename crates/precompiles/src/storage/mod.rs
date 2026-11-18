@@ -22,14 +22,16 @@ pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 use alloy::primitives::{Address, B256, Bytes, LogData, Signature, U256};
-use evm2::evm::{AccountInfo, StateCheckpoint};
+use evm2::{
+    evm::{AccountInfo, StateCheckpoint},
+    version::{GasId, GasParams},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, gas::keccak_gas};
+use tempo_primitives::{
+    TempoBlockEnv, TempoEvmKind, account::decode_config_commitment, gas::keccak_gas,
+};
 
 use crate::error::{Result, TempoPrecompileError};
-
-/// TIP-1108 charge for the first config-commitment write to an account.
-pub const CONFIG_COMMITMENT_REGISTRATION_GAS: u64 = 20_000;
 
 /// TIP-1108 charge for replacing a nonzero config commitment.
 const CONFIG_COMMITMENT_UPDATE_GAS: u64 = 5_000;
@@ -45,12 +47,33 @@ pub enum ConfigCommitmentWriteGas {
 }
 
 impl ConfigCommitmentWriteGas {
-    fn cost(self, previous: B256) -> Result<u64> {
+    /// Gas charged before the previous commitment is read: the cheaper of the two writes.
+    fn static_cost(self) -> u64 {
+        match self {
+            Self::Intrinsic => 0,
+            Self::Precompile => CONFIG_COMMITMENT_UPDATE_GAS,
+        }
+    }
+
+    /// Regular gas charged once the previous commitment is known, on top of
+    /// [`Self::static_cost`]. A first write is priced like account creation, since the commitment
+    /// is permanent account state; its state gas is [`Self::state_cost`].
+    fn dynamic_cost(self, previous: B256, gas: &GasParams) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => Ok(CONFIG_COMMITMENT_REGISTRATION_GAS),
-            Self::Precompile => Ok(CONFIG_COMMITMENT_UPDATE_GAS),
+            Self::Precompile if previous.is_zero() => Ok(gas
+                .get(GasId::NewAccountCost)
+                .saturating_sub(CONFIG_COMMITMENT_UPDATE_GAS)),
+            Self::Precompile => Ok(0),
+        }
+    }
+
+    /// State gas for the write: account-creation state gas for a first write charged here.
+    fn state_cost(self, previous: B256, gas: &GasParams) -> u64 {
+        match self {
+            Self::Precompile if previous.is_zero() => gas.new_account_state_gas(),
+            Self::Intrinsic | Self::Precompile => 0,
         }
     }
 }
@@ -78,6 +101,16 @@ pub trait PrecompileStorageProvider {
 
     /// Executes a closure with access to the account info for the given address.
     fn with_account_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
+
+    /// Reads the warm transaction caller without a second account-access charge.
+    /// Normal transaction setup has already loaded this caller. Production rejects a cold
+    /// account; this is not a generic cache-only read, and callers must have checked that
+    /// `address` is the transaction origin.
+    fn with_warm_caller_info(
         &mut self,
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
@@ -134,8 +167,10 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    ///
+    /// Negative when a nested callee clears state that an earlier frame created.
+    fn state_gas_used(&self) -> i64;
 
     /// Returns the state gas that was drawn from regular gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`).
@@ -161,6 +196,21 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::NestedCallUnavailable)
+    }
 
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
@@ -194,6 +244,13 @@ pub trait PrecompileStorageProvider {
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
 
+    /// Returns the kind of EVM this context executes over, which fixes the protocol rules that
+    /// differ between Tempo L1 and its zones. Providers that cannot write state may keep the
+    /// [`TempoEvmKind::L1`] default, since those rules only affect state changes.
+    fn kind(&self) -> TempoEvmKind {
+        TempoEvmKind::L1
+    }
+
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
@@ -222,26 +279,32 @@ pub trait PrecompileStorageProvider {
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
     }
 
-    /// Reads the commitment with normal account-access gas.
-    /// Providers that cannot store commitments report zero for every account.
-    fn config_commitment(&mut self, address: Address) -> Result<B256> {
-        self.with_account_info(address, &mut |_| {})?;
-        Ok(B256::ZERO)
-    }
+    /// Reads the commitment from the account extension with normal account-access gas.
+    fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
     /// Writes an authorized nonzero commitment through the account journal.
+    /// The first write also installs the shared account code marker without a code-deposit charge;
+    /// rotations preserve it. Both changes share the same rollback boundary.
     /// Callers must validate registration, rotation, or migration authority first.
     /// Account-access gas belongs to that authorization read; this method charges
     /// only what `gas` names, or nothing when registration was charged intrinsically.
     /// Providers that cannot store commitments reject every write.
     fn set_config_commitment(
         &mut self,
-        _address: Address,
-        _commitment: B256,
-        _gas: ConfigCommitmentWriteGas,
-    ) -> Result<()> {
-        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
-    }
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<()>;
+}
+
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data.
+    Success(Bytes),
+    /// The callee reverted with this data or halted, and was rolled back.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.
@@ -304,4 +367,13 @@ pub trait ContractStorage {
 /// Fails with [`TempoPrecompileError::OutOfGas`] if the cost overflows `u64`.
 pub fn keccak_cost(len: usize) -> Result<u64> {
     keccak_gas(len).ok_or(TempoPrecompileError::OutOfGas)
+}
+
+/// Decodes the TIP-1108 commitment carried in `info`'s account extension under `hardfork`.
+///
+/// A malformed extension is a node invariant violation, so it fails with
+/// [`TempoPrecompileError::Fatal`].
+pub fn account_config_commitment(info: &AccountInfo, hardfork: TempoHardfork) -> Result<B256> {
+    decode_config_commitment(&info.extension, hardfork)
+        .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))
 }

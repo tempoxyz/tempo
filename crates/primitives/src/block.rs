@@ -1,6 +1,6 @@
 //! Tempo-specific EVM2 block environment fields.
 
-use alloy_primitives::{Address, U256, uint};
+use alloy_primitives::{U256, uint};
 use core::num::NonZeroU64;
 
 use crate::ed25519::PublicKey;
@@ -16,13 +16,21 @@ pub struct TempoBlockExt {
     pub timestamp_millis_part: u64,
     /// Number of blocks in a consensus epoch.
     pub epoch_length: NonZeroU64,
-    /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
+    /// Proposer's Ed25519 public key, taken from the block's consensus context
+    /// (`header.consensus_context` on import, the payload attributes' context
+    /// when building).
+    ///
+    /// `Some` for post-T4 blocks that go through consensus, which rejects a
+    /// block without a consensus context. `None` for pre-T4 blocks and for
+    /// blocks executed outside consensus, such as simulated blocks
+    /// (`eth_simulateV1`) and pending-block environments, which never carry a
+    /// consensus context.
+    ///
+    /// Downstream, block execution relies on this: when it is `None`, the
+    /// boundary block's DKG outcome check (`check_boundary_outcome` in
+    /// `tempo-evm`) is skipped. That check only applies from T15 onwards, so
+    /// in practice it is skipped only for blocks executed outside consensus.
     pub proposer_public_key: Option<PublicKey>,
-    /// Configurable account recovery factory explicitly selected by chain configuration. Native
-    /// authorization is unavailable when absent; there is no default production factory address.
-    // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub configurable_account_recovery_factory: Option<Address>,
 }
 
 impl Default for TempoBlockExt {
@@ -31,7 +39,6 @@ impl Default for TempoBlockExt {
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
             proposer_public_key: None,
-            configurable_account_recovery_factory: None,
         }
     }
 }
@@ -47,12 +54,6 @@ impl TempoBlockExt {
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
         height / self.epoch_length
-    }
-
-    /// Returns the configurable account recovery factory, treating the zero address as unset.
-    pub fn configurable_account_recovery_factory(&self) -> Option<Address> {
-        self.configurable_account_recovery_factory
-            .filter(|factory| !factory.is_zero())
     }
 }
 

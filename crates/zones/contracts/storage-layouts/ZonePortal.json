@@ -343,6 +343,14 @@
       "offset": 8,
       "slot": "28",
       "type": "t_bool"
+    },
+    {
+      "astId": 5904,
+      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
+      "label": "transfersEnabled",
+      "offset": 9,
+      "slot": "28",
+      "type": "t_bool"
     }
   ],
   "types": {

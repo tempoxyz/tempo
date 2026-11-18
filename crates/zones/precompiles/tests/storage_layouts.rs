@@ -44,7 +44,13 @@ fn zone_portal_slot_constants_match_solidity() {
         ),
     ]
     .map(|(name, slot)| RustStorageSlot::new(name, slot));
-    assert_foundry_slots(&artifact("ZonePortal"), &fields);
+    let transfers_enabled =
+        RustStorageSlot::new("transfersEnabled", portal::slots::TRANSFERS_ENABLED)
+            .with_offset(portal::slots::TRANSFERS_ENABLED_OFFSET);
+    assert_foundry_slots(
+        &artifact("ZonePortal"),
+        &[&fields[..], &[transfers_enabled]].concat(),
+    );
 }
 
 #[test]

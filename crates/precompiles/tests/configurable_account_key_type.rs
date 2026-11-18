@@ -23,6 +23,7 @@ use tempo_precompiles::{
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
 };
 use tempo_primitives::{MasterId, TempoAddressExt, TempoBlockEnv, UserTag};
+use test_case::test_case;
 
 mod common;
 
@@ -30,16 +31,6 @@ use common::PrecompileOutput;
 
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
-
-fn restrictions(expiry: u64) -> KeyRestrictions {
-    KeyRestrictions {
-        expiry,
-        enforceLimits: false,
-        limits: vec![],
-        allowAnyCalls: true,
-        allowedCalls: vec![],
-    }
-}
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, in the entered
 /// storage context.
@@ -93,7 +84,7 @@ fn authorization_calls(
             authorizeKey_1Call {
                 keyId: key_id,
                 signatureType: signature_type,
-                config: restrictions(expiry),
+                config: KeyRestrictions::unrestricted().expiry(expiry),
             }
             .abi_encode(),
         ),
@@ -102,7 +93,7 @@ fn authorization_calls(
             authorizeKey_2Call {
                 keyId: key_id,
                 signatureType: signature_type,
-                config: restrictions(expiry),
+                config: KeyRestrictions::unrestricted().expiry(expiry),
                 witness: B256::ZERO,
             }
             .abi_encode(),
@@ -204,89 +195,77 @@ enum DelegateCase {
 
 /// A grant to a ConfigurableAccount key is accepted from T14 only, and only for a code-free
 /// delegate other than the granting account that is not in a reserved address range.
-#[test]
-fn delegate_grants_are_guarded_from_t14() {
+#[test_case(DelegateCase::CodeFree)]
+#[test_case(DelegateCase::SelfGrant)]
+#[test_case(DelegateCase::Bytecode)]
+#[test_case(DelegateCase::Delegation)]
+// An Ethereum precompile, an uncreated TIP-20, a virtual and a zone portal address carry no code.
+#[test_case(DelegateCase::Reserved(Address::with_last_byte(1)))]
+#[test_case(DelegateCase::Reserved(Address::new_tip20(1)))]
+#[test_case(DelegateCase::Reserved(Address::new_virtual(MasterId::ZERO, UserTag::ZERO)))]
+#[test_case(DelegateCase::Reserved(address!("5ad0000000000000000000000000000000000001")))]
+fn delegate_grants_are_guarded_from_t14(case: DelegateCase) {
     for spec in TempoHardfork::VARIANTS.iter().copied() {
-        for case in [
-            DelegateCase::CodeFree,
-            DelegateCase::SelfGrant,
-            DelegateCase::Bytecode,
-            DelegateCase::Delegation,
-            // An Ethereum precompile, an uncreated TIP-20, a virtual and a zone portal address
-            // carry no code.
-            DelegateCase::Reserved(Address::with_last_byte(1)),
-            DelegateCase::Reserved(Address::new_tip20(1)),
-            DelegateCase::Reserved(Address::new_virtual(MasterId::ZERO, UserTag::ZERO)),
-            DelegateCase::Reserved(address!("5ad0000000000000000000000000000000000001")),
-        ] {
-            let delegate = match case {
-                DelegateCase::SelfGrant => PARENT,
-                DelegateCase::Reserved(address) => address,
-                DelegateCase::CodeFree | DelegateCase::Bytecode | DelegateCase::Delegation => {
-                    DELEGATE
-                }
-            };
-            let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
-            // Every fork since T3 rejects the legacy `authorizeKey` selector outright.
-            for (entrypoint, calldata) in calls
-                .iter()
-                .filter(|(_, calldata)| !calldata.starts_with(&authorizeKey_0Call::SELECTOR))
-            {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-                match case {
-                    DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
-                        StorageCtx
-                            .set_code(delegate, Bytes::from_static(&[0x60, 0x00]))
-                            .unwrap()
-                    }),
-                    DelegateCase::Delegation => StorageCtx::enter(&mut storage, || {
-                        StorageCtx
-                            .set_code(
-                                delegate,
-                                Bytecode::new_eip7702(Address::repeat_byte(0x33)).original_bytes(),
-                            )
-                            .unwrap()
-                    }),
-                    DelegateCase::CodeFree
-                    | DelegateCase::SelfGrant
-                    | DelegateCase::Reserved(_) => {}
-                }
+        let delegate = match case {
+            DelegateCase::SelfGrant => PARENT,
+            DelegateCase::Reserved(address) => address,
+            DelegateCase::CodeFree | DelegateCase::Bytecode | DelegateCase::Delegation => DELEGATE,
+        };
+        let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
+        // Every fork since T3 rejects the legacy `authorizeKey` selector outright.
+        // T14 also drops `authorizeAdminKey` (TIP-1137).
+        for (entrypoint, calldata) in calls.iter().filter(|(_, calldata)| {
+            !calldata.starts_with(&authorizeKey_0Call::SELECTOR)
+                && !(spec.is_t14() && calldata.starts_with(&authorizeAdminKeyCall::SELECTOR))
+        }) {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            match case {
+                DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
+                    StorageCtx
+                        .set_code(delegate, Bytes::from_static(&[0x60, 0x00]))
+                        .unwrap()
+                }),
+                DelegateCase::Delegation => StorageCtx::enter(&mut storage, || {
+                    StorageCtx
+                        .set_code(
+                            delegate,
+                            Bytecode::new_eip7702(Address::repeat_byte(0x33)).original_bytes(),
+                        )
+                        .unwrap()
+                }),
+                DelegateCase::CodeFree | DelegateCase::SelfGrant | DelegateCase::Reserved(_) => {}
+            }
 
-                let output = call_as_parent(&mut storage, calldata);
-                let granted = spec.is_t14() && case == DelegateCase::CodeFree;
+            let output = call_as_parent(&mut storage, calldata);
+            let granted = spec.is_t14() && case == DelegateCase::CodeFree;
+            assert_eq!(!output.is_revert(), granted, "{spec}, {entrypoint}");
+            if granted {
+                let get_key = getKeyCall {
+                    account: PARENT,
+                    keyId: delegate,
+                }
+                .abi_encode();
+                let output = call_as_parent(&mut storage, &get_key);
+                assert!(!output.is_revert(), "{spec}, {entrypoint}");
+                let key = getKeyCall::abi_decode_returns(&output.bytes).unwrap();
                 assert_eq!(
-                    !output.is_revert(),
-                    granted,
-                    "{spec}, {entrypoint}, {case:?}"
+                    key.signatureType,
+                    SignatureType::ConfigurableAccount,
+                    "{spec}, {entrypoint}"
                 );
-                if granted {
-                    let get_key = getKeyCall {
-                        account: PARENT,
-                        keyId: delegate,
-                    }
-                    .abi_encode();
-                    let output = call_as_parent(&mut storage, &get_key);
-                    assert!(!output.is_revert(), "{spec}, {entrypoint}");
-                    let key = getKeyCall::abi_decode_returns(&output.bytes).unwrap();
+            } else {
+                if spec.is_t14() {
                     assert_eq!(
-                        key.signatureType,
-                        SignatureType::ConfigurableAccount,
+                        AccountKeychainError::abi_decode(&output.bytes).unwrap(),
+                        AccountKeychainError::invalid_key_id(),
                         "{spec}, {entrypoint}"
                     );
-                } else {
-                    if spec.is_t14() {
-                        assert_eq!(
-                            AccountKeychainError::abi_decode(&output.bytes).unwrap(),
-                            AccountKeychainError::invalid_key_id(),
-                            "{spec}, {entrypoint}, {case:?}"
-                        );
-                    }
-                    assert_eq!(
-                        key_expiry(&mut storage, delegate),
-                        0,
-                        "{spec}, {entrypoint}, {case:?}"
-                    );
                 }
+                assert_eq!(
+                    key_expiry(&mut storage, delegate),
+                    0,
+                    "{spec}, {entrypoint}"
+                );
             }
         }
     }
@@ -301,7 +280,7 @@ fn stored_key_type_is_checked_on_use() {
     let grant = authorizeKey_1Call {
         keyId: DELEGATE,
         signatureType: SignatureType::ConfigurableAccount,
-        config: restrictions(u64::MAX),
+        config: KeyRestrictions::unrestricted(),
     }
     .abi_encode();
     assert!(!call_as_parent(&mut storage, &grant).is_revert());
@@ -325,39 +304,31 @@ fn stored_key_type_is_checked_on_use() {
     }
 }
 
-/// From T6, an admin grant naming the granting account reverts with `InvalidKeyId` and stores
-/// no key, whatever its key type.
-#[test]
-fn admin_self_grants_are_rejected() {
+/// From T6 until T14 drops admin keys (TIP-1137), an admin grant naming the granting account
+/// reverts with `InvalidKeyId` and stores no key, whatever its key type.
+#[test_case(SignatureType::Secp256k1)]
+#[test_case(SignatureType::P256)]
+#[test_case(SignatureType::WebAuthn)]
+fn admin_self_grants_are_rejected(signature_type: SignatureType) {
     for spec in TempoHardfork::VARIANTS
         .iter()
         .copied()
-        .filter(|spec| spec.is_t6())
+        .filter(|spec| spec.is_t6() && !spec.is_t14())
     {
-        for signature_type in [
-            SignatureType::Secp256k1,
-            SignatureType::P256,
-            SignatureType::WebAuthn,
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            let grant = authorizeAdminKeyCall {
-                keyId: PARENT,
-                signatureType: signature_type,
-                witness: B256::ZERO,
-            }
-            .abi_encode();
-            let output = call_as_parent(&mut storage, &grant);
-            assert!(output.is_revert(), "{spec}, {signature_type:?}");
-            assert_eq!(
-                AccountKeychainError::abi_decode(&output.bytes).unwrap(),
-                AccountKeychainError::invalid_key_id(),
-                "{spec}, {signature_type:?}"
-            );
-            assert_eq!(
-                key_expiry(&mut storage, PARENT),
-                0,
-                "{spec}, {signature_type:?}"
-            );
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        let grant = authorizeAdminKeyCall {
+            keyId: PARENT,
+            signatureType: signature_type,
+            witness: B256::ZERO,
         }
+        .abi_encode();
+        let output = call_as_parent(&mut storage, &grant);
+        assert!(output.is_revert(), "{spec}");
+        assert_eq!(
+            AccountKeychainError::abi_decode(&output.bytes).unwrap(),
+            AccountKeychainError::invalid_key_id(),
+            "{spec}"
+        );
+        assert_eq!(key_expiry(&mut storage, PARENT), 0, "{spec}");
     }
 }

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::interpreter::InstrStop;
+pub use invariants_core::Counts;
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
 
@@ -293,6 +294,10 @@ pub struct TempoExecutionOutcome {
     /// Invariants broken after a block's pre-execution changes or after a transaction. They do not
     /// stop execution.
     pub invariant_failures: Vec<InvariantFailure>,
+    /// By invariant ID, how many subjects (tokens, accounts, signatures...) each judged after a
+    /// step, for how many its precondition held (armed), and how many broke it (fired). An
+    /// invariant that is never armed checks nothing.
+    pub invariant_counts: BTreeMap<String, Counts>,
 }
 
 /// What a harness build accepts, so a runner that loads several builds can generate inputs all of

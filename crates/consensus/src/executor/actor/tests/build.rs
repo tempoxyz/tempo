@@ -1,6 +1,7 @@
 //! Scenario tests for proposal builds: forkchoice updates that carry
 //! payload attributes, and the payload jobs that deliver the built block.
 
+use commonware_cryptography::Digestible as _;
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::{B256, Bytes};
@@ -18,7 +19,9 @@ use super::harness::{
     ElCall, ForkchoiceStateExt as _, GENESIS, Harness, STARTUP_FCU, attributes, built_payload,
     make_block, round,
 };
-use crate::{consensus::Digest, executor::DeferredExtraData};
+use tempo_dkg_onchain_artifacts::{CeremonyOutput, OnchainDkgOutcome};
+
+use crate::{consensus::Digest, executor::DeferredCeremonyOutput};
 
 #[test_traced]
 fn building_on_an_unfinalized_head_leaves_forkchoice_unchanged() {
@@ -876,7 +879,7 @@ fn build_forkchoice_update_transport_error_is_fatal() {
 }
 
 #[test_traced]
-fn payload_attributes_reach_the_execution_layer_unchanged() {
+fn payload_attributes_reach_the_execution_layer_with_remaining_budget() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
 
@@ -897,6 +900,7 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
             Some(consensus_context),
         )
         .with_payload_build_budget(build_budget);
+        let expected_attributes = attributes.clone();
 
         let proposal = make_block(1, 1, GENESIS);
         h.execution.script_built_payload(built_payload(&proposal));
@@ -912,23 +916,26 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.timestamp_millis(), 123_456);
         assert_eq!(received.extra_data(), &extra_data);
         assert_eq!(received.consensus_context(), Some(consensus_context));
-        assert_eq!(received.payload_build_budget(), Some(build_budget));
+        let before = expected_attributes.payload_build_budget().unwrap();
+        let remaining = received.payload_build_budget().unwrap();
+        let after = expected_attributes.payload_build_budget().unwrap();
+        assert!((after..=before).contains(&remaining));
     });
 }
 
-/// A [`DeferredExtraData`] for a build, with handles for the test: `asked`
+/// A [`DeferredCeremonyOutput`] for a build, with handles for the test: `asked`
 /// records the parents that it is resolved with, and `answer` sends its
 /// result.
-struct ScriptedDeferredExtraData {
-    deferred_extra_data: DeferredExtraData,
+struct ScriptedCeremonyOutput {
+    deferred_ceremony_output: DeferredCeremonyOutput,
     asked: Arc<Mutex<Vec<Digest>>>,
-    answer: oneshot::Sender<eyre::Result<Bytes>>,
+    answer: oneshot::Sender<eyre::Result<CeremonyOutput>>,
 }
 
-fn scripted_deferred_extra_data() -> ScriptedDeferredExtraData {
+fn scripted_ceremony_output() -> ScriptedCeremonyOutput {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let (answer, answered) = oneshot::channel();
-    let deferred_extra_data = DeferredExtraData::new({
+    let deferred_ceremony_output = DeferredCeremonyOutput::new({
         let asked = asked.clone();
         move |parent| {
             asked.lock().push(parent.digest());
@@ -940,15 +947,15 @@ fn scripted_deferred_extra_data() -> ScriptedDeferredExtraData {
             .boxed()
         }
     });
-    ScriptedDeferredExtraData {
-        deferred_extra_data,
+    ScriptedCeremonyOutput {
+        deferred_ceremony_output,
         asked,
         answer,
     }
 }
 
 #[test_traced]
-fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
+fn build_resolves_the_deferred_ceremony_output_between_the_valid_parent_and_the_fcu() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
@@ -960,24 +967,25 @@ fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
         h.execution
             .script_built_payload(built_payload(&make_block(2, 2, digest)));
 
-        let ScriptedDeferredExtraData {
-            deferred_extra_data,
+        let ScriptedCeremonyOutput {
+            deferred_ceremony_output,
             asked,
             answer,
-        } = scripted_deferred_extra_data();
+        } = scripted_ceremony_output();
         let budget = Duration::from_secs(10);
-        let build = h.build_with_deferred_extra_data(
+        let expected_attributes = attributes().with_payload_build_budget(budget);
+        let build = h.build_with_deferred_ceremony_output(
             round(2),
             digest,
-            attributes().with_payload_build_budget(budget),
-            deferred_extra_data,
+            expected_attributes.clone(),
+            deferred_ceremony_output,
         );
         h.wait_until(|| h.execution.new_payloads() == vec![digest])
             .await;
         h.run_for(Duration::from_millis(10)).await;
         assert!(
             asked.lock().is_empty(),
-            "the extra data must wait for the VALID answer for the parent",
+            "the ceremony output must wait for the VALID answer for the parent",
         );
 
         release_parent.send(()).unwrap();
@@ -986,14 +994,14 @@ fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
         assert_eq!(
             h.execution.fcus(),
             vec![STARTUP_FCU],
-            "the FCU must wait for the extra data",
+            "the FCU must wait for the ceremony output",
         );
 
-        let extra_data = Bytes::from_static(b"dkg outcome");
-        answer.send(Ok(extra_data.clone())).unwrap();
+        let output = OnchainDkgOutcome::dealt(1, 3).output;
+        answer.send(Ok(output.clone())).unwrap();
         build
             .await
-            .expect("the build should complete with its extra data");
+            .expect("the build should complete with its DKG ceremony output");
         assert_eq!(
             h.execution.fcus(),
             vec![STARTUP_FCU, (digest, GENESIS, true)]
@@ -1002,38 +1010,43 @@ fn build_resolves_deferred_extra_data_between_the_valid_parent_and_the_fcu() {
         let [received] = received.as_slice() else {
             panic!("expected exactly one attribute-carrying FCU");
         };
-        assert_eq!(received.extra_data(), &extra_data);
+        assert_eq!(received.dkg_ceremony_output(), Some(&output));
+        let before = expected_attributes.payload_build_budget().unwrap();
+        let remaining = received.payload_build_budget().unwrap();
+        let after = expected_attributes.payload_build_budget().unwrap();
         assert!(
-            received
-                .payload_build_budget()
-                .is_some_and(|remaining| remaining <= budget),
-            "the build keeps its budget, less the wait for the extra data",
+            (after..=before).contains(&remaining),
+            "the build keeps the original budget clock through parent delivery and the DKG ceremony output",
         );
     });
 }
 
 #[test_traced]
-fn failed_deferred_extra_data_ends_only_the_build() {
+fn failed_deferred_ceremony_output_ends_only_the_build() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
         let digest = parent.digest();
         h.execution.add_body(parent);
 
-        let ScriptedDeferredExtraData {
-            deferred_extra_data,
+        let ScriptedCeremonyOutput {
+            deferred_ceremony_output,
             asked,
             answer,
-        } = scripted_deferred_extra_data();
-        let build =
-            h.build_with_deferred_extra_data(round(2), digest, attributes(), deferred_extra_data);
+        } = scripted_ceremony_output();
+        let build = h.build_with_deferred_ceremony_output(
+            round(2),
+            digest,
+            attributes(),
+            deferred_ceremony_output,
+        );
         h.wait_until(|| asked.lock().as_slice() == [digest]).await;
         answer
             .send(Err(eyre!("the DKG actor dropped the request")))
             .unwrap();
         assert!(
             build.await.is_err(),
-            "a build without its extra data must fail",
+            "a boundary build without its ceremony output must fail",
         );
         assert!(!h.execution.fcus().iter().any(|(_, _, attrs)| *attrs));
 
@@ -1047,7 +1060,7 @@ fn failed_deferred_extra_data_ends_only_the_build() {
 }
 
 #[test_traced]
-fn canceling_a_build_that_waits_for_deferred_extra_data_frees_the_slot() {
+fn canceling_a_build_that_waits_for_deferred_ceremony_output_frees_the_slot() {
     deterministic::Runner::default().start(|context| async move {
         let h = Harness::start_at_genesis(&context);
         let parent = make_block(1, 1, GENESIS);
@@ -1055,13 +1068,17 @@ fn canceling_a_build_that_waits_for_deferred_extra_data_frees_the_slot() {
         h.execution.add_body(parent);
 
         // The answer never comes, as for a DKG outcome that is not ready.
-        let ScriptedDeferredExtraData {
-            deferred_extra_data,
+        let ScriptedCeremonyOutput {
+            deferred_ceremony_output,
             asked,
             answer: _answer,
-        } = scripted_deferred_extra_data();
-        let build =
-            h.build_with_deferred_extra_data(round(2), digest, attributes(), deferred_extra_data);
+        } = scripted_ceremony_output();
+        let build = h.build_with_deferred_ceremony_output(
+            round(2),
+            digest,
+            attributes(),
+            deferred_ceremony_output,
+        );
         h.wait_until(|| asked.lock().as_slice() == [digest]).await;
         drop(build);
 

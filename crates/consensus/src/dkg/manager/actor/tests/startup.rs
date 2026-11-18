@@ -10,16 +10,14 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoHeader;
 
 use super::{
-    super::{
-        startup::verify_finalized_tip,
-        state::{self, ShareState, State},
-    },
+    super::state::{self, ShareState, State},
     harness::{Harness, header, outcome_header},
 };
 use crate::{
     consensus::Digest,
     epoch::SchemeProvider,
     gossip::Certificate,
+    startup::verify_finalized_tip,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -62,8 +60,8 @@ fn startup_uses_the_newest_trusted_identity_without_falling_back() {
     Runner::default().start(|mut context| async move {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let new = dkg_fixture(&mut context, Epoch::new(3));
-        let old_state = persisted(&old, &mut context);
-        let new_state = persisted(&new, &mut context);
+        let old_state = identity(&old);
+        let new_state = identity(&new);
         let old_tip = tip(&old, 3);
         let new_tip = tip(&new, 3);
         let reshared_tip = tip(&new, 4);
@@ -175,7 +173,7 @@ fn historical_tips_and_genesis_remain_allowed() {
     Runner::default().start(|mut context| async move {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let new = dkg_fixture(&mut context, Epoch::new(3));
-        let state = persisted(&new, &mut context);
+        let state = identity(&new);
         // Last block of epoch 2, signed by the outgoing key. Persisted DKG
         // state already holds the identity for epoch 3.
         let boundary_tip = tip_for_header(&old, &header(Height::new(29)));
@@ -330,19 +328,23 @@ fn startup_rejects_epoch_tampering_at_or_after_identity_epoch() {
 }
 
 #[test]
-#[should_panic(expected = "persisted DKG network identity differs from the configured identity")]
 fn startup_rejects_conflicting_persisted_identity_even_for_a_historical_tip() {
     Runner::default().start(|mut context| async move {
         let configured_fixture = dkg_fixture(&mut context, Epoch::new(3));
         let local = dkg_fixture(&mut context, Epoch::new(3));
-        let state = persisted(&local, &mut context);
-        let _ = verify_finalized_tip(
+        let state = identity(&local);
+        let error = verify_finalized_tip(
             &mut context,
             &identity(&configured_fixture),
             Some(&state),
             None,
             Height::zero(),
             &SchemeProvider::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "persisted DKG network identity differs from the configured identity in epoch `3`"
         );
     });
 }
@@ -469,5 +471,38 @@ fn missing_tip_is_authenticated_and_registered_before_actors_start() {
         assert!(harness.marshal.reads().is_empty());
         harness.stop().await;
         assert_eq!(harness.storage().current().output, current_state.output);
+    });
+}
+
+#[test]
+fn historical_tip_bounds_the_startup_epoch() {
+    Runner::timed(std::time::Duration::from_secs(10)).start(|mut context| async move {
+        let trusted = dkg_fixture(&mut context, Epoch::new(3));
+        let snapshot = dkg_fixture(&mut context, Epoch::new(5));
+        let snapshot_state = persisted(&snapshot, &mut context);
+        // The snapshot's floor is the boundary into epoch 5, past the trusted
+        // identity's epoch 3, while its tip claims epoch 1 to skip verification.
+        let tip_header = header(Height::new(52));
+        let historical_tip = (
+            Height::new(52),
+            make_certificate(
+                Digest(tip_header.hash_slow()),
+                Epoch::new(1),
+                1,
+                &snapshot.schemes,
+            ),
+        );
+        let mut harness = Harness::builder(context.child("test"), "historical_tip_bound")
+            .finalized_floor(Height::new(49))
+            .startup(identity(&trusted), Some(historical_tip))
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(49), &snapshot_state));
+        harness.start().await;
+        harness.wait_for_exit().await;
+        assert!(harness.epoch_manager.events().is_empty());
+        assert!(harness.scheme_provider.scheme(Epoch::new(5)).is_none());
     });
 }

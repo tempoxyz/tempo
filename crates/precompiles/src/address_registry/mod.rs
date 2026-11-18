@@ -124,16 +124,28 @@ impl AddressRegistry {
             return Err(AddrRegistryError::master_id_collision(master).into());
         }
 
-        // Store the registration
+        self.write_master(master_id, msg_sender)
+    }
+
+    /// Registers `master` under `master_id` without the proof of work or any other check, so
+    /// test and fuzz fixtures can pick their master IDs. Overwrites an existing registration.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn register_virtual_master_unchecked(
+        &mut self,
+        master_id: MasterId,
+        master: Address,
+    ) -> Result<MasterId> {
+        self.write_master(master_id, master)
+    }
+
+    /// Stores `master` under `master_id`, emits `MasterRegistered` and returns `master_id`.
+    fn write_master(&mut self, master_id: MasterId, master: Address) -> Result<MasterId> {
         self.data[master_id].write(RegistryData {
-            master_address: msg_sender,
+            master_address: master,
             reserved: FixedBytes::ZERO,
             ty: 0,
         })?;
-
-        // Emit event
-        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
-
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, master))?;
         Ok(master_id)
     }
 
@@ -190,7 +202,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
+        test_util::{VIRTUAL_MASTER, VIRTUAL_SALT, with_storage},
     };
     use alloy_primitives::fixed_bytes;
 
@@ -198,8 +210,7 @@ mod tests {
 
     #[test]
     fn test_is_implicitly_approved_pre_t5_returns_false() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T4, || {
             let registry = AddressRegistry::new();
             assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
@@ -211,8 +222,7 @@ mod tests {
 
     #[test]
     fn test_is_implicitly_approved_t5_lists_initial_set() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T5, || {
             let registry = AddressRegistry::new();
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
@@ -254,10 +264,10 @@ mod tests {
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt: bad_salt },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::AddrRegistryError(AddrRegistryError::ProofOfWorkFailed(_))
-            ));
+            assert_eq!(
+                result,
+                Err(AddrRegistryError::proof_of_work_failed().into())
+            );
 
             Ok(())
         })
@@ -265,9 +275,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_zero_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
@@ -276,10 +284,10 @@ mod tests {
                     salt: FixedBytes::ZERO,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
-            ));
+            assert_eq!(
+                result,
+                Err(AddrRegistryError::invalid_master_address().into())
+            );
 
             Ok(())
         })
@@ -287,9 +295,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_virtual_address_as_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T2, || {
             let mut registry = AddressRegistry::new();
 
             let result = registry.register_virtual_master(
@@ -298,10 +304,10 @@ mod tests {
                     salt: FixedBytes::ZERO,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
-            ));
+            assert_eq!(
+                result,
+                Err(AddrRegistryError::invalid_master_address().into())
+            );
 
             Ok(())
         })
@@ -321,10 +327,10 @@ mod tests {
                     salt: FixedBytes::ZERO,
                 },
             );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::AddrRegistryError(AddrRegistryError::InvalidMasterAddress(_))
-            ));
+            assert_eq!(
+                result,
+                Err(AddrRegistryError::invalid_master_address().into())
+            );
 
             Ok(())
         })
@@ -401,12 +407,10 @@ mod tests {
             let registry = AddressRegistry::new();
 
             let result = registry.resolve_recipient(virtual_addr);
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::AddrRegistryError(
-                    AddrRegistryError::VirtualAddressUnregistered(_)
-                )
-            ));
+            assert_eq!(
+                result,
+                Err(AddrRegistryError::virtual_address_unregistered().into())
+            );
 
             Ok(())
         })

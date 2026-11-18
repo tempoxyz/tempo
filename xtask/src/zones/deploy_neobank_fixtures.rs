@@ -10,7 +10,7 @@ use alloy::{
 };
 use eyre::{Context as _, ensure, eyre};
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf};
 use tempo_alloy::{
     TempoNetwork,
     primitives::transaction::Call,
@@ -913,13 +913,13 @@ async fn deploy<P: Provider<TempoNetwork>>(
         .get_receipt()
         .await
         .wrap_err_with(|| format!("failed waiting for {label} deployment receipt"))?;
-    if !receipt.status() {
-        return Err(eyre!(
+    receipt.ensure_success().map_err(|_| {
+        eyre!(
             "{label} reverted after using {} gas (transaction {})",
             receipt.gas_used(),
             receipt.transaction_hash(),
-        ));
-    }
+        )
+    })?;
     let contract = receipt
         .contract_address
         .ok_or_else(|| eyre!("{label} deployment receipt did not contain a contract address"))?;
@@ -974,8 +974,6 @@ fn artifact_path(artifacts: &std::path::Path, contract: &str) -> PathBuf {
 }
 
 fn read_private_address_file(path: &std::path::Path) -> eyre::Result<Vec<Address>> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let metadata = fs::symlink_metadata(path).wrap_err_with(|| {
         format!(
             "failed reading allowed-accounts metadata from {}",

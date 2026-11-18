@@ -2,7 +2,7 @@
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_primitives::{
-    Address, B256, Bytes, TxKind, U256,
+    Address, B256, Bytes, U256,
     map::{AddressMap, B256Map, HashMap},
 };
 use alloy_signer::SignerSync;
@@ -310,11 +310,7 @@ pub(crate) fn sign_precompile_call(
         max_priority_fee_per_gas: TXGEN_FEE_PER_GAS,
         max_fee_per_gas: TXGEN_FEE_PER_GAS,
         gas_limit: TXGEN_GAS_LIMIT,
-        calls: vec![Call {
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input,
-        }],
+        calls: vec![Call::new(to, input)],
         access_list: Default::default(),
         nonce_key: TEMPO_EXPIRING_NONCE_KEY,
         nonce: 0,

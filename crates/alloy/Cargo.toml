@@ -62,12 +62,17 @@ http.workspace = true
 alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
 eyre.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 test-case.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 
 [features]
 default = []
+test-utils = [
+    "reth-primitives-traits?/test-utils",
+    "tempo-primitives/test-utils",
+]
 reth = [
     "dep:tempo-evm",
     "dep:reth-primitives-traits",

@@ -19,6 +19,7 @@ pub mod metrics;
 mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
+pub(crate) mod startup;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -28,13 +29,11 @@ pub(crate) mod validators;
 use std::sync::Arc;
 
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
-use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Supervisor as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_consensus_config::SigningShare;
 use tempo_node::TempoFullNode;
-use tracing::info;
+use tracing::{info, warn};
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -54,6 +53,11 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Starts consensus using `estimator` as the authority for proposal pacing.
+///
+/// The estimator must be shared with the payload builder. Timing fields in
+/// `config` seed that estimator at the launch boundary; this function does not
+/// apply them again, so an explicit estimator override takes precedence.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -89,12 +93,25 @@ pub async fn run_consensus_stack(
         .await?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
-    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
+    if let Some(ignored) = config.max_message_size_bytes {
+        warn!(
+            ignored,
+            "--consensus.max-message-size-bytes is deprecated and ignored; the p2p message size \
+             limit is derived from the largest consensus payload"
+        );
+    }
 
-    let (mut network, oracle) =
-        instantiate_network(&context, &config, signing_key.clone().into_inner())
-            .await
-            .wrap_err("failed to start network")?;
+    let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
+    let max_message_size = network::max_message_size(config.max_peers_per_set);
+
+    let (mut network, oracle) = network::instantiate(
+        &context,
+        &config,
+        signing_key.clone().into_inner(),
+        max_message_size,
+    )
+    .await
+    .wrap_err("failed to start network")?;
 
     let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT);
     let certificates = network.register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT);
@@ -102,12 +119,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    let target_block_time = config.target_block_time.into_duration();
-    // Reserve time for propagation. The remaining application budget starts
-    // after commonware fetches the parent; that fetch time is not deducted.
-    let proposal_return_budget =
-        target_block_time.saturating_sub(config.network_budget.into_duration());
-
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
         execution_node: Some(execution_node),
@@ -125,8 +136,8 @@ pub async fn run_consensus_stack(
         share,
 
         mailbox_size: config.mailbox_size,
+        max_peers: config.max_peers_per_set,
         deque_size: config.deque_size,
-        max_message_size: config.max_message_size_bytes,
         verification_mode: config.verification_mode,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
@@ -135,7 +146,6 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
-        proposal_return_budget,
         estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
@@ -230,49 +240,4 @@ pub async fn run_follow_stack(
     ret.map_err(eyre::Report::from)
         .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
         .wrap_err("follow engine task failed")
-}
-
-async fn instantiate_network(
-    context: &commonware_runtime::tokio::Context,
-    config: &Args,
-    signing_key: PrivateKey,
-) -> eyre::Result<(
-    lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
-    lookup::Oracle<PublicKey>,
-)> {
-    // TODO: Find out why `union_unique` should be used. This is the only place
-    // where `NAMESPACE` is used at all. We follow alto's example for now.
-    let namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
-    let cfg = lookup::Config {
-        namespace,
-        crypto: signing_key,
-        listen: config.listen_address,
-        max_message_size: config.max_message_size_bytes,
-        mailbox_size: config.mailbox_size,
-        send_batch_size: commonware_utils::NZUsize!(8),
-        bypass_ip_check: config.bypass_ip_check,
-        allow_private_ips: config.allow_private_ips,
-        allow_dns: config.allow_dns,
-        tracked_peer_sets: crate::config::PEERSETS_TO_TRACK,
-        max_peers_per_set: config.max_peers_per_set,
-        synchrony_bound: config.synchrony_bound.into_duration(),
-        max_handshake_age: config.handshake_stale_after.into_duration(),
-        handshake_timeout: config.handshake_timeout.into_duration(),
-        dial_timeout: config.dial_timeout.into_duration(),
-        max_concurrent_handshakes: config.max_concurrent_handshakes,
-        block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
-        dial_frequency: config.wait_before_peers_redial.into_duration(),
-        ping_frequency: config.wait_before_peers_reping.into_duration(),
-        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
-        allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
-            config.handshake_per_ip_min_period.into_duration(),
-        )
-        .ok_or_eyre("handshake per ip min period must be non-zero")?,
-        allowed_handshake_rate_per_subnet: commonware_runtime::Quota::with_period(
-            config.handshake_per_subnet_min_period.into_duration(),
-        )
-        .ok_or_eyre("handshake per subnet min period must be non-zero")?,
-    };
-
-    Ok(lookup::Network::new(context.child("network"), cfg))
 }

@@ -1,6 +1,9 @@
 version: 3
 rules:
-  # This vendored action has no release tags; its pin documents the source commit.
+  # tempoxyz/changelogs v0.11.0 is younger than the 7-day cooldown. Allow this
+  # exact commit; remove after 2026-11-02. The exception also skips
+  # version-comment verification.
   - ignore: true
     conditions:
-      - expr: ActionName == "tempoxyz/changelogs"
+      - expr: |
+          ActionName matches "^tempoxyz/changelogs(/check)?$" && ActionVersion == "35288d5b399317c9412f9dd4bfaf8cccf2d22215"

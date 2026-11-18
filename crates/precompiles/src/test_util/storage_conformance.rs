@@ -19,11 +19,23 @@ pub struct RustStorageField {
 pub struct RustStorageSlot {
     pub name: &'static str,
     pub slot: U256,
+    /// Byte offset within the slot, checked only when set.
+    pub offset: Option<usize>,
 }
 
 impl RustStorageSlot {
     pub const fn new(name: &'static str, slot: U256) -> Self {
-        Self { name, slot }
+        Self {
+            name,
+            slot,
+            offset: None,
+        }
+    }
+
+    /// Also checks that the field is packed at `offset` within its slot.
+    pub const fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = Some(offset);
+        self
     }
 }
 
@@ -251,6 +263,14 @@ pub fn compare_slots(
             errors.push(format!(
                 "{}: Solidity slot={slot}, Rust slot={}",
                 field.name, field.slot
+            ));
+        }
+        if let Some(offset) = field.offset
+            && offset != solidity_field.offset
+        {
+            errors.push(format!(
+                "{}: Solidity offset={}, Rust offset={offset}",
+                field.name, solidity_field.offset
             ));
         }
     }

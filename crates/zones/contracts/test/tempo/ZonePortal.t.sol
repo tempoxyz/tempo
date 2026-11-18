@@ -1582,7 +1582,7 @@ contract ZonePortalTest is BaseTest {
         assertTrue(portal.areDepositsActive(address(pathUSD)));
     }
 
-    function test_pause_blocksDepositsAndWithdrawalProcessingButAllowsBatchSubmission() public {
+    function test_pause_blocksValueMovementButAllowsBatchSubmission() public {
         vm.prank(sequencer);
         portal.pause();
 
@@ -1598,13 +1598,18 @@ contract ZonePortalTest is BaseTest {
         vm.expectRevert(IZonePortal.PortalIsPaused.selector);
         portal.processWithdrawals(new Withdrawal[](0), bytes32(0));
 
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.PortalIsPaused.selector);
+        portal.claimRefund(address(pathUSD));
+
         vm.roll(block.number + 1);
+        bytes32 prevBlockHash = portal.blockHash();
         _submitBatch(
             portal,
             uint64(block.number - 1),
             0,
             BlockTransition({
-                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("paused-settlement")
+                prevBlockHash: prevBlockHash, nextBlockHash: keccak256("paused-settlement")
             }),
             DepositQueueTransition({
                 prevProcessedHash: bytes32(0),
@@ -2361,6 +2366,43 @@ contract ZonePortalTest is BaseTest {
         vm.expectRevert(IZonePortal.NotAdmin.selector);
         portal.setGatewayMode(false);
         vm.stopPrank();
+    }
+
+    function test_setTransfersEnabled_defaultsOffAndToggles() public {
+        assertFalse(portal.transfersEnabled());
+
+        vm.expectEmit(false, false, false, true);
+        emit IZonePortal.TransfersEnabledUpdated(true);
+        vm.prank(admin);
+        portal.setTransfersEnabled(true);
+        assertTrue(portal.transfersEnabled());
+
+        vm.expectEmit(false, false, false, true);
+        emit IZonePortal.TransfersEnabledUpdated(false);
+        vm.prank(admin);
+        portal.setTransfersEnabled(false);
+        assertFalse(portal.transfersEnabled());
+    }
+
+    function test_setTransfersEnabled_revertsIfNotAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.setTransfersEnabled(true);
+    }
+
+    function test_setTransfersEnabled_revertsAfterAccessPolicyAbdication() public {
+        vm.prank(admin);
+        portal.abdicate(Capability.AccessPolicy);
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZonePortal.CapabilityAbdicated.selector, Capability.AccessPolicy
+            )
+        );
+        portal.setTransfersEnabled(true);
+        assertFalse(portal.transfersEnabled());
     }
 
     function test_setAllowedAccount_enablesAndDisablesMembership() public {
@@ -5749,6 +5791,24 @@ contract ZonePortalTest is BaseTest {
 
         assertEq(portal.refunds(address(pathUSD), bob), 0);
         assertEq(pathUSD.balanceOf(bob), bobBalanceBefore + amount);
+    }
+
+    /// @notice A virtual address can't be a refund recipient, since it can never claim a refund.
+    function test_deposit_revertsForVirtualRefundRecipient() public {
+        address virtualRecipient = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(0x58e21090), bytes10(0xfdfdfdfdfdfdfdfdfdfd), bytes6(uint48(1))
+                )
+            )
+        );
+        assertTrue(StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(virtualRecipient));
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), virtualRecipient);
+        vm.stopPrank();
     }
 
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.

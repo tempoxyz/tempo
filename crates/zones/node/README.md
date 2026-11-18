@@ -136,8 +136,9 @@ using Tempo's upstream policy implementation over anchored raw L1 state:
    read and caching the result.
 2. **L1OverlayDB** — composes ordinary zone EVM storage with the raw L1
    reader at the exact finalized block recorded in `TempoState`. TIP-403
-   registry state and each token's L1-owned transfer-policy field come from L1;
-   balances and all other TIP-20 state remain zone-local. Mirrored reads retain
+   registry state, each token's L1-owned transfer-policy field and, from T15,
+   each token's pause flag come from L1; balances and all other TIP-20 state
+   remain zone-local. Mirrored reads retain
    normal EVM gas, warming, and storage accounting, while persistent writes to
    L1-owned slots are rejected.
 3. **Tempo TIP-20 and TIP-403 precompiles** — execute the upstream business

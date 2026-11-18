@@ -1,11 +1,6 @@
 use commonware_actor::Feedback;
 use commonware_consensus::{Reporter, marshal::Update};
-use commonware_p2p::{
-    Address, AddressableManager, AddressableTrackedPeers, PeerSetSubscription, Provider,
-    TrackedPeers,
-};
-use commonware_utils::ordered::Map;
-use eyre::WrapErr as _;
+use commonware_p2p::{PeerSetSubscription, Provider, TrackedPeers};
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, error};
 
@@ -39,13 +34,6 @@ impl MessageWithCause {
 }
 
 pub(super) enum Message {
-    Track {
-        id: u64,
-        peers: Map<PublicKey, Address>,
-    },
-    Overwrite {
-        peers: Map<PublicKey, Address>,
-    },
     PeerSet {
         id: u64,
         response: oneshot::Sender<Option<TrackedPeers<PublicKey>>>,
@@ -105,43 +93,6 @@ impl Provider for Mailbox {
         );
 
         fallback_rx
-    }
-}
-
-impl AddressableManager for Mailbox {
-    fn track<R>(&mut self, id: u64, peers: R) -> Feedback
-    where
-        R: Into<AddressableTrackedPeers<Self::PublicKey>> + Send,
-    {
-        let addressable: AddressableTrackedPeers<Self::PublicKey> = peers.into();
-        if let Err(error) = self
-            .inner
-            .unbounded_send(MessageWithCause::in_current_span(Message::Track {
-                id,
-                peers: addressable.primary,
-            }))
-            .wrap_err("actor no longer running")
-        {
-            error!(%error, "failed to send message to peer_manager");
-            Feedback::Closed
-        } else {
-            Feedback::Ok
-        }
-    }
-
-    fn overwrite(&mut self, peers: Map<Self::PublicKey, Address>) -> Feedback {
-        if let Err(error) = self
-            .inner
-            .unbounded_send(MessageWithCause::in_current_span(Message::Overwrite {
-                peers,
-            }))
-            .wrap_err("actor no longer running")
-        {
-            error!(%error, "failed to send message to peer_manager");
-            Feedback::Closed
-        } else {
-            Feedback::Ok
-        }
     }
 }
 
