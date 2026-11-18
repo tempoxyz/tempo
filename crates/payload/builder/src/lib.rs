@@ -509,8 +509,15 @@ where
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(plan) = build_plan.as_ref() {
-                let elapsed = start.elapsed();
+            // A speculative build ignores its budget until released, then
+            // counts it from the release.
+            let held = match attributes.release() {
+                Some(None) => None,
+                Some(Some(at)) => Some(at.saturating_duration_since(start)),
+                None => Some(Duration::ZERO),
+            };
+            if let (Some(plan), Some(held)) = (build_plan.as_ref(), held) {
+                let elapsed = start.elapsed().saturating_sub(held);
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,

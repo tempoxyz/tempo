@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -96,6 +96,8 @@ struct OpenBuild {
     preparation: Duration,
     proposal_budget: ProposalBudget,
     payload: oneshot::Receiver<TempoBuiltPayload>,
+    /// Lets a speculative build stop filling once it is proposed.
+    release: Option<Arc<OnceLock<Instant>>>,
 }
 
 impl Inner {
@@ -229,8 +231,10 @@ impl Inner {
             leader,
             parent: (parent_view, parent_digest),
         };
-        let payload = if speculative {
-            self.executor.build_speculative(context.clone(), attrs)?
+        let release = speculative.then(Arc::<OnceLock<Instant>>::default);
+        let payload = if let Some(release) = &release {
+            self.executor
+                .build_speculative(context.clone(), attrs.with_release(release.clone()))?
         } else {
             self.executor
                 .build_proposal(context.clone(), attrs, ceremony_output)?
@@ -242,6 +246,7 @@ impl Inner {
             preparation: window_opened.saturating_duration_since(propose_start),
             proposal_budget,
             payload,
+            release,
         })
     }
 
@@ -258,6 +263,7 @@ impl Inner {
             preparation,
             proposal_budget,
             payload,
+            ..
         } = open;
         let round = context.round;
         #[cfg(feature = "fuzz")]
@@ -586,11 +592,21 @@ where
         let speculative = self.take_speculative(context.round);
         let parent = ancestry.next().await?;
         let reused = match speculative.filter(|open| open.context == context) {
-            Some(open) => self
-                .finish_build(&runtime, open)
-                .await
-                .inspect_err(|error| warn!(%error, "speculative build failed; building again"))
-                .ok(),
+            Some(mut open) => {
+                // Pace the reused build as if it opened now.
+                open.window_opened = Instant::now();
+                open.proposal_budget = self.estimator.start_proposal(
+                    open.window_opened,
+                    open.window_opened.saturating_duration_since(propose_start),
+                );
+                if let Some(release) = &open.release {
+                    let _ = release.set(open.window_opened);
+                }
+                self.finish_build(&runtime, open)
+                    .await
+                    .inspect_err(|error| warn!(%error, "speculative build failed; building again"))
+                    .ok()
+            }
             None => None,
         };
         let block = match reused {
