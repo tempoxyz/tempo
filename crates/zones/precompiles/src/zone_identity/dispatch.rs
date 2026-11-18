@@ -40,8 +40,11 @@ impl ZoneIdentity {
                     setOrgAdmin(call) => mutate(call, msg_sender, |caller, call| {
                         self.set_org_admin(caller, registrar()?, call.orgId, call.admin)
                     }),
-                    addMembers(call) => mutate(call, msg_sender, |caller, call| {
-                        self.add_members(caller, registrar()?, call.orgId, &call.accounts)
+                    setInvites(call) => mutate(call, msg_sender, |caller, call| {
+                        self.set_invites(caller, registrar()?, call.orgId, &call.accounts, call.invited)
+                    }),
+                    joinOrg(call) => mutate(call, msg_sender, |caller, call| {
+                        self.join_org(caller, call.orgId)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
                         self.remove_member(caller, call.account)

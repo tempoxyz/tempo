@@ -295,18 +295,27 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
-    // Members, added in one batch per org by its admin.
+    // Members: each org's admin invites in one batch, then each account joins with its own
+    // transaction.
     let members = [
-        (&admin_a, org_a, vec![alice.address, bob.address]),
-        (&admin_b, org_b, vec![carol.address]),
+        (&admin_a, org_a, vec![&alice, &bob]),
+        (&admin_b, org_b, vec![&carol]),
     ];
     for (admin, org, accounts) in members {
-        let call = IZoneIdentity::addMembersCall {
+        let invite = IZoneIdentity::setInvitesCall {
             orgId: org,
-            accounts,
+            accounts: accounts.iter().map(|party| party.address).collect(),
+            invited: true,
         };
-        let pending = admin.send(ZONE_IDENTITY_ADDRESS, call).await?;
+        let pending = admin.send(ZONE_IDENTITY_ADDRESS, invite).await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+        let mut joins = Vec::new();
+        for party in &accounts {
+            let join = IZoneIdentity::joinOrgCall { orgId: org };
+            joins.push(party.send(ZONE_IDENTITY_ADDRESS, join).await?);
+        }
+        let statuses = mine(&mut fixture, &zone, joins).await?;
+        assert!(statuses.iter().all(|ok| *ok), "{statuses:?}");
     }
     let alice_org = alice.identity().orgOf(alice.address).call().await?;
     assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
@@ -368,6 +377,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     fixture.seed_identity_config(registrar.address, true);
 
     // Inside an org transfers pass; A to B waits for B's half; B to A and org 0 have no edge.
+    // Carol paid for her own join, so her balance is read rather than assumed.
+    let carol_before = zone.balance_of(PATH_USD_ADDRESS, carol.address).await?;
     let to_bob = alice.transfer(bob.address, 1_000).await?;
     let to_carol = alice.transfer(carol.address, 1_000).await?;
     assert_eq!(
@@ -376,7 +387,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     );
     assert_eq!(
         zone.balance_of(PATH_USD_ADDRESS, carol.address).await?,
-        U256::from(FUNDING)
+        carol_before
     );
     assert_transfer(&zone, alice.address, carol.address, false).await?;
     let accept = admin_b
@@ -387,7 +398,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     assert_eq!(
         zone.balance_of(PATH_USD_ADDRESS, carol.address).await?,
-        U256::from(FUNDING + 1_000)
+        carol_before + U256::from(1_000)
     );
     assert_transfer(&zone, carol.address, alice.address, false).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;

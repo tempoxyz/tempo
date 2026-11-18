@@ -8,7 +8,9 @@ crate::sol! {
     /// Org membership, per-token edges between orgs, and each org's per-token Tempo targets.
     ///
     /// An address on the Zone belongs to at most one org; an address in no org is in org 0, which
-    /// the registrar administers. Token T may move on the Zone from org A to org B only when A's
+    /// the registrar administers. Joining takes both sides: the org's admin invites the address and
+    /// the address itself calls `joinOrg`, since membership lets the admin freeze and read it and it
+    /// cannot leave on its own. Token T may move on the Zone from org A to org B only when A's
     /// admin allows it outbound and B's admin allows it inbound. Tempo addresses are never members:
     /// each org's admin alone decides, per token, which Tempo addresses its members accept deposits
     /// from and may withdraw to, through its targets and its [`L1Policy`].
@@ -34,8 +36,11 @@ crate::sol! {
         function createOrg(address admin) external returns (uint64 orgId);
         function setOrgAdmin(uint64 orgId, address admin) external;
 
+        // Account: joins an org whose admin invited it.
+        function joinOrg(uint64 orgId) external;
+
         // Org admin.
-        function addMembers(uint64 orgId, address[] calldata accounts) external;
+        function setInvites(uint64 orgId, address[] calldata accounts, bool invited) external;
         function removeMember(address account) external;
         function setFrozen(address account, bool frozen) external;
         function setEdge(uint64 fromOrg, uint64 toOrg, address[] calldata tokens, bool allowed) external;
@@ -53,6 +58,7 @@ crate::sol! {
         event OrgCreated(uint64 indexed orgId, address admin);
         event OrgAdminUpdated(uint64 indexed orgId, address admin);
         event MemberUpdated(address indexed account, uint64 indexed orgId, bool frozen);
+        event InviteUpdated(uint64 indexed orgId, address indexed account, bool invited);
         event EdgeUpdated(uint64 indexed fromOrg, uint64 indexed toOrg, address indexed token, bool fromOk, bool toOk);
         event L1TargetUpdated(uint64 indexed orgId, address indexed target, address indexed token, bool depositFrom, bool withdrawTo);
         event L1PolicyUpdated(uint64 indexed orgId, address indexed token, L1Policy policy);
@@ -61,6 +67,7 @@ crate::sol! {
         error UnknownOrg(uint64 orgId);
         error InvalidAddress();
         error AlreadyMember(address account);
+        error NotInvited(uint64 orgId);
         error OrgPolicyForbids(address token, address from, address to);
     }
 }

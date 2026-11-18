@@ -3,7 +3,9 @@
 //! [`ZoneIdentity`] is the source of truth for which org each Zone address belongs to, which TIP-20s
 //! each org may send to each other org, and which Tempo addresses each org's members may deposit
 //! from and withdraw to. An org is a set of Zone addresses with one admin; an address in no org is
-//! in org 0, whose admin is the registrar.
+//! in org 0, whose admin is the registrar. An address joins only when both sides agree: the admin
+//! invites it and it calls `joinOrg` itself, since a member can be frozen and read by its admin and
+//! cannot leave on its own.
 //!
 //! - **Transfers on the Zone** follow edges: org A may send token T to org B only when A's admin
 //!   allows T outbound to B and B's admin allows T inbound from A. An org's edge to itself, which
@@ -176,13 +178,16 @@ impl ZoneIdentity {
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
-    /// Adds `accounts`, each in no org, to `org`. Reverts, adding none, if any is already in an org.
-    pub fn add_members(
+    /// Invites `accounts` to `org`, or withdraws their invites. An invite is only the admin's half
+    /// of joining: an account becomes a member when it calls [`Self::join_org`] itself. Inviting an
+    /// account that is already in an org is allowed and has no effect until it is removed.
+    pub fn set_invites(
         &mut self,
         caller: Address,
         registrar: Address,
         org: u64,
         accounts: &[Address],
+        invited: bool,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
         if org == 0 {
@@ -194,14 +199,30 @@ impl ZoneIdentity {
             if account.is_zero() || account.is_virtual() {
                 return Err(ZoneIdentityError::invalid_address().into());
             }
-            if self.members[account].read()? != Member::default() {
-                return Err(ZoneIdentityError::already_member(account).into());
-            }
         }
         for &account in accounts {
-            self.write_member(account, Member { org, frozen: false })?;
+            self.orgs[org].invites[account].write(invited)?;
+            self.emit_event(IZoneIdentity::InviteUpdated {
+                orgId: org,
+                account,
+                invited,
+            })?;
         }
         Ok(())
+    }
+
+    /// Makes the caller a member of `org`, which must have invited it, and spends the invite. The
+    /// caller's own transaction is its consent, so no admin can place an address in an org.
+    pub fn join_org(&mut self, caller: Address, org: u64) -> ZoneResult<()> {
+        self.ensure_org(org)?;
+        if org == 0 || !self.orgs[org].invites[caller].read()? {
+            return Err(ZoneIdentityError::not_invited(org).into());
+        }
+        if self.members[caller].read()? != Member::default() {
+            return Err(ZoneIdentityError::already_member(caller).into());
+        }
+        self.orgs[org].invites[caller].write(false)?;
+        self.write_member(caller, Member { org, frozen: false })
     }
 
     /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
@@ -438,12 +459,15 @@ impl ZoneIdentity {
 /// One org's configuration.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct Org {
-    /// Key that manages the org's members, its halves of edges, its targets and its policy.
+    /// Key that invites, removes and freezes the org's members and sets its halves of edges, its
+    /// targets and its policy.
     pub admin: Address,
     /// Both halves of the Zone edge from this org to another, keyed by receiving org and token.
     pub edges: Mapping<u64, Mapping<Address, Edge>>,
     /// Which Tempo addresses this org's members may deposit from and withdraw to, keyed by token.
     pub l1: Mapping<Address, L1Rules>,
+    /// Addresses the admin invited that have not joined yet.
+    pub invites: Mapping<Address, bool>,
 }
 
 /// One org's Tempo rules for one token.
@@ -590,6 +614,22 @@ mod tests {
             .unwrap()
     }
 
+    /// Invites `accounts` to `org` as its admin, then has each of them join.
+    fn enroll(
+        identity: &mut ZoneIdentity,
+        admin: Address,
+        registrar: Address,
+        org: u64,
+        accounts: &[Address],
+    ) {
+        identity
+            .set_invites(admin, registrar, org, accounts, true)
+            .unwrap();
+        for &account in accounts {
+            identity.join_org(account, org).unwrap();
+        }
+    }
+
     /// One org administered by the returned admin, with Alice and Bob as members and `usd` allowed
     /// inside it.
     fn org_with_members(
@@ -602,9 +642,7 @@ mod tests {
         identity
             .set_edge(admin, registrar, org, org, &[usd], true)
             .unwrap();
-        identity
-            .add_members(admin, registrar, org, &[ALICE, BOB])
-            .unwrap();
+        enroll(identity, admin, registrar, org, &[ALICE, BOB]);
         (admin, org)
     }
 
@@ -696,20 +734,81 @@ mod tests {
     }
 
     #[test]
-    fn an_address_belongs_to_one_org() {
+    fn joining_needs_the_admin_and_the_account() {
         with_identity(|identity, registrar| {
             let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
             let a = identity.create_org(registrar, registrar, admin_a).unwrap();
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
+            let org_of =
+                |identity: &ZoneIdentity, account| identity.members[account].read().unwrap();
+
+            // An invite alone adds nobody, and only the org's admin can invite.
             identity
-                .add_members(admin_a, registrar, a, &[ALICE])
+                .set_invites(admin_a, registrar, a, &[ALICE, BOB], true)
                 .unwrap();
-            // The whole batch is refused, so BOB is not added either.
+            assert_eq!(org_of(identity, ALICE), Member::default());
             assert_eq!(
-                identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
+                identity.set_invites(admin_b, registrar, a, &[STRANGER], true),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            // A bad address anywhere refuses the whole batch.
+            assert_eq!(
+                identity.set_invites(admin_a, registrar, a, &[STRANGER, Address::ZERO], true),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
+            );
+            assert!(!identity.orgs[a].invites[STRANGER].read().unwrap());
+
+            // Without an invite from that org, joining reverts: another org's invite, org 0 and an
+            // unknown org do not count.
+            assert_eq!(
+                identity.join_org(ALICE, b),
+                Err(identity_error(ZoneIdentityError::not_invited(b)))
+            );
+            assert_eq!(
+                identity.join_org(ALICE, 0),
+                Err(identity_error(ZoneIdentityError::not_invited(0)))
+            );
+            assert_eq!(
+                identity.join_org(ALICE, 9),
+                Err(identity_error(ZoneIdentityError::unknown_org(9)))
+            );
+
+            // The account's own call completes it and spends the invite.
+            identity.join_org(ALICE, a).unwrap();
+            assert_eq!(
+                org_of(identity, ALICE),
+                Member {
+                    org: a,
+                    frozen: false
+                }
+            );
+            assert!(!identity.orgs[a].invites[ALICE].read().unwrap());
+
+            // A member cannot join a second org, even when invited.
+            identity
+                .set_invites(admin_b, registrar, b, &[ALICE], true)
+                .unwrap();
+            assert_eq!(
+                identity.join_org(ALICE, b),
                 Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
-            assert_eq!(identity.members[BOB].read().unwrap().org, 0);
+
+            // A withdrawn invite can't be used, and a removed member needs a new invite to rejoin.
+            identity
+                .set_invites(admin_a, registrar, a, &[BOB], false)
+                .unwrap();
+            assert_eq!(
+                identity.join_org(BOB, a),
+                Err(identity_error(ZoneIdentityError::not_invited(a)))
+            );
+            identity.remove_member(admin_a, ALICE).unwrap();
+            assert_eq!(
+                identity.join_org(ALICE, a),
+                Err(identity_error(ZoneIdentityError::not_invited(a)))
+            );
+            // B's earlier invite is still open, so Alice may now join B.
+            identity.join_org(ALICE, b).unwrap();
+            assert_eq!(org_of(identity, ALICE).org, b);
         });
     }
 
@@ -752,9 +851,7 @@ mod tests {
             let carol = Address::repeat_byte(0x55);
             let admin_b = Address::repeat_byte(2);
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            identity
-                .add_members(admin_b, registrar, b, &[carol])
-                .unwrap();
+            enroll(identity, admin_b, registrar, b, &[carol]);
             assert!(!allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
             set_target(identity, admin_b, b, OFFRAMP, false, true);
             assert!(allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
@@ -875,9 +972,7 @@ mod tests {
             let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
             // A virtual address of a member's master is in the member's org.
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
-            identity
-                .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
-                .unwrap();
+            enroll(identity, admin, registrar, org, &[VIRTUAL_MASTER]);
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             // A withdrawal to a virtual Tempo address follows its master's target.
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
@@ -897,7 +992,7 @@ mod tests {
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
             // Virtual addresses themselves cannot be members.
             assert_eq!(
-                identity.add_members(admin, registrar, org, &[virtual_addr]),
+                identity.set_invites(admin, registrar, org, &[virtual_addr], true),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
             // An unregistered virtual recipient is denied, not an error, for every kind of move.
@@ -944,12 +1039,8 @@ mod tests {
                 let other = identity
                     .create_org(registrar, registrar, registrar)
                     .unwrap();
-                identity
-                    .add_members(registrar, registrar, other, &[carol])
-                    .unwrap();
-                identity
-                    .add_members(admin, registrar, org, &[dave])
-                    .unwrap();
+                enroll(&mut identity, registrar, registrar, other, &[carol]);
+                enroll(&mut identity, admin, registrar, org, &[dave]);
                 identity.set_frozen(admin, dave, true).unwrap();
                 identity
                     .set_l1_target(
