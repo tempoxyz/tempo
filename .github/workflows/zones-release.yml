@@ -148,7 +148,12 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+          # Releases come from main or a protected release/* branch.
+          on_protected_branch() {
+            [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
+          }
+          if ! on_protected_branch "$commit_sha"; then
             # Prepare Zones Release tags the commit on its pre-release branch,
             # which a squash merge keeps off main. Accept it only as one commit
             # on main that changes nothing but Zones version lines.
@@ -166,7 +171,7 @@ jobs:
                 grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
             )"
             if [[ "${#ancestry[@]}" -ne 2 ]] ||
-               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               ! on_protected_branch "$parent" ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
               echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
               exit 1
