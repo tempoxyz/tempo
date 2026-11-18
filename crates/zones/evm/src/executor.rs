@@ -24,10 +24,12 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    precompiles::RESERVATIONS_ADDRESS,
+    precompiles::{ADDRESS_REGISTRY_ADDRESS, RESERVATIONS_ADDRESS},
     zones::{IZoneOutbox, TempoAdvanced},
 };
-use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, deploy_precompile_at_boundary,
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
@@ -230,32 +232,6 @@ impl<'a> ZoneBlockExecutor<'a> {
         }
         Ok(())
     }
-
-    /// Gives the reservation core's account its native-precompile marker, as Tempo does at T15.
-    ///
-    /// Without code the account counts as empty, and its storage (holds, allowances, liens) would
-    /// be cleared with it at the end of each transaction. Runs before every T15 block and changes
-    /// nothing once the marker is there, which covers zones created before T15 and after.
-    fn deploy_t15_reservations(&mut self) -> Result<(), BlockExecutionError> {
-        let original = self
-            .inner
-            .evm_mut()
-            .state_mut()
-            .account_info_untracked(&RESERVATIONS_ADDRESS)
-            .map_err(map_database_error)?;
-        if original
-            .as_ref()
-            .is_some_and(|info| !info.is_empty_code_hash())
-        {
-            return Ok(());
-        }
-        let marker = Bytecode::new_raw(Bytes::from_static(&[0xef]));
-        let current = original.clone().unwrap_or_default().with_code(marker);
-        let mut state = PendingState::default();
-        state.insert_account(RESERVATIONS_ADDRESS, original, Some(current));
-        self.inner.commit_pending_state(&state);
-        Ok(())
-    }
 }
 
 impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
@@ -290,7 +266,10 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
-                self.deploy_t15_reservations()?;
+                // The block cache never reads the storage of a missing account through the L1
+                // overlay, so the mirrored registry needs its account to exist.
+                deploy_precompile_at_boundary(&mut self.inner, ADDRESS_REGISTRY_ADDRESS, &[])?;
+                deploy_precompile_at_boundary(&mut self.inner, RESERVATIONS_ADDRESS, &[])?;
             }
             Ok(())
         } else {
@@ -313,8 +292,11 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             .execute_transaction_without_commit((tx_env, recovered));
 
         let inner = result?;
-        validate_pending_state(&inner.result().pending_state)
-            .map_err(BlockExecutionError::other)?;
+        validate_pending_state(
+            &inner.result().pending_state,
+            self.inner.evm().config_spec_id(),
+        )
+        .map_err(BlockExecutionError::other)?;
 
         Ok(ZoneTxResult { inner, next_phase })
     }

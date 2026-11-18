@@ -2014,7 +2014,6 @@ fn test_refund_cap_removed_on_t7() {
                 gas_limit: SPENT,
                 floor_gas: 0,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )
@@ -2059,7 +2058,6 @@ fn test_negative_refund_counter_refunds_the_cap() {
                 gas_limit: SPENT,
                 floor_gas,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )
@@ -4175,7 +4173,6 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
             gas_limit,
             floor_gas: floor,
             initial_state_gas: state,
-            state_refund: 0,
             result: MessageResult::<TempoEvmTypes> {
                 stop: InstrStop::Stop,
                 gas: GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir),
@@ -4444,7 +4441,6 @@ fn test_state_gas_batch_create_accounting() {
                 gas_limit: TX_GAS_LIMIT,
                 floor_gas: 0,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )

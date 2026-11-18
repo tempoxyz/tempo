@@ -275,6 +275,44 @@ pub struct TempoBlockExecutor<'a> {
     block_gas_used: u64,
 }
 
+/// Deploys `0xEF` marker bytecode and initializes storage at a precompile address, unless the
+/// account already has code.
+///
+/// This also dispatches the state change to the system caller's state hook so that the sparse
+/// trie task is aware of the change. Zones call it at their own activation forks.
+pub fn deploy_precompile_at_boundary(
+    executor: &mut EthBlockExecutor<'_, TempoEvmTypes, TempoReceiptBuilder>,
+    address: Address,
+    storage: &[(U256, U256)],
+) -> Result<(), BlockExecutionError> {
+    let original = executor
+        .evm_mut()
+        .state_mut()
+        .account_info_untracked(&address)
+        .map_err(map_database_error)?;
+    if original
+        .as_ref()
+        .is_some_and(|info| !info.is_empty_code_hash())
+    {
+        return Ok(());
+    }
+
+    let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+    let current = original.clone().unwrap_or_default().with_code(code);
+    let mut state = PendingState::default();
+    state.insert_account(address, original, Some(current));
+    for &(slot, value) in storage {
+        let original = executor
+            .evm_mut()
+            .state_mut()
+            .storage_slot_untracked(&address, &slot)
+            .map_err(map_database_error)?;
+        state.insert_storage(address, slot, original, value);
+    }
+    executor.commit_pending_state(&state);
+    Ok(())
+}
+
 impl<'a> TempoBlockExecutor<'a> {
     pub(crate) fn new(
         evm: TempoEvm<'a>,
@@ -341,43 +379,12 @@ impl<'a> TempoBlockExecutor<'a> {
         self.replay_state = StorageActionReplayState::default();
     }
 
-    /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
-    ///
-    /// This also dispatches the state change to the system caller's state hook so that the
-    /// sparse trie task is aware of the change.
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
-            Ok(info) => info,
-            Err(error) => return Err(map_database_error(error)),
-        };
-        if original
-            .as_ref()
-            .is_some_and(|info| !info.is_empty_code_hash())
-        {
-            return Ok(());
-        }
-
-        let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
-        let current = original.clone().unwrap_or_default().with_code(code);
-        let mut state = PendingState::default();
-        state.insert_account(address, original, Some(current));
-        for &(slot, value) in storage {
-            let original = match self
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&address, &slot)
-            {
-                Ok(value) => value,
-                Err(error) => return Err(map_database_error(error)),
-            };
-            state.insert_storage(address, slot, original, value);
-        }
-        self.inner.commit_pending_state(&state);
-        Ok(())
+        deploy_precompile_at_boundary(&mut self.inner, address, storage)
     }
 
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.
@@ -468,6 +475,20 @@ impl<'a> TempoBlockExecutor<'a> {
         let epoch_length = self.evm().block().ext.epoch_length.get();
         let block_number = self.evm().block().number.saturating_to::<u64>();
         if !block_number.saturating_add(1).is_multiple_of(epoch_length) {
+            return Ok(());
+        }
+        // `proposer_public_key` is derived from the header's or payload attributes'
+        // `consensus_context` (`consensus_context.map(|ctx| ctx.proposer)` in the
+        // `ConfigureEvm` env builders), so it is `None` exactly when the block has no
+        // consensus context. Such blocks (RPC simulations, dev-mode blocks) carry no DKG
+        // outcome, and their backing database may hold caller-supplied state rather than the
+        // parent state, so the check is skipped for them.
+        //
+        // This relies on the consensus layer: it rejects proposals without a consensus context
+        // (see the application's verify step), and imported blocks are pinned to finalized
+        // hashes. The execution layer does not enforce the presence of a consensus context
+        // itself, the same as for the proposer fee recipient check above.
+        if self.evm().block().ext.proposer_public_key.is_none() {
             return Ok(());
         }
         let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
@@ -1636,16 +1657,29 @@ mod tests {
                 rotation_epoch,
             ))
         };
+        let proposer = B256::from_slice(&validator.public_key());
+        let executor =
+            |db: InMemoryDB, fork, block_number, extra_data: Bytes, proposer: Option<B256>| {
+                let mut executor = TestExecutorBuilder::default()
+                    .with_block_number(block_number)
+                    .with_epoch_length(5)
+                    .with_extra_data(extra_data)
+                    .with_parent_beacon_block_root(B256::ZERO)
+                    .with_spec(fork)
+                    .build(db, &chainspec);
+                let mut block = *executor.evm().block();
+                block.ext.proposer_public_key = proposer.map(|key| key.try_into().unwrap());
+                executor.evm_mut().set_block(block);
+                executor
+            };
+        let execute =
+            |db: InMemoryDB, fork, block_number, extra_data: Bytes, proposer: Option<B256>| {
+                executor(db, fork, block_number, extra_data, proposer)
+                    .apply_pre_execution_changes()
+                    .map_err(|e| e.to_string())
+            };
         let run = |db: InMemoryDB, fork, block_number, extra_data: Bytes| {
-            TestExecutorBuilder::default()
-                .with_block_number(block_number)
-                .with_epoch_length(5)
-                .with_extra_data(extra_data)
-                .with_parent_beacon_block_root(B256::ZERO)
-                .with_spec(fork)
-                .build(db, &chainspec)
-                .apply_pre_execution_changes()
-                .map_err(|e| e.to_string())
+            execute(db, fork, block_number, extra_data, Some(proposer))
         };
         let full_dkg = OnchainDkgOutcome {
             is_next_full_dkg: true,
@@ -1721,19 +1755,38 @@ mod tests {
         );
 
         // Before ValidatorConfigV2 is initialized, the players came from ValidatorConfig V1.
-        assert_eq!(
-            run(
+        // The proposer check rejects such a block first, so this calls the outcome check alone.
+        assert!(
+            executor(
                 InMemoryDB::default(),
                 TempoHardfork::T15,
                 4,
-                wrong_players.encode().into()
-            ),
-            Ok(())
+                wrong_players.encode().into(),
+                Some(proposer)
+            )
+            .check_boundary_outcome()
+            .is_ok()
         );
 
         // Blocks other than the boundary carry no outcome.
         assert_eq!(
             run(config(None), TempoHardfork::T15, 3, Bytes::new()),
+            Ok(())
+        );
+
+        // Blocks without a consensus context, such as RPC simulations, are not checked.
+        assert_eq!(
+            execute(config(None), TempoHardfork::T15, 4, Bytes::new(), None),
+            Ok(())
+        );
+        assert_eq!(
+            execute(
+                config(None),
+                TempoHardfork::T15,
+                4,
+                wrong_players.encode().into(),
+                None
+            ),
             Ok(())
         );
     }
