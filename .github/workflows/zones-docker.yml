@@ -531,6 +531,7 @@ jobs:
       version: ${{ steps.release-version.outputs.version }}
       is_release: ${{ steps.release-version.outputs.is_release }}
       is_stable: ${{ steps.release-version.outputs.is_stable }}
+      zones_floating: ${{ steps.release-version.outputs.zones_floating }}
       prover_release: ${{ steps.release-version.outputs.prover_release }}
       prover_stable: ${{ steps.release-version.outputs.prover_stable }}
     steps:
@@ -589,17 +590,11 @@ jobs:
             exit 1
           fi
           # zones/v* tags may also come from a protected release/* branch, which
-          # holds releases cut from an earlier Tempo release. Such a tag must be
-          # the highest Zones version, so the floating stable and major tags
-          # never move back. prover/v* tags stay on main only.
-          version="${tag#"$component"/v}"
-          highest_zones="$(
-            { git tag -l 'zones/v*' | sed 's#^zones/v##' | grep -v -- '-' || true; } |
-              { cat; echo "${version%%-*}"; } | sort -V | tail -n 1
-          )"
+          # holds releases cut from an earlier Tempo release, matching Zones
+          # Release. prover/v* tags stay on main only.
           on_protected_branch() {
             git merge-base --is-ancestor "$1" refs/remotes/origin/main && return 0
-            [[ "$component" == zones && "${version%%-*}" == "$highest_zones" ]] || return 1
+            [[ "$component" == zones ]] || return 1
             [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
               'refs/remotes/origin/release/*')" ]]
           }
@@ -625,7 +620,7 @@ jobs:
             if [[ "$component" != zones || "${#ancestry[@]}" -ne 2 ]] ||
                ! on_protected_branch "$parent" ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
-              echo "Release tag $tag does not point to a commit on main, a release/* branch for the highest Zones version, or a Zones version bump on one" >&2
+              echo "Release tag $tag does not point to a commit on main or a release/* branch, or a Zones version bump on one" >&2
               exit 1
             fi
           fi
@@ -641,6 +636,10 @@ jobs:
             exit 1
           fi
 
+          highest_zones="$(
+            { git tag -l 'zones/v*' | sed -n -E 's#^zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
+              sort -V | tail -n 1
+          )"
           release_key=is_release
           stable_key=is_stable
           if [[ "$component" == prover ]]; then
@@ -650,11 +649,14 @@ jobs:
           {
             echo "version=v$version"
             echo "$release_key=true"
-            # Only the highest Zones version moves the floating stable and
-            # major tags; an older zones/v* release keeps just its exact tag.
+            # Only the highest stable Zones version moves the floating stable
+            # and major tags; an older zones/v* release keeps its exact tag.
             if [[ "$version" != *-* ]] &&
                [[ "$component" == prover || "$version" == "$highest_zones" ]]; then
               echo "$stable_key=true"
+            fi
+            if [[ "$component" == zones && "$version" == "$highest_zones" ]]; then
+              echo "zones_floating=true"
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -671,8 +673,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -985,8 +987,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -1420,8 +1422,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ inputs.nightly == true }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
