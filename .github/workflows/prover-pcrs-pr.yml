@@ -110,13 +110,17 @@ jobs:
           # the digest and PCRs its notes record for this tag.
           release_body="$(
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases" |
-              jq -rs --arg tag "$TAG"                 '[.[][] | select(.tag_name == $tag and .author.login == "github-actions[bot]")] | .[0].body // empty'
+              jq -rs --arg tag "$TAG" \
+                '[.[][] | select(.tag_name == $tag and .author.login == "github-actions[bot]")] | .[0].body // empty'
           )"
           if [[ -z "$release_body" ]]; then
             echo "::error::No release drafted by Prover Release for $TAG; its PCRs were not reproduced"
             exit 1
           fi
-          for value in "ghcr.io/tempoxyz/tempo-zone-prover@$digest"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr0"] // ""' <<< "$labels")"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr1"] // ""' <<< "$labels")"             "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr2"] // ""' <<< "$labels")"; do
+          for value in "ghcr.io/tempoxyz/tempo-zone-prover@$digest" \
+            "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr0"] // ""' <<< "$labels")" \
+            "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr1"] // ""' <<< "$labels")" \
+            "$(jq -r '.["xyz.tempo.zone-prover.nitro.pcr2"] // ""' <<< "$labels")"; do
             if [[ -z "$value" ]] || ! grep -qF -- "$value" <<< "$release_body"; then
               echo "::error::The $TAG release does not record '$value'; $image may have changed since it was reproduced"
               exit 1
