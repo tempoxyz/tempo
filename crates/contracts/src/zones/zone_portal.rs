@@ -313,6 +313,8 @@ crate::sol! {
         /// Pre-T15 only.
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function DEPOSITS_PER_BUCKET() external view returns (uint64);
+        function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
+        function MAX_ENTRY_WEIGHT() external view returns (uint64);
         function CONGESTION_TIER_WEIGHT() external view returns (uint64);
         function CONGESTION_MAX_TIER() external view returns (uint64);
         function CONGESTION_MAX_FEE() external view returns (uint128);

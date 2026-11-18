@@ -513,7 +513,8 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     const WITHDRAWAL_COUNT: usize =
         ACCOUNT_COUNT as usize + REPEATED_ACCOUNT_COUNT * (WITHDRAWALS_PER_REPEATED_ACCOUNT - 1);
     const MAX_WITHDRAWALS_PER_BATCH: usize = 2;
-    const TEST_MAX_BATCH_GAS: u64 = 2_500_000;
+    // The 1.25M per-transaction overhead plus two 1M simple withdrawals.
+    const TEST_MAX_BATCH_GAS: u64 = 3_250_000;
     const TEST_MAX_IN_FLIGHT_BATCHES: usize = 2;
     const DEPOSIT_AMOUNT: u128 = 2_000_000;
     const WITHDRAWAL_AMOUNT: u128 = 250_000;
