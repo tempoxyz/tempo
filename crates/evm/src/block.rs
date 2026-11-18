@@ -45,8 +45,6 @@ pub(crate) enum BlockSection {
     ///
     /// Must use at most `non_shared_gas_left` gas.
     NonShared,
-    /// Gas incentive transaction.
-    GasIncentive,
     /// End of block system transactions.
     System { seen_subblocks_signatures: bool },
 }
@@ -56,7 +54,7 @@ impl serde::Serialize for BlockSection {
         serializer.serialize_u8(match self {
             Self::StartOfBlock => 0,
             Self::NonShared => 1,
-            Self::GasIncentive => 2,
+            // 2 was the removed gas incentive section; stored boundaries keep their ids.
             Self::System {
                 seen_subblocks_signatures: false,
             } => 3,
@@ -72,7 +70,6 @@ impl<'de> serde::Deserialize<'de> for BlockSection {
         Ok(match u8::deserialize(deserializer)? {
             0 => Self::StartOfBlock,
             1 => Self::NonShared,
-            2 => Self::GasIncentive,
             3 => Self::System {
                 seen_subblocks_signatures: false,
             },
@@ -82,7 +79,7 @@ impl<'de> serde::Deserialize<'de> for BlockSection {
             id => {
                 return Err(serde::de::Error::invalid_value(
                     serde::de::Unexpected::Unsigned(id.into()),
-                    &"a block section id from 0 to 4",
+                    &"a block section id of 0, 1, 3 or 4",
                 ));
             }
         })
@@ -101,14 +98,37 @@ pub struct ExecutorState {
     non_shared_gas_left: u64,
     /// Gas left for non-payment transactions.
     non_payment_gas_left: u64,
-    /// Gas used by the gas incentive section.
-    incentive_gas_used: u64,
+    /// Slot of the removed gas incentive counter, kept so stored boundaries keep their layout.
+    /// Always zero.
+    reserved: ReservedZero,
     /// Block gas used.
     block_gas_used: u64,
     /// Inner executor's cumulative gas used.
     cumulative_gas_used: u64,
     /// Inner executor's blob gas used.
     blob_gas_used: u64,
+}
+
+/// A `u64` that is always zero: serializes as `0` and fails to deserialize anything else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ReservedZero;
+
+impl serde::Serialize for ReservedZero {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReservedZero {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u64::deserialize(deserializer)? {
+            0 => Ok(Self),
+            value => Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Unsigned(value),
+                &"zero in the removed gas incentive counter",
+            )),
+        }
+    }
 }
 
 /// Builder for [`TempoReceipt`].
@@ -269,8 +289,6 @@ pub struct TempoBlockExecutor<'a> {
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
-    /// Incentive-section gas from real transactions; simulations are exempt.
-    incentive_gas_used: u64,
     block_gas_used: u64,
 }
 
@@ -345,7 +363,6 @@ impl<'a> TempoBlockExecutor<'a> {
         Self {
             chain_spec,
             prague_active,
-            incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -368,7 +385,7 @@ impl<'a> TempoBlockExecutor<'a> {
             section: self.section,
             non_shared_gas_left: self.non_shared_gas_left,
             non_payment_gas_left: self.non_payment_gas_left,
-            incentive_gas_used: self.incentive_gas_used,
+            reserved: ReservedZero,
             block_gas_used: self.block_gas_used,
             cumulative_gas_used: self.inner.inner.cumulative_gas_used,
             blob_gas_used: self.inner.inner.blob_gas_used,
@@ -384,7 +401,6 @@ impl<'a> TempoBlockExecutor<'a> {
         self.section = state.section;
         self.non_shared_gas_left = state.non_shared_gas_left;
         self.non_payment_gas_left = state.non_payment_gas_left;
-        self.incentive_gas_used = state.incentive_gas_used;
         self.block_gas_used = state.block_gas_used;
         self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
         self.inner.inner.blob_gas_used = state.blob_gas_used;
@@ -703,21 +719,17 @@ impl<'a> TempoBlockExecutor<'a> {
             self.non_shared_gas_left,
             self.non_payment_gas_left,
             tx_hash,
-            self.rejects_lane_overflow(execution_context),
+            Self::enforces_gas_lanes(execution_context),
             is_system_tx,
             is_payment,
             gas_used,
         )
     }
 
-    /// Returns whether a transaction that overflows its gas lane makes the block invalid.
-    ///
-    /// Since T4 the shared gas limit is zero, so the gas incentive section has no capacity and
-    /// any signed transaction that spills into it invalidates the block. Simulations are exempt,
-    /// matching the incentive gas check in `finish`.
-    fn rejects_lane_overflow(&self, execution_context: ExecutionContext) -> bool {
-        self.evm().config_spec_id().is_t4()
-            && matches!(execution_context, ExecutionContext::Transaction { .. })
+    /// Returns whether a transaction that overflows its gas lane makes the block invalid: true
+    /// for signed transactions, false for simulations, which may exceed the lanes.
+    fn enforces_gas_lanes(execution_context: ExecutionContext) -> bool {
+        matches!(execution_context, ExecutionContext::Transaction { .. })
     }
 
     /// Implements [`Self::validate_tx`] over copied section state, so it can run while the inner
@@ -728,7 +740,7 @@ impl<'a> TempoBlockExecutor<'a> {
         non_shared_gas_left: u64,
         non_payment_gas_left: u64,
         tx_hash: B256,
-        reject_lane_overflow: bool,
+        enforce_gas_lanes: bool,
         is_system_tx: bool,
         is_payment: bool,
         gas_used: u64,
@@ -753,35 +765,22 @@ impl<'a> TempoBlockExecutor<'a> {
 
         match section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
-                if gas_used > non_shared_gas_left
-                    || (!is_payment && gas_used > non_payment_gas_left)
+                if enforce_gas_lanes
+                    && (gas_used > non_shared_gas_left
+                        || (!is_payment && gas_used > non_payment_gas_left))
                 {
-                    if reject_lane_overflow {
-                        trace!(
-                            target: "tempo::block",
-                            ?tx_hash,
-                            gas_used,
-                            "Rejecting: transaction overflows its gas lane"
-                        );
-                        return Err(BlockValidationError::msg("incentive gas limit exceeded"));
-                    }
-                    // Historical blocks can use the gas incentive section after
-                    // exhausting the non-shared or general gas budget.
-                    Ok(BlockSection::GasIncentive)
-                } else {
-                    Ok(BlockSection::NonShared)
+                    trace!(
+                        target: "tempo::block",
+                        ?tx_hash,
+                        gas_used,
+                        "Rejecting: transaction exceeds its gas lane"
+                    );
+                    return Err(BlockValidationError::msg(
+                        "transaction exceeds its gas lane",
+                    ));
                 }
+                Ok(BlockSection::NonShared)
             }
-            BlockSection::GasIncentive if reject_lane_overflow && gas_used > 0 => {
-                trace!(
-                    target: "tempo::block",
-                    ?tx_hash,
-                    gas_used,
-                    "Rejecting: transaction in the gas incentive section"
-                );
-                Err(BlockValidationError::msg("incentive gas limit exceeded"))
-            }
-            BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
             BlockSection::System { .. } => {
                 trace!(target: "tempo::block", ?tx_hash, "Rejecting: regular transaction after system transaction");
                 Err(BlockValidationError::msg(
@@ -797,7 +796,6 @@ impl<'a> TempoBlockExecutor<'a> {
         next_section: BlockSection,
         block_gas_used: u64,
         is_payment: bool,
-        execution_context: ExecutionContext,
     ) {
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
 
@@ -808,14 +806,11 @@ impl<'a> TempoBlockExecutor<'a> {
                 // no gas spending for start-of-block system transactions
             }
             BlockSection::NonShared => {
-                self.non_shared_gas_left -= block_gas_used;
+                // Signed transactions never exceed the lanes; simulations may, and saturate.
+                self.non_shared_gas_left = self.non_shared_gas_left.saturating_sub(block_gas_used);
                 if !is_payment {
-                    self.non_payment_gas_left -= block_gas_used;
-                }
-            }
-            BlockSection::GasIncentive => {
-                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
-                    self.incentive_gas_used += block_gas_used;
+                    self.non_payment_gas_left =
+                        self.non_payment_gas_left.saturating_sub(block_gas_used);
                 }
             }
             BlockSection::System { .. } => {
@@ -1015,7 +1010,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         )?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
-        self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+        self.record_committed_tx(next_section, block_gas_used, is_payment);
 
         Ok(gas_output)
     }
@@ -1034,7 +1029,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let reject_lane_overflow = self.rejects_lane_overflow(execution_context);
+        let enforce_gas_lanes = Self::enforces_gas_lanes(execution_context);
         let (section, non_shared_gas_left, non_payment_gas_left) = (
             self.section,
             self.non_shared_gas_left,
@@ -1057,7 +1052,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     non_shared_gas_left,
                     non_payment_gas_left,
                     tx_hash,
-                    reject_lane_overflow,
+                    enforce_gas_lanes,
                     is_system_tx,
                     is_payment,
                     block_gas_used,
@@ -1079,7 +1074,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             };
         };
         if let Some(Ok((next_section, block_gas_used))) = validated {
-            self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+            self.record_committed_tx(next_section, block_gas_used, is_payment);
         }
         Ok(Some(gas_output))
     }
@@ -1088,12 +1083,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         mut self,
     ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>), BlockExecutionError>
     {
-        // T4 sets the shared gas limit to zero, so any gas spilled into the
-        // incentive section exceeds the available block capacity.
-        if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
-            return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
-        }
-
         self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
 
@@ -1624,16 +1613,6 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "withdrawals are not permitted"
-        );
-        let mut executor = TestExecutorBuilder::default()
-            .with_block_number(4)
-            .with_epoch_length(5)
-            .with_spec(TempoHardfork::T13)
-            .build(InMemoryDB::default(), &chainspec);
-        executor.incentive_gas_used = 1;
-        assert_eq!(
-            executor.finish().err().unwrap().to_string(),
-            "incentive gas limit exceeded"
         );
     }
 
@@ -2232,7 +2211,6 @@ mod tests {
         for section in [
             BlockSection::StartOfBlock,
             BlockSection::NonShared,
-            BlockSection::GasIncentive,
             BlockSection::System {
                 seen_subblocks_signatures: false,
             },
@@ -2244,7 +2222,7 @@ mod tests {
                 section,
                 non_shared_gas_left: 11,
                 non_payment_gas_left: 12,
-                incentive_gas_used: 13,
+                reserved: ReservedZero,
                 block_gas_used: 14,
                 cumulative_gas_used: 15,
                 blob_gas_used: 16,
@@ -2271,7 +2249,7 @@ mod tests {
             },
             non_shared_gas_left: 1,
             non_payment_gas_left: 2,
-            incentive_gas_used: 3,
+            reserved: ReservedZero,
             block_gas_used: 4,
             cumulative_gas_used: 5,
             blob_gas_used: 6,
@@ -2283,11 +2261,25 @@ mod tests {
             state
         );
 
-        json["section"] = 5.into();
+        assert_eq!(json["reserved"], 0);
+
+        // 2 was the removed gas incentive section.
+        for id in [2, 5] {
+            let mut unknown = json.clone();
+            unknown["section"] = id.into();
+            let err = serde_json::from_value::<ExecutorState>(unknown).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("expected a block section id of 0, 1, 3 or 4"),
+                "{err}"
+            );
+        }
+
+        json["reserved"] = 1.into();
         let err = serde_json::from_value::<ExecutorState>(json).unwrap_err();
         assert!(
             err.to_string()
-                .contains("expected a block section id from 0 to 4"),
+                .contains("expected zero in the removed gas incentive counter"),
             "{err}"
         );
     }
@@ -2537,14 +2529,17 @@ mod tests {
         assert_eq!(executor.section(), BlockSection::NonShared);
         assert_eq!(executor.non_payment_gas_left, 9_000);
 
-        // A speculative executor with untouched lane budgets would select the non-shared section,
-        // but the remaining non-payment budget can no longer fit this transaction.
-        executor
-            .commit_transaction(create_precomputed_result(false, 21_000))
-            .unwrap();
-        assert_eq!(executor.section(), BlockSection::GasIncentive);
+        // A speculative executor with untouched lane budgets would accept this transaction,
+        // but the remaining non-payment budget can no longer fit it.
+        assert_eq!(
+            executor
+                .commit_transaction(create_precomputed_result(false, 21_000))
+                .unwrap_err()
+                .to_string(),
+            "transaction exceeds its gas lane"
+        );
+        assert_eq!(executor.section(), BlockSection::NonShared);
         assert_eq!(executor.non_payment_gas_left, 9_000);
-        assert_eq!(executor.incentive_gas_used, 21_000);
     }
 
     #[test]
@@ -2742,7 +2737,7 @@ mod tests {
     }
 
     #[test_matrix([TempoHardfork::T3, TempoHardfork::T4], [vec![true], vec![false], vec![false, true], vec![true, false]])]
-    fn test_incentive_gas_validation_exempts_only_simulated_transactions(
+    fn test_lane_overflow_rejects_only_signed_transactions(
         hardfork: TempoHardfork,
         simulations: Vec<bool>,
     ) {
@@ -2754,17 +2749,15 @@ mod tests {
             .with_spec(hardfork)
             .build(&mut db, &chainspec);
         executor.apply_pre_execution_changes().unwrap();
-        let mut commit_results = Vec::new();
+        let mut result = Ok(());
         for &simulation in &simulations {
-            let result = executor.commit_transaction(TempoTxResult {
+            let commit = executor.commit_transaction(TempoTxResult {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
                 execution_context: if simulation {
                     ExecutionContext::Simulation
                 } else {
-                    ExecutionContext::Transaction {
-                        tx_hash: B256::ZERO,
-                    }
+                    SIGNED
                 },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
@@ -2782,30 +2775,30 @@ mod tests {
                 is_payment: false,
                 block_gas_used: 21_000,
             });
-            let failed = result.is_err();
-            commit_results.push(result);
-            if failed {
+            if let Err(error) = commit {
+                result = Err(error);
                 break;
             }
+            // Simulations exceed the lane and saturate it.
+            assert_eq!(executor.section(), BlockSection::NonShared);
+            assert_eq!(executor.non_payment_gas_left, 0);
         }
-        let should_reject = hardfork == TempoHardfork::T4 && simulations.contains(&false);
-        let result = commit_results
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .and_then(|_| executor.finish().map(|_| ()));
         match result {
             Err(error) => {
-                assert!(should_reject);
-                assert_eq!(error.to_string(), "incentive gas limit exceeded");
+                assert!(simulations.contains(&false));
+                assert_eq!(error.to_string(), "transaction exceeds its gas lane");
             }
-            Ok(()) => assert!(!should_reject),
+            Ok(()) => {
+                assert!(!simulations.contains(&false));
+                assert!(executor.finish().is_ok());
+            }
         }
     }
 
-    /// T4+: a signed transaction that overflows the general lane is rejected when it executes,
-    /// not after the rest of the block ran.
-    #[test]
-    fn test_t4_rejects_general_lane_overflow_before_finish() {
+    /// A signed transaction that overflows a gas lane is rejected when it executes, on every
+    /// fork, not after the rest of the block ran.
+    #[test_matrix([TempoHardfork::T3, TempoHardfork::T4])]
+    fn test_rejects_general_lane_overflow_on_every_fork(hardfork: TempoHardfork) {
         let chainspec = test_chainspec();
         let tx = create_legacy_tx();
         let hash = *tx.tx_hash();
@@ -2813,14 +2806,14 @@ mod tests {
         let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default()
             .with_general_gas_limit(30_000)
-            .with_spec(TempoHardfork::T4)
+            .with_spec(hardfork)
             .build(&mut db, &chainspec);
         assert_eq!(
             executor
                 .validate_tx(hash, SIGNED, false, false, 30_001)
                 .unwrap_err()
                 .to_string(),
-            "incentive gas limit exceeded"
+            "transaction exceeds its gas lane"
         );
         // Payments use the non-shared budget, not the general lane.
         assert_eq!(
@@ -2829,54 +2822,19 @@ mod tests {
                 .unwrap(),
             BlockSection::NonShared
         );
-        // Simulations keep the historical behaviour.
+        // Simulations may exceed the lanes.
         assert_eq!(
             executor
                 .validate_tx(hash, ExecutionContext::Simulation, false, false, 30_001)
                 .unwrap(),
-            BlockSection::GasIncentive
-        );
-
-        let mut db = InMemoryDB::default();
-        let executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000)
-            .with_spec(TempoHardfork::T3)
-            .build(&mut db, &chainspec);
-        assert_eq!(
-            executor
-                .validate_tx(hash, SIGNED, false, false, 30_001)
-                .unwrap(),
-            BlockSection::GasIncentive
+            BlockSection::NonShared
         );
     }
 
+    /// Committing a result that overflows the general lane fails, even when it was produced by
+    /// an executor that does not check the lanes before commit.
     #[test]
-    fn test_t4_rejects_signed_tx_in_incentive_section() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let executor = TestExecutorBuilder::default()
-            .with_section(BlockSection::GasIncentive)
-            .with_spec(TempoHardfork::T4)
-            .build(&mut db, &chainspec);
-        assert_eq!(
-            executor
-                .validate_tx(B256::ZERO, SIGNED, false, false, 1)
-                .unwrap_err()
-                .to_string(),
-            "incentive gas limit exceeded"
-        );
-        assert_eq!(
-            executor
-                .validate_tx(B256::ZERO, ExecutionContext::Simulation, false, false, 1)
-                .unwrap(),
-            BlockSection::GasIncentive
-        );
-    }
-
-    /// T4+: committing a result that overflows the general lane fails, even when it was
-    /// produced by an executor that does not reject lane overflow before commit.
-    #[test]
-    fn test_t4_commit_rejects_general_lane_overflow() {
+    fn test_commit_rejects_general_lane_overflow() {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
@@ -2890,7 +2848,7 @@ mod tests {
                 .commit_transaction(create_precomputed_result(false, 30_001))
                 .unwrap_err()
                 .to_string(),
-            "incentive gas limit exceeded"
+            "transaction exceeds its gas lane"
         );
     }
 
@@ -3167,52 +3125,6 @@ mod tests {
             executor.non_payment_gas_left,
             initial_non_payment - 200_000,
             "T4: non_payment_gas_left should exclude state gas"
-        );
-    }
-
-    /// T4: incentive gas accounting must also exclude state gas.
-    #[test]
-    fn test_t4_incentive_gas_excludes_state_gas() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_amsterdam_eip8037_enabled(true)
-            .with_section(BlockSection::GasIncentive)
-            .build(&mut db, &chainspec);
-
-        executor.apply_pre_execution_changes().unwrap();
-
-        let tx = create_legacy_tx();
-        let output = TempoTxResult {
-            tx_type: TempoTxType::Legacy,
-            tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
-            inner: EthTransactionResultWithState::new(
-                TxResultWithState {
-                    result: TxResult::<TempoEvmTypes> {
-                        status: true,
-                        total_gas_spent: 300_000,
-                        state_gas_spent: 100_000,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                tx.tx_type(),
-                0,
-            ),
-            is_system_tx: false,
-            is_payment: false,
-            block_gas_used: 200_000,
-        };
-        executor.commit_transaction(output).unwrap();
-
-        assert_eq!(
-            executor.incentive_gas_used, 200_000,
-            "T4: incentive_gas_used should exclude state gas"
         );
     }
 
