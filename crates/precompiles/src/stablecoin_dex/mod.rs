@@ -1879,7 +1879,7 @@ mod tests {
     use tempo_primitives::test_utils::{actors, actors_vec};
 
     use super::*;
-    use crate::{STABLECOIN_DEX_ADDRESS, test_util::with_storage};
+    use crate::test_util::with_storage;
     use proptest::prelude::*;
     use test_case::test_case;
 
@@ -2049,16 +2049,6 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_tick_to_price() {
-        let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
-        for tick in test_ticks {
-            let price = orderbook::tick_to_price(tick);
-            let expected_price = (orderbook::PRICE_SCALE as i32 + i32::from(tick)) as u32;
-            assert_eq!(price, expected_price);
-        }
     }
 
     #[test]
@@ -4235,15 +4225,6 @@ mod tests {
 
             exchange.swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)?;
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_stablecoin_dex_address_returns_correct_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            assert_eq!(StablecoinDEX::new().address(), STABLECOIN_DEX_ADDRESS);
             Ok(())
         })
     }

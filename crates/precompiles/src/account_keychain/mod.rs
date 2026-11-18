@@ -3316,39 +3316,6 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_sets_up_storage_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-
-            // Before initialize: operations should work after init
-            keychain.initialize()?;
-
-            // Verify we can perform operations after initialize
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            let account = Address::random();
-            let key_id = Address::random();
-            let auth_call = authorizeKeyCall {
-                keyId: key_id,
-                signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions::unrestricted(),
-            };
-            // This would fail if initialize didn't set up storage properly
-            authorize_key(&mut keychain, account, auth_call)?;
-
-            // Verify key was stored
-            let key_info = keychain.get_key(getKeyCall {
-                account,
-                keyId: key_id,
-            })?;
-            assert_eq!(key_info.expiry, u64::MAX, "Key should be stored after init");
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_authorize_key_webauthn_signature_type() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();

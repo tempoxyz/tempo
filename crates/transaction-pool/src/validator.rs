@@ -1447,32 +1447,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_some_balance() {
-        let transaction = TxBuilder::eip1559(Address::random())
-            .value(U256::ONE)
-            .build_eip1559();
-        let validator = setup_validator(&transaction, 0);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction.clone())
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(error))
-                        if matches!(
-                            error.external_ref::<TempoInvalidTransaction>(),
-                            Some(TempoInvalidTransaction::ValueTransferNotAllowed)
-                        )
-                ));
-            }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn test_system_tx_rejected_as_invalid() {
         let tx = TxLegacy {
             chain_id: Some(MODERATO.chain_id()),

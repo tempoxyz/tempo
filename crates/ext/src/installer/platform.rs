@@ -118,31 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn executable_name_passthrough() {
-        assert_eq!(executable_name("tempo-wallet"), "tempo-wallet");
-    }
-
-    #[test]
-    fn binary_candidates_single() {
-        assert_eq!(
-            binary_candidates("tempo-wallet"),
-            vec!["tempo-wallet".to_string()]
-        );
-    }
-
-    #[test]
-    fn home_dir_from_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        let original = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", "/test/home") };
-        assert_eq!(home_dir(), Some(PathBuf::from("/test/home")));
-        match original {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-    }
-
-    #[test]
     fn default_local_bin_path() {
         let _lock = ENV_MUTEX.lock().unwrap();
         let original = std::env::var_os("HOME");

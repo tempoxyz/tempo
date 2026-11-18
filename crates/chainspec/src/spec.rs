@@ -472,20 +472,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cli")]
-    fn can_load_testnet() {
-        let _ = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
-    }
-
-    #[test]
-    #[cfg(feature = "cli")]
-    fn can_load_dev() {
-        let _ = super::TempoChainSpecParser::parse("dev")
-            .expect("the dev chainspec must always be well formed");
-    }
-
-    #[test]
-    #[cfg(feature = "cli")]
     fn dev_genesis_contains_eip2935_history_storage() {
         use alloy_eips::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE};
 
@@ -517,17 +503,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "cli")]
-    fn test_tempo_chainspec_implements_tempo_hardforks_trait() {
-        let chainspec = super::TempoChainSpecParser::parse("mainnet")
-            .expect("the mainnet chainspec must always be well formed");
-
-        // Should be able to query Tempo hardfork activation through trait
-        let activation = chainspec.tempo_fork_activation(TempoHardfork::T0);
-        assert_eq!(activation, ForkCondition::Timestamp(0));
-    }
-
-    #[test]
     fn network_identity_defaults_to_genesis_extra_data() {
         let genesis: alloy_genesis::Genesis =
             serde_json::from_str(include_str!("./genesis/presto.json"))
@@ -554,11 +529,6 @@ mod tests {
     fn named_network_identities_use_compiled_identities() {
         let moderato = super::TempoChainSpecParser::parse("testnet")
             .expect("the moderato chainspec must always be well formed");
-        assert_eq!(
-            moderato.network_identity,
-            Some(super::NetworkIdentity::testnet())
-        );
-
         assert_eq!(
             moderato.network_identity,
             Some(super::NetworkIdentity::testnet())

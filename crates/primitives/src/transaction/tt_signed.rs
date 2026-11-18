@@ -922,17 +922,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_expiring_nonce_hash_deterministic() {
-        let tx = make_tx();
-        let signed = tx.into_signed(Signature::test_signature().into());
-        let sender = Address::repeat_byte(0xAB);
-
-        let h1 = signed.expiring_nonce_hash(sender);
-        let h2 = signed.expiring_nonce_hash(sender);
-        assert_eq!(h1, h2, "expiring_nonce_hash must be deterministic");
-    }
-
-    #[test]
     fn test_recover_signer() {
         let (signing_key, expected_address) = generate_secp256k1_keypair();
 

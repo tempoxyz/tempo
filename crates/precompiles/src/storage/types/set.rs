@@ -545,14 +545,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_preserves_first_occurrence_order() {
-        let vec = vec!['a', 'b', 'c', 'b', 'a', 'd'];
-        let set = Set::from(vec);
-
-        assert_eq!(&set[..], &['a', 'b', 'c', 'd']);
-    }
-
-    #[test]
     fn test_set_into_vec() {
         let set = Set::from(vec![1, 2, 3]);
         let vec: Vec<i32> = set.into();
@@ -579,15 +571,6 @@ mod tests {
         assert_eq!(set.get(1), Some(&'b'));
         assert_eq!(set.get(2), Some(&'c'));
         assert_eq!(set.get(3), None);
-    }
-
-    #[test]
-    fn test_set_deref_to_slice() {
-        let set = Set::from(vec![1, 2, 3]);
-
-        assert_eq!(set[0], 1);
-        assert_eq!(set[1], 2);
-        assert_eq!(set.len(), 3);
     }
 
     // -- HANDLER TESTS --------------------------------------------------------

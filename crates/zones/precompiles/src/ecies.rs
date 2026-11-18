@@ -985,21 +985,23 @@ mod tests {
     }
 
     #[test]
-    fn test_hkdf_sha256_basic() {
+    fn test_hkdf_sha256_vector() {
+        // RFC 5869 HKDF-SHA256 with L = 32, computed independently.
         let ikm = [0x0bu8; 32];
-        let salt = b"salt-value";
         let info = b"info-value";
 
-        let out1 = hkdf_sha256(&ikm, salt, info);
-        assert_ne!(out1, [0u8; 32], "output should not be all zeros");
-
-        // Deterministic: same inputs → same output
-        let out2 = hkdf_sha256(&ikm, salt, info);
-        assert_eq!(out1, out2, "hkdf must be deterministic");
-
-        // Different salt → different output
-        let out3 = hkdf_sha256(&ikm, b"other-salt", info);
-        assert_ne!(out1, out3, "different salt should produce different output");
+        assert_eq!(
+            hkdf_sha256(&ikm, b"salt-value", info),
+            alloy_primitives::hex!(
+                "0736ee6cf129d3446ac2270ea70292270176b328be853f21ad2176076ff5217c"
+            )
+        );
+        assert_eq!(
+            hkdf_sha256(&ikm, b"other-salt", info),
+            alloy_primitives::hex!(
+                "b14e8127660dc133d32d117c1e2b10d6d3841d22242c8002e58f77adde7f82d7"
+            )
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
+    TempoEvmExt, TempoFeeManager, TempoStateAccess, tempo_tx_registry,
 };
 use alloy_consensus::{SignableTransaction, transaction::Recovered};
 use alloy_primitives::{B256, Bytes, Signature};
@@ -2392,51 +2392,6 @@ proptest! {
         prop_assert_eq!(gas, expected,
             "Gas {} should equal expected {} for {} calls (21k + {}*COLD_ACCOUNT_ACCESS_COST)",
             gas, expected, num_calls, num_calls.saturating_sub(1));
-    }
-
-    /// Property: first_call returns the first call for AA transactions with any number of calls
-    #[test]
-    fn proptest_first_call_returns_first_for_aa(num_calls in 1usize..10) {
-        let env = aa_env(
-            TempoTransaction {
-                calls: (0..num_calls)
-                    .map(|index| Call::new(Address::with_last_byte(index as u8), vec![index as u8; index + 1]))
-                    .collect(),
-                ..Default::default()
-            },
-            secp256k1_signature(),
-        );
-        prop_assert_eq!(
-            env.evm_tx().calls().next(),
-            Some((TxKind::Call(Address::ZERO), &Bytes::from_static(&[0])))
-        );
-    }
-
-    /// Property: first_call returns None for AA transaction with zero calls
-    #[test]
-    fn proptest_first_call_empty_aa(_dummy in 0u8..1) {
-        let env = aa_env(TempoTransaction::default(), secp256k1_signature());
-        prop_assert!(env.evm_tx().calls().next().is_none());
-    }
-
-    /// Property: first_call returns inner tx data for non-AA transactions
-    #[test]
-    fn proptest_first_call_non_aa(calldata_len in 0usize..100) {
-        let input = Bytes::from(vec![0xab; calldata_len]);
-        let transaction = alloy_consensus::TxLegacy {
-            to: TxKind::Call(Address::repeat_byte(0x42)),
-            input: input.clone(),
-            ..Default::default()
-        };
-        let transaction = TempoEvmTx::from(Recovered::new_unchecked(
-            tempo_primitives::TempoTxEnvelope::Legacy(transaction
-                .into_signed(Signature::test_signature())),
-            SIGNER,
-        ));
-        prop_assert_eq!(
-            transaction.calls().next(),
-            Some((TxKind::Call(Address::repeat_byte(0x42)), &input))
-        );
     }
 
     /// Property: calculate_key_authorization_gas is monotonic in number of limits

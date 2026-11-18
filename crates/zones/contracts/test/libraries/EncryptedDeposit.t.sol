@@ -49,20 +49,6 @@ contract EncryptedDepositLibTest is Test {
         assertEq(decodedMemo, memo);
     }
 
-    /// @notice Verifies decoding rejects plaintext with the wrong byte length.
-    function test_decodePlaintext_revertsOnWrongLength() public {
-        bytes memory plaintext = new bytes(63);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                EncryptedDepositLib.InvalidPlaintextLength.selector,
-                uint256(63),
-                ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE
-            )
-        );
-        harness.decodePlaintext(plaintext);
-    }
-
     /// @notice Verifies deposit queue hashing matches the typed ABI encoding.
     function test_queueHash_matchesTypedEncoding() public view {
         Deposit memory deposit = _makeEncryptedDeposit(100e6, bytes32("ciphertext"));

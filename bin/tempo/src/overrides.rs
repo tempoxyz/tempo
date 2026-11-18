@@ -83,28 +83,10 @@ impl TempoOverrides {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
+    use std::sync::{Arc, Mutex};
 
     use super::TempoOverrides;
     use tempo_node::TempoNode;
-
-    #[test]
-    fn maps_tempo_node() {
-        let called = Arc::new(AtomicBool::new(false));
-        let called_clone = called.clone();
-
-        let mut overrides = TempoOverrides::new().map_tempo_node(move |node| {
-            called_clone.store(true, Ordering::Relaxed);
-            node
-        });
-
-        let _ = overrides.apply_tempo_node(TempoNode::default());
-
-        assert!(called.load(Ordering::Relaxed));
-    }
 
     #[test]
     fn applies_tempo_node_mappers_in_order() {

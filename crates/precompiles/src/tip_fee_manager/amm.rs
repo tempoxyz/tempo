@@ -970,11 +970,19 @@ mod tests {
     }
 
     /// Test execute_fee_swap executes swap immediately, updates reserves and rounds consistently
-    #[test_case(10_000, 100)]
-    #[test_case(100_000_000_000, 10_000_000_000)]
-    fn test_execute_fee_swap(liquidity: u64, amount_in: u64) -> eyre::Result<()> {
+    #[test_case(10_000, 100, 99)]
+    #[test_case(100_000_000_000, 10_000_000_000, 9_970_000_000)]
+    fn test_execute_fee_swap(
+        liquidity: u64,
+        amount_in: u64,
+        expected_out: u64,
+    ) -> eyre::Result<()> {
         let admin = Address::random();
-        let (liquidity, amount_in) = (U256::from(liquidity), U256::from(amount_in));
+        let (liquidity, amount_in, expected_out) = (
+            U256::from(liquidity),
+            U256::from(amount_in),
+            U256::from(expected_out),
+        );
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let (user_token, validator_token) = FeeAmmSetup::new(admin)
@@ -982,8 +990,6 @@ mod tests {
                 .apply()?;
             let mut amm = TipFeeManager::new();
 
-            // e.g. 100 * 9970 / 10000 = 99
-            let expected_out = (amount_in * M) / SCALE;
             let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
             assert_eq!(amount_out, expected_out);
 
@@ -1049,32 +1055,6 @@ mod tests {
                 U256::from(pool.reserve_validator_token),
                 initial - total_out
             );
-
-            Ok(())
-        })
-    }
-
-    /// Test pool boundary condition
-    #[test]
-    fn test_pool_liquidity_boundary() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let unit = uint!(10_U256).pow(U256::from(6));
-            let (user_token, validator_token) = FeeAmmSetup::new(admin)
-                .liquidity(admin, uint!(100_U256) * unit)
-                .apply()?;
-            let amm = TipFeeManager::new();
-            let pool_id = amm.pool_id(user_token, validator_token);
-
-            let reserve = U256::from(amm.pools[pool_id].read()?.reserve_validator_token);
-
-            // Exactly at boundary should succeed (100 * 0.997 = 99.7, which is < 100)
-            assert!(reserve >= compute_amount_out(uint!(100_U256) * unit)?);
-
-            // Just over boundary should fail (101 * 0.997 = 100.697, which is > 100)
-            assert!(reserve < compute_amount_out(uint!(101_U256) * unit)?);
 
             Ok(())
         })

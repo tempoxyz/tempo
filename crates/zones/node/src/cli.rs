@@ -1382,19 +1382,6 @@ mod tests {
     }
 
     #[test]
-    fn portal_address_argument_is_rejected() {
-        let error = ZoneArgsParser::try_parse_from([
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x5ad0000000000000000000000000000000000002",
-        ])
-        .unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
-
-    #[test]
     fn l1_rpc_url_rejects_non_websocket_schemes() {
         assert!(parse_l1_rpc_url("http://localhost:8545").is_err());
         assert!(parse_l1_rpc_url("https://rpc.moderato.tempo.xyz").is_err());

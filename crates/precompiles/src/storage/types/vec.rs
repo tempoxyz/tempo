@@ -608,19 +608,6 @@ mod tests {
     // Tests that verify handlers compute correct slots WITHOUT storage interaction
 
     #[test]
-    fn test_vec_handler_slot_computation() {
-        let len_slot = U256::random();
-        let address = Address::random();
-        let handler = VecHandler::<u8>::new(len_slot, address);
-
-        // Verify base slot is stored correctly
-        assert_eq!(handler.len_slot, len_slot);
-
-        // Verify address is stored correctly
-        assert_eq!(*handler.address, *address);
-    }
-
-    #[test]
     fn test_vec_data_slot_derivation() {
         let len_slot = U256::random();
 
@@ -681,28 +668,6 @@ mod tests {
         let elem_slot = &handler[5];
         assert_eq!(elem_slot.slot(), data_start + U256::from(5));
         assert_eq!(elem_slot.offset(), None);
-    }
-
-    #[test]
-    fn test_vec_at_determinism() {
-        let len_slot = U256::random();
-        let address = Address::random();
-        let handler = VecHandler::<u16>::new(len_slot, address);
-
-        // Same index should always produce same slot
-        let slot1 = &handler[10];
-        let slot2 = &handler[10];
-
-        assert_eq!(
-            slot1.slot(),
-            slot2.slot(),
-            "Same index should produce same slot"
-        );
-        assert_eq!(
-            slot1.offset(),
-            slot2.offset(),
-            "Same index should produce same offset"
-        );
     }
 
     #[test]

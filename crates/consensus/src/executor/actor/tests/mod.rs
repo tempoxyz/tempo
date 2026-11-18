@@ -6,12 +6,9 @@ use commonware_consensus::{
 use commonware_cryptography::Digestible as _;
 use commonware_runtime::{Runner as _, deterministic};
 use commonware_utils::Acknowledgement as _;
-use futures::{StreamExt as _, executor::block_on};
+use futures::StreamExt as _;
 
-use super::{
-    ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, Verification, VerificationKey,
-    WalkOwner,
-};
+use super::{ExecutionTaskType, Verification, VerificationKey};
 use crate::consensus::Digest;
 
 mod harness;
@@ -30,29 +27,6 @@ mod walk;
 use super::super::Actor;
 use crate::executor::ingress::Build;
 use harness::{FakeExecution, FakeMarshal, GENESIS, attributes, make_block, round};
-
-#[test]
-fn execution_task_finishes_with_an_outcome() {
-    let mut task = ExecutionTask::new(
-        ExecutionTaskType::Verify,
-        futures::future::ready(ExecutionTaskOutcome::Delivered {
-            owner: WalkOwner::Verification(VerificationKey {
-                round: round(1),
-                digest: make_block(1, 1, GENESIS).digest(),
-            }),
-            digest: make_block(1, 1, GENESIS).digest(),
-            status: Err(eyre::eyre!("delivery failed")),
-        }),
-    );
-
-    assert!(matches!(task.task_type, ExecutionTaskType::Verify));
-    let finished = block_on(&mut task);
-    assert!(matches!(finished.task_type, ExecutionTaskType::Verify));
-    assert!(matches!(
-        finished.outcome,
-        ExecutionTaskOutcome::Delivered { .. }
-    ));
-}
 
 #[test]
 fn delivered_finalized_tip_tracks_its_own_round() {

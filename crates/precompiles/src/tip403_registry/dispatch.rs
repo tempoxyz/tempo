@@ -106,45 +106,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_authorized_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Test policy 1 (always allow)
-            assert!(dispatch_call(
-                &mut registry,
-                Address::ZERO,
-                ITIP403Registry::isAuthorizedCall { policyId: 1, user }
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_create_policy_precompile() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            let policy_id = dispatch_call(
-                &mut registry,
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            );
-            assert_eq!(policy_id, 2); // First created policy ID
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_policy_id_counter_initialization() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();

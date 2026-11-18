@@ -565,36 +565,6 @@ mod tests {
     }
 
     #[test]
-    fn test_add_errors_to_registry_populates_registry() {
-        let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
-
-        assert!(registry.is_empty());
-
-        add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
-
-        assert!(!registry.is_empty());
-
-        let order_not_found_selector = StablecoinDEXError::order_does_not_exist().selector();
-        assert!(
-            registry.contains_key(&order_not_found_selector),
-            "Registry should contain OrderDoesNotExist selector"
-        );
-    }
-
-    #[test]
-    fn test_error_decoder_registry_is_not_empty() {
-        let registry = error_decoder_registry();
-
-        assert!(
-            !registry.is_empty(),
-            "error_decoder_registry should return a populated registry"
-        );
-
-        let dex_selector = StablecoinDEXError::order_does_not_exist().selector();
-        assert!(registry.contains_key(&dex_selector));
-    }
-
-    #[test]
     fn test_decode_error_returns_some_for_valid_error() {
         let error = StablecoinDEXError::order_does_not_exist();
         let encoded = error.abi_encode();

@@ -537,32 +537,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_encode_decode_roundtrip() {
-        // Short strings roundtrip
-        for len in [0, 1, 15, 30, 31] {
-            let bytes = vec![b'x'; len];
-            let encoded = encode_short_string(&bytes);
-            let decoded_len = calc_string_length(encoded, false);
-            assert_eq!(
-                decoded_len,
-                Ok(len),
-                "Short string roundtrip failed for {len} bytes"
-            );
-        }
-
-        // Long strings roundtrip
-        for len in [32, 33, 64, 100] {
-            let encoded = encode_long_string_length(len);
-            let decoded_len = calc_string_length(encoded, true);
-            assert_eq!(
-                decoded_len,
-                Ok(len),
-                "Long string roundtrip failed for {len} bytes"
-            );
-        }
-    }
-
     // -- TAMPERED STATE TESTS --------------------------------------------------
 
     #[test]

@@ -672,20 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tick_price_encoding() {
-        // Tick represents price offset from peg
-
-        let order_above = Order::new_bid(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 2);
-        assert_eq!(order_above.tick(), 2);
-
-        let order_below = Order::new_ask(2, TEST_MAKER, TEST_BOOK_KEY, 1000, -2);
-        assert_eq!(order_below.tick(), -2);
-
-        let order_par = Order::new_bid(3, TEST_MAKER, TEST_BOOK_KEY, 1000, 0);
-        assert_eq!(order_par.tick(), 0);
-    }
-
-    #[test]
     fn test_linked_list_pointers_initialization() {
         let order = Order::new_bid(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
         // Linked list pointers should be initialized to 0

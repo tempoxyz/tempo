@@ -742,8 +742,7 @@ fn print_missing_install_hint(extension: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BASE_URL, Cli, Commands, PUBLIC_KEY, base_url, is_valid_extension_name, manifest_url,
-        release_public_key,
+        Cli, Commands, PUBLIC_KEY, is_valid_extension_name, manifest_url, release_public_key,
     };
     use crate::{installer::is_allowed_manifest_url, test_util::ENV_MUTEX};
     use clap::Parser;
@@ -893,12 +892,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_remove() {
-        let cli = parse(&["tempo", "remove", "wallet"]);
-        assert!(matches!(cli.command, Commands::Remove(_)));
-    }
-
-    #[test]
     fn parse_update_with_extension() {
         let cli = parse(&["tempo", "update", "wallet"]);
         match cli.command {
@@ -997,21 +990,6 @@ mod tests {
     #[test]
     fn parse_remove_rejects_version() {
         let _ = parse_err(&["tempo", "remove", "wallet", "1.0.0"]);
-    }
-
-    #[test]
-    fn base_url_defaults_to_constant() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        // Clear any env override to test the default.
-        let _guard = EnvGuard::new("TEMPO_EXT_BASE_URL");
-        assert_eq!(base_url(), BASE_URL);
-    }
-
-    #[test]
-    fn base_url_respects_env_override() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        let _guard = EnvGuard::set("TEMPO_EXT_BASE_URL", "https://custom.example.com");
-        assert_eq!(base_url(), "https://custom.example.com");
     }
 
     #[test]

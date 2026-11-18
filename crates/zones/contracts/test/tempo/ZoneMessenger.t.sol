@@ -184,10 +184,6 @@ contract ZoneMessengerTest is BaseTest {
         return 3 * words + (words * words) / 512;
     }
 
-    function test_zoneFactoryConstant() public view {
-        assertEq(address(messenger.zoneFactory()), address(messengerFactory));
-    }
-
     function test_relayMessage_revertsUnauthorizedPortalForNonPortalCaller() public {
         vm.expectRevert(ZoneMessenger.UnauthorizedPortal.selector);
         messenger.relayMessage(ZONE_ID, token, bytes32("sender"), alice, 1, 50_000, "");

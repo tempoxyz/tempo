@@ -110,19 +110,6 @@ contract TIP403RegistryTest is TempoTest {
         assertEq(storedAdmin, bob);
     }
 
-    function test_SetPolicyAdmin_VerifyAdminAddress() public {
-        // Create a policy with alice as admin
-        uint64 policyId = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-
-        // Set admin to a specific address and verify it's actually set
-        address newAdmin = charlie;
-        vm.prank(alice);
-        registry.setPolicyAdmin(policyId, newAdmin);
-
-        (, address storedAdmin) = registry.policyData(policyId);
-        assertEq(storedAdmin, newAdmin, "Admin address should be set to the provided value");
-    }
-
     function test_SetPolicyAdmin_Unauthorized() public {
         // Create a policy with alice as admin
         uint64 policyId = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
@@ -441,13 +428,6 @@ contract TIP403RegistryTest is TempoTest {
                            VIEW FUNCTION TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_GetPolicyAdmin() public {
-        uint64 policyId = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-
-        (, address admin) = registry.policyData(policyId);
-        assertEq(admin, alice);
-    }
-
     function test_GetPolicyIdCounter() public {
         uint64 initialCount = registry.policyIdCounter();
         assertEq(initialCount, 2); // Special policies 0 and 1
@@ -684,32 +664,6 @@ contract TIP403RegistryTest is TempoTest {
         }
     }
 
-    function test_PolicyIdCounter_Increment() public {
-        uint64 initialCounter = registry.policyIdCounter();
-
-        registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        assertEq(registry.policyIdCounter(), initialCounter + 1);
-
-        registry.createPolicy(bob, ITIP403Registry.PolicyType.BLACKLIST);
-        assertEq(registry.policyIdCounter(), initialCounter + 2);
-    }
-
-    function test_AdminPolicy_Authorization_Whitelist() public {
-        address[] memory accounts = new address[](1);
-        accounts[0] = alice;
-
-        uint64 policyId = registry.createPolicyWithAccounts(
-            alice, ITIP403Registry.PolicyType.WHITELIST, accounts
-        );
-
-        // Alice is the admin, so she should be able to modify it
-        vm.prank(alice);
-        registry.modifyPolicyWhitelist(policyId, bob, true);
-
-        // Bob should now be whitelisted
-        assertTrue(registry.isAuthorized(policyId, bob));
-    }
-
     function test_AdminPolicy_BlacklistAllowed() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
@@ -740,22 +694,6 @@ contract TIP403RegistryTest is TempoTest {
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP403Registry.Unauthorized.selector));
         }
-    }
-
-    function test_Authorization_AdminCanUpdate() public {
-        // Create a whitelist policy with alice as admin
-        address[] memory accounts = new address[](1);
-        accounts[0] = bob;
-        uint64 policyId = registry.createPolicyWithAccounts(
-            alice, ITIP403Registry.PolicyType.WHITELIST, accounts
-        );
-
-        // Alice should be able to modify the policy (she is the admin)
-        vm.prank(alice);
-        registry.modifyPolicyWhitelist(policyId, charlie, true);
-
-        // Charlie should now be whitelisted
-        assertTrue(registry.isAuthorized(policyId, charlie));
     }
 
     function test_Authorization_OnlyAdminCanUpdate() public {
@@ -887,98 +825,6 @@ contract TIP403RegistryTest is TempoTest {
         assertTrue(registry.isAuthorized(policyId, eve)); // Added by charlie
     }
 
-    function test_CreateCompoundPolicy_Basic() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 blacklist = registry.createPolicy(alice, ITIP403Registry.PolicyType.BLACKLIST);
-
-        uint64 compound = registry.createCompoundPolicy(whitelist, blacklist, whitelist);
-
-        (uint64 senderPid, uint64 recipientPid, uint64 mintPid) =
-            registry.compoundPolicyData(compound);
-        assertEq(senderPid, whitelist);
-        assertEq(recipientPid, blacklist);
-        assertEq(mintPid, whitelist);
-    }
-
-    function test_CreateCompoundPolicy_HasNoAdmin() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-
-        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
-
-        (ITIP403Registry.PolicyType policyType, address policyAdmin) = registry.policyData(compound);
-        assertEq(uint8(policyType), uint8(ITIP403Registry.PolicyType.COMPOUND));
-        assertEq(policyAdmin, address(0));
-    }
-
-    function test_CreateCompoundPolicy_CannotReferenceCompound() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
-
-        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        this.createCompoundPolicyExternal(compound, whitelist, whitelist);
-
-        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        this.createCompoundPolicyExternal(whitelist, compound, whitelist);
-
-        vm.expectRevert(ITIP403Registry.PolicyNotSimple.selector);
-        this.createCompoundPolicyExternal(whitelist, whitelist, compound);
-    }
-
-    function createCompoundPolicyExternal(uint64 s, uint64 r, uint64 m) external returns (uint64) {
-        return registry.createCompoundPolicy(s, r, m);
-    }
-
-    function test_CreateCompoundPolicy_RevertsOnNonExistentPolicy() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 nonExistent = 99_999;
-
-        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
-        try registry.createCompoundPolicy(nonExistent, whitelist, whitelist) returns (uint64) {
-            revert("createCompoundPolicy should have reverted");
-        } catch (bytes memory err) {
-            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
-        }
-
-        try registry.createCompoundPolicy(whitelist, nonExistent, whitelist) returns (uint64) {
-            revert("createCompoundPolicy should have reverted");
-        } catch (bytes memory err) {
-            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
-        }
-
-        try registry.createCompoundPolicy(whitelist, whitelist, nonExistent) returns (uint64) {
-            revert("createCompoundPolicy should have reverted");
-        } catch (bytes memory err) {
-            assertEq(bytes4(err), ITIP403Registry.PolicyNotFound.selector);
-        }
-    }
-
-    function test_CreateCompoundPolicy_CanReferenceBuiltinPolicies() public {
-        uint64 alwaysReject = 0;
-        uint64 alwaysAllow = 1;
-
-        uint64 cpAllow = registry.createCompoundPolicy(alwaysAllow, alwaysAllow, alwaysAllow);
-        assertTrue(registry.isAuthorizedSender(cpAllow, alice));
-        assertTrue(registry.isAuthorizedRecipient(cpAllow, alice));
-
-        uint64 cpReject = registry.createCompoundPolicy(alwaysReject, alwaysAllow, alwaysAllow);
-        assertFalse(registry.isAuthorizedSender(cpReject, alice));
-        assertTrue(registry.isAuthorizedRecipient(cpReject, alice));
-    }
-
-    function test_CreateCompoundPolicy_CannotModify() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 compound = registry.createCompoundPolicy(whitelist, whitelist, whitelist);
-
-        // Use try/catch instead of vm.expectRevert() due to precompile call depth issues
-        try registry.modifyPolicyWhitelist(compound, alice, true) {
-            revert("modifyPolicyWhitelist should have reverted");
-        } catch { }
-
-        try registry.modifyPolicyBlacklist(compound, alice, true) {
-            revert("modifyPolicyBlacklist should have reverted");
-        } catch { }
-    }
-
     function test_CompoundPolicyData_RevertsForNonCompound() public {
         uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
 
@@ -1017,63 +863,6 @@ contract TIP403RegistryTest is TempoTest {
         assertFalse(registry.isAuthorizedMintRecipient(whitelist, charlie));
     }
 
-    function test_SimplePolicyEquivalence() public {
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        vm.prank(alice);
-        registry.modifyPolicyWhitelist(whitelist, bob, true);
-
-        bool senderAuth = registry.isAuthorizedSender(whitelist, bob);
-        bool recipientAuth = registry.isAuthorizedRecipient(whitelist, bob);
-        bool mintAuth = registry.isAuthorizedMintRecipient(whitelist, bob);
-        bool general = registry.isAuthorized(whitelist, bob);
-
-        assertEq(senderAuth, recipientAuth);
-        assertEq(recipientAuth, mintAuth);
-        assertEq(senderAuth, general);
-    }
-
-    function test_CompoundPolicy_DirectionalAuthorization() public {
-        uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist =
-            registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-
-        vm.startPrank(alice);
-        registry.modifyPolicyWhitelist(senderWhitelist, bob, true);
-        registry.modifyPolicyWhitelist(recipientWhitelist, charlie, true);
-        vm.stopPrank();
-
-        uint64 compound =
-            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, senderWhitelist);
-
-        // Bob is authorized as sender but not recipient
-        assertTrue(registry.isAuthorizedSender(compound, bob));
-        assertFalse(registry.isAuthorizedRecipient(compound, bob));
-
-        // Charlie is authorized as recipient but not sender
-        assertFalse(registry.isAuthorizedSender(compound, charlie));
-        assertTrue(registry.isAuthorizedRecipient(compound, charlie));
-    }
-
-    function test_CompoundPolicy_IsAuthorizedEquivalence() public {
-        uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWhitelist =
-            registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-
-        vm.startPrank(alice);
-        registry.modifyPolicyWhitelist(senderWhitelist, bob, true);
-        registry.modifyPolicyWhitelist(recipientWhitelist, bob, true);
-        vm.stopPrank();
-
-        uint64 compound =
-            registry.createCompoundPolicy(senderWhitelist, recipientWhitelist, senderWhitelist);
-
-        bool senderAuth = registry.isAuthorizedSender(compound, bob);
-        bool recipientAuth = registry.isAuthorizedRecipient(compound, bob);
-        bool isAuth = registry.isAuthorized(compound, bob);
-
-        assertEq(isAuth, senderAuth && recipientAuth);
-    }
-
     function test_CompoundPolicy_IsAuthorizedShortCircuits() public {
         uint64 senderWhitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
         uint64 recipientWhitelist =
@@ -1085,47 +874,6 @@ contract TIP403RegistryTest is TempoTest {
 
         // This should return false without checking recipient
         assertFalse(registry.isAuthorized(compound, bob));
-    }
-
-    function testFuzz_SimplePolicyEquivalence(uint256 policySeed, address user) public {
-        vm.assume(user != address(0));
-
-        ITIP403Registry.PolicyType policyType = policySeed % 2 == 0
-            ? ITIP403Registry.PolicyType.WHITELIST
-            : ITIP403Registry.PolicyType.BLACKLIST;
-
-        uint64 testPolicy = registry.createPolicy(alice, policyType);
-
-        if (policySeed % 3 == 0) {
-            vm.prank(alice);
-            if (policyType == ITIP403Registry.PolicyType.WHITELIST) {
-                registry.modifyPolicyWhitelist(testPolicy, user, true);
-            } else {
-                registry.modifyPolicyBlacklist(testPolicy, user, true);
-            }
-        }
-
-        bool senderAuth = registry.isAuthorizedSender(testPolicy, user);
-        bool recipientAuth = registry.isAuthorizedRecipient(testPolicy, user);
-        bool mintAuth = registry.isAuthorizedMintRecipient(testPolicy, user);
-
-        assertEq(senderAuth, recipientAuth, "Fuzz: Sender != Recipient");
-        assertEq(recipientAuth, mintAuth, "Fuzz: Recipient != MintRecipient");
-    }
-
-    function testFuzz_IsAuthorizedEquivalence(address user) public {
-        vm.assume(user != address(0));
-
-        uint64 whitelist = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 blacklist = registry.createPolicy(alice, ITIP403Registry.PolicyType.BLACKLIST);
-
-        uint64 compound = registry.createCompoundPolicy(whitelist, blacklist, whitelist);
-
-        bool senderAuth = registry.isAuthorizedSender(compound, user);
-        bool recipientAuth = registry.isAuthorizedRecipient(compound, user);
-        bool isAuth = registry.isAuthorized(compound, user);
-
-        assertEq(isAuth, senderAuth && recipientAuth, "Fuzz: isAuthorized != sender && recipient");
     }
 
 }

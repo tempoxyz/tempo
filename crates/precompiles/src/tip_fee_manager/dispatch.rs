@@ -80,10 +80,7 @@ mod tests {
         Precompile, expect_precompile_revert,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip_fee_manager::{
-            FeeManagerError,
-            amm::{M, MIN_LIQUIDITY, N, PoolKey, SCALE},
-        },
+        tip_fee_manager::{FeeManagerError, amm::PoolKey},
     };
     use alloy::{
         primitives::{Address, B256, U256},
@@ -272,16 +269,16 @@ mod tests {
 
             let result =
                 fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(result.bytes())?, MIN_LIQUIDITY);
+            assert_eq!(U256::abi_decode(result.bytes())?, U256::from(1000));
 
             let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(result.bytes())?, M);
+            assert_eq!(U256::abi_decode(result.bytes())?, U256::from(9970));
 
             let result = fee_manager.call(&ITIPFeeAMM::NCall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(result.bytes())?, N);
+            assert_eq!(U256::abi_decode(result.bytes())?, U256::from(9985));
 
             let result = fee_manager.call(&ITIPFeeAMM::SCALECall {}.abi_encode(), sender)?;
-            assert_eq!(U256::abi_decode(result.bytes())?, SCALE);
+            assert_eq!(U256::abi_decode(result.bytes())?, U256::from(10000));
 
             Ok(())
         })

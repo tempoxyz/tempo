@@ -106,7 +106,6 @@ macro_rules! tempo_hardfork {
         mod tests {
             use super::*;
             use TempoHardfork::*;
-            use alloy_hardforks::Hardfork;
 
             #[test]
             fn test_hardfork_name() {
@@ -122,13 +121,6 @@ macro_rules! tempo_hardfork {
                     assert!(key.eq_ignore_ascii_case(concat!(stringify!($variant), "Time")));
                     assert!(key.starts_with('t') && key.ends_with("Time"), "{key}");
                 )*
-            }
-
-            #[test]
-            fn test_hardfork_trait_implementation() {
-                for fork in TempoHardfork::VARIANTS {
-                    let _name: &str = Hardfork::name(fork);
-                }
             }
 
             #[test]

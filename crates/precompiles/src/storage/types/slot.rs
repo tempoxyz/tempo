@@ -286,28 +286,6 @@ mod tests {
     // -- BASIC TESTS -----------------------------------------------------------
 
     #[test]
-    fn test_slot_size() {
-        // slot (U256) 32 bytes + LayoutCtx (usize) 8 bytes + Address 20 bytes (+4 for byte alignment)
-        assert_eq!(size_of::<Slot<U256>>(), 64);
-        assert_eq!(size_of::<Slot<Address>>(), 64);
-        assert_eq!(size_of::<Slot<bool>>(), 64);
-    }
-
-    #[test]
-    fn test_slot_number_extraction() -> eyre::Result<()> {
-        let (mut storage, address) = setup_storage();
-        StorageCtx::enter(&mut storage, || {
-            let slot_0 = Slot::<U256>::new(U256::ZERO, address);
-            let slot_1 = Slot::<Address>::new(U256::ONE, address);
-            let slot_max = Slot::<bool>::new(U256::MAX, address);
-            assert_eq!(slot_0.slot(), U256::ZERO);
-            assert_eq!(slot_1.slot(), U256::ONE);
-            assert_eq!(slot_max.slot(), U256::MAX);
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_slot_edge_cases() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageCtx::enter(&mut storage, || {

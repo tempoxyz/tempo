@@ -1302,7 +1302,7 @@ mod tests {
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb_sized;
     use tempo_contracts::precompiles::ITIP20;
-    use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
+    use tempo_precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::transaction::{
         ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         KeyAuthorization, KeychainSignature, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
@@ -1640,25 +1640,6 @@ mod tests {
         assert_eq!(aa_id.seq_id.address, sender);
         assert_eq!(aa_id.seq_id.nonce_key, nonce_key);
         assert_eq!(aa_id.nonce, nonce);
-    }
-
-    #[test]
-    fn test_nonce_key_slot_caching_for_2d_tx() {
-        let sender = Address::random();
-        let nonce_key = U256::from(123);
-        let tx = TxBuilder::aa(sender).nonce_key(nonce_key).build();
-
-        // Compute expected slot
-        let expected_slot = NonceManager::new().nonces[sender][nonce_key].slot();
-
-        // First call should compute and cache
-        let slot1 = tx.nonce_key_slot();
-        assert_eq!(slot1, Some(expected_slot));
-
-        // Second call should return cached value (same result)
-        let slot2 = tx.nonce_key_slot();
-        assert_eq!(slot2, Some(expected_slot));
-        assert_eq!(slot1, slot2);
     }
 
     #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]

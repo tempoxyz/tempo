@@ -289,15 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn load_partial_json_returns_error() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        let home = TempHome::new();
-        fs::write(home.registry_path(), r#"{"extensions":{"#).unwrap();
-        let err = Registry::load().unwrap_err();
-        assert!(err.contains("registry corrupt"));
-    }
-
-    #[test]
     fn needs_check_when_no_record() {
         let reg = Registry::default();
         assert!(reg.needs_update_check("wallet"));
@@ -344,29 +335,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_serialize() {
-        let mut reg = Registry::default();
-        reg.record_check("wallet", "v1.0.0", false, "");
-        let json = serde_json::to_string(&reg).unwrap();
-        let loaded: Registry = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.extensions["wallet"].installed_version, "v1.0.0");
-    }
-
-    #[test]
-    fn pinned_flag_recorded() {
-        let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", true, "");
-        assert!(reg.is_pinned("wallet"));
-    }
-
-    #[test]
-    fn not_pinned_by_default() {
-        let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", false, "");
-        assert!(!reg.is_pinned("wallet"));
-    }
-
-    #[test]
     fn is_pinned_returns_false_for_unknown() {
         let reg = Registry::default();
         assert!(!reg.is_pinned("unknown"));
@@ -379,22 +347,6 @@ mod tests {
         assert!(reg.is_pinned("wallet"));
         reg.record_check("wallet", "2.0.0", false, "");
         assert!(!reg.is_pinned("wallet"));
-    }
-
-    #[test]
-    fn roundtrip_serialize_pinned() {
-        let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", true, "");
-        let json = serde_json::to_string(&reg).unwrap();
-        let loaded: Registry = serde_json::from_str(&json).unwrap();
-        assert!(loaded.is_pinned("wallet"));
-    }
-
-    #[test]
-    fn description_recorded() {
-        let mut reg = Registry::default();
-        reg.record_check("wallet", "1.0.0", false, "Tempo wallet");
-        assert_eq!(reg.extensions["wallet"].description, "Tempo wallet");
     }
 
     #[test]

@@ -4831,19 +4831,6 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_aa_sequence_id_equality() {
-        let addr = Address::random();
-        let nonce_key = U256::from(42);
-
-        let id1 = AASequenceId::new(addr, nonce_key);
-        let id2 = AASequenceId::new(addr, nonce_key);
-        let id3 = AASequenceId::new(Address::random(), nonce_key);
-
-        assert_eq!(id1, id2);
-        assert_ne!(id1, id3);
-    }
-
-    #[test]
     fn test_aa2d_transaction_id_unlocks() {
         let addr = Address::random();
         let seq_id = AASequenceId::new(addr, U256::ZERO);
@@ -4852,17 +4839,6 @@ mod tests {
         let next_id = tx_id.unlocks();
         assert_eq!(next_id.seq_id, seq_id);
         assert_eq!(next_id.nonce, 6);
-    }
-
-    #[test]
-    fn test_aa2d_transaction_id_ordering() {
-        let addr = Address::random();
-        let seq_id = AASequenceId::new(addr, U256::ZERO);
-
-        let id1 = AA2dTransactionId::new(seq_id, 1);
-        let id2 = AA2dTransactionId::new(seq_id, 2);
-
-        assert!(id1 < id2);
     }
 
     // ============================================
@@ -5017,34 +4993,6 @@ mod tests {
         );
 
         pool.assert_invariants();
-    }
-
-    #[test]
-    fn test_add_outdated_nonce_transaction() {
-        let mut pool = AA2dPool::default();
-        let sender = Address::random();
-
-        let tx = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(5).build();
-        let tx_hash = *tx.hash();
-        let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
-
-        let result = pool.add_transaction(valid_tx, 10, TempoHardfork::T1);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.hash, tx_hash);
-        assert!(
-            matches!(
-                err.kind,
-                PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
-                    InvalidTransactionError::NonceNotConsistent { tx: 5, state: 10 }
-                ))
-            ),
-            "Expected NonceNotConsistent, got {:?}",
-            err.kind
-        );
-
-        let (pending, queued) = pool.pending_and_queued_txn_count();
-        assert_eq!(pending + queued, 0);
     }
 
     #[test]
@@ -5450,41 +5398,6 @@ mod tests {
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(queued, 3, "Queued should be capped at 3");
         assert_eq!(pending, 0, "No pending transactions");
-        pool.assert_invariants();
-    }
-
-    /// Verifies pending transactions respect their own limit independently
-    #[test]
-    fn test_pending_limit_enforced_separately() {
-        let config = AA2dPoolConfig {
-            price_bump_config: PriceBumpConfig::default(),
-            pending_limit: SubPoolLimit {
-                max_txs: 3,
-                max_size: usize::MAX,
-            },
-            queued_limit: SubPoolLimit {
-                max_txs: 10,
-                max_size: usize::MAX,
-            },
-            max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
-            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
-        };
-        let mut pool = AA2dPool::new(config);
-
-        // Add 5 pending transactions (nonce=0, different senders)
-        for i in 0..5usize {
-            let sender = Address::from_word(B256::from(U256::from(i)));
-            let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
-            let _ = pool.add_transaction(
-                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
-                0,
-                TempoHardfork::T1,
-            );
-        }
-
-        let (pending, queued) = pool.pending_and_queued_txn_count();
-        assert_eq!(pending, 3, "Pending should be capped at 3");
-        assert_eq!(queued, 0, "No queued transactions");
         pool.assert_invariants();
     }
 

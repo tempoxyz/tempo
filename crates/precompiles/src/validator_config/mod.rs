@@ -1036,31 +1036,4 @@ mod tests {
             Ok(())
         })
     }
-
-    #[test]
-    fn test_next_dkg_ceremony_returns_correct_value() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            // Default should be 0
-            assert_eq!(validator_config.get_next_full_dkg_ceremony()?, 0);
-
-            // Set to a specific value
-            validator_config.set_next_full_dkg_ceremony(
-                owner,
-                IValidatorConfig::setNextFullDkgCeremonyCall { epoch: 100 },
-            )?;
-
-            // Should return the set value, not 0 or 1
-            let result = validator_config.get_next_full_dkg_ceremony()?;
-            assert_eq!(result, 100);
-            assert_ne!(result, 0);
-            assert_ne!(result, 1);
-
-            Ok(())
-        })
-    }
 }

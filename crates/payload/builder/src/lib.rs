@@ -1236,23 +1236,3 @@ pub(crate) struct RootsTaskResult {
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extra_data_flow_in_attributes() {
-        // Test that extra_data in attributes can be accessed correctly
-        let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
-
-        let attrs = TempoPayloadAttributes::new(None, 1, 0, extra_data.clone(), None);
-
-        assert_eq!(attrs.extra_data(), &extra_data);
-
-        // Verify the data is as expected
-        let injected_data = attrs.extra_data().clone();
-
-        assert_eq!(injected_data, extra_data);
-    }
-}

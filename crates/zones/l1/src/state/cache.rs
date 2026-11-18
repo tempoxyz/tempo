@@ -485,19 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn coverage_defaults_to_zero() {
-        let cache = L1StateCacheInner::new();
-        assert_eq!(*cache.coverage.end(), 0);
-    }
-
-    #[test]
-    fn contiguous_update_advances_coverage() {
-        let mut cache = L1StateCacheInner::new();
-        cache.invalidate_and_set_anchor(1, []);
-        assert_eq!(*cache.coverage.end(), 1);
-    }
-
-    #[test]
     fn non_contiguous_update_resets_cache_at_new_floor() {
         let mut cache = L1StateCacheInner::new();
         let slot = B256::with_last_byte(1);

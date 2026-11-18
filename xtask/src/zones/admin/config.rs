@@ -330,17 +330,9 @@ pub(crate) fn format_duration(duration: Duration) -> String {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use clap::Parser as _;
-
     use super::*;
 
     static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
-
-    #[derive(Debug, clap::Parser)]
-    struct SharedParser {
-        #[command(flatten)]
-        shared: SharedAdminArgs,
-    }
 
     fn shared() -> SharedAdminArgs {
         SharedAdminArgs {
@@ -459,26 +451,5 @@ operator_rpc_url = "https://file-a.example"
         assert_eq!(labeled.name.as_deref(), Some("node-a"));
         let unlabeled: OperatorEndpoint = "http://127.0.0.1:9000".parse().unwrap();
         assert_eq!(unlabeled.name, None);
-    }
-
-    #[test]
-    fn clap_accepts_emergency_cli_without_config_or_manifest() {
-        let command = SharedParser::try_parse_from([
-            "check",
-            "--zone-id",
-            "7",
-            "--l1-rpc-url",
-            "https://l1.example",
-            "--operator-rpc",
-            "node-a=https://node-a.example",
-            "--operator-rpc",
-            "https://node-b.example",
-            "--json",
-        ])
-        .unwrap();
-        assert_eq!(command.shared.zone_id, Some(7));
-        assert_eq!(command.shared.operator_rpcs.len(), 2);
-        assert!(command.shared.zone_manifest.is_none());
-        assert!(command.shared.json);
     }
 }

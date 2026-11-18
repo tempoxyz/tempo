@@ -324,16 +324,6 @@ mod runtime_tests {
     }
 
     #[test]
-    fn can_execute_system_tx() {
-        let mut evm = create_evm();
-        let result = evm
-            .transact_detach(system_tx_env(TxKind::Call(Address::ZERO), Bytes::new()))
-            .unwrap();
-
-        assert!(result.result.status);
-    }
-
-    #[test]
     fn test_transact_raw() {
         let mut evm = create_evm();
 

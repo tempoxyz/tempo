@@ -282,31 +282,5 @@ contract NonceTest is TempoTest {
 
     // ============ Gas Tests ============
 
-    function test_Gas_GetNonce() public view {
-        uint256 gasBefore = gasleft();
-        nonce.getNonce(testAlice, 1);
-        uint256 gasUsed = gasBefore - gasleft();
-
-        // This is informational - actual gas usage will depend on implementation
-        assertTrue(gasUsed > 0, "Should consume some gas");
-    }
-
-    function test_Gas_IncrementNonce_FirstTime() public {
-        uint256 gasBefore = gasleft();
-        _incrementNonceViaStorage(testAlice, 1);
-        uint256 gasUsed = gasBefore - gasleft();
-
-        assertTrue(gasUsed > 0, "Should consume gas");
-    }
-
-    function test_Gas_IncrementNonce_Subsequent() public {
-        _incrementNonceViaStorage(testAlice, 1); // First increment
-
-        uint256 gasBefore = gasleft();
-        _incrementNonceViaStorage(testAlice, 1); // Second increment
-        uint256 gasUsed = gasBefore - gasleft();
-
-        assertTrue(gasUsed > 0, "Should consume gas");
-    }
 
 }

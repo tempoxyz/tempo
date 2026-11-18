@@ -2709,37 +2709,6 @@ contract ZonePortalTest is BaseTest {
         assertEq(portal.withdrawalQueueSlot(0), bytes32(0));
     }
 
-    function test_deposit_hashChainStructure() public {
-        // Verify the hash chain is built correctly: newest deposits wrap the outside
-        uint128 amount = 1000e6;
-
-        vm.startPrank(alice);
-        pathUSD.approve(address(portal), amount * 3);
-
-        // Initial state: currentDepositQueueHash = 0
-        bytes32 initialHash = portal.currentDepositQueueHash();
-        assertEq(initialHash, bytes32(0));
-
-        // After deposit 1
-        _deposit(portal, address(pathUSD), alice, amount, bytes32("d1"), alice);
-        bytes32 hash1 = portal.currentDepositQueueHash();
-
-        // After deposit 2: hash2 = keccak256(abi.encode(message2, hash1))
-        _deposit(portal, address(pathUSD), alice, amount, bytes32("d2"), alice);
-        bytes32 hash2 = portal.currentDepositQueueHash();
-
-        // After deposit 3: hash3 = keccak256(abi.encode(message3, hash2))
-        _deposit(portal, address(pathUSD), alice, amount, bytes32("d3"), alice);
-        bytes32 hash3 = portal.currentDepositQueueHash();
-
-        vm.stopPrank();
-
-        // Each hash should be different (chain is growing)
-        assertTrue(hash1 != hash2);
-        assertTrue(hash2 != hash3);
-        assertTrue(hash1 != hash3);
-    }
-
     function test_deposit_doesNotInspectEncryptedMintRecipientPolicy() public {
         uint128 depositAmount = 1000e6;
 
@@ -5212,21 +5181,6 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(portal)), encryptedPortalBalance);
         assertEq(portal.depositCount(), encryptedDepositCount);
         assertEq(keccak256(abi.encode(aliasLogs)), keccak256(abi.encode(encryptedLogs)));
-    }
-
-    function test_deposit_legacyPlaintextSelectorIsAbsent() public {
-        bytes memory callData = abi.encodeWithSignature(
-            "deposit(address,address,uint128,bytes32,address)",
-            address(pathUSD),
-            alice,
-            uint128(1000e6),
-            bytes32(0),
-            alice
-        );
-
-        vm.prank(alice);
-        (bool success,) = address(portal).call(callData);
-        assertFalse(success);
     }
 
     function test_deposit_success() public {

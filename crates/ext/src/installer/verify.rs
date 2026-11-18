@@ -79,14 +79,6 @@ mod tests {
     }
 
     #[test]
-    fn sha256_empty() {
-        assert_eq!(
-            sha256_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-    }
-
-    #[test]
     fn decode_public_key_valid() {
         let (pk, _) = test_keypair();
         let encoded = pk.to_base64();

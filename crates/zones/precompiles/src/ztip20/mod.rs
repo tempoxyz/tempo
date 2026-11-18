@@ -1022,14 +1022,19 @@ mod tests {
     }
 
     #[test]
-    fn fixed_gas_selector_mapping_is_complete() {
+    fn fixed_gas_applies_only_to_transfer_and_approval_selectors() {
         let rules = rules();
-        for selector in TIP20_FIXED_GAS_SELECTORS {
-            assert_eq!(
-                rules.fixed_gas(Some(*selector)),
-                Some(TIP20_FIXED_TRANSFER_GAS)
-            );
+        for selector in [
+            ITIP20::transferCall::SELECTOR,
+            ITIP20::transferFromCall::SELECTOR,
+            ITIP20::transferWithMemoCall::SELECTOR,
+            ITIP20::transferFromWithMemoCall::SELECTOR,
+            ITIP20::approveCall::SELECTOR,
+            ITIP20::permitCall::SELECTOR,
+        ] {
+            assert_eq!(rules.fixed_gas(Some(selector)), Some(100_000));
         }
+        assert_eq!(rules.fixed_gas(Some(ITIP20::balanceOfCall::SELECTOR)), None);
         assert_eq!(rules.fixed_gas(Some([0xff; 4])), None);
         assert_eq!(rules.fixed_gas(None), None);
     }

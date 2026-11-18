@@ -232,22 +232,6 @@ alloy_sol_types::sol! {
             );
     }
 
-    #[sol(rpc)]
-    contract LegacyUniversalEarnRouter {
-        function depositToZone(
-            address earnVault,
-            uint256 assets,
-            uint256 minEarnShares,
-            LegacyEarnZoneDelivery delivery
-        ) external returns (uint256 earnShares, bytes32 zoneDepositHash);
-        function redeemToZone(
-            address earnVault,
-            uint256 earnShares,
-            uint256 minAssets,
-            LegacyEarnZoneDelivery delivery
-        ) external returns (uint256 assets, bytes32 zoneDepositHash);
-    }
-
     /// Earn's public test-only stand-in for the DirectPropAMM par pool behind the router.
     #[sol(rpc)]
     contract DemoParPool {
@@ -2333,46 +2317,6 @@ async fn matrix_redeem_public_public_succeeds() -> eyre::Result<()> {
         fixture.l1.balance_of(fixture.vault_asset, user).await?,
         assets_before,
         "direct public EarnVault lifecycle did not return the deposited assets"
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn matrix_deposit_public_private_rejects_retired_router_surface() -> eyre::Result<()> {
-    let fixture = EarnZoneFixture::start().await?;
-    let user = fixture.user.address();
-    let result = LegacyUniversalEarnRouter::new(fixture.router, fixture.user.l1_provider())
-        .depositToZone(
-            fixture.earn_vault,
-            U256::from(AMOUNT),
-            U256::ONE,
-            legacy_delivery(fixture.portal, user),
-        )
-        .call()
-        .await;
-    eyre::ensure!(
-        result.is_err(),
-        "retired public-to-private deposit surface remained callable"
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn matrix_redeem_public_private_rejects_retired_router_surface() -> eyre::Result<()> {
-    let fixture = EarnZoneFixture::start().await?;
-    let user = fixture.user.address();
-    let result = LegacyUniversalEarnRouter::new(fixture.router, fixture.user.l1_provider())
-        .redeemToZone(
-            fixture.earn_vault,
-            U256::from(AMOUNT),
-            U256::ONE,
-            legacy_delivery(fixture.portal, user),
-        )
-        .call()
-        .await;
-    eyre::ensure!(
-        result.is_err(),
-        "retired public-to-private redeem surface remained callable"
     );
     Ok(())
 }

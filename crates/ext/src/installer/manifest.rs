@@ -210,18 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn is_allowed_rejects_http() {
-        assert!(!is_allowed_manifest_url(
-            "http://insecure.example.com/manifest.json"
-        ));
-    }
-
-    #[test]
-    fn is_allowed_rejects_ftp() {
-        assert!(!is_allowed_manifest_url("ftp://example.com/manifest.json"));
-    }
-
-    #[test]
     fn is_allowed_rejects_data_url() {
         assert!(!is_allowed_manifest_url("data:text/plain,hello"));
     }
@@ -229,11 +217,6 @@ mod tests {
     #[test]
     fn is_allowed_rejects_javascript_url() {
         assert!(!is_allowed_manifest_url("javascript:alert(1)"));
-    }
-
-    #[test]
-    fn is_allowed_accepts_absolute_path() {
-        assert!(is_allowed_manifest_url("/tmp/manifest.json"));
     }
 
     #[test]

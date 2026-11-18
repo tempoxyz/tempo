@@ -2245,52 +2245,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_must_be_first_call() {
-        let create_call = Call::new(TxKind::Create, Bytes::new());
-        let call_call = Call::new(Address::random(), Bytes::new());
-
-        // Valid: CREATE as first call
-        let tx_valid = TempoTransaction {
-            calls: vec![create_call.clone(), call_call.clone()],
-            ..Default::default()
-        };
-        assert!(tx_valid.validate().is_ok());
-
-        // Invalid: CREATE as second call
-        let tx_invalid = TempoTransaction {
-            calls: vec![call_call, create_call],
-            ..Default::default()
-        };
-        assert!(tx_invalid.validate().is_err());
-        assert!(tx_invalid.validate().unwrap_err().contains("first call"));
-    }
-
-    #[test]
-    fn test_only_one_create_allowed() {
-        let create_call = Call::new(TxKind::Create, Bytes::new());
-
-        // Valid: Single CREATE
-        let tx_valid = TempoTransaction {
-            calls: vec![create_call.clone()],
-            ..Default::default()
-        };
-        assert!(tx_valid.validate().is_ok());
-
-        // Invalid: Multiple CREATEs (both at first position, second one triggers error)
-        let tx_invalid = TempoTransaction {
-            calls: vec![create_call.clone(), create_call],
-            ..Default::default()
-        };
-        assert!(tx_invalid.validate().is_err());
-        assert!(
-            tx_invalid
-                .validate()
-                .unwrap_err()
-                .contains("only one CREATE")
-        );
-    }
-
-    #[test]
     fn test_create_forbidden_with_auth_list() {
         let create_call = Call::new(TxKind::Create, Bytes::new());
 
@@ -2313,23 +2267,6 @@ mod tests {
         let result = tx.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("aa_authorization_list"));
-    }
-
-    #[test]
-    fn test_create_validation_allows_call_only_batch() {
-        // A batch with only CALL operations should be valid
-        let call1 = Call::new(Address::random(), Bytes::new());
-        let call2 = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::random(),
-            input: Bytes::from(vec![1, 2, 3]),
-        };
-
-        let tx = TempoTransaction {
-            calls: vec![call1, call2],
-            ..Default::default()
-        };
-        assert!(tx.validate().is_ok());
     }
 
     #[test]

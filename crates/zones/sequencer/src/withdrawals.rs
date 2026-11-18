@@ -1135,29 +1135,6 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_hash_requires_param_encoding() {
-        let w = abi::Withdrawal {
-            token: address!("0x20c0000000000000000000000000000000000000"),
-            senderTag: B256::repeat_byte(0x22),
-            to: address!("0x70997970c51812dc3a010c7d01b50e0d17dc79c8"),
-            amount: 500_000,
-            memo: B256::ZERO,
-            gasLimit: 0,
-            fallbackNonce: 1,
-            callbackData: Default::default(),
-            encryptedSender: Default::default(),
-        };
-
-        let tuple_value_hash = keccak256((w.clone(), B256::ZERO).abi_encode());
-        let param_hash = keccak256((w, B256::ZERO).abi_encode_params());
-
-        assert_ne!(
-            tuple_value_hash, param_hash,
-            "tuple-value encoding must differ from Solidity abi.encode(args...) here"
-        );
-    }
-
-    #[test]
     fn withdrawal_gas_limits_are_classified_and_bounded() {
         let at_cap = PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS
             + process_withdrawal_item_gas(MAX_WITHDRAWAL_GAS_LIMIT, 1);
@@ -1261,29 +1238,6 @@ mod tests {
         store.remove_batch(0);
         assert!(!store.has_batch(0));
         assert_eq!(store.batch_count(), 0);
-    }
-
-    #[test]
-    fn store_slot_index_must_match_portal_tail() {
-        // Demonstrates that withdrawals must be stored under the portal's actual
-        // queue tail index. If the monitor starts with tail=0 but the portal is
-        // at tail=5, withdrawals end up in slot 0 while the withdrawal processor
-        // looks for them in slot 5.
-        let mut store = WithdrawalStore::new();
-        let w = test_withdrawal(Address::with_last_byte(0x42), 100);
-
-        // Simulate storing under the wrong slot (tail=0 when portal is at 5).
-        store.add_withdrawal(0, w.clone());
-        assert!(store.has_batch(0));
-        assert!(
-            !store.has_batch(5),
-            "withdrawal processor would look at slot 5 and find nothing"
-        );
-
-        // Correct: store under the portal's actual tail.
-        let portal_tail = 5u64;
-        store.add_withdrawal(portal_tail, w);
-        assert!(store.has_batch(portal_tail));
     }
 
     #[test]

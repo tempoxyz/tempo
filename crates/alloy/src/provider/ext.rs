@@ -471,22 +471,12 @@ mod tests {
 
     use crate::{
         TempoFillers, TempoNetwork,
-        fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
-        provider::ext::{SponsorConfig, TempoProviderBuilderExt, TempoProviderExt},
+        fillers::Random2DNonceFiller,
+        provider::ext::{TempoProviderBuilderExt, TempoProviderExt},
     };
 
     fn mock_provider(asserter: Asserter) -> impl alloy_provider::Provider<TempoNetwork> {
         ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(asserter)
-    }
-
-    #[test]
-    fn test_sponsor_builder_extension() {
-        let _ = ProviderBuilder::<_, _, TempoNetwork>::default()
-            .sponsor("https://sponsor.testnet.tempo.xyz");
-        let _ = ProviderBuilder::<_, _, TempoNetwork>::default().sponsor_with_config(
-            "https://sponsor.testnet.tempo.xyz",
-            SponsorConfig::sign_only(),
-        );
     }
 
     #[test]
@@ -509,28 +499,6 @@ mod tests {
                 );
                 fillers
             });
-    }
-
-    #[test]
-    fn test_with_expiring_nonces() {
-        let _: ProviderBuilder<
-            Stack<Identity, Identity>,
-            JoinFill<Identity, TempoFillers<ExpiringNonceFiller>>,
-            _,
-        > = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .layer(Identity)
-            .with_expiring_nonces();
-    }
-
-    #[test]
-    fn test_with_nonce_key_filler() {
-        let _: ProviderBuilder<
-            Stack<Identity, Identity>,
-            JoinFill<Identity, TempoFillers<NonceKeyFiller>>,
-            _,
-        > = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .layer(Identity)
-            .with_nonce_key_filler();
     }
 
     #[tokio::test]

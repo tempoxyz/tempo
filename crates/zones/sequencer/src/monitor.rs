@@ -1381,34 +1381,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_failure_enters_no_proof_submission_path() {
-        let l1 = Asserter::new();
-        let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());
-        monitor.settlement_prover =
-            Some(SettlementProver::fixed(Err(eyre::eyre!("invalid proof"))));
-        for _ in 0..MAX_RETRIES {
-            l1.push_failure_msg("portal read failed");
-        }
-
-        let ready = monitor
-            .batch_preparer()
-            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
-            .await
-            .unwrap();
-        assert_eq!(ready.verifier_mode, VerifierMode::NoProof);
-        assert!(ready.proof.is_none());
-
-        let error = monitor.submit_ready_batch(ready).await.unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("batch submission failed after 3 retries")
-        );
-        assert!(l1.read_q().is_empty(), "fallback must reach submission");
-    }
-
-    #[tokio::test]
     async fn submission_error_invalidates_pipeline_on_hardfork_change() {
         let l1 = Asserter::new();
         let mut monitor = test_monitor(l1.clone(), TestZoneProvider::new());

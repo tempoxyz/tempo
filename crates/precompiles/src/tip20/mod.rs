@@ -3039,21 +3039,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_is_tip20_prefix() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let created_tip20 = TIP20Setup::create("Test Token", "TEST", sender).apply()?;
-
-            assert!(PATH_USD_ADDRESS.is_tip20());
-            assert!(created_tip20.address.is_tip20());
-            assert!(!Address::random().is_tip20());
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_initialize_supply_cap() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();

@@ -1222,14 +1222,6 @@ mod tests {
     }
 
     #[test]
-    fn tempo_node_disables_fee_amm_pool_check() {
-        let node =
-            TempoNode::default().map_pool_builder(|pool| pool.with_disable_fee_amm_check(true));
-
-        assert!(node.pool_builder.disable_fee_amm_check);
-    }
-
-    #[test]
     fn tempo_node_configures_address_filter() {
         let address = Address::with_last_byte(1);
         let node = TempoNode::new(
@@ -1242,16 +1234,6 @@ mod tests {
 
         assert_eq!(node.pool_builder.address_filter.len(), 1);
         assert!(node.pool_builder.address_filter.contains(&address));
-    }
-
-    #[test]
-    fn tempo_node_sets_pool_builder() {
-        let node = TempoNode::default().with_pool_builder(TempoPoolBuilder {
-            aa_valid_after_max_secs: 42,
-            ..Default::default()
-        });
-
-        assert_eq!(node.pool_builder.aa_valid_after_max_secs, 42);
     }
 
     #[test]
@@ -1268,16 +1250,6 @@ mod tests {
             node.payload_builder_builder.build_time_multiplier,
             TempoNodeArgs::default().builder_build_time_multiplier
         );
-    }
-
-    #[test]
-    fn tempo_node_sets_payload_builder_builder() {
-        let node = TempoNode::default().with_payload_builder_builder(TempoPayloadBuilderBuilder {
-            state_provider_metrics: true,
-            ..Default::default()
-        });
-
-        assert!(node.payload_builder_builder.state_provider_metrics);
     }
 
     #[test_case::test_case(998; "same second")]

@@ -858,14 +858,6 @@ mod tests {
     }
 
     #[test]
-    fn constructs_a_minimal_batch_witness() {
-        let witness = minimal_batch_witness();
-
-        assert_eq!(witness.public_inputs.zone_id, 1);
-        assert!(witness.zone_blocks.is_empty());
-    }
-
-    #[test]
     fn rejects_an_empty_zone_batch() {
         let witness = minimal_batch_witness();
 

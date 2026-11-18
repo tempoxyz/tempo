@@ -1403,28 +1403,6 @@ mod tests {
         })
     }
 
-    /// Validator token slot computation is deterministic and the storage
-    /// write produces the expected value when read back via TipFeeManager.
-    #[test]
-    fn validator_token_slot_roundtrip() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sequencer = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut fee_manager = TipFeeManager::new();
-
-            // Write via the Mapping handler (what the executor does via journal sstore).
-            fee_manager.validator_tokens[sequencer].write(token)?;
-
-            // Read back via TipFeeManager API.
-            let read_back = fee_manager.get_validator_token(sequencer)?;
-            assert_eq!(read_back, token);
-
-            Ok(())
-        })
-    }
-
     #[test_case(0, TempoHardfork::T12, true)]
     #[test_case(0, TempoHardfork::T13, false)]
     #[test_case(0, TempoHardfork::T13, true)]

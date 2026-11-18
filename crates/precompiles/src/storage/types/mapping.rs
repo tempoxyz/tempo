@@ -169,24 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_slot_encoding() {
-        let key = Address::random();
-        let base_slot = U256::random();
-
-        // Manual computation to validate
-        let mut buf = [0u8; 64];
-        // Left-pad the address to 32 bytes
-        buf[12..32].copy_from_slice(key.as_ref());
-        // Slot in big-endian
-        buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
-
-        let expected = U256::from_be_bytes(keccak256(buf).0);
-        let computed = key.mapping_slot(base_slot);
-
-        assert_eq!(computed, expected, "mapping_slot encoding mismatch");
-    }
-
-    #[test]
     fn test_mapping_slot_matches_old_impl() {
         let slot = U256::random();
 

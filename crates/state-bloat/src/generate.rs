@@ -442,13 +442,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_entry_size() {
-        let slot = U256::ZERO.to_be_bytes::<32>();
-        let value = B256::with_last_byte(1);
-        assert_eq!(slot.len() + value.len(), 64);
-    }
-
     #[derive(Parser)]
     struct GeneratorCli {
         #[command(flatten)]

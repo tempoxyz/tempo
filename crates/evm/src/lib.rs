@@ -415,15 +415,6 @@ mod tests {
     };
 
     #[test]
-    fn test_evm_config_can_query_tempo_hardforks() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
-        let activation = evm_config
-            .chain_spec()
-            .tempo_fork_activation(TempoHardfork::Genesis);
-        assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
-    }
-
-    #[test]
     fn test_evm_env() {
         let evm_config = TempoEvmConfig::new(test_chainspec());
 
