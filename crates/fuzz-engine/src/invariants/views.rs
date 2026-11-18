@@ -19,7 +19,7 @@ use crate::state::{Net, PreStateDb, Reader};
 
 /// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
 /// answered from `view_cache` when the same call was made on the same state before.
-pub(super) struct EvmViews<'a> {
+pub(crate) struct EvmViews<'a> {
     evm: TempoEvm<'a>,
     /// What the call being made has read.
     reads: Rc<RefCell<Vec<Read>>>,
@@ -30,7 +30,7 @@ pub(super) struct EvmViews<'a> {
 }
 
 impl<'a> EvmViews<'a> {
-    pub(super) fn new<C: crate::engine::EvmConfig>(
+    pub(crate) fn new<C: crate::engine::EvmConfig>(
         db: impl Database + 'a,
         evm_config: &C,
         env: TempoEvmEnv,
@@ -260,7 +260,7 @@ impl Database for PreView<'_> {
 
 /// A view call that reverted, halted or could not run.
 #[derive(Debug, Clone)]
-pub(super) struct ViewFailed {
+pub(crate) struct ViewFailed {
     selector: Bytes,
     target: Address,
     reason: String,

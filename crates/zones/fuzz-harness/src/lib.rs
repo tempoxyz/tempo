@@ -7,6 +7,8 @@
 //! [`tempo_fuzz_types::TempoHarnessOutcome`] with Tempo's protocol invariants checked after every
 //! step. It exports the Tempo harness's C ABI, so the same loader runs either.
 
+mod accounts;
+mod chain;
 mod engine;
 mod types;
 
@@ -15,18 +17,32 @@ use core::ffi::c_int;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_fuzz_engine::ffi;
 use tempo_fuzz_types::{
-    HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION, TempoHarnessCapabilities, TempoHarnessOutcome,
+    ErrorClass, HarnessInputKind, PreState, TYPED_HARNESS_SCHEMA_VERSION, TempoExecutionOutcome,
+    TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
 };
 
-pub use engine::{L1, Zone};
-pub use types::{L1StateInput, ZoneHarnessInput};
+use chain::watched;
+pub use engine::{L1, L1Chain, Zone};
+pub use types::{L1Input, L1StateInput, ZoneHarnessInput};
 
 /// The hardforks a zone runs: zones launched on T13.
 const HARDFORKS: &[TempoHardfork] = &[TempoHardfork::T13, TempoHardfork::T14, TempoHardfork::T15];
 
 /// Executes `input` on a zone that reads its L1 state.
 pub fn run(input: ZoneHarnessInput) -> TempoHarnessOutcome {
-    tempo_fuzz_engine::run(&Zone::new(&input.l1), input.input)
+    if zone_code(&input.input) {
+        return invalid(
+            &input.input,
+            "the zone pre-state holds code a zone never stores",
+        );
+    }
+    match input.l1 {
+        L1Input::State(l1) => {
+            let zone = Zone::new(L1::state(&l1), watched(&input.input));
+            tempo_fuzz_engine::run(&zone, input.input)
+        }
+        L1Input::Chain(tempo) => chain::run(&tempo, input.input),
+    }
 }
 
 /// Executes a bincode-encoded [`ZoneHarnessInput`] and writes the bincode-encoded
@@ -92,3 +108,31 @@ pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `input`'s pre-state holds code starting with 0xef outside the zone genesis: the
+/// configurable account marker or a delegation. Zones create no contracts and reject
+/// authorization lists, so they never store either.
+fn zone_code(input: &TempoHarnessInput) -> bool {
+    let accounts = match input {
+        TempoHarnessInput::Transaction(_) => return false,
+        TempoHarnessInput::State(state) => &state.pre_state.accounts,
+        TempoHarnessInput::Blockchain(chain) => match &chain.pre_state {
+            PreState::Genesis(state) | PreState::Exact { state, .. } => &state.accounts,
+        },
+    };
+    accounts.iter().any(|(address, account)| {
+        !engine::GENESIS_STATE.accounts.contains_key(address) && account.code.first() == Some(&0xef)
+    })
+}
+
+/// The outcome of `input`'s kind for an input the zone cannot run, rejected for `why`.
+fn invalid(input: &TempoHarnessInput, why: &'static str) -> TempoHarnessOutcome {
+    let error = tempo_fuzz_engine::reject(ErrorClass::InvalidInput, why);
+    chain::failed(
+        input,
+        TempoExecutionOutcome {
+            error,
+            ..Default::default()
+        },
+    )
+}

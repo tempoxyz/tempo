@@ -10,7 +10,7 @@ use tempo_invariants::all;
 
 use super::{
     StepEffects,
-    views::{EvmViews, PreView, ViewCache, ViewFailed},
+    views::{EvmViews, PreView, ViewCache},
 };
 use crate::{engine::EvmConfig, state::Db};
 
@@ -81,11 +81,11 @@ impl<C: EvmConfig> Reader<'_, C> {
 
 /// `read`'s value, counting it under `view`: a read nothing answered is not armed, one that
 /// failed otherwise breaks `view`.
-fn observed<T>(
+pub fn observed<T, E: Display>(
     report: &mut Report,
     view: &'static str,
     subject: impl Display,
-    read: Result<T, ObserveError<ViewFailed>>,
+    read: Result<T, ObserveError<E>>,
 ) -> Option<T> {
     let counts = report.counts.entry(view).or_default();
     counts.evaluated += 1;
