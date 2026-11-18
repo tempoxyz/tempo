@@ -531,7 +531,6 @@ jobs:
       version: ${{ steps.release-version.outputs.version }}
       is_release: ${{ steps.release-version.outputs.is_release }}
       is_stable: ${{ steps.release-version.outputs.is_stable }}
-      zones_floating: ${{ steps.release-version.outputs.zones_floating }}
       prover_release: ${{ steps.release-version.outputs.prover_release }}
       prover_stable: ${{ steps.release-version.outputs.prover_stable }}
     steps:
@@ -589,21 +588,16 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           fi
-          # zones/v* tags may also come from a protected release/* branch, which
-          # holds releases cut from an earlier Tempo release, matching Zones
-          # Release. prover/v* tags stay on main only.
+          # Releases come from main or a protected release/* branch.
           on_protected_branch() {
-            git merge-base --is-ancestor "$1" refs/remotes/origin/main && return 0
-            [[ "$component" == zones ]] || return 1
             [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
-              'refs/remotes/origin/release/*')" ]]
+              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
           }
           if ! on_protected_branch "$commit_sha"; then
             # Prepare Zones Release tags the commit on its pre-release branch,
             # which a squash merge keeps off main. Accept it only for zones/v*
-            # tags, as one commit on main (or an accepted release/* branch)
-            # that changes nothing but Zones version lines. prover/v* tags must
-            # point to a commit on main.
+            # tags, as one commit on main that changes nothing but Zones
+            # version lines. prover/v* tags must point to a commit on main.
             read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
             parent="${ancestry[1]:-}"
             # Without rename detection a moved file shows as a deletion and an
@@ -620,7 +614,7 @@ jobs:
             if [[ "$component" != zones || "${#ancestry[@]}" -ne 2 ]] ||
                ! on_protected_branch "$parent" ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
-              echo "Release tag $tag does not point to a commit on main or a release/* branch, or a Zones version bump on one" >&2
+              echo "Release tag $tag does not point to a commit on main or a Zones version bump on one" >&2
               exit 1
             fi
           fi
@@ -636,10 +630,6 @@ jobs:
             exit 1
           fi
 
-          highest_zones="$(
-            { git tag -l 'zones/v*' | sed -n -E 's#^zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
-              sort -V | tail -n 1
-          )"
           release_key=is_release
           stable_key=is_stable
           if [[ "$component" == prover ]]; then
@@ -649,14 +639,8 @@ jobs:
           {
             echo "version=v$version"
             echo "$release_key=true"
-            # Only the highest stable Zones version moves the floating stable
-            # and major tags; an older zones/v* release keeps its exact tag.
-            if [[ "$version" != *-* ]] &&
-               [[ "$component" == prover || "$version" == "$highest_zones" ]]; then
+            if [[ "$version" != *-* ]]; then
               echo "$stable_key=true"
-            fi
-            if [[ "$component" == zones && "$version" == "$highest_zones" ]]; then
-              echo "zones_floating=true"
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -673,8 +657,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -974,24 +958,6 @@ jobs:
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      - name: Recheck highest Zones version
-        id: floating
-        # A newer zones/v* tag may have landed since build-and-push read the
-        # tags; only a release that is still the highest moves floating tags.
-        env:
-          VERSION: ${{ needs.build-and-push.outputs.version }}
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-        run: |
-          set -euo pipefail
-          version="${VERSION#v}"
-          remote_tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/zones/v*')"
-          highest="$(
-            { printf '%s\n' "$remote_tags" | sed -n -E 's#^[0-9a-f]+\trefs/tags/zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
-              sort -V | tail -n 1
-          )"
-          if [[ "$version" == "$highest" ]]; then
-            echo "still_highest=true" >> "$GITHUB_OUTPUT"
-          fi
       - name: Docker metadata for tempo-zone-xtask
         id: meta-tempo-zone-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -1005,9 +971,9 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -1428,24 +1394,6 @@ jobs:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Recheck highest Zones version
-        id: floating
-        # A newer zones/v* tag may have landed since build-and-push read the
-        # tags; only a release that is still the highest moves floating tags.
-        env:
-          VERSION: ${{ needs.build-and-push.outputs.version }}
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-        run: |
-          set -euo pipefail
-          version="${VERSION#v}"
-          remote_tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/zones/v*')"
-          highest="$(
-            { printf '%s\n' "$remote_tags" | sed -n -E 's#^[0-9a-f]+\trefs/tags/zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
-              sort -V | tail -n 1
-          )"
-          if [[ "$version" == "$highest" ]]; then
-            echo "still_highest=true" >> "$GITHUB_OUTPUT"
-          fi
       - name: Docker metadata for promoted tempo-zone
         id: meta-tempo-zone
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -1458,9 +1406,9 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ inputs.nightly == true }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-

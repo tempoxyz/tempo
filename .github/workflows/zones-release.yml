@@ -148,8 +148,7 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          # A release/* branch holds releases that backport fixes onto an
-          # earlier release; it is protected like main.
+          # Releases come from main or a protected release/* branch.
           on_protected_branch() {
             [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
               refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
