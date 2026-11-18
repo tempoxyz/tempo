@@ -10,7 +10,7 @@ use std::{
 
 use alloy_provider::{Provider as _, RootProvider};
 use alloy_pubsub::{ConnectionHandle, PubSubConnect};
-use alloy_rpc_client::{RpcClient, WsConnect};
+use alloy_rpc_client::{RpcClient, WebSocketConfig, WsConnect};
 use alloy_rpc_types_eth::{Block as RpcBlock, Transaction};
 use alloy_transport::{TransportErrorKind, TransportResult};
 use commonware_consensus::{Reporter, types::Height};
@@ -18,6 +18,7 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use eyre::{Report, WrapErr as _, ensure};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use rand_08::Rng as _;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use tempo_alloy::TempoNetwork;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
@@ -55,6 +56,11 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the upstream node may take to answer `consensus_subscribe`.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The largest websocket frame and message accepted from the upstream node.
+///
+/// The upstream sends a whole block as JSON in one frame: hex doubles its RLP size, which
+/// [`MAX_RLP_BLOCK_SIZE`] bounds, and field names add under 1 KiB per transaction.
+const MAX_MESSAGE_SIZE: usize = 8 * MAX_RLP_BLOCK_SIZE;
 
 /// Manages the connection to the upstream node.
 ///
@@ -359,6 +365,11 @@ impl Connector for WebSocketConnector {
         async move {
             let connect = NoReconnect(
                 WsConnect::new(url.as_str())
+                    .with_config(
+                        WebSocketConfig::default()
+                            .max_frame_size(Some(MAX_MESSAGE_SIZE))
+                            .max_message_size(Some(MAX_MESSAGE_SIZE)),
+                    )
                     .with_keepalive_interval(PING_INTERVAL)
                     // alloy already stops at the first non-retryable reconnect error; this keeps
                     // it from waiting between attempts if that ever changes.
@@ -568,6 +579,15 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use alloy_consensus::{
+        BlockBody, EMPTY_ROOT_HASH, SignableTransaction as _, TxLegacy,
+        proofs::calculate_transaction_root,
+        transaction::{Recovered, TransactionInfo},
+    };
+    use alloy_primitives::{Address, Signature};
+    use alloy_rlp::Encodable as _;
+    use alloy_rpc_types_eth::BlockTransactions;
+
     struct DropGuard(Arc<AtomicBool>);
 
     impl Drop for DropGuard {
@@ -635,6 +655,130 @@ mod tests {
             .await
             .expect("event stream must end once the server closes the subscription");
         assert!(next.is_none(), "expected the stream to end, got {next:?}");
+    }
+
+    #[tokio::test]
+    async fn receives_block_at_rlp_size_limit() {
+        let transaction = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                input: vec![0xff; 2048].into(),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        // Leaves room for the header and the list prefixes.
+        let transactions =
+            vec![transaction.clone(); (MAX_RLP_BLOCK_SIZE - 1024) / transaction.length()];
+        let block = SealedBlock::seal_slow(tempo_primitives::Block {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: calculate_transaction_root(&transactions),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions,
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        });
+        assert!(block.length() > MAX_RLP_BLOCK_SIZE - 4096);
+        let certified = CertifiedBlock {
+            epoch: 0,
+            view: 0,
+            digest: block.hash(),
+            certificate: String::new(),
+            block: block.clone().into(),
+        };
+        let rpc_block = RpcBlock {
+            header: alloy_rpc_types_eth::Header::from_consensus(
+                block.clone_sealed_header().into(),
+                None,
+                None,
+            ),
+            uncles: Vec::new(),
+            transactions: BlockTransactions::Full(
+                block
+                    .body()
+                    .transactions
+                    .iter()
+                    .map(|transaction| {
+                        Transaction::from_transaction(
+                            Recovered::new_unchecked(transaction.clone(), Address::ZERO),
+                            TransactionInfo::default(),
+                        )
+                    })
+                    .collect(),
+            ),
+            withdrawals: Some(Default::default()),
+        };
+
+        let mut module = jsonrpsee::RpcModule::new((certified.clone(), rpc_block));
+        module
+            .register_subscription(
+                "consensus_subscribe",
+                "consensus_event",
+                "consensus_unsubscribe",
+                |_, pending, context| async move {
+                    let sink = pending.accept().await?;
+                    let event = jsonrpsee::SubscriptionMessage::new(
+                        sink.method_name(),
+                        sink.subscription_id().clone(),
+                        &Event::Finalized {
+                            block: context.0.clone(),
+                            seen: 0,
+                        },
+                    )
+                    .unwrap();
+                    sink.send(event).await?;
+                    sink.closed().await;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        module
+            .register_method("consensus_getFinalization", |_, context| {
+                Some(context.0.clone())
+            })
+            .unwrap();
+        module
+            .register_method("eth_getBlockByHash", |_, context| Some(context.1.clone()))
+            .unwrap();
+        let server = jsonrpsee::server::Server::builder()
+            .set_config(
+                jsonrpsee::server::ServerConfig::builder()
+                    .max_response_body_size(u32::MAX)
+                    .build(),
+            )
+            .build("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let _handle = server.start(module);
+
+        let connector = WebSocketConnector::new(format!("ws://{addr}").parse().unwrap());
+        let (_, client) = connector.connect(0).await;
+        let client = client.unwrap();
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let mut events = UpstreamClient::subscribe_events(&client).await.unwrap();
+            let event = events.next().await.unwrap().unwrap();
+            assert!(matches!(event, Event::Finalized { block, .. } if block == certified));
+
+            let finalization = UpstreamClient::get_finalization(&client, Height::new(0))
+                .await
+                .unwrap();
+            assert_eq!(finalization, Some(certified));
+
+            let fetched = UpstreamClient::get_block(&client, Digest(block.hash()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(fetched.block(), &block);
+        })
+        .await
+        .expect("a block at the RLP size limit must arrive through every request");
     }
 
     #[tokio::test]
