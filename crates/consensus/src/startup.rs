@@ -84,3 +84,23 @@ pub(crate) fn verify_finalized_tip(
     scheme_provider.register(Epoch::new(trusted.from_epoch), scheme);
     Ok(trusted)
 }
+
+/// Ensures a startup DKG outcome is at most one epoch past the finalized tip's epoch.
+///
+/// [`verify_finalized_tip`] accepts a tip older than the trusted identity without
+/// verifying it. Bounding the startup outcome by that tip forces the node to cross every
+/// boundary up to the identity's epoch, where the pinned identity is checked.
+pub(crate) fn ensure_outcome_within_tip_epoch(
+    outcome_epoch: Epoch,
+    tip: Option<&Certificate>,
+) -> eyre::Result<()> {
+    if let Some(tip) = tip {
+        let tip_epoch = tip.proposal.round.epoch();
+        ensure!(
+            outcome_epoch <= tip_epoch.next(),
+            "startup DKG outcome is for epoch `{outcome_epoch}`, past the epoch after the \
+             finalized tip's epoch `{tip_epoch}`",
+        );
+    }
+    Ok(())
+}

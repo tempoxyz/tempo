@@ -220,3 +220,7 @@ broadcast may preserve original headers.
 Sponsor relay services may enforce their own policy, rate limits, and authentication. Applications
 should surface sponsor errors to users and avoid assuming every valid Tempo AA transaction is
 eligible for sponsorship.
+
+The local preflight is stateless and does not authenticate the sender: keychain access keys and
+configurable-account commitments are only checked against chain state by the node. Sponsor services
+must verify the claimed account themselves before applying identity-based policy, quotas, or signing.

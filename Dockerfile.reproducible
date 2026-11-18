@@ -71,7 +71,10 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update && \
 WORKDIR /app
 COPY . .
 
+# VERGEN_IDEMPOTENT=0 overrides .cargo/config.toml, so the published hash stays what it was before
+# idempotent mode existed.
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    VERGEN_IDEMPOTENT=0 \
     LC_ALL=C \
     TZ=UTC \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \

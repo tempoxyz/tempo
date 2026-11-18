@@ -33,6 +33,9 @@ extern crate alloc;
 
 pub mod account;
 
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+
 use once_cell as _;
 // TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
 #[cfg(feature = "rpc")]

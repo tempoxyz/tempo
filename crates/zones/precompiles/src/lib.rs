@@ -67,6 +67,7 @@ mod execution;
 mod privacy;
 pub use execution::ZonePrecompileEnv;
 mod account_keychain;
+mod configurable_account;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
@@ -101,11 +102,14 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, Precompile as _,
-    RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
+    signature_verifier::SignatureVerifier,
     storage::{actions::StorageActions, evm::EvmStorageExt},
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
@@ -176,20 +180,7 @@ where
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.base.contains(address)
-            || is_tip20_prefix(*address)
-            || matches!(
-                *address,
-                TEMPO_STATE_ADDRESS
-                    | ZONE_INBOX_ADDRESS
-                    | ZONE_FEE_MANAGER_ADDRESS
-                    | TIP403_REGISTRY_ADDRESS
-                    | NONCE_PRECOMPILE_ADDRESS
-                    | ACCOUNT_KEYCHAIN_ADDRESS
-                    | RECEIVE_POLICY_GUARD_ADDRESS
-                    | STORAGE_CREDITS_ADDRESS
-            )
-            || cfg!(feature = "std") && *address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+        self.base.contains(address) || is_zone_precompile(*address, self.env.spec())
     }
 
     fn execute(
@@ -294,6 +285,17 @@ where
                 StorageCredits,
                 storage_credits::StorageCreditsRules
             )
+        } else if address == CONFIGURABLE_ACCOUNT_ADDRESS && self.env.spec().is_t14() {
+            zone_precompile!(
+                evm,
+                message,
+                gas,
+                &self.env,
+                ConfigurableAccount,
+                configurable_account::ConfigurableAccountRules
+            )
+        } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
+            zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
         } else {
             #[cfg(feature = "std")]
             if address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS {
@@ -320,6 +322,47 @@ where
     }
 }
 
+/// Whether `address` is a precompile a Zone running `spec` adds to Ethereum's built-ins: a Zone
+/// system contract, or a Tempo precompile the Zone wraps, including every TIP-20 token.
+pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
+    if is_tip20_prefix(address)
+        || cfg!(feature = "std") && address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS
+    {
+        return true;
+    }
+    match address {
+        TEMPO_STATE_ADDRESS
+        | ZONE_INBOX_ADDRESS
+        | ZONE_FEE_MANAGER_ADDRESS
+        | TIP403_REGISTRY_ADDRESS
+        | NONCE_PRECOMPILE_ADDRESS
+        | ACCOUNT_KEYCHAIN_ADDRESS
+        | RECEIVE_POLICY_GUARD_ADDRESS
+        | STORAGE_CREDITS_ADDRESS => true,
+        // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
+        CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
+        _ => false,
+    }
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_utils;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Zones add ConfigurableAccount and SignatureVerifier at T14 (TIP-1154), even though Tempo
+    /// activated SignatureVerifier earlier, so zone blocks before T14 execute unchanged.
+    #[test]
+    fn tip1154_precompiles_activate_at_t14() {
+        for address in [CONFIGURABLE_ACCOUNT_ADDRESS, SIGNATURE_VERIFIER_ADDRESS] {
+            assert!(
+                !is_zone_precompile(address, TempoHardfork::T13),
+                "{address}"
+            );
+            assert!(is_zone_precompile(address, TempoHardfork::T14), "{address}");
+        }
+    }
+}

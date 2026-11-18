@@ -416,6 +416,66 @@ fn duplicate_and_late_acks_do_not_penalize_peers() {
 }
 
 #[test]
+fn messages_from_nonparticipants_are_rejected_before_decoding() {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 3, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let mut harness = Harness::builder(context.child("actor"), "nonparticipant_messages")
+            .initial_state(state.clone())
+            .identity(keys[0].clone())
+            .build()
+            .await;
+        let (mut actor, _mailbox) = harness.init().await.unwrap();
+        let mut storage = actor
+            .storage
+            .take()
+            .unwrap()
+            .init_verified(state.clone())
+            .await;
+        let outsider = PrivateKey::from_seed(u64::MAX).public_key();
+        assert!(round.dealers().position(&outsider).is_none());
+        assert!(round.players().position(&outsider).is_none());
+        let mut sender = harness.sender().clone();
+
+        // The payloads are not decodable: reaching the decoder would fail
+        // with a decoding error instead.
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::ACK_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received an ACK from a non-player"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone()]);
+
+        let result = actor
+            .handle_network_msg(
+                &round,
+                &mut sender,
+                &mut storage,
+                None,
+                None,
+                outsider.clone(),
+                vec![Message::DEALER_TAG, u8::MAX].into(),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "received a dealing from a non-dealer"
+        );
+        assert_eq!(harness.blocker.peers(), vec![outsider.clone(), outsider]);
+    });
+}
+
+#[test]
 fn local_share_storage_failures_panic_and_allow_recovery() {
     // Fail opening the dealing's journal section, syncing the dealing, or
     // syncing the ACK after the dealing has already been persisted.
@@ -2012,18 +2072,93 @@ fn dealer_log_verification_distinguishes_unavailable_state_from_invalid_logs() {
         assert!(
             harness
                 .mailbox()
-                .verify_dealer_log(state.epoch.next(), vec![u8::MAX].into())
+                .verify_dealer_log(state.epoch.next(), 0, vec![u8::MAX].into())
                 .await
                 .is_err()
         );
         assert!(
             harness
                 .mailbox()
-                .verify_dealer_log(state.epoch, vec![u8::MAX].into())
+                .verify_dealer_log(state.epoch, 0, vec![u8::MAX].into())
                 .await
                 .unwrap()
                 .is_none()
         );
+    });
+}
+
+#[test]
+fn dealer_logs_with_trailing_bytes_are_invalid_from_t15() {
+    assert_dealer_logs_with_trailing_bytes(true);
+}
+
+#[test]
+fn dealer_logs_with_trailing_bytes_are_valid_before_t15() {
+    assert_dealer_logs_with_trailing_bytes(false);
+}
+
+/// Checks a dealer log with a trailing byte against the application's
+/// verification and the ceremony that reads finalized blocks.
+fn assert_dealer_logs_with_trailing_bytes(t15: bool) {
+    Runner::default().start(|mut context| async move {
+        let (state, keys, _) = dkg_state(&mut context, Epoch::new(1), 4, true);
+        let round = Round::from_state(&state, crate::config::NAMESPACE, true);
+        let dealers = keys
+            .iter()
+            .map(|key| (key.clone(), None))
+            .collect::<Vec<_>>();
+        let signed_logs = signed_dealer_logs(
+            round.info(),
+            &dealers,
+            &keys,
+            |index| StdRng::seed_from_u64(index as u64),
+            |_, _| false,
+        );
+        let (trailing_dealer, _) = signed_logs[0].clone().check(round.info()).unwrap();
+        let mut trailing = signed_logs[0].encode().to_vec();
+        trailing.push(0);
+
+        let mut harness = Harness::builder(context.child("test"), "trailing_dealer_logs")
+            .initial_state(state.clone())
+            .identity(PrivateKey::from_seed(100))
+            .build()
+            .await;
+        if !t15 {
+            // Drops every fork after T12, T15 among them.
+            harness.execution.set_t12_activation(Some(0));
+        }
+        harness.start().await;
+
+        let verdict = harness
+            .mailbox()
+            .verify_dealer_log(state.epoch, 0, trailing.clone().into())
+            .await
+            .unwrap();
+        assert_eq!(verdict, (!t15).then_some(trailing_dealer));
+
+        for (offset, signed) in signed_logs.iter().enumerate() {
+            let mut log_header = header(Height::new(15 + offset as u64));
+            log_header.inner.extra_data = if offset == 0 {
+                trailing.clone().into()
+            } else {
+                signed.encode().into()
+            };
+            harness.report_finalized_header(log_header).await;
+        }
+        // The ceremony concludes before the end of the epoch only with the logs
+        // of all dealers. From T15, it lacks the log with the trailing byte.
+        let parent = parent_block(
+            ConsensusRound::new(state.epoch, View::new(18)),
+            Height::new(18),
+            1,
+        );
+        let concluded = context
+            .timeout(
+                Duration::from_secs(1),
+                harness.mailbox().subscribe_dkg_ceremony(parent),
+            )
+            .await;
+        assert_eq!(concluded.is_ok(), !t15);
     });
 }
 
@@ -2382,5 +2517,35 @@ fn outcome_request_switches_notarized_ancestry_branches() {
 
         assert_eq!(cached_first_output, first_output);
         assert_eq!(harness.marshal.subscriptions(), subscriptions);
+    });
+}
+
+#[test]
+fn boundary_outcome_must_be_for_the_next_epoch() {
+    Runner::timed(Duration::from_secs(10)).start(|mut context| async move {
+        let (state, _, _) = dkg_state(&mut context, Epoch::new(1), 4, false);
+        let (skipped, _, _) = dkg_state(&mut context, Epoch::new(3), 4, false);
+        let mut harness = Harness::builder(context.child("test"), "boundary_skips_an_epoch")
+            .epoch_length(10)
+            .initial_state(state.clone())
+            .build()
+            .await;
+        harness.start().await;
+        assert!(!harness.has_dealer_log(state.epoch).await);
+
+        // Height 19 ends epoch 1, but its outcome claims epoch 3.
+        let boundary = outcome_header(Height::new(19), &skipped);
+        harness.execution.add_header(boundary.clone());
+        let (acknowledgement, _waiter) = commonware_utils::acknowledgement::Exact::handle();
+        let _ = commonware_consensus::Reporter::report(
+            &mut harness.mailbox().clone(),
+            commonware_consensus::marshal::Update::Block(block(boundary).into(), acknowledgement),
+        );
+        harness.wait_for_exit().await;
+
+        assert_eq!(harness.storage().current().epoch, state.epoch);
+        assert!(!harness.epoch_manager.events().iter().any(
+            |event| matches!(event, EpochEvent::Enter { epoch, .. } if *epoch == skipped.epoch)
+        ));
     });
 }

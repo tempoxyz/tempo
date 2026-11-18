@@ -171,6 +171,8 @@ jobs:
           BIN_FEATURES: ${{ matrix.binary.features }}
           BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
           TARGET: ${{ matrix.platform.target }}
+          # Release binaries carry the real build timestamp.
+          VERGEN_IDEMPOTENT: "0"
         run: cargo build --locked --bin "$BIN_NAME" --features "$BIN_FEATURES" --profile "$BUILD_PROFILE" --target "$TARGET"
 
       - name: Prepare binary

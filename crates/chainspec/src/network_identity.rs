@@ -68,46 +68,30 @@ fn deserialize_identity<'de, D: Deserializer<'de>>(
 mod tests {
     use super::*;
     use commonware_codec::Encode as _;
+    use test_case::test_case;
 
-    #[test]
-    fn compiled_identities_match_files() {
-        for (identity, json) in [
-            (
-                NetworkIdentity::mainnet(),
-                env!("TEMPO_MAINNET_NETWORK_IDENTITY"),
-            ),
-            (
-                NetworkIdentity::testnet(),
-                env!("TEMPO_TESTNET_NETWORK_IDENTITY"),
-            ),
-        ] {
-            let published = serde_json::from_str::<serde_json::Value>(json).unwrap();
+    #[test_case(NetworkIdentity::mainnet(), env!("TEMPO_MAINNET_NETWORK_IDENTITY"))]
+    #[test_case(NetworkIdentity::testnet(), env!("TEMPO_TESTNET_NETWORK_IDENTITY"))]
+    fn compiled_identities_match_files(identity: NetworkIdentity, json: &str) {
+        let published = serde_json::from_str::<serde_json::Value>(json).unwrap();
 
-            assert_eq!(
-                identity.from_epoch,
-                published["from_epoch"].as_u64().unwrap()
-            );
-            assert_eq!(
-                hex::encode_prefixed(identity.identity.encode()),
-                published["identity"]
-            );
-        }
+        assert_eq!(
+            identity.from_epoch,
+            published["from_epoch"].as_u64().unwrap()
+        );
+        assert_eq!(
+            hex::encode_prefixed(identity.identity.encode()),
+            published["identity"]
+        );
     }
 
-    #[test]
-    fn deserialize_rejects_invalid_identity() {
-        for (encoded, expected) in [
-            ("0x00".to_owned(), "invalid string length"),
-            ("gg".repeat(96), "invalid character 'g' at position 0"),
-            (
-                "00".repeat(96),
-                "Validation Error: Context(G2), Message(Bad encoding)",
-            ),
-        ] {
-            let json = serde_json::json!({ "from_epoch": 2042, "identity": encoded });
-            let error = serde_json::from_value::<NetworkIdentity>(json).unwrap_err();
-
-            assert_eq!(error.to_string(), expected);
-        }
+    #[test_case("0x00".to_owned() => "invalid string length")]
+    #[test_case("gg".repeat(96) => "invalid character 'g' at position 0")]
+    #[test_case("00".repeat(96) => "Validation Error: Context(G2), Message(Bad encoding)")]
+    fn deserialize_rejects_invalid_identity(encoded: String) -> String {
+        let json = serde_json::json!({ "from_epoch": 2042, "identity": encoded });
+        serde_json::from_value::<NetworkIdentity>(json)
+            .unwrap_err()
+            .to_string()
     }
 }

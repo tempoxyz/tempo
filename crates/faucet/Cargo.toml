@@ -28,6 +28,5 @@ alloy = { workspace = true, features = [
   "providers",
   "reqwest-rustls-tls", # TODO(mattsse): set this to just reqwest after https://github.com/alloy-rs/alloy/pull/2865
 ] }
-async-trait.workspace = true
 jsonrpsee.workspace = true
 clap.workspace = true

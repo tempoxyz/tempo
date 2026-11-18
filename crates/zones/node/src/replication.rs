@@ -3,7 +3,9 @@
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
 use alloy_rlp::Decodable as _;
+use eyre::OptionExt as _;
 use futures::{StreamExt as _, stream::BoxStream};
+use minicbor::data::Type;
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
 use reth_storage_api::{BlockNumReader, BlockReader, StateProviderFactory};
@@ -358,7 +360,71 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
     let block = Block::decode(&mut input)
         .map_err(|err| eyre::eyre!("invalid RLP-encoded zone block: {err}"))?;
     let witness = if witnessed {
-        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(input));
+        // minicbor-serde recurses once per nesting level and the flattened witness buffers unknown
+        // keys recursively, so bound the depth iteratively before deserializing.
+        let mut depth_check = minicbor::Decoder::new(input);
+        // An open container: items left in a definite one, or whether an indefinite map still
+        // owes the value of its last key.
+        enum Open {
+            Definite(u64),
+            IndefiniteArray,
+            IndefiniteMap { value_due: bool },
+        }
+        let mut open = Vec::new();
+        loop {
+            let datatype = depth_check.datatype()?;
+            if datatype == Type::Break {
+                let closed = open.pop();
+                eyre::ensure!(
+                    matches!(
+                        closed,
+                        Some(Open::IndefiniteArray | Open::IndefiniteMap { value_due: false })
+                    ),
+                    "unexpected CBOR break"
+                );
+            } else {
+                match open.last_mut() {
+                    Some(Open::Definite(remaining)) => *remaining -= 1,
+                    Some(Open::IndefiniteMap { value_due }) => *value_due = !*value_due,
+                    Some(Open::IndefiniteArray) | None => {}
+                }
+            }
+            match datatype {
+                Type::Array | Type::ArrayIndef => open.push(
+                    depth_check
+                        .array()?
+                        .map_or(Open::IndefiniteArray, Open::Definite),
+                ),
+                Type::Map | Type::MapIndef => open.push(match depth_check.map()? {
+                    Some(pairs) => Open::Definite(
+                        pairs
+                            .checked_mul(2)
+                            .ok_or_eyre("witness CBOR map is too long")?,
+                    ),
+                    None => Open::IndefiniteMap { value_due: false },
+                }),
+                Type::Tag => {
+                    depth_check.tag()?;
+                    open.push(Open::Definite(1));
+                }
+                // Also consumes a break.
+                _ => depth_check.skip()?,
+            }
+            eyre::ensure!(
+                open.len() <= MAX_WITNESS_CBOR_DEPTH,
+                "witness CBOR nests deeper than {MAX_WITNESS_CBOR_DEPTH} levels"
+            );
+            while matches!(open.last(), Some(Open::Definite(0))) {
+                open.pop();
+            }
+            if open.is_empty() {
+                break;
+            }
+        }
+        // serde must only see the bytes the walk checked.
+        let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(
+            &input[..depth_check.position()],
+        ));
         let proof = serde::Deserialize::deserialize(&mut deserializer)?;
         input = &input[deserializer.decoder().position()..];
         Some(proof)
@@ -382,6 +448,9 @@ const BACKFILL_PAGE_SIZE: u64 = 64;
 /// one request outstanding per peer, so manifest size bounds the live queue depth; the
 /// headroom absorbs requests arriving before the server task starts.
 pub(crate) const BACKFILL_SERVE_QUEUE_CAPACITY: usize = 128;
+
+/// Deepest CBOR nesting accepted in a peer witness. Honest witnesses nest only a few levels.
+const MAX_WITNESS_CBOR_DEPTH: usize = 32;
 
 fn serve_backfill_page<P>(
     provider: &P,
@@ -530,9 +599,12 @@ pub(crate) async fn collect_follower_settlement_signatures(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+        thread,
     };
 
     use futures::{StreamExt as _, stream};
@@ -753,6 +825,66 @@ mod tests {
         json.extend_from_slice(&bare);
         serde_json::to_writer(&mut json, &proof).unwrap();
         assert!(decode_peer_block(&json).is_err());
+    }
+
+    #[test]
+    fn witness_envelope_rejects_deeply_nested_cbor() {
+        let bare = alloy_rlp::encode(Block::default());
+        // {"formatVersion": 2, "witness": {"x": <nested>}}: serde buffers the flattened witness's
+        // unknown key recursively, so nested arrays and maps overflow this stack unchecked.
+        let prefix = [
+            &[0xa2, 0x6d][..],
+            b"formatVersion",
+            &[0x02, 0x67],
+            b"witness",
+            &[0xa1, 0x61, b'x'],
+        ]
+        .concat();
+        for nested in [0x81, 0x9f, 0xa1, 0xbf, 0xc6].map(|header| vec![header; 5_000]) {
+            let encoded = [
+                EncodedBlock::WITNESS_PREFIX,
+                &bare,
+                &prefix,
+                &nested,
+                &[0x00],
+            ]
+            .concat();
+            let err = thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || decode_peer_block(&encoded).unwrap_err().to_string())
+                .unwrap()
+                .join()
+                .unwrap();
+            assert_eq!(err, "witness CBOR nests deeper than 32 levels");
+        }
+
+        // A break where an indefinite map owes a value must not end the walk early: serde reads
+        // it as the ignored value of "x" and decodes the unchecked rest.
+        let early_break = [
+            EncodedBlock::WITNESS_PREFIX,
+            &bare,
+            &[0xbf, 0x6d],
+            b"formatVersion",
+            &[0x02, 0x61, b'x', 0xff, 0x67],
+            b"witness",
+            &[0xa1, 0x61, b'x'],
+            &[0x81; 5_000],
+            &[0x00, 0xff],
+        ]
+        .concat();
+        let err = thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || decode_peer_block(&early_break).unwrap_err().to_string())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(err, "unexpected CBOR break");
+
+        let stray_break = [EncodedBlock::WITNESS_PREFIX, &bare, &prefix, &[0xff]].concat();
+        assert_eq!(
+            decode_peer_block(&stray_break).unwrap_err().to_string(),
+            "unexpected CBOR break"
+        );
     }
 
     #[tokio::test]
