@@ -425,6 +425,15 @@ class LedgerModel(unittest.TestCase):
         self.check(10)
         self.assertEqual(self.checks, [])
 
+    def test_signs_token_transactions(self):
+        keys = driver.Ledger.derive()
+        signed = keys[0].sign_transaction({
+            "type": 2, "chainId": driver.CHAIN_ID, "nonce": 0, "to": driver.TOKEN, "value": 0,
+            "gas": driver.GAS_LIMIT, "maxFeePerGas": 2, "maxPriorityFeePerGas": 0,
+            "data": driver.call_data("mint", keys[1].address, 5),
+        })
+        self.assertTrue(bytes(signed.raw_transaction))
+
     def test_genesis_accounts_derive_from_localnet_mnemonic(self):
         keys = driver.Ledger.derive()
         self.assertEqual(keys[0].address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")

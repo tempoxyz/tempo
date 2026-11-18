@@ -22,7 +22,7 @@ FAULT_CONTROL_TIMEOUT = 10
 # BetaUSD carries no fees: genesis sets AlphaUSD as every account's fee token,
 # so a token's balances move only through the transactions this driver sends.
 CHAIN_ID = 1337
-TOKEN = "0x20c0000000000000000000000000000000000002"
+TOKEN = "0x20C0000000000000000000000000000000000002"
 MNEMONIC = "test test test test test test test test test test test junk"
 ISSUER = 0  # Genesis grants account 0 the issuer role on every token.
 TRACKED = tuple(range(1, 17))
