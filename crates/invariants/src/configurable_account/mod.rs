@@ -46,26 +46,7 @@ impl Observe for Commitments {
             admins: queries,
             keys: key_queries,
         } = at;
-        let calls: Vec<_> = accounts
-            .iter()
-            .map(|&account| {
-                (
-                    precompile,
-                    IConfigurableAccount::getConfigCommitmentCall { account },
-                )
-            })
-            .collect();
-        let read = view_many(views, &calls)?;
-        let mut of = BTreeMap::new();
-        for (&account, commitment) in accounts.iter().zip(read) {
-            let commitment = commitment.ok_or(ObserveError::NotAnswered {
-                call: "getConfigCommitment(address)",
-                to: precompile,
-            });
-            if let Some(commitment) = optional(views, commitment)? {
-                of.insert(account, commitment);
-            }
-        }
+        let of = read_commitments(views, precompile, accounts)?;
         let calls: Vec<_> = queries
             .iter()
             .map(|&(account, key_id)| {
@@ -107,6 +88,35 @@ impl Observe for Commitments {
             keys,
         })
     }
+}
+
+/// Each of `accounts`' commitments as `precompile` reports them, leaving out unanswered ones.
+pub(crate) fn read_commitments<V: Views>(
+    views: &mut V,
+    precompile: Address,
+    accounts: &[Address],
+) -> Result<BTreeMap<Address, B256>, ObserveError<V::Error>> {
+    let calls: Vec<_> = accounts
+        .iter()
+        .map(|&account| {
+            (
+                precompile,
+                IConfigurableAccount::getConfigCommitmentCall { account },
+            )
+        })
+        .collect();
+    let read = view_many(views, &calls)?;
+    let mut of = BTreeMap::new();
+    for (&account, commitment) in accounts.iter().zip(read) {
+        let commitment = commitment.ok_or(ObserveError::NotAnswered {
+            call: "getConfigCommitment(address)",
+            to: precompile,
+        });
+        if let Some(commitment) = optional(views, commitment)? {
+            of.insert(account, commitment);
+        }
+    }
+    Ok(of)
 }
 
 /// The precompile and the accounts whose commitments to read, and the keychain and the

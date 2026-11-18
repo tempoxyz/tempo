@@ -7,6 +7,7 @@ use std::sync::{Arc, LazyLock};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::Address;
 use evm2::evm::Cache;
+use invariants_core::Report;
 use reth_consensus::{Consensus, HeaderValidator};
 use reth_evm::{BlockExecutionError, BlockExecutorFactory, ConfigureEvm};
 use tempo_chainspec::{TempoChainSpec, spec::TempoConsensusSpec};
@@ -14,7 +15,7 @@ use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus
 use tempo_fuzz_types::{ChainSpecInput, ErrorClass};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
-use crate::{chain, state};
+use crate::{chain, state, step::StepState};
 
 /// An EVM configuration whose blocks execute on Tempo's EVM, as Tempo L1's and a zone's do.
 pub trait EvmConfig:
@@ -75,7 +76,8 @@ pub trait Engine {
     fn genesis(&self) -> &Cache;
 
     /// Whether the chain runs the protocol contract at `contract`, so its invariants apply. Every
-    /// one by default; a zone runs no stablecoin DEX.
+    /// one by default; a zone runs no stablecoin DEX, and keeps no configurable account commitments
+    /// of its own (`CONFIGURABLE_ACCOUNT_ADDRESS`), mirroring Tempo's.
     fn runs(&self, _contract: &Address) -> bool {
         true
     }
@@ -102,6 +104,19 @@ pub trait Engine {
         _header: &TempoHeader,
     ) -> Result<Vec<Recovered<TempoTxEnvelope>>, BlockExecutionError> {
         Ok(Vec::new())
+    }
+    /// Checks the engine's own invariants on the state after each step, beyond the protocol's,
+    /// recording what they find in `report`. Runs after the protocol invariants, unless the
+    /// process turns invariants off.
+    fn check_step<C: EvmConfig>(&self, _state: &StepState<'_, C>, _report: &mut Report) {}
+
+    /// Whether a block leaves out each of its transactions that a sequencer's block builder would,
+    /// rather than failing: one invalid at its position, and a system or subblock transaction,
+    /// which its pool never admits. Only the input's own transactions are left out; a system
+    /// transaction [`Self::open_block`] or [`Self::close_block`] returns that is invalid still fails
+    /// the block.
+    fn skips_invalid_txs(&self) -> bool {
+        false
     }
 }
 

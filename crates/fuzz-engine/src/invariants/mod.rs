@@ -29,13 +29,15 @@ pub(crate) static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("TEMPO_FUZZ_INVARIANTS").is_none_or(|value| value != "0"));
 
 use reader::Reader;
-pub(crate) use views::ViewCache;
+pub use reader::observed;
+pub(crate) use views::{EvmViews, ViewCache};
 
 mod configurable_account;
 mod reader;
 mod views;
 
-pub(crate) use configurable_account::authority;
+pub use configurable_account::authority;
+pub(crate) use configurable_account::{account_at, leaf};
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
@@ -47,6 +49,9 @@ pub(crate) struct StepEffects<'a> {
     pub(crate) logs: &'a [Log],
     pub(crate) tx: Tx,
     pub(crate) spec: TempoHardfork,
+    /// Whether the chain keeps configurable accounts' commitments itself, so the TIP-1107 account
+    /// invariants judge the step. A zone mirrors Tempo's instead.
+    pub(crate) accounts: bool,
 }
 
 impl StepEffects<'_> {
@@ -197,7 +202,7 @@ pub(crate) fn check<C: EvmConfig>(
         };
         reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
-    if let Some(effects) = &effects {
+    if let Some(effects) = effects.as_ref().filter(|effects| effects.accounts) {
         configurable_account::check(&reader, db, effects, &mut step);
     }
 

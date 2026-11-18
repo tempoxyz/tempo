@@ -178,7 +178,7 @@ fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     let db = state::seed(&genesis(), crate::Engine::genesis(&crate::Tempo)).unwrap();
     let blocks: Vec<_> = blocks
         .iter()
-        .map(|block| execute::recover_block(spec.as_ref(), block).unwrap())
+        .map(|block| execute::recover_block(spec.as_ref(), block, None).unwrap())
         .collect();
     let mut outcome = TempoExecutionOutcome::default();
     let _ = execute::execute_blocks(
@@ -188,6 +188,7 @@ fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
         &db,
         &blocks,
         &mut outcome,
+        &mut |_, _| {},
     );
     assert_eq!(outcome.error, ErrorClass::None);
 

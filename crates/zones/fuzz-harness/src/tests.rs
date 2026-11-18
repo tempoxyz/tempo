@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
-use alloy_consensus::{SignableTransaction as _, TxLegacy};
-use alloy_eips::Encodable2718 as _;
+use alloy_consensus::{SignableTransaction as _, TxEip7702, TxLegacy};
+use alloy_eips::{Encodable2718 as _, eip7702::Authorization};
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
+use alloy_signer::SignerSync as _;
+use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall as _;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
@@ -18,10 +20,17 @@ use tempo_precompiles::{
     tip20::slots::{BALANCES, TOTAL_SUPPLY},
     zone_factory::{ZonePortalStorage, portal_address},
 };
-use tempo_primitives::{MasterId, TempoAddressExt as _, TempoTxEnvelope, UserTag};
+use tempo_primitives::{
+    MasterId, TempoAddressExt as _, TempoTxEnvelope, UserTag,
+    transaction::{
+        Call, ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        PrimitiveSignature, TempoSignature, TempoTransaction, configurable_account_digest,
+        envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+    },
+};
 use zone_primitives::constants::zone_chain_id;
 
-use crate::{L1StateInput, ZoneHarnessInput, run};
+use crate::{L1Input, L1StateInput, ZoneHarnessInput, run};
 
 const ZONE_ID: u32 = 1;
 const SENDER: Address = address!("00000000000000000000000000000000000000a1");
@@ -29,9 +38,10 @@ const RECIPIENT: Address = address!("00000000000000000000000000000000000000b2");
 const MASTER: Address = address!("00000000000000000000000000000000000000c3");
 const MASTER_ID: [u8; 4] = [0xaa, 1, 2, 3];
 const FUNDS: u64 = 1_000_000;
+const TEMPO_CHAIN_ID: u64 = 1_337;
 
 fn chain_id() -> u64 {
-    zone_chain_id(1_337, ZONE_ID).unwrap()
+    zone_chain_id(TEMPO_CHAIN_ID, ZONE_ID).unwrap()
 }
 
 /// Every hardfork up to `fork` at genesis, the rest long after.
@@ -119,6 +129,21 @@ fn execute(
     l1: L1StateInput,
     blocks: Vec<Vec<Bytes>>,
 ) -> TempoExecutionOutcome {
+    let outcome = run(zone_input(fork, L1Input::State(l1), blocks, Some(SENDER)));
+    let TempoHarnessOutcome::Blockchain(outcome) = outcome else {
+        panic!("a blockchain input has a blockchain outcome");
+    };
+    outcome
+}
+
+/// A zone input of `blocks` on `fork`, reading `l1`, every transaction sent by `sender` or, without
+/// one, by the account its signature recovers.
+fn zone_input(
+    fork: TempoHardfork,
+    l1: L1Input,
+    blocks: Vec<Vec<Bytes>>,
+    sender: Option<Address>,
+) -> ZoneHarnessInput {
     let blocks = blocks
         .into_iter()
         .enumerate()
@@ -129,24 +154,20 @@ fn execute(
                 hardfork: fork,
                 ..Default::default()
             }),
-            senders: vec![SENDER; txs.len()],
+            senders: sender.map_or_else(Vec::new, |sender| vec![sender; txs.len()]),
             txs,
         })
         .collect::<Vec<_>>()
         .try_into()
         .expect("at least one block");
-    let outcome = run(ZoneHarnessInput {
+    ZoneHarnessInput {
         l1,
         input: TempoHarnessInput::Blockchain(TempoBlockchainInput {
             chain_spec: chain(fork),
             pre_state: pre_state(),
             blocks,
         }),
-    });
-    let TempoHarnessOutcome::Blockchain(outcome) = outcome else {
-        panic!("a blockchain input has a blockchain outcome");
-    };
-    outcome
+    }
 }
 
 /// The outcomes of the input's transactions: each block's receipts after its `advanceTempo`.
@@ -241,7 +262,7 @@ fn t15_virtual_address_transfers_resolve_through_l1_registry() {
 #[test]
 fn non_zone_chain_ids_are_invalid() {
     let mut input = ZoneHarnessInput {
-        l1: L1StateInput::default(),
+        l1: L1Input::State(L1StateInput::default()),
         input: TempoHarnessInput::Blockchain(TempoBlockchainInput {
             chain_spec: chain(TempoHardfork::T15),
             pre_state: pre_state(),
@@ -261,4 +282,251 @@ fn non_zone_chain_ids_are_invalid() {
         panic!("a blockchain input has a blockchain outcome");
     };
     assert_eq!(outcome.error, ErrorClass::InvalidInput);
+}
+
+/// A configurable account owned by one deterministic key, its version-zero configuration, and the
+/// account it derives.
+fn owned_account(seed: u8) -> (PrivateKeySigner, ConfigurableAccountConfig, Address) {
+    let owner = PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).unwrap();
+    let config = ConfigurableAccountConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let account = config.derive_account().unwrap();
+    (owner, config, account)
+}
+
+/// A call to [`RECIPIENT`] on `chain_id` from `account`, approved by `owner` in a quorum carrying
+/// `config`, without fees.
+fn quorum_tx(
+    chain_id: u64,
+    account: Address,
+    config: &ConfigurableAccountConfig,
+    owner: &PrivateKeySigner,
+) -> Bytes {
+    let tx = TempoTransaction {
+        chain_id,
+        fee_token: Some(PATH_USD_ADDRESS),
+        gas_limit: 1_000_000,
+        calls: vec![Call {
+            to: TxKind::Call(RECIPIENT),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+    let digest = configurable_account_digest(tx.signature_hash(), account, config.version);
+    let approval = PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap());
+    let signature = ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval])
+        .expect("the witness has a valid shape");
+    TempoTxEnvelope::AA(tx.into_signed(TempoSignature::ConfigurableAccount(signature)))
+        .encoded_2718()
+        .into()
+}
+
+/// A Tempo chain from its genesis on `fork`, one block per entry of `blocks`.
+fn tempo_chain(fork: TempoHardfork, blocks: Vec<Vec<Bytes>>) -> TempoBlockchainInput {
+    TempoBlockchainInput {
+        chain_spec: ChainSpecInput {
+            chain_id: TEMPO_CHAIN_ID,
+            ..chain(fork)
+        },
+        pre_state: PreState::Genesis(StateInput::default()),
+        blocks: blocks
+            .into_iter()
+            .enumerate()
+            .map(|(index, txs)| TempoBlock {
+                header: BlockHeaderInput::Context(BlockContextInput {
+                    timestamp: index as u64 + 1,
+                    hardfork: fork,
+                    ..Default::default()
+                }),
+                txs,
+                senders: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("at least one block"),
+    }
+}
+
+/// `zone` blocks on a zone of the Tempo chain of `tempo` blocks, both on T14.
+fn on_tempo(tempo: Vec<Vec<Bytes>>, zone: Vec<Vec<Bytes>>) -> TempoExecutionOutcome {
+    let fork = TempoHardfork::T14;
+    let input = zone_input(fork, L1Input::Chain(tempo_chain(fork, tempo)), zone, None);
+    let TempoHarnessOutcome::Blockchain(outcome) = run(input) else {
+        panic!("a blockchain input has a blockchain outcome");
+    };
+    outcome
+}
+
+/// How often `id` was judged and armed.
+fn judged(outcome: &TempoExecutionOutcome, id: &str) -> (u64, u64) {
+    let counts = outcome
+        .invariant_counts
+        .get(id)
+        .copied()
+        .unwrap_or_default();
+    (counts.evaluated, counts.armed)
+}
+
+#[test]
+fn zone_blocks_advance_through_the_tempo_chain() {
+    let outcome = on_tempo(vec![vec![], vec![], vec![]], vec![vec![], vec![], vec![]]);
+    assert_clean(&outcome);
+    // Each zone block imports the next Tempo block, which TempoState checks links to the last.
+    assert_eq!(outcome.receipts.len(), 3);
+    assert!(
+        outcome
+            .receipts
+            .iter()
+            .all(|r| r.outcome == TxOutcome::Success),
+        "{:?}",
+        outcome.receipts
+    );
+    assert!(judged(&outcome, "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE").1 > 0);
+}
+
+#[test]
+fn a_zone_transaction_signed_by_a_quorum_registered_on_tempo_executes() {
+    let (owner, config, account) = owned_account(1);
+    let register = quorum_tx(TEMPO_CHAIN_ID, account, &config, &owner);
+    let send = quorum_tx(chain_id(), account, &config, &owner);
+    let outcome = on_tempo(vec![vec![register]], vec![vec![send]]);
+
+    assert_clean(&outcome);
+    assert_eq!(user_outcomes(&outcome), [TxOutcome::Success]);
+    // The account's quorum is judged against its Tempo commitment, which the zone mirrors.
+    assert_eq!(
+        judged(&outcome, "TEMPO-ZONE-ACCOUNT-QUORUM-COMMITMENT"),
+        (1, 1)
+    );
+    for id in [
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        "TEMPO-ZONE-ACCOUNT-INELIGIBLE",
+        "TEMPO-ZONE-ACCOUNT-MARKER-CALL",
+        "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-ANCHORED",
+        "TEMPO-ZONE-ACCOUNT-NO-WRITE",
+        "TEMPO-ZONE-ACCOUNT-NO-AUTHORIZATION-LIST",
+        "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+        "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
+        "TEMPO-ZONE-ACCOUNT-VIEW",
+    ] {
+        assert!(judged(&outcome, id).1 > 0, "{id} is never armed");
+    }
+}
+
+#[test]
+fn a_zone_block_leaves_out_transactions_the_zone_rejects() {
+    let (owner, config, account) = owned_account(1);
+    let register = quorum_tx(TEMPO_CHAIN_ID, account, &config, &owner);
+    // A quorum of another owner, carrying a configuration Tempo does not hold for the account.
+    let (stranger, mut stale, _) = owned_account(2);
+    stale.owners[0].owner = stranger.address();
+    let stale = quorum_tx(chain_id(), account, &stale, &stranger);
+    let authorization = Authorization {
+        chain_id: U256::from(chain_id()),
+        address: RECIPIENT,
+        nonce: 0,
+    }
+    .into_signed(Signature::test_signature());
+    let authorizing: Bytes = TempoTxEnvelope::Eip7702(
+        TxEip7702 {
+            chain_id: chain_id(),
+            gas_limit: 1_000_000,
+            to: RECIPIENT,
+            authorization_list: vec![authorization],
+            ..Default::default()
+        }
+        .into_signed(Signature::test_signature()),
+    )
+    .encoded_2718()
+    .into();
+    let system: Bytes = TempoTxEnvelope::Legacy(
+        TxLegacy {
+            chain_id: Some(chain_id()),
+            to: TxKind::Call(RECIPIENT),
+            ..Default::default()
+        }
+        .into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+    )
+    .encoded_2718()
+    .into();
+    let send = quorum_tx(chain_id(), account, &config, &owner);
+    let outcome = on_tempo(
+        vec![vec![register]],
+        vec![vec![stale, authorizing, system, send]],
+    );
+
+    assert_clean(&outcome);
+    // Only the last transaction executed.
+    assert_eq!(user_outcomes(&outcome), [TxOutcome::Success]);
+    assert_eq!(
+        judged(&outcome, "TEMPO-ZONE-ACCOUNT-QUORUM-COMMITMENT"),
+        (1, 1)
+    );
+}
+
+#[test]
+fn bad_zone_inputs_on_a_tempo_chain_are_invalid() {
+    let fork = TempoHardfork::T14;
+    let input = |tempo: TempoBlockchainInput, zone: Vec<Vec<Bytes>>| {
+        zone_input(fork, L1Input::Chain(tempo), zone, None)
+    };
+    let mut exact_tempo = tempo_chain(fork, vec![vec![]]);
+    exact_tempo.pre_state = PreState::Exact {
+        state: StateInput::default(),
+        block_hashes: BTreeMap::new(),
+    };
+    let mut other_chain = tempo_chain(fork, vec![vec![]]);
+    other_chain.chain_spec.chain_id = TEMPO_CHAIN_ID + 1;
+    let with_code = |code: Bytes| {
+        let mut input = input(tempo_chain(fork, vec![vec![]]), vec![vec![]]);
+        let TempoHarnessInput::Blockchain(chain) = &mut input.input else {
+            unreachable!()
+        };
+        let PreState::Genesis(state) = &mut chain.pre_state else {
+            unreachable!()
+        };
+        state.accounts.insert(
+            RECIPIENT,
+            AccountInput {
+                code,
+                ..Default::default()
+            },
+        );
+        input
+    };
+    let cases = [
+        ("exact Tempo pre-state", input(exact_tempo, vec![vec![]])),
+        (
+            "more zone blocks",
+            input(tempo_chain(fork, vec![vec![]]), vec![vec![], vec![]]),
+        ),
+        ("another chain's zone", input(other_chain, vec![vec![]])),
+        (
+            "marker code",
+            with_code(tempo_primitives::account::CONFIGURABLE_ACCOUNT_CODE),
+        ),
+        (
+            "delegation",
+            with_code(Bytes::from_static(&[0xef, 0x01, 0x00, 0xaa])),
+        ),
+    ];
+    for (case, input) in cases {
+        let TempoHarnessOutcome::Blockchain(outcome) = run(input) else {
+            panic!("a blockchain input has a blockchain outcome");
+        };
+        assert_eq!(
+            (outcome.error, outcome.receipts.len()),
+            (ErrorClass::InvalidInput, 0),
+            "{case}"
+        );
+    }
 }

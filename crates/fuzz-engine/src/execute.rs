@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_consensus::{
-    BlockHeader as _,
+    BlockHeader as _, Sealable as _,
     proofs::calculate_transaction_root,
     transaction::{Recovered, Transaction as _},
 };
@@ -16,9 +16,12 @@ use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
 use invariants_core::Report;
+use reth_chainspec::EthChainSpec as _;
 use reth_evm::{BlockExecutionError, BlockExecutor, BlockValidationError};
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
+use tempo_chainspec::hardfork::TempoHardforks as _;
+use tempo_contracts::precompiles::CONFIGURABLE_ACCOUNT_ADDRESS;
 use tempo_evm::{TempoEvm, TempoEvmEnv, TempoInvalidTransaction};
 use tempo_fuzz_types::{
     BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
@@ -26,13 +29,15 @@ use tempo_fuzz_types::{
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_primitives::{Block, BlockBody, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 use crate::{
+    anchor::Anchor,
     chain,
     engine::{BlockConsensus, Chain, Engine, EvmConfig},
     invariants,
     state::{self, Contracts, Db, Net},
+    step::{self as own, StepState},
 };
 
 type ExecutionBlock = RecoveredBlock<Block>;
@@ -54,6 +59,7 @@ pub(crate) enum Check {
     Header,
     SenderCount,
     IncompletePreState,
+    AnchoredChain,
     /// An error class no check recorded a reason for.
     Unclassified,
 }
@@ -71,6 +77,9 @@ impl Display for Check {
             Self::Header => "header does not resolve",
             Self::SenderCount => "sender count differs from the transaction count",
             Self::IncompletePreState => "pre-state could not answer a read",
+            Self::AnchoredChain => {
+                "an anchored chain needs a genesis pre-state and context headers"
+            }
             Self::Unclassified => "no reason recorded",
         })
     }
@@ -81,7 +90,7 @@ impl Display for Check {
 /// derived Debug form starts with, so it comes from the error's type rather than its text, such as
 /// `Rejected/CollectFeePreTx/InsufficientFeeTokenBalance` for
 /// `CollectFeePreTx(InsufficientFeeTokenBalance { .. })`.
-pub(crate) fn reject(class: ErrorClass, why: impl Debug + Display) -> ErrorClass {
+pub fn reject(class: ErrorClass, why: impl Debug + Display) -> ErrorClass {
     let debug = format!("{why:?}");
     REJECTION.with_borrow_mut(|r| {
         r.clear();
@@ -184,14 +193,55 @@ pub fn execute<E: Engine>(
     pre_state: &PreState,
     blocks: &[TempoBlock],
 ) -> TempoExecutionOutcome {
+    execute_with(engine, chain, pre_state, blocks, None)
+}
+
+/// Executes `blocks` as [`execute`] does, as a chain from its genesis: they are numbered from 1
+/// and each header's parent hash links it to the one before, from the genesis header. Returns the
+/// outcome, and the genesis header with the pre-state and each block that applied with the state
+/// after it, which a chain built on this one, such as a zone, reads it at.
+///
+/// The pre-state must be [`PreState::Genesis`] and every header [`BlockHeaderInput::Context`],
+/// whose `block_number` is ignored; otherwise the input is `InvalidInput` and nothing is anchored.
+pub fn execute_anchored<E: Engine>(
+    engine: &E,
+    chain: &ChainSpecInput,
+    pre_state: &PreState,
+    blocks: &[TempoBlock],
+) -> (TempoExecutionOutcome, Vec<Anchor>) {
+    let anchorable = matches!(pre_state, PreState::Genesis(_))
+        && blocks
+            .iter()
+            .all(|block| matches!(block.header, BlockHeaderInput::Context(_)));
+    if !anchorable {
+        let outcome = TempoExecutionOutcome {
+            error: reject(ErrorClass::InvalidInput, Check::AnchoredChain),
+            ..Default::default()
+        };
+        return (outcome, Vec::new());
+    }
+    let mut anchors = Vec::new();
+    let outcome = execute_with(engine, chain, pre_state, blocks, Some(&mut anchors));
+    (outcome, anchors)
+}
+
+/// Executes `blocks`, anchoring them to `anchors` as [`execute_anchored`] describes when given.
+fn execute_with<E: Engine>(
+    engine: &E,
+    chain: &ChainSpecInput,
+    pre_state: &PreState,
+    blocks: &[TempoBlock],
+    mut anchors: Option<&mut Vec<Anchor>>,
+) -> TempoExecutionOutcome {
     let prepared = engine
         .chain(chain)
         .map_err(|class| reject(class, Check::HardforkSchedule))
         .and_then(|chain| {
             let spec = &chain.spec;
+            let mut parent = anchors.is_some().then(|| spec.genesis_header().clone());
             let blocks = blocks
                 .iter()
-                .map(|block| recover_block(spec.as_ref(), block))
+                .map(|block| recover_block(spec.as_ref(), block, parent.as_mut()))
                 .collect::<Result<Vec<_>, _>>()?;
             if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
                 return Err(reject(ErrorClass::InvalidInput, Check::TimestampOrder));
@@ -202,9 +252,9 @@ pub fn execute<E: Engine>(
         });
     let (
         Chain {
+            spec,
             evm_config,
             consensus,
-            ..
         },
         blocks,
         db,
@@ -219,9 +269,23 @@ pub fn execute<E: Engine>(
     };
 
     let pre = db.cache.borrow().clone();
+    let mut anchor = |header: &TempoHeader, db: &Db| {
+        if let Some(anchors) = anchors.as_deref_mut() {
+            let fork = spec.tempo_hardfork_at(header.inner.timestamp);
+            anchors.push(Anchor::new(header.clone(), fork, db.cache.borrow().clone()));
+        }
+    };
+    anchor(spec.genesis_header(), &db);
     let mut outcome = TempoExecutionOutcome::default();
-    let (applied, failed_logs) =
-        execute_blocks(engine, &evm_config, &consensus, &db, &blocks, &mut outcome);
+    let (applied, failed_logs) = execute_blocks(
+        engine,
+        &evm_config,
+        &consensus,
+        &db,
+        &blocks,
+        &mut outcome,
+        &mut anchor,
+    );
     if !outcome.invariant_failures.is_empty() {
         let invariant_failures = broken_start(
             engine,
@@ -305,10 +369,13 @@ fn broken_start(
     failures
 }
 
-/// `block` with its header resolved, its transactions decoded and their senders known.
+/// `block` with its header resolved, its transactions decoded and their senders known. With
+/// `parent`, a context header follows it: it takes the next number and links to its hash, and then
+/// becomes the parent.
 pub(crate) fn recover_block(
     spec: &impl tempo_chainspec::spec::TempoConsensusSpec,
     block: &TempoBlock,
+    parent: Option<&mut TempoHeader>,
 ) -> Result<ExecutionBlock, ErrorClass> {
     let mut header =
         chain::header(spec, &block.header).map_err(|class| reject(class, Check::Header))?;
@@ -331,6 +398,12 @@ pub(crate) fn recover_block(
     };
     if matches!(block.header, BlockHeaderInput::Context(_)) {
         header.inner.transactions_root = calculate_transaction_root(&txs);
+        if let Some(parent) = parent {
+            // Blocks are numbered from 1, so no input holds enough to overflow.
+            header.inner.number = parent.inner.number + 1;
+            header.inner.parent_hash = parent.hash_slow();
+            *parent = header.clone();
+        }
     }
     let body = BlockBody {
         transactions: txs,
@@ -354,6 +427,7 @@ pub(crate) fn execute_blocks(
     db: &Db,
     blocks: &[ExecutionBlock],
     outcome: &mut TempoExecutionOutcome,
+    applied_block: &mut dyn FnMut(&TempoHeader, &Db),
 ) -> (Net, Vec<Log>) {
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
@@ -373,6 +447,7 @@ pub(crate) fn execute_blocks(
                 for update in &updates {
                     applied.apply(update);
                 }
+                applied_block(block.header(), db);
                 outcome.receipts.extend(outputs.receipts);
                 outcome.state_diff.blocks.push(outputs.changes);
                 outcome
@@ -561,12 +636,34 @@ fn execute_txs<'a>(
         run(executor, tx.as_recovered_ref())?;
     }
     for tx in block.transactions_recovered() {
-        run(executor, tx)?;
+        // The pool admits no system transaction and no subblock transaction.
+        if engine.skips_invalid_txs() && (tx.is_system_tx() || tx.has_sub_block_nonce_key_prefix())
+        {
+            continue;
+        }
+        match run(executor, tx) {
+            // Executing an invalid transaction changes nothing, so leaving it out is as if the
+            // block never held it.
+            Err(err) if engine.skips_invalid_txs() && is_invalid_tx(&err) => {}
+            result => result?,
+        }
     }
     for tx in engine.close_block(executor.evm_mut(), block.header())? {
         run(executor, tx.as_recovered_ref())?;
     }
     Ok(())
+}
+
+/// Whether `err` is a transaction a block builder leaves out: invalid at its position, or needing
+/// more gas than the block has left.
+const fn is_invalid_tx(err: &BlockExecutionError) -> bool {
+    matches!(
+        err,
+        BlockExecutionError::Validation(
+            BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+        )
+    )
 }
 
 /// Executes and commits `tx`, recording its receipt and changes and checking invariants after it.
@@ -687,17 +784,19 @@ fn step<'a>(
     let is_tx = tx.is_some();
     let selected = |contract: &_| engine.runs(contract) && (!is_tx || net.contains(contract));
     let evm = executor.evm();
+    let own_tx = tx.as_ref().map(|(tx, logs)| (tx.clone(), *logs));
     let effects = tx.map(|(tx, logs)| invariants::StepEffects {
         net: &net,
         logs,
         tx,
         spec: evm.config_spec_id(),
+        accounts: engine.runs(&CONFIGURABLE_ACCOUNT_ADDRESS),
     });
     let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
     invariants::check(
         db,
         evm_config,
-        env,
+        env.clone(),
         &scope,
         selected,
         &[],
@@ -706,6 +805,16 @@ fn step<'a>(
         failures,
         report,
     );
+    let state = StepState {
+        db,
+        evm_config,
+        env: &env,
+        net: &net,
+        tx: own_tx.as_ref().map(|(tx, _)| tx),
+        logs: own_tx.as_ref().map_or(&[], |(_, logs)| logs),
+        scope: &scope,
+    };
+    own::check(engine, &state, failures, report);
     updates.extend(step);
     changes
 }
