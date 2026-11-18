@@ -36,6 +36,8 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_ptr: *const u8,
     in_len: usize,
 ) -> c_int {
+    // Before the early returns, so a rejected input never reports the previous input's reads.
+    state::clear_read_trace();
     if in_ptr.is_null() {
         execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
         return FUZZ_REJECT;
@@ -116,7 +118,8 @@ pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
 /// executing EVMs first read them, with the same return values and safety contract as
 /// [`tempo_fuzz_last_rejection_v1`]. Each record is 53 bytes: a tag (0 for an account, 1 for a
 /// storage slot), the 20-byte address, and the 32-byte big-endian slot, zero for an account. View
-/// calls, such as invariant checks, are left out. An empty trace needs no buffer.
+/// calls, such as invariant checks, are left out. An empty trace needs no buffer. The trace stops
+/// at [`state::READ_TRACE_MAX_RECORDS`] records, so a longer one is its prefix.
 ///
 /// Two runs of the same transactions over states that differ only in where data sits read in the
 /// same order, so pairing their traces shows where each read moved.

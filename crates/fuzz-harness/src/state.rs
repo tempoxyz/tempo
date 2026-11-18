@@ -28,17 +28,29 @@ thread_local! {
     static READ_TRACE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The most records one input's read trace keeps: about 3.5 MB.
+pub(crate) const READ_TRACE_MAX_RECORDS: usize = 1 << 16;
+
+const READ_TRACE_RECORD_LEN: usize = 1 + 20 + 32;
+
 fn trace_read(address: &Address, slot: Option<&U256>) {
     READ_TRACE.with_borrow_mut(|trace| {
+        if trace.len() >= READ_TRACE_MAX_RECORDS * READ_TRACE_RECORD_LEN {
+            return;
+        }
         trace.push(slot.is_some().into());
         trace.extend_from_slice(address.as_slice());
         trace.extend_from_slice(&slot.copied().unwrap_or_default().to_be_bytes::<32>());
     });
 }
 
-/// Empties this thread's read trace, before an input executes.
+/// Empties this thread's read trace, before an input executes, keeping at most a full trace's
+/// allocation.
 pub(crate) fn clear_read_trace() {
-    READ_TRACE.with_borrow_mut(Vec::clear);
+    READ_TRACE.with_borrow_mut(|trace| {
+        trace.clear();
+        trace.shrink_to(READ_TRACE_MAX_RECORDS * READ_TRACE_RECORD_LEN);
+    });
 }
 
 /// Calls `f` with this thread's read trace.

@@ -491,6 +491,57 @@ fn the_read_trace_lists_executing_reads_in_order_and_leaves_out_views() {
     });
 }
 
+fn last_read_trace(out: &mut [u8]) -> (core::ffi::c_int, usize) {
+    let mut written = usize::MAX;
+    let out_ptr = if out.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        out.as_mut_ptr()
+    };
+    let result = unsafe { crate::tempo_fuzz_last_read_trace_v1(out_ptr, out.len(), &mut written) };
+    (result, written)
+}
+
+#[test]
+fn the_read_trace_export_reports_its_size_and_clears_on_a_rejected_input() {
+    let db = state::seed(&exact(one_account(RECIPIENT, AccountInput::default()))).unwrap();
+    state::clear_read_trace();
+    db.reader().get_account(&RECIPIENT).unwrap();
+
+    // A short buffer is refused with the size needed, then a large enough one is filled.
+    assert_eq!(last_read_trace(&mut []), (FUZZ_REJECT, 53));
+    let mut out = [0u8; 53];
+    assert_eq!(last_read_trace(&mut out), (FUZZ_ACCEPT, 53));
+    assert_eq!(&out[1..21], RECIPIENT.as_slice());
+
+    // An input that fails to decode clears the trace before it is rejected.
+    let mut written = 0;
+    let garbage = [0xffu8; 3];
+    let result = unsafe {
+        crate::tempo_fuzz_execute_with_result_v1(
+            std::ptr::null_mut(),
+            0,
+            &mut written,
+            garbage.as_ptr(),
+            garbage.len(),
+        )
+    };
+    assert_eq!(result, FUZZ_REJECT);
+    assert_eq!(last_read_trace(&mut []), (FUZZ_ACCEPT, 0));
+}
+
+#[test]
+fn the_read_trace_stops_at_its_cap() {
+    let db = state::seed(&exact(one_account(RECIPIENT, AccountInput::default()))).unwrap();
+    state::clear_read_trace();
+    for slot in 0..=state::READ_TRACE_MAX_RECORDS as u64 {
+        db.reader()
+            .get_storage(&RECIPIENT, &U256::from(slot))
+            .unwrap();
+    }
+    state::with_read_trace(|trace| assert_eq!(trace.len(), state::READ_TRACE_MAX_RECORDS * 53));
+}
+
 #[test]
 fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
     // From T8 on, the last block of an epoch carries the DKG outcome that the
