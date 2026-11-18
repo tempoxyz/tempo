@@ -1,5 +1,5 @@
 required-approvals: 1
-require-codeowners: true
+require-codeowners: false
 allow-self-reviews: false
 
 # Deployments to the release environment need two VK approvals:
