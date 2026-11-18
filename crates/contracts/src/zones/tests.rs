@@ -132,10 +132,21 @@ fn latest_zone_runtime_matches_solidity(contract: &str, address: Address) {
     );
 }
 
-/// Strips the CBOR metadata solc appends, whose length is the runtime's last two bytes.
+/// Strips the CBOR metadata solc appends, `{"ipfs": <sha2-256 multihash>, "solc": <version>}`
+/// and its two-byte length, and fails on any other trailer, so bytes appended after the code
+/// can't pass as metadata.
 fn without_metadata(runtime: &[u8]) -> &[u8] {
-    let [.., hi, lo] = runtime else {
-        panic!("runtime is shorter than its metadata length")
+    const TRAILER_LEN: usize = 53;
+    let Some(code_len) = runtime.len().checked_sub(TRAILER_LEN) else {
+        panic!("runtime is shorter than solc's metadata trailer")
     };
-    &runtime[..runtime.len() - 2 - usize::from(u16::from_be_bytes([*hi, *lo]))]
+    let (code, trailer) = runtime.split_at(code_len);
+    let is_solc_metadata = trailer[..10] == *b"\xa2\x64ipfs\x58\x22\x12\x20"
+        && trailer[42..48] == *b"\x64solc\x43"
+        && trailer[51..] == [0x00, 0x33];
+    assert!(
+        is_solc_metadata,
+        "runtime doesn't end in solc's ipfs and version metadata"
+    );
+    code
 }
