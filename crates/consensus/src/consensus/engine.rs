@@ -195,7 +195,7 @@ where
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
-                network_identity: self.network_identity.clone(),
+                network_identity: None,
             },
         ))
         .await

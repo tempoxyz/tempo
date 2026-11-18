@@ -83,7 +83,11 @@ pub(crate) mod marshal {
 
         /// Identity that authenticates the startup floor when the boundary
         /// block of its epoch is not stored locally.
-        pub network_identity: NetworkIdentity,
+        ///
+        /// Only a follower sets this: it archives the finalization of a tip
+        /// before it has backfilled down to that boundary block. Without it,
+        /// a missing boundary block fails startup.
+        pub network_identity: Option<NetworkIdentity>,
     }
 
     /// Marshal actor + mailbox + the height marshal will resume from,
@@ -187,7 +191,7 @@ pub(crate) mod marshal {
                 &mut context,
                 &config.epoch_strategy,
                 &config.scheme_provider,
-                &config.network_identity,
+                config.network_identity.as_ref(),
                 &finalized_blocks,
                 finalization,
             )
@@ -387,7 +391,7 @@ pub(crate) mod marshal {
         context: &mut TContext,
         epoch_strategy: &FixedEpocher,
         scheme_provider: &SchemeProvider,
-        network_identity: &NetworkIdentity,
+        network_identity: Option<&NetworkIdentity>,
         finalized_blocks: &Hybrid<
             TContext,
             BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>,
@@ -404,6 +408,9 @@ pub(crate) mod marshal {
             .await
             .wrap_err_with(|| format!("failed reading boundary header at height `{boundary}`"))?
         else {
+            let Some(network_identity) = network_identity else {
+                bail!("missing boundary header at height `{boundary}` in hybrid store");
+            };
             // A follower archives the finalization of a tip it verified against
             // the network identity before it has backfilled down to the boundary
             // block of that tip's epoch. Authenticate such a floor the same way.
