@@ -724,6 +724,9 @@ mod tests {
     use reth_db::test_utils::create_test_static_files_dir;
     use reth_primitives_traits::Account;
     use std::{
+        io::{BufRead, BufReader, Write as _},
+        os::unix::net::UnixListener,
+        process::{Command, Stdio},
         sync::mpsc,
         thread,
         time::{Duration, Instant},
@@ -879,6 +882,83 @@ mod tests {
         assert!(matches!(server.handle(Request::GetProof {
             round: 0, block: 0, targets: Vec::new(),
         }).unwrap(), Response::Rejected { reason } if reason == "round 0 is over"));
+        close(server);
+    }
+
+    #[test]
+    #[ignore = "runs in a subprocess with its own socket environment"]
+    fn queued_shutdown_driver() {
+        harness::parallel_driver_blocks().unwrap();
+    }
+
+    #[test]
+    fn queued_socket_driver_is_unavailable_after_production_error() {
+        let (directory, _) = create_test_static_files_dir();
+        let server = server(directory.path().join("campaign"));
+        server
+            .round
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .journal
+            .record(1, &[Operation::Commit, update()])
+            .unwrap();
+        let path = directory.path().join("trie.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut driver = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::queued_shutdown_driver", "--ignored", "--nocapture"])
+            .env("ANTITHESIS_TRIE_SOCKET", &path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "driver did not connect");
+                    thread::yield_now();
+                }
+                Err(error) => panic!("accept driver: {error}"),
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+        let request = serde_json::from_str::<Request>(&line).unwrap();
+        assert!(matches!(request, Request::BuildBlock));
+        // The real driver request is queued at the socket before the original mutation fails.
+        assert_eq!(server.handle(Request::BuildBlock).unwrap_err().to_string(), production_error());
+        let response = server.handle(request).unwrap();
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            json!({"result": "rejected", "reason": "no active round"})
+        );
+        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while driver.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                driver.kill().unwrap();
+                panic!("queued driver did not finish");
+            }
+            thread::yield_now();
+        }
+        let output = driver.wait_with_output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect::<Vec<_>>(),
+            vec![json!({"server": "unavailable"})]
+        );
         close(server);
     }
 
