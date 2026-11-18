@@ -69,7 +69,8 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        )?;
+        )
+        .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 
         let result = TempoTxResult::new_precomputed(
             original,
@@ -82,7 +83,8 @@ impl TempoBlockExecutor<'_> {
         );
         result_closure(&result);
 
-        self.commit_transaction(result)?;
+        self.commit_transaction(result)
+            .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 
         Ok(())
     }
@@ -888,6 +890,47 @@ mod tests {
             info.code_hash,
             Bytecode::new_raw(CONFIGURABLE_ACCOUNT_CODE).hash_slow()
         );
+    }
+
+    #[test]
+    fn rejected_replay_does_not_leak_expiring_nonce_pointer() {
+        let chainspec = test_chainspec();
+        let sender = Address::repeat_byte(0x11);
+        let tx = TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_price: 1,
+                gas_limit: 40_000,
+                to: TxKind::Call(Address::ZERO),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T4)
+            .with_general_gas_limit(30_000)
+            .build(InMemoryDB::default(), &chainspec);
+        let valid_before = executor.evm().block().timestamp.to::<u64>() + 1;
+        let replay = StorageActionReplay {
+            result: TxResult::<TempoEvmTypes> {
+                status: true,
+                total_gas_spent: 30_001,
+                ..Default::default()
+            },
+            accounts: vec![],
+            actions: vec![],
+            expiring_nonce: Some(ExpiringNonceReplay {
+                hash: B256::repeat_byte(0x99),
+                valid_before,
+            }),
+        };
+
+        let err = executor
+            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+            .unwrap_err();
+        assert_eq!(err.to_string(), "transaction exceeds its gas lane");
+        assert_eq!(executor.replay_state.expiring_nonce.pending_ring_ptr, None);
+        assert!(executor.replay_state.tx_changes.is_empty());
     }
 
     #[test]
