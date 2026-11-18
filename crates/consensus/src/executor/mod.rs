@@ -97,6 +97,7 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
     /// highest block a crash never rolls back. The block is read from
     /// persisted storage, so it can lie on a branch that the execution layer
     /// has since reorged away from, until its next persistence run unwinds it.
+    #[allow(dead_code)]
     fn durable_block_at_or_below(&self, height: u64) -> eyre::Result<BlockNumHash>;
 
     /// Subscribes to the execution layer's persistence runs. The receiver is

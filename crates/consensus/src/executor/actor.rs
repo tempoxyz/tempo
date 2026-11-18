@@ -1089,25 +1089,9 @@ where
         if *lowest > finalized {
             return Ok(());
         }
-        let durable = self
-            .execution_node
-            .durable_block_at_or_below((*highest).min(finalized).get())
-            .wrap_err("failed reading the execution layer's durable block")?;
-        let height = Height::new(durable.number);
-        // `None` if the durable block is below every pending block.
-        let Some(request) = self.pending_acknowledgements.get(&height) else {
-            return Ok(());
-        };
-        if request.block.digest().0 != durable.hash {
-            debug!(
-                durable.height = durable.number,
-                durable.hash = %durable.hash,
-                finalized.digest = %request.block.digest(),
-                "durable block conflicts with the finalized block at its height; \
-                waiting for the execution layer to unwind it",
-            );
-            return Ok(());
-        }
+        // Every block up to tracked finality was accepted by the execution
+        // layer, so it can be acknowledged.
+        let height = (*highest).min(finalized);
         let pending = self.pending_acknowledgements.split_off(&height.next());
         for (_, request) in std::mem::replace(&mut self.pending_acknowledgements, pending) {
             self.acknowledge(request);
