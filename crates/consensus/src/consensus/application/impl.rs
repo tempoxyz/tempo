@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::atomic::AtomicU64,
+    sync::{Arc, Mutex, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -13,7 +13,7 @@ use commonware_consensus::{
     Heightable as _, Reporter,
     marshal::{Update, ancestry::Ancestry},
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epocher as _, FixedEpocher, Height, Round},
 };
 use commonware_cryptography::{
     Digested, Digestible as _,
@@ -34,8 +34,8 @@ use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::TEMPO_MAXIMUM_EXTRA_DATA_SIZE;
 use tempo_payload_types::{
-    Estimator, EstimatorSnapshot, ProposalKey, ProposalTiming, TempoPayloadAttributes,
-    ValidationLatencyWorkload,
+    Estimator, EstimatorSnapshot, ProposalBudget, ProposalKey, ProposalTiming, TempoBuiltPayload,
+    TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_primitives::{TempoConsensusContext, TempoHeader};
 use tempo_telemetry_util::display_duration;
@@ -81,8 +81,21 @@ pub(crate) struct Inner {
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
     parent_state: TempoParentState,
+    /// The highest round seen, and the build opened on the block this node
+    /// verified last, before consensus asks for a proposal on it.
+    speculative: Arc<Mutex<(Round, Option<OpenBuild>)>>,
 
     metrics: Metrics,
+}
+
+/// A payload build that has been requested but not yet returned to consensus.
+struct OpenBuild {
+    context: Context<Digest, PublicKey>,
+    window_opened: Instant,
+    window_opened_millis: u64,
+    preparation: Duration,
+    proposal_budget: ProposalBudget,
+    payload: oneshot::Receiver<TempoBuiltPayload>,
 }
 
 impl Inner {
@@ -96,6 +109,7 @@ impl Inner {
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
+            speculative: Default::default(),
             metrics: Metrics::init(&config.context),
         }
     }
@@ -112,13 +126,13 @@ impl Inner {
         ),
         err(level = Level::WARN),
     )]
-    async fn build<TContext: Clock>(
+    async fn open_build<TContext: Clock>(
         &self,
         runtime: &TContext,
         context: Context<Digest, PublicKey>,
         parent: &Digested<Block>,
         propose_start: Instant,
-    ) -> eyre::Result<Block> {
+    ) -> eyre::Result<OpenBuild> {
         self.executor
             .report_pending_head(context.round, context.parent)?;
 
@@ -209,23 +223,45 @@ impl Inner {
         // and runs it to completion; dropping the receiver (for example
         // because the proposal was cancelled) tells it that the payload is
         // no longer wanted.
-        let payload_build_start = Instant::now();
+        let context = Context {
+            round,
+            leader,
+            parent: (parent_view, parent_digest),
+        };
         let payload = self
             .executor
-            .build_proposal(
-                Context {
-                    round,
-                    leader,
-                    parent: (parent_view, parent_digest),
-                },
-                attrs,
-                ceremony_output,
-            )?
-            .await
-            .wrap_err(
-                "executor dropped the payload channel: the build failed (the \
+            .build_proposal(context.clone(), attrs, ceremony_output)?;
+        Ok(OpenBuild {
+            context,
+            window_opened,
+            window_opened_millis,
+            preparation: window_opened.saturating_duration_since(propose_start),
+            proposal_budget,
+            payload,
+        })
+    }
+
+    /// Waits for an opened build and paces its return.
+    async fn finish_build<TContext: Clock>(
+        &self,
+        runtime: &TContext,
+        open: OpenBuild,
+    ) -> eyre::Result<Block> {
+        let OpenBuild {
+            context,
+            window_opened,
+            window_opened_millis,
+            preparation,
+            proposal_budget,
+            payload,
+        } = open;
+        let round = context.round;
+        let return_budget = proposal_budget.return_budget();
+        let payload_build_start = Instant::now();
+        let payload = payload.await.wrap_err(
+            "executor dropped the payload channel: the build failed (the \
                 executor logs the cause) or the executor shut down",
-            )?;
+        )?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
@@ -247,7 +283,7 @@ impl Inner {
         debug!(
             proposal.digest = %proposal.digest(),
             return_budget = %display_duration(return_budget),
-            preparation = %display_duration(window_opened.saturating_duration_since(propose_start)),
+            preparation = %display_duration(preparation),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -318,6 +354,45 @@ impl Inner {
             .expect("epoch strategy is for all heights")
             .last()
             == height
+    }
+
+    /// Records `round` as seen, and takes the build opened for it or earlier.
+    fn take_speculative(&self, round: Round) -> Option<OpenBuild> {
+        let mut speculative = self.speculative.lock().expect("not poisoned");
+        speculative.0 = speculative.0.max(round);
+        speculative.1.take_if(|open| open.context.round <= round)
+    }
+
+    /// Opens the build this node would propose on `block` in the next view,
+    /// so that it fills while consensus certifies `block`. Boundary blocks and
+    /// their children are built only when asked.
+    async fn open_speculative<TContext: Clock>(
+        &self,
+        runtime: &TContext,
+        verified: Round,
+        block: &Digested<Block>,
+    ) {
+        let next = Context {
+            round: Round::new(verified.epoch(), verified.view().next()),
+            leader: self.public_key.clone(),
+            parent: (verified.view(), block.digest()),
+        };
+        let round = next.round;
+        if self.is_boundary(block.height())
+            || self.is_boundary(block.height().next())
+            || self.speculative.lock().expect("not poisoned").0 >= round
+        {
+            return;
+        }
+        match self.open_build(runtime, next, block, Instant::now()).await {
+            Ok(open) => {
+                let mut speculative = self.speculative.lock().expect("not poisoned");
+                if speculative.0 < round {
+                    speculative.1 = Some(open);
+                }
+            }
+            Err(error) => debug!(%error, "failed opening a speculative build"),
+        }
     }
 
     /// Checks the header of a proposal before it is handed to the execution
@@ -499,8 +574,23 @@ where
         (): (),
     ) -> Option<Digested<Block>> {
         let propose_start = Instant::now();
+        let speculative = self.take_speculative(context.round);
         let parent = ancestry.next().await?;
-        match self.build(&runtime, context, &parent, propose_start).await {
+        let open = match speculative.filter(|open| open.context == context) {
+            Some(open) => {
+                info!("reusing the build opened on the verified parent");
+                Ok(open)
+            }
+            None => {
+                self.open_build(&runtime, context, &parent, propose_start)
+                    .await
+            }
+        };
+        let block = match open {
+            Ok(open) => self.finish_build(&runtime, open).await,
+            Err(error) => Err(error),
+        };
+        match block {
             Ok(block) => {
                 let digest = block.digest();
                 info!(proposal.digest = %digest, "constructed proposal");
@@ -530,6 +620,9 @@ where
         (runtime, context): (TContext, Self::Context),
         mut ancestry: impl Ancestry<Block>,
     ) -> bool {
+        // A build opened for this round or earlier is no longer wanted.
+        drop(self.take_speculative(context.round));
+
         // The consensus parent remains a convergence target even if this
         // proposal's header is invalid or its verification cannot complete
         // with our current local state.
@@ -569,6 +662,7 @@ where
             }
         };
 
+        let round = context.round;
         match self.executor.verify_block(context, block.clone()).await {
             Ok(Some(duration)) => {
                 self.estimator.on_block_verified(
@@ -579,6 +673,7 @@ where
                     ),
                     duration,
                 );
+                self.open_speculative(&runtime, round, &block).await;
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
