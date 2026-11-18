@@ -301,11 +301,13 @@ impl ExecutionLayer for Arc<TempoFullNode> {
         parent_hash: B256,
         attributes: TempoPayloadAttributes,
     ) -> impl Future<Output = eyre::Result<PayloadId>> + Send + 'static {
-        let pending = self.payload_builder_handle.send_new_payload(BuildNewPayload {
-            attributes,
-            parent_hash,
-            resources: Default::default(),
-        });
+        let pending = self
+            .payload_builder_handle
+            .send_new_payload(BuildNewPayload {
+                attributes,
+                parent_hash,
+                resources: Default::default(),
+            });
         async move { Ok(pending.await??) }
     }
 }

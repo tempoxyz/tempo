@@ -390,7 +390,10 @@ impl Inner {
         {
             return;
         }
-        match self.open_build(runtime, next, block, Instant::now(), true).await {
+        match self
+            .open_build(runtime, next, block, Instant::now(), true)
+            .await
+        {
             Ok(open) => {
                 let mut speculative = self.speculative.lock().expect("not poisoned");
                 if speculative.0 < round {

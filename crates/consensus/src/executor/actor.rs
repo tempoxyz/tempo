@@ -2556,7 +2556,10 @@ async fn execute_build(
         attributes = attributes.with_dkg_ceremony_output(output);
     }
     if speculative {
-        return match execution_node.build_payload(parent_digest.0, attributes).await {
+        return match execution_node
+            .build_payload(parent_digest.0, attributes)
+            .await
+        {
             Ok(payload_id) => BuildOutcome::Speculative(StartPayloadJob {
                 cause,
                 payload_id,
