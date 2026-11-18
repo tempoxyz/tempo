@@ -8,7 +8,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use futures::stream;
 use std::{collections::HashSet, ops::RangeInclusive};
 use tempo_contracts::precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount,
+    ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount,
     ITIP20::{PauseStateUpdate, TransferPolicyUpdate},
     TIP403_REGISTRY_ADDRESS,
 };
@@ -1135,7 +1135,10 @@ where
                         })?;
                 } else if let Some(address) = cache_invalidation_address(address, log.topic0()) {
                     invalidated.extend([address, log.address()]);
-                } else if is_tip20_pause_update(address, log.topic0()) {
+                } else if is_tip20_pause_update(address, log.topic0())
+                    || address == ADDRESS_REGISTRY_ADDRESS
+                {
+                    // Registrations fill slots the cache may hold as unregistered (zero).
                     invalidated.insert(address);
                 } else if let Some(account) = config_commitment_invalidation_account(log) {
                     invalidated.insert(account);

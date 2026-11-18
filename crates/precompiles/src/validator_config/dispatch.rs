@@ -7,6 +7,8 @@ use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
 
 impl Precompile for ValidatorConfig {
+    // From T15 every selector reverts with UnknownFunctionSelector: consensus reads only
+    // ValidatorConfigV2, so V1 dispatch is kept only to replay historical blocks.
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -16,26 +18,37 @@ impl Precompile for ValidatorConfig {
             |call| match call {
                 IValidatorConfig::IValidatorConfigCalls {
                     // View functions
+                    #[schedule(until = T15)]
                     owner(call) => view(call, |_| self.owner()),
+                    #[schedule(until = T15)]
                     getValidators(call) => view(call, |_| self.get_validators()),
+                    #[schedule(until = T15)]
                     getNextFullDkgCeremony(call) => view(call, |_| self.get_next_full_dkg_ceremony()),
+                    #[schedule(until = T15)]
                     validatorsArray(call) => view(call, |c| {
                         let index = u64::try_from(c.index)
                             .map_err(|_| TempoPrecompileError::array_oob())?;
                         self.validators_array(index)
                     }),
+                    #[schedule(until = T15)]
                     validators(call) => view(call, |c| self.validators(c.validator)),
+                    #[schedule(until = T15)]
                     validatorCount(call) => view(call, |_| self.validator_count()),
 
                     // Mutate functions
+                    #[schedule(until = T15)]
                     addValidator(call) => mutate(call, msg_sender, |sender, c| self.add_validator(sender, c)),
+                    #[schedule(until = T15)]
                     updateValidator(call) => mutate(call, msg_sender, |sender, c| self.update_validator(sender, c)),
+                    #[schedule(until = T15)]
                     changeValidatorStatus(call) => mutate(call, msg_sender, |sender, c| self.change_validator_status(sender, c)),
-                    #[schedule(since = T1)]
+                    #[schedule(since = T1, until = T15)]
                     changeValidatorStatusByIndex(call) => mutate(call, msg_sender, |sender, c| {
                         self.change_validator_status_by_index(sender, c)
                     }),
+                    #[schedule(until = T15)]
                     changeOwner(call) => mutate(call, msg_sender, |sender, c| self.change_owner(sender, c)),
+                    #[schedule(until = T15)]
                     setNextFullDkgCeremony(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_next_full_dkg_ceremony(sender, c)
                     })
@@ -243,6 +256,44 @@ mod tests {
             // Verify the status was changed
             let validators = validator_config.get_validators()?;
             assert!(!validators[0].active, "Validator should be inactive");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t15_disables_all_selectors() -> eyre::Result<()> {
+        let owner = Address::random();
+
+        // T14: V1 still dispatches
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let result =
+                validator_config.call(&IValidatorConfig::ownerCall {}.abi_encode(), owner)?;
+            assert_eq!(Address::abi_decode(result.bytes())?, owner);
+
+            Ok(())
+        })?;
+
+        // T15: every selector reverts with UnknownFunctionSelector, even for the owner
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            for selector in IValidatorConfigCalls::SELECTORS {
+                let result = validator_config.call(selector, owner);
+                let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
+                assert_eq!(
+                    decoded.selector.0,
+                    *selector,
+                    "{}",
+                    IValidatorConfigCalls::name_by_selector(*selector).unwrap_or_default()
+                );
+            }
 
             Ok(())
         })

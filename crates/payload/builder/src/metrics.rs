@@ -108,6 +108,7 @@ pub(crate) enum BlockBuildStopReason {
     RlpBlockSizeLimit,
     TxPoolEmpty,
     BuildBudget,
+    TransactionCountLimit,
 }
 
 impl BlockBuildStopReason {
@@ -117,6 +118,7 @@ impl BlockBuildStopReason {
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
             Self::BuildBudget => "build_budget",
+            Self::TransactionCountLimit => "transaction_count_limit",
         }
     }
 }

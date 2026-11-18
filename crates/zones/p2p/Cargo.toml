@@ -36,3 +36,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 commonware-actor.workspace = true
+test-case.workspace = true
