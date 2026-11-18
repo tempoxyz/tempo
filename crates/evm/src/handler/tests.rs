@@ -740,7 +740,12 @@ fn test_aa_gas_multiple_calls_overhead() {
 
 const BATCH_BENEFICIARY: Address = Address::new([0xbe; 20]);
 
-fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Vec<Address>) -> u64 {
+fn batch_intrinsic_gas(
+    spec: TempoHardfork,
+    targets: &[Address],
+    access_list: Vec<Address>,
+    fee_payer: Option<&PrivateKeySigner>,
+) -> u64 {
     let signer = PrivateKeySigner::random();
     let caller = signer.address();
     let gas_limit = 1_000_000;
@@ -749,14 +754,15 @@ fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Ve
     let mut block = *evm.block();
     block.beneficiary = BATCH_BENEFICIARY;
     evm.set_block(block);
+    let payer = fee_payer.map_or(caller, |fee_payer| fee_payer.address());
     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
         TIP20Setup::path_usd(caller)
             .with_issuer(caller)
-            .with_mint(caller, calc_gas_balance_spending(gas_limit, gas_price))
+            .with_mint(payer, calc_gas_balance_spending(gas_limit, gas_price))
             .apply()
     })
     .unwrap();
-    let tx = TempoTransaction {
+    let mut tx = TempoTransaction {
         chain_id: 1,
         fee_token: Some(PATH_USD_ADDRESS),
         gas_limit,
@@ -776,6 +782,13 @@ fn batch_intrinsic_gas(spec: TempoHardfork, targets: &[Address], access_list: Ve
             .into(),
         ..Default::default()
     };
+    if let Some(fee_payer) = fee_payer {
+        tx.fee_payer_signature = Some(
+            fee_payer
+                .sign_hash_sync(&tx.fee_payer_signature_hash(caller))
+                .unwrap(),
+        );
+    }
     let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
     let env: TempoTxEnv = Recovered::new_unchecked(
         TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
@@ -800,30 +813,47 @@ fn test_t14_batch_charges_cold_access_once_per_cold_target() {
     // `Address::ZERO` stands for the transaction's sender.
     let sender = Address::ZERO;
     let spec = TempoHardfork::T14;
-    let single = batch_intrinsic_gas(spec, &[a], vec![]);
+    let single = batch_intrinsic_gas(spec, &[a], vec![], None);
 
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, b, c], vec![]),
+        batch_intrinsic_gas(spec, &[a, b, c], vec![], None),
         single + 2 * COLD_ACCOUNT_ACCESS_COST
     );
     // Repeated targets, including the first call's, pay only the warm access.
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![], None),
         single + COLD_ACCOUNT_ACCESS_COST + 2 * u64::from(WARM_STORAGE_READ_COST)
     );
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, sender], vec![]),
+        batch_intrinsic_gas(spec, &[a, sender], vec![], None),
         single + u64::from(WARM_STORAGE_READ_COST)
     );
     // The block's fee recipient is warm during execution, but intrinsic gas must not depend on
     // which validator builds the block.
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, BATCH_BENEFICIARY], vec![]),
+        batch_intrinsic_gas(spec, &[a, BATCH_BENEFICIARY], vec![], None),
         single + COLD_ACCOUNT_ACCESS_COST
     );
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, listed], vec![listed]),
-        batch_intrinsic_gas(spec, &[a], vec![listed]) + u64::from(WARM_STORAGE_READ_COST)
+        batch_intrinsic_gas(spec, &[a, listed], vec![listed], None),
+        batch_intrinsic_gas(spec, &[a], vec![listed], None) + u64::from(WARM_STORAGE_READ_COST)
+    );
+}
+
+#[test]
+fn test_t14_batch_target_reusing_fee_payer_pays_warm_access() {
+    let [a, b] = [1, 2].map(Address::with_last_byte);
+    let fee_payer = PrivateKeySigner::random();
+    let spec = TempoHardfork::T14;
+    let single = batch_intrinsic_gas(spec, &[a], vec![], Some(&fee_payer));
+    // Root-key validation already charged the fee payer's cold access.
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, fee_payer.address()], vec![], Some(&fee_payer)),
+        single + u64::from(WARM_STORAGE_READ_COST)
+    );
+    assert_eq!(
+        batch_intrinsic_gas(spec, &[a, b], vec![], Some(&fee_payer)),
+        single + COLD_ACCOUNT_ACCESS_COST
     );
 }
 
@@ -832,8 +862,8 @@ fn test_pre_t14_batch_charges_cold_access_per_call() {
     let [a, b] = [1, 2].map(Address::with_last_byte);
     let spec = TempoHardfork::T13;
     assert_eq!(
-        batch_intrinsic_gas(spec, &[a, b, b, a], vec![]),
-        batch_intrinsic_gas(spec, &[a], vec![]) + 3 * COLD_ACCOUNT_ACCESS_COST
+        batch_intrinsic_gas(spec, &[a, b, b, a], vec![], None),
+        batch_intrinsic_gas(spec, &[a], vec![], None) + 3 * COLD_ACCOUNT_ACCESS_COST
     );
 }
 
@@ -1984,7 +2014,6 @@ fn test_refund_cap_removed_on_t7() {
                 gas_limit: SPENT,
                 floor_gas: 0,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )
@@ -2029,7 +2058,6 @@ fn test_negative_refund_counter_refunds_the_cap() {
                 gas_limit: SPENT,
                 floor_gas,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )
@@ -4145,7 +4173,6 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
             gas_limit,
             floor_gas: floor,
             initial_state_gas: state,
-            state_refund: 0,
             result: MessageResult::<TempoEvmTypes> {
                 stop: InstrStop::Stop,
                 gas: GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir),
@@ -4414,7 +4441,6 @@ fn test_state_gas_batch_create_accounting() {
                 gas_limit: TX_GAS_LIMIT,
                 floor_gas: 0,
                 initial_state_gas: 0,
-                state_refund: 0,
                 result,
             },
         )

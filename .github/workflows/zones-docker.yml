@@ -859,7 +859,6 @@ jobs:
 
           measurements=target/tempo-zone-prover-eif/measurements.json
           {
-            echo "hash_algorithm=$(jq -er '.Measurements.HashAlgorithm | strings | select(length > 0)' "$measurements")"
             echo "pcr0=$(jq -er '.Measurements.PCR0 | strings | select(length > 0)' "$measurements")"
             echo "pcr1=$(jq -er '.Measurements.PCR1 | strings | select(length > 0)' "$measurements")"
             echo "pcr2=$(jq -er '.Measurements.PCR2 | strings | select(length > 0)' "$measurements")"
@@ -897,7 +896,6 @@ jobs:
           set: |
             tempo-zone-prover.tags=tempo-zone-prover:candidate
             tempo-zone-prover.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover.tar
-            tempo-zone-prover.args.NITRO_HASH_ALGORITHM=${{ steps.prover_measurements.outputs.hash_algorithm }}
             tempo-zone-prover.args.NITRO_PCR0=${{ steps.prover_measurements.outputs.pcr0 }}
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}

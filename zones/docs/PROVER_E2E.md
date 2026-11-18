@@ -1,19 +1,19 @@
 # Prover E2E
 
 The publisher resolves exact commit SHAs without executing candidate code.
-There is no cron schedule.
+The full suite runs on nightly Zones images, not on each push to `main`.
 
 | Trigger | Coverage | GitHub status |
 | --- | --- | --- |
 | Merge queue, shared Rust crates, prover binaries, packaging, dependency graph or toolchain changes | `prover-tests`: hardfork, settlement, fallback, recovery | `Tempo Zone Prover E2E` |
 | Merge queue, no matching changes | No build or devnet; immediate success | `Tempo Zone Prover E2E` |
-| Every push to `main`, including each merged PR | `prover-tests-full`: the four fast plans plus ancestry | `Tempo Zone Prover E2E (full)` |
+| Each successful scheduled (nightly) `Zones Docker Build` on `main` | `prover-tests-full`: the four fast plans plus ancestry | `Tempo Zone Prover E2E (full)` |
 | Manual dispatch | Exact SHA and selected fast/full suite, regardless of changed paths | Corresponding suite status |
 
 Merge-queue detection compares the event's base SHA with its head SHA using the
 same pinned changed-paths action as the Tempo CI Image workflow. Detection or dispatch errors
-fail the check. Main runs use the pushed SHA, not a later resolution of `main`;
-newer merges do not cancel earlier ancestry runs. T14 remains a separate opt-in
+fail the check. Nightly runs use the image build's head SHA, not a later resolution
+of `main`; newer nightlies do not cancel earlier ancestry runs. T14 remains a separate opt-in
 scenario requiring distinct prover versions.
 
 The publisher requires the matching `prover-tests`, `prover-tests-full` and

@@ -261,6 +261,10 @@ pub struct TempoTransaction {
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
+/// Error message for a CREATE call that is not the first call of a transaction.
+const CREATE_NOT_FIRST: &str =
+    "only one CREATE call is allowed per transaction, and it must be the first call of the batch";
+
 /// Validates the calls list structure for Tempo transactions.
 ///
 /// This is a shared validation function used by both `TempoTransaction::validate()`
@@ -291,9 +295,7 @@ pub fn validate_calls(calls: &[Call], has_authorization_list: bool) -> Result<()
     // All subsequent calls must be CALL.
     for call in calls_iter {
         if call.to.is_create() {
-            return Err(
-                "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
-            );
+            return Err(CREATE_NOT_FIRST);
         }
     }
 
@@ -578,7 +580,7 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = Decodable::decode(buf)?;
+        let calls = decode_calls(buf)?;
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
@@ -668,6 +670,24 @@ impl TempoTransaction {
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         has_sub_block_nonce_key_prefix(&self.nonce_key)
     }
+}
+
+/// Decodes a calls list, rejecting a CREATE call after the first as soon as it is read.
+///
+/// [`validate_calls`] rejects such a list once the whole transaction is decoded, but a CREATE call
+/// encodes in 4 bytes, so a list of them would first decode to many times its size. Every call
+/// accepted after the first targets an address and encodes in at least 24 bytes.
+fn decode_calls(buf: &mut &[u8]) -> alloy_rlp::Result<Vec<Call>> {
+    let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+    let mut calls = Vec::new();
+    while !payload.is_empty() {
+        let call = Call::decode(&mut payload)?;
+        if !calls.is_empty() && call.to.is_create() {
+            return Err(alloy_rlp::Error::Custom(CREATE_NOT_FIRST));
+        }
+        calls.push(call);
+    }
+    Ok(calls)
 }
 
 impl Transaction for TempoTransaction {
@@ -1033,6 +1053,50 @@ mod tests {
 
     fn create_call(to: TxKind) -> Call {
         Call::new(to, Bytes::new())
+    }
+
+    /// Encodes `calls` as an RLP list followed by `trailing` bytes inside the list.
+    fn encoded_calls_list(calls: &[Call], trailing: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for call in calls {
+            call.encode(&mut payload);
+        }
+        payload.extend_from_slice(trailing);
+        let mut out = Vec::new();
+        RlpHeader {
+            list: true,
+            payload_length: payload.len(),
+        }
+        .encode(&mut out);
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    #[test]
+    fn decode_calls_reads_create_then_calls() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(Address::ZERO)),
+            create_call(TxKind::Call(Address::ZERO)),
+        ];
+        let encoded = encoded_calls_list(&calls, &[]);
+
+        let mut buf = encoded.as_slice();
+        assert_eq!(decode_calls(&mut buf).unwrap(), calls);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn decode_calls_rejects_create_after_first_before_reading_on() {
+        // The malformed bytes after the second CREATE would fail decoding if they were read.
+        let encoded = encoded_calls_list(
+            &[create_call(TxKind::Create), create_call(TxKind::Create)],
+            &[0xff],
+        );
+
+        let err = decode_calls(&mut encoded.as_slice()).unwrap_err();
+
+        assert_eq!(err, alloy_rlp::Error::Custom(CREATE_NOT_FIRST));
     }
 
     #[test]

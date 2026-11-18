@@ -30,7 +30,10 @@ pub use action_replay::{
     StorageActionReplayOutcome, StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+    deploy_precompile_at_boundary,
+};
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;

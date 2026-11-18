@@ -41,6 +41,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
             ZoneTxHandler {
                 inner: handler,
                 l1: l1.clone(),
+                spec,
             },
         );
     }
@@ -52,6 +53,7 @@ pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
 struct ZoneTxHandler<L1> {
     inner: AnyTxHandler<TempoEvmTypes, TxResult<TempoEvmTypes>>,
     l1: L1State<L1>,
+    spec: TempoHardfork,
 }
 
 impl<L1: L1StorageReader> ZoneTxHandler<L1> {
@@ -106,7 +108,7 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         let _context = self.enter(&mut request)?;
         let transaction = Recovered::new_unchecked(request.envelope, request.tx.signer());
         let result = self.inner.execute(transaction, request.host)?;
-        validate_journal(request.host.state())
+        validate_journal(request.host.state(), self.spec)
             .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         Ok(result)
     }
@@ -416,6 +418,7 @@ pub(crate) mod tests {
             ZoneTxHandler {
                 inner: inner.get_by_type(0).unwrap(),
                 l1: l1.clone(),
+                spec,
             },
         );
         evm.set_execution_config(
