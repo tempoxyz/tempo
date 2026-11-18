@@ -164,6 +164,17 @@ while IFS=$'\t' read -r crate replacement; do
   mv "$tmp_cargo" "$FOUNDRY_CARGO"
 done <<< "$CRATES_IO_PATCHES"
 
+# ── 4b. Align Foundry's exact commonware pins ───────────────────────────────
+# Foundry pins commonware-* crates exactly (`=X`) in its workspace and in test
+# fixtures. Tempo's crates need its own commonware release, so rewrite those
+# pins to Tempo's version whenever the two differ.
+COMMONWARE_VERSION="$(sed -nE 's/^commonware-[a-z-]+ = (\{ *version = )?"([^"]+)".*/\2/p' "$TEMPO_CARGO" | head -n1)"
+if [[ -n "$COMMONWARE_VERSION" ]]; then
+  while IFS= read -r -d '' manifest; do
+    sed -i -E "s/^(commonware-[a-z-]+ = (\{ *version = )?\")=[^\"]+\"/\1=$COMMONWARE_VERSION\"/" "$manifest"
+  done < <(find "$FOUNDRY_ROOT" -name Cargo.toml -not -path '*/target/*' -print0)
+fi
+
 # ── 5. Patch evm2 ────────────────────────────────────────────────────────────
 # Tempo's reth crates and Foundry must share one evm2, and Foundry may depend on
 # a fork or another revision of it. Redirect every evm2 source in the graph to
