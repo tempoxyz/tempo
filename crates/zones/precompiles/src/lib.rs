@@ -26,7 +26,7 @@
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
 //! - **Zone TIP-20** ([`ztip20`]) — upstream TIP-20 with zone call rules.
-//! - **ZoneIdentity** ([`zone_identity`]) — orgs, members and per-token edges on shared zones.
+//! - **ZoneIdentity** ([`zone_identity`]) — orgs, members, per-token edges and Tempo targets on shared zones.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::too_many_arguments)]

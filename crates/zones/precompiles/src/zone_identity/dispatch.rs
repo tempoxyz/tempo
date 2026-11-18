@@ -5,7 +5,7 @@ use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::IZoneIdentity;
 use tempo_precompiles::{charge_input_cost, dispatch, storage::StorageCtx};
 
-use super::ZoneIdentity;
+use super::{L1Target, ZoneIdentity};
 use crate::{
     dispatch::{mutate, view},
     storage::{L1State, L1StorageReader},
@@ -50,7 +50,17 @@ impl ZoneIdentity {
                         self.set_frozen(caller, call.account, call.frozen)
                     }),
                     setEdge(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_edge(caller, registrar()?, call.from, call.to, &call.tokens, call.allowed)
+                        self.set_edge(caller, registrar()?, call.fromOrg, call.toOrg, &call.tokens, call.allowed)
+                    }),
+                    setL1Target(call) => mutate(call, msg_sender, |caller, call| {
+                        let rules = L1Target {
+                            deposit_from: call.depositFrom,
+                            withdraw_to: call.withdrawTo,
+                        };
+                        self.set_l1_target(caller, registrar()?, call.orgId, call.target, &call.tokens, rules)
+                    }),
+                    setL1Policy(call) => mutate(call, msg_sender, |caller, call| {
+                        self.set_l1_policy(caller, registrar()?, call.orgId, &call.tokens, call.policy.into())
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
@@ -62,7 +72,19 @@ impl ZoneIdentity {
                         })
                     }),
                     edge(call) => view(call, |call| {
-                        self.edge(msg_sender, registrar()?, call.from, call.to, call.token)
+                        self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)
+                    }),
+                    l1Target(call) => view(call, |call| {
+                        self.l1_target(msg_sender, registrar()?, call.orgId, call.target, call.token).map(
+                            |rules| IZoneIdentity::l1TargetReturn {
+                                depositFrom: rules.deposit_from,
+                                withdrawTo: rules.withdraw_to,
+                            },
+                        )
+                    }),
+                    l1Policy(call) => view(call, |call| {
+                        self.l1_policy(msg_sender, registrar()?, call.orgId, call.token)
+                            .map(IZoneIdentity::L1Policy::from)
                     }),
                 }
             },

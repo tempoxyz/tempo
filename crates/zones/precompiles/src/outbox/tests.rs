@@ -696,12 +696,12 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     Ok(())
 }
 
-/// With org enforcement on, a withdrawal needs an edge to its destination's Tempo side and, when the
-/// fallback recipient is someone else, a Zone edge to that recipient too.
+/// With org enforcement on, a withdrawal needs its org to list the destination as a Tempo target
+/// and, when the fallback recipient is someone else, a Zone edge to that recipient too.
 #[test]
 fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> {
-    use crate::zone_identity::ZoneIdentity;
-    use tempo_contracts::zones::{IZoneIdentity::OrgKey, ZoneIdentityError};
+    use crate::zone_identity::{L1Target, ZoneIdentity};
+    use tempo_contracts::zones::ZoneIdentityError;
 
     let mut env = ZoneSpec {
         hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
@@ -712,17 +712,17 @@ fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> 
     env.with_storage(|| -> crate::ZoneResult<()> {
         let mut identity = ZoneIdentity::new();
         let org = identity.create_org(registrar, registrar, registrar)?;
-        let exits = identity.create_org(registrar, registrar, registrar)?;
         identity.add_members(registrar, registrar, org, &[ALICE])?;
-        identity.add_members(registrar, registrar, exits, &[BOB])?;
-        let usd = [PATH_USD_ADDRESS];
-        identity.set_edge(
+        identity.set_l1_target(
             registrar,
             registrar,
-            OrgKey::zone(org),
-            OrgKey::l1(exits),
-            &usd,
-            true,
+            org,
+            BOB,
+            &[PATH_USD_ADDRESS],
+            L1Target {
+                deposit_from: false,
+                withdraw_to: true,
+            },
         )
     })?;
     env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));

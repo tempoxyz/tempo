@@ -182,8 +182,8 @@ impl ZoneOutbox {
             return Err(TempoPrecompileError::from(TIP20Error::uninitialized()).into());
         }
         self.validate_withdrawal_policy(l1, call.token, call.to, call.gasLimit)?;
-        // The withdrawal must follow an org edge, and so must its bounce-back to the fallback
-        // recipient.
+        // The sender's org must allow the Tempo destination, and the bounce-back to the fallback
+        // recipient must follow an org edge.
         let identity = ZoneIdentity::new();
         let enforced = ZoneIdentity::enforced(l1)?;
         identity.ensure_transfer(
