@@ -78,16 +78,6 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
         receipt.gas_used
     );
 
-    // The portal admin turns virtual deposits on.
-    let admin = l1.provider_with_signer(l1.admin_signer());
-    let receipt = ZonePortal::new(portal_address, &admin)
-        .setVirtualDepositsEnabled(true)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "setVirtualDepositsEnabled failed");
-
     // A plain TIP-20 transfer on L1 to the recipient's deposit address.
     let amount = 2_000_000u128;
     let fee = ZonePortal::new(portal_address, l1.provider())
@@ -200,15 +190,6 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
         .get_receipt()
         .await?;
     eyre::ensure!(receipt.status(), "registerMaster failed");
-
-    let admin = l1.provider_with_signer(l1.admin_signer());
-    let receipt = ZonePortal::new(portal_address, &admin)
-        .setVirtualDepositsEnabled(true)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "setVirtualDepositsEnabled failed");
 
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
     allowlist.replace(vec![sender.address()])?;
@@ -329,14 +310,6 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
         .get_receipt()
         .await?;
     eyre::ensure!(receipt.status(), "registerMaster failed");
-    let admin = l1.provider_with_signer(l1.admin_signer());
-    let receipt = ZonePortal::new(portal_address, &admin)
-        .setVirtualDepositsEnabled(true)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    eyre::ensure!(receipt.status(), "setVirtualDepositsEnabled failed");
 
     // Derivation waits for the registration to settle on Tempo.
     let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;

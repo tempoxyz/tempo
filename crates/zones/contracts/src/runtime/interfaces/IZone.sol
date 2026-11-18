@@ -513,9 +513,6 @@ interface IZonePortal {
         bytes32 memo
     );
 
-    /// @notice TIP-1094: the admin enabled or disabled virtual deposits
-    event VirtualDepositsEnabledUpdated(bool enabled);
-
     /// @notice TIP-1094: the admin raised the minimum accepted address key version
     event AddressVersionsRetired(uint8 minimumVersion);
 
@@ -620,7 +617,6 @@ interface IZonePortal {
     error TokenTransferPolicyNotSet();
     error TokenEnablementCursorNotInitialized();
     error InvalidBouncebackRecipient();
-    error VirtualDepositsDisabled();
     error AddressVersionRetired(uint8 version);
     error InvalidVersionRetirement(uint8 minimumVersion);
     error InvalidVirtualDeposit();
@@ -706,12 +702,6 @@ interface IZonePortal {
     )
         external
         returns (bytes32 newCurrentDepositQueueHash);
-
-    /// @notice TIP-1094: whether transfers to zone deposit addresses are accepted.
-    function virtualDepositsEnabled() external view returns (bool);
-
-    /// @notice TIP-1094: turn virtual deposits on or off. Only callable by the admin.
-    function setVirtualDepositsEnabled(bool enabled) external;
 
     /// @notice TIP-1094: lowest address key version still accepted (at least 1).
     function minimumAddressVersion() external view returns (uint8);

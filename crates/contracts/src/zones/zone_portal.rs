@@ -124,7 +124,6 @@ crate::sol! {
             bool hasMemo,
             bytes32 memo
         );
-        event VirtualDepositsEnabledUpdated(bool enabled);
         event AddressVersionsRetired(uint8 minimumVersion);
 
         /// Event emitted when a new TIP-20 token is enabled for bridging.
@@ -268,7 +267,6 @@ crate::sol! {
         error InvalidQuorumCertificate();
         error CallbackDidNotReturnToZone();
         error InvalidBouncebackRecipient();
-        error VirtualDepositsDisabled();
         error AddressVersionRetired(uint8 version);
         error InvalidVersionRetirement(uint8 minimumVersion);
         error InvalidVirtualDeposit();
@@ -300,8 +298,6 @@ crate::sol! {
             bool hasMemo,
             bytes32 memo
         ) external returns (bytes32 newCurrentDepositQueueHash);
-        function virtualDepositsEnabled() external view returns (bool);
-        function setVirtualDepositsEnabled(bool enabled) external;
         function minimumAddressVersion() external view returns (uint8);
         function retireAddressVersionsBelow(uint8 minimumVersion) external;
         function hasRole(address account, Role role) external view returns (bool);

@@ -550,34 +550,6 @@ mod runtime_tests {
             .unwrap()
         };
 
-        // Virtual deposits start disabled: the whole transfer reverts.
-        let result = evm
-            .system_call(
-                SystemTx::new(PATH_USD_ADDRESS, transfer.clone().into()).with_caller(alice),
-            )
-            .unwrap()
-            .commit();
-        assert!(!result.status);
-        assert_eq!(
-            result.output.as_ref(),
-            IZonePortal::VirtualDepositsDisabled {}.abi_encode()
-        );
-        assert_eq!(balance(&mut evm, alice), amount * U256::from(2));
-
-        let result = evm
-            .system_call(
-                SystemTx::new(
-                    created.portal,
-                    IZonePortal::setVirtualDepositsEnabledCall { enabled: true }
-                        .abi_encode()
-                        .into(),
-                )
-                .with_caller(admin),
-            )
-            .unwrap()
-            .commit();
-        assert!(result.status, "enable failed: {result:?}");
-
         let result = evm
             .system_call(SystemTx::new(PATH_USD_ADDRESS, transfer.into()).with_caller(alice))
             .unwrap()

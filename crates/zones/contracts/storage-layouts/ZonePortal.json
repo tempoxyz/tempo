@@ -353,18 +353,10 @@
       "type": "t_bool"
     },
     {
-      "astId": 6092,
-      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
-      "label": "virtualDepositsEnabled",
-      "offset": 10,
-      "slot": "28",
-      "type": "t_bool"
-    },
-    {
       "astId": 6095,
       "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
       "label": "_minimumAddressVersion",
-      "offset": 11,
+      "offset": 10,
       "slot": "28",
       "type": "t_uint8"
     }

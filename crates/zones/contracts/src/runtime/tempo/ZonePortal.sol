@@ -245,10 +245,6 @@ contract ZonePortal is IZonePortal {
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
 
-    /// @notice TIP-1094: whether transfers to zone deposit addresses are accepted.
-    /// @dev Packed after `transfersEnabled` in slot 28. Starts disabled.
-    bool public virtualDepositsEnabled;
-
     /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1.
     uint8 internal _minimumAddressVersion;
 
@@ -520,12 +516,6 @@ contract ZonePortal is IZonePortal {
         admin = pendingAdmin;
         pendingAdmin = address(0);
         emit AdminTransferred(previousAdmin, admin);
-    }
-
-    /// @notice TIP-1094: turn virtual deposits on or off. Queued deposits are unaffected.
-    function setVirtualDepositsEnabled(bool enabled) external onlyAdmin {
-        virtualDepositsEnabled = enabled;
-        emit VirtualDepositsEnabledUpdated(enabled);
     }
 
     /// @notice TIP-1094: lowest address key version still accepted.
@@ -1058,7 +1048,6 @@ contract ZonePortal is IZonePortal {
         ) {
             revert InvalidVirtualDeposit();
         }
-        if (!virtualDepositsEnabled) revert VirtualDepositsDisabled();
         uint8 version = uint8(bytes20(destination)[13]);
         if (version < minimumAddressVersion()) revert AddressVersionRetired(version);
 

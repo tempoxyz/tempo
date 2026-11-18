@@ -6025,13 +6025,7 @@ contract ZonePortalTest is BaseTest {
         return portal.depositVirtual(alice, VIRTUAL_GROSS, destination, hasMemo, memo);
     }
 
-    function _enableVirtualDeposits() internal {
-        vm.prank(admin);
-        portal.setVirtualDepositsEnabled(true);
-    }
-
     function test_depositVirtual_queuesNetAmountAndHashesAsZoneVirtual() public {
-        _enableVirtualDeposits();
         address destination = _virtualDestination(testZoneId, 1);
         bytes32 previous = portal.currentDepositQueueHash();
         uint64 countBefore = portal.depositCount();
@@ -6052,17 +6046,7 @@ contract ZonePortalTest is BaseTest {
         assertEq(portal.depositCount(), countBefore + 1);
     }
 
-    function test_depositVirtual_startsDisabled() public {
-        assertFalse(portal.virtualDepositsEnabled());
-        vm.prank(address(pathUSD));
-        vm.expectRevert(IZonePortal.VirtualDepositsDisabled.selector);
-        portal.depositVirtual(
-            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
-        );
-    }
-
     function test_depositVirtual_rejectsNonTokenCallers() public {
-        _enableVirtualDeposits();
         vm.prank(alice);
         vm.expectRevert(IZonePortal.TokenNotEnabled.selector);
         portal.depositVirtual(
@@ -6071,7 +6055,6 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_depositVirtual_rejectsOtherZonesAndBadMemos() public {
-        _enableVirtualDeposits();
         vm.startPrank(address(pathUSD));
         vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
         portal.depositVirtual(
@@ -6087,7 +6070,6 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_retireAddressVersionsBelow_isRaiseOnly() public {
-        _enableVirtualDeposits();
         assertEq(portal.minimumAddressVersion(), 1);
 
         vm.prank(alice);
@@ -6113,7 +6095,6 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_depositVirtual_rejectsPortalOriginators() public {
-        _enableVirtualDeposits();
         address destination = _virtualDestination(testZoneId, 1);
         vm.startPrank(address(pathUSD));
         vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
@@ -6130,7 +6111,6 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_depositVirtual_rejectsDepositsBelowFees() public {
-        _enableVirtualDeposits();
         vm.fee(1e12);
         _setZoneGasRate(1);
         _setBouncebackGas(300_000);

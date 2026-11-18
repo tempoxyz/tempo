@@ -134,10 +134,6 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
                 net_amount: e.netAmount,
             }
         }
-        ZonePortal::VirtualDepositsEnabledUpdated::SIGNATURE_HASH => ignored!(
-            ZonePortal::VirtualDepositsEnabledUpdated,
-            "VirtualDepositsEnabledUpdated"
-        ),
         ZonePortal::AddressVersionsRetired::SIGNATURE_HASH => {
             ignored!(ZonePortal::AddressVersionsRetired, "AddressVersionsRetired")
         }
