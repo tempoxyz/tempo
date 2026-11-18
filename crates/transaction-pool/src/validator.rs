@@ -3414,6 +3414,7 @@ mod tests {
                 registry,
                 NoPrecompiles::default(),
             );
+            tempo_evm::install_lane_pricing(&mut evm);
             COLD_ACCOUNT_COST.store(0, Ordering::Relaxed);
             let _ = validator.validate_one_with_evm(TransactionOrigin::External, tx, &mut evm);
             COLD_ACCOUNT_COST.load(Ordering::Relaxed)

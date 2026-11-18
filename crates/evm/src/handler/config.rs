@@ -12,7 +12,7 @@ use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
     SpecId, TxResult,
     ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
-    evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
+    evm::{DynDatabase, SystemTx, TxGasSchedule, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     version::GasId,
@@ -162,32 +162,30 @@ pub fn tempo_execution_config(
     ExecutionConfig::for_spec_and_version(tempo_spec, version)
 }
 
-/// Selects the gas parameters of a transaction's lane, as the EVM's
-/// [`tx_gas_params_selector`](Evm::tx_gas_params_selector).
+/// Prices each transaction the EVM runs by its lane.
 ///
 /// From T15, payment-lane transactions ([`TempoTxEnv::is_payment_v3`]) run with
-/// [`payment_lane_gas_params`], which prices state loading separately. Other transactions, and
-/// every transaction before T15, run with the EVM's own gas parameters. Only gas parameters differ
-/// between lanes: the rest of the EVM's version applies to both.
+/// [`payment_lane_gas_params`], which prices state loading separately, precomputed here from the
+/// EVM's current gas parameters. Other transactions, and every transaction before T15, run with the
+/// EVM's own gas parameters. Only gas parameters differ between lanes: the rest of the EVM's version
+/// applies to both.
+///
+/// The EVM applies the schedule itself, so block execution, payload building, transaction pool
+/// validation, RPC calls, gas estimation, simulation and tracing with inspectors all price a
+/// transaction the same way. Call it again after replacing the EVM's execution config with one
+/// whose gas parameters differ, which removes the schedule.
 ///
 /// [`payment_lane_gas_params`]: tempo_chainspec::gas_params::payment_lane_gas_params
-pub fn lane_gas_params(
-    spec: TempoHardfork,
-    general: &evm2::version::GasParams,
-    tx: &TempoTxEnv,
-) -> Option<evm2::version::GasParams> {
-    if !tx.is_payment_v3() {
-        return None;
-    }
-    tempo_chainspec::gas_params::payment_lane_gas_params(general, spec)
-}
-
-/// Prices each transaction the EVM runs by its lane (see [`lane_gas_params`]).
-///
-/// The EVM applies the selector itself, so block execution, payload building, RPC calls, gas
-/// estimation, simulation and tracing with inspectors all price a transaction the same way.
 pub fn install_lane_pricing(evm: &mut Evm<'_, TempoEvmTypes>) {
-    evm.set_tx_gas_params_selector(Some(lane_gas_params));
+    let schedule = tempo_chainspec::gas_params::payment_lane_gas_params(
+        &evm.version().gas_params,
+        evm.config_spec_id(),
+    )
+    .map(|gas_params| TxGasSchedule {
+        select: TempoTxEnv::is_payment_v3,
+        gas_params,
+    });
+    evm.set_tx_gas_schedule(schedule);
 }
 
 /// Builds a Tempo-configured EVM2 instance.

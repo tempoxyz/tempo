@@ -4713,7 +4713,7 @@ fn payment_transfer_gas(
             .apply()
     })?;
     if !lane_pricing {
-        evm.set_tx_gas_params_selector(None);
+        evm.set_tx_gas_schedule(None);
     }
     let input = ITIP20::transferCall {
         to: Address::repeat_byte(0x22),
@@ -4765,18 +4765,17 @@ fn test_payment_lane_priced_as_general_before_t15() -> eyre::Result<()> {
     Ok(())
 }
 
-/// A non-payment transaction, and a payment transaction whose access list is set, as
-/// `eth_createAccessList` does, run with the general schedule.
+/// Lane pricing selects payment transactions only: not a payment transaction whose access list is
+/// set, as `eth_createAccessList` does, nor a call.
 #[test]
-fn test_lane_gas_params_selects_payment_transactions_only() {
+fn test_lane_pricing_selects_payment_transactions_only() {
     let caller = Address::repeat_byte(0x11);
-    let general = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T15, false);
+
     let transfer = ITIP20::transferCall {
         to: Address::repeat_byte(0x22),
         amount: U256::ONE,
     }
     .abi_encode();
-
     let mut payment = legacy_tx_env(
         caller,
         0,
@@ -4784,15 +4783,12 @@ fn test_lane_gas_params_selects_payment_transactions_only() {
         transfer.into(),
         1_000_000,
     );
-    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &payment).is_some());
-    assert!(crate::lane_gas_params(TempoHardfork::T14, &general.gas_params, &payment).is_none());
-
+    assert!(payment.is_payment_v3());
     reth_evm::TransactionEnvMut::set_access_list(
         &mut payment,
         alloy_eips::eip2930::AccessList(vec![Default::default()]),
     );
     assert!(!payment.is_payment_v3());
-    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &payment).is_none());
 
     let call = legacy_tx_env(
         caller,
@@ -4801,5 +4797,5 @@ fn test_lane_gas_params_selects_payment_transactions_only() {
         Bytes::new(),
         1_000_000,
     );
-    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &call).is_none());
+    assert!(!call.is_payment_v3());
 }
