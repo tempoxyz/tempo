@@ -33,7 +33,7 @@ use tempo_contracts::precompiles::{
         revokeKeyCall,
     },
 };
-use tempo_node::rpc::TempoTransactionRequest;
+use tempo_node::{evm::expiring_nonces::ExpiringNonce, rpc::TempoTransactionRequest};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::updateSpendingLimitCall,
@@ -2011,6 +2011,171 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     );
     println!("✓ Replay rejected at transaction pool level");
 
+    Ok(())
+}
+
+/// TIP-1173 activation: the first T16 block starts from an empty set and commits its root, the
+/// ring stops being written, and an expiring nonce transaction included before T16 still cannot
+/// be replayed inside the activation window, through the frozen seen slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_t16_activation_keeps_pre_fork_replay_protection() -> eyre::Result<()> {
+    use reth_trie_common::EMPTY_ROOT_HASH;
+    use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+
+    reth_tracing::init_test_tracing();
+    // Far enough past the harness's starting timestamp to mine pre-fork blocks first.
+    const ACTIVATION: u64 = 1_800_000_000;
+    let mut setup = TestNodeBuilder::new()
+        .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T15))
+        .with_fork_time("t16Time", ACTIVATION)
+        .build_with_node_access()
+        .await?;
+    let provider = alloy::providers::RootProvider::<TempoNetwork>::new_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let signer = test_signer(0);
+    let sign = |valid_before: u64| -> eyre::Result<TempoTxEnvelope> {
+        let tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        Ok(tx.into_signed(signature).into())
+    };
+
+    // Before T16: the ring records the entry and headers carry no root. The pool checks the
+    // window against the head, so move the head close to activation first.
+    setup.node.set_next_payload_timestamp(ACTIVATION - 30)?;
+    setup.node.advance_block().await?;
+    setup.node.set_next_payload_timestamp(ACTIVATION - 20)?;
+    let pre_fork = sign(ACTIVATION + 60)?;
+    let mined = setup
+        .node
+        .mine([pre_fork.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+    assert_eq!(mined.block().header().expiring_nonce_root, None);
+    let ptr_before = provider
+        .get_storage_at(NONCE_PRECOMPILE_ADDRESS, U256::from(3))
+        .await?;
+    assert_ne!(ptr_before, U256::ZERO, "the pre-T16 ring records the entry");
+
+    // First T16 block: empty set.
+    setup.node.set_next_payload_timestamp(ACTIVATION)?;
+    let first = setup.node.advance_block().await?;
+    assert_eq!(
+        first.block().header().expiring_nonce_root,
+        Some(EMPTY_ROOT_HASH)
+    );
+
+    // Replaying the pre-fork transaction inside the activation window is never included.
+    let replay_hash = *pre_fork.tx_hash();
+    if setup
+        .node
+        .inject_tx(pre_fork.encoded_2718().into())
+        .await
+        .is_ok()
+    {
+        let block = setup.node.advance_block().await?;
+        assert!(
+            !block
+                .block()
+                .body()
+                .transactions()
+                .any(|tx| *tx.tx_hash() == replay_hash),
+            "a pre-T16 entry was replayed inside the activation window"
+        );
+    }
+
+    // A new T16 transaction is included, changes the root, and leaves the ring untouched.
+    let latest = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let timestamp = latest.header.timestamp();
+    let fresh = sign(timestamp + 30)?;
+    let mined = setup
+        .node
+        .mine([fresh.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+    let root = mined
+        .block()
+        .header()
+        .expiring_nonce_root
+        .ok_or_eyre("T16 header without expiring nonce root")?;
+    assert_ne!(root, EMPTY_ROOT_HASH);
+    assert_eq!(
+        provider
+            .get_storage_at(NONCE_PRECOMPILE_ADDRESS, U256::from(3))
+            .await?,
+        ptr_before,
+        "T16 must not write the ring"
+    );
+
+    // Its replay is rejected by the pool against the set.
+    assert!(
+        setup
+            .node
+            .inject_tx(fresh.encoded_2718().into())
+            .await
+            .is_err(),
+        "the pool admitted a replay of a T16 entry"
+    );
+    Ok(())
+}
+
+/// The expiring nonce set follows the canonical chain and holds included expiring nonce hashes
+/// until they expire.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_expiring_nonce_set_tracks_canonical_chain() -> eyre::Result<()> {
+    let Localnet {
+        mut setup,
+        provider,
+        chain_id,
+        funder_signer: alice_signer,
+        ..
+    } = Localnet::new().await?;
+
+    // The node's add-ons seed and follow the set (TIP-1173).
+    let sets = setup.node.inner.evm_config.expiring_nonce_sets().clone();
+    setup.node.advance_blocks(3).await?;
+
+    let parent = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let valid_before = parent.header.timestamp() + setup.hardfork.expiring_nonce_max_expiry_secs();
+    let tx = create_expiring_nonce_tx(chain_id, valid_before, Address::random());
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let entry = ExpiringNonce {
+        hash: envelope.unique_tx_identifier(alice_signer.address()),
+        valid_before,
+    };
+    setup
+        .node
+        .mine([envelope.encoded_2718().into()])
+        .await?
+        .ensure_success()?;
+
+    let tip = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .ok_or_eyre("missing latest block")?;
+    let tip_hash = tip.header.hash;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !sets.contains(tip_hash) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .wrap_err("expiring nonce set of the tip was never stored")?;
+
+    let at_tip = sets
+        .derive(tip_hash, tip.header.timestamp(), &[], true)
+        .ok_or_eyre("tip set is known")?;
+    assert!(at_tip.contains(&entry));
+    let expired = sets
+        .derive(tip_hash, valid_before, &[], true)
+        .ok_or_eyre("tip set is known")?;
+    assert!(!expired.contains(&entry));
     Ok(())
 }
 

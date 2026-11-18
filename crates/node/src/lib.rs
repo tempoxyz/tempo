@@ -34,11 +34,13 @@ use reth_node_ethereum as _;
 
 pub mod engine;
 pub mod executed_state;
+mod expiring_nonces;
 pub mod gossip;
 pub mod node;
 pub mod rpc;
 mod shadow_replay;
 pub mod telemetry;
+pub use expiring_nonces::ExpiringNonceTracker;
 pub use shadow_replay::{ReplayOutcome, ShadowReplayer};
 pub use tempo_evm as evm;
 pub use tempo_evm::consensus;

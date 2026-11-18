@@ -85,6 +85,12 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST as u64 + 100 + 3 * WARM_SSTORE_RESET as u64;
 
+/// Intrinsic gas for expiring nonce replay protection from T16 (TIP-1173).
+///
+/// The set lives outside EVM state: the charge covers an in-memory lookup and insert plus the
+/// transaction's share of rehashing its bucket path and the set trie when the block commits.
+const EXPIRING_NONCE_GAS_T16: u64 = 3_000;
+
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
 /// T3 charges for all persisted scope rows. T4 narrows this to rows
@@ -415,7 +421,9 @@ fn nonce_intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> (u64, u
     let spec = host.config_spec_id();
     let params = &host.version().gas_params;
 
-    if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
+    if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t16() {
+        (EXPIRING_NONCE_GAS_T16, 0)
+    } else if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1() {
         (EXPIRING_NONCE_GAS, 0)
     } else if spec.is_t1() && tx.nonce == 0 {
         // TIP-1000: Storage pricing updates for launch
@@ -1180,13 +1188,34 @@ fn apply_nonce(
             .valid_before
             .map(|value| value.get())
             .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
+        let timestamp = host.block().timestamp.saturating_to::<u64>();
+        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
+        let max_allowed = timestamp.saturating_add(max_expiry_secs);
+        let expiry_error = || {
+            TempoInvalidTransaction::NonceManagerError(if valid_before <= timestamp {
+                format!(
+                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
+                )
+            } else {
+                format!(
+                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
+                )
+            })
+        };
+        if spec.is_t16() {
+            // TIP-1173: replay protection lives in the block executor's expiring nonce set, which
+            // rejects replays before execution. Only the expiry window is checked here, and no
+            // Nonce precompile storage is read or written.
+            if valid_before <= timestamp || valid_before > max_allowed {
+                return Err(expiry_error().into());
+            }
+            return Ok(protocol_nonce);
+        }
         let replay_hash = if spec.is_t1b() {
             envelope.unique_tx_identifier()
         } else {
             envelope.tx_hash()
         };
-        let timestamp = host.block().timestamp.saturating_to::<u64>();
-        let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
         return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut nonces = NonceManager::new();
@@ -1203,18 +1232,11 @@ fn apply_nonce(
             nonces
                 .check_and_mark_expiring_nonce(replay_hash, valid_before)
                 .map_err(|error| match error {
-                    TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => error.into(),
+                    TempoPrecompileError::Database(_) | TempoPrecompileError::Fatal(_) => {
+                        error.into()
+                    }
                     TempoPrecompileError::NonceError(NonceError::InvalidExpiringNonceExpiry(_)) => {
-                        let max_allowed = timestamp.saturating_add(max_expiry_secs);
-                        if valid_before <= timestamp {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({timestamp})"
-                            )).into()
-                        } else {
-                            TempoInvalidTransaction::NonceManagerError(format!(
-                                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {max_expiry_secs}s of block timestamp ({timestamp}), max allowed is {max_allowed}"
-                            )).into()
-                        }
+                        expiry_error().into()
                     }
                     TempoPrecompileError::NonceError(NonceError::ExpiringNonceReplay(_)) => {
                         TempoInvalidTransaction::ExpiringNonceReplay.into()

@@ -168,6 +168,16 @@ where
         mined
     }
 
+    /// TIP-1173: removes mined expiring nonce transactions from the 2D pool by transaction hash.
+    pub(crate) fn remove_mined_expiring_nonce_txs(
+        &self,
+        mined: impl IntoIterator<Item = B256>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.aa_2d_pool
+            .write()
+            .remove_mined_expiring_nonce_txs(mined)
+    }
+
     /// Reports removed transactions as discarded.
     fn notify_discarded(&self, discarded: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) {
         self.reth_pool

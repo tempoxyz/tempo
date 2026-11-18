@@ -123,6 +123,9 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     /// opening the state it validated against, and admission inserts, under the read lock, only
     /// outcomes reported with the current value.
     pub(crate) admission_epoch: RwLock<u64>,
+    /// T16+ (TIP-1173): the node's expiring nonce sets. Expiring nonce replays are checked
+    /// against the set at the validated tip instead of the frozen `expiringNonceSeen` slot.
+    expiring_nonce_sets: Option<tempo_evm::expiring_nonces::ExpiringNonceSets>,
 }
 
 impl<Client, EvmConfig> TempoTransactionValidator<Client, EvmConfig>
@@ -163,7 +166,33 @@ where
             active_hardfork,
             metrics: ValidationMetrics::default(),
             admission_epoch: RwLock::default(),
+            expiring_nonce_sets: None,
         }
+    }
+
+    /// Checks expiring nonce replays against `sets` from T16 (TIP-1173).
+    pub fn with_expiring_nonce_sets(
+        mut self,
+        sets: tempo_evm::expiring_nonces::ExpiringNonceSets,
+    ) -> Self {
+        self.expiring_nonce_sets = Some(sets);
+        self
+    }
+
+    /// T16+ (TIP-1173): returns whether `transaction`'s expiring nonce entry is already in the
+    /// set at the cached tip. Returns `false` when the tip's set is not known yet; the block
+    /// executor still rejects the replay.
+    fn is_expiring_nonce_replay(
+        &self,
+        transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
+    ) -> bool {
+        let Some(sets) = self.expiring_nonce_sets.as_ref() else {
+            return false;
+        };
+        let tip_hash = self.cached_state.read().0;
+        sets.authoritative(tip_hash)
+            .is_some_and(|set| set.contains_tx(transaction.inner(), transaction.sender(), spec))
     }
 
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
@@ -598,6 +627,14 @@ where
                 "successful Tempo handler did not resolve a fee token".into(),
             );
         };
+        if spec.is_t16() && self.is_expiring_nonce_replay(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                    HandlerError::from(TempoInvalidTransaction::ExpiringNonceReplay),
+                )),
+            );
+        }
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);

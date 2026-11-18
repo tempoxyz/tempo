@@ -15,12 +15,14 @@ impl reth_primitives_traits::InMemorySize for TempoHeader {
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
+            expiring_nonce_root,
         } = self;
         inner.size()
             + general_gas_limit.size()
             + timestamp_millis_part.size()
             + shared_gas_limit.size()
             + consensus_context.as_ref().map_or(0, |f| f.size())
+            + expiring_nonce_root.map_or(0, |_| core::mem::size_of::<B256>())
     }
 }
 
@@ -74,6 +76,7 @@ mod codec {
     #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
     struct TempoHeaderTrailingCompact {
         consensus_context: Option<TempoConsensusContext>,
+        expiring_nonce_root: Option<alloy_primitives::B256>,
     }
 
     /// Private helper for Reth's Compat encoding where the last type
@@ -99,10 +102,10 @@ mod codec {
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
         {
-            let trailing = self
-                .consensus_context
-                .map(|ctx| TempoHeaderTrailingCompact {
-                    consensus_context: Some(ctx),
+            let trailing = (self.consensus_context.is_some() || self.expiring_nonce_root.is_some())
+                .then_some(TempoHeaderTrailingCompact {
+                    consensus_context: self.consensus_context,
+                    expiring_nonce_root: self.expiring_nonce_root,
                 });
 
             let header = TempoHeaderCompact {
@@ -122,7 +125,14 @@ mod codec {
                 general_gas_limit: header_compat.general_gas_limit,
                 shared_gas_limit: header_compat.shared_gas_limit,
                 timestamp_millis_part: header_compat.timestamp_millis_part,
-                consensus_context: header_compat.trailing.and_then(|f| f.consensus_context),
+                consensus_context: header_compat
+                    .trailing
+                    .as_ref()
+                    .and_then(|f| f.consensus_context),
+                expiring_nonce_root: header_compat
+                    .trailing
+                    .as_ref()
+                    .and_then(|f| f.expiring_nonce_root),
                 inner: header_compat.inner,
             };
 
@@ -185,6 +195,7 @@ mod codec {
                 shared_gas_limit: 10_000_000,
                 timestamp_millis_part: 500,
                 consensus_context: None,
+                expiring_nonce_root: None,
                 inner: Header {
                     parent_hash: B256::repeat_byte(0xaa),
                     ommers_hash: b256!(
@@ -237,6 +248,7 @@ mod codec {
                 shared_gas_limit: 0x2faf080,
                 timestamp_millis_part: 0x2c5,
                 consensus_context: None,
+                expiring_nonce_root: None,
                 inner: Header {
                     parent_hash: b256!(
                         "49d7ec7085e77bf5a403d0fcb4cfc42a4084a89dfff60477579c5e09c9e03c54"

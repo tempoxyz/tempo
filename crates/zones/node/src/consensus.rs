@@ -155,6 +155,8 @@ mod tests {
     use zone_primitives::constants::zone_chain_id;
 
     fn fixture() -> (ZoneConsensus, SealedHeader<TempoHeader>, TempoHeader) {
+        use tempo_chainspec::spec::TempoHardforks as _;
+
         let mut genesis = crate::genesis::genesis_template().unwrap();
         genesis.config.chain_id = zone_chain_id(1_337, 1).unwrap();
         let chain_spec = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
@@ -176,6 +178,10 @@ mod tests {
                 requests_hash: Some(EMPTY_REQUESTS_HASH),
                 ..Default::default()
             },
+            // TIP-1173: T16 headers commit to the expiring nonce set.
+            expiring_nonce_root: chain_spec
+                .is_t16_active_at_timestamp(parent.inner.timestamp + 1)
+                .then_some(EMPTY_ROOT_HASH),
             ..Default::default()
         };
         (consensus, parent, header)

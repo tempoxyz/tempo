@@ -665,6 +665,20 @@ where
         // unblocked transactions before later pool scans.
         let nonce_pool_start = Instant::now();
         removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+        // TIP-1173: from T16 an included expiring nonce transaction writes no Nonce precompile
+        // slot, so the state updates above miss it. Remove it by hash here, before the next
+        // payload build, instead of waiting for Reth's canonical-update pass: until then the
+        // builder would retry every transaction of the previous block and reject it as a replay.
+        if spec.is_t16() {
+            removed_txs.push(
+                pool.remove_mined_expiring_nonce_txs(tip.blocks_iter().flat_map(|block| {
+                    block
+                        .body()
+                        .transactions()
+                        .map(|tx| *alloy_consensus::transaction::TxHashRef::tx_hash(tx))
+                })),
+            );
+        }
         metrics
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());

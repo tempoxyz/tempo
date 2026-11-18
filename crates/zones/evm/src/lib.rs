@@ -46,7 +46,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{
     FeeTokenResolver, TempoBlockAssembler, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmEnv,
     TempoEvmError, TempoEvmExt, TempoEvmTypes, TempoNextBlockEnvAttributes, TempoStateAccess,
-    TempoTxEnv, evm::TempoEvm,
+    TempoTxEnv, evm::TempoEvm, expiring_nonces::ExpiringNonceSets,
 };
 use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{error::Result as TempoResult, storage::actions::StorageActions};
@@ -91,6 +91,11 @@ impl ZoneBlockAssembler {
         Self {
             inner: TempoBlockAssembler::new(chain_spec.inner.clone()),
         }
+    }
+
+    /// Returns the expiring nonce sets the assembler reads staged payload roots from.
+    pub fn expiring_nonce_sets(&self) -> &ExpiringNonceSets {
+        self.inner.expiring_nonce_sets()
     }
 }
 
@@ -143,6 +148,9 @@ pub struct ZoneEvmConfig<L1 = L1StateProvider> {
     chain_spec: Arc<ZoneChainSpec>,
     zone_factory: ZoneEvmFactory<L1>,
     block_assembler: ZoneBlockAssembler,
+    /// Whether executors maintain the expiring nonce sets (TIP-1173). The zone prover verifies
+    /// the set from a witness instead.
+    track_expiring_nonces: bool,
 }
 
 impl<L1> FeeTokenResolver for ZoneEvmConfig<L1> {
@@ -171,12 +179,27 @@ where
         let tempo_chain_spec = chain_spec.inner.clone();
         let inner = TempoEvmConfig::new(tempo_chain_spec);
         let block_assembler = ZoneBlockAssembler::new(chain_spec.clone());
+        // Zone nodes serve expiring nonce witnesses (TIP-1173), which need each bucket's keys.
+        block_assembler.expiring_nonce_sets().retain_witness_keys();
         Self {
             inner,
             chain_spec,
             zone_factory,
             block_assembler,
+            track_expiring_nonces: true,
         }
+    }
+
+    /// Stops executors from maintaining expiring nonce sets, for stateless re-execution such as
+    /// the zone prover, which verifies the set from a witness.
+    pub fn without_expiring_nonce_sets(mut self) -> Self {
+        self.track_expiring_nonces = false;
+        self
+    }
+
+    /// Returns the expiring nonce sets shared by executors and the block assembler.
+    pub fn expiring_nonce_sets(&self) -> &ExpiringNonceSets {
+        self.block_assembler.expiring_nonce_sets()
     }
 
     /// Returns the Zone chain specification.
@@ -196,11 +219,13 @@ where
 
     /// Clones this configuration with another Tempo L1 storage reader.
     pub fn with_l1_reader<R: L1StorageReader>(&self, l1_reader: R) -> ZoneEvmConfig<R> {
-        ZoneEvmConfig::new(
-            self.chain_spec.clone(),
-            l1_reader,
-            self.zone_factory.portal_address,
-        )
+        ZoneEvmConfig {
+            inner: self.inner.clone(),
+            chain_spec: self.chain_spec.clone(),
+            zone_factory: ZoneEvmFactory::new(l1_reader, self.zone_factory.portal_address),
+            block_assembler: self.block_assembler.clone(),
+            track_expiring_nonces: self.track_expiring_nonces,
+        }
     }
 
     /// Clones this configuration with a Tempo L1 storage-read recorder.
@@ -270,7 +295,10 @@ where
     where
         Self: 'a,
     {
-        ZoneBlockExecutor::new(evm, ctx, self.chain_spec())
+        let sets = self
+            .track_expiring_nonces
+            .then(|| self.expiring_nonce_sets().clone());
+        ZoneBlockExecutor::new(evm, ctx, self.chain_spec(), sets)
     }
 
     fn evm_factory(&self) -> &Self::EvmFactory {
@@ -372,6 +400,8 @@ where
             general_gas_limit: 0,
             shared_gas_limit: 0,
             consensus_context: block.header().consensus_context,
+            block_hash: Some(block.hash()),
+            expiring_nonce_root: block.header().expiring_nonce_root,
         })
     }
 

@@ -494,7 +494,7 @@ where
                 .first()
                 .map(|tx| tx.input().clone());
 
-            let (execution_witness, reads, initial_tempo) = self
+            let (execution_witness, reads, initial_tempo, expiring_nonce_witness) = self
                 .eth_api
                 .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
                     let initial_tempo = db
@@ -511,6 +511,13 @@ where
                         .map_err(|error| EthApiError::Internal(error.into()))?;
                     db.commit_source(&BundleSource(&output.state));
 
+                    let expiring_nonce_witness =
+                        expiring_nonce_witness(eth_api.evm_config(), eth_api.provider(), &block)
+                            .map_err(|error| {
+                                EthApiError::Internal(
+                                    reth_evm::BlockExecutionError::msg(format!("{error:#}")).into(),
+                                )
+                            })?;
                     let witness = ExecutionWitnessRecord::new(&db)
                         .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
                         .into_execution_witness(
@@ -520,7 +527,12 @@ where
                             mode,
                         )
                         .map_err(EthApiError::from)?;
-                    Ok((witness, recorder.take_reads(), initial_tempo))
+                    Ok((
+                        witness,
+                        recorder.take_reads(),
+                        initial_tempo,
+                        expiring_nonce_witness,
+                    ))
                 })
                 .await
                 .map_err(|error| operator_rpc_error(internal(error)))?;
@@ -540,9 +552,47 @@ where
                 execution_witness,
                 initial_tempo_header,
                 tempo_state,
+                expiring_nonce_witness,
             })
         })
     }
+}
+
+/// Builds the TIP-1173 expiring nonce witness of a T16 `block` from its parent's set, which the
+/// node holds after executing the block. Returns `None` before T16.
+fn expiring_nonce_witness<P>(
+    evm_config: &ZoneEvmConfig,
+    provider: &P,
+    block: &reth_primitives_traits::RecoveredBlock<tempo_primitives::Block>,
+) -> eyre::Result<Option<zone_rpc::types::ExpiringNonceWitness>>
+where
+    P: HeaderProvider<Header = TempoHeader>,
+{
+    use tempo_evm::expiring_nonces::{BlockParams, ExpiringNonce};
+
+    let timestamp = block.header().timestamp();
+    let spec = evm_config.chain_spec().tempo_hardfork_at(timestamp);
+    if !spec.is_t16() {
+        return Ok(None);
+    }
+    let parent = provider
+        .header(block.parent_hash())?
+        .ok_or_eyre("parent header of the witnessed block not found")?;
+    let parent_set = evm_config
+        .expiring_nonce_sets()
+        .parent(block.parent_hash(), true)
+        .ok_or_eyre("expiring nonce set of the witnessed block's parent is unknown")?;
+    let entries = ExpiringNonce::from_block(block, spec);
+    let params = BlockParams {
+        parent_timestamp: parent.timestamp(),
+        timestamp,
+        max_expiry_secs: spec.expiring_nonce_max_expiry_secs(),
+    };
+    let nodes = parent_set.witness(&params, &entries)?;
+    Ok(Some(zone_rpc::types::ExpiringNonceWitness {
+        parent_root: parent_set.root(),
+        nodes,
+    }))
 }
 
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
@@ -2228,11 +2278,19 @@ mod tests {
             execution_witness: Default::default(),
             initial_tempo_header: TempoHeader::default(),
             tempo_state: vec![Bytes::from(vec![1, 2])],
+            expiring_nonce_witness: Some(zone_rpc::types::ExpiringNonceWitness {
+                parent_root: B256::repeat_byte(0xee),
+                nodes: vec![Bytes::from(vec![3])],
+            }),
         };
         let value = serde_json::to_value(&witness).unwrap();
 
         assert!(value.get("state").is_some());
         assert_eq!(value["tempo_state"], serde_json::json!(["0x0102"]));
+        assert_eq!(
+            value["expiring_nonce_witness"]["nodes"],
+            serde_json::json!(["0x03"])
+        );
         assert_eq!(
             serde_json::from_value::<ZoneExecutionWitness>(value).unwrap(),
             witness

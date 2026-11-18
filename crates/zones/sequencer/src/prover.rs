@@ -446,7 +446,7 @@ async fn build_witness<P: ZoneSequencerProvider>(
         .record(started.elapsed().as_secs_f64());
 
     let started = Instant::now();
-    let (zone_state_witness, tempo_state_witness) =
+    let (zone_state_witness, tempo_state_witness, expiring_nonce_witness) =
         zone_witnesses(proofs, &zone_inputs, expected_next_hash).await?;
     metrics
         .zone_witness_duration_seconds
@@ -503,6 +503,7 @@ async fn build_witness<P: ZoneSequencerProvider>(
         zone_state_witness,
         tempo_state_witness,
         tempo_ancestry_headers: anchor.ancestry_headers().to_vec(),
+        expiring_nonce_witness,
     };
 
     let stats = ValidationStats {
@@ -853,7 +854,7 @@ async fn zone_witnesses(
     proofs: &ProofCollectorHandle,
     inputs: &ZoneInputs,
     tip_hash: B256,
-) -> Result<(ZoneStateWitness, TempoStateWitness)> {
+) -> Result<(ZoneStateWitness, TempoStateWitness, Vec<Bytes>)> {
     let from = inputs
         .blocks
         .first()
@@ -910,8 +911,16 @@ async fn zone_witnesses(
     let mut state = BTreeMap::new();
     let mut codes = BTreeMap::new();
     let mut tempo_nodes = BTreeMap::new();
+    let mut expiring_nonce_nodes = BTreeMap::new();
     let mut initial_tempo_header_rlp = None;
     for (number, witness) in results {
+        // TIP-1173: every block's nodes are against its own parent's set; the prover recomputes
+        // paths earlier blocks changed, so pooling by hash covers the whole batch.
+        if let Some(expiring) = witness.expiring_nonce_witness {
+            for node in expiring.nodes {
+                expiring_nonce_nodes.entry(keccak256(&node)).or_insert(node);
+            }
+        }
         if number == from {
             initial_tempo_header_rlp = Some(Bytes::from(alloy_rlp::encode(
                 &witness.initial_tempo_header,
@@ -937,6 +946,7 @@ async fn zone_witnesses(
             initial_tempo_header_rlp: initial_tempo_header_rlp.ok_or_eyre("empty witness range")?,
             node_pool: tempo_nodes.into_values().collect(),
         },
+        expiring_nonce_nodes.into_values().collect(),
     ))
 }
 
@@ -1127,7 +1137,7 @@ mod tests {
             initial_tempo_number: 0,
             initial_tempo_hash: B256::ZERO,
         };
-        let (state, tempo_state) = zone_witnesses(
+        let (state, tempo_state, _) = zone_witnesses(
             &ProofCollectorHandle::answering(witness),
             &inputs,
             B256::repeat_byte(3),

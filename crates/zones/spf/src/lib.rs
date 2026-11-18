@@ -11,7 +11,10 @@ use reth_chainspec::EthChainSpec as _;
 use reth_evm::{DynDatabase as _, execute::BlockAssemblerInput};
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::noop::NoopProvider;
-use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
+use tempo_evm::{
+    TempoBlockAssembler, TempoEvmConfig,
+    expiring_nonces::{BlockParams, PartialExpiringNonceSet},
+};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
 use zone_primitives::constants::{
@@ -123,6 +126,8 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
         initial_parent_hash
     };
     let mut previous_header = witness.parent_header.clone();
+    // TIP-1173: the batch's expiring nonce set, revealed from the witness at the first T16 block.
+    let mut expiring_nonces: Option<PartialExpiringNonceSet> = None;
     for (block_index, block) in witness.zone_blocks.iter().enumerate() {
         let expected_parent_hash = previous_header.hash_slow();
         if block.parent_hash != expected_parent_hash {
@@ -187,8 +192,39 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             .inner_mut()
             .state_root(&executed_block.output.state)?;
         let gas_limit = executed_block.evm_env.block.gas_limit.to::<u64>();
-        let execution_context =
+        let mut execution_context =
             execution::evm::next_block_execution_context(config.chain_spec(), block, gas_limit);
+
+        // TIP-1173: verify the block's expiring nonce set transition against the witness,
+        // starting from the root the parent header commits to (empty before T16). The assembled
+        // header carries the result, so the next block's parent hash binds it.
+        let spec = executed_block.evm_env.spec;
+        if spec.is_t16() {
+            let set = match expiring_nonces.as_mut() {
+                Some(set) => set,
+                None => expiring_nonces.insert(
+                    PartialExpiringNonceSet::new(
+                        previous_header
+                            .expiring_nonce_root
+                            .unwrap_or(alloy_consensus::EMPTY_ROOT_HASH),
+                        witness.expiring_nonce_witness.iter().cloned(),
+                    )
+                    .map_err(|error| Error::ExpiringNonceWitness { block_index, error })?,
+                ),
+            };
+            let entries =
+                execution::evm::expiring_nonce_entries(&executed_block.transactions, spec)
+                    .map_err(|_| Error::BlockAssembly { block_index })?;
+            let params = BlockParams {
+                parent_timestamp: previous_header.timestamp(),
+                timestamp: block.timestamp,
+                max_expiry_secs: spec.expiring_nonce_max_expiry_secs(),
+            };
+            let root = set
+                .apply(&params, &entries)
+                .map_err(|error| Error::ExpiringNonceWitness { block_index, error })?;
+            execution_context.expiring_nonce_root = Some(root);
+        }
         let state_provider = NoopProvider::<tempo_chainspec::TempoChainSpec, TempoPrimitives>::new(
             config.chain_spec().inner.clone(),
         );
@@ -518,6 +554,14 @@ pub enum Error {
     /// A batch must execute at least one Zone block.
     #[error("zone batch contains no blocks")]
     EmptyZoneBatch,
+    /// The block's expiring nonce set transition (TIP-1173) does not verify against the witness.
+    #[error("zone block {block_index}: {error}")]
+    ExpiringNonceWitness {
+        /// Index of the block within the batch.
+        block_index: usize,
+        /// Why verification failed.
+        error: tempo_evm::expiring_nonces::WitnessError,
+    },
     /// A checkpoint-only block carried operational inputs or transactions.
     #[error("checkpoint-only zone block {block_index} contains operational inputs")]
     InvalidCheckpointOnlyBlock { block_index: usize },
@@ -765,6 +809,7 @@ mod tests {
             },
             tempo_state_witness: empty_tempo_witness(2),
             tempo_ancestry_headers: Vec::new(),
+            expiring_nonce_witness: Vec::new(),
         }
     }
 

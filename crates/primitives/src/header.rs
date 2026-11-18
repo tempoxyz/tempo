@@ -24,12 +24,14 @@ pub struct TempoConsensusContext {
 /// Tempo block header.
 ///
 /// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
-/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+/// consensus_context?, expiring_nonce_root?]`. Trailing `None` fields are omitted. A header
+/// with `expiring_nonce_root` but no `consensus_context` (zone headers) encodes the context as
+/// the empty string `0x80`, which decoding accepts only when a field follows it.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing(no_gaps))]
+#[rlp(trailing(canonical))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -56,6 +58,16 @@ pub struct TempoHeader {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub consensus_context: Option<TempoConsensusContext>,
+
+    /// Root of the expiring nonce set after this block (TIP-1173). `None` before T16.
+    ///
+    /// Zone headers carry no consensus context, so their RLP encodes it as the empty string
+    /// `0x80` when this field is present.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub expiring_nonce_root: Option<B256>,
 }
 
 impl TempoHeader {
@@ -291,6 +303,7 @@ mod tests {
                 parent_view: 1,
                 proposer: PublicKey::from_seed(1),
             }),
+            expiring_nonce_root: None,
         };
 
         let encoded = alloy_rlp::encode(&header);
@@ -304,6 +317,7 @@ mod tests {
             timestamp_millis_part: 0,
             inner: Header::default(),
             consensus_context: None,
+            expiring_nonce_root: None,
         };
         let encoded = alloy_rlp::encode(&header_no_ctx);
         let decoded = TempoHeader::decode(&mut encoded.as_slice()).unwrap();
@@ -318,10 +332,72 @@ mod tests {
             timestamp_millis_part: 0,
             inner: Header::default(),
             consensus_context: None,
+            expiring_nonce_root: None,
         };
 
         let encoded = alloy_rlp::encode(&header);
         let malformed = append_explicit_none_to_rlp_list(&encoded);
+        assert!(TempoHeader::decode(&mut malformed.as_slice()).is_err());
+    }
+
+    #[test]
+    fn header_rlp_roundtrip_with_expiring_nonce_root() {
+        let root = B256::repeat_byte(0xab);
+        let base = TempoHeader {
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 3_000_000,
+            timestamp_millis_part: 7,
+            inner: Header::default(),
+            consensus_context: None,
+            expiring_nonce_root: None,
+        };
+
+        // Zone-style header: no consensus context, so it is encoded as a 0x80 placeholder.
+        let zone = TempoHeader {
+            expiring_nonce_root: Some(root),
+            ..base.clone()
+        };
+        let encoded = alloy_rlp::encode(&zone);
+        let without_root = alloy_rlp::encode(&base);
+        assert_eq!(encoded.len(), without_root.len() + 1 + 33);
+        assert_eq!(TempoHeader::decode(&mut encoded.as_slice()).unwrap(), zone);
+
+        // L1-style header with both trailing fields.
+        let full = TempoHeader {
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 3,
+                view: 4,
+                parent_view: 3,
+                proposer: PublicKey::from_seed(2),
+            }),
+            expiring_nonce_root: Some(root),
+            ..base
+        };
+        let encoded = alloy_rlp::encode(&full);
+        assert_eq!(TempoHeader::decode(&mut encoded.as_slice()).unwrap(), full);
+        let full_hash = full.hash_slow();
+        assert_ne!(
+            full_hash,
+            TempoHeader {
+                expiring_nonce_root: None,
+                ..full
+            }
+            .hash_slow()
+        );
+    }
+
+    #[test]
+    fn header_rejects_placeholder_without_following_root() {
+        let header = TempoHeader {
+            general_gas_limit: 1,
+            shared_gas_limit: 1,
+            timestamp_millis_part: 0,
+            inner: Header::default(),
+            consensus_context: None,
+            expiring_nonce_root: None,
+        };
+        // [.., inner, 0x80] is not canonical: a trailing None must be omitted.
+        let malformed = append_explicit_none_to_rlp_list(&alloy_rlp::encode(&header));
         assert!(TempoHeader::decode(&mut malformed.as_slice()).is_err());
     }
 

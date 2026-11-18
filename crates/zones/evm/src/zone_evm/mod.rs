@@ -350,7 +350,7 @@ pub(crate) mod tests {
             let config = config(MockL1Reader::default());
             let block = Default::default();
             let ctx = config.context_for_block(&block).unwrap();
-            let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec());
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, config.chain_spec(), None);
             let tx = Recovered::new_unchecked(
                 TempoTxEnvelope::Legacy(
                     TxLegacy {

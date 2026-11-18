@@ -163,6 +163,7 @@ mod tests {
                     .try_into()
                     .unwrap(),
             }),
+            expiring_nonce_root: None,
         };
         let response = TempoHeaderResponse {
             timestamp_millis: header.timestamp_millis(),

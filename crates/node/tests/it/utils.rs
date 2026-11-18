@@ -538,6 +538,8 @@ pub(crate) struct TestNodeBuilder {
     external_rpc: Option<Url>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
+    /// Fork activation timestamps set after the schedule, by genesis config key.
+    fork_times: Vec<(String, u64)>,
 }
 
 impl TestNodeBuilder {
@@ -552,12 +554,20 @@ impl TestNodeBuilder {
             external_rpc: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
+            fork_times: Vec::new(),
         }
     }
 
     /// Set the fork schedule (Devnet, Testnet, or Mainnet)
     pub(crate) fn with_schedule(mut self, schedule: ForkSchedule) -> Self {
         self.schedule = schedule;
+        self
+    }
+
+    /// Activates the Tempo hardfork with genesis key `key` (such as `t16Time`) at `timestamp`,
+    /// overriding the schedule.
+    pub(crate) fn with_fork_time(mut self, key: &str, timestamp: u64) -> Self {
+        self.fork_times.push((key.to_owned(), timestamp));
         self
     }
 
@@ -716,6 +726,9 @@ impl TestNodeBuilder {
         }
 
         self.schedule.apply(&mut genesis);
+        for (key, timestamp) in &self.fork_times {
+            genesis["config"][key] = serde_json::json!(timestamp);
+        }
 
         Ok(TempoChainSpec::from_genesis(serde_json::from_value(
             genesis,

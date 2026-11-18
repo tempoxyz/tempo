@@ -500,6 +500,7 @@ pub(crate) async fn batch_witness(
     let mut zone_nodes = BTreeMap::new();
     let mut codes = BTreeMap::new();
     let mut tempo_nodes = BTreeMap::new();
+    let mut expiring_nonce_nodes = BTreeMap::new();
     let mut blocks = Vec::new();
     let mut final_header = TempoHeader::default();
     for number in from..=to {
@@ -519,6 +520,14 @@ pub(crate) async fn batch_witness(
         }
         for code in generated.execution_witness.codes {
             codes.insert(keccak256(&code), code);
+        }
+        // TIP-1173: each block's expiring nonce set nodes merge by hash into the batch pool.
+        for node in generated
+            .expiring_nonce_witness
+            .into_iter()
+            .flat_map(|witness| witness.nodes)
+        {
+            expiring_nonce_nodes.insert(keccak256(&node), node);
         }
         let mut import = None;
         let mut finalization = None;
@@ -601,5 +610,6 @@ pub(crate) async fn batch_witness(
             node_pool: tempo_nodes.into_values().collect(),
         },
         tempo_ancestry_headers: vec![],
+        expiring_nonce_witness: expiring_nonce_nodes.into_values().collect(),
     })
 }

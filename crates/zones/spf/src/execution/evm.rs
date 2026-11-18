@@ -46,6 +46,22 @@ pub(crate) struct ExecutedZoneBlock {
     pub(crate) evm_env: tempo_evm::TempoEvmEnv,
 }
 
+/// Returns the expiring nonce entries (TIP-1173) of a block's executed transactions, in order.
+pub(crate) fn expiring_nonce_entries(
+    transactions: &[TempoTxEnvelope],
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> Result<Vec<tempo_evm::expiring_nonces::ExpiringNonce>, alloy_consensus::crypto::RecoveryError>
+{
+    let mut entries = Vec::new();
+    for tx in transactions.iter().filter(|tx| tx.is_expiring_nonce()) {
+        let sender = tx.recover_signer()?;
+        if let Some(entry) = tempo_evm::expiring_nonces::ExpiringNonce::from_tx(tx, sender, spec) {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
 pub(crate) struct BlockReplayContext<'a> {
     pub(crate) parent: &'a TempoHeader,
     pub(crate) block_index: usize,
@@ -225,6 +241,8 @@ pub(crate) fn next_block_execution_context(
         general_gas_limit: 0,
         shared_gas_limit: 0,
         consensus_context: None,
+        block_hash: None,
+        expiring_nonce_root: None,
     }
 }
 

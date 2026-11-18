@@ -63,6 +63,8 @@ const KEPT_KEY: u32 = 150;
 const PENDING_KEY: u32 = 151;
 /// Test key index of the access key granted after the change.
 const FRESH_KEY: u32 = 152;
+/// Test key index of the EOA that sends expiring nonce transactions on the zone.
+const EXPIRING_KEY: u32 = 153;
 /// Every role a primitive key fills.
 const KEY_ROLES: [RootKeyRole; 4] = [
     RootKeyRole::Sender,
@@ -632,6 +634,114 @@ async fn test_batch_with_a_changed_account_proves(change: Change) -> eyre::Resul
             slot: None,
             block_number: anchor,
         }
+    );
+    Ok(())
+}
+
+/// TIP-1173: a batch whose zone blocks include expiring nonce transactions proves from the
+/// expiring nonce witness the zone node serves, and fails without it. The zone refuses a replay.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_batch_with_expiring_nonce_transactions_proves() -> eyre::Result<()> {
+    use tempo_primitives::transaction::tempo_transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+    let env = Env::start().await?;
+    let l1 = env.rpc.l1();
+    let zone = &env.rpc.zone;
+    let portal = env.rpc.portal_address();
+    let provider = zone.provider();
+    let sender = signer_at(EXPIRING_KEY);
+    let account = sender.address();
+    fund_on_zone(l1, zone, portal, account).await?;
+
+    // Three expiring nonce transactions in separate blocks, so later blocks check and insert
+    // against a parent set that already holds entries.
+    let mut included = Vec::new();
+    for i in 0..3u64 {
+        let latest = provider
+            .get_block_by_number(Default::default())
+            .await?
+            .ok_or_eyre("the zone has no latest block")?;
+        let mut tx = env
+            .zone_chain
+            .transaction(account, 0, vec![approve_outbox()])
+            .await?;
+        tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+        tx.nonce = 0;
+        tx.valid_before = std::num::NonZeroU64::new(
+            alloy_consensus::BlockHeader::timestamp(&latest.header) + 60 + i,
+        );
+        let signature = TempoSignature::from(sender.sign_hash_sync(&tx.signature_hash())?);
+        let block = env
+            .zone_chain
+            .execute(tx.clone(), signature.clone())
+            .await?;
+        if i == 0 {
+            assert!(
+                env.zone_chain.send(tx, signature).await.is_err(),
+                "the zone accepted a replay of an expiring nonce transaction"
+            );
+        }
+        included.push(block);
+    }
+
+    // Start after the first entry's block, so the batch's parent set holds an entry the witness
+    // must prove; within a batch the prover computes the set itself.
+    let from = included[1];
+    eyre::ensure!(
+        from > included[0],
+        "the expiring nonce transactions share a block"
+    );
+    let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &provider);
+    let finalized = outbox
+        .lastBatch()
+        .block(BlockId::number(from - 1))
+        .call()
+        .await?
+        .withdrawalBatchIndex;
+    // A batch ends at the first block that finalizes withdrawals.
+    let to = poll_until(
+        L1_TIMEOUT,
+        DEFAULT_POLL,
+        "a zone block finalizes withdrawals",
+        || async {
+            for number in from..=provider.get_block_number().await? {
+                let batch = outbox
+                    .lastBatch()
+                    .block(BlockId::number(number))
+                    .call()
+                    .await?;
+                if batch.withdrawalBatchIndex != finalized {
+                    return Ok(Some(number));
+                }
+            }
+            Ok(None)
+        },
+    )
+    .await?;
+    let mut genesis = genesis_template()?;
+    genesis.config.chain_id = env.zone_chain.chain_id;
+    let config = SpfConfig::new(Arc::new(ZoneChainSpec::from_genesis(genesis)?));
+    let witness = batch_witness(l1, zone, portal, from, to).await?;
+    assert!(
+        !witness.expiring_nonce_witness.is_empty(),
+        "the batch checks entries against a non-empty parent set"
+    );
+
+    let output = prove_zone_batch(&config, witness.clone())?;
+    let head = provider
+        .get_block_by_number(to.into())
+        .await?
+        .ok_or_eyre("the batch's last block is missing")?;
+    assert_eq!(output.next_zone_height, to);
+    assert_eq!(output.block_transition.nextBlockHash, head.header.hash);
+
+    let mut omitted = witness;
+    omitted.expiring_nonce_witness.clear();
+    let error = prove_zone_batch(&config, omitted)
+        .expect_err("proving verifies the expiring nonce set from the witness");
+    assert!(
+        matches!(error, zone_spf::Error::ExpiringNonceWitness { .. }),
+        "unexpected error: {error:?}"
     );
     Ok(())
 }

@@ -340,7 +340,7 @@ async fn generate_input(args: GenerateInputArgs) -> Result<()> {
     timings.record("batch extraction", started, ());
 
     let started = start_phase("Zone and Tempo state witnesses");
-    let (zone_state_witness, tempo_state_witness) =
+    let (zone_state_witness, tempo_state_witness, expiring_nonce_witness) =
         zone_witnesses(&zone_provider, from_block, to_block).await?;
     let initial_tempo_header = decode_tempo_header(&tempo_state_witness.initial_tempo_header_rlp)?;
     timings.record("Zone and Tempo state witnesses", started, ());
@@ -380,6 +380,7 @@ async fn generate_input(args: GenerateInputArgs) -> Result<()> {
         zone_state_witness,
         tempo_state_witness,
         tempo_ancestry_headers,
+        expiring_nonce_witness,
     };
 
     let started = start_phase("SPF validation");
@@ -1171,7 +1172,7 @@ async fn zone_witnesses(
     zone: &DynProvider<TempoNetwork>,
     from: u64,
     to: u64,
-) -> Result<(ZoneStateWitness, TempoStateWitness)> {
+) -> Result<(ZoneStateWitness, TempoStateWitness, Vec<Bytes>)> {
     let results = stream::iter(from..=to)
         .map(|number| async move {
             let started = Instant::now();
@@ -1202,8 +1203,17 @@ async fn zone_witnesses(
     let mut state = BTreeMap::new();
     let mut codes = BTreeMap::new();
     let mut tempo_nodes = BTreeMap::new();
+    let mut expiring_nonce_nodes = BTreeMap::new();
     let mut initial_tempo_header_rlp = None;
     for (number, witness) in results {
+        // TIP-1173: per-block expiring nonce set nodes merge by hash into one batch pool.
+        for node in witness
+            .expiring_nonce_witness
+            .into_iter()
+            .flat_map(|witness| witness.nodes)
+        {
+            expiring_nonce_nodes.entry(keccak256(&node)).or_insert(node);
+        }
         if number == from {
             initial_tempo_header_rlp = Some(Bytes::from(alloy_rlp::encode(
                 &witness.initial_tempo_header,
@@ -1229,6 +1239,7 @@ async fn zone_witnesses(
             initial_tempo_header_rlp: initial_tempo_header_rlp.ok_or_eyre("empty witness range")?,
             node_pool: tempo_nodes.into_values().collect(),
         },
+        expiring_nonce_nodes.into_values().collect(),
     ))
 }
 
@@ -1433,6 +1444,7 @@ mod tests {
                 node_pool: Vec::new(),
             },
             tempo_ancestry_headers: Vec::new(),
+            expiring_nonce_witness: Vec::new(),
         }
     }
 

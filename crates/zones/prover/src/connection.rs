@@ -493,6 +493,7 @@ mod tests {
                 node_pool: vec![Bytes::from_static(&[0x08])],
             },
             tempo_ancestry_headers: vec![Bytes::from_static(&[0x09])],
+            expiring_nonce_witness: Vec::new(),
         }
     }
 }

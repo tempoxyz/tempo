@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use reth_evm::NextBlockEnvAttributes;
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_primitives::TempoConsensusContext;
@@ -14,6 +15,12 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
+    /// Hash of the block being executed, when it is already sealed (validation and replay).
+    /// `None` while building a payload, whose hash is only known once it is assembled.
+    pub block_hash: Option<B256>,
+    /// The header's expiring nonce set root (TIP-1173), checked against the executed set when
+    /// the block is sealed. `None` while building a payload and before T16.
+    pub expiring_nonce_root: Option<B256>,
 }
 
 /// Context required for next block environment.

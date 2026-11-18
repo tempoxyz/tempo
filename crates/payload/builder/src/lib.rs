@@ -415,6 +415,7 @@ where
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
+        let evm_env_spec = evm_env.spec;
         let ctx = self
             .evm_config
             .context_for_next_block(&parent_header, next_attributes)
@@ -506,6 +507,18 @@ where
         let build_plan = payload_build_budget
             .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
+        // T16+ (TIP-1173): the parent's expiring nonce set. Pool maintenance can lag the next
+        // build by a block, so the pool still offers transactions the parent included; skip them
+        // with a set lookup instead of an executor round-trip each.
+        let spec = evm_env_spec;
+        let parent_expiring_nonces = spec
+            .is_t16()
+            .then(|| {
+                self.evm_config
+                    .expiring_nonce_sets()
+                    .authoritative(parent_header.hash())
+            })
+            .flatten();
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -563,6 +576,13 @@ where
             };
             let tx = pool_tx.tx.clone();
             pool_transactions_yielded += 1;
+
+            if let Some(set) = parent_expiring_nonces.as_ref()
+                && set.contains_tx(tx.transaction.inner(), tx.transaction.sender(), spec)
+            {
+                self.metrics.inc_pool_tx_skipped("expiring_nonce_in_parent");
+                continue;
+            }
 
             let max_regular_gas_used =
                 core::cmp::min(tx.gas_limit(), executor.evm().version().tx_gas_limit_cap);
@@ -1111,6 +1131,9 @@ where
         let execution_block_encoded = execution_block_encoder.encoded_block();
         // Drop the encoder off-thread so its `Drop` impl can populate the cache in the background.
         self.executor.spawn_drop(execution_block_encoder);
+        // TIP-1173: the engine inserts this payload without executing it again, so keep its
+        // expiring nonce set until finality: the next block may build on it.
+        self.evm_config.expiring_nonce_sets().pin(block.hash());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let executed_block = BuiltPayloadExecutedBlock {

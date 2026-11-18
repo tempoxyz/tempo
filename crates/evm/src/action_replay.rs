@@ -78,6 +78,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
+            self.expiring_nonces.entry(original, *recovered.signer()),
         );
         result_closure(&result);
 
@@ -277,6 +278,11 @@ impl TempoBlockExecutor<'_> {
             || expiring_nonce.valid_before > block_timestamp.saturating_add(max_expiry_secs)
         {
             return Err(StorageActionReplayError::ActionConflict.into());
+        }
+        // T16+ (TIP-1173): replays are rejected against the expiring nonce set when the
+        // transaction commits; the ring is no longer read or written.
+        if spec.is_t16() {
+            return Ok(());
         }
 
         let db = self.inner.evm_mut().overlay_db_mut();

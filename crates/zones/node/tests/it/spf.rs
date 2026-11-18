@@ -165,6 +165,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
             node_pool: vec![],
         },
         tempo_ancestry_headers: vec![],
+        expiring_nonce_witness: Vec::new(),
     };
 
     let output = prove_zone_batch(&config, witness)?;
@@ -317,6 +318,7 @@ impl BuiltTransactionBlock {
                 node_pool: tempo_state_nodes,
             },
             tempo_ancestry_headers: vec![],
+            expiring_nonce_witness: Vec::new(),
         }
     }
 }

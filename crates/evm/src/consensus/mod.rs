@@ -115,6 +115,19 @@ where
             .into());
         }
 
+        // TIP-1173: the expiring nonce root is present exactly from T16. Its value is checked
+        // against the executed set by the block executor.
+        let expects_root = self
+            .inner
+            .chain_spec()
+            .is_t16_active_at_timestamp(header.timestamp());
+        if header.expiring_nonce_root.is_some() != expects_root {
+            return Err(TempoConsensusError::ExpiringNonceRootPresence {
+                expected: expects_root,
+            }
+            .into());
+        }
+
         Ok(())
     }
 
