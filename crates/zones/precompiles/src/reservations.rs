@@ -19,7 +19,9 @@ use tempo_contracts::{
     zones::Unauthorized,
 };
 use tempo_precompiles::{
-    dispatch::abi_decoder_config_for_spec, error::Result, reservations::Reservations,
+    dispatch::abi_decoder_config_for_spec,
+    error::Result,
+    reservations::{Reservations, empty_hold},
     storage::StorageCtx,
 };
 
@@ -48,7 +50,7 @@ impl<P: L1StorageReader> ReservationRules<P> {
     }
 
     /// Admits a read of `owner`'s position in `token`: the owner, or a holder it approved for the
-    /// token that still has an allowance or outstanding holds. Anyone else reads zero, all it could
+    /// token that still has a budget or outstanding holds. Anyone else reads zero, all it could
     /// hold: a program asks about every token in an owner's funding order, approved or not.
     fn admit_position(caller: Address, owner: Address, token: Address) -> Result<CallCheck> {
         if caller == owner || Self::holds_for(caller, owner, token)? {
@@ -61,19 +63,18 @@ impl<P: L1StorageReader> ReservationRules<P> {
 
     /// Whether `owner` approved `caller` as a holder of `token`, or it still holds some.
     fn holds_for(caller: Address, owner: Address, token: Address) -> Result<bool> {
-        let allowance = Reservations::new().allowance(owner, caller, token)?;
-        Ok(allowance.allowance != 0 || allowance.outstanding != 0)
+        let budget = Reservations::new().budget(owner, caller, token)?;
+        Ok(budget.limit != 0 || budget.outstanding != 0)
     }
 
-    /// Admits a read of `owner`'s hold `id`: the owner, its placer or its payee. Anyone else reads
-    /// an empty record, as for a hold that does not exist: a program checks for its leg's hold
-    /// before placing it.
-    fn admit_hold(caller: Address, owner: Address, id: B256) -> Result<CallCheck> {
-        if caller == owner {
+    /// Admits a read of the hold `id` that `placer` placed on `owner`'s balance: the owner, the
+    /// placer or the payee. Anyone else reads an empty record, as for a hold that does not exist: a
+    /// program checks for its leg's hold before placing it.
+    fn admit_hold(caller: Address, owner: Address, placer: Address, id: B256) -> Result<CallCheck> {
+        if caller == owner || caller == placer {
             return Ok(CallCheck::Continue);
         }
-        let record = Reservations::new().get_hold(owner, id)?;
-        if caller == record.placer || caller == record.payee {
+        if caller == Reservations::new().get_hold(owner, placer, id)?.payee {
             return Ok(CallCheck::Continue);
         }
         Ok(CallCheck::Return(
@@ -81,22 +82,14 @@ impl<P: L1StorageReader> ReservationRules<P> {
         ))
     }
 
-    /// Admits a read of lien `id` of `authority`: the authority or the owner it binds.
-    fn admit_lien(caller: Address, authority: Address, id: B256) -> Result<CallCheck> {
-        if caller == authority {
-            return Ok(CallCheck::Continue);
-        }
-        let lien = Reservations::new().lien_of(authority, id)?;
-        Ok(check_caller(caller, &[lien.owner]))
-    }
-
-    /// Admits a read of `owner`'s debt in `token`: the owner, its creditor, or an approved holder.
+    /// Admits a read of `owner`'s debts in `token`: the owner, one of its creditors, or an
+    /// approved holder.
     fn admit_debt(caller: Address, owner: Address, token: Address) -> Result<CallCheck> {
         if caller == owner {
             return Ok(CallCheck::Continue);
         }
-        let debt = Reservations::new().debt_of(owner, token)?;
-        if (!debt.creditor.is_zero() && debt.creditor == caller)
+        let debts = Reservations::new().debt_of(owner, token)?;
+        if debts.iter().any(|debt| debt.creditor == caller)
             || Self::holds_for(caller, owner, token)?
         {
             return Ok(CallCheck::Continue);
@@ -109,49 +102,34 @@ impl<P: L1StorageReader> ReservationRules<P> {
         // Intentionally exhaustive: an upstream ABI addition must be classified here.
         Ok(match call {
             C::approveHolder(_)
-            | C::setDebtCap(_)
-            | C::setCaptureTolerance(_)
-            | C::setOfflineCap(_)
+            | C::setPayeeTerms(_)
             | C::hold(_)
             | C::holdFrom(_)
+            | C::pledge(_)
+            | C::pledgeFrom(_)
+            | C::lien(_)
             | C::adjust(_)
             | C::capture(_)
             | C::release(_)
             | C::releaseExpired(_)
-            | C::refund(_)
             | C::charge(_)
-            | C::lien(_)
-            | C::pledge(_)
-            | C::releaseLien(_)
-            | C::reduceLien(_)
-            | C::seizeLien(_)
-            | C::releaseExpiredLien(_)
-            | C::pledgeFrom(_) => self.admit_write()?,
-            C::getHold(IReservationCore::getHoldCall { owner, id }) => {
-                Self::admit_hold(caller, owner, id)?
+            | C::refund(_)
+            | C::clearLapsedDebt(_) => self.admit_write()?,
+            C::getHold(IReservationCore::getHoldCall { owner, placer, id }) => {
+                Self::admit_hold(caller, owner, placer, id)?
             }
             C::reserved(IReservationCore::reservedCall { owner, token })
-            | C::available(IReservationCore::availableCall { owner, token })
-            | C::liened(IReservationCore::lienedCall { owner, token }) => {
+            | C::available(IReservationCore::availableCall { owner, token }) => {
                 Self::admit_position(caller, owner, token)?
             }
             C::debtOf(IReservationCore::debtOfCall { owner, token }) => {
                 Self::admit_debt(caller, owner, token)?
             }
-            C::allowance(IReservationCore::allowanceCall { owner, holder, .. }) => {
+            C::budget(IReservationCore::budgetCall { owner, holder, .. }) => {
                 check_caller(caller, &[owner, holder])
             }
-            C::debtCap(IReservationCore::debtCapCall {
-                owner, creditor, ..
-            }) => check_caller(caller, &[owner, creditor]),
-            C::captureTolerance(IReservationCore::captureToleranceCall {
-                owner, payee, ..
-            })
-            | C::offlineCap(IReservationCore::offlineCapCall { owner, payee, .. }) => {
+            C::payeeTerms(IReservationCore::payeeTermsCall { owner, payee, .. }) => {
                 check_caller(caller, &[owner, payee])
-            }
-            C::lienOf(IReservationCore::lienOfCall { authority, id }) => {
-                Self::admit_lien(caller, authority, id)?
             }
         })
     }
@@ -166,22 +144,6 @@ impl<P: L1StorageReader> CallRules for ReservationRules<P> {
         };
         self.try_admit(call, caller)
             .unwrap_or_else(CallCheck::Error)
-    }
-}
-
-/// The record of a hold that does not exist.
-fn empty_hold() -> IReservationCore::HoldRecord {
-    IReservationCore::HoldRecord {
-        token: Address::ZERO,
-        placer: Address::ZERO,
-        payee: Address::ZERO,
-        held: 0,
-        approved: 0,
-        captured: 0,
-        refunded: 0,
-        expiresAt: 0,
-        standIn: false,
-        settled: false,
     }
 }
 
@@ -254,7 +216,8 @@ mod tests {
             let approve = IReservationCore::approveHolderCall {
                 holder: HOLDER,
                 token: PATH_USD_ADDRESS,
-                allowance: 500,
+                limit: 500,
+                period: 0,
             };
             core.call(&approve.abi_encode(), OWNER)
                 .expect("approve the holder");
@@ -287,13 +250,18 @@ mod tests {
     fn reads_answer_only_the_owner_and_its_counterparties() {
         let token = PATH_USD_ADDRESS;
         let id = B256::repeat_byte(1);
-        let hold = IReservationCore::getHoldCall { owner: OWNER, id }.abi_encode();
+        let hold = IReservationCore::getHoldCall {
+            owner: OWNER,
+            placer: HOLDER,
+            id,
+        }
+        .abi_encode();
         let reserved = IReservationCore::reservedCall {
             owner: OWNER,
             token,
         }
         .abi_encode();
-        let terms = IReservationCore::captureToleranceCall {
+        let terms = IReservationCore::payeeTermsCall {
             owner: OWNER,
             payee: PAYEE,
             token,
@@ -341,6 +309,7 @@ mod tests {
     ) {
         let release = IReservationCore::releaseCall {
             owner: OWNER,
+            placer: HOLDER,
             id: B256::repeat_byte(1),
         }
         .abi_encode();

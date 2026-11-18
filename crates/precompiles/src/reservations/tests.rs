@@ -1,16 +1,19 @@
 use super::*;
 use crate::{
-    account_keychain::AccountKeychain,
+    account_keychain::{AccountKeychain, KeyRestrictions, SignatureType, TokenLimit},
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     tip20::{BURN_BLOCKED_ROLE, IRolesAuth, ITIP20},
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
+use alloy::primitives::IntoLogData;
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IReservationCore::IReservationCoreCalls;
+
+mod model;
 
 const NOW: u64 = 1_000;
 const EXPIRY: u64 = NOW + 600;
@@ -26,7 +29,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Mints `balance` to a fresh owner of a fresh token.
+    /// Mints the balance to a fresh owner of a fresh token.
     fn new(balance: u64) -> Result<Self> {
         let admin = Address::random();
         let owner = Address::random();
@@ -46,65 +49,70 @@ impl Fixture {
         })
     }
 
-    fn request(
-        &self,
-        id: B256,
-        amount: u128,
-        expires_at: u64,
-        stand_in: bool,
-    ) -> IReservationCore::HoldRequest {
+    fn request(&self, id: B256, amount: u128, stand_in: bool) -> IReservationCore::HoldRequest {
         IReservationCore::HoldRequest {
             token: self.token.address(),
             id,
             amount,
-            expiresAt: expires_at,
+            expiresAt: EXPIRY,
             payee: self.payee,
             standIn: stand_in,
         }
     }
 
     fn hold(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, EXPIRY, false);
+        let request = self.request(id, amount, false);
         self.reservations.place(self.owner, self.owner, request)
     }
 
     fn hold_stand_in(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, EXPIRY, true);
+        let request = self.request(id, amount, true);
         self.reservations.place(self.owner, self.owner, request)
     }
 
     fn hold_from(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, EXPIRY, false);
+        let request = self.request(id, amount, false);
         self.reservations.place(self.holder, self.owner, request)
     }
 
-    fn approve(&mut self, allowance: u128) -> Result<()> {
+    fn approve(&mut self, limit: u128, period: u32) -> Result<()> {
         self.reservations.approve_holder(
             self.owner,
             IReservationCore::approveHolderCall {
                 holder: self.holder,
                 token: self.token.address(),
-                allowance,
+                limit,
+                period,
             },
         )
     }
 
-    fn adjust(&mut self, caller: Address, id: B256, amount: u128) -> Result<()> {
+    fn adjust(&mut self, caller: Address, placer: Address, id: B256, amount: u128) -> Result<()> {
         self.reservations.adjust(
             caller,
             IReservationCore::adjustCall {
                 owner: self.owner,
+                placer,
                 id,
                 amount,
             },
         )
     }
 
-    fn capture(&mut self, caller: Address, id: B256, amount: u128, is_final: bool) -> Result<()> {
+    #[expect(clippy::too_many_arguments, reason = "the fields of one capture")]
+    fn capture_of(
+        &mut self,
+        caller: Address,
+        placer: Address,
+        id: B256,
+        amount: u128,
+        is_final: bool,
+    ) -> Result<()> {
         self.reservations.capture(
             caller,
             IReservationCore::captureCall {
                 owner: self.owner,
+                placer,
                 id,
                 amount,
                 isFinal: is_final,
@@ -112,66 +120,93 @@ impl Fixture {
         )
     }
 
-    fn release(&mut self, caller: Address, id: B256) -> Result<()> {
-        self.reservations.release(caller, self.owner, id)
+    /// Captures a hold the owner placed.
+    fn capture(&mut self, caller: Address, id: B256, amount: u128, is_final: bool) -> Result<()> {
+        self.capture_of(caller, self.owner, id, amount, is_final)
     }
 
-    fn refund(&mut self, id: B256, amount: u128) -> Result<()> {
+    fn release(&mut self, caller: Address, placer: Address, id: B256) -> Result<()> {
+        self.reservations.release(
+            caller,
+            IReservationCore::releaseCall {
+                owner: self.owner,
+                placer,
+                id,
+            },
+        )
+    }
+
+    fn release_expired(&mut self, placer: Address, id: B256) -> Result<()> {
+        self.reservations
+            .release_expired(IReservationCore::releaseExpiredCall {
+                owner: self.owner,
+                placer,
+                id,
+            })
+    }
+
+    fn refund(&mut self, caller: Address, id: B256, amount: u128) -> Result<()> {
         self.reservations.refund(
-            self.payee,
+            caller,
             IReservationCore::refundCall {
                 owner: self.owner,
+                token: self.token.address(),
+                placer: self.owner,
                 id,
                 amount,
             },
         )
     }
 
-    fn charge(&mut self, caller: Address, id: B256, amount: u128, stand_in: bool) -> Result<()> {
+    fn charge(&mut self, caller: Address, amount: u128, stand_in: bool) -> Result<()> {
+        self.charge_to(caller, self.payee, amount, stand_in)
+    }
+
+    fn charge_to(
+        &mut self,
+        caller: Address,
+        payee: Address,
+        amount: u128,
+        stand_in: bool,
+    ) -> Result<()> {
         self.reservations.charge(
             caller,
             IReservationCore::chargeCall {
                 owner: self.owner,
                 token: self.token.address(),
-                id,
+                id: B256::random(),
                 amount,
-                payee: self.payee,
+                payee,
                 standIn: stand_in,
             },
         )
     }
 
-    fn set_tolerance(&mut self, bps: u32) -> Result<()> {
-        self.reservations.set_capture_tolerance(
+    fn set_terms_for(
+        &mut self,
+        payee: Address,
+        debt_cap: u128,
+        offline_cap: u128,
+        tolerance_bps: u16,
+        debt_term: u32,
+    ) -> Result<()> {
+        self.reservations.set_payee_terms(
             self.owner,
-            IReservationCore::setCaptureToleranceCall {
-                payee: self.payee,
+            IReservationCore::setPayeeTermsCall {
+                payee,
                 token: self.token.address(),
-                toleranceBps: bps,
+                terms: IReservationCore::PayeeTerms {
+                    debtCap: debt_cap,
+                    offlineCap: offline_cap,
+                    toleranceBps: tolerance_bps,
+                    debtTerm: debt_term,
+                },
             },
         )
     }
 
-    fn set_debt_cap(&mut self, cap: u128) -> Result<()> {
-        self.reservations.set_debt_cap(
-            self.owner,
-            IReservationCore::setDebtCapCall {
-                creditor: self.payee,
-                token: self.token.address(),
-                cap,
-            },
-        )
-    }
-
-    fn set_offline_cap(&mut self, cap: u128) -> Result<()> {
-        self.reservations.set_offline_cap(
-            self.owner,
-            IReservationCore::setOfflineCapCall {
-                payee: self.payee,
-                token: self.token.address(),
-                cap,
-            },
-        )
+    fn set_terms(&mut self, debt_cap: u128, offline_cap: u128, tolerance_bps: u16) -> Result<()> {
+        self.set_terms_for(self.payee, debt_cap, offline_cap, tolerance_bps, 0)
     }
 
     fn lien_authority(&mut self) -> Result<Address> {
@@ -225,11 +260,6 @@ impl Fixture {
         )
     }
 
-    fn seize(&mut self, authority: Address, id: B256, amount: u128) -> Result<()> {
-        self.reservations
-            .seize_lien(authority, IReservationCore::seizeLienCall { id, amount })
-    }
-
     fn mint(&mut self, to: Address, amount: u64) -> Result<()> {
         self.token.mint(
             self.admin,
@@ -264,22 +294,25 @@ impl Fixture {
             .available_of(self.owner, self.token.address())
     }
 
-    fn debt(&self) -> Result<IReservationCore::debtOfReturn> {
-        self.reservations.debt_of(self.owner, self.token.address())
-    }
-
-    fn record(&self, id: B256) -> Result<IReservationCore::HoldRecord> {
-        self.reservations.get_hold(self.owner, id)
-    }
-
-    fn outstanding(&self) -> Result<u128> {
+    fn debts(&self) -> Result<Vec<(Address, u128)>> {
         Ok(self
             .reservations
-            .allowance(self.owner, self.holder, self.token.address())?
-            .outstanding)
+            .debt_of(self.owner, self.token.address())?
+            .into_iter()
+            .map(|debt| (debt.creditor, debt.amount))
+            .collect())
     }
 
-    /// Makes the token's transfer policy a blacklist of `accounts`.
+    fn record(&self, placer: Address, id: B256) -> Result<IReservationCore::HoldRecord> {
+        self.reservations.get_hold(self.owner, placer, id)
+    }
+
+    fn budget(&self) -> Result<IReservationCore::Budget> {
+        self.reservations
+            .budget(self.owner, self.holder, self.token.address())
+    }
+
+    /// Makes the token's transfer policy a blacklist of the accounts.
     fn blacklist(&mut self, accounts: Vec<Address>) -> Result<()> {
         let mut registry = TIP403Registry::new();
         registry.initialize()?;
@@ -306,17 +339,49 @@ fn new_storage() -> HashMapStorageProvider {
     storage
 }
 
-/// Runs `f` at T16 with the block timestamp at [`NOW`].
+/// Runs the closure at T16 with the block timestamp at NOW.
 fn at_fork(f: impl FnOnce() -> eyre::Result<()>) -> eyre::Result<()> {
     let mut storage = new_storage();
     StorageCtx::enter(&mut storage, f)
 }
 
-/// Signs as `account` with an access key for the rest of the transaction.
+fn warp(seconds: u64) {
+    let now = StorageCtx.timestamp().saturating_to::<u64>();
+    StorageCtx.set_timestamp(U256::from(now + seconds));
+}
+
+/// Signs as the account with an access key that has no spending limits.
 fn sign_with_access_key(account: Address) -> Result<()> {
     let mut keychain = AccountKeychain::new();
     keychain.set_tx_origin(account)?;
     keychain.set_transaction_key(Address::random())
+}
+
+/// Signs as the account with an access key that may spend at most the limit of the token.
+fn sign_with_limited_key(account: Address, token: Address, limit: u64) -> Result<()> {
+    let mut keychain = AccountKeychain::new();
+    keychain.initialize()?;
+    keychain.set_transaction_key(Address::ZERO)?;
+    keychain.set_tx_origin(account)?;
+    let key = Address::random();
+    keychain.authorize_key(
+        account,
+        key,
+        SignatureType::Secp256k1,
+        KeyRestrictions {
+            expiry: u64::MAX,
+            enforceLimits: true,
+            limits: vec![TokenLimit {
+                token,
+                amount: U256::from(limit),
+                period: 0,
+            }],
+            allowAnyCalls: true,
+            allowedCalls: vec![],
+        },
+        None,
+    )?;
+    keychain.set_transaction_key(key)
 }
 
 /// Evaluates a call that must fail and returns its error, reverting what it wrote as a failed
@@ -328,6 +393,18 @@ macro_rules! err {
         drop(checkpoint);
         result.expect_err("call must fail")
     }};
+}
+
+/// Asserts the reservation core's latest event.
+fn assert_last_event(reservations: &Reservations, event: ReservationsEvent) {
+    assert_eq!(
+        reservations.emitted_events().last(),
+        Some(&event.into_log_data())
+    );
+}
+
+fn e(error: IReservationCore::IReservationCoreErrors) -> TempoPrecompileError {
+    error.into()
 }
 
 #[test]
@@ -350,33 +427,23 @@ fn test_hold_reserves_in_place() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.hold(id, 600)?;
-        assert_eq!((f.reserved()?, f.available()?), (600, 400));
+        f.hold(id, 300)?;
+        assert_eq!((f.reserved()?, f.available()?), (300, 700));
         assert_eq!(f.balance(f.owner)?, U256::from(1_000));
-        let record = f.record(id)?;
+        let record = f.record(f.owner, id)?;
         assert_eq!(
-            (record.placer, record.payee, record.held, record.approved),
-            (f.owner, f.payee, 600, 600)
+            (record.held, record.captureLimit, record.kind, record.payee),
+            (300, 300, kind::HOLD, f.payee)
         );
-        assert_eq!(
-            (record.expiresAt, record.standIn, record.settled),
-            (EXPIRY, false, false)
+        // Reserved funds cannot be transferred.
+        let other = Address::random();
+        assert!(
+            err!(f.transfer(f.owner, other, 701))
+                .to_string()
+                .contains("nsufficient")
         );
-        assert!(f.transfer(f.owner, Address::random(), 401).is_err());
-        assert!(f.transfer(f.owner, Address::random(), 400)?);
-        assert_eq!(f.balance(f.owner)?, U256::from(600));
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::hold_placed(
-                f.owner,
-                id,
-                f.token.address(),
-                f.owner,
-                f.payee,
-                600,
-                600,
-                EXPIRY,
-                false,
-            )]);
+        f.transfer(f.owner, other, 700)?;
+        assert_eq!(f.balance(f.owner)?, U256::from(300));
         Ok(())
     })
 }
@@ -384,146 +451,97 @@ fn test_hold_reserves_in_place() -> eyre::Result<()> {
 #[test]
 fn test_hold_rejects_invalid_requests() -> eyre::Result<()> {
     at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
+        let mut f = Fixture::new(100)?;
         let id = B256::random();
-        for amount in [0, u128::from(u64::MAX) + 1] {
-            assert_eq!(
-                err!(f.hold(id, amount)),
-                ReservationsError::invalid_amount().into()
-            );
-        }
-        for expires_at in [NOW, NOW - 1, NOW + MAX_HOLD_DURATION + 1] {
-            let request = f.request(id, 1, expires_at, false);
-            assert_eq!(
-                err!(f.reservations.place(f.owner, f.owner, request)),
-                ReservationsError::invalid_expiry().into()
-            );
-        }
-        let request = f.request(id, 1, NOW + MAX_HOLD_DURATION, false);
-        f.reservations.place(f.owner, f.owner, request)?;
-        assert_eq!(err!(f.hold(id, 1)), ReservationsError::hold_exists().into());
+        assert_eq!(err!(f.hold(id, 0)), e(ReservationsError::invalid_amount()));
         assert_eq!(
-            err!(f.hold(B256::random(), 1_000)),
-            ReservationsError::insufficient_available().into()
+            err!(f.hold(id, 101)),
+            e(ReservationsError::insufficient_available())
         );
-        let mut request = f.request(B256::random(), 1, EXPIRY, false);
-        request.payee = f.owner;
+        let mut late = f.request(id, 10, false);
+        late.expiresAt = NOW + MAX_HOLD_DURATION + 1;
         assert_eq!(
-            err!(f.reservations.place(f.owner, f.owner, request)),
-            ReservationsError::policy_forbids().into()
+            err!(f.reservations.place(f.owner, f.owner, late)),
+            e(ReservationsError::invalid_expiry())
         );
-        f.blacklist(vec![f.payee])?;
+        let mut past = f.request(id, 10, false);
+        past.expiresAt = NOW;
         assert_eq!(
-            err!(f.hold(B256::random(), 1)),
-            ReservationsError::policy_forbids().into()
+            err!(f.reservations.place(f.owner, f.owner, past)),
+            e(ReservationsError::invalid_expiry())
         );
+        let mut to_self = f.request(id, 10, false);
+        to_self.payee = f.owner;
+        assert_eq!(
+            err!(f.reservations.place(f.owner, f.owner, to_self)),
+            e(ReservationsError::policy_forbids())
+        );
+        f.hold(id, 10)?;
+        assert_eq!(err!(f.hold(id, 10)), e(ReservationsError::hold_exists()));
         Ok(())
     })
 }
 
+/// Each placer's ids are its own: a stranger cannot take or touch the id another placer uses.
 #[test]
-fn test_capture_after_the_owner_is_blocked_pays_an_allowed_payee() -> eyre::Result<()> {
+fn test_hold_ids_are_namespaced_by_placer() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
-        f.approve(500)?;
-        let (direct, delegated) = (B256::random(), B256::random());
-        f.hold(direct, 100)?;
-        f.hold_from(delegated, 200)?;
-        f.blacklist(vec![f.owner])?;
-        // Funds reserved under the policy in force at authorization still pay the payee.
-        f.capture(f.payee, direct, 60, false)?;
-        f.capture(f.holder, delegated, 150, true)?;
-        f.capture(f.owner, direct, 40, true)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(250));
-        assert_eq!((f.reserved()?, f.available()?), (0, 750));
-        assert_eq!(f.outstanding()?, 0);
-        Ok(())
-    })
-}
-
-#[test]
-fn test_blocked_owner_cannot_authorize_anything_new() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        f.approve(500)?;
-        f.set_tolerance(2_000)?;
-        let id = B256::random();
+        f.approve(500, 0)?;
+        let id = B256::repeat_byte(7);
+        // The holder places first; the owner's own hold with the same id is a different record.
         f.hold_from(id, 100)?;
-        f.blacklist(vec![f.owner])?;
-        let forbids: TempoPrecompileError = ReservationsError::policy_forbids().into();
-        assert_eq!(err!(f.hold(B256::random(), 10)), forbids);
-        assert_eq!(err!(f.hold_from(B256::random(), 10)), forbids);
-        assert_eq!(err!(f.charge(f.holder, B256::random(), 10, false)), forbids);
-        assert_eq!(err!(f.charge(f.owner, B256::random(), 10, false)), forbids);
-        // Raising the hold or capturing past it moves funds that were never reserved.
-        assert_eq!(err!(f.adjust(f.holder, id, 110)), forbids);
-        assert_eq!(err!(f.capture(f.holder, id, 110, true)), forbids);
-        // Lowering it and capturing within it still work.
-        f.adjust(f.holder, id, 90)?;
-        f.capture(f.holder, id, 90, true)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(90));
-        assert_eq!((f.reserved()?, f.outstanding()?), (0, 0));
+        f.hold(id, 200)?;
+        assert_eq!(f.record(f.holder, id)?.held, 100);
+        assert_eq!(f.record(f.owner, id)?.held, 200);
+        assert_eq!(f.reserved()?, 300);
+        // A stranger's charge with the id touches neither record.
+        let stranger = Address::random();
+        assert_eq!(
+            err!(f.charge(stranger, 1, false)),
+            e(ReservationsError::unauthorized())
+        );
+        // The payee names the placer to capture.
+        f.capture_of(f.payee, f.holder, id, 100, true)?;
+        assert_eq!(f.record(f.holder, id)?, empty_hold());
+        assert_eq!(f.record(f.owner, id)?.held, 200);
+        assert_eq!(
+            err!(f.capture_of(f.payee, f.holder, id, 1, true)),
+            e(ReservationsError::hold_not_found())
+        );
+        // A stranger cannot act on either record.
+        assert_eq!(
+            err!(f.release(stranger, f.owner, id)),
+            e(ReservationsError::unauthorized())
+        );
+        assert_eq!(
+            err!(f.adjust(stranger, f.owner, id, 1)),
+            e(ReservationsError::unauthorized())
+        );
         Ok(())
     })
 }
 
 #[test]
-fn test_capture_to_a_blocked_payee_fails() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        let id = B256::random();
-        f.hold(id, 100)?;
-        f.blacklist(vec![f.owner, f.payee])?;
-        assert_eq!(
-            err!(f.capture(f.owner, id, 50, false)),
-            ReservationsError::policy_forbids().into()
-        );
-        f.blacklist(vec![f.payee])?;
-        assert_eq!(
-            err!(f.capture(f.payee, id, 50, false)),
-            ReservationsError::policy_forbids().into()
-        );
-        // The hold stays whole and can still be released.
-        assert_eq!(f.reserved()?, 100);
-        f.release(f.owner, id)?;
-        assert_eq!((f.reserved()?, f.available()?), (0, 1_000));
+fn test_settled_holds_are_deleted_and_ids_reusable() -> eyre::Result<()> {
+    let mut storage = new_storage();
+    let count = |storage: &HashMapStorageProvider| storage.nonzero_slot_count(RESERVATIONS_ADDRESS);
+    let mut f = StorageCtx::enter(&mut storage, || Fixture::new(1_000))?;
+    let base = count(&storage);
+    let id = B256::random();
+    StorageCtx::enter(&mut storage, || f.hold(id, 100))?;
+    // Two record slots and the owner's position.
+    assert_eq!(count(&storage), base + 3);
+    StorageCtx::enter(&mut storage, || f.capture(f.payee, id, 40, true))?;
+    assert_eq!(count(&storage), base);
+    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+        assert_eq!(f.record(f.owner, id)?, empty_hold());
+        f.hold(id, 50)?;
+        f.release(f.payee, f.owner, id)?;
         Ok(())
-    })
-}
-
-#[test]
-fn test_capture_tolerance_defaults_to_zero() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        let id = B256::random();
-        f.hold(id, 100)?;
-        assert_eq!(
-            f.reservations
-                .capture_tolerance(f.owner, f.payee, f.token.address())?,
-            0
-        );
-        assert_eq!(
-            err!(f.capture(f.owner, id, 101, true)),
-            ReservationsError::tolerance_exceeded().into()
-        );
-
-        // 10% lets a capture reach 110, the excess coming from the available balance.
-        f.set_tolerance(1_000)?;
-        assert_eq!(
-            err!(f.capture(f.owner, id, 111, true)),
-            ReservationsError::tolerance_exceeded().into()
-        );
-        f.capture(f.owner, id, 110, true)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(110));
-        assert_eq!(f.balance(f.owner)?, U256::from(890));
-        assert_eq!((f.reserved()?, f.debt()?.amount), (0, 0));
-        let record = f.record(id)?;
-        assert_eq!(
-            (record.held, record.captured, record.settled),
-            (0, 110, true)
-        );
-        Ok(())
-    })
+    })?;
+    assert_eq!(count(&storage), base);
+    Ok(())
 }
 
 #[test]
@@ -531,118 +549,72 @@ fn test_part_captures_and_final_release_the_rest() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.hold(id, 300)?;
-        f.capture(f.payee, id, 100, false)?;
-        assert_eq!((f.record(id)?.held, f.reserved()?), (200, 200));
+        f.hold(id, 500)?;
+        f.capture(f.payee, id, 200, false)?;
+        assert_eq!((f.reserved()?, f.balance(f.payee)?), (300, U256::from(200)));
+        assert_eq!(f.record(f.owner, id)?.captureLimit, 300);
+        f.capture(f.owner, id, 100, true)?;
+        assert_eq!((f.reserved()?, f.available()?), (0, 700));
+        assert_eq!(f.balance(f.payee)?, U256::from(300));
         assert_eq!(
             err!(f.capture(f.payee, id, 0, false)),
-            ReservationsError::invalid_amount().into()
-        );
-        // Part captures stay within the approval.
-        assert_eq!(
-            err!(f.capture(f.payee, id, 201, false)),
-            ReservationsError::tolerance_exceeded().into()
-        );
-        f.capture(f.owner, id, 50, true)?;
-        let record = f.record(id)?;
-        assert_eq!(
-            (record.held, record.captured, record.settled),
-            (0, 150, true)
-        );
-        assert_eq!((f.reserved()?, f.available()?), (0, 850));
-        assert_eq!(f.balance(f.payee)?, U256::from(150));
-
-        // A stranger can neither capture nor release.
-        let other = B256::random();
-        f.hold(other, 10)?;
-        let stranger = Address::random();
-        assert_eq!(
-            err!(f.capture(stranger, other, 1, true)),
-            ReservationsError::unauthorized().into()
-        );
-        assert_eq!(
-            err!(f.release(stranger, other)),
-            ReservationsError::unauthorized().into()
-        );
-        f.release(f.payee, other)?;
-        assert_eq!(f.reserved()?, 0);
-        Ok(())
-    })
-}
-
-#[test]
-fn test_settled_id_is_terminal() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        let (captured, released, charged) = (B256::random(), B256::random(), B256::random());
-        f.hold(captured, 100)?;
-        f.capture(f.owner, captured, 100, true)?;
-        f.hold(released, 100)?;
-        f.release(f.owner, released)?;
-        f.charge(f.owner, charged, 10, false)?;
-        for id in [captured, released, charged] {
-            assert!(f.record(id)?.settled);
-            assert_eq!(err!(f.hold(id, 1)), ReservationsError::hold_exists().into());
-            assert_eq!(
-                err!(f.charge(f.owner, id, 1, false)),
-                ReservationsError::hold_exists().into()
-            );
-            assert_eq!(
-                err!(f.capture(f.owner, id, 1, true)),
-                ReservationsError::hold_settled().into()
-            );
-            assert_eq!(
-                err!(f.adjust(f.owner, id, 1)),
-                ReservationsError::hold_settled().into()
-            );
-            assert_eq!(
-                err!(f.release(f.owner, id)),
-                ReservationsError::hold_settled().into()
-            );
-            StorageCtx.set_timestamp(U256::from(EXPIRY));
-            assert_eq!(
-                err!(f.reservations.release_expired(f.owner, id)),
-                ReservationsError::hold_settled().into()
-            );
-            StorageCtx.set_timestamp(U256::from(NOW));
-        }
-        assert_eq!(
-            err!(f.capture(f.owner, B256::random(), 1, true)),
-            ReservationsError::hold_not_found().into()
+            e(ReservationsError::hold_not_found())
         );
         Ok(())
     })
 }
 
 #[test]
-fn test_adjust_by_placer() -> eyre::Result<()> {
+fn test_capture_tolerance_is_fixed_at_placement() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.hold(id, 300)?;
+        f.set_terms(0, 0, 2_000)?;
+        f.hold(id, 100)?;
+        assert_eq!(f.record(f.owner, id)?.captureLimit, 120);
+        // Raising the payee's tolerance later does not widen the hold.
+        f.set_terms(0, 0, 5_000)?;
         assert_eq!(
-            err!(f.adjust(f.payee, id, 100)),
-            ReservationsError::unauthorized().into()
+            err!(f.capture(f.payee, id, 121, true)),
+            e(ReservationsError::capture_limit_exceeded())
         );
-        f.adjust(f.owner, id, 100)?;
-        assert_eq!((f.reserved()?, f.record(id)?.approved), (100, 300));
-        f.adjust(f.owner, id, 500)?;
-        assert_eq!((f.reserved()?, f.record(id)?.approved), (500, 500));
+        f.capture(f.payee, id, 120, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(120));
+        Ok(())
+    })
+}
+
+#[test]
+fn test_adjust_by_placer_and_stand_in_limits() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 100)?;
         assert_eq!(
-            err!(f.adjust(f.owner, id, 1_001)),
-            ReservationsError::insufficient_available().into()
+            err!(f.adjust(f.payee, f.owner, id, 50)),
+            e(ReservationsError::unauthorized())
         );
+        f.adjust(f.owner, f.owner, id, 300)?;
         assert_eq!(
-            err!(f.adjust(f.owner, id, 0)),
-            ReservationsError::invalid_amount().into()
+            (f.reserved()?, f.record(f.owner, id)?.captureLimit),
+            (300, 300)
         );
-        // After a part capture, adjusting sets what is left; the approval covers both.
-        f.capture(f.payee, id, 200, false)?;
-        f.adjust(f.owner, id, 400)?;
-        let record = f.record(id)?;
+        f.adjust(f.owner, f.owner, id, 50)?;
         assert_eq!(
-            (record.held, record.captured, record.approved),
-            (400, 200, 600)
+            (f.reserved()?, f.record(f.owner, id)?.captureLimit),
+            (50, 300)
+        );
+        f.adjust(f.owner, f.owner, id, 200)?;
+        assert_eq!(f.record(f.owner, id)?.captureLimit, 300);
+
+        // A stand-in's approval was fixed offline.
+        let stand_in = B256::random();
+        f.hold_stand_in(stand_in, 100)?;
+        f.adjust(f.owner, f.owner, stand_in, 60)?;
+        f.adjust(f.owner, f.owner, stand_in, 100)?;
+        assert_eq!(
+            err!(f.adjust(f.owner, f.owner, stand_in, 101)),
+            e(ReservationsError::invalid_amount())
         );
         Ok(())
     })
@@ -653,155 +625,133 @@ fn test_hard_expiry() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.hold(id, 300)?;
-        let stranger = Address::random();
+        f.hold(id, 100)?;
         assert_eq!(
-            err!(f.reservations.release_expired(f.owner, id)),
-            ReservationsError::hold_not_expired().into()
+            err!(f.release_expired(f.owner, id)),
+            e(ReservationsError::hold_not_expired())
         );
-
-        StorageCtx.set_timestamp(U256::from(EXPIRY));
+        warp(600);
         assert_eq!(
-            err!(f.capture(f.payee, id, 1, false)),
-            ReservationsError::hold_expired().into()
+            err!(f.capture(f.payee, id, 100, true)),
+            e(ReservationsError::hold_expired())
         );
         assert_eq!(
-            err!(f.capture(f.owner, id, 0, true)),
-            ReservationsError::hold_expired().into()
+            err!(f.adjust(f.owner, f.owner, id, 10)),
+            e(ReservationsError::hold_expired())
         );
-        assert_eq!(
-            err!(f.adjust(f.owner, id, 400)),
-            ReservationsError::hold_expired().into()
-        );
-        assert_eq!(
-            err!(f.adjust(f.owner, id, 100)),
-            ReservationsError::hold_expired().into()
-        );
-        assert_eq!(
-            err!(f.release(stranger, id)),
-            ReservationsError::unauthorized().into()
-        );
-
-        // Anyone ends it; a late presentment is a charge.
-        f.reservations.clear_emitted_events();
-        f.reservations.release_expired(f.owner, id)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::hold_released(
-                f.owner,
-                id,
-                f.token.address(),
-                300,
-                true,
-            )]);
-        assert_eq!((f.reserved()?, f.available()?), (0, 1_000));
-        assert!(f.record(id)?.settled);
-        f.charge(f.owner, B256::random(), 300, false)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(300));
-
-        // The placer or payee may also release after expiry.
-        StorageCtx.set_timestamp(U256::from(NOW));
-        let other = B256::random();
-        f.hold(other, 10)?;
-        StorageCtx.set_timestamp(U256::from(EXPIRY + 1));
-        f.release(f.payee, other)?;
+        f.release_expired(f.owner, id)?;
+        assert_eq!((f.reserved()?, f.record(f.owner, id)?), (0, empty_hold()));
         Ok(())
     })
 }
 
 #[test]
-fn test_holder_allowance_bounds_outstanding() -> eyre::Result<()> {
+fn test_budget_spends_are_never_returned_and_reset_each_period() -> eyre::Result<()> {
     at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        let (first, second) = (B256::random(), B256::random());
+        let mut f = Fixture::new(10_000)?;
+        f.set_terms(0, 0, 5_000)?;
+        f.approve(1_000, 3_600)?;
+        let (a, b) = (B256::random(), B256::random());
+        f.hold_from(a, 600)?;
         assert_eq!(
-            err!(f.hold_from(first, 100)),
-            ReservationsError::unauthorized().into()
+            err!(f.hold_from(b, 401)),
+            e(ReservationsError::budget_exceeded())
         );
-        f.approve(300)?;
-        f.hold_from(first, 200)?;
-        let record = f.record(first)?;
-        assert_eq!((record.placer, record.held), (f.holder, 200));
-        assert_eq!(f.outstanding()?, 200);
+        // A capture moves what it pays from outstanding to spent, and returns the rest.
+        f.capture_of(f.payee, f.holder, a, 200, true)?;
+        let budget = f.budget()?;
+        assert_eq!((budget.spent, budget.outstanding), (200, 0));
+        // A release returns what the hold reserved; spending is not returned.
+        let c = B256::random();
+        f.hold_from(c, 100)?;
+        f.release(f.payee, f.holder, c)?;
+        assert_eq!((f.budget()?.spent, f.budget()?.outstanding), (200, 0));
+        // A charge spends, and a capture beyond the hold spends its excess.
+        f.charge(f.holder, 400, false)?;
+        f.hold_from(b, 300)?;
         assert_eq!(
-            err!(f.hold_from(second, 101)),
-            ReservationsError::allowance_exceeded().into()
+            err!(f.capture_of(f.payee, f.holder, b, 450, true)),
+            e(ReservationsError::budget_exceeded())
         );
-        f.hold_from(second, 100)?;
-        assert_eq!(f.outstanding()?, 300);
+        f.capture_of(f.payee, f.holder, b, 400, true)?;
+        let budget = f.budget()?;
+        assert_eq!((budget.spent, budget.outstanding), (1_000, 0));
+        assert_eq!(
+            err!(f.charge(f.holder, 1, false)),
+            e(ReservationsError::budget_exceeded())
+        );
+        // The next period starts afresh.
+        warp(3_600);
+        let budget = f.budget()?;
+        assert_eq!(
+            (budget.spent, budget.periodStart),
+            (0, u64::from(NOW as u32) + 3_600)
+        );
+        f.charge(f.holder, 1_000, false)?;
+        Ok(())
+    })
+}
 
-        // Only the placer adjusts, within the allowance.
+#[test]
+fn test_lifetime_budget_never_resets() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(10_000)?;
+        f.approve(100, 0)?;
+        f.charge(f.holder, 100, false)?;
+        warp(400 * DAY);
         assert_eq!(
-            err!(f.adjust(f.owner, first, 100)),
-            ReservationsError::unauthorized().into()
+            err!(f.charge(f.holder, 1, false)),
+            e(ReservationsError::budget_exceeded())
         );
-        assert_eq!(
-            err!(f.adjust(f.holder, first, 201)),
-            ReservationsError::allowance_exceeded().into()
-        );
-        f.adjust(f.holder, first, 150)?;
-        assert_eq!(f.outstanding()?, 250);
+        Ok(())
+    })
+}
 
-        // Captures free the allowance.
-        f.capture(f.payee, first, 100, false)?;
-        assert_eq!(f.outstanding()?, 150);
-        f.capture(f.holder, first, 20, true)?;
-        assert_eq!(f.outstanding()?, 100);
-
-        // Revoking stops new holds; existing ones still capture, release and refund.
-        f.approve(0)?;
+#[test]
+fn test_revoked_holder_places_nothing_but_settles() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(10_000)?;
+        f.approve(1_000, 0)?;
+        let (a, b, p) = (B256::random(), B256::random(), B256::random());
+        f.hold_from(a, 100)?;
+        f.hold_from(b, 100)?;
+        f.pledge_from(p, 100, NOW + 90 * DAY)?;
+        f.approve(0, 0)?;
         assert_eq!(
             err!(f.hold_from(B256::random(), 1)),
-            ReservationsError::unauthorized().into()
+            e(ReservationsError::unauthorized())
         );
         assert_eq!(
-            err!(f.charge(f.holder, B256::random(), 1, false)),
-            ReservationsError::unauthorized().into()
+            err!(f.charge(f.holder, 1, false)),
+            e(ReservationsError::unauthorized())
         );
-        f.capture(f.payee, second, 60, false)?;
-        f.release(f.holder, second)?;
-        assert_eq!((f.outstanding()?, f.reserved()?), (0, 0));
-        f.refund(first, 120)?;
-        f.refund(second, 60)?;
-        assert_eq!(f.balance(f.owner)?, U256::from(1_000));
-        Ok(())
-    })
-}
-
-#[test]
-fn test_holder_charges_and_captures_beyond_the_hold_within_its_allowance() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        f.approve(100)?;
         assert_eq!(
-            err!(f.charge(f.holder, B256::random(), 101, false)),
-            ReservationsError::allowance_exceeded().into()
+            err!(f.pledge_from(B256::random(), 1, NOW + DAY)),
+            e(ReservationsError::unauthorized())
         );
-        f.charge(f.holder, B256::random(), 100, false)?;
-        // A charge leaves nothing outstanding.
-        assert_eq!(f.outstanding()?, 0);
-
-        let (id, other) = (B256::random(), B256::random());
-        f.hold_from(id, 40)?;
-        f.hold_from(other, 60)?;
-        f.set_tolerance(20_000)?;
-        // Past the hold, the excess counts against the allowance once the hold is freed.
         assert_eq!(
-            err!(f.capture(f.holder, id, 100, true)),
-            ReservationsError::allowance_exceeded().into()
+            err!(f.adjust(f.holder, f.holder, a, 101)),
+            e(ReservationsError::unauthorized())
         );
-        f.capture(f.holder, id, 80, true)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(180));
-        f.capture(f.payee, other, 20, true)?;
+        // Existing holds still settle within what they reserved; nothing beyond them.
         assert_eq!(
-            (f.balance(f.payee)?, f.outstanding()?),
-            (U256::from(200), 0)
+            err!(f.capture_of(f.payee, f.holder, a, 101, true)),
+            e(ReservationsError::capture_limit_exceeded())
+        );
+        f.capture_of(f.payee, f.holder, a, 100, true)?;
+        f.release(f.holder, f.holder, b)?;
+        f.capture_of(f.holder, f.holder, p, 100, true)?;
+        let budget = f.budget()?;
+        assert_eq!(
+            (budget.limit, budget.spent, budget.outstanding),
+            (0, 200, 0)
         );
         Ok(())
     })
 }
 
 #[test]
-fn test_approve_holder_requires_root_key() -> eyre::Result<()> {
+fn test_approve_and_terms_require_root_key() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         assert_eq!(
@@ -810,259 +760,292 @@ fn test_approve_holder_requires_root_key() -> eyre::Result<()> {
                 IReservationCore::approveHolderCall {
                     holder: f.owner,
                     token: f.token.address(),
-                    allowance: 1,
+                    limit: 1,
+                    period: 0,
                 },
             )),
-            ReservationsError::unauthorized().into()
+            e(ReservationsError::unauthorized())
         );
-        f.approve(10)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::holder_approved(
-                f.owner,
-                f.holder,
-                f.token.address(),
-                10,
-            )]);
+        f.approve(10, 60)?;
+        assert_last_event(
+            &f.reservations,
+            ReservationsEvent::holder_approved(f.owner, f.holder, f.token.address(), 10, 60),
+        );
+        assert_eq!(
+            err!(f.set_terms_for(f.payee, 0, 0, 0, (MAX_DEBT_TERM + 1) as u32)),
+            e(ReservationsError::invalid_expiry())
+        );
         sign_with_access_key(f.owner)?;
+        assert_eq!(err!(f.approve(20, 0)), e(ReservationsError::unauthorized()));
         assert_eq!(
-            err!(f.approve(20)),
-            ReservationsError::unauthorized().into()
-        );
-        assert_eq!(
-            err!(f.set_tolerance(1)),
-            ReservationsError::unauthorized().into()
-        );
-        assert_eq!(
-            err!(f.set_debt_cap(1)),
-            ReservationsError::unauthorized().into()
-        );
-        assert_eq!(
-            err!(f.set_offline_cap(1)),
-            ReservationsError::unauthorized().into()
+            err!(f.set_terms(1, 1, 1)),
+            e(ReservationsError::unauthorized())
         );
         assert_eq!(
             err!(f.pledge(Address::random(), B256::random(), 1, EXPIRY)),
-            ReservationsError::unauthorized().into()
+            e(ReservationsError::unauthorized())
         );
-        assert_eq!(
-            f.reservations
-                .allowance(f.owner, f.holder, f.token.address())?
-                .allowance,
-            10
-        );
+        assert_eq!(f.budget()?.limit, 10);
         Ok(())
     })
 }
 
+/// An access key answers for everything a hold lets captures pay, tolerance included.
 #[test]
-fn test_stand_in_capture_is_capped_at_the_approval() -> eyre::Result<()> {
+fn test_access_key_holds_charge_the_full_capture_limit() -> eyre::Result<()> {
     at_fork(|| {
-        let mut f = Fixture::new(100)?;
+        let mut f = Fixture::new(10_000)?;
+        f.set_terms(0, 0, 5_000)?;
+        sign_with_limited_key(f.owner, f.token.address(), 300)?;
+        // 250 with 50% tolerance lets captures pay 375, more than the key may spend.
+        assert!(
+            err!(f.hold_stand_in(B256::random(), 250))
+                .to_string()
+                .contains("pending")
+        );
         let id = B256::random();
         f.hold_stand_in(id, 200)?;
-        let record = f.record(id)?;
-        assert_eq!(
-            (record.held, record.approved, record.standIn),
-            (100, 200, true)
-        );
-        assert_eq!(f.available()?, 0);
-
-        // A capture above the offline approval is refused, however much debt room there is.
-        f.set_offline_cap(1_000)?;
-        assert_eq!(
-            err!(f.capture(f.payee, id, 450, true)),
-            ReservationsError::tolerance_exceeded().into()
-        );
-        // Raising a stand-in past its approval is refused too.
-        assert_eq!(
-            err!(f.adjust(f.owner, id, 201)),
-            ReservationsError::invalid_amount().into()
-        );
-        f.set_tolerance(1_000)?;
-        assert_eq!(
-            err!(f.capture(f.payee, id, 221, true)),
-            ReservationsError::tolerance_exceeded().into()
-        );
-        f.capture(f.payee, id, 220, true)?;
-        assert_eq!(f.balance(f.payee)?, U256::from(100));
-        assert_eq!(f.debt()?.amount, 120);
-        assert_eq!(f.debt()?.creditor, f.payee);
-        Ok(())
-    })
-}
-
-#[test]
-fn test_stand_in_debt_reaches_the_offline_cap_only() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(100)?;
-        f.set_debt_cap(50)?;
-        f.set_offline_cap(150)?;
-        // Ordinary payments stay within the debt cap.
-        assert_eq!(
-            err!(f.charge(f.owner, B256::random(), 151, false)),
-            ReservationsError::debt_cap_exceeded().into()
-        );
-        let id = B256::random();
-        f.hold_stand_in(id, 300)?;
-        assert_eq!(
-            err!(f.capture(f.payee, id, 251, true)),
-            ReservationsError::debt_cap_exceeded().into()
-        );
-        f.capture(f.payee, id, 250, true)?;
-        assert_eq!(f.debt()?.amount, 150);
-        assert_eq!(
-            err!(f.charge(f.owner, B256::random(), 1, true)),
-            ReservationsError::debt_cap_exceeded().into()
+        // The key spent 300 on the hold, so even a capture of its full limit needs nothing more.
+        f.capture(f.owner, id, 300, true)?;
+        assert!(
+            err!(f.charge(f.owner, 1, false))
+                .to_string()
+                .contains("pending")
         );
         Ok(())
     })
 }
 
 #[test]
-fn test_charge_shortfall_is_capped_debt_repaid_on_receive() -> eyre::Result<()> {
+fn test_stand_in_capture_is_capped_and_debt_reaches_the_offline_cap() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(100)?;
-        assert_eq!(
-            err!(f.charge(f.owner, B256::random(), 101, false)),
-            ReservationsError::insufficient_available().into()
-        );
-        f.set_debt_cap(500)?;
+        f.set_terms(20, 80, 0)?;
         let id = B256::random();
-        f.charge(f.owner, id, 300, false)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::charged(
-                f.owner,
-                id,
-                f.token.address(),
-                f.payee,
-                300,
-                200,
-            )]);
-        let record = f.record(id)?;
+        // A stand-in reserves what is available and records the full approval.
+        f.hold_stand_in(id, 150)?;
         assert_eq!(
-            (record.captured, record.held, record.settled),
-            (300, 0, true)
+            (f.reserved()?, f.record(f.owner, id)?.captureLimit),
+            (100, 150)
         );
-        assert_eq!(f.debt()?.amount, 200);
-
-        // A second creditor waits until the first is repaid.
-        let other = Address::random();
-        f.reservations.set_debt_cap(
-            f.owner,
-            IReservationCore::setDebtCapCall {
-                creditor: other,
-                token: f.token.address(),
-                cap: 100,
-            },
-        )?;
         assert_eq!(
-            err!(f.reservations.charge(
-                f.owner,
-                IReservationCore::chargeCall {
-                    owner: f.owner,
-                    token: f.token.address(),
-                    id: B256::random(),
-                    amount: 1,
-                    payee: other,
-                    standIn: false,
-                },
-            )),
-            ReservationsError::debt_cap_exceeded().into()
+            err!(f.capture(f.payee, id, 190, true)),
+            e(ReservationsError::capture_limit_exceeded())
         );
+        f.capture(f.payee, id, 150, true)?;
+        assert_eq!(f.debts()?, vec![(f.payee, 50)]);
+        // A plain charge may not take the debt past the ordinary cap.
+        assert_eq!(
+            err!(f.charge(f.owner, 1, false)),
+            e(ReservationsError::debt_cap_exceeded())
+        );
+        f.charge(f.owner, 30, true)?;
+        assert_eq!(f.debts()?, vec![(f.payee, 80)]);
+        Ok(())
+    })
+}
 
-        let sender = Address::random();
-        f.mint(sender, 1_000)?;
-        f.transfer(sender, f.owner, 150)?;
+#[test]
+fn test_debt_has_several_creditors_repaid_oldest_first() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(0)?;
+        let creditors: Vec<Address> = (0..5).map(|_| Address::random()).collect();
+        for creditor in &creditors {
+            f.set_terms_for(*creditor, 100, 0, 0, 0)?;
+        }
+        for (index, creditor) in creditors.iter().take(4).enumerate() {
+            f.charge_to(f.owner, *creditor, 10 * (index as u128 + 1), false)?;
+        }
+        assert_eq!(
+            err!(f.charge_to(f.owner, creditors[4], 1, false)),
+            e(ReservationsError::too_many_creditors())
+        );
+        // More debt to a standing creditor keeps its place.
+        f.charge_to(f.owner, creditors[0], 5, false)?;
+        assert_eq!(
+            f.debts()?,
+            vec![
+                (creditors[0], 15),
+                (creditors[1], 20),
+                (creditors[2], 30),
+                (creditors[3], 40)
+            ]
+        );
+        // A credit repays oldest first; a blocked creditor is skipped and keeps its debt.
+        f.blacklist(vec![creditors[1]])?;
+        f.mint(f.owner, 50)?;
+        assert_eq!(f.debts()?, vec![(creditors[1], 20), (creditors[3], 35)]);
+        assert_eq!(f.balance(creditors[0])?, U256::from(15));
+        assert_eq!(f.balance(creditors[2])?, U256::from(30));
         assert_eq!(f.balance(f.owner)?, U256::ZERO);
-        assert_eq!(f.balance(f.payee)?, U256::from(250));
-        assert_eq!(f.debt()?.amount, 50);
-        f.mint(f.owner, 80)?;
-        assert_eq!(f.balance(f.owner)?, U256::from(30));
-        assert_eq!(
-            f.debt()?,
-            IReservationCore::debtOfReturn {
-                creditor: Address::ZERO,
-                amount: 0
-            }
-        );
-        Ok(())
-    })
-}
-
-/// A zone runs the same core: holds reserve and capture, and debt is counted in the core itself,
-/// since a zone cannot write the TIP-403 registry it mirrors from L1.
-#[test]
-fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
-    let mut storage = new_storage().with_kind(TempoEvmKind::Zone);
-    StorageCtx::enter(&mut storage, || {
-        let mut f = Fixture::new(100)?;
-        let id = B256::random();
-        f.hold(id, 60)?;
-        assert_eq!((f.reserved()?, f.available()?), (60, 40));
-        assert_eq!(f.balance(f.owner)?, U256::from(100));
-        f.capture(f.payee, id, 60, true)?;
-        assert_eq!((f.reserved()?, f.balance(f.payee)?), (0, U256::from(60)));
-
-        f.set_debt_cap(500)?;
-        f.charge(f.owner, B256::random(), 140, false)?;
-        assert_eq!(f.debt()?.amount, 100);
-        assert!(f.reservations.owes_debt(f.owner)?);
-        assert!(!TIP403Registry::new().has_reservation_debt(f.owner)?);
-
-        let sender = Address::random();
-        f.mint(sender, 1_000)?;
-        f.transfer(sender, f.owner, 130)?;
-        assert_eq!(f.debt()?.amount, 0);
-        assert_eq!(f.balance(f.owner)?, U256::from(30));
+        f.blacklist(vec![])?;
+        f.mint(f.owner, 100)?;
+        assert_eq!(f.debts()?, vec![]);
+        assert_eq!(f.balance(f.owner)?, U256::from(45));
         assert!(!f.reservations.owes_debt(f.owner)?);
         Ok(())
     })
 }
 
 #[test]
-fn test_refund_bounds() -> eyre::Result<()> {
+fn test_debt_lapses_after_its_term() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(0)?;
+        let (short, long) = (Address::random(), Address::random());
+        f.set_terms_for(short, 100, 0, 0, DAY as u32)?;
+        f.set_terms_for(long, 100, 0, 0, 0)?;
+        f.charge_to(f.owner, short, 40, false)?;
+        f.charge_to(f.owner, long, 60, false)?;
+        // More debt does not extend the term.
+        warp(DAY - 1);
+        f.charge_to(f.owner, short, 10, false)?;
+        warp(1);
+        assert_eq!(f.debts()?, vec![(long, 60)]);
+        // The lapsed debt is not repaid; anyone may clear it.
+        f.reservations
+            .clear_lapsed_debt(f.owner, f.token.address())?;
+        assert_last_event(
+            &f.reservations,
+            ReservationsEvent::debt_lapsed(f.owner, short, f.token.address(), 50),
+        );
+        f.mint(f.owner, 100)?;
+        assert_eq!(
+            (f.balance(short)?, f.balance(long)?),
+            (U256::ZERO, U256::from(60))
+        );
+        warp(MAX_DEBT_TERM);
+        f.charge_to(f.owner, long, 100, false)?;
+        warp(MAX_DEBT_TERM);
+        assert_eq!(f.debts()?, vec![]);
+        Ok(())
+    })
+}
+
+#[test]
+fn test_refund_forgives_debt_then_pays() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(100)?;
+        f.set_terms(200, 0, 0)?;
+        let id = B256::random();
+        f.hold(id, 100)?;
+        f.capture(f.payee, id, 100, true)?;
+        f.charge(f.owner, 80, false)?;
+        assert_eq!(f.debts()?, vec![(f.payee, 80)]);
+        assert_eq!(
+            err!(f.refund(f.payee, id, 0)),
+            e(ReservationsError::invalid_amount())
+        );
+        assert_eq!(
+            err!(f.refund(f.payee, id, 181)),
+            e(ReservationsError::insufficient_available())
+        );
+        f.refund(f.payee, id, 120)?;
+        assert_eq!(f.debts()?, vec![]);
+        assert_eq!(
+            (f.balance(f.owner)?, f.balance(f.payee)?),
+            (U256::from(40), U256::from(60))
+        );
+        assert_last_event(
+            &f.reservations,
+            ReservationsEvent::refunded(f.owner, f.payee, f.token.address(), f.owner, id, 120, 80),
+        );
+        // A refund is a payment, so the policy applies.
+        f.blacklist(vec![f.payee])?;
+        assert_eq!(
+            err!(f.refund(f.payee, id, 1)),
+            e(ReservationsError::policy_forbids())
+        );
+        Ok(())
+    })
+}
+
+/// A hold's held part still pays its own payee after the owner is blocked; nothing else moves.
+#[test]
+fn test_policy_applies_to_every_movement() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        f.set_terms(500, 0, 5_000)?;
+        f.approve(1_000, 0)?;
+        let (part, whole, excess, pledged) = (
+            B256::random(),
+            B256::random(),
+            B256::random(),
+            B256::random(),
+        );
+        let authority = f.lien_authority()?;
+        let lien = B256::random();
+        f.hold(part, 100)?;
+        f.hold(whole, 100)?;
+        f.hold(excess, 100)?;
+        f.pledge_from(pledged, 100, NOW + DAY)?;
+        f.lien(authority, lien, 100, 0)?;
+        f.blacklist(vec![f.owner])?;
+
+        f.capture(f.payee, part, 40, false)?;
+        f.capture(f.payee, whole, 100, true)?;
+        assert_eq!(
+            err!(f.capture(f.payee, excess, 101, true)),
+            e(ReservationsError::policy_forbids())
+        );
+        assert_eq!(
+            err!(f.charge(f.owner, 1, false)),
+            e(ReservationsError::policy_forbids())
+        );
+        assert_eq!(
+            err!(f.hold(B256::random(), 1)),
+            e(ReservationsError::policy_forbids())
+        );
+        assert_eq!(
+            err!(f.adjust(f.owner, f.owner, part, 61)),
+            e(ReservationsError::policy_forbids())
+        );
+        // A pledge's seizure is a payment from the owner, so a blocked owner pays none.
+        assert_eq!(
+            err!(f.capture_of(f.holder, f.holder, pledged, 10, false)),
+            e(ReservationsError::policy_forbids())
+        );
+        // A lien is a freeze: its authority seizes whatever the owner's status.
+        f.capture_of(authority, authority, lien, 30, false)?;
+        assert_eq!(f.balance(authority)?, U256::from(30));
+        // Releases always work.
+        f.release(f.payee, f.owner, excess)?;
+        f.release(f.holder, f.holder, pledged)?;
+
+        // A blocked payee receives nothing, not even from a hold.
+        f.blacklist(vec![f.payee])?;
+        assert_eq!(
+            err!(f.capture(f.payee, part, 10, false)),
+            e(ReservationsError::policy_forbids())
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn test_paused_token_moves_nothing() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.hold(id, 300)?;
+        let authority = f.lien_authority()?;
+        let lien = B256::random();
+        f.hold(id, 100)?;
+        f.lien(authority, lien, 100, 0)?;
+        f.token
+            .grant_role_internal(f.admin, crate::tip20::PAUSE_ROLE)?;
+        f.token.pause(f.admin, ITIP20::pauseCall {})?;
         assert_eq!(
-            err!(f.refund(id, 1)),
-            ReservationsError::refund_exceeds_capture().into()
-        );
-        f.capture(f.payee, id, 100, false)?;
-        assert_eq!(
-            err!(f.reservations.refund(
-                f.owner,
-                IReservationCore::refundCall {
-                    owner: f.owner,
-                    id,
-                    amount: 1
-                },
-            )),
-            ReservationsError::unauthorized().into()
+            err!(f.capture(f.payee, id, 1, true)),
+            e(ReservationsError::policy_forbids())
         );
         assert_eq!(
-            err!(f.refund(id, 0)),
-            ReservationsError::invalid_amount().into()
+            err!(f.capture_of(authority, authority, lien, 1, false)),
+            e(ReservationsError::policy_forbids())
         );
         assert_eq!(
-            err!(f.refund(id, 101)),
-            ReservationsError::refund_exceeds_capture().into()
+            err!(f.charge(f.owner, 1, false)),
+            e(ReservationsError::policy_forbids())
         );
-        f.refund(id, 60)?;
-        f.capture(f.payee, id, 50, true)?;
-        f.refund(id, 90)?;
-        assert_eq!(
-            err!(f.refund(id, 1)),
-            ReservationsError::refund_exceeds_capture().into()
-        );
-        let record = f.record(id)?;
-        assert_eq!((record.captured, record.refunded), (150, 150));
-        assert_eq!(f.balance(f.owner)?, U256::from(1_000));
-        assert_eq!(
-            err!(f.refund(B256::random(), 1)),
-            ReservationsError::hold_not_found().into()
-        );
+        f.release(f.owner, f.owner, id)?;
         Ok(())
     })
 }
@@ -1071,61 +1054,31 @@ fn test_refund_bounds() -> eyre::Result<()> {
 fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
-        let id = B256::random();
-        let stranger = Address::random();
-        assert_eq!(
-            err!(f.lien(stranger, id, 10, 0)),
-            ReservationsError::unauthorized().into()
-        );
         let authority = f.lien_authority()?;
+        let id = B256::random();
         assert_eq!(
-            err!(f.lien(authority, id, 0, 0)),
-            ReservationsError::invalid_amount().into()
+            err!(f.lien(Address::random(), id, 100, 0)),
+            e(ReservationsError::unauthorized())
+        );
+        f.lien(authority, id, 600, 0)?;
+        assert_eq!((f.reserved()?, f.available()?), (600, 400));
+        let record = f.record(authority, id)?;
+        assert_eq!(
+            (record.kind, record.payee, record.expiresAt),
+            (kind::LIEN, authority, 0)
+        );
+        // Only the authority acts, and only downward.
+        assert_eq!(
+            err!(f.release(f.owner, authority, id)),
+            e(ReservationsError::unauthorized())
         );
         assert_eq!(
-            err!(f.lien(authority, id, 10, NOW)),
-            ReservationsError::invalid_expiry().into()
+            err!(f.adjust(authority, authority, id, 700)),
+            e(ReservationsError::invalid_amount())
         );
-        f.lien(authority, id, 400, 0)?;
-        assert_eq!(
-            err!(f.lien(authority, id, 1, 0)),
-            ReservationsError::lien_exists().into()
-        );
-        assert_eq!((f.reserved()?, f.available()?), (400, 600));
-        assert_eq!(f.reservations.liened_of(f.owner, f.token.address())?, 400);
-        assert_eq!(
-            err!(f.hold(B256::random(), 601)),
-            ReservationsError::insufficient_available().into()
-        );
-
-        // Only the authority acts on it, and a lien without expiry never expires.
-        assert_eq!(
-            err!(f.reservations.release_lien(stranger, id)),
-            ReservationsError::lien_not_found().into()
-        );
-        StorageCtx.set_timestamp(U256::from(u64::from(u32::MAX)));
-        assert_eq!(
-            err!(f.reservations.release_expired_lien(authority, id)),
-            ReservationsError::lien_not_expired().into()
-        );
-        StorageCtx.set_timestamp(U256::from(NOW));
-        f.reservations.reduce_lien(
-            authority,
-            IReservationCore::reduceLienCall { id, amount: 100 },
-        )?;
-        assert_eq!(f.reservations.lien_of(authority, id)?.amount, 300);
-
-        // Seizure pays the authority only.
-        f.seize(authority, id, 120)?;
-        assert_eq!(f.balance(authority)?, U256::from(120));
-        assert_eq!(f.balance(f.owner)?, U256::from(880));
-        assert_eq!(f.reserved()?, 180);
-        assert_eq!(
-            err!(f.seize(authority, id, 181)),
-            ReservationsError::invalid_amount().into()
-        );
-
-        // A role lien's seizure still needs the role.
+        f.adjust(authority, authority, id, 500)?;
+        assert_eq!(f.record(authority, id)?.captureLimit, 500);
+        // Seizure needs the role at that time.
         f.token.revoke_role(
             f.admin,
             IRolesAuth::revokeRoleCall {
@@ -1134,15 +1087,16 @@ fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
             },
         )?;
         assert_eq!(
-            err!(f.seize(authority, id, 1)),
-            ReservationsError::unauthorized().into()
+            err!(f.capture_of(authority, authority, id, 100, false)),
+            e(ReservationsError::unauthorized())
         );
-        f.reservations.release_lien(authority, id)?;
-        assert_eq!((f.reserved()?, f.available()?), (0, 880));
-        assert_eq!(
-            err!(f.reservations.release_lien(authority, id)),
-            ReservationsError::lien_not_found().into()
-        );
+        f.token.grant_role_internal(authority, LIEN_ROLE)?;
+        f.capture_of(authority, authority, id, 200, false)?;
+        assert_eq!(f.record(authority, id)?.held, 300);
+        // Seizing the rest settles it.
+        f.capture_of(authority, authority, id, 300, false)?;
+        assert_eq!(f.record(authority, id)?, empty_hold());
+        assert_eq!((f.reserved()?, f.balance(authority)?), (0, U256::from(500)));
         Ok(())
     })
 }
@@ -1151,242 +1105,94 @@ fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
 fn test_pledges_expire_and_seize_to_the_authority() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
-        let lender = Address::random();
+        let authority = Address::random();
         let id = B256::random();
         assert_eq!(
-            err!(f.pledge(lender, id, 100, 0)),
-            ReservationsError::invalid_expiry().into()
+            err!(f.pledge(authority, id, 100, NOW + MAX_PLEDGE_DURATION + 1)),
+            e(ReservationsError::invalid_expiry())
+        );
+        f.pledge(authority, id, 400, NOW + 90 * DAY)?;
+        assert_eq!(f.record(f.owner, id)?.kind, kind::PLEDGE);
+        assert_eq!(
+            err!(f.capture(f.owner, id, 100, false)),
+            e(ReservationsError::unauthorized())
         );
         assert_eq!(
-            err!(f.pledge(f.owner, id, 100, EXPIRY)),
-            ReservationsError::unauthorized().into()
+            err!(f.release(f.owner, f.owner, id)),
+            e(ReservationsError::unauthorized())
         );
-        f.pledge(lender, id, 500, EXPIRY)?;
-        let lien = f.reservations.lien_of(lender, id)?;
+        f.capture(authority, id, 100, false)?;
+        assert_eq!(f.balance(authority)?, U256::from(100));
+        warp(90 * DAY);
         assert_eq!(
-            (lien.owner, lien.amount, lien.expiresAt, lien.pledged),
-            (f.owner, 500, EXPIRY, true)
+            err!(f.capture(authority, id, 1, false)),
+            e(ReservationsError::hold_expired())
         );
-
-        // The pledge's authority seizes without the role.
-        f.seize(lender, id, 200)?;
-        assert_eq!(f.balance(lender)?, U256::from(200));
-
-        let anyone = Address::random();
-        assert_eq!(
-            err!(f.reservations.release_expired_lien(lender, id)),
-            ReservationsError::lien_not_expired().into()
-        );
-        let _ = anyone;
-        StorageCtx.set_timestamp(U256::from(EXPIRY));
-        assert_eq!(
-            err!(f.seize(lender, id, 1)),
-            ReservationsError::invalid_expiry().into()
-        );
-        f.reservations.clear_emitted_events();
-        f.reservations.release_expired_lien(lender, id)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::lien_released(
-                f.owner,
-                lender,
-                f.token.address(),
-                id,
-                300,
-                true,
-            )]);
-        assert_eq!((f.reserved()?, f.available()?), (0, 800));
+        f.release_expired(f.owner, id)?;
+        assert_eq!((f.reserved()?, f.available()?), (0, 900));
         Ok(())
     })
 }
 
 #[test]
-fn test_holder_pledges_draw_on_the_allowance() -> eyre::Result<()> {
+fn test_holder_pledges_draw_on_the_budget() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
-        let (pledge, hold) = (B256::random(), B256::random());
-        let reserve_expiry = NOW + 90 * DAY;
         assert_eq!(
-            err!(f.pledge_from(pledge, 100, reserve_expiry)),
-            ReservationsError::unauthorized().into()
+            err!(f.pledge_from(B256::random(), 100, NOW + DAY)),
+            e(ReservationsError::unauthorized())
         );
-        f.approve(300)?;
-        f.reservations.clear_emitted_events();
-        f.pledge_from(pledge, 200, reserve_expiry)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::liened(
-                f.owner,
-                f.holder,
-                f.token.address(),
-                pledge,
-                200,
-                reserve_expiry,
-                true,
-            )]);
-        let lien = f.reservations.lien_of(f.holder, pledge)?;
+        f.approve(300, 0)?;
+        let (a, b) = (B256::random(), B256::random());
+        f.pledge_from(a, 200, NOW + 90 * DAY)?;
         assert_eq!(
-            (lien.owner, lien.amount, lien.expiresAt, lien.pledged),
-            (f.owner, 200, reserve_expiry, true)
+            err!(f.pledge_from(b, 101, NOW + DAY)),
+            e(ReservationsError::budget_exceeded())
         );
-        assert_eq!(
-            (f.outstanding()?, f.reserved()?, f.available()?),
-            (200, 200, 800)
-        );
-        assert_eq!(f.reservations.liened_of(f.owner, f.token.address())?, 200);
-
-        // Holds and pledges share one allowance.
-        assert_eq!(
-            err!(f.hold_from(hold, 101)),
-            ReservationsError::allowance_exceeded().into()
-        );
-        f.hold_from(hold, 100)?;
-        assert_eq!(f.outstanding()?, 300);
-        assert_eq!(
-            err!(f.pledge_from(B256::random(), 1, reserve_expiry)),
-            ReservationsError::allowance_exceeded().into()
-        );
-        assert_eq!(
-            err!(f.pledge_from(pledge, 1, reserve_expiry)),
-            ReservationsError::allowance_exceeded().into()
-        );
-
-        // Reducing, releasing a hold and seizing each free the allowance.
-        f.reservations.reduce_lien(
-            f.holder,
-            IReservationCore::reduceLienCall {
-                id: pledge,
-                amount: 50,
-            },
-        )?;
-        assert_eq!(f.outstanding()?, 250);
-        f.release(f.holder, hold)?;
-        assert_eq!(f.outstanding()?, 150);
-        f.seize(f.holder, pledge, 100)?;
-        assert_eq!(f.outstanding()?, 50);
-        assert_eq!((f.reserved()?, f.available()?), (50, 850));
-        f.reservations.release_lien(f.holder, pledge)?;
-        assert_eq!(
-            (f.outstanding()?, f.reserved()?, f.available()?),
-            (0, 0, 900)
-        );
+        assert_eq!(f.budget()?.outstanding, 200);
+        f.adjust(f.holder, f.holder, a, 150)?;
+        assert_eq!(f.budget()?.outstanding, 150);
+        f.capture_of(f.holder, f.holder, a, 50, false)?;
+        let budget = f.budget()?;
+        assert_eq!((budget.spent, budget.outstanding), (50, 100));
+        warp(90 * DAY);
+        f.release_expired(f.holder, a)?;
+        assert_eq!(f.budget()?.outstanding, 0);
         Ok(())
     })
 }
 
 #[test]
-fn test_revoked_holder_pledges_still_release_and_seize() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        let (seized, released) = (B256::random(), B256::random());
-        let reserve_expiry = NOW + 120 * DAY;
-        f.approve(500)?;
-        f.pledge_from(seized, 300, reserve_expiry)?;
-        f.pledge_from(released, 100, reserve_expiry)?;
-        f.approve(0)?;
-        assert_eq!(
-            err!(f.pledge_from(B256::random(), 1, reserve_expiry)),
-            ReservationsError::unauthorized().into()
-        );
-        assert_eq!(f.outstanding()?, 400);
-
-        // Only the holder acts on its pledges, and seizure is capped by the pledge.
-        for stranger in [f.owner, f.payee, Address::random()] {
-            assert_eq!(
-                err!(f.seize(stranger, seized, 1)),
-                ReservationsError::lien_not_found().into()
-            );
-        }
-        assert_eq!(
-            err!(f.seize(f.holder, seized, 301)),
-            ReservationsError::invalid_amount().into()
-        );
-        f.reservations.clear_emitted_events();
-        f.seize(f.holder, seized, 300)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::lien_seized(
-                f.owner,
-                f.holder,
-                f.token.address(),
-                seized,
-                300,
-                0,
-            )]);
-        // Seizure pays the holder only.
-        assert_eq!(
-            (
-                f.balance(f.holder)?,
-                f.balance(f.payee)?,
-                f.balance(f.owner)?
-            ),
-            (U256::from(300), U256::ZERO, U256::from(700))
-        );
-        // Seizing all of it ends the pledge.
-        assert_eq!(
-            err!(f.reservations.release_lien(f.holder, seized)),
-            ReservationsError::lien_not_found().into()
-        );
-        f.reservations.release_lien(f.holder, released)?;
-        assert_eq!(
-            (f.outstanding()?, f.reserved()?, f.available()?),
-            (0, 0, 700)
-        );
-        Ok(())
-    })
-}
-
-#[test]
-fn test_holder_pledges_expire_within_their_bound() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(1_000)?;
-        f.approve(2_000)?;
-        for expires_at in [0, NOW, NOW + MAX_PLEDGE_DURATION + 1] {
-            assert_eq!(
-                err!(f.pledge_from(B256::random(), 10, expires_at)),
-                ReservationsError::invalid_expiry().into()
-            );
-        }
-        // The longest pledge may outlast any hold.
-        f.pledge_from(B256::random(), 10, NOW + MAX_PLEDGE_DURATION)?;
-        const { assert!(MAX_PLEDGE_DURATION > MAX_HOLD_DURATION) };
-        assert_eq!(
-            err!(f.pledge_from(B256::random(), 991, NOW + DAY)),
-            ReservationsError::insufficient_available().into()
-        );
-        assert_eq!(
-            err!(f.pledge_from(B256::random(), 0, NOW + DAY)),
-            ReservationsError::invalid_amount().into()
-        );
-        assert_eq!(f.outstanding()?, 10);
-
-        // A 90-day reserve.
+fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
+    let mut storage = new_storage().with_kind(TempoEvmKind::Zone);
+    StorageCtx::enter(&mut storage, || {
+        let mut f = Fixture::new(100)?;
+        f.set_terms(0, 0, 5_000)?;
         let id = B256::random();
-        let reserve_expiry = NOW + 90 * DAY;
-        f.pledge_from(id, 300, reserve_expiry)?;
+        f.hold(id, 60)?;
+        assert_eq!((f.reserved()?, f.available()?), (60, 40));
+        // The held part pays its payee after the owner is blocked on a zone too.
+        f.blacklist(vec![f.owner])?;
         assert_eq!(
-            err!(f.reservations.release_expired_lien(f.holder, id)),
-            ReservationsError::lien_not_expired().into()
+            err!(f.capture(f.payee, id, 61, true)),
+            e(ReservationsError::policy_forbids())
         );
-        StorageCtx.set_timestamp(U256::from(reserve_expiry));
-        assert_eq!(
-            err!(f.seize(f.holder, id, 1)),
-            ReservationsError::invalid_expiry().into()
-        );
-        // It stays reserved and outstanding until someone releases it.
-        assert_eq!((f.outstanding()?, f.reserved()?), (310, 310));
-        f.reservations.clear_emitted_events();
-        f.reservations.release_expired_lien(f.holder, id)?;
-        f.reservations
-            .assert_emitted_events(vec![ReservationsEvent::lien_released(
-                f.owner,
-                f.holder,
-                f.token.address(),
-                id,
-                300,
-                true,
-            )]);
-        assert_eq!(
-            (f.outstanding()?, f.reserved()?, f.available()?),
-            (10, 10, 990)
-        );
+        f.capture(f.payee, id, 60, true)?;
+        assert_eq!((f.reserved()?, f.balance(f.payee)?), (0, U256::from(60)));
+        f.blacklist(vec![])?;
+
+        f.set_terms(500, 0, 0)?;
+        f.charge(f.owner, 140, false)?;
+        assert_eq!(f.debts()?, vec![(f.payee, 100)]);
+        assert!(f.reservations.owes_debt(f.owner)?);
+        assert!(!TIP403Registry::new().has_reservation_debt(f.owner)?);
+
+        let sender = Address::random();
+        f.mint(sender, 1_000)?;
+        f.transfer(sender, f.owner, 130)?;
+        assert_eq!(f.debts()?, vec![]);
+        assert_eq!(f.balance(f.owner)?, U256::from(30));
+        assert!(!f.reservations.owes_debt(f.owner)?);
         Ok(())
     })
 }
@@ -1404,20 +1210,20 @@ fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
             .burn_blocked(f.admin, f.owner, U256::from(800), true)?;
         assert_eq!(f.balance(f.owner)?, U256::from(200));
         assert_eq!((f.reserved()?, f.available()?), (200, 0));
-        assert_eq!(f.record(released)?.held, 300);
+        assert_eq!(f.record(f.owner, released)?.held, 300);
 
         // Ending a hold consumes the burned part first, so what remains still backs the others.
         f.blacklist(vec![])?;
-        f.release(f.owner, released)?;
+        f.release(f.owner, f.owner, released)?;
         assert_eq!((f.reserved()?, f.available()?), (200, 0));
         assert_eq!(
             err!(f.capture(f.owner, captured, 600, true)),
-            ReservationsError::insufficient_available().into()
+            e(ReservationsError::insufficient_available())
         );
-        f.set_debt_cap(400)?;
+        f.set_terms(400, 0, 0)?;
         f.capture(f.owner, captured, 600, true)?;
         assert_eq!(f.balance(f.payee)?, U256::from(200));
-        assert_eq!(f.debt()?.amount, 400);
+        assert_eq!(f.debts()?, vec![(f.payee, 400)]);
         assert_eq!(f.reserved()?, 0);
         Ok(())
     })
@@ -1455,7 +1261,6 @@ fn test_reserved_funds_earn_no_rewards() -> eyre::Result<()> {
             Ok(f.token.get_user_reward_info(account)?.reward_balance)
         };
 
-        // A hold takes its funds out of the opted-in supply.
         let id = B256::random();
         f.hold(id, 500)?;
         assert_eq!(f.token.get_opted_in_supply()?, 1_500);
@@ -1463,18 +1268,15 @@ fn test_reserved_funds_earn_no_rewards() -> eyre::Result<()> {
         assert_eq!(rewards(&mut f, owner)?, U256::from(100));
         assert_eq!(rewards(&mut f, other)?, U256::from(200));
 
-        // A transfer of available funds moves them as usual.
         f.transfer(f.owner, merchant, 100)?;
         assert_eq!(f.token.get_opted_in_supply()?, 1_400);
 
-        // Releasing brings them back.
-        f.release(f.owner, id)?;
+        f.release(f.owner, f.owner, id)?;
         assert_eq!(f.token.get_opted_in_supply()?, 1_900);
         distribute(&mut f, 190)?;
         assert_eq!(rewards(&mut f, owner)?, U256::from(190));
         assert_eq!(rewards(&mut f, other)?, U256::from(300));
 
-        // Capturing to a payee that is not opted in leaves the supply.
         let id = B256::random();
         f.hold(id, 400)?;
         assert_eq!(f.token.get_opted_in_supply()?, 1_500);
@@ -1488,600 +1290,72 @@ fn test_reserved_funds_earn_no_rewards() -> eyre::Result<()> {
     })
 }
 
-/// New slots the reservation core holds after each operation, against the slot budget.
+/// New slots the reservation core holds after each operation, against its budget: a hold adds at
+/// most its two record slots beyond the owner's position, and settling deletes them.
 #[test]
 fn test_slots_per_operation() -> eyre::Result<()> {
     let mut storage = new_storage();
     let count = |storage: &HashMapStorageProvider| storage.nonzero_slot_count(RESERVATIONS_ADDRESS);
     let mut f = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
         let mut f = Fixture::new(10_000)?;
-        f.approve(5_000)?;
+        f.approve(5_000, 0)?;
         Ok(f)
     })?;
-    let step = |storage: &mut HashMapStorageProvider,
-                f: &mut Fixture,
-                op: &dyn Fn(&mut Fixture) -> Result<()>|
-     -> eyre::Result<i64> {
-        let before = count(storage) as i64;
-        StorageCtx::enter(storage, || op(f))?;
-        Ok(count(storage) as i64 - before)
+    let mut step = |op: &dyn Fn(&mut Fixture) -> Result<()>| -> eyre::Result<i64> {
+        let before = count(&storage) as i64;
+        StorageCtx::enter(&mut storage, || op(&mut f))?;
+        Ok(count(&storage) as i64 - before)
     };
     let ids: Vec<B256> = (0..8).map(|_| B256::random()).collect();
-    let (a, b, c, d, e) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
     // The first hold also writes the owner's position slot.
-    assert_eq!(step(&mut storage, &mut f, &|f| f.hold(a, 100))?, 3);
-    assert_eq!(step(&mut storage, &mut f, &|f| f.hold(b, 100))?, 2);
-    assert_eq!(step(&mut storage, &mut f, &|f| f.hold_from(c, 100))?, 3);
-    // The payee's balance is a TIP-20 slot; the core adds the totals slot on the first capture.
+    assert_eq!(step(&|f| f.hold(a, 100))?, 3);
+    assert_eq!(step(&|f| f.hold(b, 100))?, 2);
+    // A holder's first hold also writes its budget's outstanding into the existing budget slot.
+    assert_eq!(step(&|f| f.hold_from(c, 100))?, 2);
+    assert_eq!(step(&|f| f.capture(f.payee, a, 40, false))?, 0);
+    assert_eq!(step(&|f| f.capture(f.payee, a, 40, true))?, -2);
     assert_eq!(
-        step(&mut storage, &mut f, &|f| f.capture(f.payee, a, 40, false))?,
-        1
-    );
-    assert_eq!(
-        step(&mut storage, &mut f, &|f| f.capture(f.payee, a, 40, true))?,
-        0
-    );
-    assert_eq!(
-        step(&mut storage, &mut f, &|f| f.capture(f.payee, c, 100, true))?,
-        1
+        step(&|f| f.capture_of(f.payee, f.holder, c, 100, true))?,
+        -2
     );
     // Releasing the last live hold clears the owner's position slot.
-    assert_eq!(step(&mut storage, &mut f, &|f| f.release(f.owner, b))?, -1);
-    assert_eq!(step(&mut storage, &mut f, &|f| f.refund(a, 30))?, 0);
+    assert_eq!(step(&|f| f.release(f.owner, f.owner, b))?, -3);
+    assert_eq!(step(&|f| f.refund(f.payee, a, 30))?, 0);
+    assert_eq!(step(&|f| f.charge(f.owner, 10, false))?, 0);
+    assert_eq!(step(&|f| f.charge(f.holder, 10, false))?, 0);
+    assert_eq!(step(&|f| f.hold(d, 10))?, 3);
+    assert_eq!(step(&|f| f.pledge_from(ids[5], 100, NOW + 90 * DAY))?, 2);
+    assert_eq!(step(&|f| f.pledge_from(ids[6], 100, NOW + 90 * DAY))?, 2);
     assert_eq!(
-        step(&mut storage, &mut f, &|f| f.charge(f.owner, d, 10, false))?,
-        3
+        step(&|f| f.capture_of(f.holder, f.holder, ids[6], 100, false))?,
+        -2
     );
-    assert_eq!(step(&mut storage, &mut f, &|f| f.hold(e, 10))?, 3);
-    // A holder's pledge is a two-slot lien; the owner's first lien also writes its shortfall slot.
-    assert_eq!(
-        step(&mut storage, &mut f, &|f| f.pledge_from(
-            ids[5],
-            100,
-            NOW + 90 * DAY
-        ))?,
-        3
-    );
-    assert_eq!(
-        step(&mut storage, &mut f, &|f| f.pledge_from(
-            ids[6],
-            100,
-            NOW + 90 * DAY
-        ))?,
-        2
-    );
+    // A debt is one slot per creditor.
+    assert_eq!(step(&|f| f.set_terms(1_000_000, 0, 0))?, 1);
+    assert_eq!(step(&|f| f.charge(f.owner, 20_000, false))?, 1);
     Ok(())
 }
 
-/// One operation of the random sequences.
-#[derive(Debug, Clone)]
-enum Op {
-    Hold {
-        owner: usize,
-        id: usize,
-        amount: u128,
-        ttl: u64,
-        stand_in: bool,
-        by_holder: bool,
-    },
-    Adjust {
-        owner: usize,
-        id: usize,
-        amount: u128,
-    },
-    Capture {
-        owner: usize,
-        id: usize,
-        amount: u128,
-        is_final: bool,
-        by_payee: bool,
-    },
-    Release {
-        owner: usize,
-        id: usize,
-        by_payee: bool,
-    },
-    ReleaseExpired {
-        owner: usize,
-        id: usize,
-    },
-    Refund {
-        owner: usize,
-        id: usize,
-        amount: u128,
-    },
-    Charge {
-        owner: usize,
-        id: usize,
-        amount: u128,
-        stand_in: bool,
-        by_holder: bool,
-    },
-    Transfer {
-        from: usize,
-        to: usize,
-        amount: u64,
-    },
-    Lien {
-        owner: usize,
-        id: usize,
-        amount: u128,
-        ttl: u64,
-    },
-    ReleaseLien {
-        id: usize,
-    },
-    PledgeFrom {
-        owner: usize,
-        id: usize,
-        amount: u128,
-        ttl: u64,
-    },
-    ReducePledge {
-        id: usize,
-        amount: u128,
-    },
-    SeizePledge {
-        id: usize,
-        amount: u128,
-    },
-    ReleasePledge {
-        id: usize,
-    },
-    ReleaseExpiredLien {
-        id: usize,
-        pledge: bool,
-    },
-    Approve {
-        owner: usize,
-        revoke: bool,
-    },
-    Warp {
-        seconds: u64,
-    },
-}
-
-const OWNERS: usize = 2;
-const IDS: usize = 6;
-/// Pledge ids the holder places.
-const PLEDGES: usize = 3;
-
-fn op_strategy() -> impl Strategy<Value = Op> {
-    let owner = 0..OWNERS;
-    let id = 0..IDS;
-    prop_oneof![
-        4 => (owner.clone(), id.clone(), 1..400u128, 1..900u64, any::<bool>(), any::<bool>()).prop_map(
-            |(owner, id, amount, ttl, stand_in, by_holder)| Op::Hold { owner, id, amount, ttl, stand_in, by_holder }
-        ),
-        2 => (owner.clone(), id.clone(), 1..400u128).prop_map(|(owner, id, amount)| Op::Adjust { owner, id, amount }),
-        4 => (owner.clone(), id.clone(), 0..500u128, any::<bool>(), any::<bool>()).prop_map(
-            |(owner, id, amount, is_final, by_payee)| Op::Capture { owner, id, amount, is_final, by_payee }
-        ),
-        2 => (owner.clone(), id.clone(), any::<bool>()).prop_map(|(owner, id, by_payee)| Op::Release { owner, id, by_payee }),
-        1 => (owner.clone(), id.clone()).prop_map(|(owner, id)| Op::ReleaseExpired { owner, id }),
-        2 => (owner.clone(), id.clone(), 1..300u128).prop_map(|(owner, id, amount)| Op::Refund { owner, id, amount }),
-        2 => (owner.clone(), id, 1..300u128, any::<bool>(), any::<bool>()).prop_map(
-            |(owner, id, amount, stand_in, by_holder)| Op::Charge { owner, id, amount, stand_in, by_holder }
-        ),
-        2 => (0..4usize, 0..4usize, 1..300u64).prop_map(|(from, to, amount)| Op::Transfer { from, to, amount }),
-        1 => (owner, 0..2usize, 1..200u128, 0..900u64).prop_map(|(owner, id, amount, ttl)| Op::Lien { owner, id, amount, ttl }),
-        1 => (0..2usize).prop_map(|id| Op::ReleaseLien { id }),
-        2 => (0..OWNERS, 0..PLEDGES, 1..300u128, 1..900u64).prop_map(|(owner, id, amount, ttl)| Op::PledgeFrom { owner, id, amount, ttl }),
-        1 => (0..PLEDGES, 1..300u128).prop_map(|(id, amount)| Op::ReducePledge { id, amount }),
-        1 => (0..PLEDGES, 1..300u128).prop_map(|(id, amount)| Op::SeizePledge { id, amount }),
-        1 => (0..PLEDGES).prop_map(|id| Op::ReleasePledge { id }),
-        1 => (0..PLEDGES, any::<bool>()).prop_map(|(id, pledge)| Op::ReleaseExpiredLien { id, pledge }),
-        1 => (0..OWNERS, any::<bool>()).prop_map(|(owner, revoke)| Op::Approve { owner, revoke }),
-        2 => (0..400u64).prop_map(|seconds| Op::Warp { seconds }),
-    ]
-}
-
-/// Accounts and terms of a random sequence.
-struct World {
-    token: TIP20Token,
-    reservations: Reservations,
-    owners: [Address; OWNERS],
-    holder: Address,
-    payee: Address,
-    authority: Address,
-    stranger: Address,
-    ids: Vec<B256>,
-    lien_ids: Vec<B256>,
-    pledge_ids: Vec<B256>,
-    /// Hold records seen settled.
-    settled: BTreeSet<(usize, usize)>,
-    /// Captured and held amounts first seen past expiry.
-    expired: BTreeMap<(usize, usize), (u128, u128)>,
-}
-
-const ALLOWANCE: u128 = 500;
-const TOLERANCE: u32 = 2_000;
-const DEBT_CAP: u128 = 100;
-const OFFLINE_CAP: u128 = 250;
-
-impl World {
-    fn new() -> Result<Self> {
-        let admin = Address::random();
-        let owners = [Address::random(), Address::random()];
-        let (holder, payee, authority, stranger) = (
-            Address::random(),
-            Address::random(),
-            Address::random(),
-            Address::random(),
-        );
-        let mut token = TIP20Setup::create("Core USD", "CUSD", admin)
-            .with_issuer(admin)
-            .with_mint(owners[0], U256::from(1_000))
-            .with_mint(owners[1], U256::from(500))
-            .with_mint(stranger, U256::from(500))
-            .apply()?;
-        token.grant_role_internal(authority, LIEN_ROLE)?;
-        let mut reservations = Reservations::new();
-        reservations.initialize()?;
-        let token_address = token.address();
-        for owner in owners {
-            reservations.approve_holder(
-                owner,
-                IReservationCore::approveHolderCall {
-                    holder,
-                    token: token_address,
-                    allowance: ALLOWANCE,
-                },
-            )?;
-            reservations.set_capture_tolerance(
-                owner,
-                IReservationCore::setCaptureToleranceCall {
-                    payee,
-                    token: token_address,
-                    toleranceBps: TOLERANCE,
-                },
-            )?;
-            reservations.set_debt_cap(
-                owner,
-                IReservationCore::setDebtCapCall {
-                    creditor: payee,
-                    token: token_address,
-                    cap: DEBT_CAP,
-                },
-            )?;
-            reservations.set_offline_cap(
-                owner,
-                IReservationCore::setOfflineCapCall {
-                    payee,
-                    token: token_address,
-                    cap: OFFLINE_CAP,
-                },
-            )?;
-        }
-        Ok(Self {
-            token,
-            reservations,
-            owners,
-            holder,
-            payee,
-            authority,
-            stranger,
-            ids: (0..IDS).map(|_| B256::random()).collect(),
-            lien_ids: (0..2).map(|_| B256::random()).collect(),
-            pledge_ids: (0..PLEDGES).map(|_| B256::random()).collect(),
-            settled: BTreeSet::new(),
-            expired: BTreeMap::new(),
-        })
-    }
-
-    fn accounts(&self) -> [Address; 5] {
-        [
-            self.owners[0],
-            self.owners[1],
-            self.payee,
-            self.stranger,
-            self.authority,
-        ]
-    }
-
-    fn apply(&mut self, op: &Op) -> Result<()> {
-        let token = self.token.address();
-        let now = StorageCtx.timestamp().saturating_to::<u64>();
-        match *op {
-            Op::Hold {
-                owner,
-                id,
-                amount,
-                ttl,
-                stand_in,
-                by_holder,
-            } => {
-                let request = IReservationCore::HoldRequest {
-                    token,
-                    id: self.ids[id],
-                    amount,
-                    expiresAt: now + ttl,
-                    payee: self.payee,
-                    standIn: stand_in,
-                };
-                let owner = self.owners[owner];
-                let placer = if by_holder { self.holder } else { owner };
-                self.reservations.place(placer, owner, request)
-            }
-            Op::Adjust { owner, id, amount } => {
-                let (owner, id) = (self.owners[owner], self.ids[id]);
-                let placer = self.reservations.get_hold(owner, id)?.placer;
-                self.reservations
-                    .adjust(placer, IReservationCore::adjustCall { owner, id, amount })
-            }
-            Op::Capture {
-                owner,
-                id,
-                amount,
-                is_final,
-                by_payee,
-            } => {
-                let (owner, id) = (self.owners[owner], self.ids[id]);
-                let caller = if by_payee {
-                    self.payee
-                } else {
-                    self.reservations.get_hold(owner, id)?.placer
-                };
-                self.reservations.capture(
-                    caller,
-                    IReservationCore::captureCall {
-                        owner,
-                        id,
-                        amount,
-                        isFinal: is_final,
-                    },
-                )
-            }
-            Op::Release {
-                owner,
-                id,
-                by_payee,
-            } => {
-                let (owner, id) = (self.owners[owner], self.ids[id]);
-                let caller = if by_payee {
-                    self.payee
-                } else {
-                    self.reservations.get_hold(owner, id)?.placer
-                };
-                self.reservations.release(caller, owner, id)
-            }
-            Op::ReleaseExpired { owner, id } => self
-                .reservations
-                .release_expired(self.owners[owner], self.ids[id]),
-            Op::Refund { owner, id, amount } => self.reservations.refund(
-                self.payee,
-                IReservationCore::refundCall {
-                    owner: self.owners[owner],
-                    id: self.ids[id],
-                    amount,
-                },
-            ),
-            Op::Charge {
-                owner,
-                id,
-                amount,
-                stand_in,
-                by_holder,
-            } => {
-                let owner = self.owners[owner];
-                let caller = if by_holder { self.holder } else { owner };
-                self.reservations.charge(
-                    caller,
-                    IReservationCore::chargeCall {
-                        owner,
-                        token,
-                        id: self.ids[id],
-                        amount,
-                        payee: self.payee,
-                        standIn: stand_in,
-                    },
-                )
-            }
-            Op::Transfer { from, to, amount } => {
-                let accounts = self.accounts();
-                let (from, to) = (accounts[from], accounts[to]);
-                let spendable = self.token.balances[from].read()?;
-                let result = self.token.transfer(
-                    from,
-                    ITIP20::transferCall {
-                        to,
-                        amount: U256::from(amount),
-                    },
-                );
-                // Transfers never spend reserved funds.
-                if U256::from(amount) > spendable {
-                    assert!(result.is_err(), "transfer above the balance slot must fail");
-                }
-                result.map(|_| ())
-            }
-            Op::Lien {
-                owner,
-                id,
-                amount,
-                ttl,
-            } => self.reservations.lien(
-                self.authority,
-                IReservationCore::lienCall {
-                    owner: self.owners[owner],
-                    token,
-                    id: self.lien_ids[id],
-                    amount,
-                    expiresAt: if ttl == 0 { 0 } else { now + ttl },
-                },
-            ),
-            Op::ReleaseLien { id } => self
-                .reservations
-                .release_lien(self.authority, self.lien_ids[id]),
-            Op::PledgeFrom {
-                owner,
-                id,
-                amount,
-                ttl,
-            } => self.reservations.pledge_from(
-                self.holder,
-                IReservationCore::pledgeFromCall {
-                    owner: self.owners[owner],
-                    token,
-                    id: self.pledge_ids[id],
-                    amount,
-                    expiresAt: now + ttl,
-                },
-            ),
-            Op::ReducePledge { id, amount } => self.reservations.reduce_lien(
-                self.holder,
-                IReservationCore::reduceLienCall {
-                    id: self.pledge_ids[id],
-                    amount,
-                },
-            ),
-            Op::SeizePledge { id, amount } => self.reservations.seize_lien(
-                self.holder,
-                IReservationCore::seizeLienCall {
-                    id: self.pledge_ids[id],
-                    amount,
-                },
-            ),
-            Op::ReleasePledge { id } => self
-                .reservations
-                .release_lien(self.holder, self.pledge_ids[id]),
-            Op::ReleaseExpiredLien { id, pledge } => {
-                let (authority, id) = if pledge {
-                    (self.holder, self.pledge_ids[id])
-                } else {
-                    (self.authority, self.lien_ids[id % 2])
-                };
-                self.reservations.release_expired_lien(authority, id)
-            }
-            Op::Approve { owner, revoke } => self.reservations.approve_holder(
-                self.owners[owner],
-                IReservationCore::approveHolderCall {
-                    holder: self.holder,
-                    token,
-                    allowance: if revoke { 0 } else { ALLOWANCE },
-                },
-            ),
-            Op::Warp { seconds } => {
-                StorageCtx.set_timestamp(U256::from(now + seconds));
-                Ok(())
-            }
-        }
-    }
-
-    /// Checks the TIP-1153 invariants.
-    fn check(&mut self) -> Result<()> {
-        let token = self.token.address();
-        let now = StorageCtx.timestamp().saturating_to::<u64>();
-        let mut slots = U256::ZERO;
-        let mut reserved_total = 0u128;
-        for account in self.accounts() {
-            let slot = self.token.balances[account].read()?;
-            let reserved = self.reservations.reserved_of(account, token)?;
-            // 1. The balance slot plus what is reserved is what the owner holds.
-            assert_eq!(
-                self.token.balance_of(ITIP20::balanceOfCall { account })?,
-                slot + U256::from(reserved)
-            );
-            slots += slot;
-            reserved_total += reserved;
-        }
-        slots += self.token.balances[self.holder].read()?;
-        slots += self.token.balances[token].read()?;
-        assert_eq!(
-            self.token.total_supply()?,
-            slots + U256::from(reserved_total)
-        );
-
-        for (o, owner) in self.owners.into_iter().enumerate() {
-            let mut held = 0u128;
-            let mut delegated = 0u128;
-            for (i, id) in self.ids.clone().into_iter().enumerate() {
-                let record = self.reservations.get_hold(owner, id)?;
-                if record.token.is_zero() {
-                    continue;
-                }
-                // 3. Captures stay within the approval and its tolerance, refunds within captures.
-                let cap = record.approved * (BPS + u128::from(TOLERANCE)) / BPS;
-                assert!(
-                    record.captured <= cap,
-                    "captured {} over cap {cap}",
-                    record.captured
-                );
-                assert!(record.refunded <= record.captured);
-                if record.settled {
-                    assert_eq!(record.held, 0);
-                    self.settled.insert((o, i));
-                } else {
-                    assert!(!self.settled.contains(&(o, i)), "a settled id reopened");
-                    held += record.held;
-                    if record.placer == self.holder {
-                        delegated += record.held;
-                    }
-                }
-                // 6. After expiry, a hold can only be released.
-                if now >= record.expiresAt && !record.settled || self.expired.contains_key(&(o, i))
-                {
-                    let seen = *self
-                        .expired
-                        .entry((o, i))
-                        .or_insert((record.captured, record.held));
-                    assert_eq!(record.captured, seen.0, "captured after expiry");
-                    assert!(record.held == seen.1 || (record.held == 0 && record.settled));
-                }
-            }
-            let mut liened = 0u128;
-            for id in self.lien_ids.clone() {
-                let lien = self.reservations.lien_of(self.authority, id)?;
-                if lien.owner == owner {
-                    liened += lien.amount;
-                }
-            }
-            for id in self.pledge_ids.clone() {
-                let lien = self.reservations.lien_of(self.holder, id)?;
-                if lien.owner == owner {
-                    // 7. A holder's pledge always expires, within the pledge bound.
-                    assert!(lien.pledged);
-                    assert!(lien.expiresAt != 0 && lien.expiresAt <= now + MAX_PLEDGE_DURATION);
-                    liened += lien.amount;
-                    delegated += lien.amount;
-                }
-            }
-            // 2. Reserved is what live holds and liens hold.
-            assert_eq!(self.reservations.reserved_of(owner, token)?, held + liened);
-            assert_eq!(self.reservations.liened_of(owner, token)?, liened);
-            // 4. Outstanding is what the holder's live holds and pledges hold, within its allowance.
-            let allowance = self.reservations.allowance(owner, self.holder, token)?;
-            assert_eq!(allowance.outstanding, delegated);
-            assert!(allowance.outstanding <= ALLOWANCE);
-            // 5. Debt stays within the larger of its caps.
-            let debt = self.reservations.debt_of(owner, token)?;
-            assert!(debt.amount <= DEBT_CAP.max(OFFLINE_CAP));
-            if debt.amount != 0 {
-                assert_eq!(debt.creditor, self.payee);
-            }
-        }
-        Ok(())
-    }
-}
-
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(128))]
+    #![proptest_config(ProptestConfig::with_cases(256))]
 
+    /// Random sequences across owners, holders, payees, tokens and strangers: every call's result
+    /// matches the model's, exact error included, and the invariants hold after every step.
     #[test]
-    fn proptest_random_sequences_keep_the_invariants(ops in prop::collection::vec(op_strategy(), 1..60)) {
+    fn proptest_random_sequences_match_the_model(ops in prop::collection::vec(model::op_strategy(), 1..80)) {
         let mut storage = new_storage();
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut world = World::new()?;
-            for op in &ops {
-                // A failed call reverts, as it does in a transaction.
-                let checkpoint = StorageCtx.checkpoint();
-                if world.apply(op).is_ok() {
-                    checkpoint.commit();
-                } else {
-                    drop(checkpoint);
-                }
-                world.check()?;
+        let mut world = StorageCtx::enter(&mut storage, model::World::new)
+            .map_err(|err| TestCaseError::fail(format!("setup: {err:?}")))?;
+        for (step, op) in ops.iter().enumerate() {
+            let outcome = StorageCtx::enter(&mut storage, || world.step(op));
+            if let Err(err) = outcome {
+                return Err(TestCaseError::fail(format!("step {step} {op:?}: {err}")));
             }
-            Ok(())
-        }).unwrap();
+            let slots = storage.nonzero_slot_count(RESERVATIONS_ADDRESS);
+            if let Err(err) = StorageCtx::enter(&mut storage, || world.check(slots)) {
+                return Err(TestCaseError::fail(format!("after step {step} {op:?}: {err}")));
+            }
+        }
     }
 }

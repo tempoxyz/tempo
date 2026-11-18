@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    reservations::Reservations,
+    reservations::{PaymentExemption, Reservations, ReservationsError},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
@@ -1019,29 +1019,56 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Moves `amount` for a [`Reservations`] capture, charge or refund.
+    /// Whether this token may move funds of `from` to `to` for a [`Reservations`] payment now:
+    /// the token is not paused, `to` is a valid direct recipient other than `from`, the TIP-403
+    /// policy authorizes `from` as sender (unless `exemption` waives it) and `to` as recipient,
+    /// and `to`'s TIP-1028 receive policy accepts `from`.
+    ///
+    /// Every reservation movement (capture, charge, refund, seizure, debt repayment) goes through
+    /// this check, so all of them follow the same policy.
+    pub(crate) fn reservation_payment_allowed(
+        &self,
+        from: Address,
+        to: Address,
+        exemption: PaymentExemption,
+    ) -> Result<bool> {
+        if to.is_zero()
+            || to == from
+            || to.is_tip20()
+            || to == RECEIVE_POLICY_GUARD_ADDRESS
+            || self.paused()?
+        {
+            return Ok(false);
+        }
+        let authorized = match exemption {
+            PaymentExemption::None => self.is_transfer_authorized(from, to)?,
+            PaymentExemption::Sender => self.is_recipient_authorized(to)?,
+        };
+        Ok(authorized
+            && TIP403Registry::new()
+                .validate_receive_policy(self.address, from, to)?
+                .is_none())
+    }
+
+    /// Moves `amount` of `from`'s spendable balance to `to` for a [`Reservations`] capture,
+    /// charge, refund or seizure, after [`Self::reservation_payment_allowed`].
     ///
     /// This is an internal integration, not an ABI entrypoint. The reservations precompile checks
-    /// TIP-403 and the access key limit itself, and returns the hold being captured to the
-    /// spendable balance before calling. Reverts when `to`'s TIP-1028 receive
-    /// policy rejects `from`, since a capture cannot represent a guarded payment.
+    /// access key limits itself and returns what a hold reserved to the spendable balance first.
     pub(crate) fn reservation_transfer(
         &mut self,
         from: Address,
         to: Address,
         amount: U256,
+        exemption: PaymentExemption,
     ) -> Result<()> {
-        self.check_not_paused()?;
-        let to = Recipient::direct(to);
-        to.validate()?;
-        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(ReceivePolicyGuardError::address_reserved().into());
+        if !self.reservation_payment_allowed(from, to, exemption)? {
+            return Err(ReservationsError::policy_forbids().into());
         }
-        self.ensure_receive_policy_authorized(from, to.target)?;
         if amount.is_zero() {
             return Ok(());
         }
-        self._transfer(from, &to, amount)
+        self._transfer(from, &Recipient::direct(to), amount)
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
@@ -1477,35 +1504,29 @@ impl TIP20Token {
         self.increment_balance(owner, amount)
     }
 
-    /// (+T16) Moves up to `received` of `owner`'s balance to the creditor of its debt in this
-    /// token, emitting `DebtRepaid` and a `Transfer` to the creditor.
+    /// (+T16) Repays `owner`'s debts in this token from up to `received`, oldest first,
+    /// emitting `DebtRepaid` and a `Transfer` to each creditor paid.
     ///
-    /// Called after every credit. Only accounts flagged as debtors in their TIP-1028 receive
-    /// policy slot, which the credit already read, reach the reservations precompile; the
-    /// repayment itself does not repay the creditor's own debt. The repayment is skipped, leaving the debt in place, while
-    /// the token is paused, its TIP-403 policy rejects `owner` as sender or the creditor as
-    /// recipient, or the creditor's TIP-1028 receive policy rejects `owner`; the credit itself
-    /// never reverts for these reasons.
+    /// Called after every credit. Only accounts counted as debtors, a slot the credit already read
+    /// on Tempo L1, reach the reservations precompile; a repayment does not repay the creditor's
+    /// own debt. A creditor that [`Self::reservation_payment_allowed`] refuses is skipped and keeps
+    /// its debt; the credit itself never reverts for that reason.
     fn repay_debt(&mut self, owner: Address, received: U256) -> Result<()> {
         if !self.reservations_active() || !Reservations::new().owes_debt(owner)? {
             return Ok(());
         }
         let token = self.address;
-        let Some((creditor, repaid)) =
-            Reservations::new().take_repayment(owner, token, received, |creditor| {
-                Ok(!self.paused()?
-                    && self.is_transfer_authorized(owner, creditor)?
-                    && TIP403Registry::new()
-                        .validate_receive_policy(token, owner, creditor)?
-                        .is_none())
-            })?
-        else {
-            return Ok(());
-        };
-        self.handle_rewards_on_transfer(owner, creditor, repaid)?;
-        self.decrement_balance(owner, repaid)?;
-        self.increment_balance(creditor, repaid)?;
-        self.emit_event(TIP20Event::transfer(owner, creditor, repaid))
+        let repayments =
+            Reservations::new().take_repayments(owner, token, received, |creditor| {
+                self.reservation_payment_allowed(owner, creditor, PaymentExemption::None)
+            })?;
+        for (creditor, repaid) in repayments {
+            self.handle_rewards_on_transfer(owner, creditor, repaid)?;
+            self.decrement_balance(owner, repaid)?;
+            self.increment_balance(creditor, repaid)?;
+            self.emit_event(TIP20Event::transfer(owner, creditor, repaid))?;
+        }
+        Ok(())
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
