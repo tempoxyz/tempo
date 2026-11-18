@@ -1709,7 +1709,10 @@ fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
     P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
-    let zone_height = provider.durable_block_number().map_err(internal)?;
+    let zone_height = provider
+        .last_durable_block_num_hash()
+        .map_err(internal)?
+        .number;
     let zone_header = provider
         .sealed_header(zone_height)
         .map_err(internal)?

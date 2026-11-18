@@ -11,6 +11,7 @@ use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_transport::TransportResult;
 use reth_chain_state::{CanonStateSubscriptions, PersistedBlockSubscriptions};
+pub use reth_storage_api::DurableBlockReader;
 use reth_storage_api::{BlockReader, StateProviderFactory};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
@@ -22,7 +23,6 @@ pub mod abi {
 }
 
 pub mod attestation;
-mod durable;
 mod encryption_key;
 mod metrics;
 pub mod monitor;
@@ -35,7 +35,6 @@ pub mod settlement;
 mod settlement_manager;
 pub mod withdrawals;
 
-pub use durable::DurableBlockReader;
 pub use encryption_key::{
     EncryptionKeyProof, encryption_key_identity, prove_encryption_key_possession,
     register_encryption_key,

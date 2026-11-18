@@ -424,8 +424,9 @@ where
         let persisted_head = self
             .context
             .provider
-            .durable_block_number()
-            .wrap_err("failed reading persisted zone head")?;
+            .last_durable_block_num_hash()
+            .wrap_err("failed reading persisted zone head")?
+            .number;
         eyre::ensure!(
             height <= persisted_head,
             "settlement proposal at height {height} is not durable; persisted head is {persisted_head}"

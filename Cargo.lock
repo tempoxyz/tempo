@@ -17672,7 +17672,6 @@ dependencies = [
  "reth-metrics",
  "reth-primitives-traits",
  "reth-provider",
- "reth-stages-types",
  "reth-storage-api",
  "schnellru",
  "serde",

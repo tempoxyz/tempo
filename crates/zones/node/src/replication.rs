@@ -76,7 +76,7 @@ where
         + 'static,
 {
     fn durable_block_number(&self) -> eyre::Result<u64> {
-        Ok(DurableBlockReader::durable_block_number(self)?)
+        Ok(DurableBlockReader::last_durable_block_num_hash(self)?.number)
     }
 
     fn canonical_block_number(&self) -> eyre::Result<u64> {
@@ -474,7 +474,7 @@ where
 {
     // Never serve a block this node could still lose: a requester that imports it would
     // conflict with the block rebuilt at that height after a crash.
-    let tip = provider.durable_block_number()?;
+    let tip = provider.last_durable_block_num_hash()?.number;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
     for number in start..=end {
         let block = provider.block_by_number(number)?.ok_or_else(|| {
