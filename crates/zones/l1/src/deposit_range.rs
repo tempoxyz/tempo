@@ -1,6 +1,5 @@
 use super::*;
 use crate::{abi::ZonePortal, state::L1StateProvider};
-use alloy_rpc_types_eth::Filter;
 use eyre::OptionExt as _;
 use tempo_precompiles::{
     storage::{StorableType as _, packing::extract_from_word},
@@ -8,7 +7,7 @@ use tempo_precompiles::{
 };
 use zone_primitives::deposit_queue::DepositRangeEnd;
 
-/// Blocks per `eth_getLogs` request.
+/// Blocks per backward search window. A window the RPC rejects is split into smaller requests.
 const ENTRY_SEARCH_BLOCKS: u64 = 10_000;
 
 /// A deposit-queue position on L1.
@@ -36,7 +35,8 @@ impl DepositQueuePosition {
         let Some(last_processed) = last_processed else {
             return Ok(after_through);
         };
-        let deposit_count = ZonePortal::new(portal_address, l1_provider)
+        let portal = ZonePortal::new(portal_address, l1_provider);
+        let deposit_count = portal
             .depositCount()
             .block(BlockId::number(through))
             .call()
@@ -47,19 +47,22 @@ impl DepositQueuePosition {
         let first_owed = last_processed + 1;
 
         // Search for the first owed entry, so recovery never reads blocks without owed work.
-        let entry_events = Filter::new().address(portal_address).event_signature(vec![
-            DepositMade::SIGNATURE_HASH,
-            WithdrawalBounceBack::SIGNATURE_HASH,
-        ]);
         let mut to = through;
         loop {
             let from = to.saturating_sub(ENTRY_SEARCH_BLOCKS - 1);
-            let logs = &l1_provider
-                .get_logs(&entry_events.clone().from_block(from).to_block(to))
+            let logs = portal
+                .DepositMade_filter()
+                .event_signature(vec![
+                    DepositMade::SIGNATURE_HASH,
+                    WithdrawalBounceBack::SIGNATURE_HASH,
+                ])
+                .select(from..=to)
+                .chunked()
+                .query_raw()
                 .await?;
 
             let mut entries = Vec::new();
-            for log in logs {
+            for log in &logs {
                 let entry = match ZonePortalEvents::decode_log(&log.inner)?.data {
                     ZonePortalEvents::DepositMade(event) => event.depositNumber,
                     ZonePortalEvents::WithdrawalBounceBack(event) => event.depositNumber,
