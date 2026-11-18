@@ -1613,6 +1613,7 @@ fn full_import_cannot_consume_more_than_owed() {
         err.to_string(),
         "full import processed 2 deposits, but only 1 were owed"
     );
+    assert_eq!(owed_amounts(&queue, first.num_hash(), usize::MAX), [1]);
 }
 
 #[test]

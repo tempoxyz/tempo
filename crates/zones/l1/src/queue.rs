@@ -270,7 +270,35 @@ impl PendingDeposits {
         expected: NumHash,
         consumed: usize,
     ) -> eyre::Result<()> {
-        let mut released = false;
+        let releases = self
+            .pending
+            .front()
+            .is_some_and(|front| front.header.number() <= expected.number);
+        // A delayed duplicate must not release work deferred after, or left by, its original import.
+        if !releases
+            && self
+                .deferred
+                .as_ref()
+                .is_none_or(|deferred| deferred.last_header.number() >= expected.number)
+        {
+            return Ok(());
+        }
+        // Check before mutating, so a rejected confirmation leaves the queue unchanged.
+        let owed = self
+            .deferred
+            .as_ref()
+            .map_or(0, |deferred| deferred.deposits.len())
+            + self
+                .pending
+                .iter()
+                .take_while(|block| block.header.number() <= expected.number)
+                .map(|block| block.events.deposits.len())
+                .sum::<usize>();
+        eyre::ensure!(
+            consumed <= owed,
+            "full import processed {consumed} deposits, but only {owed} were owed"
+        );
+
         while let Some(front) = self.pending.front().map(|entry| entry.header.num_hash()) {
             if front.number > expected.number {
                 break;
@@ -283,21 +311,11 @@ impl PendingDeposits {
                 expected.hash,
             );
             self.defer_front();
-            released = true;
         }
 
-        // A delayed duplicate must not release work deferred after, or left by, its original import.
-        let Some(mut deferred) = self
-            .deferred
-            .take_if(|deferred| released || deferred.last_header.number() < expected.number)
-        else {
+        let Some(mut deferred) = self.deferred.take() else {
             return Ok(());
         };
-        eyre::ensure!(
-            consumed <= deferred.deposits.len(),
-            "full import processed {consumed} deposits, but only {} were owed",
-            deferred.deposits.len()
-        );
         // A full import executes every owed token enablement and the first `consumed` entries.
         deferred.deposits.drain(..consumed);
         deferred.enabled_tokens.clear();

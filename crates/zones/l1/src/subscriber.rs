@@ -1086,12 +1086,18 @@ where
         let mut queue = PendingDeposits::default();
         let mut blocks = self.fetch_l1_blocks(l1_provider, from..=checkpoint.number);
         while let Some((header, (events, _, _))) = blocks.try_next().await? {
+            let block = header.num_hash();
             queue.try_enqueue(header, events)?;
+            // Fold each block as it arrives, replaying the full import at its anchor.
+            if block.number == recovery.last_operational.number {
+                queue.confirm_operational_through(
+                    recovery.last_operational,
+                    recovery.start.entries_in_block,
+                )?;
+            } else {
+                queue.defer_through(block)?;
+            }
         }
-        queue.confirm_operational_through(
-            recovery.last_operational,
-            recovery.start.entries_in_block,
-        )?;
         queue.defer_through(checkpoint)?;
         self.deposit_queue.restore(queue)?;
         info!(from, to = checkpoint.number, "Recovered owed portal work");
