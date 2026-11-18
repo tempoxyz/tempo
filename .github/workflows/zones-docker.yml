@@ -974,6 +974,24 @@ jobs:
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
+      - name: Recheck highest Zones version
+        id: floating
+        # A newer zones/v* tag may have landed since build-and-push read the
+        # tags; only a release that is still the highest moves floating tags.
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          remote_tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/zones/v*')"
+          highest="$(
+            { printf '%s\n' "$remote_tags" | sed -n -E 's#.*refs/tags/zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
+              sort -V | tail -n 1
+          )"
+          if [[ "$version" == "$highest" ]]; then
+            echo "still_highest=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Docker metadata for tempo-zone-xtask
         id: meta-tempo-zone-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -987,9 +1005,9 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' && steps.floating.outputs.still_highest == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -1410,6 +1428,24 @@ jobs:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
+      - name: Recheck highest Zones version
+        id: floating
+        # A newer zones/v* tag may have landed since build-and-push read the
+        # tags; only a release that is still the highest moves floating tags.
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          remote_tags="$(git ls-remote --tags --refs "$REPO_URL" 'refs/tags/zones/v*')"
+          highest="$(
+            { printf '%s\n' "$remote_tags" | sed -n -E 's#.*refs/tags/zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p'; echo "$version"; } |
+              sort -V | tail -n 1
+          )"
+          if [[ "$version" == "$highest" ]]; then
+            echo "still_highest=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Docker metadata for promoted tempo-zone
         id: meta-tempo-zone
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -1422,9 +1458,9 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ inputs.nightly == true }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' && steps.floating.outputs.still_highest == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' && steps.floating.outputs.still_highest == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
