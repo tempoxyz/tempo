@@ -531,6 +531,7 @@ jobs:
       version: ${{ steps.release-version.outputs.version }}
       is_release: ${{ steps.release-version.outputs.is_release }}
       is_stable: ${{ steps.release-version.outputs.is_stable }}
+      zones_floating: ${{ steps.release-version.outputs.zones_floating }}
       prover_release: ${{ steps.release-version.outputs.prover_release }}
       prover_stable: ${{ steps.release-version.outputs.prover_stable }}
     steps:
@@ -641,8 +642,18 @@ jobs:
           {
             echo "version=v$version"
             echo "$release_key=true"
-            if [[ "$version" != *-* ]]; then
+            # A zones/v* release from a release/* branch may be older than the
+            # newest one; only the highest stable zones version moves the
+            # floating stable, major and major.minor tags.
+            floating=true
+            if [[ "$component" == zones ]]; then
+              highest="$(git tag -l 'zones/v*' | sed -n -E 's#^zones/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p' |
+                { cat; echo "$version"; } | sort -V | tail -n 1)"
+              [[ "$version" == "$highest" ]] || floating=false
+            fi
+            if [[ "$version" != *-* && "$floating" == true ]]; then
               echo "$stable_key=true"
+              if [[ "$component" == zones ]]; then echo "zones_floating=true"; fi
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -659,8 +670,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -973,8 +984,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -1408,8 +1419,8 @@ jobs:
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ inputs.nightly == true }}
             type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.zones_floating == 'true' }}
             type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
