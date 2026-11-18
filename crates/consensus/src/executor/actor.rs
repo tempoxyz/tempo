@@ -1291,19 +1291,7 @@ where
                     self.record_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
-                    // Marshal reports a tip before the blocks up to it, except
-                    // after a crash: its block archive can keep a finalized
-                    // block whose finalization was lost, and marshal delivers
-                    // that block without a tip. The block proves its own
-                    // finality, so it is reported as a tip too, before its
-                    // delivery can move local finality past the tip. Blocks
-                    // at or below the tip were proposed no later than the
-                    // tip's round, so round order ignores them.
-                    self.record_finalized_tip(
-                        block.context().round,
-                        block.height(),
-                        block.digest(),
-                    );
+                    // Marshal reports a tip before the blocks up to it.
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
                         cause,
                         block,
