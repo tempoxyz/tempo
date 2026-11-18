@@ -41,10 +41,7 @@ impl ZoneIdentity {
                         self.set_org_admin(caller, registrar()?, call.orgId, call.admin)
                     }),
                     addMembers(call) => mutate(call, msg_sender, |caller, call| {
-                        self.add_members(caller, registrar()?, call.orgId, &call.approvals)
-                    }),
-                    joinOrg(call) => mutate(call, msg_sender, |caller, call| {
-                        self.join_org(caller, registrar()?, call.orgId, call.deadline, &call.adminSignature)
+                        self.add_members(caller, registrar()?, call.orgId, &call.accounts)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
                         self.remove_member(caller, call.account)
@@ -73,9 +70,6 @@ impl ZoneIdentity {
                                 frozen: member.frozen,
                             }
                         })
-                    }),
-                    joinNonce(call) => view(call, |call| {
-                        self.join_nonce(msg_sender, registrar()?, call.account)
                     }),
                     edge(call) => view(call, |call| {
                         self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)

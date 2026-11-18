@@ -3,10 +3,7 @@
 //! [`ZoneIdentity`] is the source of truth for which org each Zone address belongs to, which TIP-20s
 //! each org may send to each other org, and which Tempo addresses each org's members may deposit
 //! from and withdraw to. An org is a set of Zone addresses with one admin; an address in no org is
-//! in org 0, whose admin is the registrar. An address joins only when both sides sign the same
-//! EIP-712 `Join`, since a member can be frozen and read by its admin and cannot leave on its own:
-//! the admin submits `addMembers` with each account's signature, or the account submits `joinOrg`
-//! with the admin's.
+//! in org 0, whose admin is the registrar.
 //!
 //! - **Transfers on the Zone** follow edges: org A may send token T to org B only when A's admin
 //!   allows T outbound to B and B's admin allows T inbound from A. An org's edge to itself, which
@@ -29,13 +26,11 @@
 
 mod dispatch;
 
-use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{SolStruct, eip712_domain};
+use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
     address_registry::AddressRegistry,
     error::TempoPrecompileError,
-    signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
 };
 use tempo_precompiles_macros::{Storable, contract};
@@ -58,9 +53,6 @@ pub struct ZoneIdentity {
     pub orgs: Mapping<u64, Org>,
     /// Each Zone address's membership.
     pub members: Mapping<Address, Member>,
-    /// Each address's next join nonce. A join spends it, so a join signature works once and an
-    /// address removed from an org needs a new one to rejoin.
-    pub join_nonces: Mapping<Address, u64>,
 }
 
 impl ZoneIdentity {
@@ -184,57 +176,32 @@ impl ZoneIdentity {
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
-    /// Adds each approving account, in no org, to `org`. Only `org`'s admin may call it, and each
-    /// approval must carry the account's own signature over its [`IZoneIdentity::Join`], so no
-    /// admin can place an address in an org. Reverts, adding none, if any approval fails.
+    /// Adds `accounts`, each in no org, to `org`. Reverts, adding none, if any is already in an org.
     pub fn add_members(
         &mut self,
         caller: Address,
         registrar: Address,
         org: u64,
-        approvals: &[IZoneIdentity::MemberApproval],
+        accounts: &[Address],
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
         if org == 0 {
             return Err(ZoneIdentityError::invalid_address().into());
         }
-        // Verify every approval first, so a rejected batch writes nothing.
-        let mut nonces = Vec::with_capacity(approvals.len());
-        for approval in approvals {
-            let nonce = self.ensure_joinable(approval.account, approval.deadline)?;
-            let hash = self.join_hash(org, approval.account, nonce, approval.deadline);
-            ensure_signed_by(approval.account, hash, &approval.signature)?;
-            nonces.push(nonce);
-        }
-        for (approval, nonce) in approvals.iter().zip(nonces) {
-            // An account listed twice was verified twice against the same nonce; the second join
-            // finds it a member.
-            if self.members[approval.account].read()? != Member::default() {
-                return Err(ZoneIdentityError::already_member(approval.account).into());
+        // Check every account first, so a rejected batch writes nothing.
+        for &account in accounts {
+            // A virtual address never holds funds; moves to it are checked as its master.
+            if account.is_zero() || account.is_virtual() {
+                return Err(ZoneIdentityError::invalid_address().into());
             }
-            self.join(approval.account, org, nonce)?;
+            if self.members[account].read()? != Member::default() {
+                return Err(ZoneIdentityError::already_member(account).into());
+            }
+        }
+        for &account in accounts {
+            self.write_member(account, Member { org, frozen: false })?;
         }
         Ok(())
-    }
-
-    /// Makes the caller a member of `org` with `org`'s admin's signature over the caller's
-    /// [`IZoneIdentity::Join`]. The caller's own transaction is its consent.
-    pub fn join_org(
-        &mut self,
-        caller: Address,
-        registrar: Address,
-        org: u64,
-        deadline: u64,
-        admin_signature: &[u8],
-    ) -> ZoneResult<()> {
-        self.ensure_org(org)?;
-        if org == 0 {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
-        let nonce = self.ensure_joinable(caller, deadline)?;
-        let hash = self.join_hash(org, caller, nonce, deadline);
-        ensure_signed_by(self.org_admin(registrar, org)?, hash, admin_signature)?;
-        self.join(caller, org, nonce)
     }
 
     /// Moves `account` back to org 0. Only its org's admin may remove it, so a member cannot leave
@@ -375,18 +342,6 @@ impl ZoneIdentity {
         Ok(member)
     }
 
-    /// `account`'s next join nonce, for the same callers as [`Self::org_of`]. Each side of a join
-    /// signs it into the [`IZoneIdentity::Join`].
-    pub fn join_nonce(
-        &self,
-        caller: Address,
-        registrar: Address,
-        account: Address,
-    ) -> ZoneResult<u64> {
-        self.org_of(caller, registrar, account)?;
-        Ok(self.join_nonces[account].read()?)
-    }
-
     /// Whether `token` may move along the Zone edge from `from` to `to`, for the admin of either
     /// org or the registrar.
     pub fn edge(
@@ -433,48 +388,6 @@ impl ZoneIdentity {
     fn l1_rules(&self, org: u64, token: Address, l1: Address) -> ZoneResult<(L1Policy, L1Target)> {
         let rules = &self.orgs[org].l1[token];
         Ok((rules.policy.read()?, rules.targets[l1].read()?))
-    }
-
-    /// The signing hash of `account`'s [`IZoneIdentity::Join`] to `org`.
-    fn join_hash(&self, org: u64, account: Address, nonce: u64, deadline: u64) -> B256 {
-        let domain = eip712_domain! {
-            name: "ZoneIdentity",
-            version: "1",
-            chain_id: self.storage.chain_id(),
-            verifying_contract: ZONE_IDENTITY_ADDRESS,
-        };
-        IZoneIdentity::Join {
-            orgId: org,
-            account,
-            nonce,
-            deadline,
-        }
-        .eip712_signing_hash(&domain)
-    }
-
-    /// Returns `account`'s join nonce if it may join now: a real address in no org, with a deadline
-    /// that has not passed.
-    fn ensure_joinable(&self, account: Address, deadline: u64) -> ZoneResult<u64> {
-        // A virtual address never holds funds; moves to it are checked as its master.
-        if account.is_zero() || account.is_virtual() {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
-        if self.storage.timestamp() > U256::from(deadline) {
-            return Err(ZoneIdentityError::join_expired(deadline).into());
-        }
-        if self.members[account].read()? != Member::default() {
-            return Err(ZoneIdentityError::already_member(account).into());
-        }
-        Ok(self.join_nonces[account].read()?)
-    }
-
-    /// Adds `account` to `org` and spends its join nonce.
-    fn join(&mut self, account: Address, org: u64, nonce: u64) -> ZoneResult<()> {
-        let next = nonce
-            .checked_add(1)
-            .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.join_nonces[account].write(next)?;
-        self.write_member(account, Member { org, frozen: false })
     }
 
     fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
@@ -525,8 +438,7 @@ impl ZoneIdentity {
 /// One org's configuration.
 #[derive(Debug, Clone, Storable, Default)]
 pub struct Org {
-    /// Key that approves joins, removes and freezes the org's members and sets its halves of
-    /// edges, its targets and its policy.
+    /// Key that manages the org's members, its halves of edges, its targets and its policy.
     pub admin: Address,
     /// Both halves of the Zone edge from this org to another, keyed by receiving org and token.
     pub edges: Mapping<u64, Mapping<Address, Edge>>,
@@ -625,18 +537,6 @@ pub enum TransferKind {
     Withdrawal,
 }
 
-/// Rejects `signature` unless it is `signer`'s over `hash`. Only primitive signatures count:
-/// secp256k1, P256 and WebAuthn. Keychain signatures are refused, since a join hands the org admin
-/// powers over the account that an access key should not be able to grant.
-// TODO: accept configurable account (TIP-1113) signatures.
-fn ensure_signed_by(signer: Address, hash: B256, signature: &[u8]) -> ZoneResult<()> {
-    match SignatureVerifier::new().recover(hash, signature) {
-        Ok(recovered) if !signer.is_zero() && recovered == signer => Ok(()),
-        Err(error) if error.is_system_error() => Err(error.into()),
-        _ => Err(ZoneIdentityError::invalid_join_signature(signer).into()),
-    }
-}
-
 /// Rejects a call unless `caller` is the nonzero `expected` address.
 fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
     if expected.is_zero() || caller != expected {
@@ -646,13 +546,11 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use alloy_primitives::{Address, B256, Bytes};
-    use alloy_signer::SignerSync;
-    use alloy_signer_local::PrivateKeySigner;
+mod tests {
+    use alloy_primitives::Address;
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::zones::{IZoneIdentity::MemberApproval, ZoneIdentityError};
+    use tempo_contracts::zones::ZoneIdentityError;
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{VIRTUAL_MASTER, register_virtual_master},
@@ -692,52 +590,6 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    /// Adds `accounts` to `org` without signatures, for tests of everything but joining.
-    pub(crate) fn enroll(
-        identity: &mut ZoneIdentity,
-        _admin: Address,
-        _registrar: Address,
-        org: u64,
-        accounts: &[Address],
-    ) {
-        for &account in accounts {
-            let nonce = identity.join_nonces[account].read().unwrap();
-            identity.join(account, org, nonce).unwrap();
-        }
-    }
-
-    fn key(byte: u8) -> PrivateKeySigner {
-        PrivateKeySigner::from_bytes(&B256::repeat_byte(byte)).unwrap()
-    }
-
-    /// `key`'s signature over `account`'s join to `org`.
-    fn sign_join(
-        identity: &ZoneIdentity,
-        key: &PrivateKeySigner,
-        org: u64,
-        account: Address,
-        nonce: u64,
-        deadline: u64,
-    ) -> Bytes {
-        let hash = identity.join_hash(org, account, nonce, deadline);
-        Bytes::from(key.sign_hash_sync(&hash).unwrap().as_bytes())
-    }
-
-    /// `key`'s own approval to join `org`.
-    fn approve(
-        identity: &ZoneIdentity,
-        key: &PrivateKeySigner,
-        org: u64,
-        nonce: u64,
-        deadline: u64,
-    ) -> MemberApproval {
-        MemberApproval {
-            account: key.address(),
-            deadline,
-            signature: sign_join(identity, key, org, key.address(), nonce, deadline),
-        }
-    }
-
     /// One org administered by the returned admin, with Alice and Bob as members and `usd` allowed
     /// inside it.
     fn org_with_members(
@@ -750,7 +602,9 @@ pub(crate) mod tests {
         identity
             .set_edge(admin, registrar, org, org, &[usd], true)
             .unwrap();
-        enroll(identity, admin, registrar, org, &[ALICE, BOB]);
+        identity
+            .add_members(admin, registrar, org, &[ALICE, BOB])
+            .unwrap();
         (admin, org)
     }
 
@@ -842,177 +696,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn add_members_needs_each_accounts_signature() {
+    fn an_address_belongs_to_one_org() {
         with_identity(|identity, registrar| {
-            let admin = Address::repeat_byte(1);
-            let org = identity.create_org(registrar, registrar, admin).unwrap();
-            let other = identity
-                .create_org(registrar, registrar, Address::repeat_byte(2))
-                .unwrap();
-            let (alice, bob) = (key(0xa1), key(0xb1));
-            let forged = MemberApproval {
-                account: alice.address(),
-                deadline: u64::MAX,
-                signature: sign_join(identity, &bob, org, alice.address(), 0, u64::MAX),
-            };
-            let empty = MemberApproval {
-                account: alice.address(),
-                deadline: u64::MAX,
-                signature: Bytes::new(),
-            };
-            let refused = [
-                // A bad approval anywhere refuses the whole batch.
-                (
-                    vec![approve(identity, &bob, org, 0, u64::MAX), forged],
-                    ZoneIdentityError::invalid_join_signature(alice.address()),
-                ),
-                (
-                    vec![approve(identity, &alice, other, 0, u64::MAX)],
-                    ZoneIdentityError::invalid_join_signature(alice.address()),
-                ),
-                (
-                    vec![approve(identity, &alice, org, 1, u64::MAX)],
-                    ZoneIdentityError::invalid_join_signature(alice.address()),
-                ),
-                (
-                    vec![empty],
-                    ZoneIdentityError::invalid_join_signature(alice.address()),
-                ),
-                (
-                    vec![approve(identity, &alice, org, 0, 0)],
-                    ZoneIdentityError::join_expired(0),
-                ),
-            ];
-            for (approvals, error) in refused {
-                assert_eq!(
-                    identity.add_members(admin, registrar, org, &approvals),
-                    Err(identity_error(error))
-                );
-            }
-            assert_eq!(
-                identity.members[bob.address()].read().unwrap(),
-                Member::default()
-            );
-
-            let approvals = [
-                approve(identity, &alice, org, 0, u64::MAX),
-                approve(identity, &bob, org, 0, u64::MAX),
-            ];
-            assert_eq!(
-                identity.add_members(Address::repeat_byte(2), registrar, org, &approvals),
-                Err(identity_error(ZoneIdentityError::unauthorized()))
-            );
+            let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
+            let a = identity.create_org(registrar, registrar, admin_a).unwrap();
+            let b = identity.create_org(registrar, registrar, admin_b).unwrap();
             identity
-                .add_members(admin, registrar, org, &approvals)
+                .add_members(admin_a, registrar, a, &[ALICE])
                 .unwrap();
-            for account in [alice.address(), bob.address()] {
-                assert_eq!(
-                    identity.members[account].read().unwrap(),
-                    Member { org, frozen: false }
-                );
-                assert_eq!(identity.join_nonces[account].read().unwrap(), 1);
-            }
-
-            // A member can't join again, and a used signature can't bring a removed member back.
+            // The whole batch is refused, so BOB is not added either.
             assert_eq!(
-                identity.add_members(
-                    admin,
-                    registrar,
-                    org,
-                    &[approve(identity, &bob, org, 1, u64::MAX)]
-                ),
-                Err(identity_error(ZoneIdentityError::already_member(
-                    bob.address()
-                )))
+                identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
+                Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
-            identity.remove_member(admin, alice.address()).unwrap();
-            assert_eq!(
-                identity.add_members(admin, registrar, org, &approvals[..1]),
-                Err(identity_error(ZoneIdentityError::invalid_join_signature(
-                    alice.address()
-                )))
-            );
-            // An account listed twice joins once.
-            let twice = approve(identity, &alice, org, 1, u64::MAX);
-            assert_eq!(
-                identity.add_members(admin, registrar, org, &[twice.clone(), twice]),
-                Err(identity_error(ZoneIdentityError::already_member(
-                    alice.address()
-                )))
-            );
-        });
-    }
-
-    #[test]
-    fn join_org_needs_the_admins_signature() {
-        with_identity(|identity, registrar| {
-            let admin = key(0xad);
-            let org = identity
-                .create_org(registrar, registrar, admin.address())
-                .unwrap();
-            let refused = [
-                (
-                    org,
-                    u64::MAX,
-                    sign_join(identity, &key(0xee), org, ALICE, 0, u64::MAX),
-                    ZoneIdentityError::invalid_join_signature(admin.address()),
-                ),
-                (
-                    org,
-                    u64::MAX,
-                    sign_join(identity, &admin, org, BOB, 0, u64::MAX),
-                    ZoneIdentityError::invalid_join_signature(admin.address()),
-                ),
-                (
-                    org,
-                    0,
-                    sign_join(identity, &admin, org, ALICE, 0, 0),
-                    ZoneIdentityError::join_expired(0),
-                ),
-                (
-                    0,
-                    u64::MAX,
-                    Bytes::new(),
-                    ZoneIdentityError::invalid_address(),
-                ),
-                (9, u64::MAX, Bytes::new(), ZoneIdentityError::unknown_org(9)),
-            ];
-            for (org, deadline, signature, error) in refused {
-                assert_eq!(
-                    identity.join_org(ALICE, registrar, org, deadline, &signature),
-                    Err(identity_error(error))
-                );
-            }
-
-            let signature = sign_join(identity, &admin, org, ALICE, 0, u64::MAX);
-            identity
-                .join_org(ALICE, registrar, org, u64::MAX, &signature)
-                .unwrap();
-            assert_eq!(
-                identity.members[ALICE].read().unwrap(),
-                Member { org, frozen: false }
-            );
-            // The nonce is visible to the account and the registrar only.
-            for reader in [ALICE, registrar] {
-                assert_eq!(identity.join_nonce(reader, registrar, ALICE), Ok(1));
-            }
-            assert_eq!(
-                identity.join_nonce(STRANGER, registrar, ALICE),
-                Err(identity_error(ZoneIdentityError::unauthorized()))
-            );
-
-            // After removal the old signature is spent; a new one rejoins.
-            identity.remove_member(admin.address(), ALICE).unwrap();
-            assert_eq!(
-                identity.join_org(ALICE, registrar, org, u64::MAX, &signature),
-                Err(identity_error(ZoneIdentityError::invalid_join_signature(
-                    admin.address()
-                )))
-            );
-            let signature = sign_join(identity, &admin, org, ALICE, 1, u64::MAX);
-            identity
-                .join_org(ALICE, registrar, org, u64::MAX, &signature)
-                .unwrap();
+            assert_eq!(identity.members[BOB].read().unwrap().org, 0);
         });
     }
 
@@ -1055,7 +752,9 @@ pub(crate) mod tests {
             let carol = Address::repeat_byte(0x55);
             let admin_b = Address::repeat_byte(2);
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            enroll(identity, admin_b, registrar, b, &[carol]);
+            identity
+                .add_members(admin_b, registrar, b, &[carol])
+                .unwrap();
             assert!(!allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
             set_target(identity, admin_b, b, OFFRAMP, false, true);
             assert!(allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
@@ -1176,7 +875,9 @@ pub(crate) mod tests {
             let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
             // A virtual address of a member's master is in the member's org.
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
-            enroll(identity, admin, registrar, org, &[VIRTUAL_MASTER]);
+            identity
+                .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
+                .unwrap();
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             // A withdrawal to a virtual Tempo address follows its master's target.
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
@@ -1196,7 +897,7 @@ pub(crate) mod tests {
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
             // Virtual addresses themselves cannot be members.
             assert_eq!(
-                identity.join_org(virtual_addr, registrar, org, u64::MAX, &[]),
+                identity.add_members(admin, registrar, org, &[virtual_addr]),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
             // An unregistered virtual recipient is denied, not an error, for every kind of move.
@@ -1243,8 +944,12 @@ pub(crate) mod tests {
                 let other = identity
                     .create_org(registrar, registrar, registrar)
                     .unwrap();
-                enroll(&mut identity, registrar, registrar, other, &[carol]);
-                enroll(&mut identity, admin, registrar, org, &[dave]);
+                identity
+                    .add_members(registrar, registrar, other, &[carol])
+                    .unwrap();
+                identity
+                    .add_members(admin, registrar, org, &[dave])
+                    .unwrap();
                 identity.set_frozen(admin, dave, true).unwrap();
                 identity
                     .set_l1_target(
