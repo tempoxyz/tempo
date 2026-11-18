@@ -1,6 +1,5 @@
 ---
 tempo-primitives: minor
-tempo-evm: minor
 tempo-alloy: patch
 ---
 

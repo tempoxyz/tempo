@@ -1043,7 +1043,10 @@ fn decode_advance_tempo(block: &SealedBlock<Block>) -> eyre::Result<DecodedTempo
             block.transaction_count() == 1,
             "advanceTempoHeaders must be the only transaction in its block"
         );
-        let call = IZoneInbox::advanceTempoHeadersCall::abi_decode(signed.tx().input.as_ref())?;
+        let call = IZoneInbox::advanceTempoHeadersCall::abi_decode_with_config(
+            signed.tx().input.as_ref(),
+            abi_decoder_config_for_spec(TempoHardfork::latest()),
+        )?;
         eyre::ensure!(
             call.headers.len() <= MAX_TEMPO_HEADERS_PER_ZONE_BLOCK,
             "advanceTempoHeaders has too many headers"
@@ -1120,6 +1123,7 @@ mod tests {
             header: SealedHeader::seal_slow(l1_header),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
@@ -1193,6 +1197,7 @@ mod tests {
             header: SealedHeader::seal_slow(TempoHeader::default()),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
@@ -1243,6 +1248,61 @@ mod tests {
             error
                 .to_string()
                 .contains("does not decode as advanceTempo")
+        );
+    }
+
+    #[test]
+    fn rejects_aliased_offsets_in_advance_tempo_headers_calldata() {
+        let make_block = |tx: TempoTxEnvelope| {
+            SealedBlock::seal_slow(Block {
+                header: TempoHeader::default(),
+                body: alloy_consensus::BlockBody {
+                    transactions: vec![tx],
+                    ommers: vec![],
+                    withdrawals: None,
+                },
+            })
+        };
+
+        let header = SealedHeader::seal_slow(TempoHeader::default());
+        let tx = zone_payload::build_advance_tempo_headers_tx(std::slice::from_ref(&header), 1337)
+            .unwrap();
+        let decoded = decode_advance_tempo(&make_block(tx.into_inner())).unwrap();
+        let DecodedTempoImport::CheckpointOnly { headers } = decoded else {
+            panic!("expected a checkpoint-only import");
+        };
+        assert_eq!(headers, vec![header]);
+
+        // Every element offset of `headers` points at the same tail, so the decoded
+        // `bytes[]` is much larger than the calldata.
+        let word = |value: usize| U256::from(value).to_be_bytes::<32>();
+        let count = 8;
+        let tail_len = 1024;
+        let mut input = IZoneInbox::advanceTempoHeadersCall::SELECTOR.to_vec();
+        input.extend_from_slice(&word(0x20));
+        input.extend_from_slice(&word(count));
+        for _ in 0..count {
+            input.extend_from_slice(&word(32 * count));
+        }
+        input.extend_from_slice(&word(tail_len));
+        input.resize(input.len() + tail_len, 0);
+        let tx = TxLegacy {
+            to: ZONE_INBOX_ADDRESS.into(),
+            value: U256::ZERO,
+            input: input.into(),
+            ..Default::default()
+        };
+        let block = make_block(TempoTxEnvelope::Legacy(
+            tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        ));
+
+        let error = decode_advance_tempo(&block).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref(),
+                Some(alloy_sol_types::Error::ReserMismatch)
+            ),
+            "{error}"
         );
     }
 

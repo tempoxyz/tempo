@@ -108,8 +108,9 @@ pub(crate) fn read_accounting_state<P: StateProviderFactory>(
             )));
         }
     }
+    // Read by hash: a by-number read could resolve a block that replaced this one after the check.
     let mut state = provider
-        .history_by_block_number(block.number)
+        .history_by_block_hash(block.hash)
         .map_err(|error| classify_provider_error(error, block.hash))?;
     state
         .with_read_only_storage_ctx(spec, StorageActions::disabled(), || {

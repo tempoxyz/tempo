@@ -15,7 +15,9 @@ use commonware_cryptography::{
     Committable, Digested, Digestible, Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
+use const_format::concatcp;
 use reth_consensus::ConsensusError;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_primitives_traits::{SealedBlock, SealedOrRecoveredBlock};
 use std::fmt::Display;
 use tempo_payload_types::EncodedBlock;
@@ -23,7 +25,13 @@ use tempo_primitives::TempoConsensusContext;
 use tracing::warn;
 
 use crate::consensus::Digest;
-use tempo_evm::consensus::validate_body_against_header;
+use tempo_evm::consensus::{
+    MAX_BLOCK_TRANSACTIONS, TempoConsensusError, validate_body_against_header,
+};
+
+/// Error message for a block with more than [`MAX_BLOCK_TRANSACTIONS`] transactions.
+const TOO_MANY_TRANSACTIONS: &str =
+    concatcp!("more than ", MAX_BLOCK_TRANSACTIONS, " transactions");
 
 /// Consensus block shared through commonware.
 ///
@@ -43,21 +51,18 @@ pub(crate) struct Block {
 }
 
 impl Block {
-    /// Creates a block after validating its body and rejecting BAL header commitments.
+    /// Creates a block after validating its body, rejecting BAL header commitments, and rejecting
+    /// blocks with more than [`MAX_BLOCK_TRANSACTIONS`] transactions or whose RLP encoding exceeds
+    /// [`MAX_RLP_BLOCK_SIZE`].
     pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
-        let execution_block = execution_block.into();
-        validate_body_against_header(execution_block.body(), execution_block.header())?;
-        if execution_block.block_access_list_hash().is_some() {
-            return Err(ConsensusError::BlockAccessListHashUnexpected.into());
-        }
-
-        Ok(Self::from_execution_block_unchecked(execution_block))
+        Self::try_from_execution_block_with_encoded_cache(execution_block, EncodedBlock::default())
     }
 
-    /// Creates a validated block with a shared execution-layer RLP byte cache.
+    /// Creates a validated block with a shared execution-layer RLP byte cache, encoding the block
+    /// into the cache if it is empty.
     pub(crate) fn try_from_execution_block_with_encoded_cache<T>(
         execution_block: T,
         execution_block_encoded: EncodedBlock,
@@ -65,12 +70,39 @@ impl Block {
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
-        let mut block = Self::try_from_execution_block(execution_block)?;
-        block.execution_block_encoded = execution_block_encoded;
+        let execution_block = execution_block.into();
+        validate_body_against_header(execution_block.body(), execution_block.header())?;
+        let transaction_count = execution_block.body().transactions.len();
+        if transaction_count > MAX_BLOCK_TRANSACTIONS {
+            return Err(
+                ConsensusError::from(TempoConsensusError::TooManyTransactions {
+                    count: transaction_count,
+                    max: MAX_BLOCK_TRANSACTIONS,
+                })
+                .into(),
+            );
+        }
+        if execution_block.block_access_list_hash().is_some() {
+            return Err(ConsensusError::BlockAccessListHashUnexpected.into());
+        }
+
+        let block = Self::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            execution_block_encoded,
+        );
+        let rlp_length = block.encoded_execution_block().len();
+        if rlp_length > MAX_RLP_BLOCK_SIZE {
+            return Err(ConsensusError::BlockTooLarge {
+                rlp_length,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }
+            .into());
+        }
         Ok(block)
     }
 
-    /// Creates a block without validating its body or rejecting BAL header commitments.
+    /// Creates a block without validating its body, rejecting BAL header commitments, or enforcing
+    /// [`MAX_RLP_BLOCK_SIZE`], which [`commonware_consensus::BoundedBlock`] promises.
     ///
     /// This is for reconstructing trusted blocks from persisted execution-layer data.
     /// Callers must not encode or broadcast a block whose header commits to a BAL.
@@ -181,6 +213,47 @@ impl Read for Block {
         let execution_block_encoded_size = header.length_with_payload();
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
+        // Count transactions before decoding them, since decoding expands small transactions about
+        // a hundredfold. The walk follows `Decodable2718::network_decode`, so it counts exactly the
+        // transactions `decode_sealed` would decode: a legacy transaction is an RLP list and a typed
+        // one a type byte and an RLP list, either bare or after an RLP string header. The decoder
+        // does not check that string's length, so it continues right after the envelope's list,
+        // reading any further envelopes packed into the string as more transactions.
+        let rlp_error = |rlp_err: alloy_rlp::Error| {
+            commonware_codec::Error::Wrapped("reading RLP transaction list", rlp_err.into())
+        };
+        let mut block = bytes.as_ref();
+        // Step into the block list: header, transactions, ommers, withdrawals.
+        let mut fields = alloy_rlp::Header::decode_bytes(&mut block, true).map_err(rlp_error)?;
+        // Skip the block header.
+        alloy_rlp::Header::decode_bytes(&mut fields, true).map_err(rlp_error)?;
+        // Step into the transaction list.
+        let mut transactions =
+            alloy_rlp::Header::decode_bytes(&mut fields, true).map_err(rlp_error)?;
+        let mut transaction_count = 0;
+        while !transactions.is_empty() {
+            transaction_count += 1;
+            if transaction_count > MAX_BLOCK_TRANSACTIONS {
+                return Err(commonware_codec::Error::Invalid(
+                    "Block",
+                    TOO_MANY_TRANSACTIONS,
+                ));
+            }
+            let mut item = transactions;
+            let tx_header = alloy_rlp::Header::decode(&mut item).map_err(rlp_error)?;
+            if tx_header.list {
+                transactions = &item[tx_header.payload_length..];
+            } else {
+                // `item` starts at the type byte: past the string header, or where it was for a bare
+                // type byte, which `Header::decode` reads as a one-byte string without advancing.
+                transactions = item
+                    .get(1..)
+                    .ok_or_else(|| rlp_error(alloy_rlp::Error::InputTooShort))?;
+                // Skip the typed transaction's list.
+                alloy_rlp::Header::decode_bytes(&mut transactions, true).map_err(rlp_error)?;
+            }
+        }
+
         let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
             &mut bytes.as_ref(),
         )
@@ -192,6 +265,12 @@ impl Read for Block {
         Self::try_from_execution_block_with_encoded_cache(inner, execution_block_encoded).map_err(
             |error| commonware_codec::Error::Wrapped("validating execution block", error.into()),
         )
+    }
+}
+
+impl commonware_consensus::BoundedBlock for Block {
+    fn max_encode_size(_cfg: &Self::Cfg) -> usize {
+        MAX_RLP_BLOCK_SIZE
     }
 }
 
@@ -281,13 +360,52 @@ pub(crate) struct Error(#[from] ConsensusError);
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
-    use alloy_primitives::{B256, bytes, keccak256};
+    use alloy_consensus::{
+        BlockBody, EMPTY_ROOT_HASH, SignableTransaction as _, TxEip1559, TxLegacy,
+        proofs::calculate_transaction_root,
+    };
+    use alloy_primitives::{B256, Signature, bytes, keccak256};
     use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
-    use tempo_primitives::{Block as TempoBlock, TempoHeader};
+    use tempo_primitives::{Block as TempoBlock, TempoHeader, TempoTxEnvelope};
 
     use super::*;
+
+    /// Encodes a block with valid roots carrying `transactions`.
+    fn encoded_block_with_transactions(transactions: Vec<TempoTxEnvelope>) -> Vec<u8> {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: calculate_transaction_root(&transactions),
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions,
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        });
+        alloy_rlp::encode(&execution_block)
+    }
+
+    /// Encodes a block with valid roots carrying `count` copies of a small legacy transaction.
+    fn encoded_block_with_legacy_transactions(count: usize) -> Vec<u8> {
+        let transaction =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
+        encoded_block_with_transactions(vec![transaction; count])
+    }
+
+    fn eip1559_transaction() -> TempoTxEnvelope {
+        TempoTxEnvelope::Eip1559(TxEip1559::default().into_signed(Signature::test_signature()))
+    }
 
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
@@ -365,6 +483,241 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_slice());
+    }
+
+    #[test]
+    fn reads_block_with_max_block_transactions() {
+        let encoded = encoded_block_with_legacy_transactions(MAX_BLOCK_TRANSACTIONS);
+
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+
+        assert_eq!(decoded.body().transactions.len(), MAX_BLOCK_TRANSACTIONS);
+    }
+
+    #[test]
+    fn read_rejects_block_with_more_than_max_block_transactions() {
+        let encoded = encoded_block_with_legacy_transactions(MAX_BLOCK_TRANSACTIONS + 1);
+
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Invalid("Block", TOO_MANY_TRANSACTIONS)
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(TOO_MANY_TRANSACTIONS, "more than 65536 transactions");
+    }
+
+    #[test]
+    fn read_rejects_malformed_transaction_list() {
+        let mut encoded = encoded_block_with_legacy_transactions(0);
+        // The block ends with its empty transaction, ommer and withdrawal lists. Turning the
+        // transaction list into an empty string keeps every length valid.
+        let transactions_at = encoded.len() - 3;
+        assert_eq!(encoded[transactions_at..], [alloy_rlp::EMPTY_LIST_CODE; 3]);
+        encoded[transactions_at] = alloy_rlp::EMPTY_STRING_CODE;
+
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Wrapped("reading RLP transaction list", _)
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn constructor_rejects_block_with_more_than_max_block_transactions() {
+        let transaction =
+            TempoTxEnvelope::Legacy(TxLegacy::default().into_signed(Signature::test_signature()));
+        let transactions = vec![transaction; MAX_BLOCK_TRANSACTIONS + 1];
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: calculate_transaction_root(&transactions),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions,
+                ..Default::default()
+            },
+        });
+
+        let err = Block::try_from_execution_block(execution_block).unwrap_err();
+
+        assert!(
+            matches!(
+                err.0.downcast_other_ref::<TempoConsensusError>(),
+                Some(TempoConsensusError::TooManyTransactions {
+                    count,
+                    max: MAX_BLOCK_TRANSACTIONS,
+                }) if *count == MAX_BLOCK_TRANSACTIONS + 1
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn reads_block_with_typed_transactions() {
+        let transactions = vec![eip1559_transaction(), eip1559_transaction()];
+        let encoded = encoded_block_with_transactions(transactions.clone());
+
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+
+        assert_eq!(decoded.body().transactions, transactions);
+    }
+
+    /// Encodes a block whose transaction list holds `transactions` as raw bytes, with its
+    /// transactions root over `transaction_root_of`.
+    fn encoded_block_with_raw_transaction_list(
+        transactions: &[u8],
+        transaction_root_of: &[TempoTxEnvelope],
+    ) -> Vec<u8> {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    transactions_root: calculate_transaction_root(transaction_root_of),
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody::default(),
+        });
+        let mut fields = alloy_rlp::encode(execution_block.header());
+        alloy_rlp::Header {
+            list: true,
+            payload_length: transactions.len(),
+        }
+        .encode(&mut fields);
+        fields.extend_from_slice(transactions);
+        fields.extend_from_slice(&[alloy_rlp::EMPTY_LIST_CODE; 2]);
+        let mut encoded = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: fields.len(),
+        }
+        .encode(&mut encoded);
+        encoded.extend_from_slice(&fields);
+        encoded
+    }
+
+    /// Returns the EIP-2718 envelope of a small EIP-1559 transaction: its type byte and RLP list.
+    fn eip1559_envelope() -> Vec<u8> {
+        let network_encoded = alloy_rlp::encode(eip1559_transaction());
+        alloy_rlp::Header::decode_bytes(&mut network_encoded.as_slice(), false)
+            .unwrap()
+            .to_vec()
+    }
+
+    #[test]
+    fn reads_block_with_bare_typed_envelope() {
+        let encoded =
+            encoded_block_with_raw_transaction_list(&eip1559_envelope(), &[eip1559_transaction()]);
+
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+
+        assert_eq!(decoded.body().transactions, vec![eip1559_transaction()]);
+    }
+
+    /// Packs `count` copies of a typed envelope into one RLP string, as `network_decode` accepts.
+    fn typed_envelopes_packed_into_one_string(count: usize) -> Vec<u8> {
+        let envelope = eip1559_envelope();
+        let mut packed = Vec::new();
+        alloy_rlp::Header {
+            list: false,
+            payload_length: count * envelope.len(),
+        }
+        .encode(&mut packed);
+        for _ in 0..count {
+            packed.extend_from_slice(&envelope);
+        }
+        packed
+    }
+
+    #[test]
+    fn reads_typed_envelopes_packed_into_one_string() {
+        let transactions = vec![eip1559_transaction(), eip1559_transaction()];
+        let encoded = encoded_block_with_raw_transaction_list(
+            &typed_envelopes_packed_into_one_string(2),
+            &transactions,
+        );
+
+        let decoded =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap();
+
+        assert_eq!(decoded.body().transactions, transactions);
+    }
+
+    #[test]
+    fn read_counts_every_typed_envelope_packed_into_one_string() {
+        let encoded = encoded_block_with_raw_transaction_list(
+            &typed_envelopes_packed_into_one_string(MAX_BLOCK_TRANSACTIONS + 1),
+            &[],
+        );
+
+        let err =
+            Block::read_cfg(&mut commonware_codec::Copying(encoded.as_slice()), &()).unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                commonware_codec::Error::Invalid("Block", TOO_MANY_TRANSACTIONS)
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn constructor_rejects_block_larger_than_max_rlp_block_size() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    extra_data: vec![0; MAX_RLP_BLOCK_SIZE].into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: BlockBody {
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        });
+
+        let err = Block::try_from_execution_block(execution_block).unwrap_err();
+
+        assert!(
+            matches!(
+                err.0,
+                ConsensusError::BlockTooLarge {
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                    ..
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

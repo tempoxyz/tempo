@@ -139,11 +139,11 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
+      bench-env:
+        description: Extra environment for the benchmark, such as TXGEN_* preset variables.
         type: string
         required: false
-        default: "feature-1"
+        default: ""
   workflow_call:
     inputs:
       pr:
@@ -534,7 +534,14 @@ jobs:
 
           echo "BENCH_TXGEN_SPEC_PATH=$spec_path" >> "$GITHUB_ENV"
           echo "::group::Rendered txgen spec ($BENCH_PRESET)"
-          cat "$spec_path"
+          # Per-user presets render hundreds of MiB at large account counts; print only the head.
+          spec_bytes="$(wc -c < "$spec_path")"
+          if [ "$spec_bytes" -gt 1048576 ]; then
+            echo "$spec_path is $spec_bytes bytes; first 500 lines:"
+            head -n 500 "$spec_path"
+          else
+            cat "$spec_path"
+          fi
           echo "::endgroup::"
 
       - name: Resolve Tracy capture offset
