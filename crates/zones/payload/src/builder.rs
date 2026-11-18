@@ -381,6 +381,11 @@ where
             .then_some(execution_result.requests.clone());
 
         let sealed_block = Arc::new(block.sealed_block().clone());
+        // TIP-1173: the engine inserts this payload without executing it again, so keep its
+        // expiring nonce set until finality: the next block builds on it.
+        self.evm_config
+            .expiring_nonce_sets()
+            .pin(sealed_block.hash());
         let execution_block_encoded = EncodedBlock::default();
         let execution_block_size_estimate = execution_block_encoded
             .get_or_encode(sealed_block.as_ref())

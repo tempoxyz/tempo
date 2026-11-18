@@ -5,17 +5,17 @@
 //! its parent's set existed), rebuilding it from the blocks inside the expiry window when needed.
 
 use alloy::consensus::BlockHeader as _;
-use alloy_primitives::BlockNumber;
+use alloy_primitives::{B256, BlockNumber};
 use metrics::Counter;
 use reth_ethereum::tasks::TaskExecutor;
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
-    BlockNumReader, BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider,
-    ProviderResult,
+    BlockIdReader, BlockNumReader, BlockReader, CanonStateSubscriptions, ChainSpecProvider,
+    HeaderProvider, ProviderResult,
 };
 use reth_tracing::tracing::{debug, error, info};
 use tempo_chainspec::spec::TempoHardforks;
-use tempo_evm::expiring_nonces::{ExpiringNonce, ExpiringNonceSets};
+use tempo_evm::expiring_nonces::{ExpiringNonce, ExpiringNonceSet, ExpiringNonceSets};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -27,9 +27,33 @@ pub struct ExpiringNonceTracker<P> {
     rebuilds: Counter,
 }
 
-impl<P> ExpiringNonceTracker<P> {
-    /// Creates a tracker that maintains `sets`, the snapshots the node's EVM config uses.
+impl<P> ExpiringNonceTracker<P>
+where
+    P: BlockReader<Block = Block>
+        + HeaderProvider<Header = TempoHeader>
+        + BlockNumReader
+        + ChainSpecProvider<ChainSpec: TempoHardforks>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    /// Creates a tracker that maintains `sets`, the snapshots the node's EVM config uses, and
+    /// installs `sets`' rebuild hook: a missing canonical block's set is rebuilt from `provider`.
     pub fn new(provider: P, sets: ExpiringNonceSets) -> Self {
+        let rebuild_provider = provider.clone();
+        let empty = sets.empty();
+        sets.set_rebuilder(move |block_hash| {
+            // Only a canonical block's set can be rebuilt from the provider. Every unfinalized
+            // block this node executed or built keeps its set until finality.
+            let number = rebuild_provider.block_number(block_hash).ok()??;
+            if rebuild_provider.block_hash(number).ok()?? != block_hash {
+                return None;
+            }
+            rebuild_at(&rebuild_provider, empty.clone(), number)
+                .ok()?
+                .map(|(_, set)| (number, set))
+        });
         Self {
             provider,
             sets,
@@ -44,6 +68,7 @@ where
         + HeaderProvider<Header = TempoHeader>
         + BlockNumReader
         + ChainSpecProvider<ChainSpec: TempoHardforks>
+        + BlockIdReader
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
@@ -102,6 +127,11 @@ where
                         );
                     }
                 }
+                // Consensus never builds below the finalized block, so drop the sets it made
+                // unreachable.
+                if let Ok(Some(finalized)) = self.provider.finalized_block_num_hash() {
+                    self.sets.prune_finalized(finalized.number, finalized.hash);
+                }
             }
         });
     }
@@ -123,77 +153,18 @@ where
             &entries,
             authoritative,
         ) {
-            Some(set) => self.sets.insert(block.hash(), set),
+            Some(set) => self.sets.insert(block.hash(), block.number(), set),
             None => self.rebuild(block.number())?,
         }
         Ok(())
     }
 
-    /// Rebuilds the set at canonical block `tip` from the blocks that can still hold unexpired
-    /// entries.
+    /// Rebuilds and stores the set at canonical block `tip`.
     fn rebuild(&self, tip: BlockNumber) -> ProviderResult<()> {
-        let Some(tip_header) = self.provider.sealed_header(tip)? else {
-            return Ok(());
-        };
-        let tip_timestamp = tip_header.timestamp();
-        // Forks only ever widen the window, so the tip's window covers every earlier block. A
-        // block at `timestamp` only holds entries with `valid_before <= timestamp + window`.
-        let window = self
-            .provider
-            .chain_spec()
-            .tempo_hardfork_at(tip_timestamp)
-            .expiring_nonce_max_expiry_secs();
-        let mut first = tip;
-        while first > 0 {
-            let Some(header) = self.provider.sealed_header(first - 1)? else {
-                break;
-            };
-            if header.timestamp().saturating_add(window) <= tip_timestamp {
-                break;
-            }
-            first -= 1;
+        if let Some((hash, set)) = rebuild_at(&self.provider, self.sets.empty(), tip)? {
+            self.rebuilds.increment(1);
+            self.sets.insert(hash, tip, set);
         }
-
-        let mut set = self.sets.empty();
-        for block in self.provider.recovered_block_range(first..=tip)? {
-            // TIP-1173: the first T16 block starts from an empty set.
-            let authoritative = self
-                .provider
-                .chain_spec()
-                .is_t16_active_at_timestamp(block.timestamp());
-            set = set.for_block(authoritative);
-            let replays = match set.apply(block.timestamp(), &self.entries(&block)) {
-                Ok(replays) => replays,
-                Err(err) => {
-                    error!(target: "expiring_nonces", number = block.number(), %err, "Failed to apply block to expiring nonce set");
-                    return Ok(());
-                }
-            };
-            if !replays.is_empty() {
-                error!(
-                    target: "expiring_nonces",
-                    number = block.number(),
-                    replays = replays.len(),
-                    "Canonical block repeats unexpired expiring nonce hashes"
-                );
-            }
-        }
-        // From T16 the header commits to the set: a rebuilt set that disagrees is not used.
-        if let Some(expected) = tip_header.expiring_nonce_root
-            && expected != set.root()
-        {
-            error!(
-                target: "expiring_nonces",
-                tip,
-                %expected,
-                computed = %set.root(),
-                "Rebuilt expiring nonce set does not match the header root"
-            );
-            return Ok(());
-        }
-        debug!(target: "expiring_nonces", tip, first, root = %set.root(), "Rebuilt expiring nonce set");
-        self.rebuilds.increment(1);
-        self.sets.insert(tip_header.hash(), set);
         Ok(())
     }
 
@@ -204,4 +175,76 @@ where
             .tempo_hardfork_at(block.timestamp());
         ExpiringNonce::from_block(block, spec)
     }
+}
+
+/// Rebuilds the set at canonical block `tip` from the blocks that can still hold unexpired
+/// entries. Returns `tip`'s hash and set, or `None` when `tip` is unknown or the rebuilt set
+/// disagrees with `tip`'s header root.
+fn rebuild_at<P>(
+    provider: &P,
+    empty: ExpiringNonceSet,
+    tip: BlockNumber,
+) -> ProviderResult<Option<(B256, ExpiringNonceSet)>>
+where
+    P: BlockReader<Block = Block>
+        + HeaderProvider<Header = TempoHeader>
+        + ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    let Some(tip_header) = provider.sealed_header(tip)? else {
+        return Ok(None);
+    };
+    let tip_timestamp = tip_header.timestamp();
+    // Forks only ever widen the window, so the tip's window covers every earlier block. A
+    // block at `timestamp` only holds entries with `valid_before <= timestamp + window`.
+    let window = provider
+        .chain_spec()
+        .tempo_hardfork_at(tip_timestamp)
+        .expiring_nonce_max_expiry_secs();
+    let mut first = tip;
+    while first > 0 {
+        let Some(header) = provider.sealed_header(first - 1)? else {
+            break;
+        };
+        if header.timestamp().saturating_add(window) <= tip_timestamp {
+            break;
+        }
+        first -= 1;
+    }
+
+    let mut set = empty;
+    for block in provider.recovered_block_range(first..=tip)? {
+        // TIP-1173: the first T16 block starts from an empty set.
+        let spec = provider.chain_spec().tempo_hardfork_at(block.timestamp());
+        set = set.for_block(spec.is_t16());
+        let replays = match set.apply(block.timestamp(), &ExpiringNonce::from_block(&block, spec)) {
+            Ok(replays) => replays,
+            Err(err) => {
+                error!(target: "expiring_nonces", number = block.number(), %err, "Failed to apply block to expiring nonce set");
+                return Ok(None);
+            }
+        };
+        if !replays.is_empty() {
+            error!(
+                target: "expiring_nonces",
+                number = block.number(),
+                replays = replays.len(),
+                "Canonical block repeats unexpired expiring nonce hashes"
+            );
+        }
+    }
+    // From T16 the header commits to the set: a rebuilt set that disagrees is not used.
+    if let Some(expected) = tip_header.expiring_nonce_root
+        && expected != set.root()
+    {
+        error!(
+            target: "expiring_nonces",
+            tip,
+            %expected,
+            computed = %set.root(),
+            "Rebuilt expiring nonce set does not match the header root"
+        );
+        return Ok(None);
+    }
+    debug!(target: "expiring_nonces", tip, first, root = %set.root(), "Rebuilt expiring nonce set");
+    Ok(Some((tip_header.hash(), set)))
 }

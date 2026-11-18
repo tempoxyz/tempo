@@ -3263,7 +3263,7 @@ fn test_t16_expiring_nonce_set_rejects_replay_without_ring_writes() -> eyre::Res
 
     let parent_hash = B256::repeat_byte(0x11);
     let sets = ExpiringNonceSets::default();
-    sets.insert(parent_hash, ExpiringNonceSet::default());
+    sets.insert(parent_hash, 0, ExpiringNonceSet::default());
 
     let mut executor = TestExecutorBuilder::default()
         .with_spec(TempoHardfork::T16)
@@ -3316,7 +3316,7 @@ fn test_t16_expiring_nonce_set_rejects_cross_block_replay() -> eyre::Result<()> 
     parent.set_authoritative(true);
     assert!(parent.apply(timestamp - 1, &[entry])?.is_empty());
     let sets = ExpiringNonceSets::default();
-    sets.insert(parent_hash, parent.clone());
+    sets.insert(parent_hash, 0, parent.clone());
 
     let mut executor = TestExecutorBuilder::default()
         .with_spec(TempoHardfork::T16)
@@ -3363,7 +3363,7 @@ fn test_t16_first_block_ignores_shadow_set() -> eyre::Result<()> {
     assert!(shadow.apply(timestamp - 1, &[entry])?.is_empty());
     assert!(!shadow.is_authoritative());
     let sets = ExpiringNonceSets::default();
-    sets.insert(parent_hash, shadow);
+    sets.insert(parent_hash, 0, shadow);
 
     let mut executor = TestExecutorBuilder::default()
         .with_spec(TempoHardfork::T16)

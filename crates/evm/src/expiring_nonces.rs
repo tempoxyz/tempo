@@ -25,7 +25,7 @@ mod witness;
 pub use witness::{BlockParams, PartialExpiringNonceSet, WitnessError, WitnessTrie};
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -42,16 +42,9 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoTxEnvelope;
 use tracing::{debug, error, trace};
 
-/// Number of block snapshots kept. Covers the unfinalized branches a node executes on top of.
-const SNAPSHOT_CAPACITY: u32 = 16;
-
-/// Number of built payloads whose sets wait for assembly.
-const STAGED_CAPACITY: u32 = 16;
-
-/// Number of assembled payloads whose sets are kept by hash. Kept apart from block snapshots:
-/// a node assembles far more payloads than it executes blocks (RPC pending blocks rebuild
-/// continuously), and they must not evict the sets of the chain it builds on.
-const BUILT_CAPACITY: u32 = 16;
+/// Number of unpinned assembled payloads (RPC pending blocks) whose sets are kept. Nothing builds
+/// on them, so evicting one costs at most a recomputation.
+const UNPINNED_CAPACITY: u32 = 16;
 
 /// RLP value stored for every replay hash: trie leaves cannot be empty.
 const PRESENT: [u8; 1] = [0x01];
@@ -297,22 +290,49 @@ impl ExpiringNonceSet {
     }
 }
 
-/// Expiring nonce set snapshots by block hash, shared by block execution, payload assembly and the
-/// node task that follows the canonical chain.
-#[derive(Debug, Clone)]
+/// Expiring nonce set snapshots by block hash, shared by block execution, payload building and
+/// assembly, the transaction pool, and the node task that follows the canonical chain.
+///
+/// Retention follows finality, not recency. Consensus only builds on the finalized block or on
+/// unfinalized blocks, so every set a future block can start from is either:
+///
+/// - the set of an unfinalized block this node executed or built: kept in [`Snapshots::pinned`]
+///   until finality passes its height, on every branch; or
+/// - the set of a canonical (finalized or persisted) block: kept, or rebuilt from the provider
+///   through the [`ExpiringNonceSets::set_rebuilder`] hook when it is missing (after a restart).
+///
+/// Sets of payloads that nothing builds on (RPC pending blocks) live in a small LRU instead.
+#[derive(Clone)]
 pub struct ExpiringNonceSets {
     inner: Arc<Mutex<Snapshots>>,
+    rebuilder: Arc<std::sync::OnceLock<Rebuilder>>,
+}
+
+/// Rebuilds the set at a canonical block hash, returning its block number with it.
+type Rebuilder = Box<dyn Fn(B256) -> Option<(u64, ExpiringNonceSet)> + Send + Sync>;
+
+impl core::fmt::Debug for ExpiringNonceSets {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let inner = self.inner.lock();
+        f.debug_struct("ExpiringNonceSets")
+            .field("pinned", &inner.pinned.len())
+            .field("staged", &inner.staged.len())
+            .field("finalized", &inner.finalized)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ExpiringNonceSets {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Snapshots {
-                by_block: LruMap::new(ByLength::new(SNAPSHOT_CAPACITY)),
-                built: LruMap::new(ByLength::new(BUILT_CAPACITY)),
-                staged: LruMap::new(ByLength::new(STAGED_CAPACITY)),
+                pinned: HashMap::default(),
+                unpinned: LruMap::new(ByLength::new(UNPINNED_CAPACITY)),
+                staged: HashMap::default(),
+                finalized: None,
                 witness_keys: false,
             })),
+            rebuilder: Default::default(),
         }
     }
 }
@@ -333,15 +353,70 @@ impl ExpiringNonceSets {
         }
     }
 
-    /// Returns whether the set at `block_hash` is known.
-    pub fn contains(&self, block_hash: B256) -> bool {
-        let inner = self.inner.lock();
-        inner.by_block.peek(&block_hash).is_some() || inner.built.peek(&block_hash).is_some()
+    /// Installs the hook that rebuilds the set of a canonical block from the provider when it is
+    /// not held. The node installs it once at startup; later calls are ignored.
+    pub fn set_rebuilder(
+        &self,
+        rebuild: impl Fn(B256) -> Option<(u64, ExpiringNonceSet)> + Send + Sync + 'static,
+    ) {
+        let _ = self.rebuilder.set(Box::new(rebuild));
     }
 
-    /// Stores `set` as the set at `block_hash`.
-    pub fn insert(&self, block_hash: B256, set: ExpiringNonceSet) {
-        self.inner.lock().by_block.insert(block_hash, set);
+    /// Returns whether the set at `block_hash` is held.
+    pub fn contains(&self, block_hash: B256) -> bool {
+        let inner = self.inner.lock();
+        inner.pinned.contains_key(&block_hash) || inner.unpinned.peek(&block_hash).is_some()
+    }
+
+    /// Stores `set` as the set of block `number` with `block_hash`, kept until finality passes
+    /// `number`.
+    pub fn insert(&self, block_hash: B256, number: u64, set: ExpiringNonceSet) {
+        let mut inner = self.inner.lock();
+        if inner.is_final_or_stale(block_hash, number) {
+            return;
+        }
+        inner.pinned.insert(block_hash, (number, set));
+    }
+
+    /// Keeps the assembled payload `block_hash`'s set until finality passes its height. The payload
+    /// builder calls this for payloads it hands to consensus, which the engine inserts without
+    /// executing them again.
+    pub fn pin(&self, block_hash: B256) {
+        let mut inner = self.inner.lock();
+        if let Some((number, set)) = inner.unpinned.remove(&block_hash)
+            && !inner.is_final_or_stale(block_hash, number)
+        {
+            inner.pinned.insert(block_hash, (number, set));
+        }
+    }
+
+    /// Drops every set finality made unreachable: below `number`, and at `number` other than
+    /// `block_hash`'s. Consensus never builds on those. The previously finalized block's set is
+    /// kept too: when finality follows the head (zone sequencers), the newest block's execution
+    /// witness still needs its parent's set, which this avoids rebuilding.
+    pub fn prune_finalized(&self, number: u64, block_hash: B256) {
+        let mut inner = self.inner.lock();
+        if inner.finalized.is_some_and(|(n, _)| n > number) {
+            return;
+        }
+        let previous = inner
+            .finalized
+            .replace((number, block_hash))
+            .map(|(_, hash)| hash);
+        let keep =
+            |hash: &B256, n: u64| n > number || *hash == block_hash || Some(*hash) == previous;
+        inner.pinned.retain(|hash, (n, _)| keep(hash, *n));
+        let stale: Vec<B256> = inner
+            .unpinned
+            .iter()
+            .filter(|(hash, (n, _))| !keep(hash, *n))
+            .map(|(hash, _)| *hash)
+            .collect();
+        for hash in stale {
+            inner.unpinned.remove(&hash);
+        }
+        inner.staged.retain(|_, (n, _)| *n > number);
+        metrics::gauge!("tempo_expiring_nonce_sets_pinned").set(inner.pinned.len() as f64);
     }
 
     /// Derives the set of a block at `timestamp` containing `entries` from the set at
@@ -386,19 +461,34 @@ impl ExpiringNonceSets {
         Some(set)
     }
 
-    /// Returns the set at `block_hash`, if known.
+    /// Returns the set at `block_hash` if it is held. Does not rebuild.
     pub fn get(&self, block_hash: B256) -> Option<ExpiringNonceSet> {
-        self.inner.lock().lookup(block_hash)
+        self.inner.lock().get(block_hash)
+    }
+
+    /// Returns the set at `block_hash`, rebuilding it from the provider when it is not held. Only a
+    /// canonical block's set can be rebuilt; every unfinalized block's set is held.
+    pub fn get_or_rebuild(&self, block_hash: B256) -> Option<ExpiringNonceSet> {
+        if let Some(set) = self.get(block_hash) {
+            return Some(set);
+        }
+        let rebuild = self.rebuilder.get()?;
+        let (number, set) = rebuild(block_hash)?;
+        debug!(target: "evm::expiring_nonces", %block_hash, number, "Rebuilt missing expiring nonce set");
+        self.insert(block_hash, number, set.clone());
+        Some(set)
     }
 
     /// Returns the set a child of `block_hash` starts from (see
-    /// [`ExpiringNonceSet::for_block`]), if `block_hash`'s set is known.
+    /// [`ExpiringNonceSet::for_block`]), rebuilding `block_hash`'s set when it is not held.
     pub fn parent(&self, block_hash: B256, authoritative: bool) -> Option<ExpiringNonceSet> {
-        self.get(block_hash).map(|set| set.for_block(authoritative))
+        self.get_or_rebuild(block_hash)
+            .map(|set| set.for_block(authoritative))
     }
 
-    /// Returns the set at `block_hash` if it was derived under T16 rules: the set T16 replay checks
-    /// against. A pre-T16 (shadow) set is ignored, since the first T16 block starts empty.
+    /// Returns the set at `block_hash` if it is held and was derived under T16 rules: the set T16
+    /// replay checks against. A pre-T16 (shadow) set is ignored, since the first T16 block starts
+    /// empty. Does not rebuild: callers use it to skip work early.
     pub fn authoritative(&self, block_hash: B256) -> Option<ExpiringNonceSet> {
         self.get(block_hash)
             .filter(ExpiringNonceSet::is_authoritative)
@@ -409,23 +499,29 @@ impl ExpiringNonceSets {
         self.inner
             .lock()
             .staged
-            .peek(&key)
-            .map(ExpiringNonceSet::root)
+            .get(&key)
+            .map(|(_, set)| set.root())
     }
 
-    /// Stages the set of a payload that is not assembled yet under `key` (see [`staged_key`]).
-    pub fn stage(&self, key: B256, set: ExpiringNonceSet) {
-        self.inner.lock().staged.insert(key, set);
+    /// Stages the set of a payload for block `number` that is not assembled yet under `key` (see
+    /// [`staged_key`]).
+    pub fn stage(&self, key: B256, number: u64, set: ExpiringNonceSet) {
+        let mut inner = self.inner.lock();
+        if inner.finalized.is_some_and(|(n, _)| number <= n) {
+            return;
+        }
+        inner.staged.insert(key, (number, set));
     }
 
-    /// Stores the set staged under `key` as the set of the assembled payload `block_hash`.
-    /// Returns `false` when nothing is staged under `key`.
+    /// Stores the set staged under `key` as the set of the assembled payload `block_hash`, until
+    /// [`Self::pin`] keeps it or newer payloads push it out. Returns `false` when nothing is
+    /// staged under `key`.
     pub fn promote(&self, key: B256, block_hash: impl FnOnce() -> B256) -> bool {
         let mut inner = self.inner.lock();
-        let Some(set) = inner.staged.remove(&key) else {
+        let Some(entry) = inner.staged.remove(&key) else {
             return false;
         };
-        inner.built.insert(block_hash(), set);
+        inner.unpinned.insert(block_hash(), entry);
         true
     }
 }
@@ -442,26 +538,33 @@ pub fn staged_key(parent_hash: B256, timestamp: u64, tx_hashes: &[B256]) -> B256
     hasher.finalize()
 }
 
-#[derive(Debug)]
 struct Snapshots {
-    by_block: LruMap<B256, ExpiringNonceSet, ByLength>,
-    /// Sets of assembled payloads; one moves to `by_block` once something builds on it.
-    built: LruMap<B256, ExpiringNonceSet, ByLength>,
-    staged: LruMap<B256, ExpiringNonceSet, ByLength>,
+    /// Sets of blocks this node executed and payloads it handed to consensus, by hash, with their
+    /// block numbers. Dropped only when finality passes their height.
+    pinned: HashMap<B256, (u64, ExpiringNonceSet)>,
+    /// Sets of assembled payloads nothing builds on yet (RPC pending blocks), most recent first.
+    unpinned: LruMap<B256, (u64, ExpiringNonceSet), ByLength>,
+    /// Sets of payloads executed but not assembled yet, by [`staged_key`], with block numbers.
+    staged: HashMap<B256, (u64, ExpiringNonceSet)>,
+    /// The last finalized block seen, by number and hash.
+    finalized: Option<(u64, B256)>,
     /// Whether new sets keep witness keys.
     witness_keys: bool,
 }
 
 impl Snapshots {
-    /// Returns the set at `block_hash`, moving an assembled payload's set into the block
-    /// snapshots on first use.
-    fn lookup(&mut self, block_hash: B256) -> Option<ExpiringNonceSet> {
-        if let Some(set) = self.by_block.get(&block_hash) {
+    fn get(&mut self, block_hash: B256) -> Option<ExpiringNonceSet> {
+        if let Some((_, set)) = self.pinned.get(&block_hash) {
             return Some(set.clone());
         }
-        let set = self.built.remove(&block_hash)?;
-        self.by_block.insert(block_hash, set.clone());
-        Some(set)
+        self.unpinned.get(&block_hash).map(|(_, set)| set.clone())
+    }
+
+    /// Returns whether block `number` with `block_hash` is at or below finality and not the
+    /// finalized block itself: no future block can build on it.
+    fn is_final_or_stale(&self, block_hash: B256, number: u64) -> bool {
+        self.finalized
+            .is_some_and(|(n, hash)| number < n || (number == n && block_hash != hash))
     }
 }
 
@@ -575,6 +678,7 @@ pub struct BlockExpiringNonces {
     parent_hash: B256,
     block_hash: Option<B256>,
     header_root: Option<B256>,
+    number: u64,
     timestamp: u64,
     spec: TempoHardfork,
     authoritative: bool,
@@ -586,16 +690,36 @@ pub struct BlockExpiringNonces {
     pending: HashSet<ExpiringNonce>,
 }
 
+impl Default for BlockExpiringNonces {
+    /// An inert pre-T16 block with no sets.
+    fn default() -> Self {
+        Self {
+            sets: None,
+            frozen_window: false,
+            parent_hash: B256::ZERO,
+            block_hash: None,
+            header_root: None,
+            number: 0,
+            timestamp: 0,
+            spec: TempoHardfork::default(),
+            authoritative: false,
+            entries: Vec::new(),
+            tx_hashes: Vec::new(),
+            base: None,
+            pending: HashSet::new(),
+        }
+    }
+}
+
 impl BlockExpiringNonces {
-    /// Starts a block at `timestamp` on top of `parent_hash` under `spec`. `block_hash` and
-    /// `header_root` are known when executing a sealed block; `frozen_window` is whether the block
+    /// Starts block `number` at `timestamp` under `spec`, described by `ctx` (its parent, and its
+    /// hash and header root when executing a sealed block). `frozen_window` is whether the block
     /// is in the activation window (see [`in_activation_window`]). Without `sets` only the frozen
     /// ring is checked.
     pub fn new(
         sets: Option<ExpiringNonceSets>,
-        parent_hash: B256,
-        block_hash: Option<B256>,
-        header_root: Option<B256>,
+        ctx: &crate::TempoBlockExecutionCtx<'_>,
+        number: u64,
         timestamp: u64,
         spec: TempoHardfork,
         frozen_window: bool,
@@ -604,9 +728,10 @@ impl BlockExpiringNonces {
         Self {
             sets,
             frozen_window: authoritative && frozen_window,
-            parent_hash,
-            block_hash,
-            header_root,
+            parent_hash: ctx.inner.parent_hash,
+            block_hash: ctx.block_hash,
+            header_root: ctx.expiring_nonce_root,
+            number,
             timestamp,
             spec,
             authoritative,
@@ -723,9 +848,10 @@ impl BlockExpiringNonces {
             return;
         };
         match self.block_hash {
-            Some(block_hash) => sets.insert(block_hash, set),
+            Some(block_hash) => sets.insert(block_hash, self.number, set),
             None => sets.stage(
                 staged_key(self.parent_hash, self.timestamp, &self.tx_hashes),
+                self.number,
                 set,
             ),
         }
@@ -749,25 +875,158 @@ fn root_of(buckets: impl IntoIterator<Item = (u64, B256)>) -> B256 {
 mod tests {
     use super::*;
 
+    /// Worst case for copy-on-write: every block touches every bucket.
+    /// Run: cargo test -p tempo-evm --release --lib worst_case_bucket_cow -- --ignored --nocapture
     #[test]
-    fn assembled_payloads_do_not_evict_block_snapshots() {
+    #[ignore]
+    fn worst_case_bucket_cow() {
+        fn rss_mb() -> u64 {
+            std::fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .find(|l| l.starts_with("VmRSS"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                / 1024
+        }
+        let buckets: u64 = std::env::var("BUCKETS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let per_bucket: u64 = std::env::var("PER_BUCKET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000);
+        let snapshots: usize = std::env::var("SNAPSHOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(48);
+        let base = rss_mb();
+        let mut set = ExpiringNonceSet::default();
+        let mut seed = 0u64;
+        for b in 0..buckets {
+            let entries: Vec<_> = (0..per_bucket)
+                .map(|_| {
+                    seed += 1;
+                    entry(seed, 1_000 + b)
+                })
+                .collect();
+            set.apply(1, &entries).unwrap();
+        }
+        let one = rss_mb() - base;
+        println!("one set: {} entries, {one} MB", buckets * per_bucket);
+        let mut kept = vec![set.clone()];
+        let t = std::time::Instant::now();
+        for _ in 0..snapshots {
+            let mut next = kept.last().unwrap().clone();
+            let entries: Vec<_> = (0..buckets)
+                .map(|b| {
+                    seed += 1;
+                    entry(seed, 1_000 + b)
+                })
+                .collect();
+            next.apply(1, &entries).unwrap();
+            kept.push(next);
+        }
+        println!(
+            "{} snapshots, each touching all {buckets} buckets: {} MB total ({} MB/snapshot), {:?}/block",
+            snapshots,
+            rss_mb() - base,
+            (rss_mb() - base - one) / snapshots as u64,
+            t.elapsed() / snapshots as u32
+        );
+    }
+
+    #[test]
+    fn unpinned_payloads_never_evict_pinned_sets() {
         let sets = ExpiringNonceSets::default();
         let parent = B256::repeat_byte(1);
-        sets.insert(parent, ExpiringNonceSet::default());
-        // Far more assembled payloads (such as RPC pending blocks) than snapshots.
-        for i in 0..u64::from(SNAPSHOT_CAPACITY + BUILT_CAPACITY) * 4 {
+        sets.insert(parent, 1, ExpiringNonceSet::default());
+        // Far more assembled payloads (such as RPC pending blocks) than the unpinned cache holds.
+        let payload = |i: u64| keccak256((i + 1_000_000).to_be_bytes());
+        for i in 0..u64::from(UNPINNED_CAPACITY) * 4 {
             let key = keccak256(i.to_be_bytes());
-            sets.stage(key, ExpiringNonceSet::default());
-            assert!(sets.promote(key, || keccak256((i + 1_000_000).to_be_bytes())));
+            sets.stage(key, 2, ExpiringNonceSet::default());
+            assert!(sets.promote(key, || payload(i)));
         }
         assert!(sets.get(parent).is_some());
-        // The most recent payload is still known, and moves into the block snapshots on use.
-        let last = keccak256(
-            (u64::from(SNAPSHOT_CAPACITY + BUILT_CAPACITY) * 4 - 1 + 1_000_000).to_be_bytes(),
+        assert!(
+            sets.get(payload(0)).is_none(),
+            "oldest unpinned payload is evicted"
         );
+        // A pinned payload survives any number of later payloads.
+        let last = payload(u64::from(UNPINNED_CAPACITY) * 4 - 1);
+        sets.pin(last);
+        for i in 1_000..1_000 + u64::from(UNPINNED_CAPACITY) * 4 {
+            let key = keccak256(i.to_be_bytes());
+            sets.stage(key, 2, ExpiringNonceSet::default());
+            sets.promote(key, || payload(i));
+        }
         assert!(sets.get(last).is_some());
-        assert!(sets.inner.lock().by_block.peek(&last).is_some());
     }
+
+    #[test]
+    fn unfinalized_sets_are_kept_until_finality_passes_them() {
+        let sets = ExpiringNonceSets::default();
+        let hash = |n: u8, branch: u8| {
+            B256::from([
+                n, branch, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+            ])
+        };
+        // Two branches, 100 blocks deep: far more than any capacity bound would keep.
+        for n in 1..=100u8 {
+            for branch in 0..2 {
+                sets.insert(hash(n, branch), n.into(), ExpiringNonceSet::default());
+            }
+        }
+        sets.prune_finalized(49, hash(49, 0));
+        sets.prune_finalized(50, hash(50, 0));
+        assert!(
+            sets.contains(hash(49, 0)),
+            "the previously finalized block's set is kept"
+        );
+        for n in 1..49u8 {
+            assert!(!sets.contains(hash(n, 0)) && !sets.contains(hash(n, 1)));
+        }
+        assert!(!sets.contains(hash(49, 1)));
+        assert!(
+            sets.contains(hash(50, 0)),
+            "the finalized block's set is kept"
+        );
+        assert!(
+            !sets.contains(hash(50, 1)),
+            "a sibling of the finalized block is unreachable"
+        );
+        for n in 51..=100u8 {
+            assert!(
+                sets.contains(hash(n, 0)) && sets.contains(hash(n, 1)),
+                "block {n}"
+            );
+        }
+        // Sets at or below finality are not stored again, and finality never moves back.
+        sets.insert(hash(10, 0), 10, ExpiringNonceSet::default());
+        assert!(!sets.contains(hash(10, 0)));
+        sets.prune_finalized(20, hash(20, 0));
+        assert!(sets.contains(hash(60, 1)));
+    }
+
+    #[test]
+    fn missing_canonical_sets_are_rebuilt() {
+        let sets = ExpiringNonceSets::default();
+        let canonical = B256::repeat_byte(3);
+        let mut rebuilt = ExpiringNonceSet::default().for_block(true);
+        rebuilt.apply(10, &[entry(1, 20)]).unwrap();
+        let expected = rebuilt.root();
+        sets.set_rebuilder(move |hash| (hash == canonical).then(|| (5, rebuilt.clone())));
+        assert!(sets.get(canonical).is_none());
+        assert_eq!(sets.parent(canonical, true).unwrap().root(), expected);
+        assert!(sets.contains(canonical), "a rebuilt set is kept");
+        assert!(sets.parent(B256::repeat_byte(4), true).is_none());
+    }
+
     use alloy_primitives::keccak256;
 
     fn entry(seed: u64, valid_before: u64) -> ExpiringNonce {
@@ -877,7 +1136,7 @@ mod tests {
     fn derives_from_known_parents_and_promotes_staged_sets() {
         let sets = ExpiringNonceSets::default();
         let genesis = B256::repeat_byte(1);
-        sets.insert(genesis, ExpiringNonceSet::default());
+        sets.insert(genesis, 0, ExpiringNonceSet::default());
         assert!(sets.derive(B256::repeat_byte(9), 100, &[], false).is_none());
 
         let block = B256::repeat_byte(2);
@@ -885,7 +1144,7 @@ mod tests {
             .derive(genesis, 100, &[entry(1, 110)], false)
             .expect("parent is known");
         let key = staged_key(genesis, 100, &[B256::repeat_byte(7)]);
-        sets.stage(key, set.clone());
+        sets.stage(key, 1, set.clone());
         assert!(!sets.promote(staged_key(genesis, 101, &[B256::repeat_byte(7)]), || block));
         assert!(!sets.contains(block));
         assert!(sets.promote(key, || block));

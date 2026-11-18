@@ -1131,6 +1131,9 @@ where
         let execution_block_encoded = execution_block_encoder.encoded_block();
         // Drop the encoder off-thread so its `Drop` impl can populate the cache in the background.
         self.executor.spawn_drop(execution_block_encoder);
+        // TIP-1173: the engine inserts this payload without executing it again, so keep its
+        // expiring nonce set until finality: the next block may build on it.
+        self.evm_config.expiring_nonce_sets().pin(block.hash());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let executed_block = BuiltPayloadExecutedBlock {

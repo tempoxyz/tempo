@@ -209,9 +209,8 @@ impl<'a> ZoneBlockExecutor<'a> {
         let spec = evm.config_spec_id();
         let expiring_nonces = BlockExpiringNonces::new(
             expiring_nonce_sets,
-            ctx.inner.parent_hash,
-            ctx.block_hash,
-            ctx.expiring_nonce_root,
+            &ctx,
+            evm.block().number.saturating_to::<u64>(),
             timestamp,
             spec,
             t16_activation_window(chain_spec, timestamp, spec),

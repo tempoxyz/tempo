@@ -429,7 +429,9 @@ pub(crate) fn execute_txs(
     // TIP-1173: from T16 the executor checks replays against the parent's expiring nonce set.
     let mut parent_set = tempo_evm::expiring_nonces::ExpiringNonceSet::default();
     parent_set.set_authoritative(hardfork.is_t16());
-    config.expiring_nonce_sets().insert(B256::ZERO, parent_set);
+    config
+        .expiring_nonce_sets()
+        .insert(B256::ZERO, 0, parent_set);
     let mut executor = config.create_executor(evm, ctx);
     executor
         .apply_pre_execution_changes()

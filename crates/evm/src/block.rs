@@ -346,9 +346,8 @@ impl<'a> TempoBlockExecutor<'a> {
         let spec = evm.config_spec_id();
         let expiring_nonces = BlockExpiringNonces::new(
             Some(expiring_nonce_sets),
-            ctx.inner.parent_hash,
-            ctx.block_hash,
-            ctx.expiring_nonce_root,
+            &ctx,
+            evm.block().number.saturating_to::<u64>(),
             timestamp,
             spec,
             crate::expiring_nonces::t16_activation_window(chain_spec, timestamp, spec),
@@ -1105,10 +1104,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.set_post_execution_block_access_index();
         self.apply_current_committee_system_call()?;
 
-        let expiring_nonces = std::mem::replace(
-            &mut self.expiring_nonces,
-            BlockExpiringNonces::new(None, B256::ZERO, None, None, 0, Default::default(), false),
-        );
+        let expiring_nonces = std::mem::take(&mut self.expiring_nonces);
 
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
