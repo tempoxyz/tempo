@@ -87,25 +87,23 @@ impl ZoneIdentity {
         } else {
             to
         };
-        let sender = self.members[from].read()?;
-        let recipient = self.members[to].read()?;
-        if sender.frozen || recipient.frozen {
-            return Ok(false);
-        }
-        let allowed = |from: u64, to: u64| -> ZoneResult<bool> {
-            Ok(self.orgs[from].edges[to][token].read()?.allows(kind))
-        };
-        // A deposit or withdrawal that misses falls back to org 0's Tempo side: any address there.
-        Ok(match kind {
-            TransferKind::InZone => allowed(sender.org, recipient.org)?,
-            TransferKind::Deposit => {
-                allowed(sender.org, recipient.org)?
-                    || (sender.org != 0 && allowed(0, recipient.org)?)
-            }
-            TransferKind::Withdrawal => {
-                allowed(sender.org, recipient.org)?
-                    || (recipient.org != 0 && allowed(sender.org, 0)?)
-            }
+        // From here the reads depend only on `kind`, which the caller chose, and are priced as
+        // cold: the gas shows neither the orgs involved nor whether the move is allowed.
+        self.storage.with_cold_pricing(|| {
+            let sender = self.members[from].read()?;
+            let recipient = self.members[to].read()?;
+            let edge = |from: u64, to: u64| -> ZoneResult<bool> {
+                Ok(self.orgs[from].edges[to][token].read()?.allows(kind))
+            };
+            let direct = edge(sender.org, recipient.org)?;
+            // A deposit or withdrawal that misses falls back to org 0's Tempo side: any address
+            // there.
+            let fallback = match kind {
+                TransferKind::InZone => false,
+                TransferKind::Deposit => edge(0, recipient.org)?,
+                TransferKind::Withdrawal => edge(sender.org, 0)?,
+            };
+            Ok(!sender.frozen && !recipient.frozen && (direct || fallback))
         })
     }
 
@@ -274,20 +272,21 @@ impl ZoneIdentity {
         if reader == account {
             return Ok(true);
         }
-        self.may_read_member(reader, self.members[account].read()?)
+        Ok(self.read_member(reader, account)?.1)
     }
 
-    /// Whether `reader` is the admin, or a reader named by the current admin, of `member`'s org.
-    fn may_read_member(&self, reader: Address, member: Member) -> ZoneResult<bool> {
-        if member.org == 0 {
-            return Ok(false);
-        }
-        let admin = self.orgs[member.org].admin.read()?;
-        if reader == admin {
-            return Ok(true);
-        }
-        let epoch = self.orgs[member.org].admin_epoch.read()?;
-        Ok(self.orgs[member.org].readers[epoch][reader].read()?)
+    /// `account`'s membership, and whether `reader` is the admin, or a reader named by the current
+    /// admin, of its org; never for org 0. Reads the member and its org's admin, admin epoch and
+    /// reader slots whatever the answer, priced as cold, so gas does not reveal the account's org.
+    fn read_member(&self, reader: Address, account: Address) -> ZoneResult<(Member, bool)> {
+        self.storage.with_cold_pricing(|| {
+            let member = self.members[account].read()?;
+            let org = &self.orgs[member.org];
+            let admin = org.admin.read()?;
+            let epoch = org.admin_epoch.read()?;
+            let listed = org.readers[epoch][reader].read()?;
+            Ok((member, member.org != 0 && (reader == admin || listed)))
+        })
     }
 
     /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0. The
@@ -320,8 +319,8 @@ impl ZoneIdentity {
         registrar: Address,
         account: Address,
     ) -> ZoneResult<Member> {
-        let member = self.members[account].read()?;
-        if caller != account && !self.may_read_member(caller, member)? {
+        let (member, may_read) = self.read_member(caller, account)?;
+        if caller != account && !may_read {
             ensure_caller(caller, registrar)?;
         }
         Ok(member)
@@ -361,8 +360,11 @@ impl ZoneIdentity {
     /// including an account in no org, reverts with the same `Unauthorized` after the same two
     /// reads, so the call does not reveal whether an account is a member.
     fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<Member> {
-        let member = self.members[account].read()?;
-        let admin = self.orgs[member.org].admin.read()?;
+        // Reads the member and its org's admin slot whatever the caller, priced as cold.
+        let (member, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+            let member = self.members[account].read()?;
+            Ok((member, self.orgs[member.org].admin.read()?))
+        })?;
         if member.org == 0 || admin.is_zero() || caller != admin {
             return Err(ZoneIdentityError::unauthorized().into());
         }
@@ -816,5 +818,141 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// Every org check charges the same gas whatever the orgs, freezes and edges involved, and
+    /// whether its slots were already warm, so gas cannot reveal an account's org.
+    #[test]
+    fn org_checks_cost_the_same_whatever_the_state() {
+        use crate::test_utils::{test_context_with_hardfork, test_storage_provider};
+
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
+        let registrar = Address::repeat_byte(0xbb);
+        let usd = token(1);
+        let (carol, dave, offramp, stranger) = (
+            Address::repeat_byte(0x33),
+            Address::repeat_byte(0x44),
+            Address::repeat_byte(0x66),
+            Address::repeat_byte(0x77),
+        );
+        {
+            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || {
+                let mut identity = ZoneIdentity::new();
+                let (admin, org) = org_with_members(&mut identity, registrar, usd);
+                let other = identity
+                    .create_org(registrar, registrar, registrar)
+                    .unwrap();
+                identity
+                    .add_members(registrar, registrar, other, &[carol, offramp])
+                    .unwrap();
+                identity
+                    .add_members(admin, registrar, org, &[dave])
+                    .unwrap();
+                identity.set_frozen(admin, dave, true).unwrap();
+                for caller in [admin, registrar] {
+                    identity
+                        .set_edge(
+                            caller,
+                            registrar,
+                            OrgKey::zone(org),
+                            OrgKey::l1(other),
+                            &[usd],
+                            true,
+                        )
+                        .unwrap();
+                }
+            });
+        }
+
+        let scenarios = [
+            // Allowed in an org, denied across orgs, from org 0, and with a frozen party.
+            (
+                TransferKind::InZone,
+                vec![
+                    (ALICE, BOB),
+                    (ALICE, carol),
+                    (stranger, ALICE),
+                    (ALICE, dave),
+                ],
+            ),
+            // Allowed directly, denied, to org 0, and from a frozen party.
+            (
+                TransferKind::Withdrawal,
+                vec![
+                    (ALICE, offramp),
+                    (ALICE, carol),
+                    (ALICE, stranger),
+                    (dave, offramp),
+                ],
+            ),
+            (
+                TransferKind::Deposit,
+                vec![(offramp, ALICE), (stranger, ALICE), (carol, stranger)],
+            ),
+        ];
+        for (kind, moves) in scenarios {
+            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+            let costs = StorageCtx::enter(&mut storage, || {
+                let identity = ZoneIdentity::new();
+                let mut costs = Vec::new();
+                // Each move twice: the second time every slot it reads is warm.
+                for &(from, to) in moves.iter().chain(moves.iter()) {
+                    let before = identity.storage.gas_used();
+                    identity.allows(true, usd, from, to, kind).unwrap();
+                    costs.push(identity.storage.gas_used() - before);
+                }
+                costs
+            });
+            assert!(costs[0] > 0, "{kind:?} charged no gas");
+            assert!(
+                costs.iter().all(|cost| *cost == costs[0]),
+                "{kind:?}: {costs:?}"
+            );
+        }
+
+        // orgOf by an outsider costs the same for members of either org, frozen or not, and for an
+        // address in no org, before and after its slots are warm.
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        let costs = StorageCtx::enter(&mut storage, || {
+            let identity = ZoneIdentity::new();
+            let outsider = Address::repeat_byte(0x99);
+            let accounts = [ALICE, BOB, carol, dave, stranger];
+            let mut costs = Vec::new();
+            for &account in accounts.iter().chain(accounts.iter()) {
+                let before = identity.storage.gas_used();
+                let _ = identity.org_of(outsider, registrar, account);
+                costs.push(identity.storage.gas_used() - before);
+            }
+            costs
+        });
+        assert!(
+            costs.iter().all(|cost| *cost == costs[0]),
+            "orgOf: {costs:?}"
+        );
+
+        // canRead costs the same whatever the account's org and the answer: the registrar, as
+        // `other`'s admin, may read carol but not the rest.
+        for reader in [Address::repeat_byte(0x99), registrar] {
+            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+            let costs = StorageCtx::enter(&mut storage, || {
+                let identity = ZoneIdentity::new();
+                let accounts = [ALICE, BOB, carol, dave, stranger];
+                let mut costs = Vec::new();
+                for &account in accounts.iter().chain(accounts.iter()) {
+                    let before = identity.storage.gas_used();
+                    assert_eq!(
+                        identity.can_read(reader, account).unwrap(),
+                        reader == registrar && account == carol
+                    );
+                    costs.push(identity.storage.gas_used() - before);
+                }
+                costs
+            });
+            assert!(
+                costs.iter().all(|cost| *cost == costs[0]),
+                "canRead by {reader}: {costs:?}"
+            );
+        }
     }
 }

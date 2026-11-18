@@ -195,6 +195,13 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
+    /// Sets whether SLOADs are charged as cold even when the slot is already warm, and returns the
+    /// previous setting. Providers without gas metering ignore it.
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        let _ = enabled;
+        false
+    }
+
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
     /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
