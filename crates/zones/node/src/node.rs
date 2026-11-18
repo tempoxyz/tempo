@@ -73,7 +73,9 @@ use tempo_contracts::zones::{
     ZonePortal::{self},
 };
 use tempo_node::{
-    DEFAULT_AA_VALID_AFTER_MAX_SECS, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
+    DEFAULT_AA_VALID_AFTER_MAX_SECS,
+    engine::{EagerHeaderValidatorBuilder, TempoEngineValidator},
+    rpc::TempoEthApiBuilder,
 };
 use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{
@@ -455,7 +457,7 @@ where
         TempoEthApiBuilder<N>,
         ZoneEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>,
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>,
         Identity,
     >,
     /// Queue of L1 deposit messages to be included in the next zone block.
@@ -524,7 +526,7 @@ where
                 TempoEthApiBuilder::default(),
                 ZoneEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                EagerHeaderValidatorBuilder::default(),
                 Identity::default(),
                 Default::default(),
             ),
@@ -574,7 +576,7 @@ where
         TempoEthApiBuilder<N>,
         ZoneEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>,
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>,
         Identity,
     > as NodeAddOns<N>>::Handle;
 
@@ -1706,7 +1708,8 @@ where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
     N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>;
+    type ValidatorBuilder =
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
