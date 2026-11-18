@@ -928,6 +928,25 @@ where
             self.metrics.successes.metric().inc();
         }
 
+        // Every player the finalized outcome names must enter the next epoch
+        // able to sign: dealings are persisted before they are acked, and
+        // shares a player never acked are revealed on chain.
+        #[cfg(feature = "fuzz")]
+        {
+            let am_next_player = onchain_outcome
+                .next_players
+                .position(&self.config.me.public_key())
+                .is_some();
+            antithesis_sdk::assert_always!(
+                !am_next_player || matches!(share, ShareState::Plaintext(Some(_))),
+                "A validator chosen as a next player enters the epoch with a share",
+                &serde_json::json!({
+                    "epoch": onchain_outcome.epoch().get(),
+                    "height": height.get(),
+                })
+            );
+        }
+
         Ok(Some(State {
             epoch: onchain_outcome.epoch(),
             seed: Summary::random(self.context.as_present_mut()),

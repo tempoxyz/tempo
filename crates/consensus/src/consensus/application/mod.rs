@@ -296,6 +296,24 @@ where
     type Activity = Activity<S, B::Digest>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
+        // Simplex reports a peer's conflicting votes as evidence. No validator
+        // in the cluster is Byzantine, so any evidence means an honest node
+        // forgot a vote it sent (for example across a crash or restart).
+        #[cfg(feature = "fuzz")]
+        {
+            let conflict = match &activity {
+                Activity::ConflictingNotarize(_) => Some("conflicting_notarize"),
+                Activity::ConflictingFinalize(_) => Some("conflicting_finalize"),
+                Activity::NullifyFinalize(_) => Some("nullify_finalize"),
+                _ => None,
+            };
+            if let Some(kind) = conflict {
+                antithesis_sdk::assert_unreachable!(
+                    "No validator signs conflicting votes in one view",
+                    &serde_json::json!({ "kind": kind })
+                );
+            }
+        }
         match self {
             Self::Deferred(application) => application.report(activity),
             Self::Immediate(application) => application.report(activity),
