@@ -322,34 +322,6 @@ pub(crate) mod marshal {
             }
         }
 
-        // The peer manager registers peers from execution's finalized state
-        // before marshal or the executor run, so that state must match what
-        // consensus finalized at that height: the certificate if the archive
-        // holds one, otherwise the finalized block marshal stored for it.
-        let (execution_height, execution_digest) = execution_finalized_point(execution_node);
-        if (first..=last).contains(&execution_height.get()) {
-            let finalized = match certificates
-                .get(Identifier::Index(execution_height.get()))
-                .await
-                .wrap_err("failed reading certificate at execution finalized height")?
-            {
-                Some(certificate) => Some(certificate.proposal.payload),
-                None => blocks
-                    .header_by_height(execution_height.get(), HeaderSource::Prunable)
-                    .await
-                    .wrap_err("failed reading finalized block at execution finalized height")?
-                    .map(|header| Digest(header.hash_slow())),
-            };
-            if let Some(finalized) = finalized {
-                ensure!(
-                    execution_digest == finalized,
-                    "execution finalized block `{execution_digest}` at height `{execution_height}` \
-                     does not match finalized block `{finalized}`; execution and consensus storage \
-                     are inconsistent",
-                );
-            }
-        }
-
         Ok(FinalizationRange {
             floor,
             tip: Some((height, certificate)),
