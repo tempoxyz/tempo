@@ -1,4 +1,9 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
+
+// The clap `Args` derive generates large unoptimized stack frames, and item-level lint
+// attributes on the struct do not reach the generated impl.
+#![allow(clippy::large_unopt_stack_frames)]
+
 use std::{
     net::SocketAddr,
     num::{NonZeroU32, NonZeroUsize},
