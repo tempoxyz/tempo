@@ -22,6 +22,8 @@ tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
 
+commonware-codec.workspace = true
+
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus = { workspace = true, optional = true }
@@ -55,6 +57,7 @@ antithesis_sdk = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 tempo-precompiles.workspace = true
+test-case.workspace = true
 
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]

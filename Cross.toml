@@ -1,5 +1,6 @@
 [build.env]
 passthrough = [
+    "VERGEN_IDEMPOTENT",
     "SCCACHE_ERROR_LOG",
     "SCCACHE_LOG",
     "SCCACHE_AZURE_CONNECTION_STRING",

@@ -4,6 +4,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use reth_e2e_test_utils::wallet::test_signer;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS};
@@ -41,9 +42,7 @@ async fn test_create_token() -> eyre::Result<()> {
         )
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(5_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
