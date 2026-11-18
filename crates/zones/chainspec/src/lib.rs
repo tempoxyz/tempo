@@ -103,6 +103,38 @@ fn inherit_parent_fork_activations(
     Ok(())
 }
 
+/// Fork activation fields the Zone genesis sets explicitly to a value other than its parent's.
+///
+/// Omitted fields are not mismatches: the Zone inherits them from the parent.
+pub fn fork_activation_mismatches(
+    zone_genesis: &Genesis,
+    l1: &TempoChainSpec,
+) -> Result<Vec<String>, serde_json::Error> {
+    let zone_config = serde_json::to_value(&zone_genesis.config)?;
+    let l1_config = serde_json::to_value(&l1.genesis().config)?;
+    let zone_fields = zone_config
+        .as_object()
+        .expect("ChainConfig must serialize as a JSON object");
+    let l1_fields = l1_config
+        .as_object()
+        .expect("ChainConfig must serialize as a JSON object");
+
+    let mut mismatched: Vec<String> = zone_fields
+        .iter()
+        .filter(|(name, value)| {
+            (name.ends_with("Block") || name.ends_with("Time"))
+                && !value.is_null()
+                && l1_fields
+                    .get(name.as_str())
+                    .unwrap_or(&serde_json::Value::Null)
+                    != *value
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    mismatched.sort();
+    Ok(mismatched)
+}
+
 impl Hardforks for ZoneChainSpec {
     fn fork<H: Hardfork>(&self, fork: H) -> ForkCondition {
         self.inner.fork(fork)
@@ -215,8 +247,18 @@ impl reth_cli::chainspec::ChainSpecParser for ZoneChainSpecParser {
 
     const SUPPORTED_CHAINS: &'static [&'static str] = &[];
 
+    /// Zones activate forks in lockstep with Tempo, so a genesis for a known parent may not set
+    /// a fork time that differs from the parent's.
     fn parse(s: &str) -> eyre::Result<std::sync::Arc<Self::ChainSpec>> {
         let genesis = reth_cli::chainspec::parse_genesis(s)?;
+        if let Some(parent) = tempo_chain_spec_for_l1(decode_l1_chain_id(genesis.config.chain_id)?)
+        {
+            let mismatched = fork_activation_mismatches(&genesis, parent.as_ref())?;
+            eyre::ensure!(
+                mismatched.is_empty(),
+                ZoneChainSpecError::ForkScheduleMismatch(mismatched.join(", "))
+            );
+        }
         Ok(Arc::new(ZoneChainSpec::from_genesis(genesis)?))
     }
 }
@@ -230,6 +272,9 @@ pub enum ZoneChainSpecError {
     /// The inherited parent fork activations could not be applied to the Zone genesis.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
+    /// The Zone genesis sets fork activations that differ from its parent Tempo chain.
+    #[error("zone genesis fork activations differ from its Tempo chain: {0}")]
+    ForkScheduleMismatch(String),
 }
 
 /// Returns the Tempo chain specification whose hardfork schedule a parent uses.
@@ -386,6 +431,29 @@ mod tests {
 
         assert_eq!(zone.shared_gas_limit_at(0, 30_000_000), 0);
         assert_eq!(zone.general_gas_limit_at(0, 30_000_000, 0), 0);
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn parser_rejects_fork_times_that_differ_from_the_parent() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 10).unwrap();
+        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 100);
+        let error = ZoneChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("t13Time"), "{error}");
+
+        // Repeating the parent's times, or omitting them, is accepted.
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 10).unwrap();
+        assert!(
+            fork_activation_mismatches(&genesis, &DEV)
+                .unwrap()
+                .is_empty()
+        );
+        genesis.config.cancun_time = None;
+        ZoneChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap()).unwrap();
     }
 
     #[cfg(feature = "cli")]
