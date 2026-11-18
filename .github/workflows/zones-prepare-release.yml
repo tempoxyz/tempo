@@ -101,22 +101,34 @@ jobs:
             echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
+          # Every Zones release, from main or release/*, must be above every
+          # existing zones/v* tag, so the floating stable and major image tags
+          # only move forward. A failed tag listing stops the run.
+          if ! remote_tags="$(git ls-remote --tags --refs origin 'refs/tags/zones/v*')"; then
+            echo "::error::Could not list zones/v* tags"
+            exit 1
+          fi
+          highest_zones="$(
+            { printf '%s\n' "$remote_tags" | sed -n 's#.*refs/tags/zones/v##p' | grep -v -- '-' || true; } |
+              { cat; echo "$VERSION"; } | sort -V | tail -n 1
+          )"
+          if ! printf '%s\n' "$remote_tags" | grep -q "refs/tags/zones/v${VERSION}$" &&
+             [[ "$highest_zones" != "$VERSION" ]]; then
+            echo "::error::version ${VERSION} must be above every zones/v* tag (highest: ${highest_zones})"
+            exit 1
+          fi
+
+          # The version PR targets main, or the one release/* branch holding an
+          # off-main source.
           if git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
             pr_base=main
           else
-            # A release/* source must be the highest Zones version, as Zones
-            # Docker Build requires, and its version PR targets that branch.
-            highest_zones="$(
-              { git ls-remote --tags --refs origin 'refs/tags/zones/v*' |
-                  sed 's#.*refs/tags/zones/v##' | grep -v -- '-' || true; } |
-                { cat; echo "$VERSION"; } | sort -V | tail -n 1
-            )"
-            if [[ "$highest_zones" != "$VERSION" ]]; then
-              echo "::error::a release/* source needs a version above every zones/v* tag (highest: ${highest_zones})"
+            mapfile -t release_bases < <(printf '%s\n' "$source_branches" | sed -n 's#^origin/##p')
+            if [[ "${#release_bases[@]}" -ne 1 ]]; then
+              echo "::error::source_sha is on ${#release_bases[@]} release/* branches; it must be on exactly one"
               exit 1
             fi
-            pr_base="$(printf '%s\n' "$source_branches" | grep '^origin/release/' | head -n 1)"
-            pr_base="${pr_base#origin/}"
+            pr_base="${release_bases[0]}"
           fi
           echo "pr_base=${pr_base}" >> "$GITHUB_OUTPUT"
 

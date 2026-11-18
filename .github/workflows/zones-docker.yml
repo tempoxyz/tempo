@@ -650,7 +650,10 @@ jobs:
           {
             echo "version=v$version"
             echo "$release_key=true"
-            if [[ "$version" != *-* ]]; then
+            # Only the highest Zones version moves the floating stable and
+            # major tags; an older zones/v* release keeps just its exact tag.
+            if [[ "$version" != *-* ]] &&
+               [[ "$component" == prover || "$version" == "$highest_zones" ]]; then
               echo "$stable_key=true"
             fi
           } >> "$GITHUB_OUTPUT"
