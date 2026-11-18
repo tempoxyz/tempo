@@ -87,11 +87,18 @@ jobs:
             exit 1
           fi
 
-          # Zones Release and Zones Docker Build only publish commits on main,
-          # or a single version-bump commit on top of one.
-          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
-          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
-            echo "::error::source_sha must be an ancestor of origin/main"
+          # Zones Release and Zones Docker Build only publish commits on main or
+          # a protected release/* branch (for releases that backport fixes onto
+          # an earlier release), or a single version-bump commit on top of one.
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/release/*:refs/remotes/origin/release/*"
+          source_branches="$(
+            git for-each-ref --contains "$SOURCE_SHA" --format='%(refname:short)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*'
+          )"
+          if [[ -z "$source_branches" ]]; then
+            echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
 
