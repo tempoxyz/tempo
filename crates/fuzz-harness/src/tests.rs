@@ -473,6 +473,25 @@ fn a_created_account_reads_its_unwritten_slots_as_zero_on_an_exact_pre_state() {
 }
 
 #[test]
+fn the_read_trace_lists_executing_reads_in_order_and_leaves_out_views() {
+    let db = state::seed(&exact(one_account(RECIPIENT, AccountInput::default()))).unwrap();
+    state::clear_read_trace();
+    db.reader().get_storage(&RECIPIENT, &U256::from(2)).unwrap();
+    db.view().get_storage(&RECIPIENT, &U256::from(3)).unwrap();
+    db.reader().get_account(&RECIPIENT).unwrap();
+
+    let mut expected = vec![1];
+    expected.extend_from_slice(RECIPIENT.as_slice());
+    expected.extend_from_slice(&U256::from(2).to_be_bytes::<32>());
+    expected.push(0);
+    expected.extend_from_slice(RECIPIENT.as_slice());
+    expected.extend_from_slice(&[0; 32]);
+    state::with_read_trace(|trace| {
+        assert_eq!(trace, expected.as_slice());
+    });
+}
+
+#[test]
 fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
     // From T8 on, the last block of an epoch carries the DKG outcome that the
     // committee is set from.
