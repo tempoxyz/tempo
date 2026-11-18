@@ -1203,7 +1203,7 @@ impl Reservations {
         entries: &[DebtEntry],
     ) -> Result<Vec<DebtEntry>> {
         let now = self.now();
-        let mut kept = Vec::with_capacity(entries.len());
+        let mut kept = Vec::new();
         for entry in entries {
             if lapsed(entry, now) {
                 self.emit_event(ReservationsEvent::debt_lapsed(

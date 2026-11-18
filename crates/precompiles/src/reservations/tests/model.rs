@@ -157,13 +157,13 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(caller, owner, token, id, amount, ttl)| Op::PledgeFrom { caller, owner, token, id, amount, ttl }),
         1 => (prop::sample::select(vec![AUTHORITY, STRANGER]), owner.clone(), token.clone(), id.clone(), amount.clone(), 0..900u64)
             .prop_map(|(caller, owner, token, id, amount, ttl)| Op::Lien { caller, owner, token, id, amount, ttl }),
-        2 => (account.clone(), owner.clone(), placer.clone(), id.clone(), amount.clone())
+        2 => (account.clone(), owner.clone(), placer.clone(), id.clone(), amount)
             .prop_map(|(caller, owner, placer, id, amount)| Op::Adjust { caller, owner, placer: PLACERS[placer], id, amount }),
         5 => (account.clone(), owner.clone(), placer.clone(), id.clone(), 0..500u128, any::<bool>())
             .prop_map(|(caller, owner, placer, id, amount, is_final)| Op::Capture { caller, owner, placer: PLACERS[placer], id, amount, is_final }),
         2 => (account.clone(), owner.clone(), placer.clone(), id.clone())
             .prop_map(|(caller, owner, placer, id)| Op::Release { caller, owner, placer: PLACERS[placer], id }),
-        1 => (owner.clone(), placer.clone(), id.clone())
+        1 => (owner.clone(), placer, id)
             .prop_map(|(owner, placer, id)| Op::ReleaseExpired { owner, placer: PLACERS[placer], id }),
         3 => (prop::sample::select(vec![SELF, SELF, H0, H1, STRANGER]), owner.clone(), token.clone(), 0..700u128, any::<bool>(), 0..PAYEES.len())
             .prop_map(|(caller, owner, token, amount, stand_in, payee)| Op::Charge { caller, owner, token, amount, stand_in, payee }),
@@ -962,8 +962,8 @@ impl World {
         let mut reservations = Reservations::new();
         reservations.initialize()?;
         for owner in 0..OWNERS {
-            for token in 0..TOKENS {
-                let token_address = tokens[token].address();
+            for (token, contract) in tokens.iter().enumerate() {
+                let token_address = contract.address();
                 for (holder, limit, period) in [(H0, 500u128, 0u32), (H1, 300, 3_600)] {
                     reservations.approve_holder(
                         accounts[owner],
@@ -1261,10 +1261,10 @@ impl World {
         match &mut op {
             Op::Hold { caller, owner, .. }
             | Op::PledgeFrom { caller, owner, .. }
-            | Op::Charge { caller, owner, .. } => {
-                if *caller == SELF {
-                    *caller = *owner;
-                }
+            | Op::Charge { caller, owner, .. }
+                if *caller == SELF =>
+            {
+                *caller = *owner;
             }
             _ => {}
         }

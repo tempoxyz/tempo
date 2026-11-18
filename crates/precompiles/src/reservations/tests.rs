@@ -99,7 +99,6 @@ impl Fixture {
         )
     }
 
-    #[expect(clippy::too_many_arguments, reason = "the fields of one capture")]
     fn capture_of(
         &mut self,
         caller: Address,
