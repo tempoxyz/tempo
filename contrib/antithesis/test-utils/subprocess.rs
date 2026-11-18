@@ -3,6 +3,7 @@
 use std::{
     fs,
     io::{self, ErrorKind, Write},
+    os::unix::fs::DirBuilderExt,
     path::PathBuf,
     process::{Child, Output},
     sync::atomic::{AtomicU64, Ordering},
@@ -29,7 +30,7 @@ impl SocketProcess {
             std::process::id(),
             NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&directory)?;
+        fs::DirBuilder::new().mode(0o700).create(&directory)?;
         Ok(Self { directory, child: None })
     }
 
@@ -65,10 +66,10 @@ impl Drop for SocketProcess {
                 }
             }
         }
-        if let Err(error) = fs::remove_dir_all(&self.directory) {
-            if error.kind() != ErrorKind::NotFound {
-                report(error);
-            }
+        if let Err(error) = fs::remove_dir_all(&self.directory) &&
+            error.kind() != ErrorKind::NotFound
+        {
+            report(error);
         }
     }
 }

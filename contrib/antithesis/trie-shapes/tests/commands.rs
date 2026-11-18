@@ -7,7 +7,10 @@ use antithesis_trie_shapes::{
 use serde_json::json;
 use std::{
     io::{BufRead, BufReader, ErrorKind, Write},
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
     panic::catch_unwind,
     process::{Command, Output, Stdio},
     thread,
@@ -197,6 +200,7 @@ fn root_check_reports_unexpected_responses() {
 fn panic_reaps_command_and_removes_socket_directory() {
     let mut process = SocketProcess::new().unwrap();
     let directory = process.directory.clone();
+    assert_eq!(std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777, 0o700);
     let path = directory.join("trie.sock");
     let listener = UnixListener::bind(&path).unwrap();
     process.child = Some(
