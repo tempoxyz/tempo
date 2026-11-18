@@ -8,7 +8,9 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
-use alloy_sol_types::{SolCall, SolInterface};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
+use alloy_sol_types::{SolCall, SolInterface, SolStruct, eip712_domain};
 use eyre::OptionExt;
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -34,6 +36,7 @@ const FUNDING: u128 = 100_000_000;
 /// A zone account with a provider that signs as it.
 struct Party {
     address: Address,
+    signer: PrivateKeySigner,
     provider: DynProvider,
 }
 
@@ -42,11 +45,30 @@ impl Party {
         let signer = signer_at(index);
         Self {
             address: signer.address(),
+            signer: signer.clone(),
             provider: ProviderBuilder::new()
                 .wallet(signer)
                 .connect_http(zone.http_url().clone())
                 .erased(),
         }
+    }
+
+    /// This party's signature over `account`'s join to `org` on the zone `chain_id`.
+    fn sign_join(&self, chain_id: u64, org: u64, account: Address, nonce: u64) -> Bytes {
+        let domain = eip712_domain! {
+            name: "ZoneIdentity",
+            version: "1",
+            chain_id: chain_id,
+            verifying_contract: ZONE_IDENTITY_ADDRESS,
+        };
+        let join = IZoneIdentity::Join {
+            orgId: org,
+            account,
+            nonce,
+            deadline: u64::MAX,
+        };
+        let hash = join.eip712_signing_hash(&domain);
+        Bytes::from(self.signer.sign_hash_sync(&hash).unwrap().as_bytes())
     }
 
     fn identity(&self) -> IZoneIdentity::IZoneIdentityInstance<DynProvider> {
@@ -295,28 +317,29 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
-    // Members: each org's admin invites in one batch, then each account joins with its own
-    // transaction.
-    let members = [
-        (&admin_a, org_a, vec![&alice, &bob]),
-        (&admin_b, org_b, vec![&carol]),
-    ];
-    for (admin, org, accounts) in members {
-        let invite = IZoneIdentity::setInvitesCall {
-            orgId: org,
-            accounts: accounts.iter().map(|party| party.address).collect(),
-            invited: true,
-        };
-        let pending = admin.send(ZONE_IDENTITY_ADDRESS, invite).await?;
-        assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
-        let mut joins = Vec::new();
-        for party in &accounts {
-            let join = IZoneIdentity::joinOrgCall { orgId: org };
-            joins.push(party.send(ZONE_IDENTITY_ADDRESS, join).await?);
-        }
-        let statuses = mine(&mut fixture, &zone, joins).await?;
-        assert!(statuses.iter().all(|ok| *ok), "{statuses:?}");
-    }
+    // Members join only with both sides' signatures. A's admin adds Alice and Bob in one batch
+    // with their signatures; Carol joins B herself with B's admin's signature.
+    let chain_id = admin_a.provider.get_chain_id().await?;
+    let approvals = [&alice, &bob]
+        .map(|party| IZoneIdentity::MemberApproval {
+            account: party.address,
+            deadline: u64::MAX,
+            signature: party.sign_join(chain_id, org_a, party.address, 0),
+        })
+        .to_vec();
+    let add = IZoneIdentity::addMembersCall {
+        orgId: org_a,
+        approvals,
+    };
+    let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, add).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    let join = IZoneIdentity::joinOrgCall {
+        orgId: org_b,
+        deadline: u64::MAX,
+        adminSignature: admin_b.sign_join(chain_id, org_b, carol.address, 0),
+    };
+    let pending = carol.send(ZONE_IDENTITY_ADDRESS, join).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     let alice_org = alice.identity().orgOf(alice.address).call().await?;
     assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
     // Membership is private to the account, its org's admin and the registrar.

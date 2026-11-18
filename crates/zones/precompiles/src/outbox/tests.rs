@@ -712,8 +712,7 @@ fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> 
     env.with_storage(|| -> crate::ZoneResult<()> {
         let mut identity = ZoneIdentity::new();
         let org = identity.create_org(registrar, registrar, registrar)?;
-        identity.set_invites(registrar, registrar, org, &[ALICE], true)?;
-        identity.join_org(ALICE, org)?;
+        crate::zone_identity::tests::enroll(&mut identity, registrar, registrar, org, &[ALICE]);
         identity.set_l1_target(
             registrar,
             registrar,
