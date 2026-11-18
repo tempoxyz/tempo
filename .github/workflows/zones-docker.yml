@@ -383,12 +383,14 @@ jobs:
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
-          # On main and tags, reuse a cached digest only if a main run of this workflow
+          # On main, rc/ and pre-release/ branches and tags (every ref whose runs attest),
+          # reuse a cached digest only if a main run of this workflow
           # (protected branch, not any pushed tag) attested it for this recipe_sha;
           # otherwise rebuild it from the trusted recipe, so these runs never attest a
           # foreign digest.
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
-            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/rc/* ||
+              "$GITHUB_REF" == refs/heads/pre-release/* || "$GITHUB_REF" == refs/tags/* ]] &&
             ! gh attestation verify "oci://$TOOLCHAIN_REPOSITORY@$digest" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/zones-docker.yml" \
