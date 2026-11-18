@@ -716,6 +716,10 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+#[path = "../../test-utils/subprocess.rs"]
+mod subprocess;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::Address;
@@ -731,6 +735,7 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+    use subprocess::SocketProcess;
 
     fn server(datadir: PathBuf) -> Server {
         let config =
@@ -904,16 +909,19 @@ mod tests {
             .journal
             .record(1, &[Operation::Commit, update()])
             .unwrap();
-        let path = directory.path().join("trie.sock");
+        let mut process = SocketProcess::new().unwrap();
+        let path = process.directory.join("trie.sock");
         let listener = UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let mut driver = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::queued_shutdown_driver", "--ignored", "--nocapture"])
-            .env("ANTITHESIS_TRIE_SOCKET", &path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        process.child = Some(
+            Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::queued_shutdown_driver", "--ignored", "--nocapture"])
+                .env("ANTITHESIS_TRIE_SOCKET", &path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         let (mut stream, _) = loop {
             match listener.accept() {
@@ -941,14 +949,7 @@ mod tests {
         writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
         drop(stream);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while driver.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                driver.kill().unwrap();
-                panic!("queued driver did not finish");
-            }
-            thread::yield_now();
-        }
-        let output = driver.wait_with_output().unwrap();
+        let output = process.output(deadline).unwrap();
         assert!(output.status.success(), "{output:?}");
         assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
         assert_eq!(

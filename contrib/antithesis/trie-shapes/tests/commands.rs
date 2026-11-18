@@ -6,33 +6,34 @@ use antithesis_trie_shapes::{
 };
 use serde_json::json;
 use std::{
-    fs,
     io::{BufRead, BufReader, ErrorKind, Write},
     os::unix::net::{UnixListener, UnixStream},
+    panic::catch_unwind,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
+#[path = "../../test-utils/subprocess.rs"]
+mod subprocess;
+use subprocess::SocketProcess;
+
 const TIMEOUT: Duration = Duration::from_secs(10);
-static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
 
 fn run(command: &str, replies: &[(&str, Response)]) -> Output {
-    let path = std::env::temp_dir().join(format!(
-        "trie-commands-{}-{}.sock",
-        std::process::id(),
-        NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
-    ));
+    let mut process = SocketProcess::new().unwrap();
+    let path = process.directory.join("trie.sock");
     let listener = UnixListener::bind(&path).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reth-state-root-commands"))
-        .arg(command)
-        .env("ANTITHESIS_TRIE_SOCKET", &path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    process.child = Some(
+        Command::new(env!("CARGO_BIN_EXE_reth-state-root-commands"))
+            .arg(command)
+            .env("ANTITHESIS_TRIE_SOCKET", &path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let deadline = Instant::now() + TIMEOUT;
     let mut connection: Option<BufReader<UnixStream>> = None;
     for (method, response) in replies {
@@ -65,15 +66,7 @@ fn run(command: &str, replies: &[(&str, Response)]) -> Output {
         )
         .unwrap();
     }
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            panic!("command did not finish");
-        }
-        thread::yield_now();
-    }
-    fs::remove_file(path).unwrap();
-    child.wait_with_output().unwrap()
+    process.output(deadline).unwrap()
 }
 
 fn rejected() -> Response {
@@ -198,4 +191,33 @@ fn build_reports_unexpected_responses() {
 fn root_check_reports_unexpected_responses() {
     let output = run("anytime_root", &[("check_root", Response::Queued { pending: 0 })]);
     unexpected(output, "check_root");
+}
+
+#[test]
+fn panic_reaps_command_and_removes_socket_directory() {
+    let mut process = SocketProcess::new().unwrap();
+    let directory = process.directory.clone();
+    let path = directory.join("trie.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    process.child = Some(
+        Command::new(env!("CARGO_BIN_EXE_reth-state-root-commands"))
+            .arg("parallel_driver_blocks")
+            .env("ANTITHESIS_TRIE_SOCKET", &path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = process.child.as_ref().unwrap().id();
+    assert!(process.child.as_mut().unwrap().try_wait().unwrap().is_none());
+    let panic = catch_unwind(move || {
+        let _process = process;
+        let _listener = listener;
+        panic!("deliberate fixture panic");
+    });
+    assert_eq!(panic.unwrap_err().downcast_ref::<&str>(), Some(&"deliberate fixture panic"));
+    // A zombie still has a /proc entry: disappearance checks reaping, not merely termination.
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    assert!(!path.exists());
+    assert!(!directory.exists());
 }
