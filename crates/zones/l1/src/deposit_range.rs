@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::L1StateProvider;
+use crate::{abi::ZonePortal, state::L1StateProvider};
 use alloy_rpc_types_eth::Filter;
 use eyre::OptionExt as _;
 use tempo_precompiles::{
@@ -21,15 +21,30 @@ pub struct DepositQueuePosition {
 }
 
 impl DepositQueuePosition {
-    /// Returns the position after entry `number`, whose event carries `queue_hash`, searching back
-    /// from L1 block `through`.
+    /// Returns the position after the last executed entry `(number, queue_hash)`, searching back
+    /// from L1 block `through`, or the start of `through + 1` if no later entry was appended.
     pub async fn find(
         l1_provider: &impl Provider<TempoNetwork>,
         portal_address: Address,
         through: u64,
-        number: u64,
-        queue_hash: B256,
+        last_processed: Option<(u64, B256)>,
     ) -> eyre::Result<Self> {
+        let after_through = Self {
+            block_number: through.saturating_add(1),
+            entries_in_block: 0,
+        };
+        let Some((number, queue_hash)) = last_processed else {
+            return Ok(after_through);
+        };
+        let deposit_count = ZonePortal::new(portal_address, l1_provider)
+            .depositCount()
+            .block(BlockId::number(through))
+            .call()
+            .await?;
+        if deposit_count <= number {
+            return Ok(after_through);
+        }
+
         let entry_events = Filter::new().address(portal_address).event_signature(vec![
             DepositMade::SIGNATURE_HASH,
             WithdrawalBounceBack::SIGNATURE_HASH,
@@ -110,19 +125,28 @@ pub async fn fetch_range_len(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Bytes;
+    use alloy_sol_types::SolCall as _;
     use alloy_transport::mock::Asserter;
     use test_case::test_case;
 
-    #[test_case(ENTRY_SEARCH_BLOCKS + 5, &[&[], &[(3, 7)], &[(3, 5), (3, 6), (3, 7), (3, 8)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
-    #[test_case(5, &[&[(3, 7)], &[(3, 8), (3, 6), (3, 7), (3, 5)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
-    #[test_case(5, &[&[]] => Err("queue entry 7 not found at or before L1 block 5".to_owned()))]
-    #[test_case(5, &[&[(3, 7)], &[(3, 6)]] => Err("L1 block 3 did not append queue entry 7".to_owned()))]
+    #[test_case(ENTRY_SEARCH_BLOCKS + 5, Some(7), 8, &[&[], &[(3, 7)], &[(3, 5), (3, 6), (3, 7), (3, 8)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
+    #[test_case(5, Some(7), 8, &[&[(3, 7)], &[(3, 8), (3, 6), (3, 7), (3, 5)]] => Ok(DepositQueuePosition { block_number: 3, entries_in_block: 3 }))]
+    #[test_case(5, Some(7), 7, &[] => Ok(DepositQueuePosition { block_number: 6, entries_in_block: 0 }))]
+    #[test_case(5, None, 0, &[] => Ok(DepositQueuePosition { block_number: 6, entries_in_block: 0 }))]
+    #[test_case(5, Some(7), 8, &[&[]] => Err("queue entry 7 not found at or before L1 block 5".to_owned()))]
+    #[test_case(5, Some(7), 8, &[&[(3, 7)], &[(3, 6)]] => Err("L1 block 3 did not append queue entry 7".to_owned()))]
     #[tokio::test]
     async fn find(
         through: u64,
+        last_processed: Option<u64>,
+        deposit_count: u64,
         responses: &[&[(u64, u64)]],
     ) -> Result<DepositQueuePosition, String> {
         let asserter = Asserter::new();
+        asserter.push_success(&Bytes::from(
+            ZonePortal::depositCountCall::abi_encode_returns(&deposit_count),
+        ));
         for logs in responses {
             let logs: Vec<_> = logs
                 .iter()
@@ -147,7 +171,8 @@ mod tests {
         let provider =
             ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
 
-        DepositQueuePosition::find(&provider, Address::ZERO, through, 7, B256::ZERO)
+        let last_processed = last_processed.map(|number| (number, B256::ZERO));
+        DepositQueuePosition::find(&provider, Address::ZERO, through, last_processed)
             .await
             .map_err(|error| error.to_string())
     }

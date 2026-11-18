@@ -641,24 +641,17 @@ where
         }
 
         let last_operational = latest_import.l1_num_hash;
-        let start = match latest_import.last_processed_deposit {
+        let start = DepositQueuePosition::find(
+            &l1_provider,
+            self.portal_address,
+            last_operational.number,
             // Synthetic-L1 nodes use the zero address to mean that no Portal is configured.
-            Some((number, queue_hash)) if !self.portal_address.is_zero() => {
-                DepositQueuePosition::find(
-                    &l1_provider,
-                    self.portal_address,
-                    last_operational.number,
-                    number,
-                    queue_hash,
-                )
-                .await
-                .wrap_err("failed to locate the last executed deposit queue entry on L1")?
-            }
-            _ => DepositQueuePosition {
-                block_number: last_operational.number.saturating_add(1),
-                entries_in_block: 0,
-            },
-        };
+            latest_import
+                .last_processed_deposit
+                .filter(|_| !self.portal_address.is_zero()),
+        )
+        .await
+        .wrap_err("failed to locate the last executed deposit queue entry on L1")?;
         if start.block_number <= tempo_block_number {
             self.l1_config.deferred_work = Some(DeferredWorkRecovery {
                 last_operational,
