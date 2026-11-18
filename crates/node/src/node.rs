@@ -8,6 +8,7 @@ use crate::{
         TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
         TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
         TempoToken, TempoTokenApiServer,
+        limit::{CallLimits, ConcurrencyLimitLayer},
     },
 };
 use alloy_primitives::B256;
@@ -34,7 +35,7 @@ use reth_node_builder::{
 use reth_node_core::args::JitArgs;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
-use reth_rpc_builder::{Identity, RethRpcModule};
+use reth_rpc_builder::RethRpcModule;
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
@@ -274,6 +275,8 @@ pub struct TempoNode {
     network_builder: TempoNetworkBuilder,
     /// Filled with the engine's in-memory overlay when the node launches.
     executed_state: ExecutedState,
+    /// Concurrent calls allowed per limited RPC method.
+    call_limits: CallLimits,
 }
 
 impl TempoNode {
@@ -285,6 +288,7 @@ impl TempoNode {
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
+            call_limits: CallLimits::default(),
         }
     }
 
@@ -388,6 +392,12 @@ impl TempoNode {
         self
     }
 
+    /// Sets how many calls of each limited RPC method may run at once.
+    pub fn with_call_limits(mut self, call_limits: CallLimits) -> Self {
+        self.call_limits = call_limits;
+        self
+    }
+
     /// Sets the validator key returned by the admin RPC API.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
@@ -411,7 +421,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
         TempoEngineTreeValidatorBuilder,
-        Identity,
+        ConcurrencyLimitLayer,
     >,
     validator_key: Option<B256>,
 }
@@ -423,14 +433,18 @@ where
     /// Creates a new instance from the inner `RpcAddOns`.
     ///
     /// `executed_state` is filled when reth launches the engine.
-    pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
+    pub fn new(
+        validator_key: Option<B256>,
+        executed_state: ExecutedState,
+        call_limits: CallLimits,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
                 TempoEngineTreeValidatorBuilder::new(executed_state),
-                Identity::default(),
+                call_limits.layer(),
                 Default::default(),
             ),
             validator_key,
@@ -531,7 +545,11 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key, self.executed_state.clone())
+        TempoAddOns::new(
+            self.validator_key,
+            self.executed_state.clone(),
+            self.call_limits,
+        )
     }
 }
 

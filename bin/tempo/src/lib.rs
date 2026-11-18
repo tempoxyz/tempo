@@ -88,7 +88,10 @@ pub use tempo_node::{
 };
 use tempo_node::{
     ShadowReplayer, TempoFullNode,
-    rpc::consensus::{Limits, TempoConsensusApiServer, TempoConsensusRpc},
+    rpc::{
+        consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
+        limit::CallLimits,
+    },
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
@@ -574,10 +577,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
         let faucet_args = args.faucet_args.clone();
-        let consensus_rpc_limits = Limits {
+        let consensus_subscription_limits = SubscriptionLimits {
             max_subscriptions: args.consensus_max_subscriptions,
             max_subscriptions_per_connection: args.consensus_max_subscriptions_per_connection,
-            max_concurrent_lookups: args.consensus_max_concurrent_lookups,
+        };
+        let call_limits = CallLimits {
+            consensus_get_finalization: args.consensus_max_concurrent_lookups,
         };
         let validator_key = args
             .consensus
@@ -632,7 +637,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         };
 
         let tempo_node = overrides.apply_tempo_node({
-            let node = TempoNode::new(&args.node_args, validator_key);
+            let node = TempoNode::new(&args.node_args, validator_key).with_call_limits(call_limits);
             match gossip_protocol_handler {
                 Some(protocol_handler) => node.with_finalization_cert_gossip(protocol_handler),
                 None => node,
@@ -701,7 +706,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         // the per-connection cap serves HTTP and WS only. They share one server
                         // when they share a port, and HTTP never runs subscriptions otherwise.
                         // IPC is a separate server and local, so it only gets the global cap.
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_rpc_limits);
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_subscription_limits);
                         let without_connection_cap = consensus_rpc.without_connection_cap();
                         ctx.modules.merge_http(consensus_rpc.clone().into_rpc())
                             .wrap_err("failed to register consensus rpc module on http")?;

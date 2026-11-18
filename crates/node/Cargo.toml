@@ -71,6 +71,7 @@ commonware-cryptography.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 eyre.workspace = true
 futures.workspace = true
+tower.workspace = true
 governor.workspace = true
 jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true

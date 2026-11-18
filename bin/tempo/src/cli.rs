@@ -8,9 +8,9 @@ use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_faucet::args::FaucetArgs;
 use tempo_node::{
     TempoNodeArgs,
-    rpc::consensus::{
-        DEFAULT_MAX_CONCURRENT_LOOKUPS, DEFAULT_MAX_SUBSCRIPTIONS,
-        DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+    rpc::{
+        consensus::{DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION},
+        limit::DEFAULT_MAX_CONCURRENT_LOOKUPS,
     },
 };
 
@@ -115,8 +115,8 @@ pub struct TempoArgs {
     )]
     pub(crate) consensus_max_subscriptions_per_connection: NonZeroUsize,
 
-    /// Maximum concurrent `consensus_getFinalization` height lookups across all connections.
-    /// Further ones fail with the server-busy error.
+    /// Maximum concurrent `consensus_getFinalization` height lookups across all HTTP and WS
+    /// connections. Further ones fail with the server-busy error. IPC is not limited.
     #[arg(
         long = "rpc.consensus-max-concurrent-lookups",
         value_name = "COUNT",

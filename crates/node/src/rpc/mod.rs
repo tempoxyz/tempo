@@ -3,6 +3,7 @@ pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
+pub mod limit;
 pub mod operator;
 pub mod simulate;
 pub mod token;

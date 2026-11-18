@@ -25,7 +25,6 @@ use jsonrpsee::{
     },
 };
 use parking_lot::Mutex;
-use reth_metrics::{Metrics, metrics::Counter};
 use tempo_alloy::TempoNetwork;
 use tokio::sync::Semaphore;
 
@@ -75,7 +74,7 @@ pub trait TempoConsensusApi {
     ///
     /// Use `"latest"` to get the most recent finalization, or `{"height": N}` for a specific height.
     /// The node answers a limited number of height queries at a time. Further ones fail with the
-    /// server-busy error and can be retried.
+    /// server-busy error and can be retried; see [`crate::rpc::limit`].
     #[method(name = "getFinalization")]
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock>;
 
@@ -128,31 +127,20 @@ pub const DEFAULT_MAX_SUBSCRIPTIONS: NonZeroUsize = NonZeroUsize::new(256).unwra
 /// client cannot take every slot of the node-wide cap.
 pub const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
-/// Default cap on `consensus_getFinalization` height lookups in flight at once, across all
-/// connections and transports.
-///
-/// Each one is a request to the marshal, so this bounds how many of them the marshal has queued.
-/// A follower filling a gap keeps 20 outstanding.
-pub const DEFAULT_MAX_CONCURRENT_LOOKUPS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
-
-/// Caps on concurrent `consensus_subscribe` subscriptions and `consensus_getFinalization` height
-/// lookups.
+/// Caps on concurrent `consensus_subscribe` subscriptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Limits {
-    /// Subscriptions across all connections and transports.
+pub struct SubscriptionLimits {
+    /// Across all connections and transports.
     pub max_subscriptions: NonZeroUsize,
-    /// Subscriptions on one HTTP or WS connection.
+    /// On one HTTP or WS connection.
     pub max_subscriptions_per_connection: NonZeroUsize,
-    /// Height lookups in flight across all connections and transports.
-    pub max_concurrent_lookups: NonZeroUsize,
 }
 
-impl Default for Limits {
+impl Default for SubscriptionLimits {
     fn default() -> Self {
         Self {
             max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
             max_subscriptions_per_connection: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
-            max_concurrent_lookups: DEFAULT_MAX_CONCURRENT_LOOKUPS,
         }
     }
 }
@@ -181,23 +169,11 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
-    /// One permit per height lookup in flight, shared by every connection. A lookup whose caller
-    /// went away gives its permit back: the marshal skips requests nobody waits for.
-    lookups: Arc<Semaphore>,
-    metrics: ConsensusRpcMetrics,
     /// One permit per live subscription, shared by every connection.
     subscriptions: Arc<Semaphore>,
     /// Live subscriptions per connection and their cap; `None` for transports without the cap
     /// (see [`Self::without_connection_cap`]).
     per_connection: Option<ConnectionCap>,
-}
-
-/// Metrics of the consensus RPC.
-#[derive(Metrics, Clone)]
-#[metrics(scope = "tempo_consensus_rpc")]
-struct ConsensusRpcMetrics {
-    /// `consensus_getFinalization` height lookups rejected because the lookup limit was reached.
-    lookups_rejected: Counter,
 }
 
 /// Live subscriptions per connection, and how many one connection may hold.
@@ -242,17 +218,9 @@ impl Drop for SubscriptionGuard {
 
 impl<I: ConsensusFeed> TempoConsensusRpc<I> {
     /// Create a new consensus RPC handler enforcing `limits`.
-    pub fn new(consensus_feed: I, limits: Limits) -> Self {
+    pub fn new(consensus_feed: I, limits: SubscriptionLimits) -> Self {
         Self {
             consensus_feed,
-            // A semaphore panics when created with more permits than it can hold.
-            lookups: Arc::new(Semaphore::new(
-                limits
-                    .max_concurrent_lookups
-                    .get()
-                    .min(Semaphore::MAX_PERMITS),
-            )),
-            metrics: ConsensusRpcMetrics::default(),
             subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
             per_connection: Some(ConnectionCap {
                 counts: Default::default(),
@@ -263,7 +231,7 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
 }
 
 impl<I: Clone> TempoConsensusRpc<I> {
-    /// Returns a handler sharing this one's global subscription and lookup caps but without the
+    /// Returns a handler sharing this one's global subscription cap but without the
     /// per-connection cap.
     ///
     /// Connection IDs are only unique within one server, so the per-connection cap must only be
@@ -271,8 +239,6 @@ impl<I: Clone> TempoConsensusRpc<I> {
     pub fn without_connection_cap(&self) -> Self {
         Self {
             consensus_feed: self.consensus_feed.clone(),
-            lookups: self.lookups.clone(),
-            metrics: self.metrics.clone(),
             subscriptions: self.subscriptions.clone(),
             per_connection: None,
         }
@@ -281,21 +247,6 @@ impl<I: Clone> TempoConsensusRpc<I> {
 
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
-        // `Latest` is answered from memory, only height lookups go to the marshal.
-        let _permit = match query {
-            Query::Latest => None,
-            Query::Height(_) => {
-                let Ok(permit) = self.lookups.try_acquire() else {
-                    self.metrics.lookups_rejected.increment(1);
-                    return Err(ErrorObject::owned(
-                        SERVER_IS_BUSY_CODE,
-                        "consensus lookup limit reached, try again later",
-                        None::<()>,
-                    ));
-                };
-                Some(permit)
-            }
-        };
         self.consensus_feed.get_finalization(query).await.into()
     }
 
