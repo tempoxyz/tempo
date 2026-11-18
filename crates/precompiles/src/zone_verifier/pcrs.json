@@ -7,5 +7,14 @@
       "1": "0cfa8adbf2c8842affa4e9d2bf3cd59ba3782c538ca5086c203d2382ed8b9945f289537c86dcbe52ac85057e8895fdbd",
       "2": "7cde50b7d313a691c03106281a84f6ae3c7bcdcffc8063bd1729d5f4969f535c508553c7102475bc1f02b97432ab56b9"
     }
+  },
+  "T14": {
+    "commit": "https://github.com/tempoxyz/tempo/commit/c8b89f9b6d9f011a8a277ab431183b2b105c4af7",
+    "image": "ghcr.io/tempoxyz/tempo-zone-prover@sha256:1b178741b0beda6a2acf2946332b96c8429d59fcc714af14202a8d15b104a7d9",
+    "pcrs": {
+      "0": "9f39c6eb8628230bd3aa04b36b6afc63580a44248a2350784a3802829be39f194a33a68f96399533651bce289e4bbc00",
+      "1": "0cfa8adbf2c8842affa4e9d2bf3cd59ba3782c538ca5086c203d2382ed8b9945f289537c86dcbe52ac85057e8895fdbd",
+      "2": "f59b8e8abaeb1acbbadf5a49df3910fdf300624498df8eac2160063d9e02f67b371c9433d59ceb5fe642e2edd692cbc2"
+    }
   }
 }
