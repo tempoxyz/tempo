@@ -646,6 +646,12 @@ where
                 self.deliveries_since_forkchoice += 1;
                 Err(error)
             }
+            BuildOutcome::Speculative(job) => {
+                self.deliveries_since_forkchoice += 1;
+                self.payload_jobs
+                    .push(run_payload_job(self.execution_node.clone(), job).boxed());
+                Ok(())
+            }
             BuildOutcome::Forkchoice(outcome) => {
                 self.deliveries_since_forkchoice += 1;
                 let submitted = outcome.response.is_some();
@@ -1280,7 +1286,9 @@ where
                 self.record_convergence_target(round, parent);
             }
             Command::Build(build) => {
-                self.record_convergence_target(build.context.round, build.context.parent);
+                if !build.speculative {
+                    self.record_convergence_target(build.context.round, build.context.parent);
+                }
                 // Cancellation discards the build work, not its parent target.
                 if build.response.is_canceled() {
                     return;
@@ -2379,6 +2387,8 @@ enum BuildOutcome {
     ParentDeliveryFailed(Report),
     /// The parent was VALID. The FCU may have succeeded, failed, or been skipped.
     Forkchoice(ForkchoiceOutcome),
+    /// The parent was VALID and a speculative build started on it.
+    Speculative(StartPayloadJob),
 }
 
 /// An FCU response and its build subscriber, if any. A stale update is not submitted.
@@ -2475,6 +2485,7 @@ async fn execute_build(
         context,
         attributes,
         deferred_ceremony_output,
+        speculative,
         mut response,
     } = *build;
     let mut attributes = *attributes;
@@ -2543,6 +2554,24 @@ async fn execute_build(
             }
         };
         attributes = attributes.with_dkg_ceremony_output(output);
+    }
+    if speculative {
+        return match execution_node
+            .build_payload(parent_digest.0, attributes)
+            .await
+        {
+            Ok(payload_id) => BuildOutcome::Speculative(StartPayloadJob {
+                cause,
+                payload_id,
+                response,
+            }),
+            Err(error) => {
+                warn!(%error, "failed starting the speculative build");
+                BuildOutcome::Aborted {
+                    delivery_attempted: true,
+                }
+            }
+        };
     }
     BuildOutcome::Forkchoice(
         execute_forkchoice(

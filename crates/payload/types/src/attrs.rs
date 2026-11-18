@@ -4,7 +4,10 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 use tempo_dkg_onchain_artifacts::CeremonyOutput;
 use tempo_primitives::TempoConsensusContext;
 
@@ -34,6 +37,10 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<(Duration, Instant)>,
+    /// Set for speculative builds: until it holds an instant, the build keeps
+    /// filling past its budget; from then, the budget counts from that instant.
+    #[serde(skip)]
+    release: Option<Arc<OnceLock<Instant>>>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -80,6 +87,7 @@ impl TempoPayloadAttributes {
                 target_gas_limit: None,
             },
             payload_build_budget: None,
+            release: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -124,6 +132,18 @@ impl TempoPayloadAttributes {
     pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
         self.payload_build_budget = Some((budget, Instant::now()));
         self
+    }
+
+    /// Makes the build fill until `release` is set; see [`Self::release`].
+    pub fn with_release(mut self, release: Arc<OnceLock<Instant>>) -> Self {
+        self.release = Some(release);
+        self
+    }
+
+    /// For speculative builds: `Some(None)` while the build may fill
+    /// indefinitely, `Some(Some(at))` once released at `at`.
+    pub fn release(&self) -> Option<Option<Instant>> {
+        self.release.as_ref().map(|release| release.get().copied())
     }
 
     /// Returns the remaining consensus-provided build budget, accounting for time

@@ -15,6 +15,7 @@ use commonware_runtime::{Clock, Metrics, Spawner};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::PayloadKind;
+use reth_payload_builder::BuildNewPayload;
 use reth_provider::{
     BlockHashReader as _, BlockReader as _, BlockSource, DatabaseProviderFactory as _,
     StageCheckpointReader as _,
@@ -130,6 +131,15 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
         &self,
         payload_id: PayloadId,
     ) -> impl Future<Output = Option<eyre::Result<TempoBuiltPayload>>> + Send + 'static;
+
+    /// Starts a payload build on `parent` without a forkchoice update.
+    fn build_payload(
+        &self,
+        _parent: B256,
+        _attributes: TempoPayloadAttributes,
+    ) -> impl Future<Output = eyre::Result<PayloadId>> + Send + 'static {
+        async { Err(eyre::eyre!("speculative builds are not supported")) }
+    }
 }
 
 /// The narrow marshal-actor capability used by the executor actor.
@@ -284,6 +294,21 @@ impl ExecutionLayer for Arc<TempoFullNode> {
                 .await
                 .map(|resolved| resolved.map_err(Into::into))
         }
+    }
+
+    fn build_payload(
+        &self,
+        parent_hash: B256,
+        attributes: TempoPayloadAttributes,
+    ) -> impl Future<Output = eyre::Result<PayloadId>> + Send + 'static {
+        let pending = self
+            .payload_builder_handle
+            .send_new_payload(BuildNewPayload {
+                attributes,
+                parent_hash,
+                resources: Default::default(),
+            });
+        async move { Ok(pending.await??) }
     }
 }
 

@@ -506,20 +506,29 @@ where
         let build_plan = payload_build_budget
             .map(|build_budget| self.estimator.build_plan(Instant::now(), build_budget));
         let validation_latency = build_plan.and_then(|plan| plan.validation_latency());
+        let mut idle_at_release = None;
         let block_build_stop_reason = loop {
             check_cancel!();
 
             if let Some(plan) = build_plan.as_ref() {
-                let elapsed = start.elapsed();
+                // A speculative build waits for transactions for free until
+                // proposed; its execution and replay still count.
+                let idle = match attributes.release() {
+                    Some(None) => Duration::ZERO,
+                    Some(Some(_)) => normal_transaction_fill_idle_elapsed.saturating_sub(
+                        *idle_at_release.get_or_insert(normal_transaction_fill_idle_elapsed),
+                    ),
+                    None => normal_transaction_fill_idle_elapsed,
+                };
+                let elapsed = start
+                    .elapsed()
+                    .saturating_sub(normal_transaction_fill_idle_elapsed)
+                    + idle;
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                let budget_decision = plan.decision(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    current_workload,
-                );
+                let budget_decision = plan.decision(elapsed, idle, current_workload);
                 if plan.exhausted(&budget_decision) {
                     debug!(
                         target: "payload_builder",
