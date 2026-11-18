@@ -419,6 +419,7 @@ where
                 }
 
                 Some((cause, block, ack)) = self.pending_finalized_blocks.next() => {
+                    ack.acknowledge();
                     let new_state = self
                         .handle_finalized_header(
                             cause,
@@ -449,7 +450,6 @@ where
                         }
                         None => false,
                     };
-                    ack.acknowledge();
                     if should_break {
                         break Ok(());
                     }
