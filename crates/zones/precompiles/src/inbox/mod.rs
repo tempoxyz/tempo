@@ -24,7 +24,6 @@ use tempo_contracts::zones::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
-    address_registry::AddressRegistry,
     error::TempoPrecompileError,
     storage::{Handler, Mapping, Slot, StorageCtx},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
@@ -565,8 +564,6 @@ impl ZoneInbox {
     /// Reverts with `PolicyForbids` when `to`'s receive policy blocks the Inbox, and otherwise
     /// with the token's own mint error.
     /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
-    /// +T15: A TIP-1022 virtual `to` is checked as its master, which the mint credits. An
-    /// unregistered one reverts with `VirtualAddressUnregistered`.
     fn mint(
         &mut self,
         token: Address,
@@ -574,13 +571,9 @@ impl ZoneInbox {
         amount: u128,
         memo: Option<B256>,
     ) -> Result<(), TempoPrecompileError> {
-        let receiver = if self.storage.spec().is_t15() {
-            AddressRegistry::new().resolve_recipient(to)?
-        } else {
-            to
-        };
+        // TODO: Resolve virtual addresses through `AddressRegistry`precompile once it activates.
         if TIP403Registry::new()
-            .validate_receive_policy(token, ZONE_INBOX_ADDRESS, receiver)?
+            .validate_receive_policy(token, ZONE_INBOX_ADDRESS, to)?
             .is_some()
         {
             return Err(TIP20Error::policy_forbids().into());

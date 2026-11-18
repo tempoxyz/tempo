@@ -1,7 +1,10 @@
+extern crate std;
+
 use super::*;
-use alloc::vec;
+use alloc::{format, vec};
 use alloy_primitives::{Address, B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::SolValue;
+use test_case::test_case;
 
 #[test]
 fn test_decryption_data_encoding_uses_trimmed_layout() {
@@ -90,4 +93,62 @@ fn test_router_callback_encoding_matches_tuple() {
         .abi_encode_params();
 
     assert_eq!(callback.abi_encode(), tuple_encoding);
+}
+
+/// The runtimes installed by the latest hardfork must be what `crates/zones/contracts` compiles
+/// to, so a Solidity change can't merge without a runtime constant to ship it. CBOR metadata is
+/// ignored, so comment-only edits don't need a new runtime.
+///
+/// Needs `forge build --skip test` in `crates/zones/contracts`; the Zones Contracts workflow runs
+/// it. Point it at the next fork's state once a fork after T15 installs new runtimes.
+#[test_case("ZonePortal", ZONE_PORTAL_IMPL_ADDRESS)]
+#[test_case("Verifier", ZONE_VERIFIER_ADDRESS)]
+#[test_case("ZoneMessenger", ZONE_MESSENGER_ADDRESS)]
+#[ignore = "needs forge artifacts from crates/zones/contracts"]
+fn latest_zone_runtime_matches_solidity(contract: &str, address: Address) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../zones/contracts/out/{contract}.sol/{contract}.json"
+    ));
+    let artifact = std::fs::read(&path).unwrap_or_else(|err| {
+        panic!(
+            "can't read {}: {err}; run `forge build --skip test` in crates/zones/contracts",
+            path.display()
+        )
+    });
+    let artifact: serde_json::Value = serde_json::from_slice(&artifact).unwrap();
+    let compiled: Bytes = artifact["deployedBytecode"]["object"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let installed = t15_zone_factory_state(Address::ZERO)
+        .into_iter()
+        .find(|account| account.address == address)
+        .unwrap()
+        .code;
+
+    assert!(
+        without_metadata(&installed) == without_metadata(&compiled),
+        "the {contract} runtime installed by T15 doesn't match crates/zones/contracts: \
+         regenerate it from the forge artifact or install the new runtime in a new hardfork"
+    );
+}
+
+/// Strips the CBOR metadata solc appends, `{"ipfs": <sha2-256 multihash>, "solc": <version>}`
+/// and its two-byte length, and fails on any other trailer, so bytes appended after the code
+/// can't pass as metadata.
+fn without_metadata(runtime: &[u8]) -> &[u8] {
+    const TRAILER_LEN: usize = 53;
+    let Some(code_len) = runtime.len().checked_sub(TRAILER_LEN) else {
+        panic!("runtime is shorter than solc's metadata trailer")
+    };
+    let (code, trailer) = runtime.split_at(code_len);
+    let is_solc_metadata = trailer[..10] == *b"\xa2\x64ipfs\x58\x22\x12\x20"
+        && trailer[42..48] == *b"\x64solc\x43"
+        && trailer[51..] == [0x00, 0x33];
+    assert!(
+        is_solc_metadata,
+        "runtime doesn't end in solc's ipfs and version metadata"
+    );
+    code
 }

@@ -40,13 +40,11 @@ RUN rm -rf /var/cache/dnf
 RUN install -d -m 0775 -o root -g "${PROVER_GID}" /run/nitro_enclaves /var/log/nitro_enclaves
 RUN install -m 0664 -o root -g "${PROVER_GID}" /dev/null /var/log/nitro_enclaves/nitro_enclaves.log
 
-ARG NITRO_HASH_ALGORITHM
 ARG NITRO_PCR0
 ARG NITRO_PCR1
 ARG NITRO_PCR2
 
-LABEL xyz.tempo.zone-prover.nitro.hash-algorithm="${NITRO_HASH_ALGORITHM}" \
-      xyz.tempo.zone-prover.nitro.pcr0="${NITRO_PCR0}" \
+LABEL xyz.tempo.zone-prover.nitro.pcr0="${NITRO_PCR0}" \
       xyz.tempo.zone-prover.nitro.pcr1="${NITRO_PCR1}" \
       xyz.tempo.zone-prover.nitro.pcr2="${NITRO_PCR2}"
 

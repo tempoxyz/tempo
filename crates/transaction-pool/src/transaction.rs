@@ -866,24 +866,22 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
-                || {
-                    matches!(
-                        err,
-                        HandlerError::InvalidChainId { .. }
-                            | HandlerError::MissingChainId
-                            | HandlerError::NonceOverflow
-                            | HandlerError::TxGasLimitGreaterThanCap { .. }
-                            | HandlerError::CreateInitCodeSizeLimit { .. }
-                            | HandlerError::EmptyAuthorizationList
-                            | HandlerError::EmptyBlobs
-                            | HandlerError::TooManyBlobs { .. }
-                            | HandlerError::BlobVersionNotSupported
-                            | HandlerError::PriorityFeeGreaterThanMaxFee
-                            | HandlerError::UnsupportedTransactionType(_)
-                            | HandlerError::WrongTransactionType { .. }
-                    )
-                },
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or(
+                matches!(
+                    err,
+                    HandlerError::InvalidChainId { .. }
+                        | HandlerError::MissingChainId
+                        | HandlerError::NonceOverflow
+                        | HandlerError::TxGasLimitGreaterThanCap { .. }
+                        | HandlerError::CreateInitCodeSizeLimit { .. }
+                        | HandlerError::EmptyAuthorizationList
+                        | HandlerError::EmptyBlobs
+                        | HandlerError::TooManyBlobs { .. }
+                        | HandlerError::BlobVersionNotSupported
+                        | HandlerError::PriorityFeeGreaterThanMaxFee
+                        | HandlerError::UnsupportedTransactionType(_)
+                        | HandlerError::WrongTransactionType { .. }
+                ),
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
