@@ -75,11 +75,6 @@ pub struct TempoArgs {
     )]
     pub(crate) follow_upstream_request_timeout: tempo_consensus::PositiveDuration,
 
-    /// DEPRECATED. Certification is now enabled by default in follow mode. Use
-    /// --follow.nocertify to disable. This argument is a no-op.
-    #[arg(long = "follow.experimental.certify", requires = "follow", hide = true)]
-    pub(crate) follow_experimental_certify: bool,
-
     /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
     ///
     /// The endpoint must return JSON in the format:
