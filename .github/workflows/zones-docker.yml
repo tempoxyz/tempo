@@ -1032,7 +1032,7 @@ jobs:
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
           # Runs that attest push only the per-commit sha- tags here; tag-companion-images
           # moves the rest once the digests are attested.
-          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) }}
+          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/pre-release/') || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) }}
         run: |
           set -euo pipefail
           : > "$RUNNER_TEMP/image-refs.txt"
@@ -1086,7 +1086,7 @@ jobs:
     name: Attest published companion images
     needs: publish-companion-images
     # Companion images from other refs and events stay unattested; attest-images.yml
-    # refuses any run that isn't a trusted main or release-tag run. Gated on the publish
+    # refuses any run that isn't a trusted main, rc/, pre-release/ or release-tag run. Gated on the publish
     # job's hold flag so held tags always get an attest job.
     if: needs.publish-companion-images.outputs.hold == 'true'
     permissions:
@@ -1418,7 +1418,7 @@ jobs:
       # Selected-ref dispatches from other refs still publish, unattested.
       - name: Require a trusted run to attest
         id: trusted-run
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/pre-release/') || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         env:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
@@ -1427,11 +1427,11 @@ jobs:
         run: |
           set -euo pipefail
           # Reusable workflows sign as themselves whoever calls them, so attest only
-          # for this repository's own trusted runs on main or a release tag.
+          # for this repository's own trusted runs on main, an rc/ or pre-release/ branch or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
           [[ "$REPO" == tempoxyz/tempo || "$REPO" == tempoxyz/tempo-private-fork ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
-          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$REF" == refs/heads/main || "$REF" == refs/heads/rc/* || "$REF" == refs/heads/pre-release/* || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
           [[ "$WORKFLOW_REF" =~ ^[^/]+/[^/]+/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ && "${WORKFLOW_REF%%/.github/*}" == "$REPO" ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
           echo "trusted=true" >> "$GITHUB_OUTPUT"
