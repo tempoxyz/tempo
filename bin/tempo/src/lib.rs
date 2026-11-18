@@ -34,6 +34,7 @@ pub mod cli;
 pub mod corpus;
 mod defaults;
 mod follow;
+mod goempo_dump;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -206,6 +207,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     }
 
     tempo_node::init_version_metadata();
+    {
+        let argv: Vec<String> = std::env::args().collect();
+        if argv.get(1).map(String::as_str) == Some("goempo-dump") {
+            return goempo_dump::run(&argv[2..]);
+        }
+    }
     defaults::init_defaults();
 
     // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
