@@ -155,7 +155,10 @@ impl Server {
         }
         let mut guard = self.round.lock().map_err(|_| eyre!("round lock poisoned"))?;
         let result = (|| {
-            let round = guard.as_mut().ok_or_else(|| eyre!("no active round"))?;
+            let Some(round) = guard.as_mut() else {
+                // Only the original failure may report an error and terminate the server.
+                return Ok(Response::Rejected { reason: "no active round".into() });
+            };
             match request {
                 Request::StateSummary => round.summary(),
                 Request::SubmitWrites { round: id, writes, collider } => {
@@ -814,13 +817,24 @@ mod tests {
             .unwrap();
         // Both connections queue behind the same round lock before either can build.
         let guard = server.round.lock().unwrap();
+        let journal = guard.as_ref().unwrap().collider_path.parent().unwrap().join("blocks.jsonl");
+        let before = fs::read(&journal).unwrap();
         let (ready, waiting) = mpsc::channel();
-        let mut errors = thread::scope(|scope| {
+        let (completed, responses) = mpsc::channel();
+        let (reported, report) = mpsc::channel();
+        let report = Mutex::new(report);
+        thread::scope(|scope| {
             let workers = (0..2)
                 .map(|_| {
                     scope.spawn(|| {
                         ready.send(()).unwrap();
-                        server.handle(Request::BuildBlock).unwrap_err().to_string()
+                        let result = server.handle(Request::BuildBlock);
+                        let failed = result.is_err();
+                        completed.send(result).unwrap();
+                        if failed {
+                            // Delay the fatal caller's reporting until the queued caller returns.
+                            report.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+                        }
                     })
                 })
                 .collect::<Vec<_>>();
@@ -828,17 +842,40 @@ mod tests {
                 waiting.recv_timeout(Duration::from_secs(5)).unwrap();
             }
             drop(guard);
-            workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+            let mut errors = Vec::new();
+            let mut rejections = Vec::new();
+            for _ in 0..2 {
+                match responses.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Err(error) => errors.push(error.to_string()),
+                    Ok(response) => rejections.push(serde_json::to_value(response).unwrap()),
+                }
+            }
+            assert_eq!(errors, vec![production_error()]);
+            assert_eq!(
+                rejections,
+                vec![json!({"result": "rejected", "reason": "no active round"})]
+            );
+            reported.send(()).unwrap();
+            for worker in workers {
+                worker.join().unwrap();
+            }
         });
-        errors.sort();
-        assert_eq!(errors, vec![production_error(), "no active round".to_owned()]);
         assert!(server.round.lock().unwrap().is_none());
         assert!(server.view.read().unwrap().is_none());
-        assert_eq!(
-            server.handle(Request::StateSummary).unwrap_err().to_string(),
-            "no active round"
-        );
-        assert_eq!(server.handle(Request::Flush).unwrap_err().to_string(), "no active round");
+        // Every request queued after the failure is nonfatal and leaves the journal untouched.
+        for request in [
+            Request::StateSummary,
+            Request::BuildBlock,
+            Request::CheckRoot,
+            Request::Flush,
+            Request::SubmitWrites { round: 0, writes: Vec::new(), collider: Collider::default() },
+        ] {
+            assert_eq!(
+                serde_json::to_value(server.handle(request).unwrap()).unwrap(),
+                json!({"result": "rejected", "reason": "no active round"})
+            );
+        }
+        assert_eq!(fs::read(journal).unwrap(), before);
         assert!(matches!(server.handle(Request::GetProof {
             round: 0, block: 0, targets: Vec::new(),
         }).unwrap(), Response::Rejected { reason } if reason == "round 0 is over"));
