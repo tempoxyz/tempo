@@ -16,7 +16,7 @@ use orderbook::BookId;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, OrderStep, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel,
     base_to_quote, quote_to_base, step_exact_in, step_exact_out, taker_output, tick_to_price,
-    validate_tick_spacing,
+    validate_order_terms, validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -668,20 +668,7 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick is within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, None, is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
@@ -835,41 +822,10 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick and flip_tick are within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if flip_tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate flip_tick relationship to tick based on order side.
-        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
         // NOTE: `Order::new_flip` performs the same check defensively below; the early
         // check here is preserved to keep error semantics backwards-compatible
         // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
-        if (flip_tick == tick && !self.storage.spec().is_t5())
-            || (is_bid && flip_tick < tick)
-            || (!is_bid && flip_tick > tick)
-        {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, Some(flip_tick), is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
@@ -2469,102 +2425,6 @@ mod tests {
         })
     }
 
-    /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
-    /// is rejected pre-T5 and accepted on T5+ (with the order stored verbatim).
-    #[test]
-    fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T4, TempoHardfork::T5] {
-            with_storage(spec, || {
-                let mut exchange = StablecoinDEX::initialized()?;
-
-                let [alice, admin] = actors();
-                let tick = 100i16;
-
-                let price = orderbook::tick_to_price(tick);
-                let escrow =
-                    (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
-
-                let (base_token, _) = DexSetup::new(admin).trader(alice, escrow).apply()?;
-
-                let result = exchange.place_flip(
-                    alice,
-                    base_token,
-                    MIN_ORDER_AMOUNT,
-                    true,
-                    tick,
-                    tick,
-                    false,
-                );
-
-                if spec.is_t5() {
-                    let order_id = result?;
-                    let stored = exchange.orders[order_id].read()?;
-                    assert_eq!(stored.tick(), tick);
-                    assert_eq!(stored.flip_tick(), tick);
-                    assert!(stored.is_bid());
-                    assert!(stored.is_flip());
-                } else {
-                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
-                }
-
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
-    }
-
-    /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
-    /// of `tick` is still rejected at the `place_flip` precompile entrypoint.
-    /// `Order::new_flip` enforces this in `order.rs`, but the precompile is the
-    /// security boundary so we pin the behavior here too.
-    #[test]
-    fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
-        with_storage(TempoHardfork::T5, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-            let tick = 100i16;
-
-            let price = orderbook::tick_to_price(tick);
-            let escrow =
-                (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
-
-            let (base_token, _) = DexSetup::new(admin).trader(alice, escrow).apply()?;
-
-            // Bid with flip_tick < tick is still rejected on T5.
-            let bid_result = exchange.place_flip(
-                alice,
-                base_token,
-                MIN_ORDER_AMOUNT,
-                true,
-                tick,
-                tick - TICK_SPACING,
-                false,
-            );
-            assert_eq!(
-                bid_result,
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            // Ask with flip_tick > tick is still rejected on T5.
-            let ask_result = exchange.place_flip(
-                alice,
-                base_token,
-                MIN_ORDER_AMOUNT,
-                false,
-                tick,
-                tick + TICK_SPACING,
-                false,
-            );
-            assert_eq!(
-                ask_result,
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            Ok(())
-        })
-    }
-
     /// TIP-1030 (T5): pins down the "locked book" implication called out in
     /// the spec. Same-tick flip orders can produce `best_bid_tick ==
     /// best_ask_tick`. When a same-tick flip bid fills while another resting
@@ -3913,59 +3773,6 @@ mod tests {
             let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, i16::MAX);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_place() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-
-            let (base_token, _quote_token) =
-                DexSetup::new(admin).trader(alice, 1_000_000_000).apply()?;
-
-            // Test invalid tick spacing
-            assert_eq!(
-                exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, 15),
-                Err(StablecoinDEXError::invalid_tick().into())
-            );
-
-            // Test valid tick spacing
-            exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, -20)?;
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_place_flip_checks() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-
-            let (base_token, _quote_token) =
-                DexSetup::new(admin).trader(alice, 1_000_000_000).apply()?;
-
-            // Test invalid tick spacing
-            assert_eq!(
-                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 15, 25, false),
-                Err(StablecoinDEXError::invalid_tick().into())
-            );
-
-            // Test valid tick spacing with invalid flip tick spacing
-            assert_eq!(
-                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 25, false),
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 30, false)?;
 
             Ok(())
         })

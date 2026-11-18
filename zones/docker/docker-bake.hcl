@@ -85,8 +85,13 @@ target "tempo-zone" {
     GIT_SHA = "${GIT_SHA}"
     VERSION = "${VERSION}"
   }
+  # Static so the Depot candidate and the clean rebuild keep the same image ID.
   labels = {
     "org.opencontainers.image.description" = "Production tempo-zone image verified against an independent clean image build."
+    "org.opencontainers.image.source" = "https://github.com/tempoxyz/tempo"
+    "org.opencontainers.image.url" = "https://github.com/tempoxyz/tempo"
+    "org.opencontainers.image.revision" = "${GIT_SHA}"
+    "org.opencontainers.image.licenses" = "Apache-2.0"
     "org.tempoxyz.reproducible.verification-scope" = "tempo-zone-image-id"
   }
   platforms = ["linux/amd64"]
