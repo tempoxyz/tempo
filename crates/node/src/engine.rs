@@ -58,34 +58,37 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     }
 }
 
-/// Engine validator that validates the header of a block before `TValidator` executes the block.
+/// Engine validator that validates the header of a block before the inner validator executes
+/// the block.
 ///
 /// The hardfork and the gas limits of an execution come from the header. reth validates the
 /// header on a background thread while it executes the block.
 #[derive(Debug)]
-pub struct EagerHeaderValidator<TValidator, TProvider, TConsensus> {
+pub struct EagerHeaderValidator<V, P, C> {
     /// Executes the blocks whose header is valid.
-    inner: TValidator,
+    inner: V,
     /// Reads the parent headers that the engine does not keep in memory.
-    provider: TProvider,
+    provider: P,
     /// The consensus rules that a header must satisfy.
-    consensus: TConsensus,
+    consensus: C,
 }
 
-impl<TValidator, TProvider, TConsensus> EagerHeaderValidator<TValidator, TProvider, TConsensus>
+impl<V, P, C> EagerHeaderValidator<V, P, C>
 where
-    TProvider: HeaderProvider<Header = TempoHeader>,
-    TConsensus: HeaderValidator<TempoHeader>,
+    P: HeaderProvider<Header = TempoHeader>,
+    C: HeaderValidator<TempoHeader>,
 {
     /// Validates `header` on its own and against its parent.
     ///
-    /// Returns `Ok` if the parent is unknown: the inner validator reports that without executing
-    /// the block.
+    /// Skips the validation against the parent if the parent is unknown: the inner validator
+    /// reports that without executing the block.
     fn validate_header(
         &self,
         header: &SealedHeader<TempoHeader>,
         state: &EngineApiTreeState<TempoPrimitives>,
     ) -> Result<(), InsertBlockErrorKind> {
+        self.consensus.validate_header(header)?;
+
         let parent_hash = header.parent_hash();
         let parent = match state.tree_state().sealed_header_by_hash(&parent_hash) {
             Some(parent) => parent,
@@ -95,27 +98,25 @@ where
             },
         };
 
-        self.consensus.validate_header(header)?;
         self.consensus
             .validate_header_against_parent(header, &parent)?;
         Ok(())
     }
 }
 
-impl<TPayload, TValidator, TProvider, TConsensus> EngineValidator<TPayload>
-    for EagerHeaderValidator<TValidator, TProvider, TConsensus>
+impl<T, V, P, C> EngineValidator<T> for EagerHeaderValidator<V, P, C>
 where
-    TPayload: PayloadTypes<
+    T: PayloadTypes<
             ExecutionData = TempoExecutionData,
             BuiltPayload: BuiltPayload<Primitives = TempoPrimitives>,
         >,
-    TValidator: EngineValidator<TPayload>,
-    TProvider: HeaderProvider<Header = TempoHeader> + Send + Sync + 'static,
-    TConsensus: HeaderValidator<TempoHeader> + Send + Sync + 'static,
+    V: EngineValidator<T>,
+    P: HeaderProvider<Header = TempoHeader> + Send + Sync + 'static,
+    C: HeaderValidator<TempoHeader> + Send + Sync + 'static,
 {
     fn validate_payload_attributes_against_header(
         &self,
-        attr: &TPayload::PayloadAttributes,
+        attr: &T::PayloadAttributes,
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
         self.inner
@@ -176,41 +177,39 @@ where
     }
 }
 
-impl<TValidator, TProvider, TConsensus> WaitForCaches
-    for EagerHeaderValidator<TValidator, TProvider, TConsensus>
+impl<V, P, C> WaitForCaches for EagerHeaderValidator<V, P, C>
 where
-    TValidator: WaitForCaches,
+    V: WaitForCaches,
 {
     fn wait_for_caches(&self) -> CacheWaitDurations {
         self.inner.wait_for_caches()
     }
 }
 
-/// Builds the engine validator of `TBuilder` inside an [`EagerHeaderValidator`].
+/// Builds the engine validator of the inner builder inside an [`EagerHeaderValidator`].
 #[derive(Clone, Debug, Default)]
-pub struct EagerHeaderValidatorBuilder<TBuilder> {
+pub struct EagerHeaderValidatorBuilder<B> {
     /// Builds the validator that executes blocks.
-    inner: TBuilder,
+    inner: B,
 }
 
-impl<TNode, TBuilder> EngineValidatorBuilder<TNode> for EagerHeaderValidatorBuilder<TBuilder>
+impl<N, B> EngineValidatorBuilder<N> for EagerHeaderValidatorBuilder<B>
 where
-    TNode: FullNodeComponents<
+    N: FullNodeComponents<
         Types: NodeTypes<
             Primitives = TempoPrimitives,
             Payload: PayloadTypes<ExecutionData = TempoExecutionData>,
         >,
     >,
-    TBuilder: EngineValidatorBuilder<TNode>,
+    B: EngineValidatorBuilder<N>,
 {
-    type EngineValidator =
-        EagerHeaderValidator<TBuilder::EngineValidator, TNode::Provider, TNode::Consensus>;
+    type EngineValidator = EagerHeaderValidator<B::EngineValidator, N::Provider, N::Consensus>;
 
     async fn build_tree_validator(
         self,
-        ctx: &AddOnsContext<'_, TNode>,
+        ctx: &AddOnsContext<'_, N>,
         tree_config: TreeConfig,
-        overlay_manager: OverlayManager<PrimitivesTy<TNode::Types>>,
+        overlay_manager: OverlayManager<PrimitivesTy<N::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         Ok(EagerHeaderValidator {
             inner: self
