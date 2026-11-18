@@ -296,7 +296,7 @@ impl ExpiringNonceSet {
 /// Retention follows finality, not recency. Consensus only builds on the finalized block or on
 /// unfinalized blocks, so every set a future block can start from is either:
 ///
-/// - the set of an unfinalized block this node executed or built: kept in [`Snapshots::pinned`]
+/// - the set of an unfinalized block this node executed or built: pinned
 ///   until finality passes its height, on every branch; or
 /// - the set of a canonical (finalized or persisted) block: kept, or rebuilt from the provider
 ///   through the [`ExpiringNonceSets::set_rebuilder`] hook when it is missing (after a restart).
