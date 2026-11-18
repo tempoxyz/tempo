@@ -374,10 +374,17 @@ class LedgerModel(unittest.TestCase):
             return self.receipts.get(params[0])
         raise AssertionError(method)
 
+    def block(self, url, tag):
+        number = int(tag, 16)
+        return make_block(number, txs=[txhash for txhash, receipt in self.receipts.items()
+                                       if int(receipt["blockNumber"], 16) == number])
+
     def check(self, height):
         with patch.object(driver, "rpc", side_effect=self.rpc), \
-                patch.object(self.ledger, "read", return_value=(dict(self.chain["balances"]), self.chain["supply"])):
+                patch.object(driver, "block", side_effect=self.block), \
+                patch.object(self.ledger, "read", return_value=(dict(self.chain["balances"]), self.chain["supply"])) as read:
             self.ledger.check("a", height)
+        return read
 
     def test_finalized_transfer_and_mint_are_applied(self):
         self.ledger.pending = {"t": dict(kind="transfer", sender=1, nonce=0, recipient=2, amount=30),
@@ -420,6 +427,25 @@ class LedgerModel(unittest.TestCase):
         self.receipts = {"t": {"blockNumber": "0xb", "status": "0x0"}}
         self.check(11)
         self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+
+    def test_lost_transactions_do_not_block_settling_or_sends(self):
+        # Transactions dropped from restarted pools never get receipts.
+        self.ledger.pending = {f"lost{i}": dict(kind="transfer", sender=1 + i % 16, nonce=i, recipient=2, amount=1)
+                               for i in range(1000)}
+        self.ledger.pending["t"] = dict(kind="transfer", sender=1, nonce=5000, recipient=2, amount=30)
+        self.receipts = {"t": {"blockNumber": "0xb", "status": "0x1"}}
+        self.chain["balances"].update({1: 70, 2: 130})
+        self.check(11)
+        self.assertIn((True, "Token balances and supply match the finalized ledger"), self.checks)
+        self.assertNotIn("t", self.ledger.pending)
+        self.assertNotIn("lost0", self.ledger.pending)
+        self.assertIn("lost1", self.ledger.pending)
+        self.assertFalse(hasattr(driver, "MAX_PENDING"))
+
+    def test_settling_is_bounded_per_check(self):
+        read = self.check(10 + driver.SETTLE_BLOCKS + 50)
+        self.assertEqual(self.ledger.height, 10 + driver.SETTLE_BLOCKS)
+        self.assertEqual(read.call_args.args[1], 10 + driver.SETTLE_BLOCKS)
 
     def test_old_height_is_not_rechecked(self):
         self.check(10)

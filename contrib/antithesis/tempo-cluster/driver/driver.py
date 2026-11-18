@@ -27,7 +27,8 @@ MNEMONIC = "test test test test test test test test test test test junk"
 ISSUER = 0  # Genesis grants account 0 the issuer role on every token.
 TRACKED = tuple(range(1, 17))
 GAS_LIMIT = 500_000
-MAX_PENDING = 256
+# Finalized blocks settled per ledger check; bounds RPCs after a long stall.
+SETTLE_BLOCKS = 64
 MAX_AMOUNT = 1_000_000
 SELECTORS = {"balanceOf": "70a08231", "totalSupply": "18160ddd",
              "transfer": "a9059cbb", "mint": "40c10f19"}
@@ -155,8 +156,6 @@ class Ledger:
 
     def submit(self, url, kind, sender, recipient, amount):
         """Sign and send one transaction; False means its outcome is unknown."""
-        if len(self.pending) >= MAX_PENDING:
-            return False
         account = self.keys[sender]
         try:
             nonce = int(rpc(url, "eth_getTransactionCount", [account.address, "pending"]), 16)
@@ -178,32 +177,41 @@ class Ledger:
         return True
 
     def settle(self, url, height):
-        """Apply tracked transactions finalized at or below height. url must have finalized height."""
+        """Apply tracked transactions in finalized blocks up to height; return the settled height.
+
+        Walks finalized blocks instead of polling every pending receipt, so
+        transactions lost from restarted pools neither slow settling nor cap sends.
+        url must have finalized height.
+        """
         if self.height is None or height <= self.height:
-            return False
-        for txhash, tx in list(self.pending.items()):
-            receipt = rpc(url, "eth_getTransactionReceipt", [txhash])
-            if receipt is None or int(receipt["blockNumber"], 16) > height:
-                continue
-            del self.pending[txhash]
-            self.consumed[tx["sender"]] = max(self.consumed.get(tx["sender"], -1), tx["nonce"])
-            if receipt.get("status") != "0x1":
-                self.failed += 1
-                continue
-            self.applied += 1
-            if tx["kind"] == "mint":
-                self.supply += tx["amount"]
-            else:
-                self.expected[tx["sender"]] -= tx["amount"]
-            self.expected[tx["recipient"]] += tx["amount"]
+            return None
+        for number in range(self.height + 1, min(height, self.height + SETTLE_BLOCKS) + 1):
+            landed = [txhash for txhash in block(url, hex(number))["transactions"] if txhash in self.pending]
+            receipts = [rpc(url, "eth_getTransactionReceipt", [txhash]) for txhash in landed]
+            if any(receipt is None for receipt in receipts):
+                raise RpcError(f"missing receipt in finalized block {number}")
+            for txhash, receipt in zip(landed, receipts):
+                tx = self.pending.pop(txhash)
+                self.consumed[tx["sender"]] = max(self.consumed.get(tx["sender"], -1), tx["nonce"])
+                if receipt.get("status") != "0x1":
+                    self.failed += 1
+                    continue
+                self.applied += 1
+                if tx["kind"] == "mint":
+                    self.supply += tx["amount"]
+                else:
+                    self.expected[tx["sender"]] -= tx["amount"]
+                self.expected[tx["recipient"]] += tx["amount"]
+            self.height = number
+        # A tracked transaction whose nonce another one consumed can never land.
         for txhash, tx in list(self.pending.items()):
             if tx["nonce"] <= self.consumed.get(tx["sender"], -1):
                 del self.pending[txhash]
-        self.height = height
-        return True
+        return self.height
 
     def check(self, url, height):
-        if not self.settle(url, height):
+        height = self.settle(url, height)
+        if height is None:
             return
         balances, supply = self.read(url, height)
         assertions.always(balances == self.expected and supply == self.supply,
