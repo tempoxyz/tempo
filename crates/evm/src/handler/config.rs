@@ -162,31 +162,32 @@ pub fn tempo_execution_config(
     ExecutionConfig::for_spec_and_version(tempo_spec, version)
 }
 
-/// Selects the gas schedule of a transaction's lane, as the EVM's
-/// [`tx_version_selector`](Evm::tx_version_selector).
+/// Selects the gas parameters of a transaction's lane, as the EVM's
+/// [`tx_gas_params_selector`](Evm::tx_gas_params_selector).
 ///
 /// From T15, payment-lane transactions ([`TempoTxEnv::is_payment_v3`]) run with
-/// [`payment_lane_version`], which prices state loading separately. Other transactions, and every
-/// transaction before T15, run with the EVM's own schedule.
+/// [`payment_lane_gas_params`], which prices state loading separately. Other transactions, and
+/// every transaction before T15, run with the EVM's own gas parameters. Only gas parameters differ
+/// between lanes: the rest of the EVM's version applies to both.
 ///
-/// [`payment_lane_version`]: tempo_chainspec::gas_params::payment_lane_version
-pub fn lane_version(
+/// [`payment_lane_gas_params`]: tempo_chainspec::gas_params::payment_lane_gas_params
+pub fn lane_gas_params(
     spec: TempoHardfork,
-    general: &evm2::Version,
+    general: &evm2::version::GasParams,
     tx: &TempoTxEnv,
-) -> Option<evm2::Version> {
+) -> Option<evm2::version::GasParams> {
     if !tx.is_payment_v3() {
         return None;
     }
-    tempo_chainspec::gas_params::payment_lane_version(general, spec)
+    tempo_chainspec::gas_params::payment_lane_gas_params(general, spec)
 }
 
-/// Prices each transaction the EVM runs by its lane (see [`lane_version`]).
+/// Prices each transaction the EVM runs by its lane (see [`lane_gas_params`]).
 ///
 /// The EVM applies the selector itself, so block execution, payload building, RPC calls, gas
 /// estimation, simulation and tracing with inspectors all price a transaction the same way.
 pub fn install_lane_pricing(evm: &mut Evm<'_, TempoEvmTypes>) {
-    evm.set_tx_version_selector(Some(lane_version));
+    evm.set_tx_gas_params_selector(Some(lane_gas_params));
 }
 
 /// Builds a Tempo-configured EVM2 instance.

@@ -5,8 +5,8 @@ pub(crate) mod configurable_account;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
-    TempoTxResultExt, build_tempo_evm, install_lane_pricing, lane_version, tempo_execution_config,
-    tempo_opcode_config, tempo_tx_registry,
+    TempoTxResultExt, build_tempo_evm, install_lane_pricing, lane_gas_params,
+    tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
 use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{

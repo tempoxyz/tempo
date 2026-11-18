@@ -4713,7 +4713,7 @@ fn payment_transfer_gas(
             .apply()
     })?;
     if !lane_pricing {
-        evm.set_tx_version_selector(None);
+        evm.set_tx_gas_params_selector(None);
     }
     let input = ITIP20::transferCall {
         to: Address::repeat_byte(0x22),
@@ -4768,7 +4768,7 @@ fn test_payment_lane_priced_as_general_before_t15() -> eyre::Result<()> {
 /// A non-payment transaction, and a payment transaction whose access list is set, as
 /// `eth_createAccessList` does, run with the general schedule.
 #[test]
-fn test_lane_version_selects_payment_transactions_only() {
+fn test_lane_gas_params_selects_payment_transactions_only() {
     let caller = Address::repeat_byte(0x11);
     let general = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T15, false);
     let transfer = ITIP20::transferCall {
@@ -4784,15 +4784,15 @@ fn test_lane_version_selects_payment_transactions_only() {
         transfer.into(),
         1_000_000,
     );
-    assert!(crate::lane_version(TempoHardfork::T15, &general, &payment).is_some());
-    assert!(crate::lane_version(TempoHardfork::T14, &general, &payment).is_none());
+    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &payment).is_some());
+    assert!(crate::lane_gas_params(TempoHardfork::T14, &general.gas_params, &payment).is_none());
 
     reth_evm::TransactionEnvMut::set_access_list(
         &mut payment,
         alloy_eips::eip2930::AccessList(vec![Default::default()]),
     );
     assert!(!payment.is_payment_v3());
-    assert!(crate::lane_version(TempoHardfork::T15, &general, &payment).is_none());
+    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &payment).is_none());
 
     let call = legacy_tx_env(
         caller,
@@ -4801,5 +4801,5 @@ fn test_lane_version_selects_payment_transactions_only() {
         Bytes::new(),
         1_000_000,
     );
-    assert!(crate::lane_version(TempoHardfork::T15, &general, &call).is_none());
+    assert!(crate::lane_gas_params(TempoHardfork::T15, &general.gas_params, &call).is_none());
 }
