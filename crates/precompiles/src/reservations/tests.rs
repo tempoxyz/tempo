@@ -1336,6 +1336,31 @@ fn test_slots_per_operation() -> eyre::Result<()> {
     Ok(())
 }
 
+/// An owner with one hold at a time, as most cardholders are, pays three slots per hold: the
+/// two record slots and the position slot, which empties and is deleted with the last record.
+#[test]
+fn test_slots_single_hold_cycle() -> eyre::Result<()> {
+    let mut storage = new_storage();
+    let count = |storage: &HashMapStorageProvider| storage.nonzero_slot_count(RESERVATIONS_ADDRESS);
+    let mut f = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
+        let mut f = Fixture::new(10_000)?;
+        f.approve(5_000, 0)?;
+        Ok(f)
+    })?;
+    let empty = count(&storage);
+    for _ in 0..3 {
+        let id = B256::random();
+        let before = count(&storage);
+        StorageCtx::enter(&mut storage, || f.hold_from(id, 100))?;
+        assert_eq!(count(&storage) - before, 3);
+        StorageCtx::enter(&mut storage, || {
+            f.capture_of(f.payee, f.holder, id, 100, true)
+        })?;
+        assert_eq!(count(&storage), empty);
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
