@@ -280,7 +280,7 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         for &token in tokens {
-            self.orgs[org].l1_targets[token][target].write(rules)?;
+            self.orgs[org].l1[token].targets[target].write(rules)?;
             self.emit_event(IZoneIdentity::L1TargetUpdated {
                 orgId: org,
                 target,
@@ -304,7 +304,7 @@ impl ZoneIdentity {
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
         for &token in tokens {
-            self.orgs[org].l1_policies[token].write(policy)?;
+            self.orgs[org].l1[token].policy.write(policy)?;
             self.emit_event(IZoneIdentity::L1PolicyUpdated {
                 orgId: org,
                 token,
@@ -369,7 +369,7 @@ impl ZoneIdentity {
         token: Address,
     ) -> ZoneResult<L1Target> {
         self.ensure_org_reader(caller, registrar, org)?;
-        Ok(self.orgs[org].l1_targets[token][target].read()?)
+        Ok(self.orgs[org].l1[token].targets[target].read()?)
     }
 
     /// `org`'s policy for `token`, for `org`'s admin or the registrar.
@@ -381,16 +381,13 @@ impl ZoneIdentity {
         token: Address,
     ) -> ZoneResult<L1Policy> {
         self.ensure_org_reader(caller, registrar, org)?;
-        Ok(self.orgs[org].l1_policies[token].read()?)
+        Ok(self.orgs[org].l1[token].policy.read()?)
     }
 
     /// `org`'s policy for `token` and its target entry for `l1`, always reading both slots.
     fn l1_rules(&self, org: u64, token: Address, l1: Address) -> ZoneResult<(L1Policy, L1Target)> {
-        let config = &self.orgs[org];
-        Ok((
-            config.l1_policies[token].read()?,
-            config.l1_targets[token][l1].read()?,
-        ))
+        let rules = &self.orgs[org].l1[token];
+        Ok((rules.policy.read()?, rules.targets[l1].read()?))
     }
 
     fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
@@ -445,10 +442,17 @@ pub struct Org {
     pub admin: Address,
     /// Both halves of the Zone edge from this org to another, keyed by receiving org and token.
     pub edges: Mapping<u64, Mapping<Address, Edge>>,
-    /// What this org's members may do with each Tempo address, keyed by token and address.
-    pub l1_targets: Mapping<Address, Mapping<Address, L1Target>>,
-    /// Which Tempo addresses this org's members may use without a target, keyed by token.
-    pub l1_policies: Mapping<Address, L1Policy>,
+    /// Which Tempo addresses this org's members may deposit from and withdraw to, keyed by token.
+    pub l1: Mapping<Address, L1Rules>,
+}
+
+/// One org's Tempo rules for one token.
+#[derive(Debug, Clone, Storable, Default)]
+pub struct L1Rules {
+    /// Which Tempo addresses members may use without a target.
+    pub policy: L1Policy,
+    /// What members may do with each listed Tempo address, keyed by address.
+    pub targets: Mapping<Address, L1Target>,
 }
 
 /// Both halves of the Zone edge between two orgs for one token, packed into one slot. A transfer
