@@ -60,3 +60,12 @@ crates/zones/spf/ @rkrasiuk @shekhirin @klkvr
 xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002
 zones/zone-genesis/ @mattsse @0xKitsune @klkvr @0xrusowsky
 zones/specs/ @dankrad @danrobinson
+
+# Zone runtime integrity: the runtimes zone hardforks install must match the
+# Solidity sources, checked by the runtime-bytecode job in zones-contracts.yml.
+/.github/workflows/zones-contracts.yml @legion2002 @rkrasiuk @0xalpharush
+/crates/contracts/src/zones.rs @legion2002 @0xrusowsky @0xalpharush
+/crates/contracts/src/zones/tests.rs @legion2002 @0xrusowsky @0xalpharush
+/crates/contracts/src/precompiles/zone_factory.rs @legion2002 @0xrusowsky @0xalpharush
+/.github/CODEOWNERS @rkrasiuk @mattsse @0xalpharush
+/review.yml @rkrasiuk @mattsse @0xalpharush
