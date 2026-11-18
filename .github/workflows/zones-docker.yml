@@ -588,17 +588,27 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           fi
-          # A release/* branch holds releases that backport fixes onto an
-          # earlier release; it is protected like main.
+          # zones/v* tags may also come from a protected release/* branch, which
+          # holds releases cut from an earlier Tempo release. Such a tag must be
+          # the highest Zones version, so the floating stable and major tags
+          # never move back. prover/v* tags stay on main only.
+          version="${tag#"$component"/v}"
+          highest_zones="$(
+            { git tag -l 'zones/v*' | sed 's#^zones/v##' | grep -v -- '-' || true; } |
+              { cat; echo "${version%%-*}"; } | sort -V | tail -n 1
+          )"
           on_protected_branch() {
+            git merge-base --is-ancestor "$1" refs/remotes/origin/main && return 0
+            [[ "$component" == zones && "${version%%-*}" == "$highest_zones" ]] || return 1
             [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
-              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
+              'refs/remotes/origin/release/*')" ]]
           }
           if ! on_protected_branch "$commit_sha"; then
             # Prepare Zones Release tags the commit on its pre-release branch,
             # which a squash merge keeps off main. Accept it only for zones/v*
-            # tags, as one commit on main that changes nothing but Zones
-            # version lines. prover/v* tags must point to a commit on main.
+            # tags, as one commit on main (or an accepted release/* branch)
+            # that changes nothing but Zones version lines. prover/v* tags must
+            # point to a commit on main.
             read -r -a ancestry <<< "$(git rev-list --parents -n 1 "$commit_sha")"
             parent="${ancestry[1]:-}"
             # Without rename detection a moved file shows as a deletion and an
@@ -615,7 +625,7 @@ jobs:
             if [[ "$component" != zones || "${#ancestry[@]}" -ne 2 ]] ||
                ! on_protected_branch "$parent" ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
-              echo "Release tag $tag does not point to a commit on main or a Zones version bump on one" >&2
+              echo "Release tag $tag does not point to a commit on main, a release/* branch for the highest Zones version, or a Zones version bump on one" >&2
               exit 1
             fi
           fi

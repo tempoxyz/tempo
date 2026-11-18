@@ -101,6 +101,24 @@ jobs:
             echo "::error::source_sha must be an ancestor of origin/main or an origin/release/* branch"
             exit 1
           fi
+          if git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+            pr_base=main
+          else
+            # A release/* source must be the highest Zones version, as Zones
+            # Docker Build requires, and its version PR targets that branch.
+            highest_zones="$(
+              { git ls-remote --tags --refs origin 'refs/tags/zones/v*' |
+                  sed 's#.*refs/tags/zones/v##' | grep -v -- '-' || true; } |
+                { cat; echo "$VERSION"; } | sort -V | tail -n 1
+            )"
+            if [[ "$highest_zones" != "$VERSION" ]]; then
+              echo "::error::a release/* source needs a version above every zones/v* tag (highest: ${highest_zones})"
+              exit 1
+            fi
+            pr_base="$(printf '%s\n' "$source_branches" | grep '^origin/release/' | head -n 1)"
+            pr_base="${pr_base#origin/}"
+          fi
+          echo "pr_base=${pr_base}" >> "$GITHUB_OUTPUT"
 
           # Every Zones crate shares one version, read from the tempo-zone binary.
           current_version="$(
@@ -346,6 +364,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_BRANCH: ${{ steps.release.outputs.release_branch }}
+          PR_BASE: ${{ steps.branch.outputs.pr_base }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -354,7 +373,7 @@ jobs:
           pr_url="$(
             gh pr list \
               --repo "$GITHUB_REPOSITORY" \
-              --base main \
+              --base "$PR_BASE" \
               --head "$RELEASE_BRANCH" \
               --state open \
               --json url \
@@ -365,7 +384,7 @@ jobs:
             pr_url="$(
               gh pr create \
                 --repo "$GITHUB_REPOSITORY" \
-                --base main \
+                --base "$PR_BASE" \
                 --head "$RELEASE_BRANCH" \
                 --draft \
                 --title "chore(zones): prepare zones/v${VERSION}" \
