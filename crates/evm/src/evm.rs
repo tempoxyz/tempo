@@ -496,6 +496,12 @@ mod runtime_tests {
             )),
         );
         initialize_zone_factory(&mut db, owner);
+        // The portal's deposit checkpoints call the TIP-1060 precompile, which Solidity only calls
+        // when it has code.
+        db.insert_account_info(
+            &tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
         let mut evm = configured_evm(TempoHardfork::T15, 0, false, db);
         StorageCtx::enter_evm(&mut evm, || {
             TIP20Setup::path_usd(admin)

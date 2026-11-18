@@ -107,15 +107,6 @@ impl L1PortalEvents {
         }
     }
 
-    /// Append only events consumed by `advanceTempo`.
-    ///
-    /// Key rotations and leadership transitions are applied during L1 ingestion and must not be
-    /// retained for a later operational import.
-    pub(crate) fn extend_operational(&mut self, mut other: Self) {
-        self.deposits.append(&mut other.deposits);
-        self.enabled_tokens.append(&mut other.enabled_tokens);
-    }
-
     /// Validate that `advanceTempo` processes every deposit and token enable observed in this
     /// block's verified L1 receipts, in canonical log order.
     ///

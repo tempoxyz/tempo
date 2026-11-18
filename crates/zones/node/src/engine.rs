@@ -90,9 +90,11 @@ impl std::fmt::Debug for ZoneStorageReader {
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::{
     DepositQueue, EncryptionKeyRing, FinalizedTarget, L1BlockDeposits, L1BlockTracker, L1Deposit,
+    fetch_range_len, state::L1StateProvider,
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
+use zone_primitives::deposit_queue::executable_len;
 use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
@@ -238,6 +240,8 @@ pub struct ZoneEngine {
     encryption_keys: EncryptionKeyRing,
     /// ZonePortal address on L1 — used as context in HKDF key derivation.
     portal_address: Address,
+    /// Cached L1 state, used to read the Portal's deposit checkpoints at each full import.
+    l1_state: L1StateProvider,
     /// Optional per-anchor leadership permit. `None` runs the legacy single-sequencer mode.
     production_permit: Option<ProductionPermit>,
     /// Proof WAL writer invoked after execution and before canonicalization.
@@ -259,6 +263,7 @@ impl ZoneEngine {
         fee_recipient: Address,
         encryption_keys: EncryptionKeyRing,
         portal_address: Address,
+        l1_state: L1StateProvider,
         proof_collector: Option<ProofCollectorHandle>,
     ) -> Self {
         Self {
@@ -271,6 +276,7 @@ impl ZoneEngine {
             fee_recipient,
             encryption_keys,
             portal_address,
+            l1_state,
             production_permit: None,
             proof_collector,
             deposit_allowlist: None,
@@ -434,12 +440,29 @@ impl ZoneEngine {
         let timestamp_secs = timestamp_millis / 1000;
         let timestamp_millis_part = timestamp_millis % 1000;
 
-        let tempo_import = if checkpoint_only {
-            TempoImport::CheckpointOnly(checkpoint_headers)
+        // `consumed` counts the owed entries a full import executes. The queue defers the rest.
+        let (tempo_import, consumed) = if checkpoint_only {
+            (TempoImport::CheckpointOnly(checkpoint_headers), 0)
         } else {
-            let portal_work = self
+            let owed = self.deposit_queue.owed_deposit_count(l1_num_hash)?;
+            let range_len = if self.chain_spec.tempo_hardfork_at(timestamp_secs).is_t15()
+                && !self.portal_address.is_zero()
+            {
+                fetch_range_len(&self.l1_state, self.portal_address, l1_num_hash, owed).await?
+            } else {
+                owed
+            };
+            let mut portal_work = self
                 .deposit_queue
-                .operational_work(l1_block.header.num_hash())?;
+                .operational_work(l1_num_hash, range_len)?;
+            // The Inbox executes the prefix within its weight budget. Pre-T15 ranges fit it whole.
+            let consumed = executable_len(
+                portal_work
+                    .iter()
+                    .flat_map(|block| &block.events.deposits)
+                    .map(L1Deposit::deposit_type),
+            );
+            let hashed_only = L1BlockDeposits::split_off_deposits(&mut portal_work, consumed);
             let senders = self.deposit_allowlist.as_ref().map(|_| {
                 portal_work
                     .iter()
@@ -453,6 +476,7 @@ impl ZoneEngine {
             });
             let mut prepared = L1BlockDeposits::prepare_many(
                 portal_work,
+                &hashed_only,
                 &self.encryption_keys,
                 self.portal_address,
             )
@@ -470,7 +494,7 @@ impl ZoneEngine {
                         .increment(rejected as u64);
                 }
             }
-            TempoImport::Full(Box::new(prepared))
+            (TempoImport::Full(Box::new(prepared)), consumed)
         };
 
         let attributes = ZonePayloadAttributes {
@@ -540,7 +564,8 @@ impl ZoneEngine {
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
-            self.deposit_queue.confirm_operational(l1_num_hash)?;
+            self.deposit_queue
+                .confirm_operational(l1_num_hash, consumed)?;
         }
         self.l1_block_tracker.prune_through(l1_num_hash.number);
         if let Some(permit) = &self.production_permit {

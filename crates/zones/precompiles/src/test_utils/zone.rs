@@ -199,6 +199,9 @@ impl ZoneEnv {
         self.write_portal(self.child_header.inner.number, |portal| {
             let head = portal.current_deposit_queue_hash.read()?;
             portal
+                .deposit_count
+                .write(portal.deposit_count.read()? + 1)?;
+            portal
                 .current_deposit_queue_hash
                 .write(keccak256((deposit_type, deposit, head).abi_encode_params()))
         });

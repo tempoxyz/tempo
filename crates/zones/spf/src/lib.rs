@@ -15,7 +15,7 @@ use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
 use zone_primitives::constants::{
-    MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
+    DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
     ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
 
@@ -458,7 +458,7 @@ fn validate_system_inputs(block: &ZoneBlock, index: usize) -> Result<(), Error> 
             enabled_tokens,
             ..
         } => {
-            if deposits.len() > MAX_UNPROCESSED_DEPOSITS
+            if deposits.len() > DEPOSITS_PER_BUCKET
                 || enabled_tokens.len() > MAX_UNPROCESSED_TOKEN_ENABLEMENTS
             {
                 return Err(Error::PortalWorkCapacityExceeded { block_index: index });
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn rejects_portal_work_above_capacity() {
         for (deposit_count, token_count) in [
-            (MAX_UNPROCESSED_DEPOSITS + 1, 0),
+            (DEPOSITS_PER_BUCKET + 1, 0),
             (0, MAX_UNPROCESSED_TOKEN_ENABLEMENTS + 1),
         ] {
             let block = ZoneBlock {

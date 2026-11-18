@@ -36,7 +36,7 @@ use zone_payload::{
     ZonePayloadTypes,
     abi::{IZoneInbox, ZONE_INBOX_ADDRESS},
 };
-use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
+use zone_primitives::{constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, deposit_queue::executable_len};
 use zone_prover::VerifierMode;
 use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
 
@@ -750,10 +750,10 @@ where
                 .wrap_err_with(|| {
                     format!("cannot defer checkpoint work from block {block_number}")
                 })?,
-            DecodedTempoImport::Full { .. } => self
+            DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor)
+                .confirm_operational_through(anchor, executed_deposit_count(deposits))
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -804,8 +804,15 @@ fn reconcile_canonical_import(
         .num_hash();
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
-        DecodedTempoImport::Full { .. } => deposit_queue.confirm_operational_through(anchor),
+        DecodedTempoImport::Full { deposits, .. } => {
+            deposit_queue.confirm_operational_through(anchor, executed_deposit_count(deposits))
+        }
     }
+}
+
+/// Returns how many leading entries of a full import's range the Zone executed.
+fn executed_deposit_count(deposits: &[zone_payload::abi::QueuedDeposit]) -> usize {
+    executable_len(deposits.iter().map(|deposit| deposit.depositType))
 }
 
 fn validate_full_portal_inputs(
@@ -814,7 +821,8 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let work = deposit_queue.operational_work(anchor)?;
+    // A full import's range is a prefix of the owed entries. Longer calldata fails the count check.
+    let work = deposit_queue.operational_work(anchor, deposits.len())?;
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {

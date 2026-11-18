@@ -67,6 +67,7 @@ jsonrpsee.workspace = true
 proptest.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true, default-features = true }
+test-case.workspace = true
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 zone-chainspec = { workspace = true, features = ["test-utils"] }

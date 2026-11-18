@@ -137,6 +137,8 @@ fn zone_portal_t13_surface() -> eyre::Result<AbiSurface> {
             zones::LegacyBatchSubmitted::abi().into(),
             ZonePortal::MAX_DEPOSITS_PER_TEMPO_BLOCKCall::abi().into(),
             ZonePortal::MAX_TOKENS_ENABLED_PER_TEMPO_BLOCKCall::abi().into(),
+            ZonePortal::MAX_UNPROCESSED_DEPOSITSCall::abi().into(),
+            ZonePortal::DepositBlockCapacityExceeded::abi().into(),
             zones::legacySubmitBatchCall::abi().into(),
         ]),
     }
@@ -169,7 +171,11 @@ const INTERFACES: &[InterfaceSpec] = &[
         artifact_name: "IZonePortal",
         source: "IZone.sol",
         rust: zone_portal_t13_surface,
-        ignored_functions: &[],
+        // Rust binds one overload per name so call types stay unsuffixed.
+        ignored_functions: &[
+            "deposit(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address,uint128) returns (bytes32) [nonpayable]",
+            "depositEncrypted(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address) returns (bytes32) [nonpayable]",
+        ],
     },
 ];
 

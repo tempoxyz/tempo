@@ -249,7 +249,7 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
     let mut code = portal.code.as_ref().unwrap().to_vec();
     // (2**160 - 1) & sload(16): this unique sequence loads the proof-call target.
     // Replace PUSH1 0x10; SLOAD with PUSH2 0xBEEF, preserving all jump offsets.
-    const VERIFIER_LOAD: [u8; 13] = alloy_primitives::hex!("600160a01b6001900360105416");
+    const VERIFIER_LOAD: [u8; 11] = alloy_primitives::hex!("60018060a01b0360105416");
     let mut matches = code
         .windows(VERIFIER_LOAD.len())
         .enumerate()
@@ -258,7 +258,7 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
         .next()
         .ok_or_else(|| eyre::eyre!("portal verifier load changed"))?;
     eyre::ensure!(matches.next().is_none(), "ambiguous portal verifier load");
-    code[offset + 9..offset + 12].copy_from_slice(&[0x61, 0xbe, 0xef]);
+    code[offset + 7..offset + 10].copy_from_slice(&[0x61, 0xbe, 0xef]);
     portal.code = Some(code.into());
 
     // The native factory requires the initial token's TIP-403 policy binding to exist.
@@ -1327,6 +1327,12 @@ impl ZoneTestNode {
                 sequencer_signer.address(),
                 deposit_decryption_keys,
                 portal_address,
+                zone_l1::state::L1StateProvider::new_raw(
+                    Default::default(),
+                    l1_state_cache.clone(),
+                    l1_provider.clone(),
+                    tokio::runtime::Handle::current(),
+                ),
                 None,
             )
             .with_deposit_allowlist(deposit_allowlist)
@@ -2547,6 +2553,8 @@ impl WithdrawalArgs {
             encrypted: args.encrypted,
             tempo_refund_recipient: args.tempo_refund_recipient,
             min_amount_out: args.min_amount_out,
+            // Tests accept any downstream deposit fee.
+            max_fee: u128::MAX,
         }
         .abi_encode();
 

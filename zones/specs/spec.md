@@ -533,9 +533,9 @@ currentDepositQueueHash = keccak256(abi.encode(DepositType.Deposit, deposit, cur
 
 The newest deposit is always outermost, making onchain addition O(1). The zone tracks its own `processedDepositQueueHash` and `processedDepositNumber` in state. During `advanceTempo()`, the zone processes deposits oldest-first, rebuilding the hash chain and validating that the result matches `currentDepositQueueHash` read from Tempo L1 at the zone's finalized checkpoint.
 
-At most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load.
+Before T15, at most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load. Before T15, `advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint and must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
 
-`advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint. The call must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
+From T15 (TIP-1171), the queue is unbounded. Each full zone block receives at most `DEPOSITS_PER_BUCKET` (230) entries after `processedDepositNumber`, ending at the queue head or the next portal checkpoint, executes the prefix that fits `MAX_DEPOSIT_WEIGHT_PER_BLOCK` (230), and only hashes the rest. Deposits pay a congestion premium of up to `CONGESTION_MAX_FEE`; the `maxFee` overloads revert with `FeeTooHigh` above the caller's cap.
 
 After a batch is accepted, the portal updates `lastSyncedTempoBlockNumber` to record how far Tempo state was synced, and updates `lastProcessedDepositNumber` from the proven `DepositQueueTransition`. Users should track deposit inclusion by deposit number: `DepositMade` emits `depositNumber`, `ZoneInbox.TempoAdvanced` emits the inbox's `lastProcessedDepositNumber`, and `ZonePortal.BatchSubmitted` emits the accepted portal value. A deposit with number `N` is processed once `lastProcessedDepositNumber >= N`.
 
@@ -783,7 +783,7 @@ When `submitBatch` includes a non-zero `withdrawalQueueHash`, the current `tail`
 
 The sequencer processes ordered withdrawals atomically on Tempo by calling `processWithdrawals(withdrawals, remainingQueue)` on the portal. `remainingQueue` is the queue suffix after the last supplied withdrawal, or `0x00` when the call exhausts the current slot. The portal derives each intermediate queue hash by folding the withdrawals backward from that suffix, then verifies and processes them in order.
 
-Before each call, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes.
+Before T15, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity before each call. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes. From T15, `processWithdrawals` has no capacity check.
 
 The portal dequeues before executing the withdrawal, then independently requires `withdrawal.token` to be enabled. Failed callbacks roll back in an external self-call and become bounce-backs, so the dequeue remains committed and cannot block the FIFO. If `remainingQueue` is zero (last item in the slot), processing deletes the slot and advances `head`; otherwise it updates the slot to `remainingQueue`.
 
@@ -1437,9 +1437,9 @@ The stateless execution function must reject the witness on any failed check, mi
 6. **Execute the opening system transaction.**
    For `CheckpointOnly`, execute `ZoneInbox.advanceTempoHeaders(headers)`. It advances only the authenticated checkpoint and is the block's sole transaction.
 
-   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most `MAX_UNPROCESSED_DEPOSITS` (230) deposits and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
+   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most 230 deposits (`MAX_UNPROCESSED_DEPOSITS` before T15, `DEPOSITS_PER_BUCKET` from T15) and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
 
-   Process deposits oldest-first under the [Deposit Queue](#deposit-queue) rules. Every encrypted user deposit consumes exactly one `DecryptionData` entry in deposit order; missing or extra entries make the system transaction revert. Verify the Chaum-Pedersen proof and AES-GCM ciphertext as described in [Onchain Decryption Verification](#onchain-decryption-verification). Invalid encryption or a failed recipient mint enqueues a bounce-back, while malformed queue inputs or inconsistent queue commitments reject the witness. Token initialization precedes deposit processing. In either import form, the opening transaction must leave `TempoState.tempoBlockHash` equal to `keccak256` of the final imported header. All system calldata, logs, receipts, and state changes contribute to the resulting block hash.
+   Process deposits oldest-first under the [Deposit Queue](#deposit-queue) rules. From T15, hashed-only entries consume no `DecryptionData`. Every executed encrypted user deposit consumes exactly one `DecryptionData` entry in deposit order; missing or extra entries make the system transaction revert. Verify the Chaum-Pedersen proof and AES-GCM ciphertext as described in [Onchain Decryption Verification](#onchain-decryption-verification). Invalid encryption or a failed recipient mint enqueues a bounce-back, while malformed queue inputs or inconsistent queue commitments reject the witness. Token initialization precedes deposit processing. In either import form, the opening transaction must leave `TempoState.tempoBlockHash` equal to `keccak256` of the final imported header. All system calldata, logs, receipts, and state changes contribute to the resulting block hash.
 
 7. **Execute user transactions.**
    Decode each supplied byte string as one complete signed Tempo EIP-2718 envelope, reject system transactions in the user list, recover its signer, and execute the transactions in order under the current zone EVM environment.
@@ -1938,7 +1938,8 @@ interface IZonePortal {
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
     error InvalidProofOfPossession();
     error DepositTooSmall();
-    error DepositBlockCapacityExceeded(uint64 maximum);
+    error DepositBlockCapacityExceeded(uint64 maximum); // before T15
+    error FeeTooHigh(uint128 fee, uint128 maxFee); // T15+
     error TokenEnablementBlockCapacityExceeded(uint64 maximum);
     error TokenMetadataTooLong();
     error GasFeeRateTooHigh();
@@ -1957,7 +1958,11 @@ interface IZonePortal {
     error StaleLeadershipEpoch(uint64 expected, uint64 actual);
 
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
-    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64); // before T15
+    function DEPOSITS_PER_BUCKET() external view returns (uint64); // T15+
+    function CONGESTION_TIER_WEIGHT() external view returns (uint64); // T15+
+    function CONGESTION_MAX_TIER() external view returns (uint64); // T15+
+    function CONGESTION_MAX_FEE() external view returns (uint128); // T15+
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
     function MAX_TOKEN_METADATA_BYTES() external view returns (uint256);
     function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
@@ -2010,6 +2015,17 @@ interface IZonePortal {
         address token, uint128 amount, uint256 keyIndex,
         DepositPayload calldata encrypted, address tempoRefundRecipient
     ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function deposit(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function depositEncrypted(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev From T15, includes the congestion premium for the next block.
     function calculateDepositFee() external view returns (uint128 fee);
     function calculateBouncebackFee() external view returns (uint128 fee);
     function bouncebackGas() external view returns (uint64);

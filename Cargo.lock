@@ -17350,7 +17350,9 @@ dependencies = [
  "serde_json",
  "tempo-alloy",
  "tempo-contracts",
+ "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -17577,6 +17579,7 @@ dependencies = [
  "serde",
  "tempo-contracts",
  "tempo-hardfork",
+ "test-case",
  "thiserror 2.0.21",
 ]
 
@@ -17690,6 +17693,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

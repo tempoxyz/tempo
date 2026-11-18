@@ -150,7 +150,7 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
             l1_fetch_concurrency: 1,
             retry_connection_interval: Duration::from_secs(1),
             retain_portal_evidence: false,
-            deferred_work_start: None,
+            deferred_work: None,
         },
         zone_provider,
         deposit_queue: DepositQueue::default(),
@@ -1430,9 +1430,9 @@ fn confirm_operational_through_is_idempotent_and_drains_stale_entries() {
             .unwrap();
     }
 
-    queue.confirm_operational_through(anchor).unwrap();
+    queue.confirm_operational_through(anchor, 0).unwrap();
     assert!(queue.peek().is_none());
-    queue.confirm_operational_through(anchor).unwrap();
+    queue.confirm_operational_through(anchor, 0).unwrap();
 }
 
 #[test]
@@ -1450,10 +1450,20 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
     queue.defer_through(second.num_hash()).unwrap();
     queue.defer_through(second.num_hash()).unwrap();
     assert_eq!(queue.peek().unwrap().header.num_hash(), third.num_hash());
-    assert_eq!(queue.operational_work(third.num_hash()).unwrap().len(), 2);
+    assert_eq!(
+        queue
+            .operational_work(third.num_hash(), usize::MAX)
+            .unwrap()
+            .len(),
+        2
+    );
 
-    queue.confirm_operational_through(third.num_hash()).unwrap();
-    queue.confirm_operational_through(third.num_hash()).unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
     assert!(queue.peek().is_none());
 
     let fourth = SealedHeader::seal_slow(make_chained_header(4, third.hash()));
@@ -1467,9 +1477,11 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
         .unwrap();
 
     // A late replay of block 3 must preserve block 4's newer deferred work.
-    queue.confirm_operational_through(third.num_hash()).unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
     let fifth = queue.peek().unwrap().header.num_hash();
-    assert_eq!(queue.operational_work(fifth).unwrap().len(), 2);
+    assert_eq!(queue.operational_work(fifth, usize::MAX).unwrap().len(), 2);
 }
 
 #[test]
@@ -1489,7 +1501,9 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     let second = queue.peek().unwrap();
     queue.defer_through(second.header.num_hash()).unwrap();
     let current = queue.peek().unwrap();
-    let work = queue.operational_work(current.header.num_hash()).unwrap();
+    let work = queue
+        .operational_work(current.header.num_hash(), usize::MAX)
+        .unwrap();
     assert_eq!(
         work.iter()
             .map(|block| block.header.number())
@@ -1498,60 +1512,180 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     );
 
     queue
-        .confirm_operational(current.header.num_hash())
+        .confirm_operational(current.header.num_hash(), 0)
         .unwrap();
     assert!(queue.peek().is_none());
 }
 
-#[test]
-fn restart_can_seed_deferred_checkpoint_work() {
-    let queue = DepositQueue::new();
-    let h10 = make_test_header(10);
-    let h11 = make_chained_header(11, h10.hash_slow());
-    let mut deferred = crate::queue::DeferredPortalWork::new(L1BlockDeposits {
-        header: seal(h10),
-        events: L1PortalEvents::default(),
-    });
-    deferred.push(L1BlockDeposits {
-        header: seal(h11),
-        events: L1PortalEvents::default(),
-    });
-    queue.restore_deferred(deferred).unwrap();
+fn amounts<'a>(deposits: impl IntoIterator<Item = &'a L1Deposit>) -> Vec<u128> {
+    deposits
+        .into_iter()
+        .map(|deposit| match deposit {
+            L1Deposit::WithdrawalBounceBack(deposit) => deposit.amount,
+            L1Deposit::Deposit(deposit) => deposit.amount,
+            L1Deposit::ZoneVirtual(deposit) => deposit.amount,
+        })
+        .collect()
+}
 
-    let h12 = make_chained_header(12, queue.last_enqueued().unwrap().hash);
-    queue
-        .try_enqueue_sealed(seal(h12), L1PortalEvents::default())
-        .unwrap();
-    let current = queue.peek().unwrap();
-    assert_eq!(
+/// Amounts of the first `max_deposits` entries the next full import at `anchor` receives.
+fn owed_amounts(queue: &DepositQueue, anchor: NumHash, max_deposits: usize) -> Vec<u128> {
+    amounts(
         queue
-            .operational_work(current.header.num_hash())
+            .operational_work(anchor, max_deposits)
             .unwrap()
-            .len(),
-        2
-    );
+            .iter()
+            .flat_map(|block| &block.events.deposits),
+    )
+}
+
+fn events_with_amounts(amounts: impl IntoIterator<Item = u128>) -> L1PortalEvents {
+    L1PortalEvents::from_deposits(
+        amounts
+            .into_iter()
+            .map(make_withdrawal_bounce_back)
+            .collect(),
+    )
 }
 
 #[test]
-fn deferred_empty_blocks_use_constant_space() {
-    let mut queue = PendingDeposits::default();
-    let mut parent_hash = B256::ZERO;
-    for number in 1..=10_000 {
-        let header = if number == 1 {
-            make_test_header(number)
-        } else {
-            make_chained_header(number, parent_hash)
-        };
-        let header = seal(header);
-        let anchor = header.num_hash();
-        parent_hash = anchor.hash;
-        queue
-            .try_enqueue(header, L1PortalEvents::default())
-            .unwrap();
-        queue.defer_through(anchor).unwrap();
-    }
+fn full_import_carries_unconsumed_deposits_ahead_of_newer_blocks() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    let second = seal(make_chained_header(11, first.hash()));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1, 2, 3]))
+        .unwrap();
+    queue
+        .try_enqueue_sealed(second.clone(), events_with_amounts([4]))
+        .unwrap();
 
-    assert_eq!(queue.deferred_event_block_len(), 0);
+    queue.confirm_operational(first.num_hash(), 1).unwrap();
+    assert_eq!(
+        owed_amounts(&queue, second.num_hash(), usize::MAX),
+        [2, 3, 4]
+    );
+    assert_eq!(owed_amounts(&queue, second.num_hash(), 1), [2]);
+    assert_eq!(queue.owed_deposit_count(second.num_hash()).unwrap(), 3);
+
+    queue.confirm_operational(second.num_hash(), 3).unwrap();
+    assert!(queue.peek().is_none());
+    let third = seal(make_chained_header(12, second.hash()));
+    queue
+        .try_enqueue_sealed(third.clone(), L1PortalEvents::default())
+        .unwrap();
+    assert!(owed_amounts(&queue, third.num_hash(), usize::MAX).is_empty());
+}
+
+#[test]
+fn follower_reconciliation_carries_deposits_once() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    let second = seal(make_chained_header(11, first.hash()));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1, 2, 3]))
+        .unwrap();
+
+    queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .unwrap();
+    // A delayed duplicate of the same canonical import must not consume again.
+    queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .unwrap();
+    queue
+        .try_enqueue_sealed(second.clone(), events_with_amounts([4]))
+        .unwrap();
+    assert_eq!(owed_amounts(&queue, second.num_hash(), usize::MAX), [3, 4]);
+}
+
+#[test]
+fn full_import_cannot_consume_more_than_owed() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1]))
+        .unwrap();
+
+    let err = queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .expect_err("an import cannot process unobserved deposits");
+    assert_eq!(
+        err.to_string(),
+        "full import processed 2 deposits, but only 1 were owed"
+    );
+    assert_eq!(owed_amounts(&queue, first.num_hash(), usize::MAX), [1]);
+}
+
+#[test]
+fn split_off_deposits_keeps_the_queue_prefix_across_blocks() {
+    let first = seal(make_test_header(10));
+    let second = seal(make_chained_header(11, first.hash()));
+    let mut blocks = vec![
+        L1BlockDeposits {
+            header: first,
+            events: events_with_amounts([1, 2]),
+        },
+        L1BlockDeposits {
+            header: second,
+            events: events_with_amounts([3, 4]),
+        },
+    ];
+
+    assert_eq!(
+        amounts(&L1BlockDeposits::split_off_deposits(&mut blocks, 3)),
+        [4]
+    );
+    assert_eq!(blocks[0].events.deposits.len(), 2);
+    assert_eq!(blocks[1].events.deposits.len(), 1);
+    assert_eq!(
+        amounts(&L1BlockDeposits::split_off_deposits(&mut blocks, 0)),
+        [1, 2, 3]
+    );
+    assert!(blocks.iter().all(|block| block.events.deposits.is_empty()));
+}
+
+#[tokio::test]
+async fn prepare_many_appends_hashed_only_entries_without_decrypting_them() {
+    // No key is configured, so preparing this deposit for execution would fail.
+    let hashed_only = vec![L1Deposit::Deposit(Deposit {
+        token: address!("0x0000000000000000000000000000000000001000"),
+        sender: Address::with_last_byte(1),
+        amount: 1,
+        fee: 0,
+        tempo_refund_recipient: Address::with_last_byte(1),
+        key_index: U256::ZERO,
+        ephemeral_pubkey_x: B256::ZERO,
+        ephemeral_pubkey_y_parity: 2,
+        ciphertext: vec![0; 64],
+        nonce: [0; 12],
+        tag: [0; 16],
+    })];
+    let block = L1BlockDeposits {
+        header: seal(make_test_header(10)),
+        events: events_with_amounts([1]),
+    };
+
+    let prepared = L1BlockDeposits::prepare_many(
+        vec![block.clone()],
+        &hashed_only,
+        &EncryptionKeyRing::new([]),
+        Address::ZERO,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        prepared.queued_deposits,
+        block
+            .events
+            .deposits
+            .iter()
+            .chain(&hashed_only)
+            .map(L1Deposit::to_abi_queued_deposit)
+            .collect::<Vec<_>>()
+    );
+    assert!(prepared.decryptions.is_empty());
 }
 
 #[test]
@@ -1562,7 +1696,7 @@ fn confirm_operational_through_rejects_a_conflicting_anchor() {
         .unwrap();
 
     let err = queue
-        .confirm_operational_through(NumHash::new(10, B256::repeat_byte(0xab)))
+        .confirm_operational_through(NumHash::new(10, B256::repeat_byte(0xab)), 0)
         .expect_err("a different hash at the same height must fail");
     assert!(err.to_string().contains("deposit queue holds L1 block 10"));
     assert_eq!(queue.peek().unwrap().header.number(), 10);
@@ -2144,11 +2278,6 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
     );
     let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(false));
-
-    // The pause is applied during ingestion and must not be carried into operational work.
-    let mut operational = L1PortalEvents::default();
-    operational.extend_operational(events);
-    assert_eq!(operational.portal_pause, None);
 }
 
 #[test]
@@ -2312,4 +2441,66 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(tracker.latest(), Some(NumHash::new(tip, parent)));
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
+}
+
+/// Recovery through checkpoint block 11 after a full import at `start_block`. Block 10 appends
+/// entries 1-3 and block 11 entry 4.
+#[test_case::test_case(10, 2 => vec![3, 4])]
+#[test_case::test_case(11, 1 => Vec::<u128>::new())]
+#[tokio::test]
+async fn recovery_restores_owed_entries(start_block: u64, entries_in_block: usize) -> Vec<u128> {
+    let portal = address!("0x0000000000000000000000000000000000000ABC");
+    let asserter = Asserter::new();
+    let mut parent_hash = B256::ZERO;
+    let mut anchors = Vec::new();
+    for (number, amounts) in [(10, vec![1, 2, 3]), (11, vec![4])] {
+        let logs = amounts
+            .into_iter()
+            .map(|amount| Log {
+                inner: alloy_primitives::Log {
+                    address: portal,
+                    data: WithdrawalBounceBack {
+                        newCurrentDepositQueueHash: B256::ZERO,
+                        fallbackNonce: 0,
+                        token: Address::ZERO,
+                        amount,
+                        depositNumber: 0,
+                    }
+                    .encode_log_data(),
+                },
+                ..Default::default()
+            })
+            .collect();
+        let receipt = make_receipt_with_logs(number, B256::ZERO, logs);
+        let mut header = make_chained_header(number, parent_hash);
+        header.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+        header.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+        parent_hash = header.hash_slow();
+        anchors.push(NumHash::new(number, parent_hash));
+        if number >= start_block {
+            asserter.push_success(&Some(header_response(header)));
+            asserter.push_success(&Some(vec![receipt]));
+        }
+    }
+    let mut subscriber = test_subscriber_with_checkpoint(anchors[1]);
+    subscriber.config.deferred_work = Some(DeferredWorkRecovery {
+        last_operational: anchors[usize::try_from(start_block - 10).unwrap()],
+        start: DepositQueuePosition {
+            block_number: start_block,
+            entries_in_block,
+        },
+    });
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+    subscriber
+        .recover_deferred_work(&l1_provider)
+        .await
+        .unwrap();
+
+    let next = make_chained_header(12, anchors[1].hash);
+    let anchor = seal(next.clone()).num_hash();
+    subscriber
+        .deposit_queue
+        .enqueue(next, L1PortalEvents::default());
+    owed_amounts(&subscriber.deposit_queue, anchor, usize::MAX)
 }

@@ -16,9 +16,24 @@ pub struct L1BlockDeposits {
 }
 
 impl L1BlockDeposits {
+    /// Keeps the first `at` queue entries across `blocks` and returns the rest in queue order.
+    pub fn split_off_deposits(blocks: &mut [Self], at: usize) -> Vec<L1Deposit> {
+        let mut remaining = at;
+        let mut rest = Vec::new();
+        for block in blocks {
+            let kept = remaining.min(block.events.deposits.len());
+            rest.extend(block.events.deposits.drain(kept..));
+            remaining -= kept;
+        }
+        rest
+    }
+
     /// Prepare portal work accumulated across checkpoint-only blocks for one full import.
+    ///
+    /// `hashed_only` entries follow `blocks` in the range and are queued without decryption data.
     pub async fn prepare_many(
         blocks: Vec<Self>,
+        hashed_only: &[L1Deposit],
         encryption_keys: &EncryptionKeyRing,
         portal_address: Address,
     ) -> eyre::Result<PreparedL1Block> {
@@ -36,9 +51,12 @@ impl L1BlockDeposits {
             prepared.recipients.extend(next.recipients);
             prepared.enabled_tokens.extend(next.enabled_tokens);
         }
+        prepared
+            .queued_deposits
+            .extend(hashed_only.iter().map(L1Deposit::to_abi_queued_deposit));
         eyre::ensure!(
-            prepared.queued_deposits.len() <= zone_primitives::constants::MAX_UNPROCESSED_DEPOSITS,
-            "outstanding deposit suffix exceeds protocol capacity"
+            prepared.queued_deposits.len() <= zone_primitives::constants::DEPOSITS_PER_BUCKET,
+            "deposit range exceeds protocol capacity"
         );
         eyre::ensure!(
             prepared.enabled_tokens.len()
