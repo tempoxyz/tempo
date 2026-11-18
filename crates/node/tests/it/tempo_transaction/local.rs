@@ -2169,11 +2169,11 @@ async fn test_expiring_nonce_set_tracks_canonical_chain() -> eyre::Result<()> {
     .wrap_err("expiring nonce set of the tip was never stored")?;
 
     let at_tip = sets
-        .derive(tip_hash, tip.header.timestamp(), &[])
+        .derive(tip_hash, tip.header.timestamp(), &[], true)
         .ok_or_eyre("tip set is known")?;
     assert!(at_tip.contains(&entry));
     let expired = sets
-        .derive(tip_hash, valid_before, &[])
+        .derive(tip_hash, valid_before, &[], true)
         .ok_or_eyre("tip set is known")?;
     assert!(!expired.contains(&entry));
     Ok(())

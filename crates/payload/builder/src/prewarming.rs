@@ -389,9 +389,8 @@ where
         let parent_expiring_nonces = evm_env
             .spec
             .is_t16()
-            .then(|| evm_config.expiring_nonce_sets().get(parent_hash))
-            .flatten()
-            .filter(|set| set.is_authoritative());
+            .then(|| evm_config.expiring_nonce_sets().authoritative(parent_hash))
+            .flatten();
         Self {
             provider,
             executor,
@@ -407,15 +406,13 @@ where
 
     /// Returns whether `tx` is an expiring nonce transaction already in the parent's set.
     fn is_included_expiring_nonce(&self, tx: &BestTransaction) -> bool {
-        let Some(set) = self.parent_expiring_nonces.as_ref() else {
-            return false;
-        };
-        tempo_evm::expiring_nonces::ExpiringNonce::from_tx(
-            tx.transaction.inner(),
-            tx.transaction.sender(),
-            self.evm_env.spec,
-        )
-        .is_some_and(|entry| set.contains(&entry))
+        self.parent_expiring_nonces.as_ref().is_some_and(|set| {
+            set.contains_tx(
+                tx.transaction.inner(),
+                tx.transaction.sender(),
+                self.evm_env.spec,
+            )
+        })
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {

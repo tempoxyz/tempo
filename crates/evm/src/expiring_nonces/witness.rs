@@ -66,6 +66,10 @@ pub enum WitnessError {
         /// The entry's `valid_before`.
         valid_before: u64,
     },
+    /// The set does not keep the replay hashes witnesses need (see
+    /// [`ExpiringNonceSet::retain_witness_keys`]).
+    #[error("expiring nonce set does not keep witness keys")]
+    NoWitnessKeys,
     /// Generating a witness did not converge.
     #[error("expiring nonce witness generation did not converge")]
     Generation,
@@ -232,6 +236,9 @@ impl ExpiringNonceSet {
         params: &BlockParams,
         entries: &[ExpiringNonce],
     ) -> Result<Vec<Bytes>, WitnessError> {
+        if !self.witness_keys && !self.buckets.is_empty() {
+            return Err(WitnessError::NoWitnessKeys);
+        }
         // Start from the paths every block needs, then add the ones the transition asks for,
         // mostly the siblings that collapse when a bucket is deleted.
         let mut targets = BTreeMap::<WitnessTrie, BTreeSet<B256>>::new();
@@ -497,7 +504,7 @@ mod tests {
 
     /// A set with many buckets, built over 20 blocks; returns it and its last timestamp.
     fn populated() -> (ExpiringNonceSet, u64) {
-        let mut set = ExpiringNonceSet::default();
+        let mut set = ExpiringNonceSet::default().retain_witness_keys();
         let mut seed = 0;
         for timestamp in 100..120u64 {
             let entries: Vec<_> = (0..40)
@@ -542,7 +549,7 @@ mod tests {
 
     #[test]
     fn witness_verifies_single_bucket_and_empty_set() {
-        let mut set = ExpiringNonceSet::default();
+        let mut set = ExpiringNonceSet::default().retain_witness_keys();
         verify(&set, &params(99, 100), &[entry(1, 150)]);
         set.apply(100, &[entry(1, 150)]).unwrap();
         // Deleting the only bucket empties the set.
@@ -554,7 +561,7 @@ mod tests {
     fn witness_verifies_when_targets_bypass_root_extension() {
         // Buckets 1000 and 1001 share all but the last nibble, so the set trie's root is an
         // extension. Bucket 1200 diverges inside it, so its path never reaches the branch.
-        let mut set = ExpiringNonceSet::default();
+        let mut set = ExpiringNonceSet::default().retain_witness_keys();
         set.apply(900, &[entry(1, 1000), entry(2, 1001)]).unwrap();
         verify(&set, &params(900, 901), &[entry(3, 1200)]);
         verify(&set, &params(900, 901), &[]);
@@ -647,7 +654,7 @@ mod tests {
 
     #[test]
     fn window_is_enforced() {
-        let set = ExpiringNonceSet::default();
+        let set = ExpiringNonceSet::default().retain_witness_keys();
         let block = params(99, 100);
         for valid_before in [100, 401] {
             let result = PartialExpiringNonceSet::new(set.root(), [])

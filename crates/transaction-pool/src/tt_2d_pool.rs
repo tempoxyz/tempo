@@ -1427,13 +1427,13 @@ impl AA2dPool {
     /// From T16 (TIP-1173) an included expiring nonce transaction no longer writes its
     /// `expiringNonceSeen` slot, so [`Self::on_state_updates`] cannot see it: the pool removes it
     /// by the block's transaction hashes instead.
-    pub(crate) fn remove_mined_expiring_nonce_txs<'a>(
+    pub(crate) fn remove_mined_expiring_nonce_txs(
         &mut self,
-        mined: impl IntoIterator<Item = &'a B256>,
+        mined: impl IntoIterator<Item = B256>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
         for tx_hash in mined {
-            let Some(tx) = self.by_hash.get(tx_hash) else {
+            let Some(tx) = self.by_hash.get(&tx_hash) else {
                 continue;
             };
             if !tx.transaction.is_expiring_nonce() {

@@ -190,15 +190,9 @@ where
         let Some(sets) = self.expiring_nonce_sets.as_ref() else {
             return false;
         };
-        let Some(entry) = tempo_evm::expiring_nonces::ExpiringNonce::from_tx(
-            transaction.inner(),
-            transaction.sender(),
-            spec,
-        ) else {
-            return false;
-        };
         let tip_hash = self.cached_state.read().0;
-        sets.get(tip_hash).is_some_and(|set| set.contains(&entry))
+        sets.authoritative(tip_hash)
+            .is_some_and(|set| set.contains_tx(transaction.inner(), transaction.sender(), spec))
     }
 
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.

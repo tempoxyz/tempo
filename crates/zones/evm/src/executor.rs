@@ -213,7 +213,7 @@ impl<'a> ZoneBlockExecutor<'a> {
             ctx.block_hash,
             ctx.expiring_nonce_root,
             timestamp,
-            spec.is_t16(),
+            spec,
             t16_activation_window(chain_spec, timestamp, spec),
         );
         Self {
@@ -305,11 +305,9 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         let next_phase = self.phase.validate_transaction(recovered.tx())?;
 
         let tx_hash = *alloy_consensus::transaction::TxHashRef::tx_hash(recovered.tx());
-        let expiring_nonce = ExpiringNonce::from_tx(
-            recovered.tx(),
-            *recovered.signer(),
-            self.inner.evm().config_spec_id(),
-        );
+        let expiring_nonce = self
+            .expiring_nonces
+            .entry(recovered.tx(), *recovered.signer());
         if let Some(entry) = expiring_nonce.as_ref() {
             let state = self.inner.evm_mut().state_mut();
             self.expiring_nonces.check(tx_hash, entry, |slot| {

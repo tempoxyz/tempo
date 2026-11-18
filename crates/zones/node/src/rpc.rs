@@ -568,7 +568,7 @@ fn expiring_nonce_witness<P>(
 where
     P: HeaderProvider<Header = TempoHeader>,
 {
-    use tempo_evm::expiring_nonces::{BlockParams, ExpiringNonce, ExpiringNonceSet};
+    use tempo_evm::expiring_nonces::{BlockParams, ExpiringNonce};
 
     let timestamp = block.header().timestamp();
     let spec = evm_config.chain_spec().tempo_hardfork_at(timestamp);
@@ -580,18 +580,9 @@ where
         .ok_or_eyre("parent header of the witnessed block not found")?;
     let parent_set = evm_config
         .expiring_nonce_sets()
-        .get(block.parent_hash())
+        .parent(block.parent_hash(), true)
         .ok_or_eyre("expiring nonce set of the witnessed block's parent is unknown")?;
-    // The first T16 block starts from an empty set.
-    let parent_set = if parent_set.is_authoritative() {
-        parent_set
-    } else {
-        ExpiringNonceSet::default()
-    };
-    let entries: Vec<_> = block
-        .transactions_with_sender()
-        .filter_map(|(sender, tx)| ExpiringNonce::from_tx(tx, *sender, spec))
-        .collect();
+    let entries = ExpiringNonce::from_block(block, spec);
     let params = BlockParams {
         parent_timestamp: parent.timestamp(),
         timestamp,

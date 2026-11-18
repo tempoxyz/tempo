@@ -285,7 +285,7 @@ pub struct TempoBlockExecutor<'a> {
     block_gas_used: u64,
 
     /// The block's expiring nonce bookkeeping (TIP-1173).
-    expiring_nonces: BlockExpiringNonces,
+    pub(crate) expiring_nonces: BlockExpiringNonces,
 }
 
 impl<'a> TempoBlockExecutor<'a> {
@@ -312,7 +312,7 @@ impl<'a> TempoBlockExecutor<'a> {
             ctx.block_hash,
             ctx.expiring_nonce_root,
             timestamp,
-            spec.is_t16(),
+            spec,
             crate::expiring_nonces::t16_activation_window(chain_spec, timestamp, spec),
         );
         let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
@@ -919,8 +919,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
-        let expiring_nonce =
-            ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id());
+        let expiring_nonce = self.expiring_nonces.entry(original, *recovered.signer());
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -1004,8 +1003,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
-        let expiring_nonce =
-            ExpiringNonce::from_tx(original, *recovered.signer(), self.evm().config_spec_id());
+        let expiring_nonce = self.expiring_nonces.entry(original, *recovered.signer());
         if let Some(entry) = expiring_nonce.as_ref() {
             let state = self.inner.evm_mut().state_mut();
             self.expiring_nonces.check(tx_hash, entry, |slot| {
@@ -1088,7 +1086,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         let expiring_nonces = std::mem::replace(
             &mut self.expiring_nonces,
-            BlockExpiringNonces::new(None, B256::ZERO, None, None, 0, false, false),
+            BlockExpiringNonces::new(None, B256::ZERO, None, None, 0, Default::default(), false),
         );
 
         let block_gas_used = self.block_gas_used;

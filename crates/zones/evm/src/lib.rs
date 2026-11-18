@@ -179,6 +179,8 @@ where
         let tempo_chain_spec = chain_spec.inner.clone();
         let inner = TempoEvmConfig::new(tempo_chain_spec);
         let block_assembler = ZoneBlockAssembler::new(chain_spec.clone());
+        // Zone nodes serve expiring nonce witnesses (TIP-1173), which need each bucket's keys.
+        block_assembler.expiring_nonce_sets().retain_witness_keys();
         Self {
             inner,
             chain_spec,
