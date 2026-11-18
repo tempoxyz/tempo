@@ -1709,22 +1709,16 @@ fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
     P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
-    let zone_height = provider
-        .last_durable_block_num_hash()
-        .map_err(internal)?
-        .number;
-    let zone_header = provider
-        .sealed_header(zone_height)
-        .map_err(internal)?
-        .ok_or_else(|| JsonRpcError::internal("local canonical zone header is missing"))?;
+    // Both come from the database, so the tip is the block this node keeps after a restart.
+    let durable = provider.last_durable_block_num_hash().map_err(internal)?;
     let tempo_tip = provider
-        .state_by_block_hash(zone_header.hash())
+        .state_by_block_hash(durable.hash)
         .map_err(internal)?
         .tempo_num_hash()
         .map_err(internal)?;
     Ok(PeerTip {
-        zone_height,
-        zone_hash: zone_header.hash(),
+        zone_height: durable.number,
+        zone_hash: durable.hash,
         tempo_block_number: tempo_tip.number,
         tempo_block_hash: tempo_tip.hash,
     })

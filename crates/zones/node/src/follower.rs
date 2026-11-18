@@ -421,16 +421,31 @@ where
             .zoneHeight
             .try_into()
             .wrap_err("settlement height does not fit in u64")?;
-        let persisted_head = self
+        let durable = self
             .context
             .provider
             .last_durable_block_num_hash()
-            .wrap_err("failed reading persisted zone head")?
-            .number;
+            .wrap_err("failed reading persisted zone head")?;
+        let persisted_head = durable.number;
         eyre::ensure!(
             height <= persisted_head,
             "settlement proposal at height {height} is not durable; persisted head is {persisted_head}"
         );
+        if height == persisted_head {
+            // The attestation is rebuilt from the canonical header, which may be served from
+            // memory. At the durable tip it must be the block a restart keeps.
+            let canonical = self
+                .context
+                .provider
+                .sealed_header(height)?
+                .ok_or_eyre("durable zone header is missing")?
+                .hash();
+            eyre::ensure!(
+                canonical == durable.hash,
+                "canonical block {canonical} at durable height {height} is not the committed block {}",
+                durable.hash
+            );
+        }
         let verifier_mode = VerifierMode::try_from(proposal.verifierConfigHash)?;
         let expected = build_settlement_attestation(
             &self.context.provider,
