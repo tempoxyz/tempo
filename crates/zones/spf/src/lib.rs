@@ -34,6 +34,37 @@ pub use types::*;
 /// execution. The prover launches with TIP-1096, so every batch must end at a full
 /// block's withdrawal finalization boundary.
 pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<BatchOutput, Error> {
+    prove_zone_batch_with_observer(config, witness, &mut ())
+}
+
+/// Observes each Zone block a batch executes, in order.
+///
+/// Fuzzers and tests use it to check what the batch did, such as receipts and the storage each
+/// block changed, without the proof function exposing its state.
+pub trait BatchObserver {
+    /// Called after the block at `block_index` executes, before its header is assembled.
+    fn on_block(
+        &mut self,
+        block_index: usize,
+        output: &reth_execution_types::BlockExecutionOutput<tempo_primitives::TempoReceipt>,
+    );
+}
+
+impl BatchObserver for () {
+    fn on_block(
+        &mut self,
+        _block_index: usize,
+        _output: &reth_execution_types::BlockExecutionOutput<tempo_primitives::TempoReceipt>,
+    ) {
+    }
+}
+
+/// [`prove_zone_batch`], reporting each executed block to `observer`.
+pub fn prove_zone_batch_with_observer(
+    config: &SpfConfig,
+    witness: BatchWitness,
+    observer: &mut impl BatchObserver,
+) -> Result<BatchOutput, Error> {
     // The parent header is the committed starting point for this batch. Its
     // hash binds the witness to the previously submitted Zone block, and its
     // state root selects the initial Zone state.
@@ -181,6 +212,8 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
                 return Err(error);
             }
         };
+
+        observer.on_block(block_index, &executed_block.output);
 
         let state_root = zone_state
             .db

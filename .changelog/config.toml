@@ -43,6 +43,7 @@ ignore = [
     "zone-chainspec",
     "zone-checker",
     "zone-evm",
+    "zone-fuzz-harness",
     "zone-l1",
     "zone-node",
     "zone-p2p",

@@ -54,6 +54,7 @@ members = [
   "crates/zones/checker",
   "crates/zones/evm",
   "crates/zones/exithatch",
+  "crates/zones/fuzz-harness",
   "crates/zones/l1",
   "crates/zones/node",
   "crates/zones/p2p",

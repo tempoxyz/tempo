@@ -17320,6 +17320,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "zone-fuzz-harness"
+version = "1.18.4"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
+ "arbitrary",
+ "proptest",
+ "reth-chainspec",
+ "reth-execution-types",
+ "reth-trie-common",
+ "serde_json",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "zone-chainspec",
+ "zone-primitives",
+ "zone-spf",
+]
+
+[[package]]
 name = "zone-l1"
 version = "0.5.0"
 dependencies = [
