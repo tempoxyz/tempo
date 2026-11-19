@@ -1235,6 +1235,7 @@ impl ZoneTestNode {
                     withdrawal_poll_interval: Duration::from_secs(5),
                     withdrawal_batch_limits: Default::default(),
                     deposit_allowlist: deposit_allowlist.clone(),
+                    l1_fee_token: None,
                 });
             }
         }
@@ -3100,6 +3101,7 @@ pub(crate) async fn spawn_sequencer_with_config(
         outbox_address: ZONE_OUTBOX_ADDRESS,
         inbox_address: ZONE_INBOX_ADDRESS,
         batch_anchor_config,
+        l1_fee_token: None,
     };
 
     zone.spawn_sequencer(config, sequencer_signer).await

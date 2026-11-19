@@ -400,6 +400,7 @@ async fn configure_sequencing(
                 max_in_flight_batches: args.withdrawal_max_in_flight_batches,
             },
             deposit_allowlist,
+            l1_fee_token: args.l1_fee_token,
         });
     }
     if rpc_only && let Some(address) = args.deposit_allowlist_admin {
@@ -696,6 +697,16 @@ pub struct ZoneArgs {
     #[arg(long = "sequencer.enable-prover", env = "SEQUENCER_ENABLE_PROVER")]
     pub enable_prover: bool,
 
+    /// TIP-20 token the sequencer pays Tempo L1 transaction fees in, such as OUSD.
+    ///
+    /// Unset, L1 transactions use the signing account's fee token preference on L1.
+    #[arg(
+        long = "sequencer.l1-fee-token",
+        env = "SEQUENCER_L1_FEE_TOKEN",
+        value_name = "ADDRESS"
+    )]
+    pub l1_fee_token: Option<Address>,
+
     /// Route to an immutable prover release for each exact live L1 hardfork. Repeat per hardfork.
     #[arg(
         long = "sequencer.prover-address",
@@ -914,6 +925,22 @@ mod tests {
         .expect("zone database")
         .l1_state()
         .portal()
+    }
+
+    #[test]
+    fn l1_fee_token_is_optional() {
+        let base = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
+        let unset = ZoneArgsParser::try_parse_from(base).unwrap().zone;
+        assert_eq!(unset.l1_fee_token, None);
+
+        let ousd = address!("0x20c0000000000000000000006a37da5c996874be");
+        let set = ZoneArgsParser::try_parse_from(base.into_iter().chain([
+            "--sequencer.l1-fee-token",
+            "0x20c0000000000000000000006a37da5c996874be",
+        ]))
+        .unwrap()
+        .zone;
+        assert_eq!(set.l1_fee_token, Some(ousd));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_transport::TransportResult;
 use reth_chain_state::{CanonStateSubscriptions, PersistedBlockSubscriptions};
 use reth_storage_api::{BlockReader, StateProviderFactory};
-use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
+use tempo_alloy::{TempoNetwork, fillers::FeeTokenFiller, provider::ext::TempoProviderBuilderExt};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use tokio::sync::Notify;
 use zone_chainspec::ZoneChainSpec;
@@ -119,6 +119,9 @@ pub struct ZoneSequencerConfig {
     pub inbox_address: Address,
     /// EIP-2935 history and safety-margin limits used by the batch submitter.
     pub batch_anchor_config: BatchAnchorConfig,
+    /// TIP-20 token the sequencer pays Tempo L1 transaction fees in. `None` uses the account's
+    /// fee token preference on L1.
+    pub l1_fee_token: Option<Address>,
 }
 
 /// Handles returned by [`spawn_zone_sequencer`] for managing background tasks.
@@ -164,6 +167,7 @@ where
         &config.l1_rpc_url,
         config.retry_connection_interval,
         signer.clone(),
+        config.l1_fee_token,
     )
     .await
     .expect("valid L1 RPC URL");
@@ -219,17 +223,29 @@ where
 }
 
 /// Build the shared L1 provider used by all sequencer-side L1 transaction tasks.
-async fn connect_l1_provider(
+///
+/// When `feeToken` is set, every transaction it sends pays Tempo L1 fees in that token.
+pub async fn connect_l1_provider(
     l1_rpc_url: &str,
     retry_connection_interval: Duration,
     signer: PrivateKeySigner,
+    fee_token: Option<Address>,
 ) -> TransportResult<DynProvider<TempoNetwork>> {
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .with_nonce_key_filler()
-        .wallet(signer)
-        .connect_with_config(l1_rpc_url, rpc_connection_config(retry_connection_interval))
-        .await?
-        .erased();
+    let builder = ProviderBuilder::new_with_network::<TempoNetwork>().with_nonce_key_filler();
+    let config = rpc_connection_config(retry_connection_interval);
+    let provider = match fee_token {
+        Some(fee_token) => builder
+            .filler(FeeTokenFiller::new(fee_token))
+            .wallet(signer)
+            .connect_with_config(l1_rpc_url, config)
+            .await?
+            .erased(),
+        None => builder
+            .wallet(signer)
+            .connect_with_config(l1_rpc_url, config)
+            .await?
+            .erased(),
+    };
     let l1_chain = Chain::from_id(provider.get_chain_id().await?);
     if !provider.client().is_local()
         && let Some(avg_block_time) = l1_chain.average_blocktime_hint()
@@ -320,10 +336,14 @@ mod tests {
             serve_block_number(second_stream, "0x2", false).await;
         });
 
-        let provider =
-            connect_l1_provider(&url, Duration::from_millis(10), PrivateKeySigner::random())
-                .await
-                .unwrap();
+        let provider = connect_l1_provider(
+            &url,
+            Duration::from_millis(10),
+            PrivateKeySigner::random(),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(provider.get_block_number().await.unwrap(), 1);
         assert_eq!(

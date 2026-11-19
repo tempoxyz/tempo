@@ -23,7 +23,6 @@ use crate::{
     },
     settlement_attestation::AttestationContext,
 };
-use alloy_chains::Chain;
 use alloy_consensus::{BlockHeader as _, TxReceipt as _};
 use alloy_eips::{BlockHashOrNumber, BlockNumberOrTag};
 use alloy_primitives::{Address, U256};
@@ -67,7 +66,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
+use tempo_alloy::TempoNetwork;
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
@@ -209,6 +208,9 @@ pub struct ZoneSequencerAddOnsConfig {
     /// Depositor and transfer allowlist enforced while leading. `None` credits every deposit and
     /// admits every transfer.
     pub deposit_allowlist: Option<DepositAllowlist>,
+    /// TIP-20 token the sequencer pays Tempo L1 transaction fees in. `None` uses the account's
+    /// fee token preference on L1.
+    pub l1_fee_token: Option<Address>,
 }
 
 /// Configuration for the Zone redacted RPC server extension.
@@ -748,6 +750,9 @@ where
                         .unwrap_or_default(),
                     self.l1_config.l1_rpc_url.clone(),
                     self.l1_config.retry_connection_interval,
+                    self.sequencer_config
+                        .as_ref()
+                        .and_then(|config| config.l1_fee_token),
                     self.encryption_keys.clone().unwrap_or_default(),
                     &task_executor,
                     &sequencer_rpc_slot,
@@ -1253,6 +1258,7 @@ where
         anchor_config: BatchAnchorConfig,
         l1_rpc_url: String,
         retry_connection_interval: Duration,
+        l1_fee_token: Option<Address>,
         encryption_keys: EncryptionKeyRing,
         task_executor: &TaskExecutor,
         sequencer_rpc_slot: &Arc<OnceLock<SequencerRpcContext>>,
@@ -1306,26 +1312,15 @@ where
         let role_status: SharedRoleStatus = Default::default();
         let peer_tips = PeerTipRegistry::default();
         let relayer = match individual_signer {
-            Some(signer) => {
-                let provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
-                    .with_nonce_key_filler()
-                    .wallet(signer)
-                    .connect_with_config(
-                        &l1_rpc_url,
-                        rpc_connection_config(retry_connection_interval),
-                    )
-                    .await?
-                    .erased();
-                if !provider.client().is_local()
-                    && let Some(avg_block_time) =
-                        Chain::from_id(l1_chain_id).average_blocktime_hint()
-                {
-                    provider
-                        .client()
-                        .set_poll_interval(avg_block_time.mul_f32(0.6));
-                }
-                Some(provider)
-            }
+            Some(signer) => Some(
+                zone_sequencer::connect_l1_provider(
+                    &l1_rpc_url,
+                    retry_connection_interval,
+                    signer,
+                    l1_fee_token,
+                )
+                .await?,
+            ),
             None => None,
         };
         sequencer_rpc_slot
@@ -1452,6 +1447,7 @@ where
             outbox_address: ZONE_OUTBOX_ADDRESS,
             inbox_address: ZONE_INBOX_ADDRESS,
             batch_anchor_config: config.batch_anchor_config,
+            l1_fee_token: config.l1_fee_token,
         };
         Ok(LeaderSequencerDeps {
             config,
@@ -1646,6 +1642,7 @@ where
             outbox_address: ZONE_OUTBOX_ADDRESS,
             inbox_address: ZONE_INBOX_ADDRESS,
             batch_anchor_config: config.batch_anchor_config,
+            l1_fee_token: config.l1_fee_token,
         };
         let l1_transaction_signer = config
             .l1_transaction_signer
