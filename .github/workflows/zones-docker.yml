@@ -869,7 +869,9 @@ jobs:
           mkdir -p .tempo-genesis
           # Compilation has finished; the caller can now select the fork time.
           # Bound the rendezvous so an interrupted caller cannot strand a runner.
-          deadline=$((SECONDS + 180))
+          # T14 E2E publishes the genesis only after both old and candidate
+          # builds compile, so the faster build may wait several minutes.
+          deadline=$((SECONDS + 2400))
           until curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --connect-timeout 5 --max-time 10 --location \
             --output .tempo-genesis/genesis.json "$TEMPO_DEVNET_GENESIS_URL"; do
