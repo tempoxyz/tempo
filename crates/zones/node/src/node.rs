@@ -248,8 +248,8 @@ pub struct ZoneNode {
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
-    /// TIP-1094 address key version 1 this node initializes when it builds blocks.
-    virtual_address_key: Option<zone_payload::VirtualAddressKey>,
+    /// TIP-1094 address keys in version order, which this node initializes when it builds blocks.
+    virtual_address_keys: Vec<zone_payload::VirtualAddressKey>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
@@ -306,7 +306,7 @@ impl ZoneNode {
             portal_address,
             withdrawal_batch_interval_blocks: DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS,
             withdrawal_reveal_encryptor: None,
-            virtual_address_key: None,
+            virtual_address_keys: Vec::new(),
             redacted_rpc_config: ZoneRedactedRpcConfig::default(),
             sequencer_config: None,
             prover_addresses: None,
@@ -389,8 +389,14 @@ impl ZoneNode {
     ///
     /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
     /// node of the zone is inside its confidentiality boundary.
-    pub fn with_virtual_address_key(mut self, key: zone_payload::VirtualAddressKey) -> Self {
-        self.virtual_address_key = Some(key);
+    pub fn with_virtual_address_key(self, key: zone_payload::VirtualAddressKey) -> Self {
+        self.with_virtual_address_keys(vec![key])
+    }
+
+    /// TIP-1094 address keys in version order (index 0 is version 1). Once T15 is active, each
+    /// built block initializes the lowest configured version that is still uninitialized.
+    pub fn with_virtual_address_keys(mut self, keys: Vec<zone_payload::VirtualAddressKey>) -> Self {
+        self.virtual_address_keys = keys;
         self
     }
 
@@ -1793,8 +1799,9 @@ where
             pool_builder =
                 pool_builder.with_transfer_allowlist(Arc::new(self.allowlist_mirror.clone()));
         }
-        if let Some(key) = self.virtual_address_key {
-            payload_factory = payload_factory.with_virtual_address_key(key);
+        if !self.virtual_address_keys.is_empty() {
+            payload_factory =
+                payload_factory.with_virtual_address_keys(self.virtual_address_keys.clone());
         }
         ComponentsBuilder::default()
             .node_types::<N>()

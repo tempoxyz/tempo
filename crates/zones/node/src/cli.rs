@@ -379,17 +379,23 @@ async fn configure_sequencing(
         "--deposits.allowlist requires a sequencer"
     );
     eyre::ensure!(
-        args.virtual_address_key_file.is_none() || should_sequence_blocks,
+        args.virtual_address_key_files.is_empty() || should_sequence_blocks,
         "--sequencer.virtual-address-key-file requires a node that produces blocks"
     );
     let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
-        if let Some(key) =
-            load_virtual_address_key(args.virtual_address_key_file.as_deref()).await?
-        {
-            node = node.with_virtual_address_key(key);
+        let mut virtual_address_keys = Vec::new();
+        for path in &args.virtual_address_key_files {
+            if let Some(key) = load_virtual_address_key(Some(path)).await? {
+                virtual_address_keys.push(key);
+            }
         }
+        eyre::ensure!(
+            virtual_address_keys.len() <= u8::MAX as usize,
+            "at most 255 --sequencer.virtual-address-key-file values"
+        );
+        node = node.with_virtual_address_keys(virtual_address_keys);
         let deposit_allowlist = enforced_allowlist_admin
             .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
             .transpose()?;
@@ -561,16 +567,18 @@ pub struct ZoneArgs {
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
 
-    /// File containing the TIP-1094 FF1 key (32-byte hex) to initialize as address key version 1
-    /// once T15 is active. Every sequencer of the zone should use the same key; whichever builds
-    /// the first eligible block initializes it. Keep it secret: it decrypts every version-1
-    /// deposit address.
+    /// Files containing TIP-1094 FF1 keys (32-byte hex), one per address key version in version
+    /// order: the first is version 1. Repeat the flag, or comma-separate paths in the env var.
+    /// Once T15 is active, each built block initializes the lowest listed version that is still
+    /// uninitialized, so appending a file rotates in the next version. Every sequencer of the zone
+    /// should list the same keys. Keep them secret: each decrypts every address of its version.
     #[arg(
         long = "sequencer.virtual-address-key-file",
         env = "ZONE_VIRTUAL_ADDRESS_KEY_FILE",
-        value_name = "PATH"
+        value_name = "PATH",
+        value_delimiter = ','
     )]
-    pub virtual_address_key_file: Option<PathBuf>,
+    pub virtual_address_key_files: Vec<PathBuf>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
@@ -1165,6 +1173,27 @@ mod tests {
         assert_eq!(
             signer.address(),
             alloy_primitives::address!("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf")
+        );
+    }
+
+    #[test]
+    fn virtual_address_key_files_are_kept_in_version_order() {
+        let parsed = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key-file",
+            "/run/secrets/v1",
+            "--sequencer.virtual-address-key-file",
+            "/run/secrets/v2",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.zone.virtual_address_key_files,
+            vec![
+                PathBuf::from("/run/secrets/v1"),
+                PathBuf::from("/run/secrets/v2")
+            ]
         );
     }
 

@@ -13,7 +13,7 @@ use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::{
     precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS},
-    zones::{IZoneInbox, ZONE_INBOX_ADDRESS},
+    zones::{IZoneAddressRegistry, IZoneInbox, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_INBOX_ADDRESS},
 };
 
 use crate::types::JsonRpcError;
@@ -43,8 +43,11 @@ pub const VIRTUAL_DEPOSIT_PROCESSED_TOPIC: B256 =
 /// TIP-1094 `VirtualDepositFailed`, served to its resolved recipient.
 pub const VIRTUAL_DEPOSIT_FAILED_TOPIC: B256 = IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH;
 
+/// TIP-1094 `MasterRegistered`, served to its recipient.
+pub const MASTER_REGISTERED_TOPIC: B256 = IZoneAddressRegistry::MasterRegistered::SIGNATURE_HASH;
+
 /// All event topic hashes exposed by the redacted RPC.
-pub const WHITELISTED_TOPICS: [B256; 8] = [
+pub const WHITELISTED_TOPICS: [B256; 9] = [
     TRANSFER_TOPIC,
     APPROVAL_TOPIC,
     TRANSFER_WITH_MEMO_TOPIC,
@@ -53,6 +56,7 @@ pub const WHITELISTED_TOPICS: [B256; 8] = [
     TRANSFER_BLOCKED_TOPIC,
     VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
     VIRTUAL_DEPOSIT_FAILED_TOPIC,
+    MASTER_REGISTERED_TOPIC,
 ];
 
 const VIRTUAL_DEPOSIT_TOPICS: [B256; 2] = [
@@ -96,6 +100,11 @@ pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
 
     if VIRTUAL_DEPOSIT_TOPICS.contains(topic0) {
         return log.address() == ZONE_INBOX_ADDRESS && topics.get(1) == Some(&caller_word);
+    }
+
+    if *topic0 == MASTER_REGISTERED_TOPIC {
+        return log.address() == ZONE_ADDRESS_REGISTRY_ADDRESS
+            && topics.get(1) == Some(&caller_word);
     }
 
     if *topic0 == TRANSFER_TOPIC || *topic0 == APPROVAL_TOPIC || *topic0 == TRANSFER_WITH_MEMO_TOPIC
@@ -199,6 +208,7 @@ pub fn scope_filter_addresses(
         let mut allowed_addresses = zone_tokens.to_vec();
         allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
         allowed_addresses.push(ZONE_INBOX_ADDRESS);
+        allowed_addresses.push(ZONE_ADDRESS_REGISTRY_ADDRESS);
         filter.address = FilterSet::from(allowed_addresses);
         return Ok(());
     }
@@ -207,6 +217,7 @@ pub fn scope_filter_addresses(
         zone_tokens.contains(address)
             || *address == RECEIVE_POLICY_GUARD_ADDRESS
             || *address == ZONE_INBOX_ADDRESS
+            || *address == ZONE_ADDRESS_REGISTRY_ADDRESS
     }) {
         Ok(())
     } else {
@@ -917,13 +928,19 @@ mod tests {
         assert!(filter.address.contains(&token_b));
         assert!(filter.address.contains(&RECEIVE_POLICY_GUARD_ADDRESS));
         assert!(filter.address.contains(&ZONE_INBOX_ADDRESS));
-        assert_eq!(filter.address.len(), 4);
+        assert!(filter.address.contains(&ZONE_ADDRESS_REGISTRY_ADDRESS));
+        assert_eq!(filter.address.len(), 5);
     }
 
     #[test]
     fn scope_filter_addresses_allows_enabled_addresses() {
         let token = Address::with_last_byte(0xaa);
-        for address in [token, RECEIVE_POLICY_GUARD_ADDRESS, ZONE_INBOX_ADDRESS] {
+        for address in [
+            token,
+            RECEIVE_POLICY_GUARD_ADDRESS,
+            ZONE_INBOX_ADDRESS,
+            ZONE_ADDRESS_REGISTRY_ADDRESS,
+        ] {
             let mut filter = Filter {
                 address: FilterSet::from(address),
                 ..Default::default()
@@ -997,6 +1014,24 @@ mod tests {
         for log in virtual_deposit_logs(Address::with_last_byte(0xee), recipient, originator) {
             assert!(!is_log_visible(&log, &recipient), "only inbox logs count");
         }
+    }
+
+    #[test]
+    fn master_registrations_are_visible_only_to_their_recipient() {
+        let recipient = Address::with_last_byte(1);
+        let other = Address::with_last_byte(3);
+        let data = IZoneAddressRegistry::MasterRegistered {
+            recipient,
+            masterId: Default::default(),
+        }
+        .encode_log_data();
+        let mut log = make_log(ZONE_ADDRESS_REGISTRY_ADDRESS, Vec::new());
+        log.inner.data = data.clone();
+        assert!(is_log_visible(&log, &recipient));
+        assert!(!is_log_visible(&log, &other));
+        let mut spoofed = make_log(Address::with_last_byte(0xee), Vec::new());
+        spoofed.inner.data = data;
+        assert!(!is_log_visible(&spoofed, &recipient));
     }
 
     #[test]

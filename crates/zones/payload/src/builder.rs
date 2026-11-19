@@ -104,7 +104,7 @@ pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
-    virtual_address_key: Option<VirtualAddressKey>,
+    virtual_address_keys: Vec<VirtualAddressKey>,
 }
 
 impl ZonePayloadFactory {
@@ -114,15 +114,25 @@ impl ZonePayloadFactory {
             withdrawal_batch_interval_blocks: withdrawal_batch_interval_blocks.max(1),
             withdrawal_reveal_encryptor: None,
             transfer_allowlist: None,
-            virtual_address_key: None,
+            virtual_address_keys: Vec::new(),
         }
     }
 
-    /// TIP-1094: initialize `key` as address key version 1 in the first block this node
-    /// builds once T15 is active and version 1 is still uninitialized.
-    pub fn with_virtual_address_key(mut self, key: VirtualAddressKey) -> Self {
-        self.virtual_address_key = Some(key);
+    /// TIP-1094: address keys in version order (index 0 is version 1). From T15, each block this
+    /// node builds initializes the lowest configured version that is still uninitialized, so a
+    /// new key added at the end is rotated in by the next block.
+    pub fn with_virtual_address_keys(mut self, keys: Vec<VirtualAddressKey>) -> Self {
+        assert!(
+            keys.len() <= u8::MAX as usize,
+            "at most 255 address key versions"
+        );
+        self.virtual_address_keys = keys;
         self
+    }
+
+    /// TIP-1094: configure `key` as the only address key, version 1.
+    pub fn with_virtual_address_key(self, key: VirtualAddressKey) -> Self {
+        self.with_virtual_address_keys(vec![key])
     }
 
     pub fn with_withdrawal_reveal_encryptor(
@@ -175,7 +185,7 @@ where
             withdrawal_reveal_encryptor: self.withdrawal_reveal_encryptor.clone(),
             transfer_allowlist: self.transfer_allowlist.clone(),
             metrics: ZonePayloadBuilderMetrics::default(),
-            virtual_address_key: self.virtual_address_key,
+            virtual_address_keys: self.virtual_address_keys.clone(),
         })
     }
 }
@@ -200,7 +210,7 @@ pub struct ZonePayloadBuilder<Provider> {
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
     metrics: ZonePayloadBuilderMetrics,
     /// TIP-1094 address key version 1, initialized once when still unset.
-    virtual_address_key: Option<VirtualAddressKey>,
+    virtual_address_keys: Vec<VirtualAddressKey>,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -351,23 +361,30 @@ where
 
         // TIP-1094: the executor accepts key initialization only directly after a full
         // advanceTempo, at most once per block.
-        if !tempo_import.is_checkpoint_only()
-            && let Some(key) = self.virtual_address_key
-            && builder.evm().config_spec_id().is_t15()
-            && state_provider
-                .storage(ZONE_INBOX_ADDRESS, virtual_address_key_flag_slot(1))?
-                .unwrap_or_default()
-                .is_zero()
-        {
-            info!(target: "zone::payload", "Initializing TIP-1094 address key version 1");
-            builder
-                .execute_transaction(build_initialize_virtual_address_key_tx(
-                    1,
-                    key.expose(),
-                    chain_id,
-                ))
-                .map(|_| ())
-                .map_err(PayloadBuilderError::evm)?;
+        if !tempo_import.is_checkpoint_only() && builder.evm().config_spec_id().is_t15() {
+            let mut next = None;
+            for (index, key) in self.virtual_address_keys.iter().enumerate() {
+                let version = (index + 1) as u8;
+                if state_provider
+                    .storage(ZONE_INBOX_ADDRESS, virtual_address_key_flag_slot(version))?
+                    .unwrap_or_default()
+                    .is_zero()
+                {
+                    next = Some((version, *key));
+                    break;
+                }
+            }
+            if let Some((version, key)) = next {
+                info!(target: "zone::payload", version, "Initializing TIP-1094 address key");
+                builder
+                    .execute_transaction(build_initialize_virtual_address_key_tx(
+                        version,
+                        key.expose(),
+                        chain_id,
+                    ))
+                    .map(|_| ())
+                    .map_err(PayloadBuilderError::evm)?;
+            }
         }
 
         if let Some(pool_txs) = pool_txs {

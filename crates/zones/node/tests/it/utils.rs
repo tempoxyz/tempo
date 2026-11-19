@@ -1127,7 +1127,7 @@ impl ZoneTestNode {
             prover_addresses,
             deposit_allowlist,
             deposit_allowlist_relay,
-            virtual_address_key,
+            virtual_address_keys,
         } = config;
         let tasks = Runtime::test();
         let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub(_));
@@ -1195,9 +1195,13 @@ impl ZoneTestNode {
             zone_node = zone_node
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
         }
-        if let Some(key) = virtual_address_key {
-            zone_node =
-                zone_node.with_virtual_address_key(zone_payload::VirtualAddressKey::new(key));
+        if !virtual_address_keys.is_empty() {
+            zone_node = zone_node.with_virtual_address_keys(
+                virtual_address_keys
+                    .into_iter()
+                    .map(zone_payload::VirtualAddressKey::new)
+                    .collect(),
+            );
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -1417,8 +1421,8 @@ pub(crate) struct ZoneLaunch {
     pub(crate) deposit_allowlist: Option<zone_node::DepositAllowlist>,
     /// Relays `zoneAdmin` allowlist writes signed by this admin (P2P nodes only).
     pub(crate) deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
-    /// TIP-1094 address key the sequencer initializes as version 1 once T15 is active.
-    pub(crate) virtual_address_key: Option<B256>,
+    /// TIP-1094 address keys in version order, which the sequencer initializes once T15 is active.
+    pub(crate) virtual_address_keys: Vec<B256>,
 }
 
 impl ZoneLaunch {
@@ -1450,7 +1454,7 @@ impl Default for ZoneLaunch {
             prover_addresses: None,
             deposit_allowlist: None,
             deposit_allowlist_relay: None,
-            virtual_address_key: None,
+            virtual_address_keys: Vec::new(),
         }
     }
 }
@@ -3671,7 +3675,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         prover_addresses: prover_addresses.clone(),
                         deposit_allowlist: deposit_allowlists[index].clone(),
                         deposit_allowlist_relay: None,
-                        virtual_address_key: None,
+                        virtual_address_keys: Vec::new(),
                     })
                 },
             )),
@@ -3698,7 +3702,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         .as_ref()
                         .is_some_and(|setup| setup.rpc_relays_writes)
                         .then_some(allowlist_admin),
-                    virtual_address_key: None,
+                    virtual_address_keys: Vec::new(),
                 })
                 .await
                 .map(Some)

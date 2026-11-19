@@ -166,9 +166,13 @@ impl ZoneTransactionKind {
             return Self::AdvanceTempoHeaders;
         }
 
+        // The prover rebuilds this transaction from its decoded arguments, so only the canonical
+        // encoding is accepted; trailing or non-canonical bytes would make the block unprovable.
         if calls().any(|(kind, input)| {
             kind.to() == Some(&ZONE_INBOX_ADDRESS)
                 && input.starts_with(&IZoneInbox::initializeVirtualAddressKeyCall::SELECTOR)
+                && IZoneInbox::initializeVirtualAddressKeyCall::abi_decode(input)
+                    .is_ok_and(|call| call.abi_encode() == input.as_ref())
         }) {
             return Self::InitializeVirtualAddressKey;
         }

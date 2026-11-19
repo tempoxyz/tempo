@@ -13,13 +13,16 @@ crate::sol! {
         /// returns the original ID.
         function registerMaster(address recipient, bytes32 salt) external returns (bytes4 masterId);
 
+        /// Emitted the first time a master ID is assigned. The redacted RPC serves it only to
+        /// `recipient`, so a recipient registered by someone else can find its master IDs.
+        event MasterRegistered(address indexed recipient, bytes4 indexed masterId);
+
         error InvalidMasterAddress();
         error MasterIdSpaceExhausted();
     }
 }
 
-/// Zone-only registry address. It differs from TIP-1022's registry address, which zones mirror
-/// from Tempo from T15 (TIP-1179).
+/// Zone-only registry address, separate from TIP-1022's registry address.
 pub const ZONE_ADDRESS_REGISTRY_ADDRESS: Address =
     address!("0x1c00000000000000000000000000000000000005");
 

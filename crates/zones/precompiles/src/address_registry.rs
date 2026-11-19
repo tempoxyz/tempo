@@ -7,6 +7,7 @@
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
+use alloy_sol_types::SolEvent;
 use evm2::precompiles::PrecompileResult;
 use tempo_contracts::zones::{
     IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
@@ -89,6 +90,14 @@ impl ZoneAddressRegistry {
         // The +1 offset lets the record of the last ID (0xFFFFFFFF) be distinguished from absence.
         record.write(next + 1)?;
         counter.write(next + 1)?;
+        self.storage.emit_event(
+            self.address,
+            IZoneAddressRegistry::MasterRegistered {
+                recipient,
+                masterId: master_id,
+            }
+            .encode_log_data(),
+        )?;
         Ok(master_id)
     }
 }

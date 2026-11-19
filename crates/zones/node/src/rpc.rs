@@ -1716,13 +1716,16 @@ where
                     "userTags must hold 1 to {MAX_DERIVE_DEPOSIT_ADDRESSES} tags"
                 )));
             }
-            // Derive only from settled state, so an address never depends on a zone block that
-            // could still be replaced.
+            // Derive only from settled state as of finalized Tempo, so an address never depends
+            // on a zone block, or a Tempo settlement, that could still be replaced.
             let l1_block = self
                 .l1_provider
-                .get_block_number()
+                .get_block_by_number(alloy_eips::BlockNumberOrTag::Finalized)
                 .await
-                .map_err(internal)?;
+                .map_err(internal)?
+                .ok_or_else(|| JsonRpcError::internal("no finalized Tempo block"))?
+                .header
+                .number();
             let portal = ZonePortal::new(self.config.zone_portal, &self.l1_provider);
             let settled = portal
                 .blockHash()

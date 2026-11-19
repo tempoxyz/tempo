@@ -43,7 +43,7 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
     let l1 = L1TestNode::start_at_t15().await?;
     let portal_address = l1.deploy_zone().await?;
     let zone = ZoneTestNode::launch(ZoneLaunch {
-        virtual_address_key: Some(KEY),
+        virtual_address_keys: vec![KEY],
         ..ZoneLaunch::from_l1(&l1, portal_address)
     })
     .await?;
@@ -161,7 +161,7 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
         },
     )?;
     let zone = ZoneTestNode::launch(ZoneLaunch {
-        virtual_address_key: Some(KEY),
+        virtual_address_keys: vec![KEY],
         deposit_allowlist: Some(allowlist.clone()),
         ..ZoneLaunch::from_l1(&l1, portal_address)
     })
@@ -252,7 +252,7 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
     let l1 = L1TestNode::start_at_t15().await?;
     let portal_address = l1.deploy_zone().await?;
     let zone = ZoneTestNode::launch(ZoneLaunch {
-        virtual_address_key: Some(KEY),
+        virtual_address_keys: vec![KEY],
         ..ZoneLaunch::from_l1(&l1, portal_address)
     })
     .await?;
@@ -393,6 +393,89 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
     assert_eq!(event.masterId, master_id);
     assert_eq!(event.userTag, FixedBytes::from(8u16.to_be_bytes()));
     assert_eq!(event.amount, amount - fee);
+
+    Ok(())
+}
+
+/// With two key files configured, the sequencer initializes version 1 and then version 2, and a
+/// transfer to a version-2 address is credited.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_second_key_version_is_initialized_and_used() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    const KEY_V2: B256 = B256::repeat_byte(0x6b);
+
+    let l1 = L1TestNode::start_at_t15().await?;
+    let portal_address = l1.deploy_zone().await?;
+    let zone = ZoneTestNode::launch(ZoneLaunch {
+        virtual_address_keys: vec![KEY, KEY_V2],
+        ..ZoneLaunch::from_l1(&l1, portal_address)
+    })
+    .await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+    let zone_id = ZonePortal::new(portal_address, l1.provider())
+        .zoneId()
+        .call()
+        .await?;
+
+    let mut sender = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    l1.fund_user(sender.address(), 10_000_000).await?;
+    sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
+
+    let recipient = Address::repeat_byte(0xc7);
+    let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
+    let master_id: FixedBytes<4> = registry
+        .registerMaster(recipient, B256::repeat_byte(3))
+        .call()
+        .await?;
+    let receipt = registry
+        .registerMaster(recipient, B256::repeat_byte(3))
+        .gas(TIP20_TX_GAS * 10)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(receipt.status(), "registerMaster failed");
+
+    for version in [1u8, 2] {
+        let (flag, _) = zone_precompiles::inbox::virtual_address_key_slots(version);
+        let value = zone
+            .provider()
+            .get_storage_at(zone_primitives::constants::ZONE_INBOX_ADDRESS, flag)
+            .await?;
+        assert!(!value.is_zero(), "key version {version} not initialized");
+    }
+
+    let mut plaintext = [0u8; 6];
+    plaintext[..4].copy_from_slice(&master_id.0);
+    plaintext[4..].copy_from_slice(&9u16.to_be_bytes());
+    let to = ZoneDepositAddress {
+        zone_id,
+        version: 2,
+        ciphertext: zone_precompiles::ff1::encrypt(&KEY_V2.0, 2, zone_id, plaintext).into(),
+    }
+    .encode();
+    let amount = 2_000_000u128;
+    let fee = ZonePortal::new(portal_address, l1.provider())
+        .calculateDepositFee()
+        .call()
+        .await?;
+    let receipt = ITIP20::new(PATH_USD_ADDRESS, sender.l1_provider())
+        .transfer(to, U256::from(amount))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    eyre::ensure!(
+        receipt.status(),
+        "transfer to version-2 deposit address failed"
+    );
+    zone.wait_for_balance(
+        ZONE_TOKEN_ADDRESS,
+        recipient,
+        U256::from(amount - fee),
+        L1_TIMEOUT,
+    )
+    .await?;
 
     Ok(())
 }

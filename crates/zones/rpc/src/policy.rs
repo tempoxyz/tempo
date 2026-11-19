@@ -6,7 +6,9 @@ use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::eip2718::Decodable2718;
 use alloy_network::TransactionBuilder;
 use alloy_primitives::Address;
+use alloy_sol_types::SolCall;
 use tempo_alloy::rpc::TempoTransactionRequest;
+use tempo_contracts::zones::{IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS};
 use tempo_primitives::TempoTxEnvelope;
 use zone_primitives::constants::CONTRACT_DEPLOYER_ALLOWLIST;
 
@@ -18,7 +20,43 @@ pub fn enforce_authorized(
     auth: &AuthContext,
 ) -> Result<(), JsonRpcError> {
     enforce_from(request, auth)?;
-    enforce_contract_creation(request, auth.caller)
+    enforce_contract_creation(request, auth.caller)?;
+    enforce_registration_recipient(request, auth.caller)
+}
+
+/// Refuse simulations of TIP-1094 `registerMaster` for another recipient.
+///
+/// Its return value is the recipient's existing master ID, or the next sequential one, so a
+/// simulation for someone else reveals their registrations and the registration count. Submitting
+/// a registration on someone else's behalf is still allowed; only simulating one is refused.
+pub fn enforce_registration_recipient(
+    request: &TempoTransactionRequest,
+    caller: Address,
+) -> Result<(), JsonRpcError> {
+    let registers_other = |to: Option<Address>, input: &[u8]| {
+        to == Some(ZONE_ADDRESS_REGISTRY_ADDRESS)
+            && IZoneAddressRegistry::registerMasterCall::abi_decode(input)
+                .is_ok_and(|call| call.recipient != caller)
+    };
+    let outer = registers_other(
+        request.inner.to.and_then(|to| to.to().copied()),
+        request
+            .inner
+            .input
+            .input()
+            .map(|input| input.as_ref())
+            .unwrap_or_default(),
+    );
+    let inner = request
+        .calls
+        .iter()
+        .any(|call| registers_other(call.to.to().copied(), &call.input));
+    if outer || inner {
+        return Err(JsonRpcError::invalid_params(
+            "registerMaster can only be simulated for the caller",
+        ));
+    }
+    Ok(())
 }
 
 /// Enforce that `from` matches the authenticated caller.
@@ -95,7 +133,10 @@ mod tests {
     use tempo_alloy::rpc::TempoTransactionRequest;
     use tempo_primitives::transaction::Call;
 
-    use super::{enforce_contract_creation, enforce_contract_creation_with_allowlist};
+    use super::{
+        IZoneAddressRegistry, SolCall, ZONE_ADDRESS_REGISTRY_ADDRESS, enforce_contract_creation,
+        enforce_contract_creation_with_allowlist, enforce_registration_recipient,
+    };
 
     fn call_target(byte: u8) -> TxKind {
         TxKind::Call(Address::repeat_byte(byte))
@@ -167,5 +208,27 @@ mod tests {
 
         assert!(enforce_contract_creation_with_allowlist(&request, caller, &[]).is_err());
         assert!(enforce_contract_creation_with_allowlist(&request, caller, &[caller]).is_ok());
+    }
+
+    #[test]
+    fn simulating_register_master_for_another_recipient_is_refused() {
+        let caller = Address::repeat_byte(0x11);
+        let call = |recipient: Address| {
+            let mut request = TempoTransactionRequest::default();
+            request.inner.to = Some(alloy_primitives::TxKind::Call(
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+            ));
+            request.inner.input = alloy_rpc_types_eth::TransactionInput::new(
+                IZoneAddressRegistry::registerMasterCall {
+                    recipient,
+                    salt: alloy_primitives::B256::ZERO,
+                }
+                .abi_encode()
+                .into(),
+            );
+            request
+        };
+        assert!(enforce_registration_recipient(&call(caller), caller).is_ok());
+        assert!(enforce_registration_recipient(&call(Address::repeat_byte(0x22)), caller).is_err());
     }
 }
