@@ -100,7 +100,10 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
             IZonePortal(targetPortal)
                 .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient, maxFee);
         } else {
-            // Pre-T15 portals have only the 5-argument overload and no congestion fee.
+            // Pre-T15 portals have only the 5-argument overload and no congestion fee, so the
+            // operational fee is the whole fee; still honor the caller's cap.
+            uint128 fee = IZonePortal(targetPortal).calculateDepositFee();
+            if (fee > maxFee) revert IZonePortal.FeeTooHigh(fee, maxFee);
             IZonePortal(targetPortal)
                 .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient);
         }

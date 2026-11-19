@@ -6340,6 +6340,39 @@ contract ZonePortalTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @notice Checks run in the documented order: memo, format and zone, version, originator.
+    function test_depositVirtual_errorOrder() public {
+        address retired = _virtualDestination(testZoneId, 1);
+        vm.prank(admin);
+        portal.retireAddressVersionsBelow(2);
+
+        vm.startPrank(address(pathUSD));
+        // A nonzero memo without hasMemo wins over a retired version and a portal originator.
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(uint256(1)));
+        // A retired version wins over a portal originator.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AddressVersionRetired.selector, 1));
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(0));
+        vm.stopPrank();
+    }
+
+    /// @notice A gateway can't originate a virtual deposit: the originator is also the refund
+    ///         recipient, which must be an allowed account, as for ECIES deposits.
+    function test_depositVirtual_rejectsGatewayOriginatorUnderAccessControl() public {
+        address gateway = address(0x6a7e);
+        vm.startPrank(admin);
+        portal.setAccessMode(true);
+        portal.setGatewayMode(true);
+        portal.setGateway(gateway, true);
+        vm.stopPrank();
+
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AccountNotAllowed.selector, gateway));
+        portal.depositVirtual(
+            gateway, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
+    }
+
     function test_retireAddressVersionsBelow_isRaiseOnly() public {
         assertEq(portal.minimumAddressVersion(), 1);
 
@@ -6350,6 +6383,12 @@ contract ZonePortalTest is BaseTest {
         vm.startPrank(admin);
         vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 1));
         portal.retireAddressVersionsBelow(1);
+        // One version per call: skipping ahead reverts.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 255));
+        portal.retireAddressVersionsBelow(255);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 3));
+        portal.retireAddressVersionsBelow(3);
+        portal.retireAddressVersionsBelow(2);
         portal.retireAddressVersionsBelow(3);
         vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 2));
         portal.retireAddressVersionsBelow(2);

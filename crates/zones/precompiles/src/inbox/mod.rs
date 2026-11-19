@@ -487,8 +487,8 @@ impl ZoneInbox {
 
     /// TIP-1094 key initialization: versions start at 1, run in order and are set exactly once.
     ///
-    /// TODO(tip-1094): the block validator and prover must also bind this call to the block
-    /// witness, allow at most one per block, and require it right after `advanceTempo`.
+    /// The zone block executor accepts at most one such call per block, only directly after
+    /// `advanceTempo` and only in canonical encoding, which the prover replays.
     fn initialize_virtual_address_key(
         &mut self,
         caller: Address,

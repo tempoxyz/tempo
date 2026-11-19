@@ -120,6 +120,15 @@ contract MockLegacyZonePortalForRouter {
 
     uint128 public lastDepositAmount;
     bool public legacyDepositCalled;
+    uint128 public fee;
+
+    function setFee(uint128 _fee) external {
+        fee = _fee;
+    }
+
+    function calculateDepositFee() external view returns (uint128) {
+        return fee;
+    }
 
     function isTokenEnabled(address) external pure returns (bool) {
         return true;
@@ -298,6 +307,23 @@ contract SwapAndDepositRouterTest is BaseTest {
         assertEq(ret, IWithdrawalReceiver.onWithdrawalReceived.selector);
         assertTrue(legacy.legacyDepositCalled());
         assertEq(legacy.lastDepositAmount(), AMOUNT);
+    }
+
+    function test_deposit_legacyPortalRevertsAboveMaxFee() public {
+        MockLegacyZonePortalForRouter legacy = new MockLegacyZonePortalForRouter();
+        mockFactory.setPortal(address(legacy), true);
+        legacy.setFee(MAX_FEE + 1);
+        DepositPayload memory payload = _defaultDepositPayload();
+        bytes memory data =
+            _buildCallbackData(address(pathUSD), address(legacy), 0, payload, refundBurner, 0);
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, MAX_FEE + 1, MAX_FEE)
+        );
+        router.onWithdrawalReceived(
+            SOURCE_ZONE_ID, sourcePortal, senderTag, address(pathUSD), AMOUNT, data
+        );
     }
 
     function test_deposit_withSwap() public {

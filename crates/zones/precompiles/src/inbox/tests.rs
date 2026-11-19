@@ -201,6 +201,46 @@ fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<(
     Ok(())
 }
 
+/// A full block of virtual deposits that each resolve, then fail the mint and refund, fits the
+/// system transaction budget at TIP-1171 weight 1.
+#[test]
+fn max_virtual_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
+    const BUFFERED_GAS_LIMIT: u64 = 200_000_000;
+
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+    env.with_storage(|| {
+        TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+            ALICE,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: REJECT_ALL_POLICY_ID,
+            },
+        )
+    })?;
+    let deposits = (0..MAX_DEPOSIT_WEIGHT_PER_BLOCK)
+        .map(|tag| virtual_deposit(deposit_address(1, 0, master, tag as u16), None))
+        .collect();
+
+    let output = advance_virtual(&mut env, deposits)?;
+    assert!(
+        output.is_success(),
+        "virtual deposit block failed: {output:?}"
+    );
+    eprintln!("max virtual deposit block: {} gas", output.gas_used);
+    assert!(
+        output.gas_used <= BUFFERED_GAS_LIMIT,
+        "max virtual deposit block used {} gas",
+        output.gas_used
+    );
+    assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::ZERO);
+    assert_eq!(
+        env.pending_withdrawals().len(),
+        MAX_DEPOSIT_WEIGHT_PER_BLOCK as usize
+    );
+    Ok(())
+}
+
 #[test]
 fn system_advance_selects_child_anchor_and_reads_queue() -> eyre::Result<()> {
     let mut env = spec().apply()?;

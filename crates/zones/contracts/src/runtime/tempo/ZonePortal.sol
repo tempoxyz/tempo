@@ -566,7 +566,8 @@ contract ZonePortal is IZonePortal {
 
     /// @notice TIP-1094: raise the minimum accepted address key version. Raise-only.
     function retireAddressVersionsBelow(uint8 minimumVersion) external onlyAdmin {
-        if (minimumVersion <= minimumAddressVersion()) {
+        // One version per call, so a single mistyped value can't retire every issued address.
+        if (minimumVersion != minimumAddressVersion() + 1) {
             revert InvalidVersionRetirement(minimumVersion);
         }
         _minimumAddressVersion = minimumVersion;
