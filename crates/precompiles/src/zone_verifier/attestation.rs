@@ -39,7 +39,7 @@ pub(super) fn verify_attestation_with_root(
     Ok(verify_parsed(parsed, block_timestamp, root_der, &verifier).ok())
 }
 
-/// [`AwsLcP384`] that also accepts [`tempo_primitives::fuzz_crypto`] stand-ins once they are enabled.
+/// [`tempo_nitro_attestation::AwsLcP384`] that also accepts [`tempo_primitives::fuzz_crypto`] stand-ins once they are enabled.
 #[cfg(feature = "fuzz-crypto")]
 mod fuzz {
     use tempo_nitro_attestation::{
