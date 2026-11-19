@@ -314,11 +314,11 @@ where
 
             // Retire the previous fallback in memory too. Otherwise a missing later epoch would
             // still verify against the identity this boundary rotated away from until restart.
-            let retired = self.verifier.network_identity();
+            let previous = self.verifier.network_identity();
             if self.verifier.advance_network_identity(identity.clone()) {
                 warn!(
-                    retired_from_epoch = retired.from_epoch,
-                    retired_network_identity = %retired.identity,
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
                     from_epoch = identity.from_epoch,
                     network_identity = %identity.identity,
                     "retired the network identity fallback after an authenticated full DKG rotation",
@@ -516,9 +516,9 @@ where
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured_identity.from_epoch,
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );

@@ -278,9 +278,9 @@ where
                 && configured.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured.from_epoch,
+                    configured_from_epoch = configured.from_epoch,
+                    configured_network_identity = %configured.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );
@@ -288,15 +288,15 @@ where
 
             // These headers are hash-chained to a verified finalization, so the boundary's
             // identity is authenticated: retire the previous fallback in favor of it.
-            let retired = self.verifier.network_identity();
+            let previous = self.verifier.network_identity();
             let identity = NetworkIdentity {
                 from_epoch: onchain_outcome.epoch,
                 identity: *onchain_outcome.network_identity(),
             };
             if self.verifier.advance_network_identity(identity.clone()) {
                 info!(
-                    retired_from_epoch = retired.from_epoch,
-                    retired_network_identity = %retired.identity,
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
                     from_epoch = identity.from_epoch,
                     network_identity = %identity.identity,
                     "retired the network identity fallback after an authenticated full DKG rotation",

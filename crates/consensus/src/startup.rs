@@ -37,8 +37,8 @@ pub(crate) fn verify_finalized_tip(
             if persisted.identity != configured_identity.identity {
                 warn!(
                     configured_from_epoch = configured_identity.from_epoch,
-                    persisted_from_epoch = persisted.from_epoch,
                     configured_network_identity = %configured_identity.identity,
+                    persisted_from_epoch = persisted.from_epoch,
                     persisted_network_identity = %persisted.identity,
                     "Persisted network identity differs from the configured network identity!!! Using the persisted identity; update the binary with the latest network identity"
                 );
