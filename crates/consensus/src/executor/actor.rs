@@ -933,10 +933,11 @@ where
             Some(Err(error)) => return Err(error).wrap_err_with(diverged),
         };
 
-        // Only an update the execution layer accepted settles the deliveries.
-        if accepted.is_some() {
-            self.deliveries_since_forkchoice = 0;
-        }
+        // A skipped update settles the deliveries like an accepted one: an
+        // update forced by a full batch would be skipped just the same, and
+        // with the count left full it would be rescheduled ahead of the
+        // mailbox forever.
+        self.deliveries_since_forkchoice = 0;
         self.local_state = target;
         self.acknowledge_persisted()?;
 
