@@ -3,8 +3,9 @@
 Four independent real-consensus validators (3-of-4 quorum) and one non-signing,
 certified follower, with fixed IPs/keys and persistent execution/consensus datadirs.
 No `--dev`, fake finality or process restart loops. Validators and the follower use
-`restart: unless-stopped` so disk crash faults bring them back; validator volumes are
-labelled for disk faults. A 20-block epoch exercises DKG transitions often. The follower uses
+`restart: unless-stopped` so disk crash faults bring them back; each validator's consensus
+journal (/data/consensus) is a separate volume labelled for disk faults; the MDBX
+execution DB is not, since its mmap gets SIGBUS there. A 20-block epoch exercises DKG transitions often. The follower uses
 `--follow ws://validator-0:8546` (certification stays enabled), has its own execution peer
 identity and datadir, and has no validator signing key or share. It remains subject
 to the same injected faults as the validators.

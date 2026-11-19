@@ -15,7 +15,7 @@ services:
     container_name: validator-0
     hostname: validator-0
     command: ["10.21.0.11"]
-    volumes: [validator-0-data:/data]
+    volumes: [validator-0-data:/data, validator-0-consensus:/data/consensus]
     networks:
       cluster:
         ipv4_address: 10.21.0.11
@@ -25,7 +25,7 @@ services:
     container_name: validator-1
     hostname: validator-1
     command: ["10.21.0.12"]
-    volumes: [validator-1-data:/data]
+    volumes: [validator-1-data:/data, validator-1-consensus:/data/consensus]
     networks:
       cluster:
         ipv4_address: 10.21.0.12
@@ -35,7 +35,7 @@ services:
     container_name: validator-2
     hostname: validator-2
     command: ["10.21.0.13"]
-    volumes: [validator-2-data:/data]
+    volumes: [validator-2-data:/data, validator-2-consensus:/data/consensus]
     networks:
       cluster:
         ipv4_address: 10.21.0.13
@@ -45,7 +45,7 @@ services:
     container_name: validator-3
     hostname: validator-3
     command: ["10.21.0.14"]
-    volumes: [validator-3-data:/data]
+    volumes: [validator-3-data:/data, validator-3-consensus:/data/consensus]
     networks:
       cluster:
         ipv4_address: 10.21.0.14
@@ -79,16 +79,22 @@ services:
         mac_address: 02:42:0a:15:00:14
 
 volumes:
+  # Disk faults only on the consensus journal (DKG state lives there). MDBX mmaps its
+  # files and gets SIGBUS on a disk-fault volume, so the execution DB stays unlabelled.
   validator-0-data:
+  validator-0-consensus:
     labels:
       com.antithesis.disk_fault: "true"
   validator-1-data:
+  validator-1-consensus:
     labels:
       com.antithesis.disk_fault: "true"
   validator-2-data:
+  validator-2-consensus:
     labels:
       com.antithesis.disk_fault: "true"
   validator-3-data:
+  validator-3-consensus:
     labels:
       com.antithesis.disk_fault: "true"
   follower-data:
