@@ -11,7 +11,8 @@ crate::sol! {
     /// the registrar administers. Token T may move on the Zone from org A to org B only when A's
     /// admin allows it outbound and B's admin allows it inbound. Tempo addresses are never members:
     /// each org's admin alone decides, per token, which Tempo addresses its members accept deposits
-    /// from and may withdraw to, through its targets and its [`L1Policy`].
+    /// from and may withdraw to, through its targets and its [`L1Policy`]. Addresses in org 0 may
+    /// always withdraw to any Tempo address.
     ///
     /// The registrar and the enforcement flag are set on Tempo with
     /// `ZonePortal.setIdentityConfig`.

@@ -12,7 +12,8 @@
 //!   so nobody has to consent for an org to name one: an org lists, per token, the Tempo addresses
 //!   it accepts deposits from and lets members withdraw to ([`L1Target`]), and may open either
 //!   direction to any address or to the member's own address ([`L1Policy`]). Several orgs may list
-//!   the same address, such as an off-ramp or an Earn router on Tempo.
+//!   the same address, such as an off-ramp or an Earn router on Tempo. An address in no org may
+//!   always withdraw to any Tempo address, so removing a member never strands its funds.
 //!
 //! The portal admin configures it on Tempo: `ZonePortal.setIdentityConfig` sets the registrar and
 //! whether the zone enforces edges, and the zone reads both from finalized Tempo state, so a
@@ -70,7 +71,8 @@ impl ZoneIdentity {
     ///
     /// - a transfer needs both halves of the edge from the sender's org to the recipient's;
     /// - a deposit needs the recipient's org to accept `from`, a Tempo address;
-    /// - a withdrawal needs the sender's org to allow `to`, a Tempo address.
+    /// - a withdrawal needs the sender's org to allow `to`, a Tempo address; a sender in org 0
+    ///   may always withdraw.
     pub fn allows(
         &self,
         enforced: bool,
@@ -114,7 +116,9 @@ impl ZoneIdentity {
             TransferKind::Withdrawal => {
                 let sender = self.members[from].read()?;
                 let (policy, target) = self.l1_rules(sender.org, token, to)?;
-                let allowed = policy.open_withdrawal
+                // Read before deciding, so a sender in org 0 costs the same as any other.
+                let allowed = sender.org == 0
+                    || policy.open_withdrawal
                     || (policy.self_withdrawal && to == from)
                     || target.withdraw_to;
                 Ok(!sender.frozen && allowed)
@@ -293,7 +297,8 @@ impl ZoneIdentity {
     }
 
     /// Sets, for each of `tokens`, which Tempo addresses `org`'s members may use without a target.
-    /// Org 0's policy, set by the registrar, governs addresses in no org.
+    /// Org 0's policy, set by the registrar, governs deposits to addresses in no org; they may
+    /// always withdraw.
     pub fn set_l1_policy(
         &mut self,
         caller: Address,
@@ -690,8 +695,10 @@ mod tests {
             assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
             identity.remove_member(admin, BOB).unwrap();
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
-            // The org's targets no longer apply, and org 0 has none unless the registrar sets them.
-            assert!(!allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
+            // The org's edges and targets no longer apply, but org 0 may withdraw anywhere.
+            assert!(!allows(usd, BOB, ALICE, TransferKind::InZone));
+            assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
+            assert!(allows(usd, BOB, STRANGER, TransferKind::Withdrawal));
         });
     }
 
@@ -809,6 +816,8 @@ mod tests {
                 .set_l1_policy(registrar, registrar, 0, &[usd], open)
                 .unwrap();
             assert!(allows(usd, STRANGER, STRANGER, TransferKind::Deposit));
+            // Org 0 may always withdraw anywhere, whatever its policy.
+            assert!(allows(usd, STRANGER, OFFRAMP, TransferKind::Withdrawal));
             // Org 0's rules never apply to members.
             assert!(!allows(usd, STRANGER, ALICE, TransferKind::Deposit));
             assert_eq!(
@@ -991,7 +1000,7 @@ mod tests {
                     (ALICE, dave),
                 ],
             ),
-            // Allowed by target and by policy, denied, from org 0, and from a frozen party.
+            // Allowed by target, by policy and from org 0, denied, and from a frozen party.
             (
                 TransferKind::Withdrawal,
                 vec![
