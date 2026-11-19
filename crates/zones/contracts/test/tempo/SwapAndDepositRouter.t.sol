@@ -108,6 +108,39 @@ contract MockZonePortalForRouter {
         return bytes32(0);
     }
 
+    /// @dev Present only on the T15 runtime; the router probes it to pick the deposit overload.
+    function DEPOSITS_PER_BUCKET() external pure returns (uint64) {
+        return 230;
+    }
+
+}
+
+/// @notice A pre-T15 portal: only the 5-argument deposit, no `DEPOSITS_PER_BUCKET`.
+contract MockLegacyZonePortalForRouter {
+
+    uint128 public lastDepositAmount;
+    bool public legacyDepositCalled;
+
+    function isTokenEnabled(address) external pure returns (bool) {
+        return true;
+    }
+
+    function deposit(
+        address _token,
+        uint128 amount,
+        uint256,
+        DepositPayload calldata,
+        address
+    )
+        external
+        returns (bytes32)
+    {
+        ITIP20(_token).transferFrom(msg.sender, address(this), amount);
+        lastDepositAmount = amount;
+        legacyDepositCalled = true;
+        return bytes32(0);
+    }
+
 }
 
 contract SwapAndDepositRouterTest is BaseTest {
@@ -248,6 +281,23 @@ contract SwapAndDepositRouterTest is BaseTest {
         assertEq(mockPortal.lastDepositKeyIndex(), 0);
         assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
         assertEq(mockPortal.lastDepositMaxFee(), MAX_FEE);
+    }
+
+    function test_deposit_usesLegacyOverloadOnPreT15Portal() public {
+        MockLegacyZonePortalForRouter legacy = new MockLegacyZonePortalForRouter();
+        mockFactory.setPortal(address(legacy), true);
+        DepositPayload memory payload = _defaultDepositPayload();
+        bytes memory data =
+            _buildCallbackData(address(pathUSD), address(legacy), 0, payload, refundBurner, 0);
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        bytes4 ret = router.onWithdrawalReceived(
+            SOURCE_ZONE_ID, sourcePortal, senderTag, address(pathUSD), AMOUNT, data
+        );
+
+        assertEq(ret, IWithdrawalReceiver.onWithdrawalReceived.selector);
+        assertTrue(legacy.legacyDepositCalled());
+        assertEq(legacy.lastDepositAmount(), AMOUNT);
     }
 
     function test_deposit_withSwap() public {

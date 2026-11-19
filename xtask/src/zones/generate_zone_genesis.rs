@@ -779,17 +779,23 @@ mod tests {
             let json = std::fs::read(output.path().join("genesis.json")).unwrap();
             let genesis: Genesis = serde_json::from_slice(&json).unwrap();
             assert_eq!(genesis.timestamp, 50);
-            for (key, expected) in [
-                ("t11Time", serde_json::json!(20)),
-                ("t12Time", serde_json::json!(200)),
-                ("t13Time", serde_json::Value::Null),
-                ("t14Time", serde_json::Value::Null),
-            ] {
-                assert_eq!(genesis.config.extra_fields[key], expected);
+            for (key, expected) in [("t11Time", 20), ("t12Time", 200)] {
+                assert_eq!(
+                    genesis.config.extra_fields[key],
+                    serde_json::json!(expected)
+                );
             }
+            // Forks the L1 has not scheduled are omitted, so the zone inherits them later.
+            for key in ["t13Time", "t14Time"] {
+                assert!(!genesis.config.extra_fields.contains_key(key), "{key}");
+            }
+            // Omitted forks are inherited from the L1 binary's built-in schedule, so the zone
+            // follows that, not just the forks the mocked RPC reported.
             let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+            let parent = zone_chainspec::tempo_chain_spec_for_l1(4217).unwrap();
             for (timestamp, expected) in activations {
-                assert_eq!(spec.tempo_hardfork_at(timestamp), expected);
+                let inherited = parent.tempo_hardfork_at(timestamp);
+                assert_eq!(spec.tempo_hardfork_at(timestamp), expected.max(inherited));
             }
             if let Some(original) = &original {
                 assert_eq!(

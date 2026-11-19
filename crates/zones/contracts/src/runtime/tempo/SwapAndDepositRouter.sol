@@ -96,8 +96,14 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
         uint128 amountOut = _swapIfNeeded(tokenIn, tokenOut, amount, minAmountOut);
 
         ITIP20(tokenOut).approve(targetPortal, amountOut);
-        IZonePortal(targetPortal)
-            .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient, maxFee);
+        if (_hasMaxFeeDeposit(targetPortal)) {
+            IZonePortal(targetPortal)
+                .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient, maxFee);
+        } else {
+            // Pre-T15 portals have only the 5-argument overload and no congestion fee.
+            IZonePortal(targetPortal)
+                .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient);
+        }
 
         return IWithdrawalReceiver.onWithdrawalReceived.selector;
     }
@@ -105,6 +111,14 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     /*//////////////////////////////////////////////////////////////
                            INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
+
+    /// @dev Whether `portal` runs the T15 runtime, which adds the `maxFee` deposit overloads.
+    ///      Pre-T15 runtimes have no `DEPOSITS_PER_BUCKET` and no fallback, so the probe fails.
+    function _hasMaxFeeDeposit(address portal) internal view returns (bool) {
+        (bool ok, bytes memory ret) =
+            portal.staticcall(abi.encodeWithSignature("DEPOSITS_PER_BUCKET()"));
+        return ok && ret.length == 32;
+    }
 
     /// @notice Validate the target portal is registered and the token is enabled on it
     function _validateTarget(address targetPortal, address tokenOut) internal view {

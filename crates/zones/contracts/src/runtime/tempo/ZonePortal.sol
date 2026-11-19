@@ -262,9 +262,6 @@ contract ZonePortal is IZonePortal {
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
 
-    /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1.
-    uint8 internal _minimumAddressVersion;
-
     /// @notice Deposit-queue checkpoints (slot 29). Pruning zeroes entries, keeping indices stable.
     DepositBucket[] public depositBuckets;
 
@@ -287,6 +284,10 @@ contract ZonePortal is IZonePortal {
 
     /// @notice First checkpoint index not yet pruned (slot 31).
     uint64 public nextDepositBucketToPrune;
+
+    /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1. Kept out of
+    ///      slot 28, which TIP-1180 fills with the identity registrar and enforcement flag.
+    uint8 internal _minimumAddressVersion;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
