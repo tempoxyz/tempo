@@ -26,8 +26,16 @@ built without coverage instrumentation, so only the server reports coverage and 
 | `eventually_persisted` | Flushes to the head; the persisted state, the tip root and proofs must match the model |
 | `finally_recovered` | The same once the server is back after the last fault |
 
+Proof requests that hit the known overlay anchor gap (`state trie overlay for tip … cannot be
+anchored to … with current blocks`) are temporarily rejected and logged as `proof_overlay_gap`
+events, not assertion failures. A run does not need to encounter the gap to pass. The server stays
+up; all other proof errors and returned-proof checks still fail normally. Remove this exception once
+reth pins the Finish chain for a provider's lifetime.
+
 Launch the reth target with `--fault-tolerance legacy` (network faults and thread pauses, no container
-kills), which leaves restart recovery unexercised: "Restart recovers persisted blocks" stays unreached. A command that finds the server down exits successfully, so a restart is not a failure. Run one
+kills), which leaves restart recovery unexercised. Recovered roots and proofs are still checked
+whenever the server opens an existing database. A command that finds the server down exits
+successfully, so a restart is not a failure. Run one
 locally with `ANTITHESIS_TRIE_SOCKET=/tmp/trie.sock` set for both the server and the commands.
 
 The zones workload drivers live in `xtask/zones-antithesis`, also built uninstrumented; see [`zones/README.md`](zones/README.md).

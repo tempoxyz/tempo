@@ -16,17 +16,18 @@ use alloy_provider::Provider;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::PATH_USD_ADDRESS;
+use zone_p2p::LeadershipState;
 
 use crate::utils::{
-    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, local_dev_zone_account, poll_until,
-    start_local_p2p_cluster,
+    DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, assert_same_block,
+    local_dev_zone_account, poll_until, start_local_p2p_cluster, wait_all_at,
 };
 
 /// Ceiling for one leadership switch: covers the Commonware handshake, the promotion
 /// barrier's tip-evidence round trip, and the generation swap.
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a fenced or demoted node is watched to confirm it produces nothing.
-const QUIESCENCE: Duration = Duration::from_secs(3);
+const QUIESCENCE: Duration = Duration::from_secs(1);
 /// Live-propagation ceiling during the observation→activation window: well below the
 /// follower's 30-second inactivity backfill probe, so a routing regression that degrades
 /// the window to backfill-paced replication fails fast instead of passing slowly.
@@ -48,13 +49,13 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
     // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
     for height in 1..=3 {
         cluster.inject_block(vec![])?;
-        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
     }
 
     let recovery_tip_height = 3;
     let mut original_hashes = Vec::new();
     for height in 1..=recovery_tip_height {
-        original_hashes.push(cluster.assert_same_block(height).await?.hash);
+        original_hashes.push(assert_same_block(&cluster.nodes, height).await?.hash);
     }
     let recovery_block_hash = original_hashes[(recovery_tip_height - 1) as usize];
     let recovery_start_tempo_block = cluster.next_anchor_number();
@@ -105,13 +106,13 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
         node.wait_for_tempo_block_number(recovery_start_tempo_block + 2, HANDOFF_TIMEOUT)
             .await?;
     }
-    cluster
-        .wait_all_at(optimistic_zone_tip, HANDOFF_TIMEOUT)
-        .await?;
+    wait_all_at(&cluster.nodes, optimistic_zone_tip, HANDOFF_TIMEOUT).await?;
     let b_producer = cluster.sequencer_signers[replacement_index].address();
     for height in recovery_tip_height + 1..=optimistic_zone_tip {
         assert_eq!(
-            cluster.assert_same_block(height).await?.beneficiary(),
+            assert_same_block(&cluster.nodes, height)
+                .await?
+                .beneficiary(),
             b_producer,
             "replacement leader B did not optimistically produce recovery block {height}"
         );
@@ -130,15 +131,18 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
     )?;
     cluster.inject_block(vec![])?;
     let portal_activation_zone_height = optimistic_zone_tip + 1;
-    cluster
-        .wait_all_at(portal_activation_zone_height, HANDOFF_TIMEOUT)
-        .await?;
+    wait_all_at(
+        &cluster.nodes,
+        portal_activation_zone_height,
+        HANDOFF_TIMEOUT,
+    )
+    .await?;
 
     // The pre-crash prefix is unchanged on both survivors.
     for (offset, expected_hash) in original_hashes.into_iter().enumerate() {
         let height = offset as u64 + 1;
         assert_eq!(
-            cluster.assert_same_block(height).await?.hash,
+            assert_same_block(&cluster.nodes, height).await?.hash,
             expected_hash,
             "forced recovery replaced pre-crash block {height}"
         );
@@ -147,8 +151,7 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
     // C, rather than B, produces the portal-activation block. Once it is applied, the temporary
     // recovery state is removed.
     assert_eq!(
-        cluster
-            .assert_same_block(portal_activation_zone_height)
+        assert_same_block(&cluster.nodes, portal_activation_zone_height)
             .await?
             .beneficiary(),
         c_producer,
@@ -164,9 +167,11 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
     // Production remains live under ordinary portal authority after the recovery window.
     cluster.inject_block(vec![])?;
     let next_height = portal_activation_zone_height + 1;
-    cluster.wait_all_at(next_height, HANDOFF_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, next_height, HANDOFF_TIMEOUT).await?;
     assert_eq!(
-        cluster.assert_same_block(next_height).await?.beneficiary(),
+        assert_same_block(&cluster.nodes, next_height)
+            .await?
+            .beneficiary(),
         c_producer
     );
     Ok(())
@@ -192,7 +197,7 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
     for height in 1..=3 {
         cluster.inject_block(vec![])?;
-        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
     }
 
     // --- Block 4 funds a sender so a pending transaction can ride through the handoff. ---
@@ -204,7 +209,7 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
         sender,
         amount,
     )])?;
-    cluster.wait_all_at(4, DEFAULT_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, 4, DEFAULT_TIMEOUT).await?;
     cluster.nodes[2]
         .wait_for_balance(
             PATH_USD_ADDRESS,
@@ -301,11 +306,11 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     // --- Convergence: every node holds the identical chain; the producer switches exactly
     // at the activation boundary (block height == embedded anchor in this harness). ---
     let final_height = cluster.nodes[1].provider().get_block_number().await?;
-    cluster.wait_all_at(final_height, HANDOFF_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, final_height, HANDOFF_TIMEOUT).await?;
     let a_producer = cluster.sequencer_signers[0].address();
     let b_producer = cluster.sequencer_signers[1].address();
     for height in 1..=final_height {
-        let header = cluster.assert_same_block(height).await?;
+        let header = assert_same_block(&cluster.nodes, height).await?;
         let expected = if height < handoff_anchor {
             a_producer
         } else {
@@ -321,8 +326,8 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     // --- A remains a live follower of B: it imports the next B-produced block. ---
     cluster.inject_block(vec![])?;
     let next = final_height + 1;
-    cluster.wait_all_at(next, HANDOFF_TIMEOUT).await?;
-    let header = cluster.assert_same_block(next).await?;
+    wait_all_at(&cluster.nodes, next, HANDOFF_TIMEOUT).await?;
+    let header = assert_same_block(&cluster.nodes, next).await?;
     assert_eq!(header.beneficiary(), b_producer);
 
     // Every node observes the included approval.
@@ -354,7 +359,7 @@ async fn test_lagged_follower_promotes_only_after_catching_up() -> eyre::Result<
     // Blocks 1..=2 are observed by everyone.
     for height in 1..=2 {
         cluster.inject_block(vec![])?;
-        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
     }
 
     // Blocks 3..=5: node B (index 1) does not observe the anchors, so it cannot import the
@@ -404,12 +409,12 @@ async fn test_lagged_follower_promotes_only_after_catching_up() -> eyre::Result<
         cluster.record_anchor(1, anchor, vec![])?;
     }
     cluster.record_anchor(1, boundary, vec![])?;
-    cluster.wait_all_at(6, HANDOFF_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, 6, HANDOFF_TIMEOUT).await?;
 
     let a_producer = cluster.sequencer_signers[0].address();
     let b_producer = cluster.sequencer_signers[1].address();
     for height in 1..=6 {
-        let header = cluster.assert_same_block(height).await?;
+        let header = assert_same_block(&cluster.nodes, height).await?;
         let expected = if height < handoff_anchor {
             a_producer
         } else {
@@ -424,9 +429,9 @@ async fn test_lagged_follower_promotes_only_after_catching_up() -> eyre::Result<
 
     // B keeps producing; everyone follows.
     cluster.inject_block(vec![])?;
-    cluster.wait_all_at(7, HANDOFF_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, 7, HANDOFF_TIMEOUT).await?;
     assert_eq!(
-        cluster.assert_same_block(7).await?.beneficiary(),
+        assert_same_block(&cluster.nodes, 7).await?.beneficiary(),
         b_producer
     );
     Ok(())
@@ -452,7 +457,7 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
     // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
     for height in 1..=3 {
         cluster.inject_block(vec![])?;
-        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
     }
 
     // Block 4 funds a sender used during the window.
@@ -464,7 +469,7 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
         sender,
         amount,
     )])?;
-    cluster.wait_all_at(4, DEFAULT_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, 4, DEFAULT_TIMEOUT).await?;
     cluster.nodes[2]
         .wait_for_balance(
             PATH_USD_ADDRESS,
@@ -510,9 +515,7 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
     // A produces 5..=7 through the window; each block reaches every node live.
     for height in 5..=7 {
         cluster.inject_block(vec![])?;
-        cluster
-            .wait_all_at(height, LIVE_PROPAGATION_TIMEOUT)
-            .await?;
+        wait_all_at(&cluster.nodes, height, LIVE_PROPAGATION_TIMEOUT).await?;
     }
 
     // The forwarded approval was included by A before the boundary.
@@ -533,16 +536,14 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
 
     // The boundary block and everything after it is produced by B; A follows.
     cluster.inject_block(vec![])?;
-    cluster.wait_all_at(handoff_anchor, HANDOFF_TIMEOUT).await?;
+    wait_all_at(&cluster.nodes, handoff_anchor, HANDOFF_TIMEOUT).await?;
     cluster.inject_block(vec![])?;
-    cluster
-        .wait_all_at(handoff_anchor + 1, HANDOFF_TIMEOUT)
-        .await?;
+    wait_all_at(&cluster.nodes, handoff_anchor + 1, HANDOFF_TIMEOUT).await?;
 
     let a_producer = cluster.sequencer_signers[0].address();
     let b_producer = cluster.sequencer_signers[1].address();
     for height in 1..=handoff_anchor + 1 {
-        let header = cluster.assert_same_block(height).await?;
+        let header = assert_same_block(&cluster.nodes, height).await?;
         let expected = if height < handoff_anchor {
             a_producer
         } else {
@@ -564,6 +565,78 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
                 .call()
                 .await?,
             U256::from(approval_amount)
+        );
+    }
+    Ok(())
+}
+
+/// A follower observes a transition after the incoming leader has already produced under it.
+///
+/// The portal activates a leader in the same L1 block that announces it, so a follower whose
+/// subscriber lags can receive the incoming leader's first live block before that leader is in
+/// its schedule. The P2P transport drops it (the sender is not a retained leader), and publishing
+/// the transition must trigger backfill for the dropped block well before the 30-second
+/// inactivity probe would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_follower_backfills_incoming_leader_block_dropped_before_transition()
+-> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut cluster = start_local_p2p_cluster(24).await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Blocks 1..=3 are produced by A (the manifest bootstrap leader).
+    for height in 1..=3 {
+        cluster.inject_block(vec![])?;
+        wait_all_at(&cluster.nodes, height, HANDOFF_TIMEOUT).await?;
+    }
+
+    // A and B observe A→B at the next anchor; follower C does not yet.
+    let handoff_anchor = cluster.next_anchor_number();
+    assert_eq!(
+        handoff_anchor, 4,
+        "test assumes 1:1 zone-height:anchor mapping"
+    );
+    let transition = LeadershipState::new(1, cluster.p2p_public_keys[1].clone(), handoff_anchor);
+    for node in &cluster.nodes[..2] {
+        assert!(node.leadership().publish(transition.clone())?);
+    }
+
+    // B produces the boundary block. A imports it live; C drops it at the transport because B is
+    // not a retained leader in C's schedule, even though C observed the anchor.
+    cluster.inject_block(vec![])?;
+    wait_all_at(&cluster.nodes[..2], handoff_anchor, HANDOFF_TIMEOUT).await?;
+    tokio::time::sleep(QUIESCENCE).await;
+    assert_eq!(
+        cluster.nodes[2].provider().get_block_number().await?,
+        handoff_anchor - 1,
+        "a follower must drop live blocks from a sender it does not know as a leader"
+    );
+
+    // C observes the transition. The schedule change starts backfill, which fetches the dropped
+    // block without waiting for the inactivity probe.
+    assert!(cluster.nodes[2].leadership().publish(transition)?);
+    cluster.nodes[2]
+        .wait_for_block_number(handoff_anchor, LIVE_PROPAGATION_TIMEOUT)
+        .await?;
+
+    // C now accepts B's live blocks.
+    cluster.inject_block(vec![])?;
+    wait_all_at(&cluster.nodes, handoff_anchor + 1, LIVE_PROPAGATION_TIMEOUT).await?;
+
+    let a_producer = cluster.sequencer_signers[0].address();
+    let b_producer = cluster.sequencer_signers[1].address();
+    for height in 1..=handoff_anchor + 1 {
+        let header = assert_same_block(&cluster.nodes, height).await?;
+        let expected = if height < handoff_anchor {
+            a_producer
+        } else {
+            b_producer
+        };
+        assert_eq!(
+            header.beneficiary(),
+            expected,
+            "block {height} has the wrong producer (boundary at {handoff_anchor})"
         );
     }
     Ok(())

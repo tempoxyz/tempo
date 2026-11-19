@@ -7,7 +7,7 @@
 //! Blocked funds can later be released with [`claim_blocked_receipt`] or destroyed with
 //! [`burn_blocked_receipt`], using the receipt bytes recovered via [`BlockedTransfer`].
 
-use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
+use alloy_primitives::{Address, Bytes, Log, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 use tempo_contracts::precompiles::{
     IReceivePolicyGuard::{TransferBlocked, burnBlockedReceiptCall, claimCall},
@@ -178,26 +178,18 @@ impl BlockedTransfer {
 }
 
 fn tip403_registry_call(call: impl SolCall) -> Call {
-    Call {
-        to: TxKind::Call(TIP403_REGISTRY_ADDRESS),
-        value: U256::ZERO,
-        input: Bytes::from(call.abi_encode()),
-    }
+    Call::new(TIP403_REGISTRY_ADDRESS, call.abi_encode())
 }
 
 fn receive_policy_guard_call(call: impl SolCall) -> Call {
-    Call {
-        to: TxKind::Call(RECEIVE_POLICY_GUARD_ADDRESS),
-        value: U256::ZERO,
-        input: Bytes::from(call.abi_encode()),
-    }
+    Call::new(RECEIVE_POLICY_GUARD_ADDRESS, call.abi_encode())
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use alloy_primitives::{B256, Bytes, LogData, address, bytes, uint};
+    use alloy_primitives::{B256, Bytes, LogData, TxKind, address, bytes, uint};
     use tempo_contracts::precompiles::IReceivePolicyGuard::TransferBlocked;
 
     #[test]

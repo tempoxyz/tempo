@@ -55,10 +55,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::SYSTEM_TX_COUNT};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult,
+    TempoStateAccess, TempoTxResult, consensus::MAX_BLOCK_TRANSACTIONS,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -541,6 +541,11 @@ where
                 }
             }
 
+            // Leave room for the end-of-block system transactions.
+            if executor.receipts().len() + SYSTEM_TX_COUNT >= MAX_BLOCK_TRANSACTIONS {
+                break BlockBuildStopReason::TransactionCountLimit;
+            }
+
             let Some(mut pool_tx) = best_txs.next() else {
                 if payload_build_budget.is_some() && cumulative_gas_used < block_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
@@ -980,14 +985,18 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
+            let finished_at = Instant::now();
             self.estimator.on_build_finished(
-                Instant::now(),
+                finished_at,
                 FinishedBuild::new(
                     validation_work_at_tx_cutoff,
                     validation_work_duration,
                     normal_transaction_fill_idle_elapsed,
                 ),
             );
+            self.metrics
+                .build_time_multiplier_last
+                .set(self.estimator.build_time_multiplier(finished_at));
         }
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {

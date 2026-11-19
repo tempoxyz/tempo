@@ -137,10 +137,14 @@ pub enum TempoInvalidTransaction {
     #[error("failed to recover access key address from signature")]
     AccessKeyRecoveryFailed,
 
-    /// Access keys cannot authorize other keys.
+    /// An access key tried to authorize a different key.
     ///
-    /// Only the root key can authorize new access keys. An access key can only authorize itself
-    /// in a same-transaction authorization flow.
+    /// Before T6, only the root key can authorize new access keys, and an access key can only
+    /// authorize itself in a same-transaction authorization flow. From T6, an active admin key
+    /// can also authorize other keys.
+    ///
+    /// State-dependent from T6: the acting key's admin status can change, so the transaction is
+    /// not bad.
     #[error("access keys cannot authorize other keys, only the root key can authorize new keys")]
     AccessKeyCannotAuthorizeOtherKeys,
 
@@ -150,10 +154,13 @@ pub enum TempoInvalidTransaction {
     #[error("failed to recover signer from KeyAuthorization signature")]
     KeyAuthorizationSignatureRecoveryFailed,
 
-    /// KeyAuthorization not signed by root account.
+    /// KeyAuthorization not signed by an authorized signer.
     ///
-    /// The KeyAuthorization must be signed by the root account (transaction caller),
-    /// but was signed by a different address.
+    /// Before T6, the KeyAuthorization must be signed by the root account (transaction caller).
+    /// From T6, it may also be signed by an active admin key of that account.
+    ///
+    /// State-dependent from T6: the signer's admin status can change, so the transaction is not
+    /// bad.
     #[error(
         "KeyAuthorization must be signed by root account {expected}, but was signed by {actual}"
     )]
@@ -275,9 +282,7 @@ impl TempoInvalidTransaction {
             | Self::InvalidP256Signature
             | Self::InvalidWebAuthnSignature { .. }
             | Self::AccessKeyRecoveryFailed
-            | Self::AccessKeyCannotAuthorizeOtherKeys
             | Self::KeyAuthorizationSignatureRecoveryFailed
-            | Self::KeyAuthorizationNotSignedByRoot { .. }
             | Self::KeychainUserAddressMismatch { .. }
             | Self::KeyAuthorizationChainIdMismatch { .. }
             | Self::ValueTransferNotAllowed
@@ -303,7 +308,9 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation
-            | Self::RootKeyRetired { .. } => false,
+            | Self::RootKeyRetired { .. }
+            | Self::AccessKeyCannotAuthorizeOtherKeys
+            | Self::KeyAuthorizationNotSignedByRoot { .. } => false,
 
             Self::ConfigurableAccount(error) => match error {
                 ConfigurableAccountError::AccountMismatch { .. }
@@ -541,6 +548,21 @@ mod tests {
     #[test]
     fn test_expiring_nonce_replay_is_not_bad() {
         assert!(!TempoInvalidTransaction::ExpiringNonceReplay.is_bad_transaction());
+    }
+
+    #[test]
+    fn test_admin_key_dependent_errors_are_not_bad() {
+        let cases = [
+            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys,
+            TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                expected: Address::repeat_byte(0x01),
+                actual: Address::repeat_byte(0x02),
+            },
+        ];
+
+        for err in cases {
+            assert!(!err.is_bad_transaction(), "{err} should not be bad");
+        }
     }
 
     #[test]

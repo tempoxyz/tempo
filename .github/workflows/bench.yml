@@ -197,7 +197,7 @@ jobs:
             actor = context.payload.comment.user.login;
 
             const body = context.payload.comment.body.trim();
-            const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'general-gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs', 'l1-latency-ms']);
+            const intArgs = new Set(['duration', 'bloat', 'token-count', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'general-gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs', 'l1-latency-ms', 'state-bloat-mib']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
             const stringArgs = new Set(['mode', 'preset', 'baseline-args', 'feature-args', 'baseline-features', 'feature-features', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork', 'run-side', 'tempo-hardfork', 'recipient-mode']);
             const boolArgs = new Set(['samply', 'tracy', 'force-bloat', 'no-cache', 'slack', 'no-slack', 'otlp', 'valscope', 'metrics', 'skip-state-root', 'prover']);
@@ -382,11 +382,11 @@ jobs:
               core.setFailed(msg);
               return;
             }
-            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [baseline=REF] [feature=REF] [slack]`';
+            const zonesUsage = '**Usage:** `derek bench zones [prover=true|false] [preset=full-journey|private-withdrawal|swapped-lifecycle|swapped-redemption|cold-accounts] [tempo-hardfork=HARDFORK] [tps=N] [accounts=N] [recipient-mode=existing|random] [l1-latency-ms=N] [state-bloat-mib=N] [baseline=REF] [feature=REF] [slack]`';
             // Workload overrides, forwarded to the Zone benchmark only when given.
-            const zoneWorkloadArgs = ['tempo-hardfork', 'tps', 'accounts', 'recipient-mode', 'l1-latency-ms'];
+            const zoneWorkloadArgs = ['tempo-hardfork', 'tps', 'accounts', 'recipient-mode', 'l1-latency-ms', 'state-bloat-mib'];
             const zoneArgs = new Set(['mode', 'prover', 'preset', 'baseline', 'feature', 'slack', 'no-slack', ...zoneWorkloadArgs]);
-            const zonePresets = ['full-journey', 'private-withdrawal', 'swapped-lifecycle', 'swapped-redemption'];
+            const zonePresets = ['full-journey', 'private-withdrawal', 'swapped-lifecycle', 'swapped-redemption', 'cold-accounts'];
             let zonesError = '';
             if (mode === 'zones') {
               const unsupported = [...provided].filter(key => !zoneArgs.has(key));
@@ -399,11 +399,13 @@ jobs:
                 zonesError = '`recipient-mode` must be `existing` or `random`.';
               } else if (provided.has('tempo-hardfork') && !/^t\d+[a-z]*$/i.test(defaults['tempo-hardfork'])) {
                 zonesError = '`tempo-hardfork` must be a Tempo hardfork such as `t14`.';
+              } else if (provided.has('state-bloat-mib') && Number(defaults['state-bloat-mib']) > 5000) {
+                zonesError = '`state-bloat-mib` must be between 0 and 5000.';
               }
             } else if (provided.has('prover')) {
               zonesError = '`prover` is only supported with `derek bench zones`.';
             } else {
-              const zoneOnly = ['tempo-hardfork', 'recipient-mode', 'l1-latency-ms'].filter(key => provided.has(key));
+              const zoneOnly = ['tempo-hardfork', 'recipient-mode', 'l1-latency-ms', 'state-bloat-mib'].filter(key => provided.has(key));
               if (zoneOnly.length) zonesError = `\`${zoneOnly.join('`, `')}\` is only supported with \`derek bench zones\`.`;
             }
             if (zonesError) {
@@ -799,6 +801,7 @@ jobs:
       accounts: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload).accounts || '' }}
       recipient-mode: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['recipient-mode'] || '' }}
       l1-latency-ms: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['l1-latency-ms'] || '' }}
+      state-bloat-mib: ${{ fromJSON(needs.tempo-bench-ack.outputs.zones-workload)['state-bloat-mib'] || '' }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
       pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
       slack: ${{ needs.tempo-bench-ack.outputs.no-slack == 'true' && 'never' || 'always' }}

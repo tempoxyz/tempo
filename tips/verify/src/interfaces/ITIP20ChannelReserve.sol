@@ -94,6 +94,15 @@ interface ITIP20ChannelReserve {
         view
         returns (bytes32);
 
+    function verifyVoucher(
+        ChannelDescriptor calldata descriptor,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+        view
+        returns (bool valid);
+
     function domainSeparator() external view returns (bytes32);
 
     event ChannelOpened(
@@ -144,6 +153,10 @@ interface ITIP20ChannelReserve {
         bytes32 indexed channelId, address indexed payer, address indexed payee
     );
 
+    event OpeningCommitmentRecorded(
+        bytes32 indexed channelId, address indexed signer, bytes32 commitment
+    );
+
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error NotPayer();
@@ -159,5 +172,7 @@ interface ITIP20ChannelReserve {
     error CloseNotReady();
     error DepositOverflow();
     error RootKeyRetired(address account);
+    error SignerConfigChanged(address signer);
+    error SaltNotSignerCommitment(address signer, bytes32 commitment);
 
 }

@@ -221,7 +221,8 @@ impl GenerateStateBloat {
                             .expect("child derivation should not fail");
                         let key: &coins_bip32::prelude::SigningKey = child.as_ref();
                         let credential =
-                            k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+                            alloy::signers::k256::ecdsa::SigningKey::from_slice(&key.to_bytes())
+                                .unwrap();
                         secret_key_to_address(&credential)
                     } else {
                         derive_address_fast(&seed, i as u64)
@@ -435,7 +436,8 @@ mod tests {
 
             let child = parent_key.derive_child(i).unwrap();
             let key: &coins_bip32::prelude::SigningKey = child.as_ref();
-            let credential = k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+            let credential =
+                alloy::signers::k256::ecdsa::SigningKey::from_slice(&key.to_bytes()).unwrap();
             let actual = secret_key_to_address(&credential);
 
             assert_eq!(actual, expected.address(), "address mismatch at index {i}");

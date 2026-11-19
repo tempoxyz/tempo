@@ -5,7 +5,6 @@ use alloy::{
     providers::{DynProvider, Provider},
     sol_types::SolCall,
 };
-use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::error::INTERNAL_ERROR_CODE};
 use reth_rpc_server_types::result::rpc_err;
 use tempo_alloy::{TempoNetwork, primitives::transaction::Call, rpc::TempoTransactionRequest};
@@ -37,7 +36,6 @@ impl TempoFaucetExt {
     }
 }
 
-#[async_trait]
 impl TempoFaucetExtApiServer for TempoFaucetExt {
     async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>> {
         // Batch mints so each request holds few of the faucet signer's 16 pool slots, within
@@ -46,15 +44,15 @@ impl TempoFaucetExtApiServer for TempoFaucetExt {
         for tokens in self.faucet_token_addresses.chunks(32) {
             let calls = tokens
                 .iter()
-                .map(|token| Call {
-                    to: (*token).into(),
-                    value: U256::ZERO,
-                    input: ITIP20::mintCall {
-                        to: address,
-                        amount: self.funding_amount,
-                    }
-                    .abi_encode()
-                    .into(),
+                .map(|token| {
+                    Call::new(
+                        *token,
+                        ITIP20::mintCall {
+                            to: address,
+                            amount: self.funding_amount,
+                        }
+                        .abi_encode(),
+                    )
                 })
                 .collect();
             let tx_hash = *self

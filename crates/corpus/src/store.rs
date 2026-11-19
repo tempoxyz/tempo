@@ -6,15 +6,12 @@ use crate::{
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
-use async_trait::async_trait;
-use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use bytes::Bytes;
 use eyre::{OptionExt, WrapErr};
 use futures::TryStreamExt;
 use object_store::{
-    ClientConfigKey, CredentialProvider, ObjectStore, ObjectStoreExt, PutMode, RetryConfig,
-    UpdateVersion,
-    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    ClientConfigKey, ObjectStore, ObjectStoreExt, PutMode, RetryConfig, UpdateVersion,
+    aws::{AmazonS3Builder, AmazonS3ConfigKey},
     path::Path,
 };
 use serde::{Deserialize, Serialize};
@@ -158,30 +155,6 @@ pub struct Store {
     local: bool,
 }
 
-#[derive(Debug)]
-struct Credentials(SharedCredentialsProvider);
-
-#[async_trait]
-impl CredentialProvider for Credentials {
-    type Credential = AwsCredential;
-
-    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let credential =
-            self.0
-                .provide_credentials()
-                .await
-                .map_err(|source| object_store::Error::Generic {
-                    store: "AWS credential chain",
-                    source: Box::new(source),
-                })?;
-        Ok(Arc::new(AwsCredential {
-            key_id: credential.access_key_id().to_owned(),
-            secret_key: credential.secret_access_key().to_owned(),
-            token: credential.session_token().map(str::to_owned),
-        }))
-    }
-}
-
 /// Bounds every request to at most three attempts of at most `request` each, without
 /// replacing other client options read from the environment.
 fn bounded(builder: AmazonS3Builder, request: Duration) -> AmazonS3Builder {
@@ -230,15 +203,11 @@ impl Store {
                 let bucket = url.host_str().ok_or_eyre("missing S3 bucket")?;
                 let prefix = url.path().trim_matches('/');
                 eyre::ensure!(!prefix.is_empty(), "a non-root corpus prefix is required");
-                let sdk = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-                let credentials = sdk
-                    .credentials_provider()
-                    .ok_or_eyre("AWS credential provider unavailable")?;
+                // object_store resolves credentials and region itself (env vars, web identity,
+                // ECS, IMDS) with its own HTTP client. The AWS SDK chain needs an SDK HTTP client
+                // this crate does not compile in, and panics in debug builds without one.
                 let mut builder = bounded(
-                    AmazonS3Builder::from_env()
-                        .with_bucket_name(bucket)
-                        .with_region(sdk.region().map(|r| r.as_ref()).unwrap_or("us-east-1"))
-                        .with_credentials(Arc::new(Credentials(credentials))),
+                    AmazonS3Builder::from_env().with_bucket_name(bucket),
                     REQUEST_TIMEOUT,
                 );
                 if let Some(endpoint) = endpoint {

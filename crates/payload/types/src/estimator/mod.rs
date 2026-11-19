@@ -82,6 +82,7 @@ impl Estimator {
                 validation: ValidationLatencyEstimator::default(),
                 build_time: BuildTimeTracker::new(config.build_time_multiplier),
                 network: NetworkTracker::new(&config),
+                last_return_budget: None,
             })),
         }
     }
@@ -169,13 +170,47 @@ impl Estimator {
     /// Required payload work may overrun the returned allowance.
     #[must_use]
     pub fn start_proposal(&self, now: Instant, preparation: Duration) -> ProposalBudget {
-        let network_reservation = self.lock_state().network.reserve_for_proposal(now);
-        ProposalBudget::new(
+        let mut state = self.lock_state();
+        let network_reservation = state.network.reserve_for_proposal(now);
+        let budget = ProposalBudget::new(
             self.target_block_time,
             network_reservation,
             preparation,
             self.overrun_tolerance,
-        )
+        );
+        state.last_return_budget = Some(budget.return_budget());
+        budget
+    }
+
+    /// The build time multiplier at monotonic `now`, falling back to the configured
+    /// multiplier once all retained build samples have expired.
+    pub fn build_time_multiplier(&self, now: Instant) -> f64 {
+        self.lock_state().build_time.multiplier(now).get()
+    }
+
+    /// Snapshots pacing estimates and the last prepared proposal's allowances.
+    ///
+    /// `now` is monotonic. Build estimates fall back to their configured initial
+    /// values when all build samples have expired; while any remain, earlier
+    /// samples can still influence the smoothed estimates. Validation uses a
+    /// height-bounded window, not a time limit. Network feedback expires at `now`,
+    /// but the reservation and return budget remain those of the last proposal.
+    /// Reading a snapshot removes expired network feedback without advancing the
+    /// reservation. Before the first proposal, allowances use the network floor
+    /// without a preparation cap.
+    pub fn snapshot(&self, now: Instant) -> EstimatorSnapshot {
+        let mut state = self.lock_state();
+        let (network_reserve, network_target) = state.network.snapshot(now);
+        EstimatorSnapshot {
+            validation_latency_p90: state.validation.estimate().map(|e| e.elapsed()),
+            build_time_multiplier: state.build_time.multiplier(now).get(),
+            dry_build_finish: state.build_time.dry_finish(now),
+            network_target,
+            network_reserve,
+            proposal_return_budget: state
+                .last_return_budget
+                .unwrap_or_else(|| self.target_block_time.saturating_sub(network_reserve)),
+        }
     }
 
     /// Locks the shared state, blocking while another clone holds it.
@@ -305,11 +340,35 @@ impl FinishedBuild {
     }
 }
 
+/// Pacing estimates and proposal allowances exposed for metrics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EstimatorSnapshot {
+    /// Recent P90 execution-layer validation time, if observed.
+    pub validation_latency_p90: Option<Duration>,
+    /// Build time multiplier in use.
+    pub build_time_multiplier: f64,
+    /// Finish a build that waited for transactions reserves.
+    pub dry_build_finish: Duration,
+    /// Unclamped adaptive network reservation target, or `None` in fixed mode
+    /// or without live network samples. During the first three samples it uses
+    /// the configured floor rather than the percentile; fast rise can lift it
+    /// to the smaller of the two newest samples even during that warm-up.
+    pub network_target: Option<Duration>,
+    /// Network reservation the most recent own proposal used, or the floor
+    /// before the first one.
+    pub network_reserve: Duration,
+    /// Last prepared return budget, including its preparation cap, or the
+    /// target interval less the network floor before the first proposal.
+    pub proposal_return_budget: Duration,
+}
+
 #[derive(Debug)]
 struct EstimatorState {
     validation: ValidationLatencyEstimator,
     build_time: BuildTimeTracker,
     network: NetworkTracker,
+    /// Last prepared allowance, retained only for observability.
+    last_return_budget: Option<Duration>,
 }
 
 #[cfg(test)]

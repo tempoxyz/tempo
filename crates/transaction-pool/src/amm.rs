@@ -430,6 +430,10 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::address;
     use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot};
+    use test_case::test_case;
+
+    const ACTIVE: Address = Address::repeat_byte(0x11);
+    const INACTIVE: Address = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
@@ -1074,26 +1078,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_active_validator() {
-        let active = Address::repeat_byte(0x11);
-        let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
-
-        let cases = [
-            (vec![active], active, true, "active validator in set"),
-            (
-                vec![active],
-                inactive,
-                false,
-                "inactive validator not in set",
-            ),
-            (vec![], active, false, "empty set"),
-        ];
-
-        for (unique_validators, query, expected, desc) in cases {
-            let cache = AmmLiquidityCache::with_unique_validators(unique_validators);
-            assert_eq!(cache.is_active_validator(&query), expected, "{desc}");
-        }
+    #[test_case(vec![ACTIVE], ACTIVE => true)]
+    #[test_case(vec![ACTIVE], INACTIVE => false)]
+    #[test_case(vec![], ACTIVE => false)]
+    fn test_is_active_validator(unique_validators: Vec<Address>, query: Address) -> bool {
+        AmmLiquidityCache::with_unique_validators(unique_validators).is_active_validator(&query)
     }
 
     #[test]
