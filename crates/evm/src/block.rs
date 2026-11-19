@@ -1,6 +1,6 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmTypes, transaction::ExecutionContext,
+    TempoEvmTypes,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -171,8 +171,6 @@ pub struct TempoTxResult {
     tx_type: TempoTxType,
     /// Hash of the executed transaction.
     tx_hash: B256,
-    /// Execution provenance used to exempt RPC simulations from block gas validation.
-    execution_context: ExecutionContext,
     /// Whether the transaction is a system transaction.
     ///
     /// The block section is not stored: results may be committed by a different executor than the
@@ -191,7 +189,6 @@ impl Clone for TempoTxResult {
             inner: EthTransactionResultWithState::new(self.inner.result().clone(), self.tx_type, 0),
             tx_type: self.tx_type,
             tx_hash: self.tx_hash,
-            execution_context: self.execution_context,
             is_system_tx: self.is_system_tx,
             is_payment: self.is_payment,
             block_gas_used: self.block_gas_used,
@@ -203,7 +200,6 @@ impl TempoTxResult {
     /// Creates a new [`TempoTxResult`] from a precomputed result and state.
     pub(crate) fn new_precomputed(
         tx: &TempoTxEnvelope,
-        execution_context: ExecutionContext,
         result: TxResult<TempoEvmTypes>,
         state: PendingState,
         is_system_tx: bool,
@@ -222,7 +218,6 @@ impl TempoTxResult {
             ),
             tx_type: tx.tx_type(),
             tx_hash: *tx.tx_hash(),
-            execution_context,
             is_system_tx,
             is_payment,
             block_gas_used,
@@ -339,19 +334,9 @@ impl<'a> TempoBlockExecutor<'a> {
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
         let timestamp = evm.block().timestamp.saturating_to::<u64>();
         let prague_active = chain_spec.is_prague_active_at_timestamp(timestamp);
-        // For a block under validation the lane limits come from its own header, which is only
-        // checked against the chain spec once execution finished. Never give the general lane
-        // more gas than the chain spec allows.
-        let general_gas_limit = if chain_spec.tempo_hardfork_at(timestamp).is_t4() {
-            let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
-            ctx.general_gas_limit.min(chain_spec.general_gas_limit_at(
-                timestamp,
-                block_gas_limit,
-                shared_gas_limit,
-            ))
-        } else {
-            ctx.general_gas_limit
-        };
+        let shared_gas_limit = chain_spec.shared_gas_limit_at(timestamp, block_gas_limit);
+        let general_gas_limit =
+            chain_spec.general_gas_limit_at(timestamp, block_gas_limit, shared_gas_limit);
         let spec_id = reth_evm_ethereum::spec_id_by_timestamp_and_block_number(
             chain_spec,
             evm.block().timestamp.saturating_to::<u64>(),
@@ -709,7 +694,6 @@ impl<'a> TempoBlockExecutor<'a> {
     pub(crate) fn validate_tx(
         &self,
         tx_hash: B256,
-        execution_context: ExecutionContext,
         is_system_tx: bool,
         is_payment: bool,
         gas_used: u64,
@@ -719,28 +703,19 @@ impl<'a> TempoBlockExecutor<'a> {
             self.non_shared_gas_left,
             self.non_payment_gas_left,
             tx_hash,
-            Self::enforces_gas_lanes(execution_context),
             is_system_tx,
             is_payment,
             gas_used,
         )
     }
 
-    /// Returns whether a transaction that overflows its gas lane makes the block invalid: true
-    /// for signed transactions, false for simulations, which may exceed the lanes.
-    fn enforces_gas_lanes(execution_context: ExecutionContext) -> bool {
-        matches!(execution_context, ExecutionContext::Transaction { .. })
-    }
-
     /// Implements [`Self::validate_tx`] over copied section state, so it can run while the inner
     /// executor is borrowed.
-    #[expect(clippy::too_many_arguments)]
     fn next_section(
         section: BlockSection,
         non_shared_gas_left: u64,
         non_payment_gas_left: u64,
         tx_hash: B256,
-        enforce_gas_lanes: bool,
         is_system_tx: bool,
         is_payment: bool,
         gas_used: u64,
@@ -765,9 +740,8 @@ impl<'a> TempoBlockExecutor<'a> {
 
         match section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
-                if enforce_gas_lanes
-                    && (gas_used > non_shared_gas_left
-                        || (!is_payment && gas_used > non_payment_gas_left))
+                if gas_used > non_shared_gas_left
+                    || (!is_payment && gas_used > non_payment_gas_left)
                 {
                     trace!(
                         target: "tempo::block",
@@ -942,7 +916,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
-        let execution_context = tx_env.inner().execution_context();
         let original = recovered.tx();
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
@@ -960,25 +933,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             inner.result().result.tx_gas_used()
         };
 
-        // Reject ordering violations before the result is observed; `commit_transaction` derives
-        // the section again from the committing executor's state. Lane overflow is only rejected
-        // on commit, so callers that never commit this result (such as shadow replay) can still
-        // inspect it.
-        Self::next_section(
-            self.section,
-            self.non_shared_gas_left,
-            self.non_payment_gas_left,
-            tx_hash,
-            false,
-            is_system_tx,
-            is_payment,
-            block_gas_used,
-        )?;
+        // Reject before the result is observed; `commit_transaction` derives the section again
+        // from the committing executor's state.
+        self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
         Ok(TempoTxResult {
             inner,
             tx_type,
             tx_hash,
-            execution_context,
             is_system_tx,
             is_payment,
             block_gas_used,
@@ -993,7 +954,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             inner,
             tx_type: _,
             tx_hash,
-            execution_context,
             is_system_tx,
             is_payment,
             block_gas_used,
@@ -1001,13 +961,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section = self.validate_tx(
-            tx_hash,
-            execution_context,
-            is_system_tx,
-            is_payment,
-            block_gas_used,
-        )?;
+        let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
         self.record_committed_tx(next_section, block_gas_used, is_payment);
@@ -1023,13 +977,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
-        let execution_context = tx_env.inner().execution_context();
         let original = recovered.tx();
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let is_payment = self.is_payment(original);
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let enforce_gas_lanes = Self::enforces_gas_lanes(execution_context);
         let (section, non_shared_gas_left, non_payment_gas_left) = (
             self.section,
             self.non_shared_gas_left,
@@ -1052,7 +1004,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     non_shared_gas_left,
                     non_payment_gas_left,
                     tx_hash,
-                    enforce_gas_lanes,
                     is_system_tx,
                     is_payment,
                     block_gas_used,
@@ -1199,7 +1150,9 @@ impl TempoBlockExecutor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TestExecutorBuilder, test_chainspec};
+    use crate::test_utils::{
+        TestExecutorBuilder, chainspec_with_general_gas_limit, test_chainspec,
+    };
     use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_eips::{
         eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
@@ -1251,10 +1204,6 @@ mod tests {
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use test_case::{test_case, test_matrix};
-
-    const SIGNED: ExecutionContext = ExecutionContext::Transaction {
-        tx_hash: B256::ZERO,
-    };
 
     /// The zone portal, verifier and messenger runtimes of the initial allocation.
     const INITIAL_ZONE_RUNTIMES: [Bytes; 3] = [
@@ -1995,9 +1944,6 @@ mod tests {
         TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -2147,7 +2093,7 @@ mod tests {
         let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         executor.validate_system_tx(&system_tx).unwrap();
-        let result = executor.validate_tx(*system_tx.tx_hash(), SIGNED, true, false, 0);
+        let result = executor.validate_tx(*system_tx.tx_hash(), true, false, 0);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2385,13 +2331,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(
-            *tx.tx_hash(),
-            SIGNED,
-            false,
-            executor.is_payment(&tx),
-            21_000,
-        );
+        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -2456,13 +2396,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(
-            *tx.tx_hash(),
-            SIGNED,
-            false,
-            executor.is_payment(&tx),
-            21_000,
-        );
+        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2475,7 +2409,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
@@ -2486,9 +2419,6 @@ mod tests {
         let output = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -2515,10 +2445,9 @@ mod tests {
     /// A result computed against a stale executor must not bypass lane gas limits.
     #[test]
     fn test_commit_transaction_revalidates_stale_lane_section() {
-        let chainspec = test_chainspec();
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000);
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
         executor.apply_pre_execution_changes().unwrap();
@@ -2630,9 +2559,6 @@ mod tests {
 
         executor
             .commit_transaction(TempoTxResult {
-                execution_context: ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
-                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -2736,97 +2662,28 @@ mod tests {
         assert!(executor.finish().is_ok());
     }
 
-    #[test_matrix([TempoHardfork::T3, TempoHardfork::T4], [vec![true], vec![false], vec![false, true], vec![true, false]])]
-    fn test_lane_overflow_rejects_only_signed_transactions(
-        hardfork: TempoHardfork,
-        simulations: Vec<bool>,
-    ) {
-        let chainspec = DEV.clone();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .with_general_gas_limit(0)
-            .with_spec(hardfork)
-            .build(&mut db, &chainspec);
-        executor.apply_pre_execution_changes().unwrap();
-        let mut result = Ok(());
-        for &simulation in &simulations {
-            let commit = executor.commit_transaction(TempoTxResult {
-                tx_type: TempoTxType::Legacy,
-                tx_hash: B256::ZERO,
-                execution_context: if simulation {
-                    ExecutionContext::Simulation
-                } else {
-                    SIGNED
-                },
-                inner: EthTransactionResultWithState::new(
-                    TxResultWithState {
-                        result: TxResult::<TempoEvmTypes> {
-                            status: true,
-                            total_gas_spent: 21_000,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    TempoTxType::Legacy,
-                    0,
-                ),
-                is_system_tx: false,
-                is_payment: false,
-                block_gas_used: 21_000,
-            });
-            if let Err(error) = commit {
-                result = Err(error);
-                break;
-            }
-            // Simulations exceed the lane and saturate it.
-            assert_eq!(executor.section(), BlockSection::NonShared);
-            assert_eq!(executor.non_payment_gas_left, 0);
-        }
-        match result {
-            Err(error) => {
-                assert!(simulations.contains(&false));
-                assert_eq!(error.to_string(), "transaction exceeds its gas lane");
-            }
-            Ok(()) => {
-                assert!(!simulations.contains(&false));
-                assert!(executor.finish().is_ok());
-            }
-        }
-    }
-
     /// A signed transaction that overflows a gas lane is rejected when it executes, on every
     /// fork, not after the rest of the block ran.
     #[test_matrix([TempoHardfork::T3, TempoHardfork::T4])]
     fn test_rejects_general_lane_overflow_on_every_fork(hardfork: TempoHardfork) {
-        let chainspec = test_chainspec();
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000);
         let tx = create_legacy_tx();
         let hash = *tx.tx_hash();
 
         let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000)
             .with_spec(hardfork)
             .build(&mut db, &chainspec);
         assert_eq!(
             executor
-                .validate_tx(hash, SIGNED, false, false, 30_001)
+                .validate_tx(hash, false, false, 30_001)
                 .unwrap_err()
                 .to_string(),
             "transaction exceeds its gas lane"
         );
         // Payments use the non-shared budget, not the general lane.
         assert_eq!(
-            executor
-                .validate_tx(hash, SIGNED, false, true, 30_001)
-                .unwrap(),
-            BlockSection::NonShared
-        );
-        // Simulations may exceed the lanes.
-        assert_eq!(
-            executor
-                .validate_tx(hash, ExecutionContext::Simulation, false, false, 30_001)
-                .unwrap(),
+            executor.validate_tx(hash, false, true, 30_001).unwrap(),
             BlockSection::NonShared
         );
     }
@@ -2835,10 +2692,9 @@ mod tests {
     /// an executor that does not check the lanes before commit.
     #[test]
     fn test_commit_rejects_general_lane_overflow() {
-        let chainspec = test_chainspec();
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000);
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .with_spec(TempoHardfork::T4)
             .build(&mut db, &chainspec);
@@ -2852,26 +2708,12 @@ mod tests {
         );
     }
 
-    /// T4+: the general lane never gets more gas than the chain spec allows, whatever the
-    /// header under validation claims.
+    /// The general lane budget comes from the chain spec, not the execution context.
     #[test]
-    fn test_t4_general_lane_capped_at_chain_spec() {
-        let chainspec = DEV.clone();
-        assert!(chainspec.tempo_hardfork_at(0).is_t4());
-        let expected = chainspec.general_gas_limit_at(0, 30_000_000, 0);
-
+    fn test_general_lane_limit_from_chain_spec() {
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 1_000);
         let mut db = InMemoryDB::default();
-        let executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(u64::MAX)
-            .with_spec(TempoHardfork::T4)
-            .build(&mut db, &chainspec);
-        assert_eq!(executor.non_payment_gas_left, expected);
-
-        let mut db = InMemoryDB::default();
-        let executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(1_000)
-            .with_spec(TempoHardfork::T4)
-            .build(&mut db, &chainspec);
+        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
         assert_eq!(executor.non_payment_gas_left, 1_000);
     }
 
@@ -2880,7 +2722,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
@@ -2890,9 +2731,6 @@ mod tests {
         let output = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -2921,7 +2759,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
@@ -2932,9 +2769,6 @@ mod tests {
         let output1 = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -2958,9 +2792,6 @@ mod tests {
         let output2 = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -2990,7 +2821,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .with_section(BlockSection::NonShared)
             .build(&mut db, &chainspec);
@@ -3002,9 +2832,6 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
-                execution_context: ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
-                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -3033,7 +2860,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
@@ -3045,9 +2871,6 @@ mod tests {
         let output = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -3076,7 +2899,6 @@ mod tests {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
-            .with_general_gas_limit(30_000_000)
             .with_parent_beacon_block_root(B256::ZERO)
             .with_amsterdam_eip8037_enabled(true)
             .build(&mut db, &chainspec);
@@ -3093,9 +2915,6 @@ mod tests {
         let output = TempoTxResult {
             tx_type: TempoTxType::Legacy,
             tx_hash: B256::ZERO,
-            execution_context: ExecutionContext::Transaction {
-                tx_hash: B256::ZERO,
-            },
             inner: EthTransactionResultWithState::new(
                 TxResultWithState {
                     result: TxResult::<TempoEvmTypes> {
@@ -3603,9 +3422,6 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
-                execution_context: ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
-                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -3654,9 +3470,6 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
-                execution_context: ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
-                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {
@@ -3705,9 +3518,6 @@ mod tests {
             .commit_transaction(TempoTxResult {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
-                execution_context: ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
-                },
                 inner: EthTransactionResultWithState::new(
                     TxResultWithState {
                         result: TxResult::<TempoEvmTypes> {

@@ -32,7 +32,7 @@ impl TempoBlockExecutor<'_> {
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
-        let (tx_env, recovered) = tx.into_parts();
+        let (_, recovered) = tx.into_parts();
         let original = recovered.tx();
 
         let StorageActionReplay {
@@ -65,7 +65,6 @@ impl TempoBlockExecutor<'_> {
         };
         self.validate_tx(
             *original.tx_hash(),
-            tx_env.inner().execution_context(),
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
@@ -74,7 +73,6 @@ impl TempoBlockExecutor<'_> {
 
         let result = TempoTxResult::new_precomputed(
             original,
-            tx_env.inner().execution_context(),
             result,
             state,
             is_system_tx,
@@ -710,7 +708,7 @@ mod tests {
     use super::*;
     use crate::{
         TempoBlockEnv, TempoEvm, TempoEvmExt, build_tempo_evm,
-        test_utils::{TestExecutorBuilder, test_chainspec},
+        test_utils::{TestExecutorBuilder, chainspec_with_general_gas_limit, test_chainspec},
     };
     use alloy_consensus::{SignableTransaction, TxLegacy};
     use alloy_primitives::{Signature, TxKind};
@@ -894,7 +892,7 @@ mod tests {
 
     #[test]
     fn rejected_replay_does_not_leak_expiring_nonce_pointer() {
-        let chainspec = test_chainspec();
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000);
         let sender = Address::repeat_byte(0x11);
         let tx = TempoTxEnvelope::Legacy(
             TxLegacy {
@@ -908,7 +906,6 @@ mod tests {
         );
         let mut executor = TestExecutorBuilder::default()
             .with_spec(TempoHardfork::T4)
-            .with_general_gas_limit(30_000)
             .build(InMemoryDB::default(), &chainspec);
         let valid_before = executor.evm().block().timestamp.to::<u64>() + 1;
         let replay = StorageActionReplay {
