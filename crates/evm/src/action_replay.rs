@@ -23,15 +23,16 @@ use tempo_precompiles::{
 use tempo_primitives::account::encode_config_commitment;
 
 impl TempoBlockExecutor<'_> {
-    /// Commits a precomputed transaction by replaying recorded storage actions.
+    /// Builds a precomputed transaction's result by replaying recorded storage actions, without
+    /// committing it.
     ///
-    /// `result_closure` observes the synthesized result before the replayed state is committed.
-    pub fn execute_transaction_with_actions(
+    /// Pass the result to `commit_transaction` to apply it. A result that is dropped instead
+    /// leaves the executor's committed state untouched.
+    pub fn execute_transaction_with_actions_without_commit(
         &mut self,
         tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
-        result_closure: impl FnOnce(&TempoTxResult),
-    ) -> Result<(), BlockExecutionError> {
+    ) -> Result<TempoTxResult, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
         let original = recovered.tx();
 
@@ -70,7 +71,7 @@ impl TempoBlockExecutor<'_> {
             block_gas_used,
         )?;
 
-        let result = TempoTxResult::new_precomputed(
+        Ok(TempoTxResult::new_precomputed(
             original,
             tx_env.inner().execution_context(),
             result,
@@ -78,12 +79,7 @@ impl TempoBlockExecutor<'_> {
             is_system_tx,
             self.is_payment(original),
             block_gas_used,
-        );
-        result_closure(&result);
-
-        self.commit_transaction(result)?;
-
-        Ok(())
+        ))
     }
 
     fn replay_actions(
@@ -786,11 +782,12 @@ mod tests {
                 actions: vec![StorageAction::ConfigCommitment(sender, recorded, recorded)],
                 expiring_nonce: None,
             };
-            let result = executor.execute_transaction_with_actions(
-                tx.clone().with_signer(sender),
-                replay,
-                |_| {},
-            );
+            let result = executor
+                .execute_transaction_with_actions_without_commit(
+                    tx.clone().with_signer(sender),
+                    replay,
+                )
+                .and_then(|result| executor.commit_transaction(result));
             let reason = result
                 .as_ref()
                 .err()
@@ -870,9 +867,10 @@ mod tests {
             ],
             expiring_nonce: None,
         };
-        executor
-            .execute_transaction_with_actions(tx.with_signer(sender), replay, |_| {})
+        let result = executor
+            .execute_transaction_with_actions_without_commit(tx.with_signer(sender), replay)
             .unwrap();
+        executor.commit_transaction(result).unwrap();
         let info = executor
             .evm_mut()
             .overlay_db_mut()
