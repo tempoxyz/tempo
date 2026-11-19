@@ -106,22 +106,11 @@ impl ResolvedForks {
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
-                match self.activations.get(&fork) {
-                    Some(&time) => {
-                        config
-                            .extra_fields
-                            .insert(key.to_owned(), Value::from(time));
-                    }
-                    // Schedules read from an L1 omit forks it has not scheduled yet, so the zone
-                    // inherits them once a release schedules them; a null would keep them off.
-                    None if self.parent_chain_id.is_some() => {
-                        config.extra_fields.remove(key);
-                    }
-                    // Explicit offline profiles keep later forks off.
-                    None => {
-                        config.extra_fields.insert(key.to_owned(), Value::Null);
-                    }
-                }
+                let value = self
+                    .activations
+                    .get(&fork)
+                    .map_or(Value::Null, |&time| Value::from(time));
+                config.extra_fields.insert(key.to_owned(), value);
             }
         }
     }
