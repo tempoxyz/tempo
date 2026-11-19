@@ -475,10 +475,24 @@ where
         );
 
         // Replay persisted dealer messages
+        #[cfg(feature = "fuzz")]
+        let mut replayed = 0usize;
         for (dealer, (pub_msg, priv_msg)) in self.dealings_for_epoch(round.epoch()) {
             player.replay(dealer.clone(), pub_msg.clone(), priv_msg.clone());
             debug!(%dealer, "replayed committed dealer message");
+            #[cfg(feature = "fuzz")]
+            {
+                replayed += 1;
+            }
         }
+        // Trigger for unsynced dealings: a player restarted mid-ceremony after it
+        // had already received (and acked) dealings in this epoch.
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_sometimes!(
+            replayed > 0,
+            "DKG player restarts mid-ceremony with persisted dealings",
+            &serde_json::json!({ "epoch": round.epoch().get(), "replayed": replayed })
+        );
 
         Ok(Some(player))
     }

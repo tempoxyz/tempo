@@ -811,6 +811,15 @@ where
 
         match round.epoch().cmp(&epoch_info.epoch()) {
             Ordering::Less => {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_unreachable!(
+                    "DKG loop never receives a finalized block from a future epoch",
+                    &serde_json::json!({
+                        "loop_epoch": round.epoch().get(),
+                        "block_epoch": epoch_info.epoch().get(),
+                        "height": height.get(),
+                    })
+                );
                 bail!(
                     "block is for a future epoch `{}`, but the current DKG \
                     loop is for epoch `{}`; this should never happen because \
@@ -820,6 +829,17 @@ where
                 );
             }
             Ordering::Greater => {
+                // Trigger for crashes around an epoch boundary: a node restarted
+                // after the boundary block completed the epoch and replays it.
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "DKG loop replays a prior-epoch block after a restart at an epoch boundary",
+                    &serde_json::json!({
+                        "loop_epoch": round.epoch().get(),
+                        "block_epoch": epoch_info.epoch().get(),
+                        "height": height.get(),
+                    })
+                );
                 warn!(
                     "ignoring block for prior epoch; older blocks are replayed \
                     against the DKG loop when a node was shut down right \
@@ -1263,6 +1283,22 @@ where
             {
                 if let Some(block) = storage.get_notarized_reduced_block(&round.epoch(), &digest) {
                     if let Some((dealer, log)) = block.log.clone() {
+                        // Trigger for notarized logs overriding finalized ones: the
+                        // same dealer has a finalized log and a different notarized one.
+                        #[cfg(feature = "fuzz")]
+                        if let Some(finalized) = finalized_logs.get(&dealer) {
+                            use commonware_codec::Encode as _;
+                            let differs = finalized.encode() != log.encode();
+                            antithesis_sdk::assert_reachable!(
+                                "DKG ancestry walk finds a notarized log for a dealer with a finalized log",
+                                &serde_json::json!({ "epoch": round.epoch().get(), "differs": differs })
+                            );
+                            antithesis_sdk::assert_sometimes!(
+                                differs,
+                                "DKG ancestry walk finds a notarized dealer log that differs from its finalized log",
+                                &serde_json::json!({ "epoch": round.epoch().get() })
+                            );
+                        }
                         // The ancestry walk is newest-to-oldest, so older logs replace
                         // newer ancestry duplicates.
                         notarized_logs.insert(dealer, log);
