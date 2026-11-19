@@ -775,19 +775,36 @@ jobs:
       - name: Prepare candidate image exports
         run: mkdir -p "$RUNNER_TEMP/candidate-images"
 
-      - name: Choose cache-mount scope
-        # Pull requests and the merge queue share warm cache mounts. Every other
-        # run gets fresh empty mounts under a random scope, so it never reads
-        # files that an earlier build left in a shared mount.
+      - name: Choose build cache policy
+        id: cache_policy
+        # Pull requests, the merge queue and prover E2E dispatches (each on its
+        # own automation/prover-e2e/* commit) reuse the layer cache and share
+        # warm cache mounts. Every other run (main, rc/*, pre-release/*,
+        # release/*, tags, schedules, nightly or verify-only dispatches)
+        # rebuilds every layer and gets fresh empty mounts under a random
+        # scope, so it never reads files an earlier build left behind.
         env:
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          NIGHTLY: ${{ inputs.nightly == true }}
+          VERIFY_ONLY: ${{ inputs.production_image_verify_only == true }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT" == pull_request || "$EVENT" == merge_group ]]; then
+          cached=false
+          case "$EVENT" in
+            pull_request|merge_group) cached=true ;;
+            workflow_dispatch)
+              if [[ "$REF" == refs/heads/automation/prover-e2e/* && "$NIGHTLY" != true && "$VERIFY_ONLY" != true ]]; then
+                cached=true
+              fi
+              ;;
+          esac
+          if [[ "$cached" == true ]]; then
             echo "CACHE_SCOPE=" >> "$GITHUB_ENV"
           else
             echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
           fi
+          echo "no_cache=$( [[ "$cached" == true ]] && echo false || echo true )" >> "$GITHUB_OUTPUT"
 
       - name: Compile all binaries and publish images
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -814,9 +831,9 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Pull requests and the merge queue reuse Depot's layer cache. Every
+          # Cached runs (see cache_policy) reuse Depot's layer cache. Every
           # other run rebuilds every layer and pulls fresh base images.
-          no-cache: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
         env:
           CACHE_SCOPE: ${{ env.CACHE_SCOPE }}
@@ -942,7 +959,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
 
       - name: Upload candidate image archives
