@@ -4,17 +4,22 @@ use alloy_consensus::{Header, constants::EMPTY_ROOT_HASH};
 use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
 use alloy_primitives::B256;
 use reth_chainspec::ForkCondition;
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TempoConsensusSpec};
 use tempo_fuzz_types::{BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass};
 use tempo_primitives::TempoHeader;
 
 /// The dev chain spec with `input`'s chain ID and hardfork schedule, as [`ChainSpecInput`]
 /// describes.
 pub(crate) fn chain_spec(input: &ChainSpecInput) -> Result<TempoChainSpec, ErrorClass> {
-    let mut spec = tempo_chainspec::spec::DEV.as_ref().clone();
+    chain_spec_on(tempo_chainspec::spec::DEV.as_ref().clone(), input)
+}
+
+/// `base` with `input`'s chain ID and hardfork schedule, as [`ChainSpecInput`] describes: a
+/// chain built on Tempo, such as a zone, keeps its own genesis and takes the input's schedule.
+pub fn chain_spec_on(
+    mut spec: TempoChainSpec,
+    input: &ChainSpecInput,
+) -> Result<TempoChainSpec, ErrorClass> {
     spec.inner.chain = input.chain_id.into();
     let mut previous = 0;
     for &fork in TempoHardfork::VARIANTS {
@@ -35,7 +40,7 @@ pub(crate) fn chain_spec(input: &ChainSpecInput) -> Result<TempoChainSpec, Error
 /// The header `input` describes. A context header has no transactions root yet: the block that
 /// holds the transactions computes it.
 pub(crate) fn header(
-    spec: &TempoChainSpec,
+    spec: &impl TempoConsensusSpec,
     input: &BlockHeaderInput,
 ) -> Result<TempoHeader, ErrorClass> {
     match input {
@@ -48,7 +53,7 @@ pub(crate) fn header(
 
 /// A header at the latest timestamp no earlier than `context.timestamp` where `context.hardfork` is
 /// active. Hardforks that share its activation are active too.
-fn context_header(spec: &TempoChainSpec, context: &BlockContextInput) -> TempoHeader {
+fn context_header(spec: &impl TempoConsensusSpec, context: &BlockContextInput) -> TempoHeader {
     let activation = |fork| {
         spec.tempo_fork_activation(fork)
             .as_timestamp()

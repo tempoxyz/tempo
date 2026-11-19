@@ -14519,16 +14519,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-fuzz-harness"
+name = "tempo-fuzz-engine"
 version = "1.18.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
  "bincode",
- "codspeed-criterion-compat",
  "commonware-codec",
  "evm2",
  "invariants-core",
@@ -14538,6 +14538,7 @@ dependencies = [
  "reth-execution-types",
  "reth-primitives-traits",
  "reth-trie-common",
+ "serde",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
@@ -14545,6 +14546,23 @@ dependencies = [
  "tempo-fuzz-types",
  "tempo-invariants",
  "tempo-precompiles",
+ "tempo-primitives",
+]
+
+[[package]]
+name = "tempo-fuzz-harness"
+version = "1.18.4"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-sol-types",
+ "bincode",
+ "codspeed-criterion-compat",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-fuzz-engine",
+ "tempo-fuzz-types",
  "tempo-primitives",
 ]
 
@@ -17311,6 +17329,33 @@ dependencies = [
  "tokio",
  "zone-chainspec",
  "zone-l1",
+ "zone-precompiles",
+ "zone-primitives",
+]
+
+[[package]]
+name = "zone-fuzz-harness"
+version = "1.18.4"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-sol-types",
+ "evm2",
+ "reth-evm",
+ "serde",
+ "serde_json",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-evm",
+ "tempo-fuzz-engine",
+ "tempo-fuzz-types",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "zone-chainspec",
+ "zone-evm",
  "zone-precompiles",
  "zone-primitives",
 ]

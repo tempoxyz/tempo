@@ -22,6 +22,7 @@ crates/evm/ @0xKitsune @klkvr @mattsse @shekhirin @rakita
 crates/ext/ @shekhirin @Slokh
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
+crates/fuzz-engine/ @0xrusowsky
 crates/fuzz-harness/ @0xrusowsky
 crates/fuzz-types/ @0xrusowsky
 crates/hardfork/ @klkvr @0xrusowsky @legion2002 @jenpaff @mattsse @rakita @0xKitsune

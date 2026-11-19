@@ -8,34 +8,30 @@ use std::{
 };
 
 use alloy_consensus::{
-    BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
+    BlockHeader as _,
+    proofs::calculate_transaction_root,
+    transaction::{Recovered, Transaction as _},
 };
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
-use evm2::bytecode::Bytecode;
+use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
 use invariants_core::Report;
-use reth_consensus::{Consensus as _, HeaderValidator as _};
-use reth_evm::{
-    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
-    ConfigureEvm as _,
-};
+use reth_evm::{BlockExecutionError, BlockExecutor, BlockValidationError};
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
-use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{
-    TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, TempoInvalidTransaction,
-    consensus::TempoConsensus,
-};
+use tempo_evm::{TempoEvm, TempoEvmEnv, TempoInvalidTransaction};
 use tempo_fuzz_types::{
     BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, InvariantFailure, InvariantScope,
     PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
+use tempo_primitives::{Block, BlockBody, TempoReceipt, TempoTxEnvelope};
 
 use crate::{
-    chain, invariants,
+    chain,
+    engine::{BlockConsensus, Chain, Engine, EvmConfig},
+    invariants,
     state::{self, Contracts, Db, Net},
 };
 
@@ -113,8 +109,8 @@ pub(crate) fn with_rejection<T>(f: impl FnOnce(&str) -> T) -> T {
     REJECTION.with_borrow(|r| f(r))
 }
 
-/// Executes `input`.
-pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
+/// Executes `input` on `engine`'s chain.
+pub fn run(engine: &impl Engine, input: TempoHarnessInput) -> TempoHarnessOutcome {
     REJECTION.with_borrow_mut(String::clear);
     let outcome = match input {
         TempoHarnessInput::Transaction(input) => {
@@ -127,12 +123,14 @@ pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
                 senders: input.sender.into_iter().collect(),
             };
             TempoHarnessOutcome::State(execute(
+                engine,
                 &input.chain_spec,
                 &PreState::Genesis(input.pre_state),
                 std::slice::from_ref(&block),
             ))
         }
         TempoHarnessInput::Blockchain(input) => TempoHarnessOutcome::Blockchain(execute(
+            engine,
             &input.chain_spec,
             &input.pre_state,
             input.blocks.as_slice(),
@@ -178,27 +176,39 @@ fn decode_tx(bytes: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
     TempoTxEnvelope::decode_2718_exact(bytes).map_err(|err| reject(ErrorClass::RlpDecode, err))
 }
 
-/// Executes `blocks` in order on `pre_state`, stopping at the first block that fails. An input that
-/// is not executable at all leaves an empty outcome with only its error set.
-fn execute(
+/// Executes `blocks` in order on `pre_state` on `engine`'s chain, stopping at the first block that
+/// fails. An input that is not executable at all leaves an empty outcome with only its error set.
+pub fn execute<E: Engine>(
+    engine: &E,
     chain: &ChainSpecInput,
     pre_state: &PreState,
     blocks: &[TempoBlock],
 ) -> TempoExecutionOutcome {
-    let prepared = chain::chain_spec(chain)
+    let prepared = engine
+        .chain(chain)
         .map_err(|class| reject(class, Check::HardforkSchedule))
-        .and_then(|spec| {
+        .and_then(|chain| {
+            let spec = &chain.spec;
             let blocks = blocks
                 .iter()
-                .map(|block| recover_block(&spec, block))
+                .map(|block| recover_block(spec.as_ref(), block))
                 .collect::<Result<Vec<_>, _>>()?;
             if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
                 return Err(reject(ErrorClass::InvalidInput, Check::TimestampOrder));
             }
-            let db = state::seed(pre_state).map_err(|class| reject(class, Check::PreState))?;
-            Ok((Arc::new(spec), blocks, db))
+            let db = state::seed(pre_state, engine.genesis())
+                .map_err(|class| reject(class, Check::PreState))?;
+            Ok((chain, blocks, db))
         });
-    let (spec, blocks, db) = match prepared {
+    let (
+        Chain {
+            evm_config,
+            consensus,
+            ..
+        },
+        blocks,
+        db,
+    ) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             return TempoExecutionOutcome {
@@ -209,13 +219,12 @@ fn execute(
     };
 
     let pre = db.cache.borrow().clone();
-    let evm_config = TempoEvmConfig::new(Arc::clone(&spec));
-    let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
     let (applied, failed_logs) =
-        execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome);
+        execute_blocks(engine, &evm_config, &consensus, &db, &blocks, &mut outcome);
     if !outcome.invariant_failures.is_empty() {
         let invariant_failures = broken_start(
+            engine,
             &evm_config,
             pre_state,
             &blocks[0],
@@ -249,7 +258,8 @@ fn execute(
 /// finding: the input is invalid, and these failures are reported at `Execution` scope. Only the
 /// accounts it lists can break one.
 fn broken_start(
-    evm_config: &TempoEvmConfig,
+    engine: &impl Engine,
+    evm_config: &impl EvmConfig,
     pre_state: &PreState,
     block: &ExecutionBlock,
     db: &Db,
@@ -259,7 +269,10 @@ fn broken_start(
     if !*invariants::ENABLED {
         return Vec::new();
     }
-    let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
+    let (Ok(env), Ok(start)) = (
+        evm_config.evm_env(block.header()),
+        state::seed(pre_state, engine.genesis()),
+    ) else {
         return Vec::new();
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
@@ -282,7 +295,7 @@ fn broken_start(
         evm_config,
         env,
         &InvariantScope::Execution,
-        |address| listed.accounts.contains_key(address),
+        |address| engine.runs(address) && listed.accounts.contains_key(address),
         &holders,
         None,
         &invariants::ViewCache::default(),
@@ -294,7 +307,7 @@ fn broken_start(
 
 /// `block` with its header resolved, its transactions decoded and their senders known.
 pub(crate) fn recover_block(
-    spec: &TempoChainSpec,
+    spec: &impl tempo_chainspec::spec::TempoConsensusSpec,
     block: &TempoBlock,
 ) -> Result<ExecutionBlock, ErrorClass> {
     let mut header =
@@ -335,8 +348,9 @@ pub(crate) fn recover_block(
 /// error at the first block that fails. Returns the changes of the blocks that applied, and the logs
 /// of the failed block's transactions before it failed.
 pub(crate) fn execute_blocks(
-    evm_config: &TempoEvmConfig,
-    consensus: &TempoConsensus,
+    engine: &impl Engine,
+    evm_config: &impl EvmConfig,
+    consensus: &impl BlockConsensus,
     db: &Db,
     blocks: &[ExecutionBlock],
     outcome: &mut TempoExecutionOutcome,
@@ -344,7 +358,7 @@ pub(crate) fn execute_blocks(
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
-        let executed = execute_block(evm_config, consensus, db, block, index as u64);
+        let executed = execute_block(engine, evm_config, consensus, db, block, index as u64);
         // A read the pre-state could not answer makes the result meaningless,
         // even when the error was swallowed on its way up.
         let executed = match executed {
@@ -428,9 +442,10 @@ impl BlockFailure {
 type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
 /// Executes `block` on `db`, returning its state updates and outputs, or why it failed.
-fn execute_block(
-    evm_config: &TempoEvmConfig,
-    consensus: &TempoConsensus,
+fn execute_block<C: EvmConfig>(
+    engine: &impl Engine,
+    evm_config: &C,
+    consensus: &impl BlockConsensus,
     db: &Db,
     block: &ExecutionBlock,
     block_index: u64,
@@ -458,6 +473,7 @@ fn execute_block(
     let mut outputs = BlockOutputs::default();
     let mut updates = Vec::new();
     execute_txs(
+        engine,
         evm_config,
         &mut executor,
         db,
@@ -488,10 +504,15 @@ fn execute_block(
 
 /// Applies the block's pre-execution changes and its transactions, recording each transaction's
 /// receipt and each step's changes, and checking invariants after each step.
-#[allow(clippy::too_many_arguments)]
-fn execute_txs(
-    evm_config: &TempoEvmConfig,
-    executor: &mut TempoBlockExecutor<'_>,
+#[expect(clippy::too_many_arguments)]
+fn execute_txs<'a>(
+    engine: &impl Engine,
+    evm_config: &impl EvmConfig,
+    executor: &mut impl BlockExecutor<
+        Evm = TempoEvm<'a>,
+        Transaction = TempoTxEnvelope,
+        Receipt = TempoReceipt,
+    >,
     db: &Db,
     hooked: &Updates,
     block: &ExecutionBlock,
@@ -502,6 +523,7 @@ fn execute_txs(
     executor.apply_pre_execution_changes()?;
     let view_cache = invariants::ViewCache::default();
     outputs.changes.pre_block = step(
+        engine,
         evm_config,
         executor,
         db,
@@ -515,68 +537,118 @@ fn execute_txs(
     );
 
     let basefee = block.header().base_fee_per_gas();
-    for (tx_index, tx) in block.transactions_recovered().enumerate() {
-        let tx_index = tx_index as u64;
-        let sender = tx.signer();
-        let effective_gas_price = tx.effective_gas_price(basefee);
-        let spec = executor.evm().config_spec_id();
-        let authority = invariants::authority(tx.inner(), sender, spec.is_t14());
-        let result = executor.execute_transaction_without_commit(tx)?;
-        let execution = result.result();
-        let outcome = if execution.status {
-            TxOutcome::Success
-        } else if execution.is_revert() {
-            TxOutcome::Revert
-        } else {
-            TxOutcome::Halt(execution.stop)
+    let mut tx_index = 0u64;
+    let mut run =
+        |executor: &mut _, tx: Recovered<&TempoTxEnvelope>| -> Result<(), BlockExecutionError> {
+            let index = tx_index;
+            tx_index += 1;
+            execute_tx(
+                engine,
+                evm_config,
+                executor,
+                db,
+                hooked,
+                block_index,
+                index,
+                basefee,
+                tx,
+                &view_cache,
+                updates,
+                outputs,
+            )
         };
-        let gas = ResultGas {
-            total_gas_spent: execution.total_gas_spent,
-            state_gas_spent: execution.state_gas_spent,
-            refunded: execution.refunded,
-            floor_gas: execution.floor_gas,
-        };
-        let output = execution.output.clone();
-        executor.commit_transaction(result)?;
-        // `finish` returns the receipts the executor records here, unchanged.
-        let receipt = executor
-            .receipts()
-            .last()
-            .expect("committing a transaction records its receipt");
-        outputs.receipts.push(TxReceiptOutput {
-            block_index,
-            tx_index,
-            outcome,
-            gas,
-            cumulative_gas_used: receipt.cumulative_gas_used,
-            effective_gas_price,
-            output,
-            logs: receipt.logs.clone(),
-        });
-        let scope = InvariantScope::Transaction {
-            block_index,
-            tx_index,
-        };
-        let receipt = outputs.receipts.last().expect("pushed above");
-        let tx = Tx {
-            sender,
-            success: receipt.outcome == TxOutcome::Success,
-            authority,
-        };
-        let tx_changes = step(
-            evm_config,
-            executor,
-            db,
-            hooked,
-            scope,
-            Some((tx, &receipt.logs)),
-            &view_cache,
-            updates,
-            &mut outputs.invariant_failures,
-            &mut outputs.invariant_report,
-        );
-        outputs.changes.txs.push(tx_changes);
+    for tx in engine.open_block(executor.evm_mut(), block.header())? {
+        run(executor, tx.as_recovered_ref())?;
     }
+    for tx in block.transactions_recovered() {
+        run(executor, tx)?;
+    }
+    for tx in engine.close_block(executor.evm_mut(), block.header())? {
+        run(executor, tx.as_recovered_ref())?;
+    }
+    Ok(())
+}
+
+/// Executes and commits `tx`, recording its receipt and changes and checking invariants after it.
+#[allow(clippy::too_many_arguments)]
+fn execute_tx<'a>(
+    engine: &impl Engine,
+    evm_config: &impl EvmConfig,
+    executor: &mut impl BlockExecutor<
+        Evm = TempoEvm<'a>,
+        Transaction = TempoTxEnvelope,
+        Receipt = TempoReceipt,
+    >,
+    db: &Db,
+    hooked: &Updates,
+    block_index: u64,
+    tx_index: u64,
+    basefee: Option<u64>,
+    tx: Recovered<&TempoTxEnvelope>,
+    view_cache: &invariants::ViewCache,
+    updates: &mut Vec<StateUpdate>,
+    outputs: &mut BlockOutputs,
+) -> Result<(), BlockExecutionError> {
+    let sender = tx.signer();
+    let effective_gas_price = tx.effective_gas_price(basefee);
+    let spec = executor.evm().config_spec_id();
+    let authority = invariants::authority(tx.inner(), sender, spec.is_t14());
+    let result = executor.execute_transaction_without_commit(tx)?;
+    let execution = &result.result().result;
+    let outcome = if execution.status {
+        TxOutcome::Success
+    } else if execution.is_revert() {
+        TxOutcome::Revert
+    } else {
+        TxOutcome::Halt(execution.stop)
+    };
+    let gas = ResultGas {
+        total_gas_spent: execution.total_gas_spent,
+        state_gas_spent: execution.state_gas_spent,
+        refunded: execution.refunded,
+        floor_gas: execution.floor_gas,
+    };
+    let output = execution.output.clone();
+    executor.commit_transaction(result)?;
+    // `finish` returns the receipts the executor records here, unchanged.
+    let receipt = executor
+        .receipts()
+        .last()
+        .expect("committing a transaction records its receipt");
+    outputs.receipts.push(TxReceiptOutput {
+        block_index,
+        tx_index,
+        outcome,
+        gas,
+        cumulative_gas_used: receipt.cumulative_gas_used,
+        effective_gas_price,
+        output,
+        logs: receipt.logs.clone(),
+    });
+    let scope = InvariantScope::Transaction {
+        block_index,
+        tx_index,
+    };
+    let receipt = outputs.receipts.last().expect("pushed above");
+    let tx = Tx {
+        sender,
+        success: receipt.outcome == TxOutcome::Success,
+        authority,
+    };
+    let tx_changes = step(
+        engine,
+        evm_config,
+        executor,
+        db,
+        hooked,
+        scope,
+        Some((tx, &receipt.logs)),
+        view_cache,
+        updates,
+        &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
+    );
+    outputs.changes.txs.push(tx_changes);
     Ok(())
 }
 
@@ -590,9 +662,10 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
 /// for the contracts it changed, and also on what it did, reading again only the views of
 /// `view_cache` that read what it changed.
 #[allow(clippy::too_many_arguments)]
-fn step(
-    evm_config: &TempoEvmConfig,
-    executor: &TempoBlockExecutor<'_>,
+fn step<'a>(
+    engine: &impl Engine,
+    evm_config: &impl EvmConfig,
+    executor: &impl BlockExecutor<Evm = TempoEvm<'a>>,
     db: &Db,
     hooked: &Updates,
     scope: InvariantScope,
@@ -612,7 +685,7 @@ fn step(
         state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
     };
     let is_tx = tx.is_some();
-    let selected = |contract: &_| !is_tx || net.contains(contract);
+    let selected = |contract: &_| engine.runs(contract) && (!is_tx || net.contains(contract));
     let evm = executor.evm();
     let effects = tx.map(|(tx, logs)| invariants::StepEffects {
         net: &net,

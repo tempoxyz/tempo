@@ -13,12 +13,15 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
-use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
+use tempo_evm::TempoEvmEnv;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
-use crate::state::{Db, Net};
+use crate::{
+    engine::EvmConfig,
+    state::{Db, Net},
+};
 
 /// Whether invariants are checked: unless the process sets `TEMPO_FUZZ_INVARIANTS=0`, as callers that only
 /// need coverage, such as a corpus minimizer, do.
@@ -89,9 +92,9 @@ pub(crate) fn logged_addresses<'a>(
 /// checks also run on its ledger before the step against its ledger after it. Views are answered
 /// from `view_cache`, the calls the block's earlier steps made that this step left as they were.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn check(
+pub(crate) fn check<C: EvmConfig>(
     db: &Db,
-    evm_config: &TempoEvmConfig,
+    evm_config: &C,
     env: TempoEvmEnv,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,

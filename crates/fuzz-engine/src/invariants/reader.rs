@@ -5,25 +5,25 @@ use std::fmt::Display;
 use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{Observe, ObserveError, Report, Violation};
 use reth_evm::Database;
-use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
+use tempo_evm::TempoEvmEnv;
 use tempo_invariants::all;
 
 use super::{
     StepEffects,
     views::{EvmViews, PreView, ViewCache, ViewFailed},
 };
-use crate::state::Db;
+use crate::{engine::EvmConfig, state::Db};
 
 /// Reads models from the state after a step and, with its `effects`, from the state before it.
-pub(super) struct Reader<'a> {
+pub(super) struct Reader<'a, C> {
     pub(super) db: &'a Db,
-    pub(super) evm_config: &'a TempoEvmConfig,
+    pub(super) evm_config: &'a C,
     pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
     pub(super) view_cache: &'a ViewCache,
 }
 
-impl Reader<'_> {
+impl<C: EvmConfig> Reader<'_, C> {
     /// Views of the state `db` reads, the one before the step with `before`.
     pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b> {
         let (config, env) = (self.evm_config, self.env.clone());
