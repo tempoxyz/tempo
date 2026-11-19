@@ -30,7 +30,7 @@ pub use action_replay::{
 };
 pub use assemble::TempoBlockAssembler;
 pub use block::{
-    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult, apply_t16_state_changes,
     deploy_precompile_at_boundary,
 };
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};

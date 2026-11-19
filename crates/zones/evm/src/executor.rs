@@ -24,11 +24,12 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    precompiles::{ADDRESS_REGISTRY_ADDRESS, RESERVATIONS_ADDRESS},
+    precompiles::ADDRESS_REGISTRY_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
 use tempo_evm::{
-    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, deploy_precompile_at_boundary,
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, apply_t16_state_changes,
+    deploy_precompile_at_boundary,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
@@ -269,8 +270,8 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                 // The block cache never reads the storage of a missing account through the L1
                 // overlay, so the mirrored registry needs its account to exist.
                 deploy_precompile_at_boundary(&mut self.inner, ADDRESS_REGISTRY_ADDRESS, &[])?;
-                deploy_precompile_at_boundary(&mut self.inner, RESERVATIONS_ADDRESS, &[])?;
             }
+            apply_t16_state_changes(&mut self.inner)?;
             Ok(())
         } else {
             self.inner.apply_pre_execution_changes()
@@ -459,7 +460,7 @@ mod tests {
     use reth_primitives_traits::Recovered;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use tempo_contracts::{
-        precompiles::{ITIP403Registry, TIP403_REGISTRY_ADDRESS},
+        precompiles::{ITIP403Registry, RESERVATIONS_ADDRESS, TIP403_REGISTRY_ADDRESS},
         zones::{
             ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
             TempoAdvanced,
@@ -1588,12 +1589,55 @@ mod tests {
                     "{address} at {fork:?}"
                 );
             }
-            // T15 also gives the reservation core its marker, so its storage outlives each
-            // transaction.
-            let core = db.get_account(&super::RESERVATIONS_ADDRESS).unwrap();
+            // The reservation core's marker waits for T16.
+            let core = db.get_account(&RESERVATIONS_ADDRESS).unwrap();
+            assert!(
+                core.is_none_or(|info| info.is_empty_code_hash()),
+                "reservation core at {fork:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn t16_gives_the_reservation_core_its_marker() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        for (fork, marked) in [(TempoHardfork::T15, false), (TempoHardfork::T16, true)] {
+            let mut db = InMemoryDB::default();
+            let evm = config.evm_with_env(
+                &mut db,
+                TempoEvmEnv {
+                    spec: fork,
+                    ..Default::default()
+                },
+            );
+            let ctx = TempoBlockExecutionCtx {
+                inner: EthBlockExecutionCtx {
+                    parent_hash: B256::ZERO,
+                    parent_beacon_block_root: None,
+                    ommers: &[],
+                    withdrawals: None,
+                    extra_data: Bytes::new(),
+                    tx_count_hint: None,
+                    slot_number: None,
+                },
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                consensus_context: None,
+            };
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+            executor.apply_pre_execution_changes().unwrap();
+            executor.phase = ZoneBlockPhase::Executing;
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+
+            // The marker keeps the core's storage from being cleared as an empty account's.
+            let core = db.get_account(&RESERVATIONS_ADDRESS).unwrap();
             assert_eq!(
                 core.is_some_and(|info| info.code_hash == keccak256([0xef])),
-                removed,
+                marked,
                 "reservation core at {fork:?}"
             );
         }
