@@ -1203,10 +1203,7 @@ contract ZonePortal is IZonePortal {
             revert TokenNotEnabled();
         }
         if (!hasMemo && memo != bytes32(0)) revert InvalidVirtualDeposit();
-        if (
-            bytes9(bytes20(destination) << 32) != bytes9(0xfcfcfcfcfcfcfcfcfc)
-                || uint32(bytes4(bytes20(destination))) != zoneId
-        ) {
+        if (!_isZoneDepositAddress(destination) || uint32(bytes4(bytes20(destination))) != zoneId) {
             revert InvalidVirtualDeposit();
         }
         uint8 version = uint8(bytes20(destination)[13]);
@@ -1271,8 +1268,12 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
-        // Refunds are claimed by msg.sender, which can never be a virtual address.
-        if (StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)) {
+        // Refunds are claimed by msg.sender, which can never be a TIP-1022 virtual address or a
+        // TIP-1094 zone deposit address.
+        if (
+            StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)
+                || _isZoneDepositAddress(tempoRefundRecipient)
+        ) {
             revert InvalidBouncebackRecipient();
         }
         // Enforced gateways may deposit callback returns without also being allowed accounts.
@@ -1828,6 +1829,12 @@ contract ZonePortal is IZonePortal {
                 EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)
             )
         );
+    }
+
+    /// @dev TIP-1094: whether `account` has the zone deposit address format (magic bytes 4..13),
+    ///      for any zone.
+    function _isZoneDepositAddress(address account) internal pure returns (bool) {
+        return bytes9(bytes20(account) << 32) == bytes9(0xfcfcfcfcfcfcfcfcfc);
     }
 
 }

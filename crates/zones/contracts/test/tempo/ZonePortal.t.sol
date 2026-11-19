@@ -6066,6 +6066,23 @@ contract ZonePortalTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @notice A zone deposit address can't be a refund recipient, since it can never claim one.
+    function test_deposit_revertsForZoneDepositAddressRefundRecipient() public {
+        address depositAddress = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(uint32(7)), bytes9(0xfcfcfcfcfcfcfcfcfc), uint8(1), bytes6(uint48(1))
+                )
+            )
+        );
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), depositAddress);
+        vm.stopPrank();
+    }
+
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.
     function test_withdrawalQueue_acceptsBacklogBeyondFormerCapacity() public {
         vm.roll(genesisTempoBlockNumber + 1);
