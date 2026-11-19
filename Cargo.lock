@@ -17361,7 +17361,6 @@ name = "zone-node"
 version = "0.5.0"
 dependencies = [
  "alloy",
- "alloy-chains",
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips",

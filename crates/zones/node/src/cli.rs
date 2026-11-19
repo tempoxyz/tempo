@@ -703,7 +703,8 @@ pub struct ZoneArgs {
     #[arg(
         long = "sequencer.l1-fee-token",
         env = "SEQUENCER_L1_FEE_TOKEN",
-        value_name = "ADDRESS"
+        value_name = "ADDRESS",
+        value_parser = parse_l1_fee_token
     )]
     pub l1_fee_token: Option<Address>,
 
@@ -764,6 +765,18 @@ fn validate_p2p_transaction_size_limit(
         );
     }
     Ok(())
+}
+
+fn parse_l1_fee_token(value: &str) -> Result<Address, String> {
+    let address: Address = value
+        .parse()
+        .map_err(|err| format!("failed parsing --sequencer.l1-fee-token as an address: {err}"))?;
+    if !tempo_primitives::is_tip20_prefix(address) {
+        return Err(format!(
+            "--sequencer.l1-fee-token must be a TIP-20 token address (`0x20c0…`), got `{address}`"
+        ));
+    }
+    Ok(address)
 }
 
 fn parse_l1_rpc_url(l1_rpc_url: &str) -> Result<String, String> {
@@ -941,6 +954,15 @@ mod tests {
         .unwrap()
         .zone;
         assert_eq!(set.l1_fee_token, Some(ousd));
+
+        let not_tip20 = ZoneArgsParser::try_parse_from(base.into_iter().chain([
+            "--sequencer.l1-fee-token",
+            "0x1111111111111111111111111111111111111111",
+        ]));
+        assert!(
+            not_tip20.is_err(),
+            "a non-TIP-20 fee token must be rejected"
+        );
     }
 
     #[test]

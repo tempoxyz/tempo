@@ -308,6 +308,81 @@ mod tests {
         }
     }
 
+    /// Sends a fully specified L1 request through the shared provider and returns the fee token
+    /// on the raw transaction it broadcasts.
+    async fn sent_fee_token(fee_token: Option<Address>) -> Option<Address> {
+        use alloy_eips::eip2718::Decodable2718;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (raw_tx, raw_rx) = tokio::sync::oneshot::channel::<String>();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let mut raw_tx = Some(raw_tx);
+            while let Some(Ok(message)) = ws.next().await {
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("eth_chainId") => json!("0xa5bf"),
+                    Some("eth_sendRawTransaction") => {
+                        if let Some(raw_tx) = raw_tx.take() {
+                            let _ = raw_tx.send(request["params"][0].as_str().unwrap().to_owned());
+                        }
+                        json!(format!("0x{}", "11".repeat(32)))
+                    }
+                    _ => continue,
+                };
+                let response =
+                    json!({"jsonrpc": "2.0", "id": request["id"].clone(), "result": result});
+                ws.send(Message::Text(response.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let provider = connect_l1_provider(
+            &url,
+            Duration::from_millis(10),
+            PrivateKeySigner::random(),
+            fee_token,
+        )
+        .await
+        .unwrap();
+
+        let mut request = tempo_alloy::rpc::TempoTransactionRequest::default();
+        request.inner.to = Some(Address::repeat_byte(0x11).into());
+        request.inner.chain_id = Some(0xa5bf);
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(100_000);
+        request.inner.max_fee_per_gas = Some(1_000_000_000);
+        request.inner.max_priority_fee_per_gas = Some(1);
+        request.nonce_key = Some(alloy_primitives::U256::ZERO);
+
+        let _pending = timeout(Duration::from_secs(5), provider.send_transaction(request))
+            .await
+            .expect("sending should not need more RPC calls")
+            .unwrap();
+        let raw = timeout(Duration::from_secs(5), raw_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+        let bytes = alloy_primitives::hex::decode(raw).unwrap();
+        TempoTxEnvelope::decode_2718(&mut bytes.as_slice())
+            .unwrap()
+            .fee_token()
+    }
+
+    #[tokio::test]
+    async fn l1_provider_pays_fees_in_configured_token() {
+        let token = alloy_primitives::address!("0x20c0000000000000000000006a37da5c996874be");
+        assert_eq!(sent_fee_token(Some(token)).await, Some(token));
+        assert_eq!(sent_fee_token(None).await, None);
+    }
+
     #[tokio::test]
     async fn l1_provider_reconnects_after_wss_backend_closes() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
