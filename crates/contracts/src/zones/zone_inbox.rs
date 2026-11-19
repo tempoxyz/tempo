@@ -146,14 +146,17 @@ crate::sol! {
         );
 
         /// A virtual deposit failed and its net amount was queued as a refund to `originator`.
-        /// `to` is the resolved recipient, or zero when resolution failed before a lookup. The
-        /// redacted RPC serves it only to a nonzero `to`.
+        /// `to` is the resolved recipient, or zero when resolution failed before a lookup. `masterId`
+        /// and `userTag` are zero when the address was never decrypted. The redacted RPC serves it
+        /// only to a nonzero `to`.
         event VirtualDepositFailed(
             address indexed to,
             address indexed originator,
             bytes32 indexed depositHash,
             address token,
             uint128 amount,
+            bytes4 masterId,
+            bytes2 userTag,
             VirtualDepositFailureReason reason
         );
 

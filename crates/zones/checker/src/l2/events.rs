@@ -1347,6 +1347,8 @@ mod tests {
                 to: Address::ZERO,
                 token,
                 amount: 300,
+                masterId: Default::default(),
+                userTag: Default::default(),
                 reason: IZoneInbox::VirtualDepositFailureReason::UnregisteredMaster,
             },
         );

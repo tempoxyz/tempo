@@ -973,6 +973,8 @@ mod tests {
             depositHash: B256::repeat_byte(0xd1),
             token,
             amount: 300,
+            masterId: Default::default(),
+            userTag: Default::default(),
             reason: IZoneInbox::VirtualDepositFailureReason::Rejected,
         };
         [processed.encode_log_data(), failed.encode_log_data()].map(|data| {

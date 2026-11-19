@@ -1250,6 +1250,8 @@ interface IZoneInbox {
         bytes32 indexed depositHash,
         address token,
         uint128 amount,
+        bytes4 masterId,
+        bytes2 userTag,
         VirtualDepositFailureReason reason
     );
 

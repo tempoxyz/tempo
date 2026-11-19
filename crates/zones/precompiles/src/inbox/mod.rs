@@ -188,8 +188,7 @@ impl ZoneInbox {
                     &mut outbox,
                     current_hash,
                     deposit,
-                    Address::ZERO,
-                    VirtualDepositFailureReason::Rejected,
+                    VirtualDepositFailure::before_lookup(VirtualDepositFailureReason::Rejected),
                 ),
                 DecodedQueuedDeposit::ZoneVirtual {
                     deposit,
@@ -373,8 +372,8 @@ impl ZoneInbox {
     ) -> ZoneResult<()> {
         let resolved = match self.resolve_virtual_deposit(zone_id, deposit.destination)? {
             Ok(resolved) => resolved,
-            Err((reason, to)) => {
-                return self.fail_virtual_deposit(outbox, current_hash, deposit, to, reason);
+            Err(failure) => {
+                return self.fail_virtual_deposit(outbox, current_hash, deposit, failure);
             }
         };
 
@@ -384,8 +383,12 @@ impl ZoneInbox {
                 outbox,
                 current_hash,
                 deposit,
-                resolved.recipient,
-                VirtualDepositFailureReason::MintFailed,
+                VirtualDepositFailure {
+                    reason: VirtualDepositFailureReason::MintFailed,
+                    to: resolved.recipient,
+                    master_id: resolved.master_id,
+                    user_tag: resolved.user_tag,
+                },
             );
         }
 
@@ -410,19 +413,17 @@ impl ZoneInbox {
         &mut self,
         zone_id: u32,
         destination: Address,
-    ) -> ZoneResult<Result<ResolvedVirtualDeposit, (VirtualDepositFailureReason, Address)>> {
+    ) -> ZoneResult<Result<ResolvedVirtualDeposit, VirtualDepositFailure>> {
         let Some(address) = ZoneDepositAddress::decode(&destination)
             .filter(|address| address.version != 0 && address.zone_id == zone_id)
         else {
-            return Ok(Err((
+            return Ok(Err(VirtualDepositFailure::before_lookup(
                 VirtualDepositFailureReason::InvalidAddress,
-                Address::ZERO,
             )));
         };
         let Some(key) = self.virtual_address_key(address.version)? else {
-            return Ok(Err((
+            return Ok(Err(VirtualDepositFailure::before_lookup(
                 VirtualDepositFailureReason::KeyUnconfigured,
-                Address::ZERO,
             )));
         };
 
@@ -433,16 +434,20 @@ impl ZoneInbox {
 
         let recipient = address_registry::recipient_of(master_id)?;
         if recipient.is_zero() {
-            return Ok(Err((
-                VirtualDepositFailureReason::UnregisteredMaster,
-                Address::ZERO,
-            )));
+            return Ok(Err(VirtualDepositFailure {
+                reason: VirtualDepositFailureReason::UnregisteredMaster,
+                to: Address::ZERO,
+                master_id,
+                user_tag,
+            }));
         }
         if !address_registry::is_valid_recipient(&recipient) {
-            return Ok(Err((
-                VirtualDepositFailureReason::InvalidMaster,
-                Address::ZERO,
-            )));
+            return Ok(Err(VirtualDepositFailure {
+                reason: VirtualDepositFailureReason::InvalidMaster,
+                to: Address::ZERO,
+                master_id,
+                user_tag,
+            }));
         }
         Ok(Ok(ResolvedVirtualDeposit {
             recipient,
@@ -457,8 +462,7 @@ impl ZoneInbox {
         outbox: &mut ZoneOutbox,
         current_hash: B256,
         deposit: VirtualDeposit,
-        to: Address,
-        reason: VirtualDepositFailureReason,
+        failure: VirtualDepositFailure,
     ) -> ZoneResult<()> {
         outbox.enqueue_deposit_bounce_back(
             ZONE_INBOX_ADDRESS,
@@ -469,12 +473,14 @@ impl ZoneInbox {
             },
         )?;
         self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
-            to,
+            failure.to,
             deposit.originator,
             current_hash,
             deposit.token,
             deposit.amount,
-            reason,
+            failure.master_id,
+            failure.user_tag,
+            failure.reason,
         ))?;
         Ok(())
     }
@@ -643,6 +649,28 @@ impl ZoneInbox {
 }
 
 /// A virtual deposit whose address resolved to a registered recipient.
+/// Why a virtual deposit failed, with the recipient and decrypted identifiers when it got that far.
+struct VirtualDepositFailure {
+    reason: VirtualDepositFailureReason,
+    /// The registered recipient, or zero before a successful lookup.
+    to: Address,
+    /// Zero when the address was never decrypted.
+    master_id: FixedBytes<4>,
+    /// Zero when the address was never decrypted.
+    user_tag: FixedBytes<2>,
+}
+
+impl VirtualDepositFailure {
+    fn before_lookup(reason: VirtualDepositFailureReason) -> Self {
+        Self {
+            reason,
+            to: Address::ZERO,
+            master_id: FixedBytes::ZERO,
+            user_tag: FixedBytes::ZERO,
+        }
+    }
+}
+
 struct ResolvedVirtualDeposit {
     recipient: Address,
     version: u8,
