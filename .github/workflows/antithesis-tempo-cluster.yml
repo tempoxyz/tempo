@@ -6,7 +6,7 @@ permissions:
 
 on:
   push:
-    branches: [main, antithesis/tempo-cluster, antithesis/planted-bugs]
+    branches: [main, antithesis/tempo-cluster, antithesis/planted-bugs, antithesis/planted-bugs-9481]
     paths:
       - "contrib/antithesis/tempo-cluster/**"
       - "contrib/antithesis/reth-state-root/**"
