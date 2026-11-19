@@ -34,8 +34,6 @@ mod test;
 #[derive(Clone)]
 pub(crate) struct FinalizationVerifier {
     scheme_provider: SchemeProvider,
-    /// The identity used for epochs without a registered scheme. Shared between clones so that
-    /// advancing it after an authenticated rotation retires the previous identity everywhere.
     network_identity: Arc<RwLock<NetworkIdentity>>,
     epoch_strategy: FixedEpocher,
 }

@@ -114,8 +114,6 @@ struct Chunk {
 struct State<P> {
     rpc: Rpc<P>,
     verifier: FinalizationVerifier,
-    /// The identity the stream was configured with, if any. The verifier's fallback advances past
-    /// it at each authenticated rotation, so warnings about an outdated binary compare against it.
     configured_identity: Option<NetworkIdentity>,
     epoch_strategy: FixedEpocher,
     cursor: BlockNumHash,
