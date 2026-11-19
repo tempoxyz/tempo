@@ -582,9 +582,9 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Private registry cache layers can retain expired BuildKit client
-          # sessions across runs. Build fresh layers instead of importing them.
-          no-cache: true
+          # Prover E2E test branches (automation/prover-e2e/*) reuse the layer
+          # cache; every other run rebuilds every layer.
+          no-cache: ${{ !(github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/automation/prover-e2e/')) }}
           pull: true
         env:
           VERGEN_GIT_SHA: ${{ github.sha }}
@@ -617,7 +617,7 @@ jobs:
           mkdir -p .tempo-genesis
           # Compilation has finished; the caller can now select the fork time.
           # Bound the rendezvous so an interrupted caller cannot strand a runner.
-          deadline=$((SECONDS + 180))
+          deadline=$((SECONDS + 2400))
           until curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --connect-timeout 5 --max-time 10 --location \
             --output .tempo-genesis/genesis.json "$TEMPO_DEVNET_GENESIS_URL"; do
@@ -711,7 +711,9 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: true
+          # Prover E2E test branches (automation/prover-e2e/*) reuse the layer
+          # cache; every other run rebuilds every layer.
+          no-cache: ${{ !(github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/automation/prover-e2e/')) }}
           pull: true
 
       - name: Upload candidate image archives
@@ -914,7 +916,7 @@ jobs:
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
       packages: write
@@ -1081,7 +1083,7 @@ jobs:
       github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true && inputs.production_image_verify_only != true)))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
       packages: write
