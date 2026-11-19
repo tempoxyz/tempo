@@ -310,7 +310,20 @@ where
                 identity: *outcome.network_identity(),
             };
 
-            self.state.observe(identity).await?
+            self.state.observe(identity.clone()).await?;
+
+            // Retire the previous fallback in memory too. Otherwise a missing later epoch would
+            // still verify against the identity this boundary rotated away from until restart.
+            let retired = self.verifier.network_identity();
+            if self.verifier.advance_network_identity(identity.clone()) {
+                warn!(
+                    retired_from_epoch = retired.from_epoch,
+                    retired_network_identity = %retired.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
+                );
+            }
         }
 
         Ok(())

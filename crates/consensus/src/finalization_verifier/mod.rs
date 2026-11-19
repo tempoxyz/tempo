@@ -13,6 +13,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
+use parking_lot::RwLock;
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
@@ -33,22 +34,18 @@ mod test;
 #[derive(Clone)]
 pub(crate) struct FinalizationVerifier {
     scheme_provider: SchemeProvider,
-    network_identity: NetworkIdentity,
-    network_scheme: Arc<Scheme<PublicKey, MinSig>>,
+    /// The identity used for epochs without a registered scheme. Shared between clones so that
+    /// advancing it after an authenticated rotation retires the previous identity everywhere.
+    network_identity: Arc<RwLock<NetworkIdentity>>,
     epoch_strategy: FixedEpocher,
 }
 
 impl FinalizationVerifier {
     /// Create a verifier anchored at the supplied network identity.
     pub(crate) fn new(network_identity: NetworkIdentity, epoch_strategy: FixedEpocher) -> Self {
-        let network_scheme = Arc::new(Scheme::certificate_verifier(
-            NAMESPACE,
-            network_identity.identity,
-        ));
         Self {
             scheme_provider: SchemeProvider::new(),
-            network_identity,
-            network_scheme,
+            network_identity: Arc::new(RwLock::new(network_identity)),
             epoch_strategy,
         }
     }
@@ -60,9 +57,27 @@ impl FinalizationVerifier {
         }
     }
 
-    /// Return the verifier's authoritative network identity.
-    pub(crate) const fn network_identity(&self) -> &NetworkIdentity {
-        &self.network_identity
+    /// Return the identity currently used for epochs without a registered scheme.
+    pub(crate) fn network_identity(&self) -> NetworkIdentity {
+        self.network_identity.read().clone()
+    }
+
+    /// Retire the current fallback in favor of an identity authenticated by a finalized boundary.
+    ///
+    /// Only an identity with a different key that starts after the current fallback replaces it,
+    /// so replaying an older boundary cannot reinstate a retired identity. Returns whether the
+    /// fallback changed.
+    ///
+    /// The caller is responsible for ensuring the identity came from a boundary block on a chain
+    /// authenticated by a previously verified finalization.
+    pub(crate) fn advance_network_identity(&self, identity: NetworkIdentity) -> bool {
+        let mut current = self.network_identity.write();
+        if identity.from_epoch <= current.from_epoch || identity.identity == current.identity {
+            return false;
+        }
+
+        *current = identity;
+        true
     }
 
     /// Install the identity encoded in a finalized epoch-boundary block.
@@ -130,14 +145,17 @@ impl FinalizationVerifier {
         let epoch = finalization.epoch();
         let (scheme, used_network_identity) = match self.scheme_provider.scheme(epoch) {
             Some(scheme) => (scheme, false),
-            None if epoch.get() >= self.network_identity.from_epoch => {
-                (self.network_scheme.clone(), true)
-            }
             None => {
-                return Err(CertificateVerificationError::IdentityUnavailable {
-                    epoch: epoch.get(),
-                    identity_from_epoch: self.network_identity.from_epoch,
-                });
+                let network_identity = self.network_identity.read();
+                if epoch.get() < network_identity.from_epoch {
+                    return Err(CertificateVerificationError::IdentityUnavailable {
+                        epoch: epoch.get(),
+                        identity_from_epoch: network_identity.from_epoch,
+                    });
+                }
+
+                let scheme = Scheme::certificate_verifier(NAMESPACE, network_identity.identity);
+                (Arc::new(scheme), true)
             }
         };
 

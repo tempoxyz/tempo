@@ -9,7 +9,7 @@ use commonware_parallel::Sequential;
 use eyre::ensure;
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::{config::NAMESPACE, epoch::SchemeProvider, gossip::Certificate};
 
@@ -34,6 +34,15 @@ pub(crate) fn verify_finalized_tip(
             );
         }
         if persisted.from_epoch > configured_identity.from_epoch {
+            if persisted.identity != configured_identity.identity {
+                warn!(
+                    configured_from_epoch = configured_identity.from_epoch,
+                    persisted_from_epoch = persisted.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
+                    persisted_network_identity = %persisted.identity,
+                    "Persisted network identity differs from the configured network identity!!! Using the persisted identity; update the binary with the latest network identity"
+                );
+            }
             trusted = persisted.clone();
         }
     }

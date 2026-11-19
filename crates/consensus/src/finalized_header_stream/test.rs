@@ -327,3 +327,62 @@ async fn rejects_mismatched_start_header() {
     ));
     assert!(asserter.read_q().is_empty());
 }
+
+#[test]
+fn rotation_boundary_retires_the_previous_fallback() {
+    let mut rng = StdRng::seed_from_u64(9);
+    let retired = dkg_fixture(&mut rng, Epoch::zero());
+    let rotated = dkg_fixture(&mut rng, Epoch::new(1));
+    let configured = NetworkIdentity {
+        from_epoch: 0,
+        identity: *retired.outcome.network_identity(),
+    };
+    let epoch_strategy = commonware_consensus::types::FixedEpocher::new(EPOCH_LENGTH);
+    let genesis = make_block(0, Some(&retired.outcome));
+    let state = super::State {
+        rpc: super::Rpc {
+            provider: mock_provider(Asserter::new()),
+            fetch_concurrency: 1,
+        },
+        verifier: crate::finalization_verifier::FinalizationVerifier::new(
+            configured.clone(),
+            epoch_strategy.clone(),
+        ),
+        configured_identity: Some(configured),
+        epoch_strategy,
+        cursor: alloy_rpc_types_eth::BlockNumHash::new(0, genesis.digest().0),
+        chunk_size: 1,
+        poll_interval: std::time::Duration::ZERO,
+        plan: Default::default(),
+        pending: Default::default(),
+        rng: StdRng::seed_from_u64(10),
+    };
+
+    let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&rotated.outcome));
+    state
+        .register_boundaries(&[reth_primitives_traits::SealedHeader::seal_slow(
+            boundary.header().clone(),
+        )])
+        .expect("boundary should register");
+    assert_eq!(
+        state.verifier.network_identity().identity,
+        *rotated.outcome.network_identity()
+    );
+
+    // Epoch 2 has no registered scheme, so it falls back to the rotated identity.
+    let mut rng = StdRng::seed_from_u64(11);
+    let block = make_block(2 * EPOCH_LENGTH.get(), None);
+    let forged = make_finalization(&block, Epoch::new(2), &retired.schemes);
+    let forged = make_certified_block(block.clone(), &forged);
+    assert!(
+        state
+            .verifier
+            .decode_and_verify(&mut rng, &forged)
+            .is_err_and(|error| error.is_signature_mismatch())
+    );
+    let finalization = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+    state
+        .verifier
+        .decode_and_verify(&mut rng, &make_certified_block(block, &finalization))
+        .expect("the rotated identity should verify a later epoch");
+}

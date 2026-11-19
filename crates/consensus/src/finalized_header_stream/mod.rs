@@ -26,7 +26,7 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
-use tracing::{instrument, warn};
+use tracing::{info, instrument, warn};
 
 use crate::finalization_verifier::{Error as VerificationError, FinalizationVerifier};
 
@@ -114,6 +114,9 @@ struct Chunk {
 struct State<P> {
     rpc: Rpc<P>,
     verifier: FinalizationVerifier,
+    /// The identity the stream was configured with, if any. The verifier's fallback advances past
+    /// it at each authenticated rotation, so warnings about an outdated binary compare against it.
+    configured_identity: Option<NetworkIdentity>,
     epoch_strategy: FixedEpocher,
     cursor: BlockNumHash,
     chunk_size: u64,
@@ -190,6 +193,7 @@ where
         Ok(Self {
             rpc,
             verifier,
+            configured_identity: config.network_identity,
             epoch_strategy,
             cursor: start_after,
             chunk_size,
@@ -271,16 +275,33 @@ where
                     reason: error.to_string(),
                 })?;
 
-            let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch >= network_identity.from_epoch
-                && network_identity.identity != *onchain_outcome.network_identity()
+            if let Some(configured) = &self.configured_identity
+                && onchain_outcome.epoch >= configured.from_epoch
+                && configured.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = network_identity.from_epoch,
+                    compiled_from_epoch = configured.from_epoch,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %network_identity.identity,
+                    compiled_network_identity = %configured.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
+                );
+            }
+
+            // These headers are hash-chained to a verified finalization, so the boundary's
+            // identity is authenticated: retire the previous fallback in favor of it.
+            let retired = self.verifier.network_identity();
+            let identity = NetworkIdentity {
+                from_epoch: onchain_outcome.epoch,
+                identity: *onchain_outcome.network_identity(),
+            };
+            if self.verifier.advance_network_identity(identity.clone()) {
+                info!(
+                    retired_from_epoch = retired.from_epoch,
+                    retired_network_identity = %retired.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
                 );
             }
         }
