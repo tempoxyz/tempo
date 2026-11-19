@@ -105,7 +105,8 @@ fn inherit_parent_fork_activations(
 
 /// Fork activation fields the Zone genesis sets explicitly to a value other than its parent's.
 ///
-/// Omitted fields are not mismatches: the Zone inherits them from the parent.
+/// Omitted fields are not mismatches: the Zone inherits them from the parent. An explicit null
+/// for a fork the parent schedules is one, since it would disable that fork on the Zone.
 pub fn fork_activation_mismatches(
     zone_genesis: &Genesis,
     l1: &TempoChainSpec,
@@ -123,7 +124,6 @@ pub fn fork_activation_mismatches(
         .iter()
         .filter(|(name, value)| {
             (name.ends_with("Block") || name.ends_with("Time"))
-                && !value.is_null()
                 && l1_fields
                     .get(name.as_str())
                     .unwrap_or(&serde_json::Value::Null)
@@ -251,7 +251,9 @@ impl reth_cli::chainspec::ChainSpecParser for ZoneChainSpecParser {
     /// a fork time that differs from the parent's.
     fn parse(s: &str) -> eyre::Result<std::sync::Arc<Self::ChainSpec>> {
         let genesis = reth_cli::chainspec::parse_genesis(s)?;
-        if let Some(parent) = tempo_chain_spec_for_l1(decode_l1_chain_id(genesis.config.chain_id)?)
+        // Only named networks have a fixed schedule. Local dev chains (1337, 31337) can run any
+        // schedule, so they are not checked against the built-in DEV one.
+        if let Some(parent) = chainspec_from_chain_id(decode_l1_chain_id(genesis.config.chain_id)?)
         {
             let mismatched = fork_activation_mismatches(&genesis, parent.as_ref())?;
             eyre::ensure!(
@@ -436,24 +438,50 @@ mod tests {
     #[cfg(feature = "cli")]
     #[test]
     fn parser_rejects_fork_times_that_differ_from_the_parent() {
-        let mut genesis = DEV.genesis().clone();
-        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 10).unwrap();
-        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 100);
+        let zone_genesis = |parent: &TempoChainSpec| {
+            let mut genesis = parent.genesis().clone();
+            genesis.config.chain_id = zone_chain_id(parent.chain_id(), 10).unwrap();
+            genesis
+        };
+
+        // A different time for a fork the named parent schedules.
+        let mut genesis = zone_genesis(&MODERATO);
+        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 1);
         let error = ZoneChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap())
             .unwrap_err()
             .to_string();
         assert!(error.contains("t13Time"), "{error}");
 
+        // An explicit null disables a scheduled fork, so it is a mismatch too.
+        let mut json = serde_json::to_value(zone_genesis(&MODERATO)).unwrap();
+        json["config"]["t13Time"] = serde_json::Value::Null;
+        let error = ZoneChainSpecParser::parse(&json.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("t13Time"), "{error}");
+
         // Repeating the parent's times, or omitting them, is accepted.
-        let mut genesis = DEV.genesis().clone();
-        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 10).unwrap();
+        let mut genesis = zone_genesis(&MODERATO);
         assert!(
-            fork_activation_mismatches(&genesis, &DEV)
+            fork_activation_mismatches(&genesis, &MODERATO)
                 .unwrap()
                 .is_empty()
         );
         genesis.config.cancun_time = None;
         ZoneChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap()).unwrap();
+
+        // Local dev chains can run any schedule.
+        let mut genesis = zone_genesis(&DEV);
+        test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, now_plus_30());
+        ZoneChainSpecParser::parse(&serde_json::to_string(&genesis).unwrap()).unwrap();
+    }
+
+    fn now_plus_30() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 30
     }
 
     #[cfg(feature = "cli")]
