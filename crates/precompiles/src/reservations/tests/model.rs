@@ -112,6 +112,19 @@ pub(super) enum Op {
         token: usize,
         amount: u128,
     },
+    /// A compliance burn (`burnBlocked`) of a blocked owner's balance, reserved funds included.
+    Burn {
+        owner: usize,
+        token: usize,
+        amount: u128,
+    },
+    /// A compliance burn of the owner's free balance plus `percent` of what its records back,
+    /// resolved against the model so burns reach reserved funds.
+    BurnShare {
+        owner: usize,
+        token: usize,
+        percent: u128,
+    },
     Approve {
         owner: usize,
         holder: usize,
@@ -171,6 +184,12 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(caller, owner, token, amount)| Op::Refund { caller, owner, token, amount }),
         2 => (account.clone(), account.clone(), token.clone(), 1..400u128)
             .prop_map(|(from, to, token, amount)| Op::Transfer { from, to, token, amount }),
+        1 => (owner.clone(), token.clone(), 1..1_200u128)
+            .prop_map(|(owner, token, amount)| Op::Burn { owner, token, amount }),
+        2 => (owner.clone(), token.clone(), 1..=100u128)
+            .prop_map(|(owner, token, percent)| Op::BurnShare { owner, token, percent }),
+        2 => (owner.clone(), token.clone(), any::<bool>())
+            .prop_map(|(account, token, blocked)| Op::Block { account, token, blocked }),
         1 => (owner.clone(), prop::sample::select(vec![H0, H1, STRANGER]), token.clone(), 0..700u128, prop::sample::select(vec![0u32, 3_600]))
             .prop_map(|(owner, holder, token, limit, period)| Op::Approve { owner, holder, token, limit, period }),
         1 => (account, token.clone(), any::<bool>())
@@ -248,6 +267,10 @@ struct Model {
     terms: BTreeMap<(usize, usize, usize), MTerms>,
     debts: BTreeMap<(usize, usize), Vec<MDebt>>,
     blocked: BTreeSet<(usize, usize)>,
+    /// Reserved funds compliance burns took, per (owner, token), not yet consumed by ending records.
+    shortfalls: BTreeMap<(usize, usize), u128>,
+    /// What compliance burns destroyed, per token.
+    burned: BTreeMap<usize, u128>,
 }
 
 fn refuse(cap: u128) -> TempoPrecompileError {
@@ -413,6 +436,18 @@ impl Model {
         budget
     }
 
+    /// Checks a holder's budget for `check` more without drawing on it.
+    fn admit(&mut self, owner: usize, holder: usize, token: usize, check: u128) -> Outcome {
+        let budget = self.budget_mut(owner, holder, token);
+        if budget.limit == 0 {
+            return Err(e(ReservationsError::unauthorized()));
+        }
+        if budget.spent + budget.outstanding + check > budget.limit {
+            return Err(e(ReservationsError::budget_exceeded()));
+        }
+        Ok(())
+    }
+
     fn draw(
         &mut self,
         owner: usize,
@@ -422,13 +457,8 @@ impl Model {
         outstanding: u128,
         spent: u128,
     ) -> Outcome {
+        self.admit(owner, holder, token, check)?;
         let budget = self.budget_mut(owner, holder, token);
-        if budget.limit == 0 {
-            return Err(e(ReservationsError::unauthorized()));
-        }
-        if budget.spent + budget.outstanding + check > budget.limit {
-            return Err(e(ReservationsError::budget_exceeded()));
-        }
         budget.outstanding += outstanding;
         budget.spent += spent;
         Ok(())
@@ -456,6 +486,34 @@ impl Model {
             budget.spent += excess;
         }
         Ok(())
+    }
+
+    /// Returns reserved funds to the owner's balance, the burned part first; returns what came back.
+    fn unreserve(&mut self, token: usize, owner: usize, amount: u128) -> u128 {
+        let covered = match self.shortfalls.get_mut(&(owner, token)) {
+            Some(unbacked) => {
+                let covered = (*unbacked).min(amount);
+                *unbacked -= covered;
+                if *unbacked == 0 {
+                    self.shortfalls.remove(&(owner, token));
+                }
+                covered
+            }
+            None => 0,
+        };
+        self.add(token, owner, amount - covered);
+        amount - covered
+    }
+
+    /// What the owner's records still back in a token: their held amounts less the burned part.
+    fn reserved(&self, owner: usize, token: usize) -> u128 {
+        let held: u128 = self
+            .holds
+            .iter()
+            .filter(|((o, _, _), h)| *o == owner && h.token == token)
+            .map(|(_, h)| h.held)
+            .sum();
+        held - self.shortfalls.get(&(owner, token)).copied().unwrap_or(0)
     }
 
     fn live(&self, key: HoldKey) -> std::result::Result<MHold, TempoPrecompileError> {
@@ -490,6 +548,9 @@ impl Model {
         }
         if self.holds.contains_key(&(owner, placer, id)) {
             return Err(e(ReservationsError::hold_exists()));
+        }
+        if placer != owner {
+            self.admit(owner, placer, token, amount)?;
         }
         self.ensure_allowed(token, owner, payee, false)?;
         let free = self.bal(token, owner);
@@ -546,12 +607,12 @@ impl Model {
         if self.holds.contains_key(&(owner, placer, id)) {
             return Err(e(ReservationsError::hold_exists()));
         }
+        if placer != owner {
+            self.draw(owner, placer, token, amount, amount, 0)?;
+        }
         self.ensure_allowed(token, owner, authority, false)?;
         if amount > self.bal(token, owner) {
             return Err(e(ReservationsError::insufficient_available()));
-        }
-        if placer != owner {
-            self.draw(owner, placer, token, amount, amount, 0)?;
         }
         self.sub(token, owner, amount);
         self.holds.insert(
@@ -697,7 +758,7 @@ impl Model {
                     }
                 } else if amount < hold.held {
                     let decrease = hold.held - amount;
-                    self.add(token, owner, decrease);
+                    self.unreserve(token, owner, decrease);
                     if budgeted {
                         self.settle(owner, placer, token, 0, decrease, 0)?;
                     }
@@ -736,19 +797,24 @@ impl Model {
                 let from_hold = amount.min(hold.held);
                 let excess = amount - from_hold;
                 let rest = if is_final { hold.held - from_hold } else { 0 };
-                let sender_exempt =
-                    (hold.kind == kind::HOLD && excess == 0) || hold.kind == kind::LIEN;
+                // A hold's capture is exempt only when what the hold gives back covers it.
+                let freed = if hold.kind == kind::HOLD {
+                    self.unreserve(token, owner, from_hold + rest)
+                } else {
+                    0
+                };
+                let sender_exempt = (hold.kind == kind::HOLD && excess == 0 && amount <= freed)
+                    || hold.kind == kind::LIEN;
                 self.ensure_allowed(token, owner, hold.payee, sender_exempt)?;
                 if placer != owner && hold.kind != kind::LIEN {
                     self.settle(owner, placer, token, from_hold, rest, excess)?;
                 }
                 if hold.kind == kind::HOLD {
-                    self.add(token, owner, from_hold + rest);
                     self.pay(token, owner, hold.payee, amount, hold.stand_in)?;
                 } else {
-                    self.add(token, owner, from_hold);
-                    self.move_funds(token, owner, hold.payee, from_hold);
-                    self.add(token, owner, rest);
+                    let backed = self.unreserve(token, owner, from_hold);
+                    self.move_funds(token, owner, hold.payee, backed);
+                    self.unreserve(token, owner, rest);
                 }
                 hold.held -= from_hold + rest;
                 hold.capture_limit = if hold.kind == kind::HOLD {
@@ -804,10 +870,10 @@ impl Model {
                 if amount == 0 {
                     return Err(e(ReservationsError::invalid_amount()));
                 }
-                self.ensure_allowed(token, owner, payee, false)?;
                 if caller != owner {
                     self.draw(owner, caller, token, amount, 0, amount)?;
                 }
+                self.ensure_allowed(token, owner, payee, false)?;
                 self.pay(token, owner, payee, amount, stand_in)?;
                 Ok(())
             }
@@ -853,6 +919,29 @@ impl Model {
                 self.move_funds(token, from, to, amount);
                 Ok(())
             }
+            Op::Burn {
+                owner,
+                token,
+                amount,
+            } => {
+                if !self.blocked.contains(&(token, owner)) {
+                    return Err(e(ReservationsError::policy_forbids()));
+                }
+                let slot = self.bal(token, owner);
+                if amount > slot + self.reserved(owner, token) {
+                    return Err(e(ReservationsError::insufficient_available()));
+                }
+                // The burn takes the balance slot first, then reserved funds, recording those as
+                // a shortfall the records still count.
+                let taken = amount.saturating_sub(slot);
+                if taken != 0 {
+                    *self.shortfalls.entry((owner, token)).or_default() += taken;
+                }
+                self.add(token, owner, taken);
+                self.sub(token, owner, amount);
+                *self.burned.entry(token).or_default() += amount;
+                Ok(())
+            }
             Op::Approve {
                 owner,
                 holder,
@@ -892,13 +981,15 @@ impl Model {
                 self.now += seconds;
                 Ok(())
             }
-            Op::Targeted { .. } => unreachable!("targeted ops are resolved first"),
+            Op::Targeted { .. } | Op::BurnShare { .. } => {
+                unreachable!("targeted ops are resolved first")
+            }
         }
     }
 
     fn end(&mut self, key: HoldKey, hold: MHold) -> Outcome {
         let (owner, placer, _) = key;
-        self.add(hold.token, owner, hold.held);
+        self.unreserve(hold.token, owner, hold.held);
         if placer != owner && hold.kind != kind::LIEN {
             self.settle(owner, placer, hold.token, 0, hold.held, 0)?;
         }
@@ -942,6 +1033,7 @@ impl World {
             }
             let mut token = setup.apply()?;
             token.grant_role_internal(accounts[AUTHORITY], LIEN_ROLE)?;
+            token.grant_role_internal(admin, BURN_BLOCKED_ROLE)?;
             let policy = registry.create_policy_with_accounts(
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
@@ -1213,6 +1305,21 @@ impl World {
                     .map(|_| ())
                     .map_err(|_| e(ReservationsError::policy_forbids()))
             }
+            Op::Burn {
+                owner,
+                token,
+                amount,
+            } => self.tokens[token]
+                .burn_blocked(self.admin, a(owner), U256::from(amount), true)
+                .map_err(|error| match error {
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)) => {
+                        e(ReservationsError::policy_forbids())
+                    }
+                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(_)) => {
+                        e(ReservationsError::insufficient_available())
+                    }
+                    other => other,
+                }),
             Op::Approve {
                 owner,
                 holder,
@@ -1250,7 +1357,9 @@ impl World {
                 warp(seconds);
                 Ok(())
             }
-            Op::Targeted { .. } => unreachable!("targeted ops are resolved first"),
+            Op::Targeted { .. } | Op::BurnShare { .. } => {
+                unreachable!("targeted ops are resolved first")
+            }
         }
     }
 
@@ -1265,6 +1374,20 @@ impl World {
                 if *caller == SELF =>
             {
                 *caller = *owner;
+            }
+            Op::BurnShare {
+                owner,
+                token,
+                percent,
+            } => {
+                let (owner, token) = (*owner, *token);
+                let reserved = self.model.reserved(owner, token);
+                let amount = self.model.bal(token, owner) + reserved * *percent / 100;
+                return Op::Burn {
+                    owner,
+                    token,
+                    amount: amount.max(1),
+                };
             }
             _ => {}
         }
@@ -1346,16 +1469,12 @@ impl World {
                     "available of {account} in {token}: {slot} != {}",
                     m.bal(token, account)
                 );
-                let held: u128 = m
-                    .holds
-                    .iter()
-                    .filter(|((o, _, _), h)| *o == account && h.token == token)
-                    .map(|(_, h)| h.held)
-                    .sum();
+                // A compliance burn's shortfall is counted in the records but no longer reserved.
+                let backed = m.reserved(account, token);
                 let reserved = self.reservations.reserved_of(who, address)?;
                 eyre::ensure!(
-                    reserved == held,
-                    "reserved of {account} in {token}: {reserved} != {held}"
+                    reserved == backed,
+                    "reserved of {account} in {token}: {reserved} != {backed}"
                 );
                 let balance: u128 = tip20
                     .balance_of(ITIP20::balanceOfCall { account: who })?
@@ -1363,7 +1482,11 @@ impl World {
                 eyre::ensure!(balance == slot + reserved, "balanceOf of {account}");
                 supply += balance;
             }
-            eyre::ensure!(supply == 5 * MINT, "supply of {token}: {supply}");
+            let burned = m.burned.get(&token).copied().unwrap_or(0);
+            eyre::ensure!(
+                supply + burned == 5 * MINT,
+                "supply of {token}: {supply} + {burned} burned"
+            );
         }
         for owner in 0..OWNERS {
             for &placer in &PLACERS {
@@ -1487,7 +1610,8 @@ impl World {
             + positions
             + m.budgets.values().filter(|b| b.nonzero()).count()
             + m.terms.len()
-            + m.debts.values().map(Vec::len).sum::<usize>();
+            + m.debts.values().map(Vec::len).sum::<usize>()
+            + m.shortfalls.len();
         eyre::ensure!(
             slots == expected,
             "reservation core slots: {slots} != {expected}"
