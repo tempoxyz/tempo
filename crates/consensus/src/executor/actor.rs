@@ -56,10 +56,11 @@
 //! A walk waiting for finalization resumes when the finalization pipeline
 //! delivers its ancestor.
 //!
-//! Requesters that go away are dropped without a verdict, and a request for
-//! the same round and candidate replaces the pending one. Requests for
-//! different candidates in the same round (an equivocating leader) are kept
-//! side by side, so one cannot cancel the other.
+//! A request whose requesters all went away is dropped without a verdict,
+//! and a request for the same round and candidate joins the pending one, so
+//! that every requester receives the verdict. Requests for different
+//! candidates in the same round (an equivocating leader) are kept side by
+//! side, so one cannot cancel the other.
 //!
 //! # Execution failures
 //!
@@ -207,9 +208,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// waiting for a subscribed ancestor or for finalization, and walks with
     /// a fetched ancestor in hand. Parent subscriptions live in the fetch
     /// pool; canceled requests are reaped when the queue is reconciled.
-    /// A request stays until it has a verdict, fails, is found canceled,
-    /// its round falls at or below the network finalized round, or a request
-    /// for the same round and candidate replaces it.
+    /// A request stays until it has a verdict, fails, is found canceled, or
+    /// its round falls at or below the network finalized round.
     queued_verifications: BTreeMap<VerificationKey, Verification>,
     /// The verification holding the engine slot: the one whose cursor is in
     /// flight, about to be probed, or whose parent is being looked up
@@ -1334,13 +1334,18 @@ where
 
     /// Queues a verification. Verifications from different rounds, or for
     /// different candidates in the same round, wait side by side; one for the
-    /// same round and candidate replaces the pending one, whether that one is
-    /// queued or active.
+    /// same round and candidate joins the pending one, whether that one is
+    /// queued or active, and receives the same verdict.
     fn queue_verification(&mut self, verification: Verification) {
         let key = verification.key();
-        if self.remove_verification(key).is_some() {
+        if let Some(pending) = self
+            .verifications_mut()
+            .find(|pending| pending.key() == key)
+        {
             let VerificationKey { round, digest } = key;
-            debug!(%round, %digest, "verification replaced a pending one for the same candidate");
+            debug!(%round, %digest, "verification joined a pending one for the same candidate");
+            pending.responses.extend(verification.responses);
+            return;
         }
         self.queued_verifications.insert(key, verification);
     }
@@ -1642,7 +1647,7 @@ where
             .chain(self.queued_verifications.values_mut())
     }
 
-    /// Drops the verification, wherever it sits; its channel closes.
+    /// Drops the verification, wherever it sits; its channels close.
     fn remove_verification(&mut self, key: VerificationKey) -> Option<Verification> {
         match &self.active_verification {
             Some(active) if active.key() == key => self.active_verification.take(),
@@ -1918,17 +1923,17 @@ impl Future for PendingNotarizedBlock {
 /// there if it must. The actor polls active requester cancellation, reaps
 /// canceled queued requests, and pools parent subscriptions. It stays until
 /// the candidate has a verdict, the request fails or is canceled, its round
-/// falls at or below the network finalized round, its target falls below the
-/// network finalized height, or a request for the same round and candidate
-/// replaces it.
+/// falls at or below the network finalized round, or its target falls below
+/// the network finalized height.
 struct Verification {
     round: Round,
     /// The walk toward the candidate, which is its target.
     walk: AncestryWalk,
-    /// Delivers the verdict: `Some(duration)` when the execution layer
-    /// accepted the candidate, `None` when it rejected it. Dropped without a
-    /// value when verification failed or the request was replaced or dropped.
-    response: oneshot::Sender<Option<Duration>>,
+    /// Deliver the verdict, one per requester of this round and candidate:
+    /// `Some(duration)` when the execution layer accepted the candidate,
+    /// `None` when it rejected it. Dropped without a value when verification
+    /// failed or the request was dropped.
+    responses: Vec<oneshot::Sender<Option<Duration>>>,
     /// Time spent in engine calls across the whole walk.
     duration: Duration,
 }
@@ -1943,7 +1948,7 @@ impl Verification {
         Self {
             round,
             walk: AncestryWalk::new(cause, candidate),
-            response,
+            responses: vec![response],
             duration: Duration::ZERO,
         }
     }
@@ -1956,14 +1961,17 @@ impl Verification {
         }
     }
 
+    /// Whether every requester went away.
     fn is_canceled(&self) -> bool {
-        self.response.is_canceled()
+        self.responses.iter().all(|response| response.is_canceled())
     }
 
-    /// Answers the requester and consumes the verification.
+    /// Answers every requester and consumes the verification.
     fn respond(self, verdict: Option<Duration>) {
-        if self.response.send(verdict).is_err() {
-            info!("verification subscriber went away before the verdict was delivered");
+        for response in self.responses {
+            if response.send(verdict).is_err() {
+                info!("verification subscriber went away before the verdict was delivered");
+            }
         }
     }
 
@@ -1991,9 +1999,15 @@ impl Verification {
         true
     }
 
-    /// Polls the active requester's cancellation and its local parent lookup.
+    /// Polls the active requesters' cancellation and the local parent lookup.
     fn poll_event(&mut self, cx: &mut std::task::Context<'_>) -> Poll<VerificationEvent> {
-        if self.response.poll_canceled(cx).is_ready() {
+        // The first requester still there holds the waker, which is enough
+        // to notice once all of them went away.
+        if self
+            .responses
+            .iter_mut()
+            .all(|response| response.poll_canceled(cx).is_ready())
+        {
             return Poll::Ready(VerificationEvent::Canceled);
         }
         self.walk
@@ -2004,7 +2018,7 @@ impl Verification {
 
 /// What a verification woke the event loop for.
 enum VerificationEvent {
-    /// Its requester went away.
+    /// Every requester went away.
     Canceled,
     /// Its local parent lookup resolved.
     ParentLookedUp(Option<Digested<Block>>),
