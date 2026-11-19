@@ -156,6 +156,7 @@ mod tests {
     use super::*;
     use alloy_primitives::{U256, address};
     use alloy_sol_types::SolCall;
+    use evm2::precompiles::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile, test_util::TIP20Setup, zone_factory::ZonePortalStorage,
@@ -196,6 +197,17 @@ mod tests {
         spec: TempoHardfork,
         calls: &[(Vec<u8>, Address)],
     ) -> Vec<CallCheck> {
+        in_zone(spec, || {
+            calls
+                .iter()
+                .map(|(data, caller)| rules.admit(data, *caller))
+                .collect()
+        })
+    }
+
+    /// Runs `f` at `spec` in a zone where OWNER approved HOLDER and HOLDER placed a hold for
+    /// PAYEE.
+    fn in_zone<R>(spec: TempoHardfork, f: impl FnOnce() -> R) -> R {
         let mut ctx = test_context();
         ctx.cfg.spec = spec;
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
@@ -235,10 +247,7 @@ mod tests {
             };
             core.call(&hold.abi_encode(), HOLDER)
                 .expect("place the hold");
-            calls
-                .iter()
-                .map(|(data, caller)| rules.admit(data, *caller))
-                .collect()
+            f()
         })
     }
 
@@ -298,6 +307,56 @@ mod tests {
             matches!(&checks[3], CallCheck::Return(output) if output.as_ref() == empty.as_slice())
         );
         assert!(matches!(&checks[9], CallCheck::Revert(_)));
+    }
+
+    /// A caller OWNER never approved is refused the same way whether or not OWNER could afford
+    /// the amount, so placing records tells it nothing about OWNER's balance.
+    #[test]
+    fn unapproved_placers_learn_nothing_about_the_owner_balance() {
+        let rules = rules(true);
+        let outcomes = in_zone(TempoHardfork::T16, || {
+            let expires_at = StorageCtx::default().timestamp().saturating_to::<u64>() + 3600;
+            [1u128, 900, 10_000]
+                .into_iter()
+                .flat_map(|amount| {
+                    let hold = IReservationCore::holdFromCall {
+                        owner: OWNER,
+                        request: IReservationCore::HoldRequest {
+                            token: PATH_USD_ADDRESS,
+                            id: B256::repeat_byte(2),
+                            amount,
+                            expiresAt: expires_at,
+                            payee: PAYEE,
+                            standIn: false,
+                        },
+                    }
+                    .abi_encode();
+                    let pledge = IReservationCore::pledgeFromCall {
+                        owner: OWNER,
+                        token: PATH_USD_ADDRESS,
+                        id: B256::repeat_byte(3),
+                        amount,
+                        expiresAt: expires_at,
+                    }
+                    .abi_encode();
+                    [hold, pledge]
+                })
+                .map(|data| {
+                    assert!(allowed(&rules.admit(&data, OUTSIDER)));
+                    match Reservations::new().call(&data, OUTSIDER) {
+                        Err(PrecompileError::Revert(bytes)) => bytes,
+                        other => panic!("expected a revert, got {other:?}"),
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
+        let refused = IReservationCore::Unauthorized {}.abi_encode();
+        assert!(
+            outcomes
+                .iter()
+                .all(|bytes| bytes.as_ref() == refused.as_slice()),
+            "{outcomes:?}"
+        );
     }
 
     #[test_case(TempoHardfork::T16, true, true)]

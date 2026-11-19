@@ -3,7 +3,7 @@ use crate::{
     account_keychain::{AccountKeychain, KeyRestrictions, SignatureType, TokenLimit},
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-    tip20::{BURN_BLOCKED_ROLE, IRolesAuth, ITIP20},
+    tip20::{BURN_BLOCKED_ROLE, IRolesAuth, ITIP20, TIP20Error},
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
@@ -1226,6 +1226,118 @@ fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
         assert_eq!(f.reserved()?, 0);
         Ok(())
     })
+}
+
+/// After a compliance burn takes part of a hold, a blocked owner's hold pays its payee only what
+/// the hold still backs; funds the owner received later stay where they are.
+#[test]
+fn test_capture_after_compliance_burn_pays_only_what_the_hold_still_backs() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 600)?;
+        f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+        let owner = f.owner;
+        block_sender_only(&mut f, owner)?;
+        // Burning 500 takes 400 from the balance slot and 100 from the hold's reservation.
+        f.token
+            .burn_blocked(f.admin, f.owner, U256::from(500), true)?;
+        assert_eq!((f.reserved()?, f.available()?), (500, 0));
+
+        // The blocked owner receives 300 afterwards and cannot send them itself.
+        f.mint(f.owner, 300)?;
+        assert!(f.transfer(f.owner, Address::random(), 1).is_err());
+        assert_eq!(f.available()?, 300);
+
+        // Capturing the hold's full amount would draw 100 of the new funds.
+        assert_eq!(
+            err!(f.capture(f.owner, id, 600, true)),
+            e(ReservationsError::policy_forbids())
+        );
+        // So would a partial capture, since the burned part is consumed first.
+        assert_eq!(
+            err!(f.capture(f.owner, id, 100, false)),
+            e(ReservationsError::policy_forbids())
+        );
+        // What the hold still backs pays out.
+        f.capture(f.owner, id, 500, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(500));
+        assert_eq!(f.balance(f.owner)?, U256::from(300));
+        assert_eq!((f.reserved()?, f.available()?), (0, 300));
+        assert_eq!(f.debts()?, vec![]);
+        Ok(())
+    })
+}
+
+/// A caller the owner never budgeted is refused before the owner's balance or policy is read, so
+/// the error is the same whatever the owner holds.
+#[test]
+fn test_unbudgeted_hold_from_and_pledge_from_reveal_nothing_about_the_owner() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let stranger = Address::random();
+        for amount in [1, 1_000, 1_001] {
+            let request = f.request(B256::random(), amount, false);
+            assert_eq!(
+                err!(f.reservations.place(stranger, f.owner, request)),
+                e(ReservationsError::unauthorized())
+            );
+            let pledge = IReservationCore::pledgeFromCall {
+                owner: f.owner,
+                token: f.token.address(),
+                id: B256::random(),
+                amount,
+                expiresAt: EXPIRY,
+            };
+            assert_eq!(
+                err!(f.reservations.pledge_from(stranger, pledge)),
+                e(ReservationsError::unauthorized())
+            );
+        }
+        // The same holds when the owner is blocked.
+        f.blacklist(vec![f.owner])?;
+        let request = f.request(B256::random(), 1, false);
+        assert_eq!(
+            err!(f.reservations.place(stranger, f.owner, request)),
+            e(ReservationsError::unauthorized())
+        );
+        // A budgeted holder past its limit learns nothing either.
+        f.approve(100, 0)?;
+        let request = f.request(B256::random(), 1_001, false);
+        assert_eq!(
+            err!(f.reservations.place(f.holder, f.owner, request)),
+            e(ReservationsError::budget_exceeded())
+        );
+        Ok(())
+    })
+}
+
+/// Makes the token's policy block `blocked` as a sender only, so it can still receive.
+fn block_sender_only(f: &mut Fixture, blocked: Address) -> Result<()> {
+    let mut registry = TIP403Registry::new();
+    registry.initialize()?;
+    let senders = registry.create_policy_with_accounts(
+        f.admin,
+        ITIP403Registry::createPolicyWithAccountsCall {
+            admin: f.admin,
+            policyType: ITIP403Registry::PolicyType::BLACKLIST,
+            accounts: vec![blocked],
+        },
+    )?;
+    let compound = registry.create_compound_policy(
+        f.admin,
+        ITIP403Registry::createCompoundPolicyCall {
+            senderPolicyId: senders,
+            recipientPolicyId: crate::tip403_registry::ALLOW_ALL_POLICY_ID,
+            mintRecipientPolicyId: crate::tip403_registry::ALLOW_ALL_POLICY_ID,
+        },
+    )?;
+    f.token.change_transfer_policy_id(
+        f.admin,
+        ITIP20::changeTransferPolicyIdCall {
+            newPolicyId: compound,
+        },
+    )
 }
 
 /// Runs before T7, when TIP-20 rewards still accrue to opted-in holders; the reservation calls

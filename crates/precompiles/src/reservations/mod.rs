@@ -423,6 +423,13 @@ impl Reservations {
         self.ensure_vacant(owner, placer, request.id)?;
         let payee = resolve_payee(request.payee)?;
         let mut token = TIP20Token::from_address(request.token)?;
+        // The caller's own authority is checked before the owner's policy and balance, so a caller
+        // the owner never approved learns nothing about either.
+        let budget = if placer != owner {
+            Some(self.admit_budget(owner, placer, request.token, amount)?)
+        } else {
+            None
+        };
         ensure_allowed(&token, owner, payee, PaymentExemption::None)?;
         let free = available(&token, owner)?;
         let held = if request.standIn {
@@ -436,8 +443,9 @@ impl Reservations {
             .tolerance_bps
             .read()?;
         let capture_limit = with_tolerance(amount, tolerance_bps);
-        if placer != owner {
-            self.draw_budget(owner, placer, request.token, amount, held, 0)?;
+        if let Some(mut budget) = budget {
+            budget.outstanding += held;
+            self.budgets[owner][placer][request.token].write(budget)?;
         } else {
             // An access key answers for everything the hold lets captures pay, not only what it
             // reserves now.
@@ -502,12 +510,14 @@ impl Reservations {
         }
         self.ensure_vacant(owner, placer, id)?;
         let mut tip20 = TIP20Token::from_address(token)?;
+        // The holder's budget is checked before the owner's policy and balance, so a caller the
+        // owner never approved learns nothing about either.
+        if placer != owner {
+            self.draw_budget(owner, placer, token, amount, amount, 0)?;
+        }
         ensure_allowed(&tip20, owner, authority, PaymentExemption::None)?;
         if u128::from(amount) > available(&tip20, owner)? {
             return Err(ReservationsError::insufficient_available().into());
-        }
-        if placer != owner {
-            self.draw_budget(owner, placer, token, amount, amount, 0)?;
         }
         self.reserve(&mut tip20, owner, amount.into())?;
         let terms = HoldTerms {
@@ -714,10 +724,18 @@ impl Reservations {
         let from_hold = amount.min(held);
         let excess = amount - from_hold;
         let rest = if call.isFinal { held - from_hold } else { 0 };
+        // A hold returns what it still backs to the balance first: a compliance burn may have
+        // taken part of the reservation, and only what comes back was reserved for this payee.
+        let freed = if hold.terms.kind == kind::HOLD {
+            self.unreserve(&mut token, owner, u128::from(from_hold + rest))?
+        } else {
+            0
+        };
         let exemption = match hold.terms.kind {
-            // The held part was reserved for this payee while the owner was authorized, so it
-            // still pays it after the owner is blocked. Anything beyond it is a new payment.
-            kind::HOLD if excess == 0 => PaymentExemption::Sender,
+            // Funds the hold still backs were reserved for this payee while the owner was
+            // authorized, so they still pay it after the owner is blocked. A payment that also
+            // draws on the free balance (beyond the hold, or in place of burned funds) is new.
+            kind::HOLD if excess == 0 && u128::from(amount) <= freed => PaymentExemption::Sender,
             kind::LIEN => PaymentExemption::Sender,
             _ => PaymentExemption::None,
         };
@@ -726,7 +744,6 @@ impl Reservations {
             self.settle_budget(owner, hold.placer, token_address, from_hold, rest, excess)?;
         }
         let (paid, debt) = if hold.terms.kind == kind::HOLD {
-            self.unreserve(&mut token, owner, u128::from(from_hold + rest))?;
             let debt = self.pay(
                 &mut token,
                 owner,
@@ -791,10 +808,13 @@ impl Reservations {
         let payee = resolve_payee(call.payee)?;
         let amount = amount_u64(call.amount)?;
         let mut token = TIP20Token::from_address(token_address)?;
-        ensure_allowed(&token, owner, payee, PaymentExemption::None)?;
+        // A holder's budget is checked before the owner's policy, so a caller the owner never
+        // approved learns nothing about it.
         if caller != owner {
             self.draw_budget(owner, caller, token_address, amount, 0, amount)?;
-        } else {
+        }
+        ensure_allowed(&token, owner, payee, PaymentExemption::None)?;
+        if caller == owner {
             AccountKeychain::new().authorize_transfer(owner, token_address, U256::from(amount))?;
         }
         let debt = self.pay(
@@ -1007,6 +1027,20 @@ impl Reservations {
         Ok(budget)
     }
 
+    /// Reads a holder's budget and checks it for `check` more: refused when revoked or past the
+    /// limit.
+    fn admit_budget(
+        &self,
+        owner: Address,
+        holder: Address,
+        token: Address,
+        check: u64,
+    ) -> Result<Budget> {
+        let budget = self.load_budget(owner, holder, token)?;
+        budget.admit(check)?;
+        Ok(budget)
+    }
+
     /// Checks a holder's budget for `check` more, then adds `outstanding` and `spent` to it.
     fn draw_budget(
         &mut self,
@@ -1017,8 +1051,7 @@ impl Reservations {
         outstanding: u64,
         spent: u64,
     ) -> Result<()> {
-        let mut budget = self.load_budget(owner, holder, token)?;
-        budget.admit(check)?;
+        let mut budget = self.admit_budget(owner, holder, token, check)?;
         budget.outstanding += outstanding;
         budget.spent += spent;
         self.budgets[owner][holder][token].write(budget)
