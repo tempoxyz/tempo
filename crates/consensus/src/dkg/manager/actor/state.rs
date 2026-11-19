@@ -162,18 +162,6 @@ where
         .expect("failed to persist DKG event");
     }
 
-    /// Appends an event without syncing; it becomes durable with the next
-    /// synced append to the same section.
-    async fn append_event_unsynced(&mut self, epoch: Epoch, event: Event) {
-        rebind(&mut self.events, |events| async move {
-            let section = epoch.get();
-            let (events, _, _) = events.append(section, &event).await?;
-            Ok::<_, commonware_storage::journal::Error>(events)
-        })
-        .await
-        .expect("failed to persist DKG event");
-    }
-
     /// Append a player ACK to the journal.
     #[instrument(
         skip_all,
@@ -232,7 +220,7 @@ where
             return;
         }
 
-        self.append_event_unsynced(
+        self.append_event(
             epoch,
             Event::Dealing {
                 dealer: dealer.clone(),
