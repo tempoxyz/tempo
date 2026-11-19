@@ -5,7 +5,9 @@ x-validator: &validator
   cap_add: [SYS_PTRACE]
   environment:
     ANTITHESIS_SDK_LOCAL_OUTPUT: /data/sdk.jsonl
-  # No restart policy: Antithesis owns fault duration and restart scheduling.
+  # Disk crash faults kill the container on fsync; this brings it back
+  # (node-termination faults then restart it immediately too).
+  restart: unless-stopped
 
 services:
   validator-0:
@@ -78,9 +80,17 @@ services:
 
 volumes:
   validator-0-data:
+    labels:
+      com.antithesis.disk_fault: "true"
   validator-1-data:
+    labels:
+      com.antithesis.disk_fault: "true"
   validator-2-data:
+    labels:
+      com.antithesis.disk_fault: "true"
   validator-3-data:
+    labels:
+      com.antithesis.disk_fault: "true"
   follower-data:
   driver-state:
 

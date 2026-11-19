@@ -61,7 +61,7 @@ COPY --from=builder /out/ /usr/local/bin/
 COPY --chmod=755 contrib/antithesis/tempo-cluster/scripts/node.sh /opt/tempo-cluster/node.sh
 # Fixed addresses are also committed to ValidatorConfigV2 by generate-localnet.
 RUN tempo-xtask generate-localnet --output /opt/tempo-cluster/genesis \
-    --accounts 64 --seed 42 --chain-id 1337 --epoch-length 100 --unencrypted-signing-keys \
+    --accounts 64 --seed 42 --chain-id 1337 --epoch-length 20 --unencrypted-signing-keys \
     --gas-limit 500000000 --general-gas-limit 50000000 \
     --validators 10.21.0.11:8000,10.21.0.12:8000,10.21.0.13:8000,10.21.0.14:8000 \
     && mkdir /symbols \
