@@ -6,7 +6,9 @@ use crate::{input::Operation, persistence::Persistence, Node};
 use alloy_consensus::Header;
 use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
-use reth_chain_state::{ExecutedBlock, InMemoryState};
+use reth_chain_state::{
+    CanonicalInMemoryState, ChainInfoHeaders, ExecutedBlock, InMemoryState, NewCanonicalChain,
+};
 use reth_chainspec::ChainSpec;
 use reth_db::DatabaseEnv;
 use reth_engine_primitives::MIN_PERSISTENCE_BACKPRESSURE_THRESHOLD;
@@ -49,6 +51,9 @@ pub(crate) struct Settings {
 pub(crate) struct Engine {
     runtime: Runtime,
     factory: ProviderFactory<Node>,
+    /// Tracks the produced blocks that are not persisted yet in the factory's in-memory state,
+    /// which the overlay manager builds overlays from.
+    in_memory_state: CanonicalInMemoryState,
     tree_config: TreeConfig,
     strategy: DefaultStateRootStrategy,
     timeout: Duration,
@@ -155,8 +160,13 @@ impl Engine {
             .provider()?
             .sealed_header(base)?
             .ok_or_else(|| eyre::eyre!("missing header {base}"))?;
+        let in_memory_state = CanonicalInMemoryState::with_head(
+            ChainInfoHeaders { canonical_head: parent.clone(), safe: None, finalized: None },
+            factory.in_memory_state().clone(),
+        );
         Ok(Self {
             persistence: Persistence::new(factory.clone()),
+            in_memory_state,
             runtime,
             factory,
             tree_config,
@@ -221,17 +231,12 @@ impl Engine {
                     db_tip.saturating_sub(CHANGESET_CACHE_RETENTION_BLOCKS),
                 );
                 persisted(&self.factory, previous, db_tip, state_tip)?;
-                manager.remove_blocks(
-                    self.blocks
-                        .iter()
-                        .filter(|block| block.recovered_block().number() <= state_tip)
-                        .map(|block| block.recovered_block().hash()),
-                );
                 let anchor = if state_tip == self.base {
                     self.base_hash
                 } else {
                     self.blocks[(state_tip - self.base) as usize - 1].recovered_block().hash()
                 };
+                self.in_memory_state.remove_canonical_until(anchor, state_tip);
                 manager.precompute_execution_overlay(self.parent.hash(), anchor);
                 self.prune_requested = true;
                 println!(
@@ -420,7 +425,9 @@ impl Engine {
                 }),
             },
         );
-        manager.insert_block(executed.clone());
+        self.in_memory_state
+            .update_chain(NewCanonicalChain::Commit { new: vec![executed.clone()] });
+        manager.precompute_child_execution_overlays(self.parent.hash());
         publish_sparse_trie(&pending, manager, self.parent.hash(), outcome.state_root);
         self.blocks.push(executed);
         Ok(self.parent.hash())
