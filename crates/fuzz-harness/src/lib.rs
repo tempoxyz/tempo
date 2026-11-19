@@ -8,11 +8,8 @@
 
 use core::ffi::c_int;
 
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_fuzz_engine::{Tempo, ffi};
-use tempo_fuzz_types::{
-    HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION, TempoHarnessCapabilities, TempoHarnessInput,
-};
+use tempo_fuzz_types::TempoHarnessInput;
 
 /// Executes a bincode-encoded [`TempoHarnessInput`] and writes the bincode-encoded
 /// [`tempo_fuzz_types::TempoHarnessOutcome`] to `out_ptr`.
@@ -47,8 +44,8 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     }
 }
 
-/// Writes the bincode-encoded [`TempoHarnessCapabilities`] to `out_ptr`, with the same return
-/// values and safety contract as [`tempo_fuzz_execute_with_result_v1`].
+/// Writes the bincode-encoded [`tempo_fuzz_types::TempoHarnessCapabilities`] to `out_ptr`, with
+/// the same return values and safety contract as [`tempo_fuzz_execute_with_result_v1`].
 ///
 /// # Safety
 ///
@@ -59,25 +56,7 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     out_len: usize,
     out_written: *mut usize,
 ) -> c_int {
-    let capabilities = TempoHarnessCapabilities {
-        schema_version: TYPED_HARNESS_SCHEMA_VERSION,
-        implementation: "tempo".to_string(),
-        git_revision: option_env!("TEMPO_GIT_REVISION")
-            .unwrap_or("unknown")
-            .to_string(),
-        supported_hardforks: TempoHardfork::VARIANTS
-            .to_vec()
-            .try_into()
-            .expect("there are hardforks"),
-        supported_inputs: vec![
-            HarnessInputKind::Transaction,
-            HarnessInputKind::State,
-            HarnessInputKind::Blockchain,
-        ]
-        .try_into()
-        .expect("the harness supports inputs"),
-    };
-    unsafe { ffi::write_encoded(out_ptr, out_len, out_written, &capabilities) }
+    unsafe { ffi::capabilities::<Tempo>(out_ptr, out_len, out_written) }
 }
 
 /// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block

@@ -17,7 +17,6 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
-tempo-chainspec.workspace = true
 tempo-fuzz-engine.workspace = true
 tempo-fuzz-types.workspace = true
 
@@ -28,6 +27,7 @@ alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
 bincode.workspace = true
 criterion.workspace = true
+tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
 tempo-primitives.workspace = true
 

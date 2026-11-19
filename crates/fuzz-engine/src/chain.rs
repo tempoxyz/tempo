@@ -8,24 +8,32 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TempoConsen
 use tempo_fuzz_types::{BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass};
 use tempo_primitives::TempoHeader;
 
+use crate::rejection::{Check, Rejection};
+
 /// The dev chain spec with `input`'s chain ID and hardfork schedule, as [`ChainSpecInput`]
 /// describes.
-pub(crate) fn chain_spec(input: &ChainSpecInput) -> Result<TempoChainSpec, ErrorClass> {
+pub(crate) fn chain_spec(input: &ChainSpecInput) -> Result<TempoChainSpec, Rejection> {
     chain_spec_on(tempo_chainspec::spec::DEV.as_ref().clone(), input)
 }
 
 /// `base` with `input`'s chain ID and hardfork schedule, as [`ChainSpecInput`] describes: a
 /// chain built on Tempo, such as a zone, keeps its own genesis and takes the input's schedule.
+/// `InvalidInput` if the schedule goes back in time.
 pub fn chain_spec_on(
     mut spec: TempoChainSpec,
     input: &ChainSpecInput,
-) -> Result<TempoChainSpec, ErrorClass> {
+) -> Result<TempoChainSpec, Rejection> {
     spec.inner.chain = input.chain_id.into();
     let mut previous = 0;
     for &fork in TempoHardfork::VARIANTS {
         let activation = match input.hardforks.get(&fork) {
             // Only a listed activation can go back in time.
-            Some(&activation) if activation < previous => return Err(ErrorClass::InvalidInput),
+            Some(&activation) if activation < previous => {
+                return Err(Rejection::new(
+                    ErrorClass::InvalidInput,
+                    Check::HardforkSchedule,
+                ));
+            }
             Some(&activation) => activation,
             None => previous.max(u64::from(fork.variant_index())),
         };

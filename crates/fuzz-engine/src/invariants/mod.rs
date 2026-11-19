@@ -10,16 +10,14 @@ use alloy_primitives::{Address, Log};
 use invariants_core::{Report, SlotChange, Step};
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-};
+use tempo_contracts::precompiles::IStablecoinDEX;
 use tempo_evm::TempoEvmEnv;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::{
-    engine::EvmConfig,
+    engine::Engine,
     state::{Db, Net},
 };
 
@@ -91,10 +89,12 @@ pub(crate) fn logged_addresses<'a>(
 /// changed, as no other contract's invariants can have broken. With `effects`, a token's step
 /// checks also run on its ledger before the step against its ledger after it. Views are answered
 /// from `view_cache`, the calls the block's earlier steps made that this step left as they were.
+/// Only the protocol contracts `engine`'s chain runs are checked, and views run as it calls them.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn check<C: EvmConfig>(
+pub(crate) fn check<E: Engine>(
+    engine: &E,
     db: &Db,
-    evm_config: &C,
+    evm_config: &E::EvmConfig,
     env: TempoEvmEnv,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,
@@ -138,6 +138,7 @@ pub(crate) fn check<C: EvmConfig>(
         .collect();
 
     let reader = Reader {
+        engine,
         db,
         evm_config,
         env: &env,
@@ -157,7 +158,7 @@ pub(crate) fn check<C: EvmConfig>(
         };
         reader.check::<tip20::Ledger>(&mut step, at, token, tip20::VIEW);
     }
-    if selected(&TIP_FEE_MANAGER_ADDRESS) {
+    if let Some(fee_manager) = E::FEE_AMM.filter(|fee_manager| selected(fee_manager)) {
         let pairs: Vec<(Address, Address)> = tokens
             .iter()
             .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
@@ -171,31 +172,27 @@ pub(crate) fn check<C: EvmConfig>(
         validators.sort_unstable();
         validators.dedup();
         let at = fee_amm::At {
-            fee_manager: TIP_FEE_MANAGER_ADDRESS,
+            fee_manager,
             tokens: &tokens,
             pairs: &pairs,
             validators: &validators,
             holders: &all_holders,
         };
-        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
+        reader.check::<fee_amm::Books>(&mut step, at, fee_manager, fee_amm::VIEW);
     }
-    if selected(&STABLECOIN_DEX_ADDRESS) {
+    if let Some(dex) = E::DEX.filter(|dex| selected(dex)) {
         // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
         let mut views = reader.views(db.view(), false);
-        let next = invariants_core::view(
-            &mut views,
-            STABLECOIN_DEX_ADDRESS,
-            IStablecoinDEX::nextOrderIdCall {},
-        )
-        .unwrap_or(0);
+        let next =
+            invariants_core::view(&mut views, dex, IStablecoinDEX::nextOrderIdCall {}).unwrap_or(0);
         let orders: Vec<u128> = (next.saturating_sub(MAX_ORDERS).max(1)..next).collect();
         let at = dex::At {
-            dex: STABLECOIN_DEX_ADDRESS,
+            dex,
             tokens: &tokens,
             users: &all_holders,
             orders: &orders,
         };
-        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
+        reader.check::<dex::Books>(&mut step, at, dex, dex::VIEW);
     }
     if let Some(effects) = &effects {
         configurable_account::check(&reader, db, effects, &mut step);

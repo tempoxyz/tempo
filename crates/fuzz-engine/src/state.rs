@@ -233,7 +233,7 @@ impl Database for Reader<'_> {
 }
 
 /// `genesis`'s allocation as a cache, which a genesis pre-state starts from.
-pub fn genesis(genesis: &alloy_genesis::Genesis) -> Cache {
+pub fn genesis_cache(genesis: &alloy_genesis::Genesis) -> Cache {
     let mut cache = Cache::default();
     for (address, account) in &genesis.alloc {
         let account = AccountInput {

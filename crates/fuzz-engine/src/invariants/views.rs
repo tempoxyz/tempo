@@ -15,11 +15,16 @@ use invariants_core::Views;
 use reth_evm::Database;
 use tempo_evm::{TempoEvm, TempoEvmEnv};
 
-use crate::state::{Net, PreStateDb, Reader};
+use crate::{
+    engine::Engine,
+    state::{Net, PreStateDb, Reader},
+};
 
-/// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
-/// answered from `view_cache` when the same call was made on the same state before.
-pub(super) struct EvmViews<'a> {
+/// Read-only calls against the state an EVM reads, made as `engine` calls them, noting reads the
+/// seeded pre-state misses, and answered from `view_cache` when the same call was made on the
+/// same state before.
+pub(super) struct EvmViews<'a, E> {
+    engine: &'a E,
     evm: TempoEvm<'a>,
     /// What the call being made has read.
     reads: Rc<RefCell<Vec<Read>>>,
@@ -29,10 +34,11 @@ pub(super) struct EvmViews<'a> {
     before: bool,
 }
 
-impl<'a> EvmViews<'a> {
-    pub(super) fn new<C: crate::engine::EvmConfig>(
+impl<'a, E: Engine> EvmViews<'a, E> {
+    pub(super) fn new(
+        engine: &'a E,
         db: impl Database + 'a,
-        evm_config: &C,
+        evm_config: &E::EvmConfig,
         env: TempoEvmEnv,
         pre_state: &'a PreStateDb,
         view_cache: &'a ViewCache,
@@ -44,6 +50,7 @@ impl<'a> EvmViews<'a> {
             reads: Rc::clone(&reads),
         };
         Self {
+            engine,
             evm: reth_evm::ConfigureEvm::evm_with_env(evm_config, db, env),
             reads,
             pre_state,
@@ -65,9 +72,10 @@ impl<'a> EvmViews<'a> {
         cache.accounts.clear();
         cache.storage.clear();
         self.pre_state.restore_missed(false);
+        let caller = self.engine.view_caller(*target, input);
         let result = self
             .evm
-            .system_call(SystemTx::new(*target, input.clone()).with_caller(caller(input)));
+            .system_call(SystemTx::new(*target, input.clone()).with_caller(caller));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
@@ -98,7 +106,7 @@ impl<'a> EvmViews<'a> {
     }
 }
 
-impl Views for EvmViews<'_> {
+impl<E: Engine> Views for EvmViews<'_, E> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
@@ -276,30 +284,5 @@ impl ViewFailed {
 impl Display for ViewFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
-    }
-}
-
-/// The account a view runs as: the account it reads, for a TIP-20 `balanceOf`, `allowance` or
-/// `nonces`, and `Address::ZERO` otherwise.
-///
-/// Tempo L1 answers these views for any caller. A zone answers them only for the account they read,
-/// since its balances are private, so calling as that account reads the same value on either.
-fn caller(input: &[u8]) -> Address {
-    use alloy_sol_types::SolCall as _;
-    use tempo_contracts::precompiles::ITIP20;
-    let Some(selector) = input.get(..4) else {
-        return Address::ZERO;
-    };
-    match <[u8; 4]>::try_from(selector).expect("four bytes") {
-        ITIP20::balanceOfCall::SELECTOR => {
-            ITIP20::balanceOfCall::abi_decode(input).map_or(Address::ZERO, |call| call.account)
-        }
-        ITIP20::allowanceCall::SELECTOR => {
-            ITIP20::allowanceCall::abi_decode(input).map_or(Address::ZERO, |call| call.owner)
-        }
-        ITIP20::noncesCall::SELECTOR => {
-            ITIP20::noncesCall::abi_decode(input).map_or(Address::ZERO, |call| call.owner)
-        }
-        _ => Address::ZERO,
     }
 }

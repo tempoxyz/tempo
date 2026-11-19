@@ -91,6 +91,7 @@ jobs:
               # The fuzzer and corpus crates are never linked into these images.
               - '!crates/corpus/**'
               - '!crates/fuzz-engine/**'
+              - '!crates/zones/fuzz-harness/**'
               - '!crates/fuzz-harness/**'
               - '!crates/fuzz-types/**'
               - '!crates/invariants/**'

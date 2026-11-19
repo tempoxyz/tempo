@@ -3,7 +3,9 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{SignableTransaction, TxLegacy, proofs::calculate_transaction_root};
+use alloy_consensus::{
+    SignableTransaction, TxLegacy, proofs::calculate_transaction_root, transaction::Recovered,
+};
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall;
@@ -11,6 +13,7 @@ use bincode::Options as _;
 use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
 use reth_consensus::HeaderValidator as _;
+use reth_evm::BlockExecutionError;
 use reth_execution_types::{AccountUpdate, StateUpdate};
 use reth_trie_common::{
     TrieAccount,
@@ -22,18 +25,18 @@ use tempo_chainspec::{
 };
 use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
+use tempo_evm::{TempoEvm, TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass,
-    InvariantScope, NonEmpty, PreState, StateChanges, StateInput, StorageChangeOutput, TempoBlock,
-    TempoBlockchainInput, TempoExecutionOutcome, TempoHarnessInput, TempoHarnessOutcome,
-    TempoTransactionInput, TxOutcome,
+    HarnessInputKind, InvariantScope, NonEmpty, PreState, StateChanges, StateInput,
+    StorageChangeOutput, TempoBlock, TempoBlockchainInput, TempoExecutionOutcome,
+    TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput, TxIndex, TxOutcome,
 };
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 
 use crate::{
-    chain, execute,
+    Chain, Engine, Rejection, Tempo, chain, execute,
     ffi::bincode_options,
     state::{self, Contracts, Net},
 };
@@ -125,12 +128,25 @@ fn run(pre_state: PreState, blocks: Vec<TempoBlock>) -> TempoExecutionOutcome {
 }
 
 fn run_input(input: TempoBlockchainInput) -> TempoExecutionOutcome {
-    let TempoHarnessOutcome::Blockchain(outcome) =
-        execute::run(&crate::Tempo, TempoHarnessInput::Blockchain(input))
+    run_on(&Tempo, input).0
+}
+
+/// `input`'s outcome on `engine`, and why it stopped short.
+fn run_on(
+    engine: &impl Engine,
+    input: TempoBlockchainInput,
+) -> (TempoExecutionOutcome, Option<Rejection>) {
+    let (TempoHarnessOutcome::Blockchain(outcome), rejection) =
+        execute::run(engine, TempoHarnessInput::Blockchain(input))
     else {
         panic!("a blockchain input has a blockchain outcome");
     };
-    outcome
+    assert_eq!(
+        rejection.as_ref().map(Rejection::class),
+        Some(outcome.error).filter(|error| *error != ErrorClass::None),
+        "a rejection explains every error"
+    );
+    (outcome, rejection)
 }
 
 /// The storage changes `changes` records at `address`.
@@ -163,8 +179,7 @@ fn exact(state: StateInput) -> PreState {
 
 /// The whole dev genesis state, as an outcome reports it.
 fn genesis_state() -> StateInput {
-    let db = state::seed(&genesis(), crate::Engine::genesis(&crate::Tempo))
-        .expect("the dev genesis seeds");
+    let db = state::seed(&genesis(), Tempo.genesis()).expect("the dev genesis seeds");
     let cache = db.cache.borrow();
     let accounts = state::after(&cache, &Net::default());
     state::encode(&accounts, &Contracts(&[&cache.contracts]))
@@ -175,21 +190,21 @@ fn genesis_state() -> StateInput {
 /// before the blocks.
 fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
-    let db = state::seed(&genesis(), crate::Engine::genesis(&crate::Tempo)).unwrap();
+    let db = state::seed(&genesis(), Tempo.genesis()).unwrap();
     let blocks: Vec<_> = blocks
         .iter()
         .map(|block| execute::recover_block(spec.as_ref(), block).unwrap())
         .collect();
     let mut outcome = TempoExecutionOutcome::default();
-    let _ = execute::execute_blocks(
-        &crate::Tempo,
+    let (_, _, rejection) = execute::execute_blocks(
+        &Tempo,
         &TempoEvmConfig::new(Arc::clone(&spec)),
         &TempoConsensus::new(spec),
         &db,
         &blocks,
         &mut outcome,
     );
-    assert_eq!(outcome.error, ErrorClass::None);
+    assert_eq!((outcome.error, rejection), (ErrorClass::None, None));
 
     let before = genesis_state();
     let cache = db.cache.borrow();
@@ -388,7 +403,7 @@ fn an_exact_pre_state_answers_listed_block_hashes_only() {
             state: StateInput::default(),
             block_hashes: BTreeMap::from([(5, hash)]),
         },
-        crate::Engine::genesis(&crate::Tempo),
+        Tempo.genesis(),
     )
     .unwrap();
     assert_eq!(db.reader().get_block_hash(&U256::from(5)).unwrap(), hash);
@@ -461,7 +476,7 @@ fn a_created_account_reads_its_unwritten_slots_as_zero_on_an_exact_pre_state() {
     // nothing wrote: the account did not exist before, so the slot is zero rather than missing.
     let db = state::seed(
         &exact(one_account(RECIPIENT, AccountInput::default())),
-        crate::Engine::genesis(&crate::Tempo),
+        Tempo.genesis(),
     )
     .unwrap();
     let created = StateUpdate {
@@ -725,7 +740,7 @@ fn context_headers_pass_the_nodes_header_validation_at_every_hardfork() {
 fn transaction_inputs_decode_and_recover_without_executing() {
     let outcome = |tx: Bytes, sender: Option<Address>| {
         let input = TempoHarnessInput::Transaction(TempoTransactionInput { tx, sender });
-        let TempoHarnessOutcome::Transaction(outcome) = execute::run(&crate::Tempo, input) else {
+        let (TempoHarnessOutcome::Transaction(outcome), _) = execute::run(&Tempo, input) else {
             panic!("a transaction input has a transaction outcome");
         };
         outcome
@@ -757,4 +772,95 @@ fn non_empty_encodes_as_a_sequence_and_rejects_an_empty_one() {
         encode(vec![1, 2])
     );
     assert!(decode(&encode(Vec::new())).is_err());
+}
+
+/// Tempo L1, with every block whose header the harness builds opened and closed by a call from
+/// [`SENDER`], at nonces 0 and 2 around the input's.
+struct Opening;
+
+impl Opening {
+    fn call(nonce: u64) -> Recovered<TempoTxEnvelope> {
+        let tx = call(nonce, RECIPIENT, Bytes::new(), 1_000_000);
+        let tx = TempoTxEnvelope::decode_2718_exact(&tx).unwrap();
+        Recovered::new_unchecked(tx, SENDER)
+    }
+}
+
+impl Engine for Opening {
+    type ChainSpec = <Tempo as Engine>::ChainSpec;
+    type EvmConfig = <Tempo as Engine>::EvmConfig;
+    type Consensus = <Tempo as Engine>::Consensus;
+
+    const IMPLEMENTATION: &'static str = "opening";
+    const HARDFORKS: &'static [TempoHardfork] = Tempo::HARDFORKS;
+    const INPUTS: &'static [HarnessInputKind] = Tempo::INPUTS;
+    const FEE_AMM: Option<Address> = Tempo::FEE_AMM;
+    const DEX: Option<Address> = Tempo::DEX;
+
+    fn chain(&self, input: &ChainSpecInput) -> Result<Chain<Self>, Rejection> {
+        let Chain {
+            spec,
+            evm_config,
+            consensus,
+        } = Tempo.chain(input)?;
+        Ok(Chain {
+            spec,
+            evm_config,
+            consensus,
+        })
+    }
+
+    fn genesis(&self) -> &Cache {
+        Tempo.genesis()
+    }
+
+    fn open_block(
+        &self,
+        _evm: &mut TempoEvm<'_>,
+        _header: &TempoHeader,
+    ) -> Result<Vec<Recovered<TempoTxEnvelope>>, BlockExecutionError> {
+        Ok(vec![Self::call(0)])
+    }
+
+    fn close_block(
+        &self,
+        _evm: &mut TempoEvm<'_>,
+        _header: &TempoHeader,
+    ) -> Result<Vec<Recovered<TempoTxEnvelope>>, BlockExecutionError> {
+        Ok(vec![Self::call(2)])
+    }
+}
+
+#[test]
+fn only_a_block_the_harness_builds_gets_the_chains_transactions() {
+    let built = t4_block(vec![transfer(1, 7)]);
+    let (outcome, rejection) = run_on(&Opening, input(genesis(), vec![built]));
+    assert_eq!(rejection, None);
+    assert!(
+        outcome.invariant_failures.is_empty(),
+        "{:?}",
+        outcome.invariant_failures
+    );
+    let order: Vec<_> = outcome.receipts.iter().map(|receipt| receipt.tx).collect();
+    assert_eq!(
+        order,
+        [
+            TxIndex::Synthesized(0),
+            TxIndex::Input(0),
+            TxIndex::Synthesized(1)
+        ]
+    );
+    let steps = &outcome.state_diff.blocks[0];
+    assert_eq!((steps.synthesized.len(), steps.txs.len()), (2, 1));
+    // The input's transfer is the one that moves pathUSD.
+    assert_eq!(storage_at(&steps.txs[0], PATH_USD_ADDRESS).count(), 2);
+
+    // A given header's block runs exactly the input's transactions, as on Tempo L1.
+    let tx = transfer(0, 7);
+    let block = block(
+        BlockHeaderInput::Rlp(rlp_header(&tx, |_| {}).into()),
+        vec![tx],
+    );
+    let (outcome, _) = run_on(&Opening, input(genesis(), vec![block.clone()]));
+    assert_eq!(outcome, run(genesis(), vec![block]));
 }
