@@ -33,10 +33,16 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 evm2.workspace = true
+reth-chainspec.workspace = true
+reth-consensus.workspace = true
 reth-evm.workspace = true
+reth-primitives-traits.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, default-features = true }
+thiserror.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true
+bincode.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+test-case.workspace = true

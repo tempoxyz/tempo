@@ -2,33 +2,43 @@ use std::collections::BTreeMap;
 
 use alloy_consensus::{SignableTransaction as _, TxLegacy};
 use alloy_eips::Encodable2718 as _;
-use alloy_genesis::Genesis;
-use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address, bytes};
 use alloy_sol_types::SolCall as _;
+use bincode::Options as _;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::{
+    precompiles::{ITIP20, PATH_USD_ADDRESS},
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
+};
+use tempo_fuzz_engine::{Engine, ffi::bincode_options};
 use tempo_fuzz_types::{
-    AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass, PreState,
-    StateInput, TempoBlock, TempoBlockchainInput, TempoExecutionOutcome, TempoHarnessInput,
-    TempoHarnessOutcome, TxOutcome,
+    AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass, FUZZ_ACCEPT,
+    PreState, StateInput, TYPED_HARNESS_SCHEMA_VERSION, TempoBlock, TempoBlockchainInput,
+    TempoExecutionOutcome, TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome,
+    TxIndex, TxOutcome, TxReceiptOutput,
 };
 use tempo_precompiles::{
-    address_registry::AddressRegistry,
     storage::{Handler as _, StorageCtx, StorageKey as _, hashmap::HashMapStorageProvider},
     tip20::slots::{BALANCES, TOTAL_SUPPLY},
-    zone_factory::{ZonePortalStorage, portal_address},
+    zone_factory::{ZonePortalStorage, portal::PortalTokenConfig, portal_address},
 };
-use tempo_primitives::{MasterId, TempoAddressExt as _, TempoTxEnvelope, UserTag};
-use zone_primitives::constants::zone_chain_id;
+use tempo_primitives::TempoTxEnvelope;
+use test_case::test_case;
+use zone_precompiles::tempo_state::TEMPO_BLOCK_NUMBER_SLOT;
+use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
-use crate::{L1StateInput, ZoneHarnessInput, run};
+use crate::{L1StateInput, Zone, ZoneHarnessInput, engine::GENESIS, run};
 
 const ZONE_ID: u32 = 1;
 const SENDER: Address = address!("00000000000000000000000000000000000000a1");
 const RECIPIENT: Address = address!("00000000000000000000000000000000000000b2");
-const MASTER: Address = address!("00000000000000000000000000000000000000c3");
-const MASTER_ID: [u8; 4] = [0xaa, 1, 2, 3];
 const FUNDS: u64 = 1_000_000;
+
+/// The receipt of the `advanceTempo` that opens a block whose header the harness built.
+const ADVANCED: (TxIndex, TxOutcome) = (TxIndex::Synthesized(0), TxOutcome::Success);
+/// The compressed secp256k1 generator, a key a withdrawal's sender can be revealed to.
+const REVEAL_TO: Bytes =
+    bytes!("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
 
 fn chain_id() -> u64 {
     zone_chain_id(1_337, ZONE_ID).unwrap()
@@ -46,42 +56,42 @@ fn chain(fork: TempoHardfork) -> ChainSpecInput {
     }
 }
 
-/// The zone genesis with `SENDER` holding pathUSD.
-fn pre_state() -> PreState {
-    let genesis: Genesis =
-        serde_json::from_str(include_str!("../../node/assets/zone-dev-genesis.json")).unwrap();
-    let path_usd = &genesis.alloc[&PATH_USD_ADDRESS];
-    let mut storage: BTreeMap<U256, U256> = path_usd
-        .storage
-        .iter()
-        .flatten()
-        .map(|(slot, value)| ((*slot).into(), (*value).into()))
-        .collect();
-    storage.insert(SENDER.mapping_slot(BALANCES), U256::from(FUNDS));
-    // Mint, rather than conjure, the sender's funds: TEMPO-TIP20-BALANCE-SUM holds of the pre-state.
-    let supply = storage.entry(TOTAL_SUPPLY).or_default();
-    *supply += U256::from(FUNDS);
-    PreState::Genesis(StateInput {
-        accounts: BTreeMap::from([(
-            PATH_USD_ADDRESS,
-            AccountInput {
-                balance: path_usd.balance,
-                nonce: path_usd.nonce.unwrap_or_default(),
-                code: path_usd.code.clone().unwrap_or_default(),
-                storage,
-            },
-        )]),
-    })
+fn genesis_account(address: Address) -> AccountInput {
+    let account = &GENESIS.alloc[&address];
+    AccountInput {
+        balance: account.balance,
+        nonce: account.nonce.unwrap_or_default(),
+        code: account.code.clone().unwrap_or_default(),
+        storage: account
+            .storage
+            .iter()
+            .flatten()
+            .map(|(slot, value)| ((*slot).into(), (*value).into()))
+            .collect(),
+    }
 }
 
-/// Tempo L1 with the zone's portal opted in to transfers or not, and `MASTER_ID` registered.
+fn pre_state() -> StateInput {
+    let mut path_usd = genesis_account(PATH_USD_ADDRESS);
+    path_usd
+        .storage
+        .insert(SENDER.mapping_slot(BALANCES), U256::from(FUNDS));
+    // Mint, rather than conjure, the sender's funds: TEMPO-TIP20-BALANCE-SUM holds of the pre-state.
+    *path_usd.storage.entry(TOTAL_SUPPLY).or_default() += U256::from(FUNDS);
+    StateInput {
+        accounts: BTreeMap::from([(PATH_USD_ADDRESS, path_usd)]),
+    }
+}
+
 fn l1(transfers_enabled: bool) -> L1StateInput {
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
     StorageCtx::enter(&mut storage, || {
-        ZonePortalStorage::new(portal_address(ZONE_ID))
-            .transfers_enabled
-            .write(transfers_enabled)?;
-        AddressRegistry::new().register_virtual_master_unchecked(MasterId::from(MASTER_ID), MASTER)
+        let mut portal = ZonePortalStorage::new(portal_address(ZONE_ID));
+        portal.transfers_enabled.write(transfers_enabled)?;
+        portal.token_configs[PATH_USD_ADDRESS].write(PortalTokenConfig {
+            enabled: true,
+            deposits_active: true,
+        })
     })
     .unwrap();
     let mut l1 = L1StateInput::default();
@@ -91,19 +101,14 @@ fn l1(transfers_enabled: bool) -> L1StateInput {
     l1
 }
 
-fn transfer(nonce: u64, to: Address, amount: u64) -> Bytes {
-    let input = ITIP20::transferCall {
-        to,
-        amount: U256::from(amount),
-    }
-    .abi_encode();
+fn call(nonce: u64, to: Address, input: Vec<u8>) -> Bytes {
     TempoTxEnvelope::Legacy(
         TxLegacy {
             chain_id: Some(chain_id()),
             nonce,
             gas_price: 0,
-            gas_limit: 1_000_000,
-            to: TxKind::Call(PATH_USD_ADDRESS),
+            gas_limit: 10_000_000,
+            to: TxKind::Call(to),
             value: U256::ZERO,
             input: input.into(),
         }
@@ -113,77 +118,81 @@ fn transfer(nonce: u64, to: Address, amount: u64) -> Bytes {
     .into()
 }
 
-/// `blocks` of transfers from `SENDER` on `fork`, reading `l1`.
-fn execute(
-    fork: TempoHardfork,
-    l1: L1StateInput,
-    blocks: Vec<Vec<Bytes>>,
-) -> TempoExecutionOutcome {
+fn transfer(nonce: u64, to: Address, amount: u64) -> Bytes {
+    let amount = U256::from(amount);
+    call(
+        nonce,
+        PATH_USD_ADDRESS,
+        ITIP20::transferCall { to, amount }.abi_encode(),
+    )
+}
+
+fn context(fork: TempoHardfork, index: u64) -> BlockContextInput {
+    BlockContextInput {
+        block_number: index + 1,
+        timestamp: index + 1,
+        hardfork: fork,
+        ..Default::default()
+    }
+}
+
+fn blockchain(fork: TempoHardfork, blocks: Vec<Vec<Bytes>>) -> TempoBlockchainInput {
     let blocks = blocks
         .into_iter()
         .enumerate()
         .map(|(index, txs)| TempoBlock {
-            header: BlockHeaderInput::Context(BlockContextInput {
-                block_number: index as u64 + 1,
-                timestamp: index as u64 + 1,
-                hardfork: fork,
-                ..Default::default()
-            }),
+            header: BlockHeaderInput::Context(context(fork, index as u64)),
             senders: vec![SENDER; txs.len()],
             txs,
         })
         .collect::<Vec<_>>()
         .try_into()
         .expect("at least one block");
-    let outcome = run(ZoneHarnessInput {
-        l1,
-        input: TempoHarnessInput::Blockchain(TempoBlockchainInput {
-            chain_spec: chain(fork),
-            pre_state: pre_state(),
-            blocks,
-        }),
-    });
-    let TempoHarnessOutcome::Blockchain(outcome) = outcome else {
+    TempoBlockchainInput {
+        chain_spec: chain(fork),
+        pre_state: PreState::Genesis(pre_state()),
+        blocks,
+    }
+}
+
+fn execute(
+    fork: TempoHardfork,
+    l1: L1StateInput,
+    blocks: Vec<Vec<Bytes>>,
+) -> TempoExecutionOutcome {
+    let input = TempoHarnessInput::Blockchain(blockchain(fork, blocks));
+    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(ZoneHarnessInput { l1, input })
+    else {
         panic!("a blockchain input has a blockchain outcome");
     };
-    outcome
-}
-
-/// The outcomes of the input's transactions: each block's receipts after its `advanceTempo`.
-fn user_outcomes(outcome: &TempoExecutionOutcome) -> Vec<TxOutcome> {
-    outcome
-        .receipts
-        .iter()
-        .filter(|receipt| receipt.tx_index > 0)
-        .map(|receipt| receipt.outcome.clone())
-        .collect()
-}
-
-#[track_caller]
-fn assert_clean(outcome: &TempoExecutionOutcome) {
-    let why = tempo_fuzz_engine::ffi::last_rejection_string();
-    assert_eq!(outcome.error, ErrorClass::None, "{why}");
+    assert_eq!(rejection, None);
     assert!(
         outcome.invariant_failures.is_empty(),
         "{:#?}",
         outcome.invariant_failures
     );
+    outcome
+}
+
+fn receipts(outcome: &TempoExecutionOutcome) -> Vec<(TxIndex, TxOutcome)> {
+    let receipt = |receipt: &TxReceiptOutput| (receipt.tx, receipt.outcome.clone());
+    outcome.receipts.iter().map(receipt).collect()
 }
 
 #[test]
 fn empty_blocks_execute_on_every_zone_hardfork() {
-    for &fork in crate::HARDFORKS {
+    for &fork in Zone::HARDFORKS {
         let outcome = execute(fork, l1(true), vec![vec![], vec![]]);
-        assert_clean(&outcome);
         // Each block opens with advanceTempo, whose receipt the outcome records.
-        assert_eq!(outcome.receipts.len(), 2, "{fork:?}");
-        assert!(
-            outcome
-                .receipts
-                .iter()
-                .all(|r| r.outcome == TxOutcome::Success),
-            "{fork:?}: {:?}",
-            outcome.receipts
+        let blocks: Vec<_> = outcome
+            .receipts
+            .iter()
+            .map(|receipt| receipt.block_index)
+            .collect();
+        assert_eq!(
+            (receipts(&outcome), blocks),
+            (vec![ADVANCED; 2], vec![0, 1]),
+            "{fork:?}"
         );
     }
 }
@@ -195,70 +204,144 @@ fn t15_transfers_follow_the_portal_opt_in() {
         l1(true),
         vec![vec![transfer(0, RECIPIENT, 100)]],
     );
-    assert_clean(&outcome);
-    assert_eq!(user_outcomes(&outcome), [TxOutcome::Success]);
+    assert_eq!(
+        receipts(&outcome),
+        [ADVANCED, (TxIndex::Input(0), TxOutcome::Success)]
+    );
     // The Tempo protocol invariants judge zone steps, not only Tempo L1's.
     for id in ["TEMPO-TIP20-TRANSFER-EVENTS", "TEMPO-TIP20-BALANCE-SUM"] {
         let counts = &outcome.invariant_counts[id];
         assert!(counts.armed > 0, "{id} never armed: {counts:?}");
     }
+    // Zones run no fee AMM or DEX, so their invariants judge nothing.
+    let counts = &outcome.invariant_counts;
+    let mut judged = counts.iter().filter(|(id, counts)| {
+        (id.contains("FEE-AMM") || id.contains("DEX")) && counts.evaluated > 0
+    });
+    assert!(judged.next().is_none(), "{counts:?}");
 
     for (fork, enabled) in [(TempoHardfork::T14, true), (TempoHardfork::T15, false)] {
         let outcome = execute(fork, l1(enabled), vec![vec![transfer(0, RECIPIENT, 100)]]);
-        assert_clean(&outcome);
-        assert_eq!(
-            user_outcomes(&outcome),
-            [TxOutcome::Revert],
-            "{fork:?} enabled={enabled}"
-        );
+        let reverted = [ADVANCED, (TxIndex::Input(0), TxOutcome::Revert)];
+        assert_eq!(receipts(&outcome), reverted, "{fork:?} enabled={enabled}");
     }
 }
 
 #[test]
-fn t15_virtual_address_transfers_resolve_through_l1_registry() {
-    let registered = Address::new_virtual(MasterId::from(MASTER_ID), UserTag::from([7; 6]));
-    let unregistered = Address::new_virtual(MasterId::from([0xbb, 0, 0, 0]), UserTag::from([7; 6]));
+fn a_withdrawal_is_finalized_with_its_sender_revealed_at_the_end_of_its_block() {
+    let approve = ITIP20::approveCall {
+        spender: ZONE_OUTBOX_ADDRESS,
+        amount: U256::MAX,
+    };
+    let withdraw = IZoneOutbox::requestWithdrawalCall {
+        token: PATH_USD_ADDRESS,
+        to: SENDER,
+        amount: 100,
+        memo: B256::ZERO,
+        gasLimit: 0,
+        zoneFallbackRecipient: SENDER,
+        data: Bytes::new(),
+        revealTo: REVEAL_TO,
+    };
     let outcome = execute(
         TempoHardfork::T15,
         l1(true),
         vec![vec![
-            transfer(0, registered, 100),
-            transfer(1, unregistered, 100),
+            call(0, PATH_USD_ADDRESS, approve.abi_encode()),
+            call(1, ZONE_OUTBOX_ADDRESS, withdraw.abi_encode()),
         ]],
     );
-    assert_clean(&outcome);
+
     assert_eq!(
-        user_outcomes(&outcome),
-        [TxOutcome::Success, TxOutcome::Revert]
+        receipts(&outcome),
+        [
+            ADVANCED,
+            (TxIndex::Input(0), TxOutcome::Success),
+            (TxIndex::Input(1), TxOutcome::Success),
+            (TxIndex::Synthesized(1), TxOutcome::Success),
+        ]
     );
-    let master_balance = outcome.final_state.accounts[&PATH_USD_ADDRESS]
+    let steps = &outcome.state_diff.blocks[0];
+    assert_eq!((steps.synthesized.len(), steps.txs.len()), (2, 2));
+}
+
+/// An empty block on `fork`, its input edited by `edit`.
+fn empty_block(
+    fork: TempoHardfork,
+    edit: impl FnOnce(&mut TempoBlockchainInput),
+) -> TempoHarnessInput {
+    let mut input = blockchain(fork, vec![vec![]]);
+    edit(&mut input);
+    TempoHarnessInput::Blockchain(input)
+}
+
+/// The zone genesis with TempoState at the last Tempo block number.
+fn at_last_tempo_block() -> PreState {
+    let mut tempo_state = genesis_account(TEMPO_STATE_ADDRESS);
+    tempo_state
         .storage
-        .get(&MASTER.mapping_slot(BALANCES))
-        .copied();
-    assert_eq!(master_balance, Some(U256::from(100)));
+        .insert(TEMPO_BLOCK_NUMBER_SLOT, U256::from(u64::MAX));
+    let mut state = pre_state();
+    state.accounts.insert(TEMPO_STATE_ADDRESS, tempo_state);
+    PreState::Genesis(state)
+}
+
+#[test_case(empty_block(TempoHardfork::T15, |input| input.blocks.as_mut_slice()[0].header = BlockHeaderInput::Context(BlockContextInput { extra_data: Bytes::from_static(b"extra"), ..context(TempoHardfork::T15, 0) })) => (ErrorClass::Rejected, "Rejected/Other/ExtraData: zone header extra data must be empty".into()))]
+#[test_case(empty_block(TempoHardfork::T15, |input| input.pre_state = at_last_tempo_block()) => (ErrorClass::Rejected, "Rejected/Other/AnyError: the next Tempo block number overflows".into()))]
+#[test_case(empty_block(TempoHardfork::T12, |_| {}) => (ErrorClass::InvalidInput, "InvalidInput/UnsupportedHardfork: a block executes at unsupported hardfork T12".into()))]
+fn inputs_the_zone_node_would_not_execute_are_stopped(
+    input: TempoHarnessInput,
+) -> (ErrorClass, String) {
+    let (outcome, rejection) = run(ZoneHarnessInput {
+        l1: l1(true),
+        input,
+    });
+    let error = match outcome {
+        TempoHarnessOutcome::Transaction(outcome) => outcome.error,
+        TempoHarnessOutcome::State(outcome) | TempoHarnessOutcome::Blockchain(outcome) => {
+            assert!(outcome.receipts.is_empty(), "{:?}", outcome.receipts);
+            outcome.error
+        }
+    };
+    (error, rejection.unwrap().reason().to_string())
 }
 
 #[test]
-fn non_zone_chain_ids_are_invalid() {
-    let mut input = ZoneHarnessInput {
-        l1: L1StateInput::default(),
-        input: TempoHarnessInput::Blockchain(TempoBlockchainInput {
-            chain_spec: chain(TempoHardfork::T15),
-            pre_state: pre_state(),
-            blocks: vec![TempoBlock {
-                header: BlockHeaderInput::Context(BlockContextInput::default()),
-                txs: vec![],
-                senders: vec![],
-            }]
-            .try_into()
-            .unwrap(),
-        }),
+fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
+    let input = ZoneHarnessInput {
+        l1: l1(true),
+        input: TempoHarnessInput::Blockchain(blockchain(
+            TempoHardfork::T15,
+            vec![vec![transfer(0, RECIPIENT, 100)]],
+        )),
     };
-    if let TempoHarnessInput::Blockchain(blockchain) = &mut input.input {
-        blockchain.chain_spec.chain_id = 1;
-    }
-    let TempoHarnessOutcome::Blockchain(outcome) = run(input) else {
-        panic!("a blockchain input has a blockchain outcome");
+    let bytes = bincode_options().serialize(&input).unwrap();
+    let mut out = vec![0; 1 << 20];
+    let mut written = 0;
+    let status = unsafe {
+        crate::tempo_fuzz_execute_with_result_v1(
+            out.as_mut_ptr(),
+            out.len(),
+            &mut written,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
     };
-    assert_eq!(outcome.error, ErrorClass::InvalidInput);
+    assert_eq!(status, FUZZ_ACCEPT);
+    let outcome: TempoHarnessOutcome = bincode_options().deserialize(&out[..written]).unwrap();
+    assert_eq!((outcome, None), run(input));
+
+    let status =
+        unsafe { crate::tempo_fuzz_capabilities_v1(out.as_mut_ptr(), out.len(), &mut written) };
+    assert_eq!(status, FUZZ_ACCEPT);
+    let capabilities: TempoHarnessCapabilities =
+        bincode_options().deserialize(&out[..written]).unwrap();
+    assert_eq!(capabilities.schema_version, TYPED_HARNESS_SCHEMA_VERSION);
+    assert_eq!(capabilities.implementation, "tempo-zone");
+    assert_eq!(capabilities.supported_hardforks.as_slice(), Zone::HARDFORKS);
+    assert_eq!(
+        Zone::HARDFORKS.first(),
+        Some(&TempoHardfork::T13),
+        "zones launched on T13"
+    );
 }

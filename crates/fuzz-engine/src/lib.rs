@@ -10,16 +10,18 @@
 //! same inputs, outcomes and invariants. Each harness exports the shared C ABI with [`ffi`].
 
 mod chain;
-pub mod engine;
+mod engine;
 mod execute;
 pub mod ffi;
 mod invariants;
+mod rejection;
 mod state;
 
 pub use chain::chain_spec_on;
 pub use engine::{BlockConsensus, Chain, Engine, EvmConfig, Tempo};
-pub use execute::{execute, run};
-pub use state::genesis as genesis_state;
+pub use execute::run;
+pub use rejection::Rejection;
+pub use state::genesis_cache;
 
 #[cfg(test)]
 mod tests;

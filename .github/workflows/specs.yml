@@ -10,6 +10,7 @@ on:
       - "**/Cargo.toml"
       - "!crates/corpus/Cargo.toml"
       - "!crates/fuzz-engine/Cargo.toml"
+      - "!crates/zones/fuzz-harness/Cargo.toml"
       - "!crates/fuzz-harness/Cargo.toml"
       - "!crates/fuzz-types/Cargo.toml"
       - "!crates/invariants/Cargo.toml"
@@ -71,6 +72,7 @@ jobs:
               - '**/Cargo.toml'
               - '!crates/corpus/Cargo.toml'
               - '!crates/fuzz-engine/Cargo.toml'
+              - '!crates/zones/fuzz-harness/Cargo.toml'
               - '!crates/fuzz-harness/Cargo.toml'
               - '!crates/fuzz-types/Cargo.toml'
               - '!crates/invariants/Cargo.toml'
@@ -92,6 +94,7 @@ jobs:
               - '**/Cargo.toml'
               - '!crates/corpus/Cargo.toml'
               - '!crates/fuzz-engine/Cargo.toml'
+              - '!crates/zones/fuzz-harness/Cargo.toml'
               - '!crates/fuzz-harness/Cargo.toml'
               - '!crates/fuzz-types/Cargo.toml'
               - '!crates/invariants/Cargo.toml'

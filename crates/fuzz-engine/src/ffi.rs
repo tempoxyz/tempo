@@ -3,16 +3,24 @@
 //! `tempo_fuzz_last_rejection_v1` and implements each with these.
 
 use core::ffi::c_int;
+use std::cell::RefCell;
 
 use bincode::Options as _;
 use serde::{Serialize, de::DeserializeOwned};
-use tempo_fuzz_types::{ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT};
+use tempo_fuzz_types::{
+    ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT, TYPED_HARNESS_SCHEMA_VERSION, TempoHarnessCapabilities,
+};
 
-use crate::execute as exec;
+use crate::{Engine, Rejection, rejection::Check};
+
+thread_local! {
+    /// Why the last input this thread executed stopped short, or empty.
+    static LAST_REJECTION: RefCell<String> = const { RefCell::new(String::new()) };
+}
 
 /// Decodes a bincode-encoded input from `input`, runs it with `run` and writes the
-/// bincode-encoded outcome, as `tempo_fuzz_execute_with_result_v1` does. A null input is
-/// [`reject_null`]'s.
+/// bincode-encoded outcome, as `tempo_fuzz_execute_with_result_v1` does, recording why it stopped
+/// short for [`last_rejection`]. A null input is [`reject_null`]'s.
 ///
 /// # Safety
 ///
@@ -22,14 +30,22 @@ pub unsafe fn execute<I: DeserializeOwned, O: Serialize>(
     out_len: usize,
     out_written: *mut usize,
     input: &[u8],
-    run: impl FnOnce(I) -> O,
+    run: impl FnOnce(I) -> (O, Option<Rejection>),
 ) -> c_int {
     let Ok(input) = bincode_options().deserialize::<I>(input) else {
-        exec::reject(ErrorClass::InvalidInput, exec::Check::HarnessInput);
+        record(Some(&Rejection::new(
+            ErrorClass::InvalidInput,
+            Check::HarnessInput,
+        )));
         return FUZZ_REJECT;
     };
-    let Ok(outcome) = bincode_options().serialize(&run(input)) else {
-        exec::reject(ErrorClass::Internal, exec::Check::OutcomeEncoding);
+    let (outcome, rejection) = run(input);
+    record(rejection.as_ref());
+    let Ok(outcome) = bincode_options().serialize(&outcome) else {
+        record(Some(&Rejection::new(
+            ErrorClass::Internal,
+            Check::OutcomeEncoding,
+        )));
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
@@ -37,22 +53,37 @@ pub unsafe fn execute<I: DeserializeOwned, O: Serialize>(
 
 /// Records that a harness got a null input, and returns `FUZZ_REJECT`.
 pub fn reject_null() -> c_int {
-    exec::reject(ErrorClass::InvalidInput, exec::Check::Null);
+    record(Some(&Rejection::new(ErrorClass::InvalidInput, Check::Null)));
     FUZZ_REJECT
 }
 
-/// Writes `value` bincode-encoded, as `tempo_fuzz_capabilities_v1` does.
+/// Writes `E`'s bincode-encoded [`TempoHarnessCapabilities`], as `tempo_fuzz_capabilities_v1`
+/// does.
 ///
 /// # Safety
 ///
 /// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
-pub unsafe fn write_encoded(
+pub unsafe fn capabilities<E: Engine>(
     out_ptr: *mut u8,
     out_len: usize,
     out_written: *mut usize,
-    value: &impl Serialize,
 ) -> c_int {
-    let Ok(bytes) = bincode_options().serialize(value) else {
+    let capabilities = TempoHarnessCapabilities {
+        schema_version: TYPED_HARNESS_SCHEMA_VERSION,
+        implementation: E::IMPLEMENTATION.to_string(),
+        git_revision: option_env!("TEMPO_GIT_REVISION")
+            .unwrap_or("unknown")
+            .to_string(),
+        supported_hardforks: E::HARDFORKS
+            .to_vec()
+            .try_into()
+            .expect("an engine supports hardforks"),
+        supported_inputs: E::INPUTS
+            .to_vec()
+            .try_into()
+            .expect("an engine supports inputs"),
+    };
+    let Ok(bytes) = bincode_options().serialize(&capabilities) else {
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &bytes) }
@@ -65,7 +96,7 @@ pub unsafe fn write_encoded(
 ///
 /// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
 pub unsafe fn last_rejection(out_ptr: *mut u8, out_len: usize, out_written: *mut usize) -> c_int {
-    exec::with_rejection(|why| {
+    LAST_REJECTION.with_borrow(|why| {
         if why.is_empty() && !out_written.is_null() {
             unsafe { *out_written = 0 };
             return FUZZ_ACCEPT;
@@ -74,16 +105,19 @@ pub unsafe fn last_rejection(out_ptr: *mut u8, out_len: usize, out_written: *mut
     })
 }
 
-/// Why the last input this thread executed stopped short, or an empty string.
-pub fn last_rejection_string() -> String {
-    exec::with_rejection(|why| why.to_string())
-}
-
 /// `bincode::serialize`'s encoding, rejecting trailing bytes.
 pub fn bincode_options() -> impl bincode::Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
+}
+
+/// Records `rejection`'s reason for [`last_rejection`], or that the input applied in full.
+fn record(rejection: Option<&Rejection>) {
+    LAST_REJECTION.with_borrow_mut(|why| {
+        why.clear();
+        why.push_str(rejection.map_or("", Rejection::reason));
+    });
 }
 
 /// Writes `bytes` to `dst` if it fits, and sets `written` to their length either way.

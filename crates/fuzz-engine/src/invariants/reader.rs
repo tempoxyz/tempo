@@ -12,22 +12,30 @@ use super::{
     StepEffects,
     views::{EvmViews, PreView, ViewCache, ViewFailed},
 };
-use crate::{engine::EvmConfig, state::Db};
+use crate::{engine::Engine, state::Db};
 
 /// Reads models from the state after a step and, with its `effects`, from the state before it.
-pub(super) struct Reader<'a, C> {
+pub(super) struct Reader<'a, E: Engine> {
+    pub(super) engine: &'a E,
     pub(super) db: &'a Db,
-    pub(super) evm_config: &'a C,
+    pub(super) evm_config: &'a E::EvmConfig,
     pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
     pub(super) view_cache: &'a ViewCache,
 }
 
-impl<C: EvmConfig> Reader<'_, C> {
+impl<E: Engine> Reader<'_, E> {
     /// Views of the state `db` reads, the one before the step with `before`.
-    pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b> {
-        let (config, env) = (self.evm_config, self.env.clone());
-        EvmViews::new(db, config, env, &self.db.pre, self.view_cache, before)
+    pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b, E> {
+        EvmViews::new(
+            self.engine,
+            db,
+            self.evm_config,
+            self.env.clone(),
+            &self.db.pre,
+            self.view_cache,
+            before,
+        )
     }
 
     /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
