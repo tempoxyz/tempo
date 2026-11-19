@@ -3,6 +3,8 @@
 //! Maintains a regular connection to an upstream node over websocker
 //! or `in_process::Actor` as an in-process actor working off of channels.
 
+use std::fmt;
+
 use alloy_rpc_client::BuiltInConnectionString;
 use commonware_consensus::{Reporter, types::Height};
 use commonware_runtime::{Clock, Metrics, Spawner};
@@ -30,7 +32,7 @@ pub(crate) trait Connector: Clone + Send + Sync + 'static {
 
     fn connect(&self, attempts: u64) -> BoxFuture<'static, (u64, eyre::Result<Self::Client>)>;
 
-    fn endpoint(&self) -> &Url;
+    fn endpoint(&self) -> &UpstreamUrl;
 }
 
 pub(crate) trait UpstreamClient: Clone + Send + Sync + 'static {
@@ -74,7 +76,7 @@ pub(crate) fn init<TContext>(
     context: TContext,
     config: Config,
 ) -> eyre::Result<(Actor<TContext>, ingress::Mailbox)> {
-    let url = parse_upstream_url(&config.upstream_url).wrap_err_with(|| {
+    let url = parse_upstream_url(config.upstream_url.expose()).wrap_err_with(|| {
         format!(
             "failed parsing upstream location as websocket URL: `{}`",
             config.upstream_url
@@ -89,7 +91,41 @@ pub(crate) fn init<TContext>(
 
 pub(crate) struct Config {
     /// The URL to connect to.
-    pub(crate) upstream_url: String,
+    pub(crate) upstream_url: UpstreamUrl,
+}
+
+/// The URL of an upstream node, which can carry credentials in its userinfo, path and query.
+///
+/// `Display` and `Debug` print only the scheme, host and port, or `<redacted>` if the URL has
+/// none.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UpstreamUrl(String);
+
+impl UpstreamUrl {
+    /// Wraps `url` without validating it.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into())
+    }
+
+    /// Returns the full URL, credentials included. Pass it to a client; never log it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UpstreamUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match Url::parse(&self.0).map(|url| url.origin()) {
+            Ok(origin) if origin.is_tuple() => f.write_str(&origin.ascii_serialization()),
+            _ => f.write_str("<redacted>"),
+        }
+    }
+}
+
+impl fmt::Debug for UpstreamUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
 }
 
 fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
@@ -101,7 +137,20 @@ fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
+
+    #[test_case("wss://user:secret@upstream.example:8546/v1/secret?key=secret" => "wss://upstream.example:8546")]
+    #[test_case("ws://:secret@upstream.example" => "ws://upstream.example")]
+    #[test_case("ws://[::1]:8546/secret" => "ws://[::1]:8546")]
+    #[test_case("secret:secret@upstream.example:8546" => "<redacted>")]
+    #[test_case("not a url" => "<redacted>")]
+    fn upstream_url_displays_only_origin(url: &str) -> String {
+        let url = UpstreamUrl::new(url);
+        assert_eq!(format!("{url:?}"), url.to_string());
+        url.to_string()
+    }
 
     #[test]
     fn parse_upstream_url_preserves_explicit_url() {
