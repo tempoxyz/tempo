@@ -281,6 +281,11 @@ struct Metrics {
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
     convergence_depth: commonware_runtime::telemetry::metrics::Gauge,
+    /// Number of verification requests received.
+    verification_requests: commonware_runtime::telemetry::metrics::Counter,
+    /// Number of verification requests that joined a pending verification
+    /// for the same round and candidate instead of starting their own.
+    verification_requests_joined: commonware_runtime::telemetry::metrics::Counter,
 }
 
 impl Metrics {
@@ -305,10 +310,23 @@ impl Metrics {
             (negative after a re-anchor below the head)",
             Gauge::default(),
         );
+        let verification_requests = context.register(
+            "verification_requests",
+            "number of verification requests received",
+            Counter::default(),
+        );
+        let verification_requests_joined = context.register(
+            "verification_requests_joined",
+            "number of verification requests that joined a pending verification for the \
+            same round and candidate",
+            Counter::default(),
+        );
         Self {
             finalized_blocks_proposed_by_self,
             finalization_lag,
             convergence_depth,
+            verification_requests,
+            verification_requests_joined,
         }
     }
 
@@ -1318,6 +1336,7 @@ where
                     block,
                     response,
                 } = *request;
+                self.metrics.verification_requests.inc();
                 self.record_convergence_target(context.round, context.parent);
                 self.queue_verification(Verification::new(context.round, cause, block, response));
             }
@@ -1338,13 +1357,14 @@ where
     /// queued or active, and receives the same verdict.
     fn queue_verification(&mut self, verification: Verification) {
         let key = verification.key();
-        if let Some(pending) = self
+        let pending = self
             .verifications_mut()
-            .find(|pending| pending.key() == key)
-        {
+            .find(|pending| pending.key() == key);
+        if let Some(pending) = pending {
             let VerificationKey { round, digest } = key;
             debug!(%round, %digest, "verification joined a pending one for the same candidate");
             pending.responses.extend(verification.responses);
+            self.metrics.verification_requests_joined.inc();
             return;
         }
         self.queued_verifications.insert(key, verification);
