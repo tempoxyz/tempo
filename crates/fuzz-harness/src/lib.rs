@@ -91,8 +91,9 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
 
 /// Makes every signature check in this process also accept the keyed stand-ins of
 /// [`tempo_primitives::fuzz_crypto`], so a fuzzer can sign as any account without its key. Real
-/// signatures are checked as before. Returns the stand-in format's version, or 0 when another crypto
-/// provider was installed first. Calling it again changes nothing.
+/// signatures are checked as before. Call it before executing anything: once an input has run,
+/// stand-ins stay off for the life of the process, so they can't switch on mid-input. Returns the
+/// stand-in format's version, or 0 when they stay off. Calling it again changes nothing.
 ///
 /// Harnesses without this export don't accept stand-ins, so a fuzzer must not send them one.
 #[unsafe(no_mangle)]

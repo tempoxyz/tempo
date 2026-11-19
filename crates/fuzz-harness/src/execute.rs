@@ -115,6 +115,7 @@ pub(crate) fn with_rejection<T>(f: impl FnOnce(&str) -> T) -> T {
 
 /// Executes `input`.
 pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
+    crate::crypto::settle();
     REJECTION.with_borrow_mut(String::clear);
     let outcome = match input {
         TempoHarnessInput::Transaction(input) => {

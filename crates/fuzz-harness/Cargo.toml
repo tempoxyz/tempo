@@ -24,6 +24,8 @@ alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 bincode.workspace = true
 evm2.workspace = true
+# Real secp256k1 verification behind the stand-ins: the library and version alloy uses.
+secp256k1 = { version = "0.30", features = ["global-context"] }
 invariants-core.workspace = true
 reth-primitives-traits.workspace = true
 reth-chainspec.workspace = true

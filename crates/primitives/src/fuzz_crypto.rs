@@ -9,10 +9,11 @@
 //!
 //! | Scheme | Stand-in |
 //! |---|---|
-//! | secp256k1 | `r` = [`tag`] of digest and signer, `s` = the signer's address |
+//! | secp256k1 | `r` = [`tag`] of digest and signer, `s` = the signer's address (never zero) |
 //! | P256, WebAuthn | `r` = [`tag`] of digest and public key, `s` = 1 |
 //! | Ed25519 | [`tag`] of key, namespace and message, then 32 zero bytes |
-//! | P-384 | [`tag`] of key and digest, then zero bytes to the signature's width |
+//! | P-384, COSE | [`tag`] of key and digest, then 64 zero bytes |
+//! | P-384, X.509 | DER `SEQUENCE { INTEGER tag, INTEGER 1 }` of the same [`tag`] |
 
 use crate::transaction::tt_signature::{
     P256SignatureWithPreHash, WebAuthnSignature, verify_webauthn_data_internal,
@@ -48,18 +49,21 @@ pub enum Scheme {
     P384 = 4,
 }
 
-/// The hash a stand-in carries: `keccak256("tempo-fuzz-crypto" || scheme || parts...)`.
+/// The hash a stand-in carries: `keccak256("tempo-fuzz-crypto" || scheme || (len || part)...)`,
+/// with each part's length as 8 big-endian bytes, so parts can't run into each other.
 pub fn tag(scheme: Scheme, parts: &[&[u8]]) -> B256 {
     let mut hasher = Keccak256::new();
     hasher.update(b"tempo-fuzz-crypto");
     hasher.update([scheme as u8]);
     for part in parts {
+        hasher.update((part.len() as u64).to_be_bytes());
         hasher.update(part);
     }
     hasher.finalize()
 }
 
-/// The secp256k1 stand-in `(r, s)` for `signer` signing `digest`. Any recovery id works.
+/// The secp256k1 stand-in `(r, s)` for `signer` signing `digest`. Any recovery id works. None
+/// is accepted for the zero address, whose `s` would be zero, as no real signature's is.
 pub fn secp256k1(signer: Address, digest: &B256) -> (U256, U256) {
     let r = tag(Scheme::Secp256k1, &[digest.as_slice(), signer.as_slice()]);
     (r.into(), U256::from_be_slice(signer.as_slice()))
@@ -67,10 +71,13 @@ pub fn secp256k1(signer: Address, digest: &B256) -> (U256, U256) {
 
 /// The signer of a secp256k1 stand-in, or `None` when `(r, s)` is not one for `digest`.
 pub fn secp256k1_signer(r: &[u8], s: &[u8], digest: &[u8]) -> Option<Address> {
-    if !enabled() || s.len() != 32 || s[..12] != [0; 12] {
+    if !enabled() || r.len() != 32 || s.len() != 32 || s[..12] != [0; 12] {
         return None;
     }
     let signer = Address::from_slice(&s[12..]);
+    if signer.is_zero() {
+        return None;
+    }
     (tag(Scheme::Secp256k1, &[digest, signer.as_slice()]) == r).then_some(signer)
 }
 
@@ -86,7 +93,11 @@ pub fn p256(digest: &B256, x: &B256, y: &B256) -> (B256, B256) {
 /// Whether `(r, s)` is the P256 stand-in for the key `(x, y)` signing `digest`. The key must still be
 /// a point on the curve, as a real signature's must.
 pub fn p256_accepts(r: &[u8], s: &[u8], x: &[u8], y: &[u8], digest: &[u8]) -> bool {
-    if !enabled() || s != B256::with_last_byte(1) || tag(Scheme::P256, &[digest, x, y]) != r {
+    if !enabled()
+        || [r, s, x, y, digest].iter().any(|part| part.len() != 32)
+        || s != B256::with_last_byte(1)
+        || tag(Scheme::P256, &[digest, x, y]) != r
+    {
         return false;
     }
     let mut point = [0x04; 65];
@@ -97,11 +108,7 @@ pub fn p256_accepts(r: &[u8], s: &[u8], x: &[u8], y: &[u8], digest: &[u8]) -> bo
 
 /// The Ed25519 stand-in for `public_key` signing `message` under `namespace`.
 pub fn ed25519(public_key: &[u8], namespace: &[u8], message: &[u8]) -> [u8; 64] {
-    let namespace_len = (namespace.len() as u64).to_be_bytes();
-    padded(tag(
-        Scheme::Ed25519,
-        &[public_key, &namespace_len, namespace, message],
-    ))
+    padded(tag(Scheme::Ed25519, &[public_key, namespace, message]))
 }
 
 /// Whether `signature` is the Ed25519 stand-in for `public_key` signing `message` under
@@ -115,18 +122,33 @@ pub fn ed25519_accepts(
     enabled() && signature == ed25519(public_key, namespace, message)
 }
 
-/// The P-384 stand-in for `public_key` signing `digest`, `N` bytes wide: 96 for COSE, any width of
-/// at least 32 for an X.509 certificate.
-pub fn p384<const N: usize>(public_key: &[u8], digest: &[u8]) -> [u8; N] {
+/// The P-384 stand-in for `public_key` signing `digest` in COSE's fixed `r || s` form.
+pub fn p384_fixed(public_key: &[u8], digest: &[u8]) -> [u8; 96] {
     padded(tag(Scheme::P384, &[public_key, digest]))
 }
 
-/// Whether `signature` is the P-384 stand-in for `public_key` signing `digest`, at any width.
+/// The P-384 stand-in for `public_key` signing `digest` in an X.509 certificate's DER form:
+/// `SEQUENCE { INTEGER tag, INTEGER 1 }`, which passes the certificate parser's shape check.
+pub fn p384_der(public_key: &[u8], digest: &[u8]) -> alloc::vec::Vec<u8> {
+    let tag = tag(Scheme::P384, &[public_key, digest]);
+    let mut r = tag.as_slice();
+    while r.len() > 1 && r[0] == 0 && r[1] & 0x80 == 0 {
+        r = &r[1..];
+    }
+    let pad = usize::from(r[0] & 0x80 != 0);
+    let r_len = (r.len() + pad) as u8;
+    let mut der = alloc::vec![0x30, r_len + 5, 0x02, r_len];
+    der.extend(core::iter::repeat_n(0, pad));
+    der.extend_from_slice(r);
+    der.extend_from_slice(&[0x02, 0x01, 0x01]);
+    der
+}
+
+/// Whether `signature` is the P-384 stand-in for `public_key` signing `digest`, in either form.
 pub fn p384_accepts(public_key: &[u8], digest: &[u8], signature: &[u8]) -> bool {
     enabled()
-        && signature.len() >= 32
-        && signature[..32] == tag(Scheme::P384, &[public_key, digest])
-        && signature[32..].iter().all(|byte| *byte == 0)
+        && (signature == p384_fixed(public_key, digest)
+            || signature == p384_der(public_key, digest).as_slice())
 }
 
 /// A secp256k1 stand-in signature by `signer` over `hash`: a transaction's or authorization's signature
@@ -245,19 +267,48 @@ mod tests {
             ),
             "off the curve"
         );
+        let short = [0; 31];
+        let r = tag(Scheme::P256, &[digest.as_slice(), &short, y.as_slice()]);
+        assert!(!p256_accepts(
+            r.as_slice(),
+            s.as_slice(),
+            &short,
+            y.as_slice(),
+            digest.as_slice()
+        ));
 
         let signature = ed25519(b"key", b"ns", b"msg");
         assert!(ed25519_accepts(b"key", b"ns", b"msg", &signature));
         assert!(!ed25519_accepts(b"key", b"nsm", b"sg", &signature));
 
-        let signature = p384::<96>(b"key", b"digest");
+        // Parts can't run into each other.
+        assert!(!ed25519_accepts(b"ke", b"yns", b"msg", &signature));
+
+        assert_eq!(
+            secp256k1_signer(&[0; 32], &[0; 32], digest.as_slice()),
+            None
+        );
+        let (r, s) = secp256k1(Address::ZERO, &digest);
+        let (r, s) = (r.to_be_bytes::<32>(), s.to_be_bytes::<32>());
+        assert_eq!(
+            secp256k1_signer(&r, &s, digest.as_slice()),
+            None,
+            "s would be zero"
+        );
+
+        let signature = p384_fixed(b"key", b"digest");
         assert!(p384_accepts(b"key", b"digest", &signature));
         assert!(p384_accepts(
             b"key",
             b"digest",
-            &p384::<32>(b"key", b"digest")
+            &p384_der(b"key", b"digest")
         ));
         assert!(!p384_accepts(b"other", b"digest", &signature));
+        assert!(!p384_accepts(
+            b"other",
+            b"digest",
+            &p384_der(b"key", b"digest")
+        ));
     }
 
     #[test]

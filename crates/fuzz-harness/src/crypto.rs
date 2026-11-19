@@ -12,21 +12,44 @@ use alloy_consensus::crypto::{
 };
 use alloy_primitives::Address;
 use evm2::precompiles::{Crypto, DefaultCrypto, PrecompileHalt, install_crypto};
+use secp256k1::{Message, PublicKey, SECP256K1, ecdsa::Signature};
 use std::sync::{Arc, OnceLock};
 use tempo_primitives::fuzz_crypto;
 
-/// Makes the harness accept stand-ins from now on. Returns whether both providers are installed,
-/// which fails only when something else installed one first.
+/// Whether this process accepts stand-ins, settled once by whichever comes first: [`enable`] or
+/// the first execution ([`settle`]). So stand-ins can't switch on while an input runs, and
+/// nothing can install evm2's default crypto before the providers here.
+static MODE: OnceLock<bool> = OnceLock::new();
+
+/// Installs the providers. With stand-ins off they check everything for real.
+fn install() -> bool {
+    let alloy = install_default_provider(Arc::new(StandIns)).is_ok();
+    let evm = install_crypto(StandIns);
+    alloy && evm
+}
+
+/// Makes the harness accept stand-ins, if nothing has executed yet. Returns whether it does.
 pub(crate) fn enable() -> bool {
-    static INSTALLED: OnceLock<bool> = OnceLock::new();
-    *INSTALLED.get_or_init(|| {
-        let alloy = install_default_provider(Arc::new(StandIns)).is_ok();
-        let evm = install_crypto(StandIns);
-        if alloy && evm {
+    *MODE.get_or_init(|| {
+        let installed = install();
+        if installed {
             fuzz_crypto::enable();
         }
-        alloy && evm
+        installed
     })
+}
+
+/// Settles the mode before an input executes: stand-ins stay off unless [`enable`] came first.
+/// Unit tests run in one process in any order, so there stand-ins are always on.
+pub(crate) fn settle() {
+    if cfg!(test) {
+        enable();
+    } else {
+        MODE.get_or_init(|| {
+            install();
+            false
+        });
+    }
 }
 
 /// Accepts secp256k1 and P256 stand-ins, and checks everything else for real.
@@ -52,14 +75,18 @@ impl CryptoProvider for StandIns {
         sig: &[u8; 64],
         msg: &[u8; 32],
     ) -> Result<Address, RecoveryError> {
-        // A signature verifies under a key exactly when one of its recovery ids recovers that key.
-        let signer = Address::from_raw_public_key(&pubkey[1..]);
-        [0, 1]
-            .into_iter()
-            .filter_map(|recid| self.secp256k1_ecrecover(sig, recid, msg).ok())
-            .any(|word| Address::from_word(word.into()) == signer)
-            .then_some(signer)
-            .ok_or_else(RecoveryError::new)
+        // Parse the key as alloy's own backend does, then accept its stand-in or a real signature.
+        let key = PublicKey::from_slice(pubkey).map_err(RecoveryError::from_source)?;
+        let signer = Address::from_raw_public_key(&key.serialize_uncompressed()[1..]);
+        let (r, s) = sig.split_at(32);
+        if fuzz_crypto::secp256k1_signer(r, s, msg) == Some(signer) {
+            return Ok(signer);
+        }
+        let signature = Signature::from_compact(sig).map_err(RecoveryError::from_source)?;
+        SECP256K1
+            .verify_ecdsa(&Message::from_digest(*msg), &signature, &key)
+            .map_err(RecoveryError::from_source)?;
+        Ok(signer)
     }
 }
 
@@ -89,6 +116,7 @@ mod tests {
     use super::*;
     use alloy_consensus::crypto::secp256k1::{recover_signer, sign_message};
     use alloy_primitives::{B256, Signature, address, b256};
+    use secp256k1::SecretKey;
 
     #[test]
     fn stand_ins_recover_their_signer_and_real_signatures_still_do() {
@@ -111,6 +139,42 @@ mod tests {
         assert_eq!(
             recover_signer(&real, digest).ok(),
             Some(address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"))
+        );
+    }
+
+    #[test]
+    fn explicit_key_checks_parse_the_key_and_verify_real_signatures() {
+        assert!(enable());
+        let digest = B256::repeat_byte(7);
+        let key = SecretKey::from_byte_array(&[0x11; 32]).unwrap();
+        let mut pubkey = PublicKey::from_secret_key(SECP256K1, &key).serialize_uncompressed();
+        let signer = Address::from_raw_public_key(&pubkey[1..]);
+
+        let real = sign_message(B256::from(key.secret_bytes()), digest).unwrap();
+        let real: [u8; 64] = real.as_bytes()[..64].try_into().unwrap();
+        let (r, s) = fuzz_crypto::secp256k1(signer, &digest);
+        let mut stand_in = [0; 64];
+        stand_in[..32].copy_from_slice(&r.to_be_bytes::<32>());
+        stand_in[32..].copy_from_slice(&s.to_be_bytes::<32>());
+        for sig in [real, stand_in] {
+            assert_eq!(
+                StandIns
+                    .verify_and_compute_signer_unchecked(&pubkey, &sig, &digest.0)
+                    .ok(),
+                Some(signer)
+            );
+            assert!(
+                StandIns
+                    .verify_and_compute_signer_unchecked(&pubkey, &sig, &[8; 32])
+                    .is_err()
+            );
+        }
+        pubkey[0] = 0x05;
+        assert!(
+            StandIns
+                .verify_and_compute_signer_unchecked(&pubkey, &stand_in, &digest.0)
+                .is_err(),
+            "a key with a bad SEC1 prefix is rejected"
         );
     }
 }

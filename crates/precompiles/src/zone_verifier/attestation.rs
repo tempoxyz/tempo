@@ -99,11 +99,10 @@ mod fuzz {
                 .unwrap();
             let (digest, other) = ([0x22; SHA384_SIZE], [0x23; SHA384_SIZE]);
 
-            let fixed = fuzz_crypto::p384::<P384_FIXED_SIGNATURE_SIZE>(&public_key, &digest);
+            let fixed = fuzz_crypto::p384_fixed(&public_key, &digest);
             assert!(StandInP384.verify_fixed(&public_key, &digest, &fixed));
             assert!(!StandInP384.verify_fixed(&public_key, &other, &fixed));
-            // A certificate's DER signature slot keeps its width.
-            let der = fuzz_crypto::p384::<103>(&public_key, &digest);
+            let der = fuzz_crypto::p384_der(&public_key, &digest);
             assert!(StandInP384.verify_der(&public_key, &digest, &der));
             assert!(!StandInP384.verify_der(&public_key, &other, &der));
 
@@ -230,6 +229,16 @@ pub(super) mod tests {
         user_data: &[u8; 32],
         attestation_timestamp: u64,
     ) -> (Vec<u8>, Vec<u8>, [[u8; 48]; 3]) {
+        fixture_signed(user_data, attestation_timestamp, false)
+    }
+
+    /// The fixture, with the intermediate certificate and the document signed by
+    /// `fuzz_crypto` stand-ins instead of their keys when `stand_ins` is set.
+    fn fixture_signed(
+        user_data: &[u8; 32],
+        attestation_timestamp: u64,
+        stand_ins: bool,
+    ) -> (Vec<u8>, Vec<u8>, [[u8; 48]; 3]) {
         let root_key = signing_key(1);
         let intermediate_key = signing_key(2);
         let leaf_key = signing_key(3);
@@ -247,6 +256,18 @@ pub(super) mod tests {
             &intermediate_key,
             &root_key,
         );
+        #[cfg(feature = "fuzz-crypto")]
+        let intermediate = if stand_ins {
+            let mut certificate = Certificate::from_der(&intermediate).unwrap();
+            let digest = sha2::Sha384::digest(certificate.tbs_certificate.to_der().unwrap());
+            let signature =
+                tempo_primitives::fuzz_crypto::p384_der(&public_key(&root_key), &digest);
+            certificate.signature =
+                x509_cert::der::asn1::BitString::from_bytes(&signature).unwrap();
+            certificate.to_der().unwrap()
+        } else {
+            intermediate
+        };
         let leaf = build_certificate(
             Profile::Leaf {
                 issuer: intermediate_name,
@@ -294,7 +315,20 @@ pub(super) mod tests {
         structure.bytes(&protected).unwrap();
         structure.bytes(&[]).unwrap();
         structure.bytes(&payload).unwrap();
-        let signature: Signature = leaf_key.sign(&structure.into_writer());
+        let structure = structure.into_writer();
+        let signature: Signature = leaf_key.sign(&structure);
+        let signature: [u8; 96] = signature.to_bytes().as_slice().try_into().unwrap();
+        #[cfg(feature = "fuzz-crypto")]
+        let signature = if stand_ins {
+            tempo_primitives::fuzz_crypto::p384_fixed(
+                &public_key(&leaf_key),
+                &sha2::Sha384::digest(&structure),
+            )
+        } else {
+            signature
+        };
+        #[cfg(not(feature = "fuzz-crypto"))]
+        let _ = stand_ins;
 
         let mut cose = Encoder::new(Vec::new());
         cose.tag(minicbor::data::Tag::new(18)).unwrap();
@@ -302,8 +336,29 @@ pub(super) mod tests {
         cose.bytes(&protected).unwrap();
         cose.map(0).unwrap();
         cose.bytes(&payload).unwrap();
-        cose.bytes(signature.to_bytes().as_slice()).unwrap();
+        cose.bytes(&signature).unwrap();
         (cose.into_writer(), root, pcrs)
+    }
+
+    #[cfg(feature = "fuzz-crypto")]
+    fn public_key(key: &SigningKey) -> Vec<u8> {
+        key.verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec()
+    }
+
+    /// A certificate and a document signed by stand-ins pass the parser and the chain check.
+    #[cfg(feature = "fuzz-crypto")]
+    #[test]
+    fn verifies_an_attestation_signed_by_stand_ins() {
+        tempo_primitives::fuzz_crypto::enable();
+        let user_data = [0x42; 32];
+        let (document, root, _) = fixture_signed(&user_data, BLOCK_TIMESTAMP * 1_000, true);
+        let verified = with_storage(TempoHardfork::T13, || {
+            verify_attestation_with_root(&document, BLOCK_TIMESTAMP, &root).unwrap()
+        });
+        assert_eq!(verified.expect("stand-ins verify").user_data, user_data);
     }
 
     #[test]
