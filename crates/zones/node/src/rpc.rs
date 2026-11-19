@@ -1376,6 +1376,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::call(
                 &self.eth.api,
@@ -1402,6 +1403,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::estimate_gas_at(
                 &self.eth.api,

@@ -40,12 +40,6 @@ impl ZoneChainSpec {
     /// use only the supplied genesis, so dependency updates cannot activate omitted forks.
     pub fn from_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
         let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
-        // Named networks have a fixed schedule that zones follow in lockstep, so a null fork time
-        // there means "not scheduled yet" and follows the parent. On local dev chains a null keeps
-        // the fork off, so tests can pin a schedule.
-        if let Some(parent) = chainspec_from_chain_id(parent_chain_id) {
-            return Self::compose(genesis, parent.as_ref(), true);
-        }
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
             return Self::from_genesis_with_l1(genesis, parent.as_ref());
         }
@@ -56,19 +50,11 @@ impl ZoneChainSpec {
     ///
     /// This supports custom L1 chains whose hardfork schedule is not globally registered.
     pub fn from_genesis_with_l1(
-        genesis: Genesis,
-        l1: &TempoChainSpec,
-    ) -> Result<Self, ZoneChainSpecError> {
-        Self::compose(genesis, l1, false)
-    }
-
-    fn compose(
         mut genesis: Genesis,
         l1: &TempoChainSpec,
-        null_follows_parent: bool,
     ) -> Result<Self, ZoneChainSpecError> {
         decode_l1_chain_id(genesis.config.chain_id)?;
-        inherit_parent_fork_activations(&mut genesis, l1, null_follows_parent)?;
+        inherit_parent_fork_activations(&mut genesis, l1)?;
         Ok(Self::from_explicit_genesis(genesis))
     }
 
@@ -95,7 +81,6 @@ impl ZoneChainSpec {
 fn inherit_parent_fork_activations(
     zone_genesis: &mut Genesis,
     l1: &TempoChainSpec,
-    null_follows_parent: bool,
 ) -> Result<(), serde_json::Error> {
     let mut zone_config = serde_json::to_value(&zone_genesis.config)?;
     let l1_config = serde_json::to_value(&l1.genesis().config)?;
@@ -106,15 +91,13 @@ fn inherit_parent_fork_activations(
         .as_object()
         .expect("ChainConfig must serialize as a JSON object");
 
+    // Only omitted fields are inherited. An explicit null keeps the fork off, so an existing zone
+    // never has a fork switched on under blocks it already built.
     for (name, value) in l1_fields {
         if name.ends_with("Block") || name.ends_with("Time") {
-            match zone_fields.get_mut(name) {
-                None => {
-                    zone_fields.insert(name.clone(), value.clone());
-                }
-                Some(field) if null_follows_parent && field.is_null() => *field = value.clone(),
-                Some(_) => {}
-            }
+            zone_fields
+                .entry(name.clone())
+                .or_insert_with(|| value.clone());
         }
     }
 
@@ -461,15 +444,13 @@ mod tests {
             .to_string();
         assert!(error.contains("T13"), "{error}");
 
-        // An explicit null, as genesis generators write for forks the parent hasn't scheduled
-        // yet, inherits the parent's time.
+        // An explicit null keeps a scheduled fork off, so it is a mismatch.
         let mut json = serde_json::to_value(zone_genesis(&MODERATO)).unwrap();
         json["config"]["t13Time"] = serde_json::Value::Null;
-        let zone = ZoneChainSpecParser::parse(&json.to_string()).unwrap();
-        assert_eq!(
-            zone.fork(TempoHardfork::T13),
-            MODERATO.fork(TempoHardfork::T13)
-        );
+        let error = ZoneChainSpecParser::parse(&json.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("T13"), "{error}");
 
         // Malformed Tempo metadata can't silently drop forks from the schedule.
         let mut json = serde_json::to_value(zone_genesis(&MODERATO)).unwrap();

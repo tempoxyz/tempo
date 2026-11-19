@@ -20,8 +20,7 @@ pub fn enforce_authorized(
     auth: &AuthContext,
 ) -> Result<(), JsonRpcError> {
     enforce_from(request, auth)?;
-    enforce_contract_creation(request, auth.caller)?;
-    enforce_registration_recipient(request, auth.caller)
+    enforce_contract_creation(request, auth.caller)
 }
 
 /// Refuse simulations of TIP-1094 `registerMaster` for another recipient.
