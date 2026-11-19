@@ -167,8 +167,10 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    ///
+    /// Negative when a nested callee clears state that an earlier frame created.
+    fn state_gas_used(&self) -> i64;
 
     /// Returns the state gas that was drawn from regular gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`).
@@ -200,6 +202,21 @@ pub trait PrecompileStorageProvider {
     fn set_cold_pricing(&mut self, enabled: bool) -> bool {
         let _ = enabled;
         false
+    }
+
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::NestedCallUnavailable)
     }
 
     /// Creates a new journal checkpoint so that all subsequent state-changing
@@ -285,6 +302,16 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+}
+
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data.
+    Success(Bytes),
+    /// The callee reverted with this data or halted, and was rolled back.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.

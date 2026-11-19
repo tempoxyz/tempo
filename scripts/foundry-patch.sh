@@ -45,6 +45,28 @@ if grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' "$FOUNDRY_CARGO"; t
   has_tempo_git_patch=true
 fi
 
+# ── 0. Align Foundry's commonware with Tempo's ──────────────────────────────
+# Foundry pins commonware-* crates exactly (`=X`) in its workspace and in test
+# fixtures. Tempo's crates need its own commonware release, so rewrite those
+# pins to Tempo's version whenever the two differ, and move the locked
+# commonware packages with --precise. This runs before any tempo [patch] is
+# written: a later re-resolution would also move the crates.io tempo-* releases
+# that Foundry's other dependencies (such as mpp) stay locked to onto the
+# patched local crates, which they don't build against.
+COMMONWARE_VERSION="$(sed -nE 's/^commonware-[a-z-]+ = (\{ *version = )?"=?([^"]+)".*/\2/p' "$TEMPO_CARGO" | head -n1)"
+if [[ -n "$COMMONWARE_VERSION" ]]; then
+  while IFS= read -r -d '' manifest; do
+    sed -i -E "s/^(commonware-[a-z-]+ = (\{ *version = )?\")=[^\"]+\"/\1=$COMMONWARE_VERSION\"/" "$manifest"
+  done < <(find "$FOUNDRY_ROOT" -name Cargo.toml -not -path '*/target/*' -print0)
+
+  while read -r name version; do
+    # One --precise update moves the whole commonware family, so re-check the
+    # lockfile before each package.
+    grep -A1 -xF "name = \"$name\"" "$FOUNDRY_LOCK" | grep -qxF "version = \"$version\"" || continue
+    (cd "$FOUNDRY_ROOT" && cargo update --quiet -p "$name@$version" --precise "$COMMONWARE_VERSION")
+  done < <(awk -v want="$COMMONWARE_VERSION" '/^name = "commonware-/ { n = $3; gsub(/"/, "", n) } /^version = / { if (n) { v = $3; gsub(/"/, "", v); if (v != want) print n, v; n = "" } }' "$FOUNDRY_LOCK" | sort -u)
+fi
+
 # ── 1. Discover tempo-* workspace crates that have local paths ──────────────
 PATCHES="$({
   awk '

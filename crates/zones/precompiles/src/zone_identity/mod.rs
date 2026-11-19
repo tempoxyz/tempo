@@ -76,9 +76,8 @@ impl ZoneIdentity {
             return Ok(true);
         }
         // TIP-20 credits a TIP-1022 virtual recipient's master, so the master's org decides. The
-        // registry is mirrored from Tempo, so this also resolves Tempo-side withdrawal recipients.
-        // An unregistered virtual recipient is denied rather than an error, so a deposit to one
-        // bounces instead of failing the whole block.
+        // Zone's registry holds no masters, so every virtual recipient is denied for now; it is
+        // denied rather than an error, so a deposit to one bounces instead of failing the block.
         let to = if to.is_virtual() {
             match AddressRegistry::new().resolve_virtual_address(to)? {
                 master if master.is_zero() => return Ok(false),
