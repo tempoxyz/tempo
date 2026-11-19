@@ -802,7 +802,9 @@ jobs:
           if [[ "$cached" == true ]]; then
             echo "CACHE_SCOPE=" >> "$GITHUB_ENV"
           else
-            echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+            nonce=$(openssl rand -hex 16)
+            [[ ${#nonce} -eq 32 ]]
+            echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${nonce}" >> "$GITHUB_ENV"
           fi
           echo "no_cache=$( [[ "$cached" == true ]] && echo false || echo true )" >> "$GITHUB_OUTPUT"
 

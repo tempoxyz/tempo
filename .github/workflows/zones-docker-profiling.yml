@@ -49,7 +49,11 @@ jobs:
 
       # Published images start from empty cache mounts that no earlier build wrote to.
       - name: Choose a fresh cache-mount scope
-        run: echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          nonce=$(openssl rand -hex 16)
+          [[ ${#nonce} -eq 32 ]]
+          echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${nonce}" >> "$GITHUB_ENV"
 
       - name: Build and push Docker images
         id: build-and-push
