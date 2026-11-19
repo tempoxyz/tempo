@@ -38,13 +38,10 @@ fn build_create_key_auth_tx(
         max_priority_fee_per_gas,
         max_fee_per_gas: core::cmp::max(max_priority_fee_per_gas, TEMPO_T1_BASE_FEE as u128),
         gas_limit,
-        calls: vec![Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: Bytes::from_static(&[
-                0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
-            ]),
-        }],
+        calls: vec![Call::new(
+            TxKind::Create,
+            Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]),
+        )],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),

@@ -31,7 +31,7 @@ pub(crate) fn authorization_accounts(
     authorization: &tempo_primitives::transaction::SignedKeyAuthorization,
 ) -> impl Iterator<Item = alloy_primitives::Address> {
     authorization
-        .signature
+        .signature()
         .as_configurable_account()
         .map(tempo_primitives::transaction::ConfigurableAccountSignature::account)
         .into_iter()

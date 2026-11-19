@@ -5,3 +5,10 @@ zone-xtask = "run --package tempo-xtask --bin tempo-zone-xtask --"
 x = "run --package tempo-xtask --bin tempo-xtask --"
 xtask = "run --package tempo-xtask --bin tempo-xtask --"
 docs = "doc --workspace --all-features --no-deps"
+
+[env]
+# smolgen (vergen) stamps timestamps into the build script output and reruns it on every commit,
+# which rebuilds the crates behind it and misses sccache. Idempotent mode pins the timestamps and
+# stops tracking HEAD. Builds that ship set VERGEN_IDEMPOTENT=0 in the environment, which Cargo
+# does not override.
+VERGEN_IDEMPOTENT = "1"

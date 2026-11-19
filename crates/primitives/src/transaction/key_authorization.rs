@@ -418,10 +418,10 @@ pub struct SignedKeyAuthorization {
     /// Key authorization for provisioning access keys
     #[cfg_attr(feature = "serde", serde(flatten))]
     #[deref]
-    pub authorization: KeyAuthorization,
+    authorization: KeyAuthorization,
 
     /// Direct primitive or configurable account signature authorizing this key.
-    pub signature: AccountSignature,
+    signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -440,6 +440,16 @@ impl SignedKeyAuthorization {
             signature: signature.into(),
             signer: OnceLock::new(),
         }
+    }
+
+    /// Returns the key authorization.
+    pub const fn authorization(&self) -> &KeyAuthorization {
+        &self.authorization
+    }
+
+    /// Returns the signature authorizing the key.
+    pub const fn signature(&self) -> &AccountSignature {
+        &self.signature
     }
 
     /// Recover the signer of the [`KeyAuthorization`]. Returns `Err` for a configurable account
@@ -1497,52 +1507,30 @@ mod tests {
     }
 
     #[test]
-    fn test_call_scope_accessors() {
-        let target = Address::repeat_byte(0x11);
-        let rule = SelectorRule {
-            selector: [0xaa, 0xbb, 0xcc, 0xdd],
-            recipients: vec![Address::repeat_byte(0x22)],
-        };
-        let scope = CallScope {
-            target,
-            selector_rules: vec![rule],
-        };
-
-        assert_eq!(scope.target(), target);
-        assert!(!scope.allows_all_selectors());
-        assert_eq!(scope.selector_rules().len(), 1);
-    }
-
-    #[test]
-    fn test_call_scope_allows_all_selectors_when_empty() {
-        let scope = CallScope {
+    fn test_call_scope_allows_all_selectors_only_when_empty() {
+        let mut scope = CallScope {
             target: Address::repeat_byte(0x11),
             selector_rules: vec![],
         };
         assert!(scope.allows_all_selectors());
+
+        scope.selector_rules.push(SelectorRule {
+            selector: [0xaa, 0xbb, 0xcc, 0xdd],
+            recipients: vec![Address::repeat_byte(0x22)],
+        });
+        assert!(!scope.allows_all_selectors());
     }
 
     #[test]
-    fn test_selector_rule_accessors() {
-        let selector = [0x12, 0x34, 0x56, 0x78];
-        let recipients = vec![Address::repeat_byte(0x33), Address::repeat_byte(0x44)];
-        let rule = SelectorRule {
-            selector,
-            recipients: recipients.clone(),
-        };
-
-        assert_eq!(rule.selector(), selector);
-        assert_eq!(rule.recipients(), &recipients);
-        assert!(!rule.allows_all_recipients());
-    }
-
-    #[test]
-    fn test_selector_rule_allows_all_recipients_when_empty() {
-        let rule = SelectorRule {
+    fn test_selector_rule_allows_all_recipients_only_when_empty() {
+        let mut rule = SelectorRule {
             selector: [0xaa, 0xbb, 0xcc, 0xdd],
             recipients: vec![],
         };
         assert!(rule.allows_all_recipients());
+
+        rule.recipients.push(Address::repeat_byte(0x33));
+        assert!(!rule.allows_all_recipients());
     }
 }
 

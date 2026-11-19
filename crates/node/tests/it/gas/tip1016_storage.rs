@@ -646,11 +646,10 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 150_000_000, // 150M
-        calls: vec![Call {
-            to: tempo_contracts::MULTICALL3_ADDRESS.into(),
-            value: U256::ZERO,
-            input: aggregate_calldata,
-        }],
+        calls: vec![Call::new(
+            tempo_contracts::MULTICALL3_ADDRESS,
+            aggregate_calldata,
+        )],
         nonce_key: U256::ZERO,
         nonce: account.next_nonce(),
         fee_token: Some(DEFAULT_FEE_TOKEN),

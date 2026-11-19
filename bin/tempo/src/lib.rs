@@ -36,6 +36,7 @@ mod defaults;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
+pub mod payload_bench;
 pub mod regenesis;
 pub mod shadow_replay;
 mod snapshot_download;
@@ -66,11 +67,11 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
-use reth_cli_runner::CliRunner;
+use reth_cli_runner::{CliRunner, CliRunnerConfig};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
+use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{DEV, TempoChainSpec},
@@ -86,14 +87,15 @@ pub use tempo_node::{
     TempoPooledTransaction, TransactionOrigin,
 };
 use tempo_node::{
-    EstimatorConfig, ShadowReplayer, TempoFullNode,
-    rpc::consensus::{SubscriptionLimits, TempoConsensusApiServer, TempoConsensusRpc},
+    ShadowReplayer, TempoFullNode,
+    rpc::consensus::{Limits, TempoConsensusApiServer, TempoConsensusRpc},
     telemetry::{
         HardwareMetricsConfig, PrometheusMetricsConfig, install_hardware_metrics,
         install_prometheus_metrics,
     },
 };
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, info_span, warn, warn_span};
 
 #[cfg(all(feature = "localnet", unix))]
@@ -124,6 +126,25 @@ fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
             set_zone_factory_genesis_owner(&mut genesis, owner)?;
             node_cmd.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
         }
+    }
+
+    Ok(())
+}
+
+/// Rejects reth's debug consensus clients (`--debug.rpc-consensus-url`, `--debug.etherscan`)
+/// when the Tempo consensus engine is active.
+///
+/// Reth's debug launcher drives the same beacon engine handle with new payloads and forkchoice
+/// updates without any certificate checks, so it must not run next to the Tempo consensus or
+/// certified follow stack.
+fn ensure_no_debug_forkchoice_driver(cli: &TempoCli) -> eyre::Result<()> {
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.ext.has_consensus_engine(node_cmd.dev.dev)
+        && (node_cmd.debug.rpc_consensus_url.is_some() || node_cmd.debug.etherscan.is_some())
+    {
+        eyre::bail!(
+            "--debug.rpc-consensus-url and --debug.etherscan drive forkchoice outside the Tempo consensus engine and are only allowed with --dev or --follow.nocertify"
+        );
     }
 
     Ok(())
@@ -186,7 +207,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    tempo_node::init_version_metadata();
+    tempo_node::init_version_metadata(tempo_node::tempo_version_metadata!());
     defaults::init_defaults();
 
     // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
@@ -260,6 +281,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     apply_tempo_cli_overrides(&mut cli)?;
+    ensure_no_debug_forkchoice_driver(&cli)?;
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -338,11 +360,18 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, executed_state, args, gossip_transport, estimator) =
-            consensus_startup_rx.blocking_recv().wrap_err(
+        let Some((node, executed_state, args, gossip_transport, estimator)) =
+            futures::executor::block_on(
+                shutdown_token_clone.run_until_cancelled(consensus_startup_rx),
+            )
+            .transpose()
+            .wrap_err(
                 "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
-            )?;
+            )?
+        else {
+            return Ok(());
+        };
 
         let datadir = node
             .config
@@ -488,7 +517,33 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         (evm_config, TempoConsensus::new(spec))
     };
 
+    // The node command handles SIGINT and SIGTERM in the launcher below, so that it stops consensus
+    // before Reth's graceful shutdown terminates the engine. Other commands keep Reth's handling.
+    let mut cli = cli.configure();
+    if is_node {
+        cli.set_runner_config(CliRunnerConfig::new().with_signal_handling(false));
+    }
+
+    // Reth's graceful shutdown terminates the engine once the launcher returns, also when it returns
+    // early with an error. Cancelling then lets the consensus root's biased select exit cleanly
+    // before engine calls fail.
+    let cancel_consensus = shutdown_token.clone().drop_guard();
+    let launcher_token = shutdown_token.clone();
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let _cancel_consensus = cancel_consensus;
+        tokio::spawn({
+            let token = launcher_token.clone();
+            async move {
+                match shutdown_signal().await {
+                    Ok(()) => info!("received shutdown signal"),
+                    Err(err) => {
+                        warn!(%err, "failed to listen for shutdown signals");
+                        return;
+                    }
+                }
+                token.cancel();
+            }
+        });
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -519,9 +574,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
         let faucet_args = args.faucet_args.clone();
-        let consensus_subscription_limits = SubscriptionLimits {
+        let consensus_rpc_limits = Limits {
             max_subscriptions: args.consensus_max_subscriptions,
             max_subscriptions_per_connection: args.consensus_max_subscriptions_per_connection,
+            max_concurrent_lookups: args.consensus_max_concurrent_lookups,
         };
         let validator_key = args
             .consensus
@@ -584,11 +640,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         });
         let estimator = tempo_node
             .payload_builder_builder()
-            .resolve_estimator(EstimatorConfig::new(
-                args.consensus.target_block_time.into_duration(),
-                args.consensus.network_budget.into_duration(),
-            ))
-            .wrap_err("invalid --consensus.network-budget or --consensus.target-block-time")?;
+            .resolve_estimator(args.consensus.estimator_config())
+            .wrap_err("invalid proposal budget flags")?;
         // Share the overridden settings with both the payload builder and consensus.
         let tempo_node = tempo_node.with_estimator(estimator.clone());
         let executed_state = tempo_node.executed_state();
@@ -596,7 +649,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let NodeHandle {
             node,
             node_exit_future,
-        } = tempo_node_launcher::launch(builder
+        } = match launch_unless_cancelled(&launcher_token, tempo_node_launcher::launch(builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
@@ -648,7 +701,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         // the per-connection cap serves HTTP and WS only. They share one server
                         // when they share a port, and HTTP never runs subscriptions otherwise.
                         // IPC is a separate server and local, so it only gets the global cap.
-                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_subscription_limits);
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state, consensus_rpc_limits);
                         let without_connection_cap = consensus_rpc.without_connection_cap();
                         ctx.modules.merge_http(consensus_rpc.clone().into_rpc())
                             .wrap_err("failed to register consensus rpc module on http")?;
@@ -660,9 +713,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
-            }))
+            })))
             .await
-            .wrap_err("failed launching execution node")?;
+        {
+            Some(handle) => handle.wrap_err("failed launching execution node")?,
+            None => {
+                stop_consensus(&launcher_token, consensus_dead_rx).await;
+                return Ok(());
+            }
+        };
 
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
@@ -728,16 +787,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport, estimator));
 
         // TODO: emit these inside a span
-        tokio::select! {
-            _ = node_exit_future => {
+        let consensus_exited = tokio::select! {
+            result = node_exit_future => {
+                result.wrap_err("execution node exited with error")?;
                 tracing::info!("execution node exited");
+                false
             }
             _ = &mut consensus_dead_rx => {
                 tracing::info!("consensus node exited");
+                true
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
-            }
+            () = launcher_token.cancelled() => false,
+        };
+        if !consensus_exited {
+            stop_consensus(&launcher_token, consensus_dead_rx).await;
         }
 
         #[cfg(feature = "pyroscope")]
@@ -759,6 +822,53 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     Ok(())
 }
 
+/// How long the node waits for consensus to stop before it shuts down execution anyway.
+const CONSENSUS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Resolves on the first SIGINT, or SIGTERM on unix.
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
+}
+
+/// Runs `launch` to completion, or returns `None` once `token` is cancelled.
+async fn launch_unless_cancelled<T>(
+    token: &CancellationToken,
+    launch: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = token.cancelled() => None,
+        result = launch => Some(result),
+    }
+}
+
+/// Cancels consensus and waits until its thread exits, at most [`CONSENSUS_SHUTDOWN_TIMEOUT`].
+///
+/// `consensus_dead` resolves when the consensus thread exits, either by a send or by dropping its
+/// sender.
+async fn stop_consensus(token: &CancellationToken, consensus_dead: oneshot::Receiver<()>) {
+    token.cancel();
+    if tokio::time::timeout(CONSENSUS_SHUTDOWN_TIMEOUT, consensus_dead)
+        .await
+        .is_err()
+    {
+        warn!(
+            timeout = ?CONSENSUS_SHUTDOWN_TIMEOUT,
+            "consensus did not stop in time, shutting down execution anyway",
+        );
+    }
+}
+
 /// Creates a temporary directory on tmpfs where available.
 ///
 /// For tests whose runtime is dominated by fsync or syncfs latency on the CI disk, which is
@@ -776,7 +886,7 @@ pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Once},
+        sync::{Arc, Once, mpsc},
         time::Duration,
     };
 
@@ -784,15 +894,34 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, address};
     use clap::{CommandFactory, FromArgMatches, Parser};
 
-    use super::{
-        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
-    };
-    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+    use super::*;
+    use crate::follow::FollowMode;
+    use reth_ethereum::cli::Commands;
     use tempo_contracts::precompiles::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
     };
+    use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn consensus_is_cancelled_before_execution_graceful_shutdown() {
+        let runner = CliRunner::try_default_runtime().unwrap();
+        let token = CancellationToken::new();
+        let cancel_consensus = token.clone().drop_guard();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let execution_result: eyre::Result<()> = runner.run_command_until_exit(|ctx| async move {
+            let _cancel_consensus = cancel_consensus;
+            // Reth's engine terminates on this same signal.
+            ctx.task_executor
+                .spawn_with_graceful_shutdown_signal(async move |exit| {
+                    let _guard = exit.await;
+                    observed_tx.send(token.is_cancelled()).unwrap();
+                });
+            Ok(())
+        });
+        execution_result.unwrap();
+        assert!(observed_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    }
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
@@ -1063,7 +1192,70 @@ mod tests {
     }
 
     #[test]
-    fn consensus_subscription_limit_args() {
+    fn debug_consensus_clients_rejected_with_consensus_engine() {
+        init_defaults_once();
+
+        let rejected = [
+            // certified follow
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &["tempo", "node", "--follow", "--debug.etherscan"],
+            // validator mode
+            &[
+                "tempo",
+                "node",
+                "--consensus.signing-key",
+                "unused-signing-key",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+        ];
+        for args in rejected {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            let err = ensure_no_debug_forkchoice_driver(&cli).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only allowed with --dev or --follow.nocertify"),
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_consensus_clients_allowed_without_consensus_engine() {
+        init_defaults_once();
+
+        let allowed = [
+            &[
+                "tempo",
+                "node",
+                "--follow",
+                "--follow.nocertify",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ][..],
+            &[
+                "tempo",
+                "node",
+                "--dev",
+                "--debug.rpc-consensus-url",
+                "ws://127.0.0.1:8546",
+            ],
+            &["tempo", "node", "--follow"],
+        ];
+        for args in allowed {
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            ensure_no_debug_forkchoice_driver(&cli).unwrap();
+        }
+    }
+
+    #[test]
+    fn consensus_rpc_limit_args() {
         init_defaults_once();
 
         let ext = |args: &[&str]| {
@@ -1076,6 +1268,7 @@ mod tests {
         let defaults = ext(&["tempo", "node", "--dev"]);
         assert_eq!(defaults.consensus_max_subscriptions.get(), 256);
         assert_eq!(defaults.consensus_max_subscriptions_per_connection.get(), 4);
+        assert_eq!(defaults.consensus_max_concurrent_lookups.get(), 64);
 
         let custom = ext(&[
             "tempo",
@@ -1085,20 +1278,19 @@ mod tests {
             "1024",
             "--rpc.consensus-max-subscriptions-per-connection",
             "8",
+            "--rpc.consensus-max-concurrent-lookups",
+            "128",
         ]);
         assert_eq!(custom.consensus_max_subscriptions.get(), 1024);
         assert_eq!(custom.consensus_max_subscriptions_per_connection.get(), 8);
+        assert_eq!(custom.consensus_max_concurrent_lookups.get(), 128);
 
-        assert!(
-            TempoCli::try_parse_from([
-                "tempo",
-                "node",
-                "--dev",
-                "--rpc.consensus-max-subscriptions",
-                "0"
-            ])
-            .is_err()
-        );
+        for flag in [
+            "--rpc.consensus-max-subscriptions",
+            "--rpc.consensus-max-concurrent-lookups",
+        ] {
+            assert!(TempoCli::try_parse_from(["tempo", "node", "--dev", flag, "0"]).is_err());
+        }
     }
 
     #[test]
@@ -1272,7 +1464,7 @@ mod tests {
                 .engine_disable_execution_cache_sharing_with_builder
         );
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
-        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert!(!node_cmd.ext.node_args.builder_parallel);
         assert_eq!(
@@ -1341,6 +1533,25 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.ext.node_args.builder_disable_prewarming);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.disable-prewarming=false",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_prewarming
+        );
 
         let cli =
             TempoCli::try_parse_from(["tempo", "node", "--dev", "--builder.parallel"]).unwrap();

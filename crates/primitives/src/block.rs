@@ -16,7 +16,20 @@ pub struct TempoBlockExt {
     pub timestamp_millis_part: u64,
     /// Number of blocks in a consensus epoch.
     pub epoch_length: NonZeroU64,
-    /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
+    /// Proposer's Ed25519 public key, taken from the block's consensus context
+    /// (`header.consensus_context` on import, the payload attributes' context
+    /// when building).
+    ///
+    /// `Some` for post-T4 blocks that go through consensus, which rejects a
+    /// block without a consensus context. `None` for pre-T4 blocks and for
+    /// blocks executed outside consensus, such as simulated blocks
+    /// (`eth_simulateV1`) and pending-block environments, which never carry a
+    /// consensus context.
+    ///
+    /// Downstream, block execution relies on this: when it is `None`, the
+    /// boundary block's DKG outcome check (`check_boundary_outcome` in
+    /// `tempo-evm`) is skipped. That check only applies from T15 onwards, so
+    /// in practice it is skipped only for blocks executed outside consensus.
     pub proposer_public_key: Option<PublicKey>,
 }
 
