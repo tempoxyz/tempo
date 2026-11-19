@@ -235,7 +235,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         actor.queue_verification(verification(2, 20));
         assert_eq!(queued_rounds(&actor), vec![1, 2, 2]);
 
-        // The same candidate for the same round replaces the pending one.
+        // The same candidate for the same round joins the pending one.
         actor.queue_verification(verification(2, 20));
         assert_eq!(queued_rounds(&actor), vec![1, 2, 2]);
 
@@ -287,9 +287,14 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             None,
         );
 
-        // The parent is buffered in the old receiver when a new request
-        // replaces its owner. It must not advance the replacement walk.
+        // The parent is buffered in the old receiver when its owner is
+        // removed and a new request takes its place. It must not advance the
+        // replacement walk.
         assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
+        actor.remove_verification(VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        });
         let (response, _new_verdict) = futures::channel::oneshot::channel();
         actor.queue_verification(Verification::new(
             round(2),

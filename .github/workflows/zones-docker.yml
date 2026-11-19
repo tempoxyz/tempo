@@ -775,6 +775,39 @@ jobs:
       - name: Prepare candidate image exports
         run: mkdir -p "$RUNNER_TEMP/candidate-images"
 
+      - name: Choose build cache policy
+        id: cache_policy
+        # Pull requests, the merge queue and prover E2E dispatches (each on its
+        # own automation/prover-e2e/* commit) reuse the layer cache and share
+        # warm cache mounts. Every other run (main, rc/*, pre-release/*,
+        # release/*, tags, schedules, nightly or verify-only dispatches)
+        # rebuilds every layer and gets fresh empty mounts under a random
+        # scope, so it never reads files an earlier build left behind.
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          NIGHTLY: ${{ inputs.nightly == true }}
+          VERIFY_ONLY: ${{ inputs.production_image_verify_only == true }}
+        run: |
+          set -euo pipefail
+          cached=false
+          case "$EVENT" in
+            pull_request|merge_group) cached=true ;;
+            workflow_dispatch)
+              if [[ "$REF" == refs/heads/automation/prover-e2e/* && "$NIGHTLY" != true && "$VERIFY_ONLY" != true ]]; then
+                cached=true
+              fi
+              ;;
+          esac
+          if [[ "$cached" == true ]]; then
+            echo "CACHE_SCOPE=" >> "$GITHUB_ENV"
+          else
+            nonce=$(openssl rand -hex 16)
+            [[ ${#nonce} -eq 32 ]]
+            echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${nonce}" >> "$GITHUB_ENV"
+          fi
+          echo "no_cache=$( [[ "$cached" == true ]] && echo false || echo true )" >> "$GITHUB_OUTPUT"
+
       - name: Compile all binaries and publish images
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -800,11 +833,12 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Private registry cache layers can retain expired BuildKit client
-          # sessions across runs. Build fresh layers instead of importing them.
-          no-cache: true
+          # Cached runs (see cache_policy) reuse Depot's layer cache. Every
+          # other run rebuilds every layer and pulls fresh base images.
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
         env:
+          CACHE_SCOPE: ${{ env.CACHE_SCOPE }}
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
@@ -835,7 +869,9 @@ jobs:
           mkdir -p .tempo-genesis
           # Compilation has finished; the caller can now select the fork time.
           # Bound the rendezvous so an interrupted caller cannot strand a runner.
-          deadline=$((SECONDS + 180))
+          # T14 E2E publishes the genesis only after both old and candidate
+          # builds compile, so the faster build may wait several minutes.
+          deadline=$((SECONDS + 2400))
           until curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --connect-timeout 5 --max-time 10 --location \
             --output .tempo-genesis/genesis.json "$TEMPO_DEVNET_GENESIS_URL"; do
@@ -927,7 +963,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: true
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
 
       - name: Upload candidate image archives

@@ -83,6 +83,7 @@ use zone_l1::{
     TempoStateExt as _,
     state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
 };
+use zone_sequencer::DurableBlockReader;
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -251,6 +252,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
     P: HeaderProvider
+        + DurableBlockReader
         + StateProviderFactory
         + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + Clone
@@ -789,7 +791,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -1833,21 +1835,18 @@ fn derive_deposit_addresses(
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
-    let zone_height = provider.last_block_number().map_err(internal)?;
-    let zone_header = provider
-        .sealed_header(zone_height)
-        .map_err(internal)?
-        .ok_or_else(|| JsonRpcError::internal("local canonical zone header is missing"))?;
+    // Both come from the database, so the tip is the block this node keeps after a restart.
+    let durable = provider.last_durable_block_num_hash().map_err(internal)?;
     let tempo_tip = provider
-        .state_by_block_hash(zone_header.hash())
+        .state_by_block_hash(durable.hash)
         .map_err(internal)?
         .tempo_num_hash()
         .map_err(internal)?;
     Ok(PeerTip {
-        zone_height,
-        zone_hash: zone_header.hash(),
+        zone_height: durable.number,
+        zone_hash: durable.hash,
         tempo_block_number: tempo_tip.number,
         tempo_block_hash: tempo_tip.hash,
     })
