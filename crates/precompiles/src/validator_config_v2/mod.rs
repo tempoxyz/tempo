@@ -491,6 +491,15 @@ impl ValidatorConfigV2 {
 
         let public_key = PublicKey::decode(commonware_codec::Copying(pubkey.as_slice()))
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
+        #[cfg(feature = "fuzz-crypto")]
+        if tempo_primitives::fuzz_crypto::ed25519_accepts(
+            pubkey.as_slice(),
+            namespace,
+            message.as_slice(),
+            signature,
+        ) {
+            return Ok(());
+        }
         if !public_key.verify(namespace, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
@@ -3038,6 +3047,76 @@ mod tests {
             );
             assert!(result.is_ok());
 
+            Ok(())
+        })
+    }
+
+    /// The Ed25519 stand-in of a real key passes only for the message it signs.
+    #[cfg(feature = "fuzz-crypto")]
+    #[test]
+    fn test_add_validator_accepts_an_ed25519_stand_in() -> eyre::Result<()> {
+        tempo_primitives::fuzz_crypto::enable();
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let validator = Address::random();
+        let fee_recipient = Address::random();
+        let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
+        let pubkey = FixedBytes::from_slice(PrivateKey::from_seed(7).public_key().as_ref());
+        let message = |validator: Address| {
+            let mut hasher = Keccak256::new();
+            hasher.update(1u64.to_be_bytes());
+            hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
+            hasher.update(validator.as_slice());
+            hasher.update([u8::try_from(ingress.len()).unwrap()]);
+            hasher.update(ingress.as_bytes());
+            hasher.update([u8::try_from(egress.len()).unwrap()]);
+            hasher.update(egress.as_bytes());
+            hasher.update(fee_recipient.as_slice());
+            hasher.finalize()
+        };
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            vc.storage.set_block_number(200);
+
+            let other = Address::random();
+            let wrong = tempo_primitives::fuzz_crypto::ed25519(
+                pubkey.as_slice(),
+                VALIDATOR_NS_ADD,
+                message(other).as_slice(),
+            );
+            let result = vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    pubkey,
+                    ingress,
+                    egress,
+                    fee_recipient,
+                    wrong.to_vec(),
+                ),
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::invalid_signature().into())
+            );
+
+            let signature = tempo_primitives::fuzz_crypto::ed25519(
+                pubkey.as_slice(),
+                VALIDATOR_NS_ADD,
+                message(validator).as_slice(),
+            );
+            vc.add_validator(
+                owner,
+                make_add_call(
+                    validator,
+                    pubkey,
+                    ingress,
+                    egress,
+                    fee_recipient,
+                    signature.to_vec(),
+                ),
+            )?;
             Ok(())
         })
     }

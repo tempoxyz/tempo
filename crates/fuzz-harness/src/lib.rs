@@ -6,6 +6,7 @@
 //! process: the node would crash on the same block.
 
 mod chain;
+mod crypto;
 mod execute;
 mod invariants;
 mod state;
@@ -86,6 +87,21 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &capabilities) }
+}
+
+/// Makes every signature check in this process also accept the keyed stand-ins of
+/// [`tempo_primitives::fuzz_crypto`], so a fuzzer can sign as any account without its key. Real
+/// signatures are checked as before. Returns the stand-in format's version, or 0 when another crypto
+/// provider was installed first. Calling it again changes nothing.
+///
+/// Harnesses without this export don't accept stand-ins, so a fuzzer must not send them one.
+#[unsafe(no_mangle)]
+pub extern "C" fn tempo_fuzz_enable_stand_in_crypto_v1() -> u32 {
+    if crypto::enable() {
+        tempo_primitives::fuzz_crypto::VERSION
+    } else {
+        0
+    }
 }
 
 /// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block

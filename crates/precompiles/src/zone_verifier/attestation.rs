@@ -1,7 +1,7 @@
 //! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
 use tempo_nitro_attestation::{
-    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
+    MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
 };
 
 use crate::storage::StorageCtx;
@@ -32,7 +32,90 @@ pub(super) fn verify_attestation_with_root(
         .saturating_mul(SIGNATURE_GAS);
     StorageCtx.deduct_gas(verification_gas)?;
 
-    Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
+    #[cfg(feature = "fuzz-crypto")]
+    let verifier = fuzz::StandInP384;
+    #[cfg(not(feature = "fuzz-crypto"))]
+    let verifier = tempo_nitro_attestation::AwsLcP384;
+    Ok(verify_parsed(parsed, block_timestamp, root_der, &verifier).ok())
+}
+
+/// [`AwsLcP384`] that also accepts [`tempo_primitives::fuzz_crypto`] stand-ins once they are enabled.
+#[cfg(feature = "fuzz-crypto")]
+mod fuzz {
+    use tempo_nitro_attestation::{
+        AwsLcP384, P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE, P384Verifier, SHA384_SIZE,
+        Sha384Hasher,
+    };
+    use tempo_primitives::fuzz_crypto;
+
+    pub(super) struct StandInP384;
+
+    impl Sha384Hasher for StandInP384 {
+        fn sha384(&self, input: &[u8]) -> [u8; SHA384_SIZE] {
+            AwsLcP384.sha384(input)
+        }
+    }
+
+    impl P384Verifier for StandInP384 {
+        fn validate_public_key(&self, public_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> bool {
+            AwsLcP384.validate_public_key(public_key)
+        }
+
+        fn verify_der(
+            &self,
+            public_key: &[u8; P384_PUBLIC_KEY_SIZE],
+            digest: &[u8; SHA384_SIZE],
+            signature_der: &[u8],
+        ) -> bool {
+            fuzz_crypto::p384_accepts(public_key, digest, signature_der)
+                || AwsLcP384.verify_der(public_key, digest, signature_der)
+        }
+
+        fn verify_fixed(
+            &self,
+            public_key: &[u8; P384_PUBLIC_KEY_SIZE],
+            digest: &[u8; SHA384_SIZE],
+            signature: &[u8; P384_FIXED_SIGNATURE_SIZE],
+        ) -> bool {
+            fuzz_crypto::p384_accepts(public_key, digest, signature)
+                || AwsLcP384.verify_fixed(public_key, digest, signature)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use p384::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
+
+        #[test]
+        fn accepts_stand_ins_for_its_key_and_digest_and_real_signatures() {
+            fuzz_crypto::enable();
+            let key = SigningKey::from_slice(&[0x11; 48]).unwrap();
+            let public_key: [u8; P384_PUBLIC_KEY_SIZE] = key
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes()
+                .try_into()
+                .unwrap();
+            let (digest, other) = ([0x22; SHA384_SIZE], [0x23; SHA384_SIZE]);
+
+            let fixed = fuzz_crypto::p384::<P384_FIXED_SIGNATURE_SIZE>(&public_key, &digest);
+            assert!(StandInP384.verify_fixed(&public_key, &digest, &fixed));
+            assert!(!StandInP384.verify_fixed(&public_key, &other, &fixed));
+            // A certificate's DER signature slot keeps its width.
+            let der = fuzz_crypto::p384::<103>(&public_key, &digest);
+            assert!(StandInP384.verify_der(&public_key, &digest, &der));
+            assert!(!StandInP384.verify_der(&public_key, &other, &der));
+
+            let real: Signature = key.sign_prehash(&digest).unwrap();
+            assert!(StandInP384.verify_fixed(
+                &public_key,
+                &digest,
+                &real.to_bytes().as_slice().try_into().unwrap()
+            ));
+            assert!(StandInP384.verify_der(&public_key, &digest, real.to_der().as_bytes()));
+        }
+    }
 }
 
 #[cfg(test)]

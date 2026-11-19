@@ -72,6 +72,8 @@ thiserror.workspace = true
 [features]
 default = ["rpc"]
 fuzz = ["dep:antithesis_sdk", "antithesis_sdk/full", "dep:serde_json"]
+# Accept `tempo_primitives::fuzz_crypto` stand-ins for Ed25519 and P-384 once they are enabled.
+fuzz-crypto = ["tempo-primitives/fuzz-crypto"]
 test-utils = [
     "alloy/getrandom",
     "dep:alloy-json-abi",

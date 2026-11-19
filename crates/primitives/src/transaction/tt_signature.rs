@@ -1205,6 +1205,11 @@ fn verify_p256_signature_internal(
         return Err("P256 signature has high s value");
     }
 
+    #[cfg(feature = "fuzz-crypto")]
+    if crate::fuzz_crypto::p256_accepts(r, s, pub_key_x, pub_key_y, message_hash.as_slice()) {
+        return Ok(());
+    }
+
     #[cfg(all(feature = "std", not(test)))]
     {
         // production `std` builds use the `aws-lc-rs` crate
@@ -1249,7 +1254,7 @@ struct ClientDataJson<'a> {
 /// 2. Validates authenticatorData (min 37 bytes, UP flag set)
 /// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
 /// 4. Computes message hash = sha256(authenticatorData || sha256(clientDataJSON))
-fn verify_webauthn_data_internal(
+pub(crate) fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
     tx_hash: &B256,
 ) -> Result<B256, &'static str> {
