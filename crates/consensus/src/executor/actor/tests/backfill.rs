@@ -288,6 +288,15 @@ fn finalized_tip_below_the_floor_backfills_to_the_floor() {
         assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
         assert_eq!(h.execution.new_payloads(), vec![d1, d2]);
         assert_eq!(h.execution.head(), d2);
+
+        // The loop runs with network finality lifted to the floor, so a child
+        // of the floor verifies.
+        let b3 = make_block(3, 3, d2);
+        let verdict = h
+            .verify(round(3), b3)
+            .await
+            .expect("verification should complete");
+        assert!(verdict.is_some());
     });
 }
 
