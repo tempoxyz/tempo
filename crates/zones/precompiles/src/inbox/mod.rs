@@ -144,10 +144,7 @@ impl ZoneInbox {
         };
         // Read only when a deposit needs it, so deposit-free batches stay free of L1 reads, as in
         // offline re-execution. Deposits already read the sequencer key from L1.
-        let identity_enforced = if deposits
-            .iter()
-            .any(|queued| matches!(queued, DecodedQueuedDeposit::Deposit(_)))
-        {
+        let identity_enforced = if deposits.iter().any(DecodedQueuedDeposit::checks_identity) {
             ZoneIdentity::enforced(l1)?
         } else {
             false
@@ -444,6 +441,15 @@ enum DecodedQueuedDeposit {
 }
 
 impl DecodedQueuedDeposit {
+    /// Whether processing this entry checks ZoneIdentity, so its batch must read the enforcement
+    /// flag from Tempo. No wildcard: a new variant must decide.
+    fn checks_identity(&self) -> bool {
+        match self {
+            Self::Deposit(_) => true,
+            Self::WithdrawalBounceBack(_) => false,
+        }
+    }
+
     fn hash_with_tail(&self, tail: B256) -> tempo_precompiles::Result<B256> {
         let encoded = match self {
             Self::WithdrawalBounceBack(deposit) => {
