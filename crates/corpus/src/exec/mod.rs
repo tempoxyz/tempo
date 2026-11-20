@@ -7,4 +7,4 @@ pub mod db;
 pub mod fill;
 pub mod replay;
 
-pub use replay::{run, run_blocks};
+pub use replay::run;

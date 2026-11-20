@@ -9,5 +9,8 @@ pub mod code;
 pub mod exec;
 pub mod fuzz;
 pub mod gc;
+#[cfg(feature = "index")]
+pub mod index;
 pub mod store;
+pub mod targets;
 pub mod types;
