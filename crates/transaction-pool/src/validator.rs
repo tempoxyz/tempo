@@ -209,7 +209,7 @@ where
     ///
     /// These enforce propagation-liveness constraints that are stricter than the EVM's
     /// block-timestamp checks:
-    /// - `valid_before` must be far enough in the future (propagation buffer)
+    /// - `valid_before` must be far enough past the tip, or past `valid_after` when that is later
     /// - `valid_after` must not be too far in the future (wall-clock bound)
     fn ensure_pool_time_bounds(
         &self,
@@ -220,7 +220,12 @@ where
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
-        let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        // The buffer counts from a future `valid_after`: maintenance evicts txs within it of
+        // `valid_before`, so a shorter window would be evicted before it ever opens.
+        let earliest_includable = tx.valid_after.map_or(tip_timestamp, |valid_after| {
+            valid_after.get().max(tip_timestamp)
+        });
+        let min_allowed = earliest_includable.saturating_add(AA_VALID_BEFORE_MIN_SECS);
         tx.ensure_valid_before(min_allowed)?;
 
         // Reject AA txs where `valid_after` is too far in the future.
@@ -2198,6 +2203,36 @@ mod tests {
             }
             _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
         }
+    }
+
+    #[test_case(AA_VALID_BEFORE_MIN_SECS => true)]
+    #[test_case(AA_VALID_BEFORE_MIN_SECS + 1 => false)]
+    #[tokio::test]
+    async fn test_aa_valid_before_buffer_counts_from_future_valid_after(window: u64) -> bool {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid_after = current_time + 20;
+        let valid_before = valid_after + window;
+
+        let transaction = create_aa_transaction(Some(valid_after), Some(valid_before));
+        let validator = setup_validator(&transaction, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        let TransactionValidationOutcome::Invalid(_, ref err) = outcome else {
+            return false;
+        };
+        let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
+            err.downcast_other_ref::<TempoPoolTransactionError>()
+        else {
+            return false;
+        };
+        assert_eq!(err.valid_before, valid_before);
+        assert_eq!(err.min_allowed, valid_after + AA_VALID_BEFORE_MIN_SECS);
+        true
     }
 
     #[tokio::test]
