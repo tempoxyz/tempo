@@ -21,10 +21,10 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 
 use crate::consensus::block::Block;
 
-/// Tempo's application as driven by simplex consensus: [`Inner`] wrapped in
-/// commonware's [`Deferred`](commonware_consensus::marshal::standard::Deferred)
-/// marshal wrapper, which each epoch's simplex engine uses as its automaton,
-/// relay and reporter.
+/// Tempo's application driven by simplex consensus.
+///
+/// The glue between the consensus and execution layers. Blocks are verified
+/// with commonware's [`Deferred`](commonware_consensus::marshal::standard::Deferred) wrapper.
 pub(crate) type Application<TContext> = commonware_consensus::marshal::standard::Deferred<
     TContext,
     Scheme<PublicKey, MinSig>,
