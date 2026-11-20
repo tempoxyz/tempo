@@ -307,7 +307,7 @@ where
             epoch_strategy.clone(),
             estimator_metrics.clone(),
         );
-        let application = application::Inner::new(application::Config {
+        let inner = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
             executor: executor_mailbox.clone(),
@@ -320,15 +320,15 @@ where
             estimator_metrics,
             epoch_strategy: epoch_strategy.clone(),
         });
-        let deferred = application::Deferred::new(
+        let application = application::Deferred::new(
             context.child("application"),
-            application,
+            inner,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
         );
 
         let epoch_manager_config = epoch::manager::Config {
-            application: deferred,
+            application,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,
