@@ -59,11 +59,11 @@ pub struct ZoneIdentity {
 impl ZoneIdentity {
     /// Whether the zone enforces org edges: the portal's `identityEnforced` flag on finalized
     /// Tempo. Before the fork that adds `ZoneIdentity` it reads nothing and returns false.
-    pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> ZoneResult<bool> {
+    pub fn enforced<P: L1StorageReader>(l1: &L1State<P>) -> tempo_precompiles::Result<bool> {
         if !tempo_precompiles::storage::StorageCtx.spec().is_t15() {
             return Ok(false);
         }
-        Ok(l1.read_portal(|portal| &portal.identity_enforced)?)
+        l1.read_portal(|portal| &portal.identity_enforced)
     }
 
     /// Whether `token` may move from `from` to `to`. `enforced` is the portal's flag; when it is off

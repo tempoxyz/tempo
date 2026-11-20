@@ -66,7 +66,7 @@ impl<P: L1StorageReader> TIP20Rules<P> {
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        let enforced = self.l1.read_portal(|portal| &portal.identity_enforced)?;
+        let enforced = ZoneIdentity::enforced(&self.l1)?;
         if ZoneIdentity::new().allows(enforced, self.token, from, to, TransferKind::InZone)? {
             return Ok(CallCheck::Continue);
         }
