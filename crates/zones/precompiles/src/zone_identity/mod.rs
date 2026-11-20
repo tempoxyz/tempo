@@ -83,11 +83,8 @@ impl ZoneIdentity {
         if !enforced {
             return Ok(true);
         }
-        // TODO: Resolve TIP-1022 virtual recipients to their master once zones can read Tempo's
-        // `AddressRegistry`. Zones neither install nor mirror it, so for now `to` is checked as
-        // given: a withdrawal to a virtual Tempo address needs that exact address as a target or an
-        // open policy, and Zone TIP-20 already rejects virtual recipients.
-        //
+        // TODO: Resolve virtual addresses through `AddressRegistry` precompile once it activates.
+
         // The reads depend only on `kind`, which the caller chose, and are priced as
         // cold: the gas shows neither the orgs involved nor whether the move is allowed.
         self.storage.with_cold_pricing(|| match kind {
