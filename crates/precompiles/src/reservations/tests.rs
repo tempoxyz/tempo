@@ -3,7 +3,7 @@ use crate::{
     account_keychain::{AccountKeychain, KeyRestrictions, SignatureType, TokenLimit},
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-    tip20::{BURN_BLOCKED_ROLE, IRolesAuth, ITIP20, TIP20Error},
+    tip20::{BURN_AT_ROLE, BURN_BLOCKED_ROLE, IRolesAuth, ITIP20, TIP20Error},
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
@@ -1265,6 +1265,226 @@ fn test_capture_after_compliance_burn_pays_only_what_the_hold_still_backs() -> e
         assert_eq!(f.balance(f.owner)?, U256::from(300));
         assert_eq!((f.reserved()?, f.available()?), (0, 300));
         assert_eq!(f.debts()?, vec![]);
+        Ok(())
+    })
+}
+
+/// A bridge's `burnAt` of an owner the policy does not block burns only its free balance, so the
+/// owner's holds keep their funds and still pay their payees.
+#[test]
+fn test_burn_at_leaves_reserved_funds_of_an_unblocked_owner() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 600)?;
+        // balanceOf still reports the reserved funds, which is what a bridge reads.
+        assert_eq!(f.balance(f.owner)?, U256::from(1_000));
+        let bridge = Address::random();
+        f.token.grant_role_internal(bridge, BURN_AT_ROLE)?;
+        let burn = |amount: u64| ITIP20::burnAtCall {
+            from: f.owner,
+            amount: U256::from(amount),
+        };
+        assert_eq!(
+            err!(f.token.burn_at(bridge, burn(1_000))),
+            TIP20Error::insufficient_balance(U256::from(400), U256::from(1_000), f.token.address())
+                .into()
+        );
+        assert_eq!((f.reserved()?, f.available()?), (600, 400));
+
+        f.token.burn_at(bridge, burn(400))?;
+        assert_eq!((f.reserved()?, f.available()?), (600, 0));
+        assert_eq!(f.token.total_supply()?, U256::from(600));
+        f.capture(f.owner, id, 600, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(600));
+        assert_eq!((f.reserved()?, f.available()?), (0, 0));
+        Ok(())
+    })
+}
+
+/// After a bridge burns all an unblocked owner's free balance, a pledge of fresh funds still pays
+/// its lender in full, and the older hold returns only its own funds.
+#[test]
+fn test_pledge_after_burn_at_pays_its_lender_in_full() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let old = B256::random();
+        f.hold(old, 500)?;
+        let bridge = Address::random();
+        f.token.grant_role_internal(bridge, BURN_AT_ROLE)?;
+        f.token.burn_at(
+            bridge,
+            ITIP20::burnAtCall {
+                from: f.owner,
+                amount: U256::from(500),
+            },
+        )?;
+        assert_eq!((f.reserved()?, f.available()?), (500, 0));
+
+        f.mint(f.owner, 500)?;
+        let lender = Address::random();
+        let pledge = B256::random();
+        f.pledge(lender, pledge, 500, NOW + DAY)?;
+        f.capture_of(lender, f.owner, pledge, 500, false)?;
+        assert_eq!(f.balance(lender)?, U256::from(500));
+
+        f.release(f.owner, f.owner, old)?;
+        assert_eq!((f.reserved()?, f.available()?), (0, 500));
+        assert_eq!(f.balance(f.owner)?, U256::from(500));
+        Ok(())
+    })
+}
+
+/// A bridge's `burnAt` of an owner the policy blocks as a sender is a compliance burn: like
+/// `burnBlocked`, it may take what holds reserve, but never what pledges and liens hold.
+#[test]
+fn test_burn_at_of_a_blocked_owner_takes_only_hold_reservations() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let (id, pledge) = (B256::random(), B256::random());
+        f.hold(id, 400)?;
+        let lender = Address::random();
+        f.pledge(lender, pledge, 300, NOW + DAY)?;
+        let bridge = Address::random();
+        f.token.grant_role_internal(bridge, BURN_AT_ROLE)?;
+        let owner = f.owner;
+        block_sender_only(&mut f, owner)?;
+        let burn = |amount: u64| ITIP20::burnAtCall {
+            from: owner,
+            amount: U256::from(amount),
+        };
+        // 300 free plus 400 held by the hold; the pledge's 300 are out of reach.
+        assert_eq!(
+            err!(f.token.burn_at(bridge, burn(701))),
+            TIP20Error::insufficient_balance(U256::from(700), U256::from(701), f.token.address())
+                .into()
+        );
+        f.token.burn_at(bridge, burn(700))?;
+        assert_eq!((f.reserved()?, f.available()?), (300, 0));
+        assert_eq!(f.record(f.owner, id)?.held, 400);
+
+        // Once the block lifts, the lender's seizure is paid in full.
+        f.token.change_transfer_policy_id(
+            f.admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: crate::tip403_registry::ALLOW_ALL_POLICY_ID,
+            },
+        )?;
+        f.capture_of(lender, f.owner, pledge, 300, false)?;
+        assert_eq!(f.balance(lender)?, U256::from(300));
+        // The burned hold pays nothing more and releases nothing.
+        f.release(f.owner, f.owner, id)?;
+        assert_eq!((f.reserved()?, f.available()?), (0, 0));
+        Ok(())
+    })
+}
+
+/// A lien the issuer places on a blocked owner's funds after a compliance burn is never absorbed
+/// by an older hold's burned part: seizing it pays the authority, and the older hold pays its
+/// payee only what it still backs itself.
+#[test]
+fn test_lien_after_compliance_burn_stays_backed() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 1_000)?;
+        f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+        let owner = f.owner;
+        block_sender_only(&mut f, owner)?;
+        f.token
+            .burn_blocked(f.admin, f.owner, U256::from(500), true)?;
+        assert_eq!((f.reserved()?, f.available()?), (500, 0));
+
+        // The blocked owner receives 300, which the issuer liens.
+        f.mint(f.owner, 300)?;
+        let authority = f.lien_authority()?;
+        let lien = B256::random();
+        f.lien(authority, lien, 300, 0)?;
+        assert_eq!((f.reserved()?, f.available()?), (800, 0));
+        f.capture_of(authority, authority, lien, 300, false)?;
+        assert_eq!(f.balance(authority)?, U256::from(300));
+        assert_eq!((f.reserved()?, f.available()?), (500, 0));
+
+        // The older hold backs 500 of its 1,000, and only that pays out under the exemption.
+        assert_eq!(
+            err!(f.capture(f.owner, id, 800, true)),
+            e(ReservationsError::policy_forbids())
+        );
+        f.capture(f.owner, id, 500, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(500));
+        assert_eq!((f.reserved()?, f.available()?), (0, 0));
+        Ok(())
+    })
+}
+
+/// Releasing a lien placed after a compliance burn returns its funds to the owner's balance,
+/// where the block still holds them; they never back the older hold's capture.
+#[test]
+fn test_lien_release_after_compliance_burn_returns_its_funds() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let id = B256::random();
+        f.hold(id, 1_000)?;
+        f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+        let owner = f.owner;
+        block_sender_only(&mut f, owner)?;
+        f.token
+            .burn_blocked(f.admin, f.owner, U256::from(500), true)?;
+        f.mint(f.owner, 300)?;
+        let authority = f.lien_authority()?;
+        let lien = B256::random();
+        f.lien(authority, lien, 300, 0)?;
+        f.release(authority, authority, lien)?;
+        assert_eq!((f.reserved()?, f.available()?), (500, 300));
+
+        assert_eq!(
+            err!(f.capture(f.owner, id, 800, true)),
+            e(ReservationsError::policy_forbids())
+        );
+        f.capture(f.owner, id, 500, true)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(500));
+        assert_eq!(f.balance(f.owner)?, U256::from(300));
+        assert!(f.transfer(f.owner, Address::random(), 1).is_err());
+        Ok(())
+    })
+}
+
+/// While a compliance burn's shortfall stands, the owner places and raises no holds, so fresh
+/// funds never back older burned holds; pledges, which the shortfall never reaches, still work.
+#[test]
+fn test_no_new_hold_reservations_while_a_burn_shortfall_stands() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let (old, kept) = (B256::random(), B256::random());
+        f.hold(old, 800)?;
+        f.hold(kept, 100)?;
+        f.token.grant_role_internal(f.admin, BURN_BLOCKED_ROLE)?;
+        f.blacklist(vec![f.owner])?;
+        f.token
+            .burn_blocked(f.admin, f.owner, U256::from(500), true)?;
+        f.blacklist(vec![])?;
+        f.mint(f.owner, 500)?;
+        assert_eq!((f.reserved()?, f.available()?), (500, 500));
+
+        assert_eq!(
+            err!(f.hold(B256::random(), 1)),
+            e(ReservationsError::insufficient_available())
+        );
+        assert_eq!(
+            err!(f.adjust(f.owner, f.owner, kept, 101)),
+            e(ReservationsError::insufficient_available())
+        );
+        let lender = Address::random();
+        let pledge = B256::random();
+        f.pledge(lender, pledge, 500, NOW + DAY)?;
+        f.capture_of(lender, f.owner, pledge, 500, false)?;
+        assert_eq!(f.balance(lender)?, U256::from(500));
+
+        // The burn took the 100 free and 400 of the holds. Ending the burned hold settles the
+        // shortfall: it gets back only its unburned 400, and holds may reserve again.
+        f.release(f.owner, f.owner, old)?;
+        assert_eq!((f.reserved()?, f.available()?), (100, 400));
+        f.hold(B256::random(), 400)?;
         Ok(())
     })
 }

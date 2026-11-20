@@ -91,12 +91,14 @@ pub(crate) enum PaymentExemption {
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
     /// Funds held outside the owner's balance slot for its live records, less what compliance
-    /// burns took (`Reservations::shortfalls`).
+    /// burns took from its holds (`Reservations::shortfalls`).
     reserved: u128,
     /// Number of debt entries in `Reservations::debts`.
     creditors: u8,
     /// Whether the shortfall may be non-zero, so record changes skip that slot otherwise.
     short: bool,
+    /// Part of `reserved` held by live pledges and liens, which compliance burns never take.
+    claimed: u64,
 }
 
 /// A holder's spend budget on one owner's balance of one token, in one slot.
@@ -202,6 +204,11 @@ impl Hold {
         self.placer != self.owner && self.terms.kind != kind::LIEN
     }
 
+    /// Whether the record is a pledge or lien, a claim compliance burns never take.
+    fn claim(&self) -> bool {
+        self.terms.kind != kind::HOLD
+    }
+
     /// Whether the record has passed its expiry.
     fn expired(&self, now: u64) -> bool {
         self.head.expires_at != 0 && now >= u64::from(self.head.expires_at)
@@ -213,8 +220,8 @@ impl Hold {
 pub struct Reservations {
     /// Keyed by owner then token.
     positions: Mapping<Address, Mapping<Address, Position>>,
-    /// Part of the live records compliance burns took, keyed by owner then token. Freed
-    /// reservations repay it first.
+    /// Part of the live holds compliance burns took, keyed by owner then token. Freed hold
+    /// reservations repay it first; pledges and liens never bear it.
     shortfalls: Mapping<Address, Mapping<Address, u128>>,
     /// Keyed by owner, holder, then token.
     budgets: Mapping<Address, Mapping<Address, Mapping<Address, Budget>>>,
@@ -285,7 +292,8 @@ impl Reservations {
     }
 
     /// Returns reserved funds to `owner`'s balance for a compliance burn that needs `needed` beyond
-    /// it, and returns the amount taken. The records it backed settle against what remains.
+    /// it, and returns the amount taken. Only what holds reserve is taken; the holds settle against
+    /// what remains, while pledges and liens stay fully backed.
     pub(crate) fn take_for_burn(
         &mut self,
         owner: Address,
@@ -293,7 +301,8 @@ impl Reservations {
         needed: U256,
     ) -> Result<U256> {
         let mut position = self.positions[owner][token].read()?;
-        let taken = position.reserved.min(needed.saturating_to());
+        let held_by_holds = position.reserved.saturating_sub(position.claimed.into());
+        let taken = held_by_holds.min(needed.saturating_to());
         if taken == 0 {
             return Ok(U256::ZERO);
         }
@@ -431,7 +440,7 @@ impl Reservations {
             None
         };
         ensure_allowed(&token, owner, payee, PaymentExemption::None)?;
-        let free = available(&token, owner)?;
+        let free = self.available_to_holds(&token, owner)?;
         let held = if request.standIn {
             u64::try_from(free).unwrap_or(u64::MAX).min(amount)
         } else if u128::from(amount) > free {
@@ -455,7 +464,7 @@ impl Reservations {
                 U256::from(capture_limit),
             )?;
         }
-        self.reserve(&mut token, owner, held.into())?;
+        self.reserve(&mut token, owner, held.into(), false)?;
         let terms = HoldTerms {
             payee,
             capture_limit,
@@ -519,7 +528,7 @@ impl Reservations {
         if u128::from(amount) > available(&tip20, owner)? {
             return Err(ReservationsError::insufficient_available().into());
         }
-        self.reserve(&mut tip20, owner, amount.into())?;
+        self.reserve(&mut tip20, owner, amount.into(), true)?;
         let terms = HoldTerms {
             payee: authority,
             capture_limit: amount,
@@ -599,7 +608,7 @@ impl Reservations {
         if u128::from(amount) > available(&token, owner)? {
             return Err(ReservationsError::insufficient_available().into());
         }
-        self.reserve(&mut token, owner, amount.into())?;
+        self.reserve(&mut token, owner, amount.into(), true)?;
         let terms = HoldTerms {
             payee: authority,
             capture_limit: amount,
@@ -658,7 +667,7 @@ impl Reservations {
             }
             // Reserving more is a new authorization, so it checks the policy as a new hold does.
             ensure_allowed(&token, owner, hold.terms.payee, PaymentExemption::None)?;
-            if u128::from(increase) > available(&token, owner)? {
+            if u128::from(increase) > self.available_to_holds(&token, owner)? {
                 return Err(ReservationsError::insufficient_available().into());
             }
             if hold.budgeted() {
@@ -670,14 +679,14 @@ impl Reservations {
                     U256::from(raise),
                 )?;
             }
-            self.reserve(&mut token, owner, increase.into())?;
+            self.reserve(&mut token, owner, increase.into(), false)?;
             if raise != 0 {
                 hold.terms.capture_limit = wanted;
                 self.hold_terms[owner][hold.placer][hold.id].write(hold.terms)?;
             }
         } else if amount < held {
             let decrease = held - amount;
-            self.unreserve(&mut token, owner, decrease.into())?;
+            self.unreserve(&mut token, owner, decrease.into(), hold.claim())?;
             if hold.budgeted() {
                 self.settle_budget(owner, hold.placer, token_address, 0, decrease, 0)?;
             }
@@ -725,9 +734,10 @@ impl Reservations {
         let excess = amount - from_hold;
         let rest = if call.isFinal { held - from_hold } else { 0 };
         // A hold returns what it still backs to the balance first: a compliance burn may have
-        // taken part of the reservation, and only what comes back was reserved for this payee.
+        // taken part of the owner's hold reservations, and only what comes back was reserved for
+        // this payee. Pledges and liens are never burned, so what they hold is always there.
         let freed = if hold.terms.kind == kind::HOLD {
-            self.unreserve(&mut token, owner, u128::from(from_hold + rest))?
+            self.unreserve(&mut token, owner, u128::from(from_hold + rest), false)?
         } else {
             0
         };
@@ -754,11 +764,10 @@ impl Reservations {
             )?;
             (u128::from(amount) - debt, debt)
         } else {
-            // A seizure pays only what the record still backs, never creating debt.
-            let backed = self.unreserve(&mut token, owner, from_hold.into())?;
-            token.reservation_transfer(owner, payee, U256::from(backed), exemption)?;
-            self.unreserve(&mut token, owner, rest.into())?;
-            (backed, 0)
+            // A seizure pays from the record alone, never creating debt.
+            self.unreserve(&mut token, owner, u128::from(from_hold + rest), true)?;
+            token.reservation_transfer(owner, payee, U256::from(from_hold), exemption)?;
+            (from_hold.into(), 0)
         };
         hold.head.held -= from_hold + rest;
         hold.terms.capture_limit = if hold.terms.kind == kind::HOLD {
@@ -1004,7 +1013,7 @@ impl Reservations {
         let token_address = hold.head.token;
         if held != 0 {
             let mut token = TIP20Token::from_address(token_address)?;
-            self.unreserve(&mut token, hold.owner, held.into())?;
+            self.unreserve(&mut token, hold.owner, held.into(), hold.claim())?;
             if hold.budgeted() {
                 self.settle_budget(hold.owner, hold.placer, token_address, 0, held, 0)?;
             }
@@ -1085,8 +1094,23 @@ impl Reservations {
         self.budgets[owner][holder][token].write(budget)
     }
 
-    /// Moves `amount` of `owner`'s balance into reservation.
-    fn reserve(&mut self, token: &mut TIP20Token, owner: Address, amount: u128) -> Result<()> {
+    /// What `owner` may reserve for holds in `token`: its available balance, or nothing while a
+    /// compliance burn's shortfall stands, so a new hold or raise never backs older burned holds.
+    fn available_to_holds(&self, token: &TIP20Token, owner: Address) -> Result<u128> {
+        if self.positions[owner][token.address()].short.read()? {
+            return Ok(0);
+        }
+        available(token, owner)
+    }
+
+    /// Moves `amount` of `owner`'s balance into reservation, for a pledge or lien when `claim`.
+    fn reserve(
+        &mut self,
+        token: &mut TIP20Token,
+        owner: Address,
+        amount: u128,
+        claim: bool,
+    ) -> Result<()> {
         if amount == 0 {
             return Ok(());
         }
@@ -1096,20 +1120,37 @@ impl Reservations {
             .reserved
             .checked_add(amount)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
+        if claim {
+            position.claimed = u64::try_from(amount)
+                .ok()
+                .and_then(|amount| position.claimed.checked_add(amount))
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+        }
         self.positions[owner][token_address].write(position)?;
         token.reserve(owner, U256::from(amount))
     }
 
-    /// Frees `amount` of `owner`'s reservation, repaying any burned part first, and returns what
-    /// it moved back to the balance.
-    fn unreserve(&mut self, token: &mut TIP20Token, owner: Address, amount: u128) -> Result<u128> {
+    /// Frees `amount` of `owner`'s reservation and returns what it moved back to the balance. A
+    /// hold's part repays any burned part first; a pledge's or lien's (`claim`) is always backed.
+    fn unreserve(
+        &mut self,
+        token: &mut TIP20Token,
+        owner: Address,
+        amount: u128,
+        claim: bool,
+    ) -> Result<u128> {
         if amount == 0 {
             return Ok(0);
         }
         let token_address = token.address();
         let mut position = self.positions[owner][token_address].read()?;
         let mut backed = amount;
-        if position.short {
+        if claim {
+            position.claimed = u64::try_from(amount)
+                .ok()
+                .and_then(|amount| position.claimed.checked_sub(amount))
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
+        } else if position.short {
             let mut unbacked = self.shortfalls[owner][token_address].read()?;
             let covered = unbacked.min(amount);
             unbacked -= covered;

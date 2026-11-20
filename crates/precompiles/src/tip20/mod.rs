@@ -657,7 +657,8 @@ impl TIP20Token {
         } else {
             RECEIVE_POLICY_GUARD_ADDRESS
         };
-        self.unreserve_for_compliance_burn(burn_from, amount)?;
+        let needed = self.burn_beyond_balance(burn_from, amount)?;
+        self.take_reserved_for_burn(burn_from, needed)?;
         self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
@@ -678,13 +679,26 @@ impl TIP20Token {
     ///
     /// Requires `BURN_AT_ROLE` and an unpaused token. When `from` is the transaction origin,
     /// the burn consumes the access key's spending limit even if a bridge is the caller.
+    ///
+    /// (+T16) Burns only `from`'s free balance, never funds it reserved through
+    /// [`Reservations`], unless the transfer policy blocks `from` as a sender: then it is a
+    /// compliance burn and may take hold reservations as `burnBlocked` does.
     pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
         self.check_not_paused()?;
         self.check_role(msg_sender, BURN_AT_ROLE)?;
         self.check_burn_address(call.from)?;
         self.check_and_update_spending_limit(call.from, call.amount)?;
 
-        self.unreserve_for_compliance_burn(call.from, call.amount)?;
+        let needed = self.burn_beyond_balance(call.from, call.amount)?;
+        if !needed.is_zero()
+            && !TIP403Registry::new().is_authorized_as(
+                self.transfer_policy_id()?,
+                call.from,
+                AuthRole::sender(),
+            )?
+        {
+            self.take_reserved_for_burn(call.from, needed)?;
+        }
         self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
         let total_supply = self.total_supply()?;
         let new_supply =
@@ -1461,20 +1475,25 @@ impl TIP20Token {
         ))
     }
 
-    /// (+T16) Returns reserved funds to `from`'s spendable balance when a compliance burn of
-    /// `amount` exceeds it, so the burn may take them.
-    ///
-    /// Compliance burns ignore reservations: holds are owner commitments, not claims that can
-    /// shield funds from the issuer. Holds then settle against what remains.
-    fn unreserve_for_compliance_burn(&mut self, from: Address, amount: U256) -> Result<()> {
+    /// (+T16) What a burn of `amount` from `from` needs beyond its balance slot, which reserved
+    /// funds could cover; zero before T16, when nothing is reserved.
+    fn burn_beyond_balance(&self, from: Address, amount: U256) -> Result<U256> {
         if !self.reservations_active() {
+            return Ok(U256::ZERO);
+        }
+        Ok(amount.saturating_sub(self.get_balance(from)?))
+    }
+
+    /// Returns up to `needed` of `from`'s hold reservations to its balance slot for a compliance
+    /// burn of a blocked owner, so the burn may take them.
+    ///
+    /// Holds are owner commitments, not claims that can shield funds from the issuer, so the burn
+    /// takes them and they settle against what remains. Pledges and liens stay fully backed.
+    fn take_reserved_for_burn(&mut self, from: Address, needed: U256) -> Result<()> {
+        if needed.is_zero() {
             return Ok(());
         }
-        let balance = self.get_balance(from)?;
-        if amount <= balance {
-            return Ok(());
-        }
-        let taken = Reservations::new().take_for_burn(from, self.address, amount - balance)?;
+        let taken = Reservations::new().take_for_burn(from, self.address, needed)?;
         if taken.is_zero() {
             return Ok(());
         }

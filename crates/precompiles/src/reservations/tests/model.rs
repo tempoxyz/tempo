@@ -112,18 +112,21 @@ pub(super) enum Op {
         token: usize,
         amount: u128,
     },
-    /// A compliance burn (`burnBlocked`) of a blocked owner's balance, reserved funds included.
+    /// A burn of the owner's balance: `burnBlocked`, or `burnAt` by a bridge when `bridge`. A
+    /// blocked owner's burn may take what its holds reserve; any other takes only free balance.
     Burn {
         owner: usize,
         token: usize,
         amount: u128,
+        bridge: bool,
     },
-    /// A compliance burn of the owner's free balance plus `percent` of what its records back,
-    /// resolved against the model so burns reach reserved funds.
+    /// A burn of the owner's free balance plus `percent` of what its records back, resolved
+    /// against the model so burns reach reserved funds.
     BurnShare {
         owner: usize,
         token: usize,
         percent: u128,
+        bridge: bool,
     },
     Approve {
         owner: usize,
@@ -184,10 +187,10 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(caller, owner, token, amount)| Op::Refund { caller, owner, token, amount }),
         2 => (account.clone(), account.clone(), token.clone(), 1..400u128)
             .prop_map(|(from, to, token, amount)| Op::Transfer { from, to, token, amount }),
-        1 => (owner.clone(), token.clone(), 1..1_200u128)
-            .prop_map(|(owner, token, amount)| Op::Burn { owner, token, amount }),
-        2 => (owner.clone(), token.clone(), 1..=100u128)
-            .prop_map(|(owner, token, percent)| Op::BurnShare { owner, token, percent }),
+        1 => (owner.clone(), token.clone(), 1..1_200u128, any::<bool>())
+            .prop_map(|(owner, token, amount, bridge)| Op::Burn { owner, token, amount, bridge }),
+        3 => (owner.clone(), token.clone(), 1..=100u128, any::<bool>())
+            .prop_map(|(owner, token, percent, bridge)| Op::BurnShare { owner, token, percent, bridge }),
         2 => (owner.clone(), token.clone(), any::<bool>())
             .prop_map(|(account, token, blocked)| Op::Block { account, token, blocked }),
         1 => (owner.clone(), prop::sample::select(vec![H0, H1, STRANGER]), token.clone(), 0..700u128, prop::sample::select(vec![0u32, 3_600]))
@@ -267,7 +270,8 @@ struct Model {
     terms: BTreeMap<(usize, usize, usize), MTerms>,
     debts: BTreeMap<(usize, usize), Vec<MDebt>>,
     blocked: BTreeSet<(usize, usize)>,
-    /// Reserved funds compliance burns took, per (owner, token), not yet consumed by ending records.
+    /// Reserved funds compliance burns took from holds, per (owner, token), not yet consumed by
+    /// ending holds.
     shortfalls: BTreeMap<(usize, usize), u128>,
     /// What compliance burns destroyed, per token.
     burned: BTreeMap<usize, u128>,
@@ -488,10 +492,11 @@ impl Model {
         Ok(())
     }
 
-    /// Returns reserved funds to the owner's balance, the burned part first; returns what came back.
-    fn unreserve(&mut self, token: usize, owner: usize, amount: u128) -> u128 {
+    /// Returns reserved funds to the owner's balance and returns what came back. A hold's part
+    /// repays the burned part first; a pledge's or lien's (`claim`) always comes back whole.
+    fn unreserve(&mut self, token: usize, owner: usize, amount: u128, claim: bool) -> u128 {
         let covered = match self.shortfalls.get_mut(&(owner, token)) {
-            Some(unbacked) => {
+            Some(unbacked) if !claim => {
                 let covered = (*unbacked).min(amount);
                 *unbacked -= covered;
                 if *unbacked == 0 {
@@ -499,7 +504,7 @@ impl Model {
                 }
                 covered
             }
-            None => 0,
+            _ => 0,
         };
         self.add(token, owner, amount - covered);
         amount - covered
@@ -507,13 +512,36 @@ impl Model {
 
     /// What the owner's records still back in a token: their held amounts less the burned part.
     fn reserved(&self, owner: usize, token: usize) -> u128 {
-        let held: u128 = self
-            .holds
+        self.held(owner, token, |_| true) - self.shortfall(owner, token)
+    }
+
+    /// What the owner's holds, not its pledges or liens, still back in a token: all a compliance
+    /// burn may take.
+    fn reserved_by_holds(&self, owner: usize, token: usize) -> u128 {
+        self.held(owner, token, |kind| kind == kind::HOLD) - self.shortfall(owner, token)
+    }
+
+    /// The held amounts of the owner's records in a token whose kind `kinds` selects.
+    fn held(&self, owner: usize, token: usize, kinds: impl Fn(u8) -> bool) -> u128 {
+        self.holds
             .iter()
-            .filter(|((o, _, _), h)| *o == owner && h.token == token)
+            .filter(|((o, _, _), h)| *o == owner && h.token == token && kinds(h.kind))
             .map(|(_, h)| h.held)
-            .sum();
-        held - self.shortfalls.get(&(owner, token)).copied().unwrap_or(0)
+            .sum()
+    }
+
+    fn shortfall(&self, owner: usize, token: usize) -> u128 {
+        self.shortfalls.get(&(owner, token)).copied().unwrap_or(0)
+    }
+
+    /// What the owner may reserve for holds: nothing while a burn's shortfall stands, so new or
+    /// raised holds never back older burned ones.
+    fn free_for_holds(&self, token: usize, owner: usize) -> u128 {
+        if self.shortfalls.contains_key(&(owner, token)) {
+            0
+        } else {
+            self.bal(token, owner)
+        }
     }
 
     fn live(&self, key: HoldKey) -> std::result::Result<MHold, TempoPrecompileError> {
@@ -553,7 +581,7 @@ impl Model {
             self.admit(owner, placer, token, amount)?;
         }
         self.ensure_allowed(token, owner, payee, false)?;
-        let free = self.bal(token, owner);
+        let free = self.free_for_holds(token, owner);
         let held = if stand_in {
             free.min(amount)
         } else if amount > free {
@@ -746,7 +774,7 @@ impl Model {
                         return Err(e(ReservationsError::invalid_amount()));
                     }
                     self.ensure_allowed(token, owner, hold.payee, false)?;
-                    if increase > self.bal(token, owner) {
+                    if increase > self.free_for_holds(token, owner) {
                         return Err(e(ReservationsError::insufficient_available()));
                     }
                     if budgeted {
@@ -758,7 +786,7 @@ impl Model {
                     }
                 } else if amount < hold.held {
                     let decrease = hold.held - amount;
-                    self.unreserve(token, owner, decrease);
+                    self.unreserve(token, owner, decrease, hold.kind != kind::HOLD);
                     if budgeted {
                         self.settle(owner, placer, token, 0, decrease, 0)?;
                     }
@@ -799,7 +827,7 @@ impl Model {
                 let rest = if is_final { hold.held - from_hold } else { 0 };
                 // A hold's capture is exempt only when what the hold gives back covers it.
                 let freed = if hold.kind == kind::HOLD {
-                    self.unreserve(token, owner, from_hold + rest)
+                    self.unreserve(token, owner, from_hold + rest, false)
                 } else {
                     0
                 };
@@ -812,9 +840,8 @@ impl Model {
                 if hold.kind == kind::HOLD {
                     self.pay(token, owner, hold.payee, amount, hold.stand_in)?;
                 } else {
-                    let backed = self.unreserve(token, owner, from_hold);
-                    self.move_funds(token, owner, hold.payee, backed);
-                    self.unreserve(token, owner, rest);
+                    self.unreserve(token, owner, from_hold + rest, true);
+                    self.move_funds(token, owner, hold.payee, from_hold);
                 }
                 hold.held -= from_hold + rest;
                 hold.capture_limit = if hold.kind == kind::HOLD {
@@ -923,16 +950,23 @@ impl Model {
                 owner,
                 token,
                 amount,
+                bridge,
             } => {
-                if !self.blocked.contains(&(token, owner)) {
+                let blocked = self.blocked.contains(&(token, owner));
+                if !blocked && !bridge {
                     return Err(e(ReservationsError::policy_forbids()));
                 }
                 let slot = self.bal(token, owner);
-                if amount > slot + self.reserved(owner, token) {
+                let reachable = if blocked {
+                    self.reserved_by_holds(owner, token)
+                } else {
+                    0
+                };
+                if amount > slot + reachable {
                     return Err(e(ReservationsError::insufficient_available()));
                 }
-                // The burn takes the balance slot first, then reserved funds, recording those as
-                // a shortfall the records still count.
+                // The burn takes the balance slot first, then what holds reserve, recording that
+                // as a shortfall the holds still count.
                 let taken = amount.saturating_sub(slot);
                 if taken != 0 {
                     *self.shortfalls.entry((owner, token)).or_default() += taken;
@@ -989,7 +1023,7 @@ impl Model {
 
     fn end(&mut self, key: HoldKey, hold: MHold) -> Outcome {
         let (owner, placer, _) = key;
-        self.unreserve(hold.token, owner, hold.held);
+        self.unreserve(hold.token, owner, hold.held, hold.kind != kind::HOLD);
         if placer != owner && hold.kind != kind::LIEN {
             self.settle(owner, placer, hold.token, 0, hold.held, 0)?;
         }
@@ -1034,6 +1068,7 @@ impl World {
             let mut token = setup.apply()?;
             token.grant_role_internal(accounts[AUTHORITY], LIEN_ROLE)?;
             token.grant_role_internal(admin, BURN_BLOCKED_ROLE)?;
+            token.grant_role_internal(admin, BURN_AT_ROLE)?;
             let policy = registry.create_policy_with_accounts(
                 admin,
                 ITIP403Registry::createPolicyWithAccountsCall {
@@ -1309,17 +1344,27 @@ impl World {
                 owner,
                 token,
                 amount,
-            } => self.tokens[token]
-                .burn_blocked(self.admin, a(owner), U256::from(amount), true)
-                .map_err(|error| match error {
-                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)) => {
-                        e(ReservationsError::policy_forbids())
-                    }
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(_)) => {
-                        e(ReservationsError::insufficient_available())
-                    }
-                    other => other,
-                }),
+                bridge,
+            } => if bridge {
+                self.tokens[token].burn_at(
+                    self.admin,
+                    ITIP20::burnAtCall {
+                        from: a(owner),
+                        amount: U256::from(amount),
+                    },
+                )
+            } else {
+                self.tokens[token].burn_blocked(self.admin, a(owner), U256::from(amount), true)
+            }
+            .map_err(|error| match error {
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)) => {
+                    e(ReservationsError::policy_forbids())
+                }
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(_)) => {
+                    e(ReservationsError::insufficient_available())
+                }
+                other => other,
+            }),
             Op::Approve {
                 owner,
                 holder,
@@ -1379,6 +1424,7 @@ impl World {
                 owner,
                 token,
                 percent,
+                bridge,
             } => {
                 let (owner, token) = (*owner, *token);
                 let reserved = self.model.reserved(owner, token);
@@ -1387,6 +1433,7 @@ impl World {
                     owner,
                     token,
                     amount: amount.max(1),
+                    bridge: *bridge,
                 };
             }
             _ => {}
@@ -1469,7 +1516,14 @@ impl World {
                     "available of {account} in {token}: {slot} != {}",
                     m.bal(token, account)
                 );
-                // A compliance burn's shortfall is counted in the records but no longer reserved.
+                // A compliance burn's shortfall is counted in the holds but no longer reserved;
+                // it never reaches what pledges and liens hold.
+                let shortfall = m.shortfall(account, token);
+                let by_holds = m.held(account, token, |kind| kind == kind::HOLD);
+                eyre::ensure!(
+                    shortfall <= by_holds,
+                    "shortfall of {account} in {token}: {shortfall} > {by_holds} held by holds"
+                );
                 let backed = m.reserved(account, token);
                 let reserved = self.reservations.reserved_of(who, address)?;
                 eyre::ensure!(

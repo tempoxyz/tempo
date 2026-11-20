@@ -3,9 +3,9 @@ source: crates/evm/src/evm/tests.rs
 expression: table
 ---
 reserved (view, baseline): 23870
-hold, first for the owner: 799257
-hold: 551957
-holdFrom: 557255
+hold, first for the owner: 799357
+hold: 552057
+holdFrom: 557355
 capture, part: 56883
 capture, final after a part: 61895
 capture, final of a holder's hold: 66895
@@ -17,4 +17,4 @@ pledgeFrom, first for the owner, on storage credits: 67011
 pledgeFrom, on storage credits: 64711
 seize part of a pledge, creating the holder's token balance: 311083
 release a pledge: 55075
-hold, on storage credits settled records left: 61957
+hold, on storage credits settled records left: 62057
