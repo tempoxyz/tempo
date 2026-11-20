@@ -115,8 +115,13 @@ impl UpstreamUrl {
 
 impl fmt::Display for UpstreamUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match Url::parse(&self.0).map(|url| url.origin()) {
-            Ok(origin) if origin.is_tuple() => f.write_str(&origin.ascii_serialization()),
+        // `Url::origin` recurses once per nested `blob:` prefix.
+        let origin = Url::parse(&self.0)
+            .ok()
+            .filter(|url| url.scheme() != "blob")
+            .map(|url| url.origin());
+        match origin {
+            Some(origin) if origin.is_tuple() => f.write_str(&origin.ascii_serialization()),
             _ => f.write_str("<redacted>"),
         }
     }
@@ -146,10 +151,17 @@ mod tests {
     #[test_case("ws://[::1]:8546/secret" => "ws://[::1]:8546")]
     #[test_case("secret:secret@upstream.example:8546" => "<redacted>")]
     #[test_case("not a url" => "<redacted>")]
+    #[test_case("blob:ws://upstream.example/secret" => "<redacted>")]
     fn upstream_url_displays_only_origin(url: &str) -> String {
         let url = UpstreamUrl::new(url);
         assert_eq!(format!("{url:?}"), url.to_string());
         url.to_string()
+    }
+
+    #[test]
+    fn upstream_url_displays_deeply_nested_blob() {
+        let url = UpstreamUrl::new(format!("{}ws://upstream.example", "blob:".repeat(100_000)));
+        assert_eq!(url.to_string(), "<redacted>");
     }
 
     #[test]
