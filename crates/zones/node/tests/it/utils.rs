@@ -3931,6 +3931,81 @@ fn build_keychain_auth_token(
     )
 }
 
+/// A redacted RPC server running in front of a zone, with a JSON-RPC client for it.
+pub(crate) struct RedactedRpc {
+    /// URL of the redacted RPC server (not the zone's direct HTTP endpoint).
+    pub redacted_rpc_url: url::Url,
+    /// Redacted RPC server configuration.
+    pub config: zone_node::rpc::RedactedRpcConfig,
+}
+
+impl RedactedRpc {
+    /// Starts a redacted RPC server in front of `zone` for `zone_id` and `zone_portal`.
+    pub(crate) async fn start(
+        zone: &ZoneTestNode,
+        zone_id: u32,
+        zone_portal: Address,
+    ) -> eyre::Result<Self> {
+        let config = zone_node::rpc::RedactedRpcConfig {
+            listen_addr: ([127, 0, 0, 1], 0).into(),
+            zone_id,
+            chain_id: zone.provider().get_chain_id().await?,
+            max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
+            max_response_size: 160 * 1024 * 1024,
+            zone_portal,
+        };
+        let local_addr =
+            zone_node::rpc::start_redacted_rpc(config.clone(), zone.rpc_api(config.clone()).await?)
+                .await?;
+        Ok(Self {
+            redacted_rpc_url: format!("http://{local_addr}").parse()?,
+            config,
+        })
+    }
+
+    /// An auth token for `signer` on this server.
+    pub(crate) fn token(&self, signer: &alloy_signer_local::PrivateKeySigner) -> String {
+        build_auth_token(signer, self.config.zone_id, self.config.chain_id)
+    }
+
+    /// Send an authenticated JSON-RPC call to the redacted RPC server.
+    pub(crate) async fn call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        auth_token: &str,
+    ) -> eyre::Result<serde_json::Value> {
+        let (status, text) = self.post(method, params, Some(auth_token)).await?;
+        if !status.is_success() && text.is_empty() {
+            eyre::bail!("HTTP {status}");
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// POST a JSON-RPC request to the redacted RPC server, with the auth header when
+    /// `auth_token` is set, returning HTTP status + body.
+    async fn post(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        auth_token: Option<&str>,
+    ) -> eyre::Result<(reqwest::StatusCode, String)> {
+        let mut request = reqwest::Client::new()
+            .post(self.redacted_rpc_url.as_str())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": 1
+            }));
+        if let Some(auth_token) = auth_token {
+            request = request.header("x-authorization-token", auth_token);
+        }
+        let resp = request.send().await?;
+        Ok((resp.status(), resp.text().await?))
+    }
+}
+
 /// Context for redacted RPC e2e tests.
 ///
 /// Wraps a zone node with a running redacted RPC server in front, providing
@@ -3938,14 +4013,20 @@ fn build_keychain_auth_token(
 pub(crate) struct RedactedRpcTestCtx {
     /// The underlying zone test node.
     pub zone: ZoneTestNode,
-    /// URL of the redacted RPC server (not the zone's direct HTTP endpoint).
-    pub redacted_rpc_url: url::Url,
+    /// The redacted RPC server in front of the zone.
+    pub rpc: RedactedRpc,
     /// The sequencer signer (gets full access on the redacted RPC).
     pub sequencer_signer: alloy_signer_local::PrivateKeySigner,
-    /// Redacted RPC server configuration.
-    pub config: zone_node::rpc::RedactedRpcConfig,
     /// L1 fixture for injecting deposits.
     pub fixture: L1Fixture,
+}
+
+impl Deref for RedactedRpcTestCtx {
+    type Target = RedactedRpc;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rpc
+    }
 }
 
 /// Redacted RPC e2e context backed by a real L1 node and deployed ZonePortal.
@@ -3989,17 +4070,13 @@ impl RedactedRpcTestCtx {
     pub(crate) fn sequencer_token(&self) -> String {
         self.fixture
             .seed_no_commitment(self.sequencer_signer.address());
-        build_auth_token(
-            &self.sequencer_signer,
-            self.config.zone_id,
-            self.config.chain_id,
-        )
+        self.token(&self.sequencer_signer)
     }
 
     /// Build an auth token for a regular (non-sequencer) user.
     pub(crate) fn user_token(&self, signer: &alloy_signer_local::PrivateKeySigner) -> String {
         self.fixture.seed_no_commitment(signer.address());
-        build_auth_token(signer, self.config.zone_id, self.config.chain_id)
+        self.token(signer)
     }
 
     /// Build a P256 auth token for a non-sequencer caller.
@@ -4075,20 +4152,6 @@ impl RedactedRpcTestCtx {
         (token, key_id)
     }
 
-    /// Send an authenticated JSON-RPC call to the redacted RPC server.
-    pub(crate) async fn call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-        auth_token: &str,
-    ) -> eyre::Result<serde_json::Value> {
-        let (status, text) = self.post(method, params, Some(auth_token)).await?;
-        if !status.is_success() && text.is_empty() {
-            eyre::bail!("HTTP {status}");
-        }
-        Ok(serde_json::from_str(&text)?)
-    }
-
     /// Send a JSON-RPC call authenticated as the sequencer.
     pub(crate) async fn call_as_sequencer(
         &self,
@@ -4127,29 +4190,6 @@ impl RedactedRpcTestCtx {
         params: serde_json::Value,
     ) -> eyre::Result<(reqwest::StatusCode, String)> {
         self.post(method, params, None).await
-    }
-
-    /// POST a JSON-RPC request to the redacted RPC server, with the auth header when
-    /// `auth_token` is set, returning HTTP status + body.
-    async fn post(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-        auth_token: Option<&str>,
-    ) -> eyre::Result<(reqwest::StatusCode, String)> {
-        let mut request = reqwest::Client::new()
-            .post(self.redacted_rpc_url.as_str())
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": 1
-            }));
-        if let Some(auth_token) = auth_token {
-            request = request.header("x-authorization-token", auth_token);
-        }
-        let resp = request.send().await?;
-        Ok((resp.status(), resp.text().await?))
     }
 
     /// Build an auth token with custom zone_id and chain_id (for negative testing).
@@ -4281,31 +4321,6 @@ impl RedactedRpcTestCtx {
     }
 }
 
-pub(crate) async fn start_redacted_rpc_url(
-    zone: &ZoneTestNode,
-    config: zone_node::rpc::RedactedRpcConfig,
-) -> eyre::Result<url::Url> {
-    let local_addr =
-        zone_node::rpc::start_redacted_rpc(config.clone(), zone.rpc_api(config).await?).await?;
-    Ok(format!("http://{local_addr}").parse()?)
-}
-
-fn build_redacted_rpc_ctx(
-    zone: ZoneTestNode,
-    redacted_rpc_url: url::Url,
-    sequencer_signer: alloy_signer_local::PrivateKeySigner,
-    config: zone_node::rpc::RedactedRpcConfig,
-    fixture: L1Fixture,
-) -> RedactedRpcTestCtx {
-    RedactedRpcTestCtx {
-        zone,
-        redacted_rpc_url,
-        sequencer_signer,
-        config,
-        fixture,
-    }
-}
-
 /// Start a zone node with a redacted RPC server for testing.
 ///
 /// Returns a context with:
@@ -4327,26 +4342,12 @@ pub(crate) async fn start_zone_with_redacted_rpc() -> eyre::Result<RedactedRpcTe
         20,
     );
 
-    let chain_id = zone.provider().get_chain_id().await?;
-
-    let config = zone_node::rpc::RedactedRpcConfig {
-        listen_addr: ([127, 0, 0, 1], 0).into(),
-        zone_id: 0,
-        chain_id,
-        max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
-        max_response_size: 160 * 1024 * 1024,
-        zone_portal: Address::ZERO,
-    };
-
-    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone()).await?;
-
-    Ok(build_redacted_rpc_ctx(
+    Ok(RedactedRpcTestCtx {
+        rpc: RedactedRpc::start(&zone, 0, Address::ZERO).await?,
         zone,
-        redacted_rpc_url,
         sequencer_signer,
-        config,
         fixture,
-    ))
+    })
 }
 
 /// Start a zone with a redacted RPC server backed by a real L1 + ZonePortal.
@@ -4371,28 +4372,13 @@ pub(crate) async fn start_zone_with_redacted_rpc_l1_with_encryption(
 
     zone.wait_for_l2_tempo_finalized(0, DEFAULT_TIMEOUT).await?;
 
-    let chain_id = zone.provider().get_chain_id().await?;
-
-    let config = zone_node::rpc::RedactedRpcConfig {
-        listen_addr: ([127, 0, 0, 1], 0).into(),
-        zone_id: 1,
-        chain_id,
-        max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
-        max_response_size: 160 * 1024 * 1024,
-        zone_portal: portal_address,
-    };
-
-    let redacted_rpc_url = start_redacted_rpc_url(&zone, config.clone()).await?;
-    let sequencer_signer = l1.dev_signer();
-
     Ok(RedactedRpcL1TestCtx {
-        ctx: build_redacted_rpc_ctx(
+        ctx: RedactedRpcTestCtx {
+            rpc: RedactedRpc::start(&zone, 1, portal_address).await?,
             zone,
-            redacted_rpc_url,
-            sequencer_signer,
-            config,
-            L1Fixture::new(),
-        ),
+            sequencer_signer: l1.dev_signer(),
+            fixture: L1Fixture::new(),
+        },
         l1,
         portal_address,
     })
