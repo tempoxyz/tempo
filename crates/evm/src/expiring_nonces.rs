@@ -34,10 +34,7 @@ use alloy_primitives::{Address, B256, Keccak256, U256, map::B256Map};
 use parking_lot::{Mutex, RwLock};
 use reth_evm::{BlockExecutionError, BlockValidationError};
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles};
-use reth_trie_sparse::{
-    LeafUpdate, PersistentArenaParallelSparseTrie, SparseTrie, TrieNodeEpoch,
-    errors::SparseTrieError,
-};
+use reth_trie_sparse::{LeafUpdate, SparseTrie, TrieNodeEpoch, errors::SparseTrieError};
 use schnellru::{ByLength, LruMap};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoTxEnvelope;
@@ -569,6 +566,17 @@ impl Snapshots {
     }
 }
 
+/// Trie type of one bucket.
+///
+/// By default a persistent sparse trie, whose snapshots share every node a write does not touch.
+/// With the `expiring-nonce-deep-clone` feature, a plain arena sparse trie, whose snapshots are
+/// deep copies: the copy-on-write baseline, kept to benchmark the two against each other.
+#[cfg(not(feature = "expiring-nonce-deep-clone"))]
+pub type BucketTrie = reth_trie_sparse::PersistentArenaParallelSparseTrie;
+/// Trie type of one bucket: a plain arena sparse trie, deep-copied on snapshot.
+#[cfg(feature = "expiring-nonce-deep-clone")]
+pub type BucketTrie = reth_trie_sparse::ArenaParallelSparseTrie;
+
 /// One `valid_before` second's replay hashes.
 ///
 /// Sets share buckets through `Arc`; a block that inserts into a shared bucket copies it with
@@ -578,7 +586,7 @@ impl Snapshots {
 struct Bucket {
     /// Behind a lock because [`SparseTrie::snapshot`] prepares the source for sharing through
     /// `&mut self` while other sets may read the same bucket.
-    trie: RwLock<PersistentArenaParallelSparseTrie>,
+    trie: RwLock<BucketTrie>,
     root: B256,
     len: usize,
     /// The bucket's replay hashes, one chunk per update, to build witness proofs from. Empty
@@ -600,7 +608,7 @@ impl Clone for Bucket {
 impl Default for Bucket {
     fn default() -> Self {
         Self {
-            trie: RwLock::new(PersistentArenaParallelSparseTrie::default()),
+            trie: RwLock::new(BucketTrie::default()),
             root: EMPTY_ROOT_HASH,
             len: 0,
             keys: Vec::new(),

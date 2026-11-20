@@ -266,3 +266,4 @@ trie-debug = ["tempo-node/trie-debug"]
 custom-pcrs = ["tempo-precompiles/custom-pcrs"]
 # Native EVM2 JIT compilation; building requires LLVM.
 jit = ["tempo-evm/jit", "tempo-node/jit"]
+expiring-nonce-deep-clone = ["tempo-evm/expiring-nonce-deep-clone"]

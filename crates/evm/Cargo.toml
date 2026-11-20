@@ -106,6 +106,9 @@ engine = ["dep:tempo-payload-types", "dep:rayon"]
 genesis = ["dep:alloy-genesis", "dep:eyre"]
 # Native EVM2 JIT compilation; building requires LLVM.
 jit = ["dep:evm2-jit", "reth-evm-ethereum/jit"]
+# Deep-copy expiring nonce buckets on write instead of taking persistent snapshots, to
+# benchmark the copy-on-write sparse trie against it.
+expiring-nonce-deep-clone = []
 
 [[bench]]
 name = "tip20_execution"
@@ -113,4 +116,8 @@ harness = false
 
 [[bench]]
 name = "dex_execution"
+harness = false
+
+[[bench]]
+name = "expiring_nonce_sets"
 harness = false
