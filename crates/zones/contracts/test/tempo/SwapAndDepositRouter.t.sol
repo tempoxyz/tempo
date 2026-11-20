@@ -93,61 +93,32 @@ contract MockZonePortalForRouter {
         uint128 amount,
         uint256 keyIndex,
         DepositPayload calldata,
-        address tempoRefundRecipient,
-        uint128 maxFee
+        address tempoRefundRecipient
     )
-        external
+        public
         returns (bytes32)
     {
         ITIP20(_token).transferFrom(msg.sender, address(this), amount);
         lastDepositAmount = amount;
         lastDepositKeyIndex = keyIndex;
         lastDepositBouncebackRecipient = tempoRefundRecipient;
-        lastDepositMaxFee = maxFee;
         encryptedDepositCalled = true;
         return bytes32(0);
-    }
-
-    /// @dev Present only on the T15 runtime; the router probes it to pick the deposit overload.
-    function DEPOSITS_PER_BUCKET() external pure returns (uint64) {
-        return 230;
-    }
-
-}
-
-/// @notice A pre-T15 portal: only the 5-argument deposit, no `DEPOSITS_PER_BUCKET`.
-contract MockLegacyZonePortalForRouter {
-
-    uint128 public lastDepositAmount;
-    bool public legacyDepositCalled;
-    uint128 public fee;
-
-    function setFee(uint128 _fee) external {
-        fee = _fee;
-    }
-
-    function calculateDepositFee() external view returns (uint128) {
-        return fee;
-    }
-
-    function isTokenEnabled(address) external pure returns (bool) {
-        return true;
     }
 
     function deposit(
         address _token,
         uint128 amount,
-        uint256,
-        DepositPayload calldata,
-        address
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
     )
         external
         returns (bytes32)
     {
-        ITIP20(_token).transferFrom(msg.sender, address(this), amount);
-        lastDepositAmount = amount;
-        legacyDepositCalled = true;
-        return bytes32(0);
+        lastDepositMaxFee = maxFee;
+        return deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
     }
 
 }
@@ -211,7 +182,7 @@ contract SwapAndDepositRouterTest is BaseTest {
         returns (bytes memory)
     {
         return abi.encode(
-            tokenOut, targetPortal, keyIndex, encrypted, tempoRefundRecipient, minAmountOut, MAX_FEE
+            tokenOut, targetPortal, keyIndex, encrypted, tempoRefundRecipient, minAmountOut
         );
     }
 
@@ -289,15 +260,19 @@ contract SwapAndDepositRouterTest is BaseTest {
         assertEq(mockPortal.lastDepositAmount(), AMOUNT);
         assertEq(mockPortal.lastDepositKeyIndex(), 0);
         assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
-        assertEq(mockPortal.lastDepositMaxFee(), MAX_FEE);
+        assertEq(mockPortal.lastDepositMaxFee(), 0);
     }
 
-    function test_deposit_usesLegacyOverloadOnPreT15Portal() public {
-        MockLegacyZonePortalForRouter legacy = new MockLegacyZonePortalForRouter();
-        mockFactory.setPortal(address(legacy), true);
-        DepositPayload memory payload = _defaultDepositPayload();
-        bytes memory data =
-            _buildCallbackData(address(pathUSD), address(legacy), 0, payload, refundBurner, 0);
+    function test_deposit_maxFeeLayout() public {
+        bytes memory data = abi.encode(
+            address(pathUSD),
+            address(mockPortal),
+            0,
+            _defaultDepositPayload(),
+            refundBurner,
+            0,
+            MAX_FEE
+        );
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
         bytes4 ret = router.onWithdrawalReceived(
@@ -305,22 +280,26 @@ contract SwapAndDepositRouterTest is BaseTest {
         );
 
         assertEq(ret, IWithdrawalReceiver.onWithdrawalReceived.selector);
-        assertTrue(legacy.legacyDepositCalled());
-        assertEq(legacy.lastDepositAmount(), AMOUNT);
+        assertEq(mockPortal.lastDepositAmount(), AMOUNT);
+        assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
+        assertEq(mockPortal.lastDepositMaxFee(), MAX_FEE);
     }
 
-    function test_deposit_legacyPortalRevertsAboveMaxFee() public {
-        MockLegacyZonePortalForRouter legacy = new MockLegacyZonePortalForRouter();
-        mockFactory.setPortal(address(legacy), true);
-        legacy.setFee(MAX_FEE + 1);
-        DepositPayload memory payload = _defaultDepositPayload();
-        bytes memory data =
-            _buildCallbackData(address(pathUSD), address(legacy), 0, payload, refundBurner, 0);
+    function test_revertInvalidCallbackLayout() public {
+        // An extra trailing field gives an 8-word head, which matches neither layout.
+        bytes memory data = abi.encode(
+            address(pathUSD),
+            address(mockPortal),
+            0,
+            _defaultDepositPayload(),
+            refundBurner,
+            0,
+            MAX_FEE,
+            0
+        );
 
         vm.prank(ZONE_MESSENGER_ADDRESS);
-        vm.expectRevert(
-            abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, MAX_FEE + 1, MAX_FEE)
-        );
+        vm.expectRevert(SwapAndDepositRouter.InvalidCallbackLayout.selector);
         router.onWithdrawalReceived(
             SOURCE_ZONE_ID, sourcePortal, senderTag, address(pathUSD), AMOUNT, data
         );

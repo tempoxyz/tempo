@@ -27,6 +27,11 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     IStablecoinDEX public immutable stablecoinDEX;
     IZoneFactory public immutable zoneFactory;
 
+    /// @dev Head sizes of the callback layouts. `abi.encode` places the `encrypted` tail right
+    ///      after the head, so the offset stored at `data[96:128]` identifies the layout.
+    uint256 private constant MAX_FEE_CALLBACK_HEAD = 7 * 32;
+    uint256 private constant LEGACY_CALLBACK_HEAD = 6 * 32;
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -35,6 +40,7 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     error InvalidSourcePortal();
     error InvalidTargetPortal();
     error InvalidToken();
+    error InvalidCallbackLayout();
 
     /*//////////////////////////////////////////////////////////////
                               CONSTRUCTOR
@@ -58,9 +64,10 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     /// @param data ABI-encoded callbackData (see format below)
     /// @return selector The function selector to confirm successful handling
     ///
-    /// Format: (address tokenOut, address targetPortal, uint256 keyIndex, DepositPayload encrypted, address tempoRefundRecipient, uint128 minAmountOut, uint128 maxFee)
+    /// Format: (address tokenOut, address targetPortal, uint256 keyIndex, DepositPayload encrypted, address tempoRefundRecipient, uint128 minAmountOut[, uint128 maxFee])
     ///
-    /// Note: minAmountOut is ignored for same-token transfers (no swap). maxFee caps deposit fees.
+    /// Note: minAmountOut is ignored for same-token transfers (no swap)
+    /// Note: with maxFee, the router calls the `maxFee` deposit overload, which needs a T15 portal
     function onWithdrawalReceived(
         uint32 sourceZoneId,
         address sourcePortal,
@@ -87,25 +94,25 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
             uint256 keyIndex,
             DepositPayload memory encrypted,
             address tempoRefundRecipient,
-            uint128 minAmountOut,
-            uint128 maxFee
-        ) = abi.decode(data, (address, address, uint256, DepositPayload, address, uint128, uint128));
+            uint128 minAmountOut
+        ) = abi.decode(data, (address, address, uint256, DepositPayload, address, uint128));
 
         _validateTarget(targetPortal, tokenOut);
 
         uint128 amountOut = _swapIfNeeded(tokenIn, tokenOut, amount, minAmountOut);
 
         ITIP20(tokenOut).approve(targetPortal, amountOut);
-        if (_hasMaxFeeDeposit(targetPortal)) {
+        uint256 encryptedOffset = uint256(bytes32(data[96:128]));
+        if (encryptedOffset == MAX_FEE_CALLBACK_HEAD) {
+            // `maxFee` is the last head word, which the shared decode above skips.
+            uint128 maxFee = abi.decode(data[LEGACY_CALLBACK_HEAD:MAX_FEE_CALLBACK_HEAD], (uint128));
             IZonePortal(targetPortal)
                 .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient, maxFee);
-        } else {
-            // Pre-T15 portals have only the 5-argument overload and no congestion fee, so the
-            // operational fee is the whole fee; still honor the caller's cap.
-            uint128 fee = IZonePortal(targetPortal).calculateDepositFee();
-            if (fee > maxFee) revert IZonePortal.FeeTooHigh(fee, maxFee);
+        } else if (encryptedOffset == LEGACY_CALLBACK_HEAD) {
             IZonePortal(targetPortal)
                 .deposit(tokenOut, amountOut, keyIndex, encrypted, tempoRefundRecipient);
+        } else {
+            revert InvalidCallbackLayout();
         }
 
         return IWithdrawalReceiver.onWithdrawalReceived.selector;
@@ -114,14 +121,6 @@ contract SwapAndDepositRouter is IWithdrawalReceiver {
     /*//////////////////////////////////////////////////////////////
                            INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
-
-    /// @dev Whether `portal` runs the T15 runtime, which adds the `maxFee` deposit overloads.
-    ///      Pre-T15 runtimes have no `DEPOSITS_PER_BUCKET` and no fallback, so the probe fails.
-    function _hasMaxFeeDeposit(address portal) internal view returns (bool) {
-        (bool ok, bytes memory ret) =
-            portal.staticcall(abi.encodeWithSignature("DEPOSITS_PER_BUCKET()"));
-        return ok && ret.length == 32;
-    }
 
     /// @notice Validate the target portal is registered and the token is enabled on it
     function _validateTarget(address targetPortal, address tokenOut) internal view {

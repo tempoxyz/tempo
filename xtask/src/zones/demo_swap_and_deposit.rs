@@ -620,7 +620,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
     let receipt = portal
-        .deposit(
+        .deposit_0(
             token,
             amount,
             key_index,
@@ -666,12 +666,6 @@ async fn build_router_callback<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
 
-    // The router deposits when the withdrawal lands, so cap it at the fee quoted now.
-    let max_fee = portal
-        .calculateDepositFee()
-        .call()
-        .await
-        .wrap_err("failed to fetch target portal deposit fee")?;
     let callback = SwapAndDepositRouterCallback {
         token_out: request.token_out,
         target_portal: request.target_portal,
@@ -685,7 +679,8 @@ async fn build_router_callback<P: Provider<TempoNetwork>>(
         },
         tempo_refund_recipient: request.tempo_refund_recipient,
         min_amount_out: request.min_amount_out,
-        max_fee,
+        // The legacy callback works on every portal runtime.
+        max_fee: None,
     };
 
     Ok(Bytes::from(callback.abi_encode()))

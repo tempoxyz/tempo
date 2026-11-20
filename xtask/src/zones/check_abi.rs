@@ -171,11 +171,7 @@ const INTERFACES: &[InterfaceSpec] = &[
         artifact_name: "IZonePortal",
         source: "IZone.sol",
         rust: zone_portal_t13_surface,
-        // Rust binds one overload per name so call types stay unsuffixed.
-        ignored_functions: &[
-            "deposit(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address,uint128) returns (bytes32) [nonpayable]",
-            "depositEncrypted(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address) returns (bytes32) [nonpayable]",
-        ],
+        ignored_functions: &[],
     },
 ];
 

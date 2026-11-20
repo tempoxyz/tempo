@@ -80,8 +80,6 @@ impl SpamDeposits {
         let gas_price = provider.get_gas_price().await?;
         let portal = ZonePortal::new(self.portal, &provider);
         let deposit_fee = portal.calculateDepositFee().call().await?;
-        // T15 portals add the maxFee deposit overloads; earlier ones only have the 5-argument one.
-        let max_fee_overloads = portal.DEPOSITS_PER_BUCKET().call().await.is_ok();
 
         println!("Chain ID: {chain_id}");
         println!("Gas price: {gas_price}");
@@ -181,12 +179,8 @@ impl SpamDeposits {
             // Build and sign all deposits (pure computation, no IO)
             let mut encoded_txs = Vec::with_capacity(batch_size);
             for signer in signers.iter().take(batch_size) {
-                let calldata = self.build_deposit_calldata(
-                    whale_addr,
-                    signer.address(),
-                    &enc_setup,
-                    max_fee_overloads,
-                )?;
+                let calldata =
+                    self.build_deposit_calldata(whale_addr, signer.address(), &enc_setup)?;
                 let nonce_key = U256::from(rand::random::<u128>());
 
                 let tx = tempo_primitives::TempoTransaction {
@@ -291,7 +285,6 @@ impl SpamDeposits {
         recipient: Address,
         sender: Address,
         enc_setup: &(B256, u8, U256),
-        max_fee_overloads: bool,
     ) -> eyre::Result<Vec<u8>> {
         let &(pub_x, y_parity, key_index) = enc_setup;
         let encrypted = encrypt_deposit(
@@ -313,17 +306,7 @@ impl SpamDeposits {
             tag: encrypted.tag.into(),
         };
 
-        if !max_fee_overloads {
-            return Ok(ZonePortal::depositCall {
-                token: self.token,
-                amount: self.amount,
-                keyIndex: key_index,
-                encrypted: payload,
-                tempoRefundRecipient: recipient,
-            }
-            .abi_encode());
-        }
-        Ok(ZonePortal::depositEncryptedCall {
+        Ok(ZonePortal::depositEncrypted_1Call {
             token: self.token,
             amount: self.amount,
             keyIndex: key_index,
