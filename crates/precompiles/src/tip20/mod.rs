@@ -1246,15 +1246,6 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        // TIP-1094: a blocked portal reverts the transfer instead of guarding the escrow.
-        if to.zone_deposit_address().is_some() {
-            if amount > U256::from(u128::MAX) {
-                return Err(TIP20Error::invalid_amount().into());
-            }
-            self.ensure_receive_policy_authorized(from, to.target)?;
-            return Ok(Some(to));
-        }
-
         if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
         }
