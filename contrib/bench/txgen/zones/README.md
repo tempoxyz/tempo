@@ -103,4 +103,5 @@ jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
 ```
 
 Keep fixture storage aligned with `crates/precompiles/src/zone_factory/portal.rs`.
-The submitter supports both settlement ABIs, before and after TIP-1096.
+The submitter supports both settlement ABIs, before and after TIP-1096, and both withdrawal ABIs,
+with and without T15's `senderOrg`.
