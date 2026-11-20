@@ -446,21 +446,6 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      # Requested first so R2 can propagate the token while the repository and
-      # artifacts download. The upload-binaries policy lives in
-      # tempoxyz/cloudflare-sts under policies/tempo-994992847/ and admits only
-      # this workflow on tempo/v* tags in the upload-binaries environment of
-      # this repository, so copies of the repository skip the upload. The
-      # action revokes the token after the job.
-      - name: Fetch Cloudflare token for the binaries bucket
-        id: cloudflare-sts
-        if: github.repository == 'tempoxyz/tempo'
-        uses: tempoxyz/gh-actions/actions/cloudflare-sts@1a535d662a51f211d750307541069cb849535414 # 2026-11-19T07-33-38Z-1a535d66
-        with:
-          account: prd
-          policy: upload-binaries
-          ttl: 10m
-
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -492,6 +477,22 @@ jobs:
             # Otherwise these are being stored in a generic bucket with many other subdirectories
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
+
+      # Requested after the checkout and artifact download, so a slow download
+      # can't use up the token's lifetime; the readiness check below waits for
+      # R2 to honor it. The upload-binaries policy lives in
+      # tempoxyz/cloudflare-sts under policies/tempo-994992847/ and admits only
+      # this workflow on tempo/v* tags in the upload-binaries environment of
+      # this repository, so copies of the repository skip the upload. The
+      # action revokes the token after the job.
+      - name: Fetch Cloudflare token for the binaries bucket
+        id: cloudflare-sts
+        if: github.repository == 'tempoxyz/tempo'
+        uses: tempoxyz/gh-actions/actions/cloudflare-sts@1a535d662a51f211d750307541069cb849535414 # 2026-11-19T07-33-38Z-1a535d66
+        with:
+          account: prd
+          policy: upload-binaries
+          ttl: 10m
 
       # R2's S3 access key ID is the API token's ID, and its secret is the
       # SHA-256 of the token value.
