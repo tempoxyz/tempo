@@ -509,9 +509,10 @@ jobs:
             exit 1
           fi
           endpoint="https://$ACCOUNT_ID.r2.cloudflarestorage.com"
-          id="$(curl --fail --silent --show-error --retry 3 --max-time 15 \
-            -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/tokens/verify" \
+          # The header goes in on stdin so the token stays out of curl's argv.
+          id="$(printf 'Authorization: Bearer %s\n' "$TOKEN" \
+            | curl --fail --silent --show-error --retry 3 --max-time 15 -H @- \
+              "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/tokens/verify" \
             | jq -er '.result | select(.status == "active") | .id')" \
             || { echo "::error::Cloudflare did not verify the R2 token as active"; exit 1; }
           [[ "$id" =~ ^[0-9a-f]{32}$ ]] \
@@ -522,7 +523,8 @@ jobs:
           # R2 can take up to a minute to honor a new token even after it
           # verifies as active: https://developers.cloudflare.com/r2/reference/consistency/
           # Not every R2 server honors it at once, so wait for three listings
-          # in a row, which write nothing.
+          # in a row, which write nothing. Slow responses can stretch the 30
+          # attempts past a minute.
           accepted=0
           for attempt in {1..30}; do
             status="$(curl --silent --show-error --retry 2 --max-time 15 \
@@ -539,7 +541,7 @@ jobs:
               break
             fi
             if (( attempt == 30 )); then
-              echo "::error::R2 did not consistently accept the credentials within a minute (last HTTP $status)"
+              echo "::error::R2 did not consistently accept the credentials after 30 attempts (last HTTP $status)"
               exit 1
             fi
             if [ "$status" != 200 ]; then
