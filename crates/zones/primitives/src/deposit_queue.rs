@@ -1,7 +1,6 @@
 //! Deposit-queue range selection for full Zone blocks (TIP-1171).
 
-use crate::constants::{DEPOSITS_PER_BUCKET, MAX_DEPOSIT_WEIGHT_PER_BLOCK};
-use tempo_contracts::zones::DepositType;
+use crate::constants::DEPOSITS_PER_BUCKET;
 
 /// Where the deposit-queue range a full Zone block processes ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,23 +29,6 @@ impl DepositRangeEnd {
     }
 }
 
-/// Returns how many leading entries of a range fit [`MAX_DEPOSIT_WEIGHT_PER_BLOCK`].
-pub fn executable_len(deposit_types: impl IntoIterator<Item = DepositType>) -> usize {
-    let mut weight = 0;
-    deposit_types
-        .into_iter()
-        .take_while(|deposit_type| {
-            weight += match deposit_type {
-                DepositType::Deposit
-                | DepositType::WithdrawalBounceBack
-                | DepositType::ZoneVirtual => 1,
-                DepositType::__Invalid => 0, // unreachable in practice
-            };
-            weight <= MAX_DEPOSIT_WEIGHT_PER_BLOCK
-        })
-        .count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,15 +47,5 @@ mod tests {
     #[test_case(0, u64::MAX, Some(u64::MAX - 1) => Some(DepositRangeEnd { target: u64::MAX - 1, checkpoint_index: Some(0) }))]
     fn selects_range_end(processed: u64, head: u64, base: Option<u64>) -> Option<DepositRangeEnd> {
         DepositRangeEnd::new(processed, head, base)
-    }
-
-    #[test_case(0, 0 => 0; "empty range")]
-    #[test_case(230, 0 => 230; "deposits fill the budget")]
-    #[test_case(115, 115 => 230; "mixed entries fill the budget")]
-    #[test_case(200, 31 => 230; "entry past the budget waits")]
-    fn executes_weighted_prefix(deposits: usize, bounce_backs: usize) -> usize {
-        executable_len(core::iter::repeat_n(DepositType::Deposit, deposits).chain(
-            core::iter::repeat_n(DepositType::WithdrawalBounceBack, bounce_backs),
-        ))
     }
 }

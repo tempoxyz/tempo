@@ -5,7 +5,7 @@ use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
-    zones::{DEPOSITS_PER_BUCKET, MAX_DEPOSIT_WEIGHT_PER_BLOCK, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+    zones::{DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -202,7 +202,7 @@ fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<(
 }
 
 /// A full block of virtual deposits that each resolve, then fail the mint and refund, fits the
-/// system transaction budget at TIP-1171 weight 1.
+/// system transaction budget.
 #[test]
 fn max_virtual_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
     const BUFFERED_GAS_LIMIT: u64 = 200_000_000;
@@ -218,7 +218,7 @@ fn max_virtual_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
             },
         )
     })?;
-    let deposits = (0..MAX_DEPOSIT_WEIGHT_PER_BLOCK)
+    let deposits = (0..DEPOSITS_PER_BUCKET)
         .map(|tag| virtual_deposit(deposit_address(1, 0, master, tag as u16), None))
         .collect();
 
@@ -234,10 +234,7 @@ fn max_virtual_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
         output.gas_used
     );
     assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::ZERO);
-    assert_eq!(
-        env.pending_withdrawals().len(),
-        MAX_DEPOSIT_WEIGHT_PER_BLOCK as usize
-    );
+    assert_eq!(env.pending_withdrawals().len(), DEPOSITS_PER_BUCKET);
     Ok(())
 }
 
@@ -638,7 +635,7 @@ fn queue_checkpointed_deposits(
         for position in (base..=pending).step_by(DEPOSITS_PER_BUCKET) {
             portal.deposit_buckets.push(PortalDepositBucket {
                 hash: hashes[position as usize],
-                cumulative_weight: position - base,
+                cumulative_weight: 0,
             })?;
         }
         Ok(())
@@ -679,8 +676,7 @@ fn t15_range_ends_at_head_or_next_checkpoint(
     let output = env
         .advance_tempo(
             entries[..supplied].to_vec(),
-            // Only the entries within the weight budget execute and consume decryption data.
-            vec![INVALID_DECRYPTION; supplied.min(MAX_DEPOSIT_WEIGHT_PER_BLOCK as usize)],
+            vec![INVALID_DECRYPTION; supplied],
             Vec::new(),
         )
         .unwrap();

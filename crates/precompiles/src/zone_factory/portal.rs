@@ -40,7 +40,8 @@ pub struct PortalEncryptionKeyEntry {
 pub struct PortalDepositBucket {
     /// Queue hash through the checkpoint entry.
     pub hash: B256,
-    /// Entry weight appended since bootstrap, through the checkpoint entry.
+    /// Reserved for the entry weight appended since bootstrap, through the checkpoint entry. Zero
+    /// while every entry weighs one unit.
     pub cumulative_weight: u64,
 }
 
@@ -118,9 +119,11 @@ pub struct ZonePortalStorage {
     transfers_enabled: bool,
     /// Deposit-queue checkpoints, stored in slot 29. Empty before bootstrap.
     deposit_buckets: Vec<PortalDepositBucket>,
-    /// Cumulative entry weight appended since deposit-queue checkpoints bootstrapped, in slot 30.
+    /// Reserved for the cumulative entry weight appended since bootstrap, in slot 30. Zero while
+    /// every entry weighs one unit.
     deposit_weight: u64,
-    /// Lower bound on the entry weight settled since bootstrap, in slot 30.
+    /// Reserved for the lower bound on the entry weight settled since bootstrap, in slot 30. Zero
+    /// while every entry weighs one unit.
     settled_deposit_weight: u64,
     /// Tempo block whose first append or settlement fixed `deposit_price_tier`, in slot 30.
     deposit_price_block: u64,

@@ -5,8 +5,8 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! From T15 (TIP-1171), each full block binds a bounded deposit-queue range to a checkpoint or the
-//! queue head and executes its prefix within the weight budget. Before T15 it binds every entry.
+//! From T15 (TIP-1171), each full block executes a bounded deposit-queue range and binds it to a
+//! checkpoint or the queue head. Before T15 it binds every entry to the head.
 
 mod dispatch;
 
@@ -32,7 +32,7 @@ use tempo_precompiles::{
 use tempo_precompiles_macros::contract;
 use zone_primitives::{
     constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
-    deposit_queue::{DepositRangeEnd, executable_len},
+    deposit_queue::DepositRangeEnd,
 };
 
 use crate::{
@@ -149,22 +149,15 @@ impl ZoneInbox {
 
         // Step 2: Process deposits and build hash chain
         //
-        // (+T15) only the prefix within the weight budget executes, the rest is only hashed.
+        // TODO: execute only the prefix within the TIP-1171 weight budget, and only hash the rest,
+        // once an entry type weighs more than 1 unit (T16 forced exits).
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
-        let previous_number = self.processed_deposit_number.read()?;
-        let executable_count = if StorageCtx.spec().is_t15() && !portal.is_zero() {
-            executable_len(deposits.iter().map(DecodedQueuedDeposit::deposit_type))
-        } else {
-            deposits.len()
-        };
-
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
         let zone_id = crate::address_registry::zone_id(portal);
 
-        let mut deposits = deposits.into_iter();
-        for queued in deposits.by_ref().take(executable_count) {
+        for queued in deposits {
             current_hash = queued.hash_with_tail(current_hash)?;
 
             match queued {
@@ -205,12 +198,6 @@ impl ZoneInbox {
             return Err(ZoneInboxError::extra_decryption_data().into());
         }
 
-        // Hashed-only entries are neither decrypted nor executed.
-        let processed_hash = current_hash;
-        for queued in deposits {
-            current_hash = queued.hash_with_tail(current_hash)?;
-        }
-
         // Step 3: Bind the supplied range to its commitment on Tempo.
         //
         // A range ending at a checkpoint must hash to it, and every other range to the queue head.
@@ -218,6 +205,7 @@ impl ZoneInbox {
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
+        let previous_number = self.processed_deposit_number.read()?;
         if !portal.is_zero() {
             let checkpoint_hash = if StorageCtx.spec().is_t15() {
                 let head = l1.read_portal(|portal| &portal.deposit_count)?;
@@ -255,9 +243,7 @@ impl ZoneInbox {
         }
 
         // Step 4: Update state
-        self.processed_deposit_queue_hash.write(processed_hash)?;
-        let deposit_count =
-            u64::try_from(executable_count).map_err(|_| TempoPrecompileError::under_overflow())?;
+        self.processed_deposit_queue_hash.write(current_hash)?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
@@ -268,7 +254,7 @@ impl ZoneInbox {
                 tempoBlockHash: tempo_block_hash,
                 tempoBlockNumber: tempo_block_number,
                 depositsProcessed: U256::from(deposit_count),
-                newProcessedDepositQueueHash: processed_hash,
+                newProcessedDepositQueueHash: current_hash,
                 lastProcessedDepositNumber: processed_number,
                 lastProcessedEnabledTokenCount: processed_enabled_token_count,
             })?;
@@ -277,7 +263,7 @@ impl ZoneInbox {
                 tempoBlockHash: tempo_block_hash,
                 tempoBlockNumber: tempo_block_number,
                 depositsProcessed: U256::from(deposit_count),
-                newProcessedDepositQueueHash: processed_hash,
+                newProcessedDepositQueueHash: current_hash,
                 lastProcessedDepositNumber: processed_number,
             })?;
         }
@@ -684,14 +670,6 @@ enum DecodedQueuedDeposit {
 }
 
 impl DecodedQueuedDeposit {
-    fn deposit_type(&self) -> DepositType {
-        match self {
-            Self::WithdrawalBounceBack(_) => DepositType::WithdrawalBounceBack,
-            Self::Deposit(_) => DepositType::Deposit,
-            Self::ZoneVirtual { .. } => DepositType::ZoneVirtual,
-        }
-    }
-
     fn hash_with_tail(&self, tail: B256) -> tempo_precompiles::Result<B256> {
         let encoded = match self {
             Self::WithdrawalBounceBack(deposit) => {
