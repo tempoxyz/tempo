@@ -1046,7 +1046,7 @@ The RPC uses a default-deny model. Any method not explicitly listed returns `-32
 
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
-**Readable accounts.** A caller may read an account's balance, nonce, the transactions it sent and its logs, at any block, when it is the account or, from T15, when `ZoneIdentity.canRead` allows it at the latest block. Removing a reader or replacing an org admin therefore also revokes its reads of earlier blocks. Data the caller may not read gets the same response as missing data.
+**Readable accounts.** A caller may read an account's balance, nonce, the transactions it sent and its logs, at any block or `pending`, when it is the account or, from T15, when `ZoneIdentity.canRead` allows it at the latest block. Removing a reader or replacing an org admin therefore also revokes its reads of earlier blocks. Data the caller may not read gets the same response as missing data.
 
 **Scoped.** Available to any authenticated caller but filtered to the accounts it may read:
 

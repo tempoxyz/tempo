@@ -560,6 +560,21 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             );
         }
     }
+    // Readers also see Alice's pool transactions.
+    let pooled = alice.transfer(carol.address, 1).await?;
+    let pooled_tx = *pooled.tx_hash();
+    let nonce = read(163, "eth_getTransactionCount", alice.address, "pending").await?;
+    assert_eq!(
+        nonce,
+        read(163, "eth_getTransactionCount", alice.address, "latest").await? + U256::ONE
+    );
+    for (index, expected) in [(161, nonce), (170, nonce), (162, U256::ZERO)] {
+        assert_eq!(
+            read(index, "eth_getTransactionCount", alice.address, "pending").await?,
+            expected
+        );
+    }
+    assert_eq!(mine(&mut fixture, &zone, vec![pooled]).await?, [true]);
     let assert_history = async |block: &str, reader_reads: bool| {
         let own = read(163, "eth_getBalance", alice.address, block).await?;
         assert_ne!(own, U256::ZERO);
@@ -619,8 +634,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         hashes.dedup();
         eyre::Ok(hashes)
     };
-    // The first poll covers the install block, which has no Alice transfer.
-    assert_eq!(filter_changes().await?, Vec::<B256>::new());
+    // The first poll covers the install block.
+    assert_eq!(filter_changes().await?, [pooled_tx]);
     let to_carol = alice.transfer(carol.address, 1).await?;
     let polled_tx = *to_carol.tx_hash();
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);

@@ -1184,9 +1184,10 @@ where
             .read_access(reader, account)?
             .map(|access| match access {
                 ReadAccess::Own => block.unwrap_or_default(),
-                ReadAccess::Delegated { latest } => {
-                    filter_earlier_block(block).unwrap_or(latest.into())
-                }
+                ReadAccess::Delegated { latest } => match block {
+                    Some(block) if !block.is_latest() => block,
+                    _ => latest.into(),
+                },
             }))
     }
 
