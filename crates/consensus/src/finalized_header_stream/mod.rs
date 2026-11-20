@@ -271,19 +271,6 @@ where
                     reason: error.to_string(),
                 })?;
 
-            let network_identity = self.verifier.network_identity();
-            if onchain_outcome.epoch >= network_identity.from_epoch
-                && network_identity.identity != *onchain_outcome.network_identity()
-            {
-                warn!(
-                    configured_from_epoch = network_identity.from_epoch,
-                    configured_network_identity = %network_identity.identity,
-                    onchain_epoch = %onchain_outcome.epoch,
-                    onchain_network_identity = %onchain_outcome.network_identity(),
-                    "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
-                );
-            }
-
             let identity = NetworkIdentity {
                 from_epoch: onchain_outcome.epoch,
                 identity: *onchain_outcome.network_identity(),
