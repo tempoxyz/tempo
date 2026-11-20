@@ -531,10 +531,12 @@ jobs:
           deadline=$((SECONDS + 120))
           while true; do
             attempt=$((attempt + 1))
-            status="$(curl --silent --show-error --retry 2 --max-time 15 \
-              --aws-sigv4 'aws:amz:auto:s3' --user "$id:$secret" \
-              --output /dev/null --write-out '%{http_code}' \
-              "$endpoint/$R2_BUCKET?list-type=2&max-keys=1")"
+            # The key pair goes in as curl config on stdin, out of its argv.
+            status="$(printf 'user = "%s:%s"\n' "$id" "$secret" \
+              | curl --config - --silent --show-error --retry 2 --max-time 15 \
+                --aws-sigv4 'aws:amz:auto:s3' \
+                --output /dev/null --write-out '%{http_code}' \
+                "$endpoint/$R2_BUCKET?list-type=2&max-keys=1")"
             case "$status" in
               200) accepted=$((accepted + 1)) ;;
               401|403) accepted=0 ;;
