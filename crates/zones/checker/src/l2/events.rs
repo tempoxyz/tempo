@@ -1349,7 +1349,6 @@ mod tests {
                 amount: 300,
                 masterId: Default::default(),
                 userTag: Default::default(),
-                reason: IZoneInbox::VirtualDepositFailureReason::UnregisteredMaster,
             },
         );
         let key = event_log(

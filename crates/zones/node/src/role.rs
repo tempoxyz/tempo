@@ -1099,7 +1099,7 @@ where
         context.local_ed25519_public_key.clone(),
     ))
     .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
-    .with_zone_storage(crate::engine::zone_storage_reader(context.provider.clone()))
+    .with_zone_state(crate::engine::zone_state_reader(context.provider.clone()))
 }
 
 #[cfg(test)]

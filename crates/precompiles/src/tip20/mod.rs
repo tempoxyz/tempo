@@ -1077,9 +1077,24 @@ impl TIP20Token {
         amount: U256,
         memo: Option<B256>,
     ) -> Result<()> {
+        // The portal reads `msg.sender` as the token, and a nested call's sender is the precompile
+        // that runs the frame. A transfer made inside another precompile (FeeAMM, DEX, receive
+        // policy claims) would reach the portal with the wrong sender, so it is refused.
+        if to.zone_deposit_address().is_some()
+            && StorageCtx::default()
+                .call_frame_address()
+                .is_some_and(|frame| frame != self.address)
+        {
+            return Err(TIP20Error::invalid_recipient().into());
+        }
         let Some(destination) = to.zone_deposit_address() else {
             return Ok(());
         };
+        // A zero-amount `transferFrom` needs no allowance, so it could name any account as the
+        // originator; no deposit moves zero anyway.
+        if amount.is_zero() {
+            return Err(TIP20Error::invalid_amount().into());
+        }
         let call = ZonePortal::depositVirtualCall {
             originator,
             grossAmount: u128::try_from(amount).map_err(|_| TIP20Error::invalid_amount())?,

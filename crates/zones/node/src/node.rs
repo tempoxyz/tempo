@@ -249,7 +249,7 @@ pub struct ZoneNode {
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     /// TIP-1094 address keys in version order, which this node initializes when it builds blocks.
-    virtual_address_keys: Vec<zone_payload::VirtualAddressKey>,
+    virtual_address_keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
@@ -390,12 +390,16 @@ impl ZoneNode {
     /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
     /// node of the zone is inside its confidentiality boundary.
     pub fn with_virtual_address_key(self, key: zone_payload::VirtualAddressKey) -> Self {
-        self.with_virtual_address_keys(vec![key])
+        self.with_virtual_address_keys(vec![(1, key)])
     }
 
-    /// TIP-1094 address keys in version order (index 0 is version 1). Once T15 is active, each
-    /// built block initializes the lowest configured version that is still uninitialized.
-    pub fn with_virtual_address_keys(mut self, keys: Vec<zone_payload::VirtualAddressKey>) -> Self {
+    /// TIP-1094 address keys to initialize, each with its version. Once T15 is active, each built
+    /// block initializes the lowest listed version not yet in state. Initialized keys are read
+    /// from state, so only keys not yet rotated in need to be configured.
+    pub fn with_virtual_address_keys(
+        mut self,
+        keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
+    ) -> Self {
         self.virtual_address_keys = keys;
         self
     }
@@ -1046,7 +1050,7 @@ where
                 proof_collector.clone(),
             )
             .with_deposit_allowlist(config.deposit_allowlist.clone())
-            .with_zone_storage(crate::engine::zone_storage_reader(provider.clone()));
+            .with_zone_state(crate::engine::zone_state_reader(provider.clone()));
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(

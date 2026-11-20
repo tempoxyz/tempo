@@ -992,7 +992,6 @@ mod tests {
             amount: 300,
             masterId: Default::default(),
             userTag: Default::default(),
-            reason: IZoneInbox::VirtualDepositFailureReason::Rejected,
         };
         [processed.encode_log_data(), failed.encode_log_data()].map(|data| {
             let mut log = make_log(emitter, Vec::new());

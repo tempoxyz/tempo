@@ -15,12 +15,12 @@ mod tests;
 
 use alloc::vec::Vec;
 
-use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
+use alloy_primitives::{Address, B256, FixedBytes, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use tempo_contracts::zones::{
     DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, VirtualDeposit, VirtualDepositFailureReason,
-    WithdrawalBounceBackDeposit, ZoneDepositAddress, ZoneInboxError, ZoneInboxEvent,
+    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, VirtualDeposit, WithdrawalBounceBackDeposit,
+    ZoneDepositAddress, ZoneInboxError, ZoneInboxEvent,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -36,7 +36,9 @@ use zone_primitives::{
 };
 
 use crate::{
-    ZonePrecompileError, ZoneResult, address_registry, aes_gcm, chaum_pedersen,
+    ZonePrecompileError, ZoneResult,
+    address_registry::ZoneAddressRegistry,
+    aes_gcm, chaum_pedersen,
     ecies::{ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE, hkdf_info, hkdf_sha256},
     ff1,
     outbox::ZoneOutbox,
@@ -62,6 +64,8 @@ pub struct ZoneInbox {
     processed_token_enablement_hash: B256,
     /// Number of entries from the portal's append-only enabled-token array applied by this zone.
     processed_enabled_token_count: u64,
+    /// TIP-1094 address keys by version; zero means the version is not initialized.
+    address_keys: Mapping<u8, B256>,
 }
 
 impl ZoneInbox {
@@ -157,7 +161,7 @@ impl ZoneInbox {
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
-        let zone_id = address_registry::zone_id(portal);
+        let zone_id = crate::address_registry::zone_id(portal);
 
         let mut deposits = deposits.into_iter();
         for queued in deposits.by_ref().take(executable_count) {
@@ -188,7 +192,7 @@ impl ZoneInbox {
                     &mut outbox,
                     current_hash,
                     deposit,
-                    VirtualDepositFailure::before_lookup(VirtualDepositFailureReason::Rejected),
+                    VirtualDepositFailure::default(),
                 ),
                 DecodedQueuedDeposit::ZoneVirtual {
                     deposit,
@@ -370,7 +374,7 @@ impl ZoneInbox {
         current_hash: B256,
         deposit: VirtualDeposit,
     ) -> ZoneResult<()> {
-        let resolved = match self.resolve_virtual_deposit(zone_id, deposit.destination)? {
+        let resolved = match self.resolve_virtual_deposit(zone_id, deposit.destination, true)? {
             Ok(resolved) => resolved,
             Err(failure) => {
                 return self.fail_virtual_deposit(outbox, current_hash, deposit, failure);
@@ -384,7 +388,6 @@ impl ZoneInbox {
                 current_hash,
                 deposit,
                 VirtualDepositFailure {
-                    reason: VirtualDepositFailureReason::MintFailed,
                     to: resolved.recipient,
                     master_id: resolved.master_id,
                     user_tag: resolved.user_tag,
@@ -407,47 +410,34 @@ impl ZoneInbox {
     }
 
     /// Resolves a deposit address to its registered recipient. A recipient failure returns the
-    /// committed failure reason with the recipient if one was found; system failures (gas,
-    /// missing witnesses) propagate as errors and never become a refund.
-    fn resolve_virtual_deposit(
-        &mut self,
+    /// failure with the recipient if one was found; system failures (gas, missing witnesses)
+    /// propagate as errors and never become a refund. `charge_gas` is false only for read-only
+    /// node-side lookups, which run outside a metered call.
+    pub fn resolve_virtual_deposit(
+        &self,
         zone_id: u32,
         destination: Address,
+        charge_gas: bool,
     ) -> ZoneResult<Result<ResolvedVirtualDeposit, VirtualDepositFailure>> {
         let Some(address) = ZoneDepositAddress::decode(&destination)
             .filter(|address| address.version != 0 && address.zone_id == zone_id)
         else {
-            return Ok(Err(VirtualDepositFailure::before_lookup(
-                VirtualDepositFailureReason::InvalidAddress,
-            )));
+            return Ok(Err(VirtualDepositFailure::default()));
         };
         let Some(key) = self.virtual_address_key(address.version)? else {
-            return Ok(Err(VirtualDepositFailure::before_lookup(
-                VirtualDepositFailureReason::KeyUnconfigured,
-            )));
+            return Ok(Err(VirtualDepositFailure::default()));
         };
 
-        ff1::charge_gas()?;
+        if charge_gas {
+            ff1::charge_gas()?;
+        }
         let plaintext = ff1::decrypt(&key.0, address.version, zone_id, address.ciphertext.0);
         let master_id = FixedBytes::<4>::from_slice(&plaintext[..4]);
         let user_tag = FixedBytes::<2>::from_slice(&plaintext[4..]);
 
-        let recipient = address_registry::recipient_of(master_id)?;
+        let recipient = ZoneAddressRegistry::new().recipient_of(master_id)?;
         if recipient.is_zero() {
-            return Ok(Err(VirtualDepositFailure {
-                reason: VirtualDepositFailureReason::UnregisteredMaster,
-                to: Address::ZERO,
-                master_id,
-                user_tag,
-            }));
-        }
-        if !address_registry::is_valid_recipient(&recipient) {
-            return Ok(Err(VirtualDepositFailure {
-                reason: VirtualDepositFailureReason::InvalidMaster,
-                to: Address::ZERO,
-                master_id,
-                user_tag,
-            }));
+            return Ok(Err(VirtualDepositFailure::default()));
         }
         Ok(Ok(ResolvedVirtualDeposit {
             recipient,
@@ -472,16 +462,19 @@ impl ZoneInbox {
                 tempoRefundRecipient: deposit.originator,
             },
         )?;
-        self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
-            failure.to,
-            deposit.originator,
-            current_hash,
-            deposit.token,
-            deposit.amount,
-            failure.master_id,
-            failure.user_tag,
-            failure.reason,
-        ))?;
+        // Only a resolved recipient can be served this log; earlier failures are refunded
+        // silently, like a rejected ECIES deposit.
+        if !failure.to.is_zero() {
+            self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
+                failure.to,
+                deposit.originator,
+                current_hash,
+                deposit.token,
+                deposit.amount,
+                failure.master_id,
+                failure.user_tag,
+            ))?;
+        }
         Ok(())
     }
 
@@ -506,20 +499,29 @@ impl ZoneInbox {
         if !in_order || self.virtual_address_key(version)?.is_some() {
             return Err(ZoneInboxError::invalid_address_key_version(version).into());
         }
-        let (flag_slot, key_slot) = address_key_slots(version)?;
-        Slot::<U256>::new(flag_slot, self.address).write(U256::ONE)?;
-        Slot::<B256>::new(key_slot, self.address).write(key)?;
+        // A zero key would read back as an uninitialized version.
+        if key.is_zero() {
+            return Err(ZoneInboxError::invalid_address_key_version(version).into());
+        }
+        self.address_keys[version].write(key)?;
         self.emit_event(ZoneInboxEvent::virtual_address_key_initialized(version))?;
         Ok(())
     }
 
+    /// Writes `key` as address key `version` directly, for tests in other crates.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialize_virtual_address_key_for_test(
+        &mut self,
+        version: u8,
+        key: B256,
+    ) -> tempo_precompiles::Result<()> {
+        self.address_keys[version].write(key)
+    }
+
     /// The committed key for `version`, or `None` when that version is not initialized.
-    fn virtual_address_key(&self, version: u8) -> tempo_precompiles::Result<Option<B256>> {
-        let (flag_slot, key_slot) = address_key_slots(version)?;
-        if Slot::<U256>::new(flag_slot, self.address).read()?.is_zero() {
-            return Ok(None);
-        }
-        Slot::<B256>::new(key_slot, self.address).read().map(Some)
+    pub fn virtual_address_key(&self, version: u8) -> tempo_precompiles::Result<Option<B256>> {
+        let key = self.address_keys[version].read()?;
+        Ok((!key.is_zero()).then_some(key))
     }
 
     fn process_withdrawal_bounce_back(
@@ -649,88 +651,23 @@ impl ZoneInbox {
 }
 
 /// A virtual deposit whose address resolved to a registered recipient.
-/// Why a virtual deposit failed, with the recipient and decrypted identifiers when it got that far.
-struct VirtualDepositFailure {
-    reason: VirtualDepositFailureReason,
+/// A failed virtual deposit, with the recipient and decrypted identifiers when lookup reached them.
+#[derive(Debug, Default)]
+pub struct VirtualDepositFailure {
     /// The registered recipient, or zero before a successful lookup.
     to: Address,
-    /// Zero when the address was never decrypted.
     master_id: FixedBytes<4>,
-    /// Zero when the address was never decrypted.
     user_tag: FixedBytes<2>,
 }
 
-impl VirtualDepositFailure {
-    fn before_lookup(reason: VirtualDepositFailureReason) -> Self {
-        Self {
-            reason,
-            to: Address::ZERO,
-            master_id: FixedBytes::ZERO,
-            user_tag: FixedBytes::ZERO,
-        }
-    }
-}
-
-struct ResolvedVirtualDeposit {
-    recipient: Address,
+/// A virtual deposit's registered recipient and decrypted identifiers.
+#[derive(Debug)]
+pub struct ResolvedVirtualDeposit {
+    /// The recipient to credit.
+    pub recipient: Address,
     version: u8,
     master_id: FixedBytes<4>,
     user_tag: FixedBytes<2>,
-}
-
-/// TIP-1094 key slots for `version`: the initialized flag at
-/// `keccak256(abi.encode(uint256(v), uint256(S)))` and the key in the next slot.
-fn address_key_slots(version: u8) -> tempo_precompiles::Result<(U256, U256)> {
-    let mut data = [0u8; 64];
-    data[31] = version;
-    data[32..].copy_from_slice(keccak256(b"tempo.zvda.addressKeys").as_slice());
-    let flag: U256 = StorageCtx::default().keccak256(&data)?.into();
-    Ok((flag, flag.wrapping_add(U256::ONE)))
-}
-
-/// TIP-1094 key slots (initialized flag, key) for `version` in `ZONE_INBOX_ADDRESS` storage,
-/// computed without a storage context for node-side reads. Must equal `address_key_slots`.
-pub fn virtual_address_key_slots(version: u8) -> (U256, U256) {
-    let mut data = [0u8; 64];
-    data[31] = version;
-    data[32..].copy_from_slice(keccak256(b"tempo.zvda.addressKeys").as_slice());
-    let flag: U256 = keccak256(data).into();
-    (flag, flag.wrapping_add(U256::ONE))
-}
-
-/// Resolves a virtual deposit's destination to the recipient `advanceTempo` would credit, reading
-/// committed zone storage through `read(address, slot)` at the parent of the block that will
-/// process it.
-///
-/// Returns `None` when the inbox refunds the deposit on its own (invalid or foreign address,
-/// uninitialized key version, unregistered or invalid master). Sequencers use this to apply their
-/// deposit allowlist and set `QueuedDeposit.rejected`; it mirrors `resolve_virtual_deposit`.
-pub fn virtual_deposit_recipient<E>(
-    portal: Address,
-    destination: Address,
-    mut read: impl FnMut(Address, U256) -> Result<U256, E>,
-) -> Result<Option<Address>, E> {
-    let zone_id = address_registry::zone_id(portal);
-    let Some(address) = ZoneDepositAddress::decode(&destination)
-        .filter(|address| address.version != 0 && address.zone_id == zone_id)
-    else {
-        return Ok(None);
-    };
-    let (flag_slot, key_slot) = virtual_address_key_slots(address.version);
-    if read(ZONE_INBOX_ADDRESS, flag_slot)?.is_zero() {
-        return Ok(None);
-    }
-    let key = B256::from(read(ZONE_INBOX_ADDRESS, key_slot)?);
-    let plaintext = ff1::decrypt(&key.0, address.version, zone_id, address.ciphertext.0);
-    let master_id = FixedBytes::<4>::from_slice(&plaintext[..4]);
-    let recipient = Address::from_word(B256::from(read(
-        tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
-        address_registry::recipient_storage_slot(master_id),
-    )?));
-    Ok(
-        (!recipient.is_zero() && address_registry::is_valid_recipient(&recipient))
-            .then_some(recipient),
-    )
 }
 
 /// A queue entry whose nested ABI payload has been validated before execution begins.

@@ -1741,30 +1741,28 @@ where
                 .call()
                 .await
                 .map_err(internal)?;
+            // The minimum only rises, so read it at the latest Tempo head: a version retired after
+            // the finalized block must not be issued.
             let minimum_version = portal
                 .minimumAddressVersion()
-                .block(BlockId::number(l1_block))
+                .block(BlockId::latest())
                 .call()
                 .await
                 .map_err(internal)?;
-            let state = self
+            let mut state = self
                 .eth
                 .api
                 .provider()
                 .state_by_block_hash(settled)
                 .map_err(|_| JsonRpcError::internal("settled zone block is not available"))?;
-            let derived = derive_deposit_addresses(
-                self.config.zone_id,
-                minimum_version,
-                auth.caller,
-                &request,
-                |address, slot| {
-                    state
-                        .storage(address, B256::from(slot))
-                        .map(Option::unwrap_or_default)
-                        .map_err(internal)
-                },
-            )?;
+            let derived = crate::engine::read_zone_state(&mut state, || {
+                derive_deposit_addresses(
+                    self.config.zone_id,
+                    minimum_version,
+                    auth.caller,
+                    &request,
+                )
+            })?;
             to_raw(&DeriveDepositAddressesResponse {
                 zone_block_hash: settled,
                 version: derived.0,
@@ -1774,7 +1772,7 @@ where
     }
 }
 
-/// Derives TIP-1094 deposit addresses for `request` from zone storage read through `read`.
+/// Derives TIP-1094 deposit addresses for `request` from zone state in the current storage context.
 ///
 /// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
 /// fail alike, so the method does not reveal registrations. The version defaults to the highest
@@ -1784,12 +1782,10 @@ fn derive_deposit_addresses(
     minimum_version: u8,
     caller: Address,
     request: &DeriveDepositAddressesRequest,
-    mut read: impl FnMut(Address, U256) -> Result<U256, JsonRpcError>,
 ) -> Result<(u8, Vec<Address>), JsonRpcError> {
-    let recipient = Address::from_word(B256::from(read(
-        tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
-        zone_precompiles::address_registry::recipient_storage_slot(request.master_id),
-    )?));
+    let recipient = zone_precompiles::address_registry::ZoneAddressRegistry::new()
+        .recipient_of(request.master_id)
+        .map_err(internal)?;
     if recipient.is_zero() || recipient != caller {
         return Err(JsonRpcError::invalid_params(
             "masterId is not registered to the caller",
@@ -1797,14 +1793,15 @@ fn derive_deposit_addresses(
     }
 
     // Keys initialize in order, so the initialized versions are 1 through the first gap.
-    let mut highest = 0u8;
+    let inbox = zone_precompiles::inbox::ZoneInbox::new();
+    let mut keys = Vec::new();
     for version in 1..=u8::MAX {
-        let (flag, _) = zone_precompiles::inbox::virtual_address_key_slots(version);
-        if read(ZONE_INBOX_ADDRESS, flag)?.is_zero() {
-            break;
+        match inbox.virtual_address_key(version).map_err(internal)? {
+            Some(key) => keys.push(key),
+            None => break,
         }
-        highest = version;
     }
+    let highest = keys.len() as u8;
     let version = request.version.unwrap_or(highest);
     if version == 0 || version > highest || version < minimum_version {
         return Err(JsonRpcError::invalid_params(
@@ -1812,8 +1809,7 @@ fn derive_deposit_addresses(
         ));
     }
 
-    let (_, key_slot) = zone_precompiles::inbox::virtual_address_key_slots(version);
-    let key = B256::from(read(ZONE_INBOX_ADDRESS, key_slot)?);
+    let key = keys[usize::from(version - 1)];
     let addresses = request
         .user_tags
         .iter()

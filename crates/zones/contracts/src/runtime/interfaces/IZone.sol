@@ -109,16 +109,6 @@ enum DepositType {
     ZoneVirtual // TIP-1094 TIP-20 transfer to a zone deposit address (T15)
 }
 
-/// @notice Private failure reasons recorded for a TIP-1094 virtual deposit
-enum VirtualDepositFailureReason {
-    InvalidAddress,
-    KeyUnconfigured,
-    UnregisteredMaster,
-    InvalidMaster,
-    MintFailed,
-    Rejected // The sequencer set QueuedDeposit.rejected (e.g. deposit allowlist)
-}
-
 /// @notice TIP-1094 queue entry for a TIP-20 transfer to a zone deposit address
 /// @dev The zone decrypts `destination` to a registered recipient; a failure refunds `originator`.
 struct VirtualDeposit {
@@ -1245,7 +1235,8 @@ interface IZoneInbox {
         bytes32 memo
     );
 
-    /// @notice TIP-1094: a virtual deposit failed and was queued as a refund to the originator.
+    /// @notice TIP-1094: a virtual deposit reached its recipient but the mint failed, so it was
+    ///         queued as a refund to the originator.
     event VirtualDepositFailed(
         address indexed to,
         address indexed originator,
@@ -1253,8 +1244,7 @@ interface IZoneInbox {
         address token,
         uint128 amount,
         bytes4 masterId,
-        bytes2 userTag,
-        VirtualDepositFailureReason reason
+        bytes2 userTag
     );
 
     /// @notice TIP-1094: an address key version was initialized. Carries no key material.

@@ -608,6 +608,29 @@ mod runtime_tests {
         );
         assert_eq!(balance(&mut evm, alice), amount);
 
+        // A zero-amount transfer to a deposit address reverts: it needs no allowance, so it could
+        // name any account as the originator.
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::transferCall {
+                        to: destination,
+                        amount: U256::ZERO,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(alice),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            ITIP20::InvalidAmount {}.abi_encode()
+        );
+
         // Mints to deposit addresses revert.
         let result = evm
             .system_call(

@@ -1180,26 +1180,34 @@ fn rejected_flag_is_ignored_on_withdrawal_bounce_backs() -> eyre::Result<()> {
 }
 
 #[test]
-fn node_side_resolution_matches_the_inbox() -> eyre::Result<()> {
+fn unmetered_resolution_matches_the_metered_lookup() -> eyre::Result<()> {
     let mut env = virtual_env(TempoHardfork::T15)?;
     assert!(init_key(&mut env, 1)?.is_success());
     let master = register(&mut env, BOB)?;
 
     env.with_storage(|| -> eyre::Result<()> {
-        let resolve = |destination| {
-            super::virtual_deposit_recipient(Address::ZERO, destination, |address, slot| {
-                Slot::<U256>::new(slot, address).read()
-            })
+        let inbox = ZoneInbox::new();
+        let resolve = |destination, charge_gas| -> eyre::Result<Option<Address>> {
+            Ok(inbox
+                .resolve_virtual_deposit(0, destination, charge_gas)
+                .map_err(|err| eyre::eyre!("{err:?}"))?
+                .ok()
+                .map(|resolved| resolved.recipient))
         };
-        assert_eq!(resolve(deposit_address(1, 0, master, 3))?, Some(BOB));
-        for destination in [
-            deposit_address(1, 0, 1_000, 0),
-            deposit_address(2, 0, master, 0),
-            deposit_address(1, 9, master, 0),
-            deposit_address(0, 0, master, 0),
-            BOB,
-        ] {
-            assert_eq!(resolve(destination)?, None, "{destination}");
+        for charge_gas in [true, false] {
+            assert_eq!(
+                resolve(deposit_address(1, 0, master, 3), charge_gas)?,
+                Some(BOB)
+            );
+            for destination in [
+                deposit_address(1, 0, 1_000, 0),
+                deposit_address(2, 0, master, 0),
+                deposit_address(1, 9, master, 0),
+                deposit_address(0, 0, master, 0),
+                BOB,
+            ] {
+                assert_eq!(resolve(destination, charge_gas)?, None, "{destination}");
+            }
         }
         Ok(())
     })

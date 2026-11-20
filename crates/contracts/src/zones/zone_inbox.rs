@@ -4,7 +4,7 @@ pub use IZoneInbox::{
     ChaumPedersenProof, DecryptionData, DepositType, EnabledToken,
     IZoneInboxErrors as ZoneInboxError, IZoneInboxEvents as ZoneInboxEvent, QueuedDeposit,
     TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced, VirtualDeposit,
-    VirtualDepositFailureReason, WithdrawalBounceBackDeposit,
+    WithdrawalBounceBackDeposit,
 };
 
 use alloy_primitives::{Address, B256, keccak256};
@@ -52,18 +52,6 @@ crate::sol! {
             bool hasMemo;
             /// Zero when `hasMemo` is false.
             bytes32 memo;
-        }
-
-        /// Private failure reasons recorded for a virtual deposit.
-        enum VirtualDepositFailureReason {
-            InvalidAddress,
-            KeyUnconfigured,
-            UnregisteredMaster,
-            InvalidMaster,
-            MintFailed,
-            /// The sequencer rejected the deposit (`QueuedDeposit.rejected`), for example because
-            /// its originator or recipient is not on the sequencer's deposit allowlist.
-            Rejected,
         }
 
         /// A user deposit or internal withdrawal bounce-back passed to `advanceTempo`.
@@ -145,10 +133,9 @@ crate::sol! {
             bytes32 memo
         );
 
-        /// A virtual deposit failed and its net amount was queued as a refund to `originator`.
-        /// `to` is the resolved recipient, or zero when resolution failed before a lookup. `masterId`
-        /// and `userTag` are zero when the address was never decrypted. The redacted RPC serves it
-        /// only to a nonzero `to`.
+        /// A virtual deposit reached its registered recipient `to` but the mint failed, so its net
+        /// amount was queued as a refund to `originator`. Deposits that fail earlier are refunded
+        /// without an event. The redacted RPC serves it only to `to`.
         event VirtualDepositFailed(
             address indexed to,
             address indexed originator,
@@ -156,8 +143,7 @@ crate::sol! {
             address token,
             uint128 amount,
             bytes4 masterId,
-            bytes2 userTag,
-            VirtualDepositFailureReason reason
+            bytes2 userTag
         );
 
         /// Emitted when a TIP-1094 address key version is initialized. Carries no key material.

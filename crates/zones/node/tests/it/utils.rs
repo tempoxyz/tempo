@@ -1199,7 +1199,8 @@ impl ZoneTestNode {
             zone_node = zone_node.with_virtual_address_keys(
                 virtual_address_keys
                     .into_iter()
-                    .map(zone_payload::VirtualAddressKey::new)
+                    .zip(1u8..)
+                    .map(|(key, version)| (version, zone_payload::VirtualAddressKey::new(key)))
                     .collect(),
             );
         }
@@ -1340,7 +1341,7 @@ impl ZoneTestNode {
                 None,
             )
             .with_deposit_allowlist(deposit_allowlist)
-            .with_zone_storage(zone_node::engine::zone_storage_reader(provider.clone()));
+            .with_zone_state(zone_node::engine::zone_state_reader(provider.clone()));
             node_handle
                 .node
                 .task_executor

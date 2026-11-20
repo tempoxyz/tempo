@@ -10,8 +10,8 @@ use crate::{
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_primitives::{B256, Bytes, TxHash, U256, keccak256};
-use alloy_sol_types::{SolCall, SolValue};
+use alloy_primitives::{B256, Bytes, TxHash, U256};
+use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
 };
@@ -104,7 +104,7 @@ pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
-    virtual_address_keys: Vec<VirtualAddressKey>,
+    virtual_address_keys: Vec<(u8, VirtualAddressKey)>,
 }
 
 impl ZonePayloadFactory {
@@ -118,21 +118,19 @@ impl ZonePayloadFactory {
         }
     }
 
-    /// TIP-1094: address keys in version order (index 0 is version 1). From T15, each block this
-    /// node builds initializes the lowest configured version that is still uninitialized, so a
-    /// new key added at the end is rotated in by the next block.
-    pub fn with_virtual_address_keys(mut self, keys: Vec<VirtualAddressKey>) -> Self {
-        assert!(
-            keys.len() <= u8::MAX as usize,
-            "at most 255 address key versions"
-        );
+    /// TIP-1094: address keys to initialize, each with its version. From T15, each block this
+    /// node builds initializes the lowest listed version that is not yet in state, once the
+    /// version before it is. Keys already initialized are read from state, so a node only needs
+    /// keys it has not rotated in yet.
+    pub fn with_virtual_address_keys(mut self, mut keys: Vec<(u8, VirtualAddressKey)>) -> Self {
+        keys.sort_by_key(|(version, _)| *version);
         self.virtual_address_keys = keys;
         self
     }
 
-    /// TIP-1094: configure `key` as the only address key, version 1.
+    /// TIP-1094: configure `key` as address key version 1.
     pub fn with_virtual_address_key(self, key: VirtualAddressKey) -> Self {
-        self.with_virtual_address_keys(vec![key])
+        self.with_virtual_address_keys(vec![(1, key)])
     }
 
     pub fn with_withdrawal_reveal_encryptor(
@@ -210,7 +208,7 @@ pub struct ZonePayloadBuilder<Provider> {
     transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
     metrics: ZonePayloadBuilderMetrics,
     /// TIP-1094 address key version 1, initialized once when still unset.
-    virtual_address_keys: Vec<VirtualAddressKey>,
+    virtual_address_keys: Vec<(u8, VirtualAddressKey)>,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -362,18 +360,21 @@ where
         // TIP-1094: the executor accepts key initialization only directly after a full
         // advanceTempo, at most once per block.
         if !tempo_import.is_checkpoint_only() && builder.evm().config_spec_id().is_t15() {
-            let mut next = None;
-            for (index, key) in self.virtual_address_keys.iter().enumerate() {
-                let version = (index + 1) as u8;
-                if state_provider
-                    .storage(ZONE_INBOX_ADDRESS, virtual_address_key_flag_slot(version))?
-                    .unwrap_or_default()
-                    .is_zero()
-                {
-                    next = Some((version, *key));
-                    break;
-                }
-            }
+            let next = self
+                .virtual_address_keys
+                .iter()
+                .find(|(version, _)| {
+                    let initialized = |version: u8| {
+                        zone_precompiles::inbox::ZoneInbox::new()
+                            .virtual_address_key(version)
+                            .map(|key| key.is_some())
+                            .unwrap_or(false)
+                    };
+                    read_parent_state(state_provider.as_ref(), || {
+                        !initialized(*version) && (*version == 1 || initialized(*version - 1))
+                    })
+                })
+                .copied();
             if let Some((version, key)) = next {
                 info!(target: "zone::payload", version, "Initializing TIP-1094 address key");
                 builder
@@ -963,9 +964,15 @@ fn build_advance_tempo_tx_from_parts(
     )
 }
 
-/// The storage slot of the native inbox's initialized flag for TIP-1094 key `version`.
-fn virtual_address_key_flag_slot(version: u8) -> B256 {
-    keccak256((U256::from(version), keccak256(b"tempo.zvda.addressKeys")).abi_encode())
+/// Runs `f` against the parent block's state in a read-only storage context.
+fn read_parent_state<R>(state: &dyn reth_storage_api::StateProvider, f: impl FnOnce() -> R) -> R {
+    use tempo_evm::TempoStateAccess as _;
+    let mut state = state;
+    state.with_read_only_storage_ctx(
+        tempo_chainspec::hardfork::TempoHardfork::T15,
+        tempo_precompiles::storage::StorageActions::disabled(),
+        f,
+    )
 }
 
 /// Build the TIP-1094 `initializeVirtualAddressKey(version, key)` system transaction.

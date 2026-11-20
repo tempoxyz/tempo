@@ -663,6 +663,10 @@ where
         self.is_static
     }
 
+    fn call_frame_address(&self) -> Option<Address> {
+        self.frame.as_ref().map(|frame| frame.address)
+    }
+
     fn call(
         &mut self,
         target: Address,
@@ -2099,6 +2103,15 @@ mod tests {
             AccountInfo::default().with_code(Bytecode::new_raw(code)),
         );
         TestEvm::with_database(TempoHardfork::default(), false, database)
+    }
+
+    #[test]
+    fn test_call_frame_address_reports_the_running_precompile() {
+        let mut evm = evm_with_callee(Bytes::new());
+        let provider = evm.provider_with_gas_limit(1_000_000, 0);
+        assert_eq!(provider.call_frame_address(), None);
+        let provider = provider.with_frame(frame());
+        assert_eq!(provider.call_frame_address(), Some(CALLING_PRECOMPILE));
     }
 
     #[test]

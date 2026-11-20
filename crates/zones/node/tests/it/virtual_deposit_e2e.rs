@@ -436,14 +436,22 @@ async fn test_second_key_version_is_initialized_and_used() -> eyre::Result<()> {
         .await?;
     eyre::ensure!(receipt.status(), "registerMaster failed");
 
-    for version in [1u8, 2] {
-        let (flag, _) = zone_precompiles::inbox::virtual_address_key_slots(version);
-        let value = zone
-            .provider()
-            .get_storage_at(zone_primitives::constants::ZONE_INBOX_ADDRESS, flag)
-            .await?;
-        assert!(!value.is_zero(), "key version {version} not initialized");
-    }
+    let initialized: Vec<u8> = zone
+        .provider()
+        .get_logs(
+            &alloy::rpc::types::Filter::new()
+                .address(zone_primitives::constants::ZONE_INBOX_ADDRESS)
+                .event_signature(IZoneInbox::VirtualAddressKeyInitialized::SIGNATURE_HASH)
+                .from_block(0),
+        )
+        .await?
+        .iter()
+        .map(|log| {
+            IZoneInbox::VirtualAddressKeyInitialized::decode_log(&log.inner)
+                .map(|event| event.data.version)
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(initialized, vec![1, 2]);
 
     let mut plaintext = [0u8; 6];
     plaintext[..4].copy_from_slice(&master_id.0);

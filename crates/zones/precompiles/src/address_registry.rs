@@ -1,21 +1,21 @@
 //! TIP-1094 zone address registry precompile.
 //!
-//! Assigns sequential 4-byte master IDs to recipients. Bindings are immutable, live in
-//! namespaced storage slots (so they cannot overlap TIP-1022's layout at the same address), and
-//! have no public getter: only the native inbox reads them, through `recipient_of`.
+//! Assigns sequential 4-byte master IDs to recipients. Bindings are immutable and have no public
+//! getter: only the native inbox reads them, through `recipient_of`.
 
 use alloc::vec::Vec;
 
-use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
+use alloy_primitives::{Address, B256, FixedBytes};
 use alloy_sol_types::SolEvent;
 use evm2::precompiles::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
     IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
-    ZoneAddressRegistryError, ZoneDepositAddress,
+    ZoneAddressRegistryError,
 };
 use tempo_precompiles::{
     charge_input_cost, dispatch,
-    storage::{ContractStorage, Handler, Slot, StorageCtx},
+    storage::{Handler, Mapping, StorageCtx},
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -28,9 +28,16 @@ use crate::{
 /// Exclusive upper bound of the 4-byte master ID space; also the exhausted counter value.
 pub const MASTER_ID_SPACE: u64 = 1 << 32;
 
-/// Zone-side TIP-1094 registry. All state is in namespaced slots, not macro-assigned fields.
+/// Zone-side TIP-1094 registry. Deployed at the T15 boundary.
 #[contract(addr = ZONE_ADDRESS_REGISTRY_ADDRESS)]
-pub struct ZoneAddressRegistry {}
+pub struct ZoneAddressRegistry {
+    /// Master ID (as a big-endian `u32`) to its recipient.
+    recipients: Mapping<u32, Address>,
+    /// Request hash to its master ID plus one; zero means unrecorded.
+    registrations: Mapping<B256, u64>,
+    /// The next master ID to assign.
+    next_master_id: u64,
+}
 
 impl ZoneAddressRegistry {
     pub(crate) fn call<P: L1StorageReader>(
@@ -63,33 +70,27 @@ impl ZoneAddressRegistry {
         recipient: Address,
         salt: B256,
     ) -> ZoneResult<FixedBytes<4>> {
-        if !is_valid_recipient(&recipient) {
+        // The registry exists only from T15, so deposit addresses are always invalid masters.
+        if !recipient.is_valid_master(TempoHardfork::T15) {
             return Err(ZoneAddressRegistryError::invalid_master_address().into());
         }
 
         let request_hash = request_hash(zone_id, recipient, salt)?;
-        let mut record = Slot::<u64>::new(request_slot(request_hash)?, self.address);
-        let existing = record.read()?;
+        let existing = self.registrations[request_hash].read()?;
         if existing != 0 {
             return Ok(master_id_bytes(existing - 1));
         }
 
-        let mut counter = Slot::<u64>::new(counter_slot(), self.address);
-        let next = counter.read()?;
+        let next = self.next_master_id.read()?;
         if next >= MASTER_ID_SPACE {
             return Err(ZoneAddressRegistryError::master_id_space_exhausted().into());
         }
 
-        // The registry is first written after T15 activates; mark the account so its storage is
-        // never pruned as empty.
-        if !self.is_initialized()? {
-            self.__initialize()?;
-        }
         let master_id = master_id_bytes(next);
-        Slot::<Address>::new(recipient_slot(master_id)?, self.address).write(recipient)?;
+        self.recipients[next as u32].write(recipient)?;
         // The +1 offset lets the record of the last ID (0xFFFFFFFF) be distinguished from absence.
-        record.write(next + 1)?;
-        counter.write(next + 1)?;
+        self.registrations[request_hash].write(next + 1)?;
+        self.next_master_id.write(next + 1)?;
         self.storage.emit_event(
             self.address,
             IZoneAddressRegistry::MasterRegistered {
@@ -100,6 +101,11 @@ impl ZoneAddressRegistry {
         )?;
         Ok(master_id)
     }
+
+    /// The recipient bound to `master_id`, or zero when unregistered.
+    pub fn recipient_of(&self, master_id: FixedBytes<4>) -> tempo_precompiles::Result<Address> {
+        self.recipients[u32::from_be_bytes(master_id.0)].read()
+    }
 }
 
 /// The zone ID encoded in the portal address; zero in no-L1 development mode.
@@ -108,19 +114,6 @@ pub fn zone_id(portal: Address) -> u32 {
         .zone_portal_id()
         .and_then(|id| u32::try_from(id).ok())
         .unwrap_or_default()
-}
-
-/// Recipients may not be zero, a TIP-20 token, a TIP-1022 virtual address or a deposit address.
-pub fn is_valid_recipient(recipient: &Address) -> bool {
-    !recipient.is_zero()
-        && !recipient.is_tip20()
-        && !recipient.is_virtual()
-        && !ZoneDepositAddress::is_reserved(recipient)
-}
-
-/// Reads the recipient bound to `master_id`, or zero when unregistered.
-pub(crate) fn recipient_of(master_id: FixedBytes<4>) -> tempo_precompiles::Result<Address> {
-    Slot::<Address>::new(recipient_slot(master_id)?, ZONE_ADDRESS_REGISTRY_ADDRESS).read()
 }
 
 fn master_id_bytes(id: u64) -> FixedBytes<4> {
@@ -135,40 +128,6 @@ fn request_hash(zone_id: u32, recipient: Address, salt: B256) -> tempo_precompil
     data.extend_from_slice(recipient.as_slice());
     data.extend_from_slice(salt.as_slice());
     StorageCtx::default().keccak256(&data)
-}
-
-/// `keccak256(abi.encode(key, namespace))`.
-fn mapping_slot(key: B256, namespace: &[u8]) -> tempo_precompiles::Result<U256> {
-    let mut data = [0u8; 64];
-    data[..32].copy_from_slice(key.as_slice());
-    data[32..].copy_from_slice(keccak256(namespace).as_slice());
-    Ok(StorageCtx::default().keccak256(&data)?.into())
-}
-
-/// `abi.encode(bytes4)` left-aligns the ID in its word.
-fn recipient_slot(master_id: FixedBytes<4>) -> tempo_precompiles::Result<U256> {
-    let mut key = B256::ZERO;
-    key[..4].copy_from_slice(master_id.as_slice());
-    mapping_slot(key, b"tempo.zvda.masterRegistry")
-}
-
-/// Storage slot of the recipient bound to `master_id`, computed without a storage context, for
-/// node-side reads of committed zone state. Must equal `recipient_slot`.
-pub fn recipient_storage_slot(master_id: FixedBytes<4>) -> U256 {
-    let mut key = B256::ZERO;
-    key[..4].copy_from_slice(master_id.as_slice());
-    let mut data = [0u8; 64];
-    data[..32].copy_from_slice(key.as_slice());
-    data[32..].copy_from_slice(keccak256(b"tempo.zvda.masterRegistry").as_slice());
-    keccak256(data).into()
-}
-
-fn request_slot(request_hash: B256) -> tempo_precompiles::Result<U256> {
-    mapping_slot(request_hash, b"tempo.zvda.registrationIds")
-}
-
-fn counter_slot() -> U256 {
-    keccak256(b"tempo.zvda.nextMasterId").into()
 }
 
 #[cfg(test)]
@@ -199,10 +158,13 @@ pub(crate) mod tests {
                 registry.register_master(7, acme, B256::repeat_byte(1))?,
                 first
             );
-            assert_eq!(recipient_of(first)?, acme);
-            assert_eq!(recipient_of(second)?, bob);
-            assert_eq!(recipient_of(third)?, acme);
-            assert_eq!(recipient_of(FixedBytes::from([0, 0, 0, 3]))?, Address::ZERO);
+            assert_eq!(registry.recipient_of(first)?, acme);
+            assert_eq!(registry.recipient_of(second)?, bob);
+            assert_eq!(registry.recipient_of(third)?, acme);
+            assert_eq!(
+                registry.recipient_of(FixedBytes::from([0, 0, 0, 3]))?,
+                Address::ZERO
+            );
             Ok(())
         })
     }
@@ -214,7 +176,7 @@ pub(crate) mod tests {
                 Address::ZERO,
                 Address::new_tip20(1),
                 Address::new_virtual(FixedBytes::ZERO, FixedBytes::ZERO),
-                ZoneDepositAddress {
+                tempo_contracts::zones::ZoneDepositAddress {
                     zone_id: 7,
                     version: 1,
                     ciphertext: FixedBytes::ZERO,
@@ -235,7 +197,7 @@ pub(crate) mod tests {
     fn exhaustion_keeps_the_last_id_and_retries_idempotent() -> eyre::Result<()> {
         with_registry(|registry| {
             let last = MASTER_ID_SPACE - 1;
-            Slot::<u64>::new(counter_slot(), registry.address).write(last)?;
+            registry.next_master_id.write(last)?;
             let recipient = Address::repeat_byte(0x11);
             let id = registry.register_master(7, recipient, B256::ZERO)?;
             assert_eq!(id, FixedBytes::from([0xff; 4]));

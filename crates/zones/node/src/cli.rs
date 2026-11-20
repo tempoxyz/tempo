@@ -386,15 +386,11 @@ async fn configure_sequencing(
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
         let mut virtual_address_keys = Vec::new();
-        for path in &args.virtual_address_key_files {
+        for (version, path) in &args.virtual_address_key_files {
             if let Some(key) = load_virtual_address_key(Some(path)).await? {
-                virtual_address_keys.push(key);
+                virtual_address_keys.push((*version, key));
             }
         }
-        eyre::ensure!(
-            virtual_address_keys.len() <= u8::MAX as usize,
-            "at most 255 --sequencer.virtual-address-key-file values"
-        );
         node = node.with_virtual_address_keys(virtual_address_keys);
         let deposit_allowlist = enforced_allowlist_admin
             .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
@@ -468,6 +464,22 @@ async fn load_sequencer_signer(
     key.trim()
         .parse::<PrivateKeySigner>()
         .map_err(|_| eyre::eyre!("invalid sequencer key from {source}"))
+}
+
+/// Parses a `--sequencer.virtual-address-key-file` entry, `VERSION=PATH` with VERSION in 1..=255.
+fn parse_virtual_address_key_file(value: &str) -> Result<(u8, PathBuf), String> {
+    let (version, path) = value
+        .split_once('=')
+        .ok_or_else(|| format!("expected VERSION=PATH, got {value:?}"))?;
+    let version: u8 = version
+        .parse()
+        .map_err(|_| format!("invalid key version {version:?}"))?;
+    if version == 0 || path.is_empty() {
+        return Err(format!(
+            "expected VERSION=PATH with VERSION in 1..=255, got {value:?}"
+        ));
+    }
+    Ok((version, PathBuf::from(path)))
 }
 
 async fn load_virtual_address_key(
@@ -567,18 +579,19 @@ pub struct ZoneArgs {
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
 
-    /// Files containing TIP-1094 FF1 keys (32-byte hex), one per address key version in version
-    /// order: the first is version 1. Repeat the flag, or comma-separate paths in the env var.
-    /// Once T15 is active, each built block initializes the lowest listed version that is still
-    /// uninitialized, so appending a file rotates in the next version. Every sequencer of the zone
-    /// should list the same keys. Keep them secret: each decrypts every address of its version.
+    /// TIP-1094 FF1 key files (32-byte hex) to initialize, as `VERSION=PATH`. Repeat the flag, or
+    /// comma-separate entries in the env var. Once T15 is active, each built block initializes the
+    /// lowest listed version not yet in state. Initialized keys are read from state, so only keys
+    /// not yet rotated in need to be listed. Keep them secret: each decrypts every address of its
+    /// version.
     #[arg(
         long = "sequencer.virtual-address-key-file",
         env = "ZONE_VIRTUAL_ADDRESS_KEY_FILE",
-        value_name = "PATH",
-        value_delimiter = ','
+        value_name = "VERSION=PATH",
+        value_delimiter = ',',
+        value_parser = parse_virtual_address_key_file
     )]
-    pub virtual_address_key_files: Vec<PathBuf>,
+    pub virtual_address_key_files: Vec<(u8, PathBuf)>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
@@ -1177,24 +1190,27 @@ mod tests {
     }
 
     #[test]
-    fn virtual_address_key_files_are_kept_in_version_order() {
+    fn virtual_address_key_files_name_their_version() {
         let parsed = ZoneArgsParser::try_parse_from([
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
             "--sequencer.virtual-address-key-file",
-            "/run/secrets/v1",
+            "3=/run/secrets/v3",
             "--sequencer.virtual-address-key-file",
-            "/run/secrets/v2",
+            "4=/run/secrets/v4",
         ])
         .unwrap();
         assert_eq!(
             parsed.zone.virtual_address_key_files,
             vec![
-                PathBuf::from("/run/secrets/v1"),
-                PathBuf::from("/run/secrets/v2")
+                (3, PathBuf::from("/run/secrets/v3")),
+                (4, PathBuf::from("/run/secrets/v4"))
             ]
         );
+        for bad in ["/run/secrets/v1", "0=/k", "256=/k", "1="] {
+            assert!(parse_virtual_address_key_file(bad).is_err(), "{bad}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
