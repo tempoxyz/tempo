@@ -489,6 +489,12 @@ where
             return;
         }
 
+        // The floor can sit above the last stored certificate (see
+        // `alias::marshal::init`). Backfilled blocks are final, so network
+        // finality starts no lower than them.
+        let (round, height, digest) = self.delivered_finalized_tip;
+        self.record_finalized_tip(round, height, digest);
+
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
             info!(
