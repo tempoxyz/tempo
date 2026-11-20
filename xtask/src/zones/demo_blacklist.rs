@@ -697,7 +697,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     };
 
     let receipt = portal
-        .deposit(token, amount, key_index, payload, tempo_refund_recipient)
+        .deposit_0(token, amount, key_index, payload, tempo_refund_recipient)
         .send_sync()
         .await
         .wrap_err("deposit send failed")?;

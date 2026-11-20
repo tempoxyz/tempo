@@ -620,7 +620,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
     let receipt = portal
-        .deposit(
+        .deposit_0(
             token,
             amount,
             key_index,

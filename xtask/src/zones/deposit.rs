@@ -113,7 +113,7 @@ impl Deposit {
 
         println!("Sending deposit of {} to {to}...", self.amount);
         let receipt = portal
-            .deposit(self.token, self.amount, key_index, payload, sender)
+            .deposit_0(self.token, self.amount, key_index, payload, sender)
             .send_sync()
             .await
             .wrap_err("failed to send deposit transaction")?;

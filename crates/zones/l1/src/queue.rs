@@ -202,7 +202,7 @@ impl PendingDeposits {
         Ok(current)
     }
 
-    /// Return how many queue entries the next full import at `expected` owes.
+    /// Return how many queue entries are pending through `expected`, including deferred ones.
     pub(crate) fn owed_deposit_count(&self, expected: NumHash) -> eyre::Result<usize> {
         let current = self.operational_block(expected)?;
         Ok(self
@@ -445,7 +445,7 @@ impl DepositQueue {
         self.inner.lock().defer_through(expected)
     }
 
-    /// Return how many queue entries the next full import at `expected` owes.
+    /// Return how many queue entries are pending through `expected`, including deferred ones.
     pub fn owed_deposit_count(&self, expected: NumHash) -> eyre::Result<usize> {
         self.inner.lock().owed_deposit_count(expected)
     }

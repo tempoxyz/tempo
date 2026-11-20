@@ -306,7 +306,7 @@ impl SpamDeposits {
             tag: encrypted.tag.into(),
         };
 
-        Ok(ZonePortal::depositEncryptedCall {
+        Ok(ZonePortal::depositEncrypted_1Call {
             token: self.token,
             amount: self.amount,
             keyIndex: key_index,

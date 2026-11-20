@@ -386,7 +386,23 @@ crate::sol! {
             address tempoRefundRecipient
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
-        /// Deposit capped at `maxFee` total fee (T15+). The only bound overload, so unsuffixed.
+        function deposit(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient,
+            uint128 maxFee
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
+        function depositEncrypted(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
         function depositEncrypted(
             address token,
             uint128 amount,

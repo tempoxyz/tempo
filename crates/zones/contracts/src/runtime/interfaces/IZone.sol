@@ -95,8 +95,10 @@ struct TokenEnablementTransition {
 /// @notice Deposit-queue checkpoint stored every `DEPOSITS_PER_BUCKET` entries.
 /// @dev Checkpoint `j` covers entry `depositBucketBase + j * DEPOSITS_PER_BUCKET`.
 struct DepositBucket {
-    bytes32 hash; // queue hash through the checkpoint entry
-    uint64 cumulativeWeight; // entry weight appended since bootstrap, through the checkpoint entry
+    /// Queue hash through the checkpoint entry
+    bytes32 hash;
+    /// Entry weight appended since bootstrap, through the checkpoint entry
+    uint64 cumulativeWeight;
 }
 
 /// @notice Deposit type discriminator for the unified deposit queue

@@ -2690,7 +2690,7 @@ impl ZoneAccount {
         let (key_index, encrypted) = self.prepare_deposit(recipient, B256::ZERO).await?;
 
         ZonePortal::new(self.portal_address, &self.l1_provider)
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 amount,
                 key_index,
@@ -2759,7 +2759,7 @@ impl ZoneAccount {
 
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
         let receipt = portal
-            .deposit(token, amount, key_index, encrypted, self.address)
+            .deposit_0(token, amount, key_index, encrypted, self.address)
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
@@ -2845,7 +2845,7 @@ impl ZoneAccount {
 
         let (key_index, encrypted) = self.prepare_deposit(recipient, memo).await?;
         let receipt = ZonePortal::new(portal_address, &self.l1_provider)
-            .deposit(PATH_USD_ADDRESS, amount, key_index, encrypted, self.address)
+            .deposit_0(PATH_USD_ADDRESS, amount, key_index, encrypted, self.address)
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
