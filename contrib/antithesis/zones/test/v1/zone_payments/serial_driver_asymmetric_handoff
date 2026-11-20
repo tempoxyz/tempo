@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+# Keep platform faults out of the controlled network lease and bounded recovery proof.
+if [ -n "${ANTITHESIS_STOP_FAULTS:-}" ]; then
+    "$ANTITHESIS_STOP_FAULTS" 1800
+fi
+exec timeout --signal=TERM --kill-after=10s 1500s tempo-zones-antithesis asymmetric-handoff

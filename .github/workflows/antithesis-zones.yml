@@ -18,6 +18,16 @@ on:
       - "Cargo.lock"
       - ".github/workflows/antithesis-zones.yml"
   workflow_dispatch:
+    inputs:
+      direct_handoffs:
+        description: "Use only journaled admin handoffs for a focused recovery campaign"
+        type: boolean
+        default: false
+        required: false
+      validate_config_digest:
+        description: "Validate an existing config image digest instead of building images"
+        type: string
+        required: false
 
 # Pushes to main replace each other; a manual build of another ref runs on its own.
 concurrency:
@@ -29,6 +39,7 @@ env:
 
 jobs:
   build-and-push:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.validate_config_digest == '' }}
     name: Build and push Antithesis zones images
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -114,6 +125,7 @@ jobs:
           BRANCH: ${{ steps.tags.outputs.branch }}
           DIGEST: ${{ steps.image.outputs.digest }}
           WORKLOAD_DIGEST: ${{ steps.workload.outputs.digest }}
+          DIRECT_HANDOFFS: ${{ inputs.direct_handoffs || false }}
         run: |
           dir="$RUNNER_TEMP/antithesis-config"
           mkdir -p "$dir"
@@ -123,12 +135,20 @@ jobs:
           {
             echo "ZONES_IMAGE=$REGISTRY/tempo-zones-antithesis@$DIGEST"
             echo "WORKLOAD_IMAGE=$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST"
+            echo "ZONE_HANDOFF_DIRECT_ONLY=$DIRECT_HANDOFFS"
           } > "$dir/.env"
           printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile"
+          suffix=
+          if [[ "$DIRECT_HANDOFFS" == true ]]; then suffix=-direct; fi
+          image="$REGISTRY/tempo-zones-antithesis-config"
           docker build --platform linux/amd64 \
-            -t "$REGISTRY/tempo-zones-antithesis-config:$TAG" \
-            -t "$REGISTRY/tempo-zones-antithesis-config:$BRANCH" "$dir"
-          docker push --all-tags "$REGISTRY/tempo-zones-antithesis-config"
+            -t "$image:$TAG$suffix" -t "$image:$BRANCH$suffix" "$dir"
+          docker push "$image:$TAG$suffix"
+          docker push "$image:$BRANCH$suffix"
+          ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$TAG$suffix")
+          config_digest="${ref##*@}"
+          [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "Config image: $image@$config_digest"
           {
             echo "### Antithesis zones images"
             echo ""
@@ -136,5 +156,68 @@ jobs:
             echo "|---|---|"
             echo "| Node image | \`$REGISTRY/tempo-zones-antithesis@$DIGEST\` |"
             echo "| Workload image | \`$REGISTRY/tempo-zones-antithesis-workload@$WORKLOAD_DIGEST\` |"
-            echo "| Config image | \`$REGISTRY/tempo-zones-antithesis-config:$TAG\` |"
+            echo "| Config image | \`$image@$config_digest\` |"
+            echo "| Direct handoffs | \`$DIRECT_HANDOFFS\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  validate-config:
+    name: Validate published Antithesis zones config
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validate_config_digest != '' }}
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Check config digest
+        env:
+          CONFIG_DIGEST: ${{ inputs.validate_config_digest }}
+        run: '[[ "$CONFIG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]'
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Install snouty
+        run: |
+          installer="$RUNNER_TEMP/snouty-installer.sh"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/antithesishq/snouty/releases/download/v0.9.1/snouty-installer.sh \
+            -o "$installer"
+          echo "79cd42188d65b8e10326f21f2a57231d022e465659d9f16754ac75ff606be5e7  $installer" | sha256sum --check
+          sh "$installer"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Validate exact published images
+        env:
+          CONFIG_DIGEST: ${{ inputs.validate_config_digest }}
+          SNOUTY_CONTAINER_ENGINE: docker
+        run: |
+          unset ZONES_IMAGE WORKLOAD_IMAGE ZONE_HANDOFF_DIRECT_ONLY
+          dir="$RUNNER_TEMP/zones-validation"
+          mkdir -p "$dir"
+          config="$REGISTRY/tempo-zones-antithesis-config@$CONFIG_DIGEST"
+          docker pull "$config"
+          container=$(docker create "$config" /bin/true)
+          trap 'docker rm -f "$container"' EXIT
+          docker cp "$container:/docker-compose.yaml" "$dir/docker-compose.yaml"
+          docker cp "$container:/.env" "$dir/.env"
+          images=$(docker compose --project-directory "$dir" -f "$dir/docker-compose.yaml" config --images)
+          [[ -n "$images" ]]
+          while IFS= read -r image; do
+            repository="${image%@*}"
+            digest="${image##*@}"
+            [[ "$repository" == "$REGISTRY/tempo-zones-antithesis" || "$repository" == "$REGISTRY/tempo-zones-antithesis-workload" ]]
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done <<< "$images"
+          printf '%s\n' "$images"
+          docker compose --project-directory "$dir" -f "$dir/docker-compose.yaml" pull
+          snouty --version
+          snouty validate --help
+          snouty validate "$dir" --timeout 5m

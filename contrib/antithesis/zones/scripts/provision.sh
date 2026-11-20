@@ -62,7 +62,7 @@ nth 3 "$P2P_KEYS" > "$S/p2p-rpc.key"
         echo "name = \"zone-$i\""
         echo "ed25519_public_key = \"$(nth "$i" "$P2P_PUBS")\""
         echo "secp256k1_address = \"$(nth "$i" "$SEQ_ADDRS")\""
-        echo "address = \"10.20.0.$((11 + i)):9200\""
+        echo "address = \"10.20.0.$((41 + i)):9200\""
     done
     echo ""
     echo "[[nodes]]"

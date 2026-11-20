@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+# Isolate controlled faults; restore the platform fault schedule after the bounded episode.
+if [ -n "${ANTITHESIS_STOP_FAULTS:-}" ]; then
+    "$ANTITHESIS_STOP_FAULTS" 1800
+fi
+exec timeout --signal=TERM --kill-after=10s 1500s tempo-zones-antithesis quorum-loss-recovery

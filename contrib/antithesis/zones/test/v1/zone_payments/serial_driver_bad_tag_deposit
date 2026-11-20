@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+# Actual L1 refund and a distinct valid successor, not an outer-transaction revert.
+if [ -n "${ANTITHESIS_STOP_FAULTS:-}" ]; then
+    "$ANTITHESIS_STOP_FAULTS" 1500
+fi
+exec timeout --signal=TERM --kill-after=10s 1300s tempo-zones-antithesis bad-tag-deposit
