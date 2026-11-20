@@ -88,6 +88,7 @@ use std::{
 };
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
+use commonware_actor::Feedback;
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _, Reporter,
     marshal::Update,
@@ -970,7 +971,16 @@ where
         self.local_state = target;
         if target.finalized.0 > previous_finalized {
             let (height, digest) = target.finalized;
-            let _ = self.finalized_reporter.report(Finalized { height, digest });
+            match self.finalized_reporter.report(Finalized { height, digest }) {
+                Feedback::Ok | Feedback::Backoff => {}
+                // Only during shutdown: the reporter outlives the executor
+                // otherwise.
+                Feedback::Closed => debug!(
+                    %height,
+                    %digest,
+                    "finalized reporter is closed; dropping the finalized block",
+                ),
+            }
         }
         self.acknowledge_persisted()?;
 

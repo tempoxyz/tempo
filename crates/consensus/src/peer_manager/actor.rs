@@ -119,7 +119,7 @@ where
                 _ = &mut self.peer_update_timer => {
                     // Retries the latest report if reading its state failed.
                     if let Some(finalized) = self.latest_finalized {
-                        let _ = self.refresh_peers_at(finalized);
+                        self.refresh_or_warn(finalized);
                     }
                     self.reset_peer_update_timer();
                 }
@@ -144,7 +144,7 @@ where
             }
             Message::Finalized(finalized) => {
                 self.latest_finalized = Some(finalized);
-                let _ = self.refresh_peers_at(finalized);
+                self.refresh_or_warn(finalized);
                 self.reset_peer_update_timer();
             }
         }
@@ -174,8 +174,21 @@ where
         })
     }
 
+    /// Reads peers at `finalized`. A failed read is not fatal: the peer
+    /// update timer retries the latest finalized block.
+    fn refresh_or_warn(&mut self, finalized: Finalized) {
+        if let Err(error) = self.refresh_peers_at(finalized) {
+            warn!(
+                error = %format!("{error:#}"),
+                height = %finalized.height,
+                digest = %finalized.digest,
+                "failed reading peers at finalized block; retrying on the next peer update",
+            );
+        }
+    }
+
     /// Reads peers at `finalized`, whose state the execution layer serves.
-    #[instrument(skip_all, fields(height = %finalized.height, digest = %finalized.digest), err)]
+    #[instrument(skip_all, fields(height = %finalized.height, digest = %finalized.digest))]
     fn refresh_peers_at(&mut self, finalized: Finalized) -> eyre::Result<()> {
         let highest_finalized = finalized.height.get();
 
