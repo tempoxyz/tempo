@@ -82,41 +82,8 @@ impl PendingDeposits {
         header: SealedHeader<TempoHeader>,
         events: L1PortalEvents,
     ) -> eyre::Result<bool> {
-        let block_number = header.number();
-        let block_hash = header.hash();
-
-        if let Some(last) = self.last_enqueued {
-            if block_number < last.number {
-                eyre::bail!(
-                    "out-of-order finalized L1 block {block_number}; latest enqueued block is {}",
-                    last.number
-                );
-            }
-            if block_number == last.number {
-                eyre::ensure!(
-                    block_hash == last.hash,
-                    "conflicting finalized L1 block at height {block_number}: \
-                     existing={}, received={block_hash}",
-                    last.hash
-                );
-                return Ok(false);
-            }
-
-            let expected = last
-                .number
-                .checked_add(1)
-                .ok_or_else(|| eyre::eyre!("finalized L1 block number overflow"))?;
-            eyre::ensure!(
-                block_number == expected,
-                "non-contiguous finalized L1 block: expected {expected}, received {block_number}"
-            );
-            eyre::ensure!(
-                header.parent_hash() == last.hash,
-                "finalized L1 parent mismatch at height {block_number}: \
-                 expected={}, received={}",
-                last.hash,
-                header.parent_hash()
-            );
+        if !ensure_extends(self.last_enqueued, &header)? {
+            return Ok(false);
         }
 
         self.last_enqueued = Some(header.num_hash());
@@ -276,6 +243,26 @@ impl PendingDeposits {
         self.last_enqueued
     }
 
+    /// Returns whether `header` is still pending, erroring if a different block is pending at
+    /// its height.
+    fn is_pending(&self, header: &SealedHeader<TempoHeader>) -> eyre::Result<bool> {
+        let Some(queued) = self
+            .pending
+            .iter()
+            .find(|queued| queued.header.number() == header.number())
+        else {
+            return Ok(false);
+        };
+        eyre::ensure!(
+            queued.header.hash() == header.hash(),
+            "conflicting finalized L1 block at height {}: existing={}, received={}",
+            header.number(),
+            queued.header.hash(),
+            header.hash()
+        );
+        Ok(true)
+    }
+
     /// Drain all pending L1 block deposits.
     #[cfg(test)]
     pub(crate) fn drain(&mut self) -> Vec<L1BlockDeposits> {
@@ -331,18 +318,7 @@ impl DepositQueue {
         events: L1PortalEvents,
     ) -> eyre::Result<bool> {
         let mut queue = self.inner.lock();
-        if let Some(queued) = queue
-            .pending
-            .iter()
-            .find(|queued| queued.header.number() == header.number())
-        {
-            eyre::ensure!(
-                queued.header.hash() == header.hash(),
-                "conflicting finalized L1 block at height {}: existing={}, received={}",
-                header.number(),
-                queued.header.hash(),
-                header.hash()
-            );
+        if queue.is_pending(&header)? {
             return Ok(false);
         }
         let appended = queue.try_enqueue(header, events)?;
@@ -351,6 +327,23 @@ impl DepositQueue {
             self.notify.notify_one();
         }
         Ok(appended)
+    }
+
+    /// Check, without enqueueing, that [`Self::try_enqueue_sealed`] would accept `header`.
+    ///
+    /// `checkpoint` stands in for the queue tip until a block has been enqueued, so the first
+    /// block after a restart must extend the persisted checkpoint. The result holds until the
+    /// next enqueue only while the caller is the queue's single producer.
+    pub(crate) fn ensure_accepts(
+        &self,
+        header: &SealedHeader<TempoHeader>,
+        checkpoint: Option<NumHash>,
+    ) -> eyre::Result<()> {
+        let queue = self.inner.lock();
+        if !queue.is_pending(header)? {
+            ensure_extends(queue.last_enqueued.or(checkpoint), header)?;
+        }
+        Ok(())
     }
 
     /// Like [`enqueue`](Self::enqueue) but accepts an already-sealed header,
@@ -453,4 +446,48 @@ impl Default for DepositQueue {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check that `header` extends `tip`, the most recently enqueued (or seeded) L1 block.
+///
+/// Returns `false` for an exact redelivery of `tip`. Any other non-contiguous header is a
+/// finality or provider-integrity failure.
+fn ensure_extends(tip: Option<NumHash>, header: &SealedHeader<TempoHeader>) -> eyre::Result<bool> {
+    let block_number = header.number();
+    let block_hash = header.hash();
+
+    if let Some(last) = tip {
+        if block_number < last.number {
+            eyre::bail!(
+                "out-of-order finalized L1 block {block_number}; latest enqueued block is {}",
+                last.number
+            );
+        }
+        if block_number == last.number {
+            eyre::ensure!(
+                block_hash == last.hash,
+                "conflicting finalized L1 block at height {block_number}: \
+                 existing={}, received={block_hash}",
+                last.hash
+            );
+            return Ok(false);
+        }
+
+        let expected = last
+            .number
+            .checked_add(1)
+            .ok_or_else(|| eyre::eyre!("finalized L1 block number overflow"))?;
+        eyre::ensure!(
+            block_number == expected,
+            "non-contiguous finalized L1 block: expected {expected}, received {block_number}"
+        );
+        eyre::ensure!(
+            header.parent_hash() == last.hash,
+            "finalized L1 parent mismatch at height {block_number}: \
+             expected={}, received={}",
+            last.hash,
+            header.parent_hash()
+        );
+    }
+    Ok(true)
 }
