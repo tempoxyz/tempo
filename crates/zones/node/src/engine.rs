@@ -64,7 +64,6 @@ use zone_l1::{
 };
 use zone_p2p::{LeadershipSchedule, P2pPeerId};
 use zone_payload::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
-use zone_primitives::deposit_queue::executable_len;
 use zone_sequencer::ProofCollectorHandle;
 
 /// Local block production permit backed by the effective leadership schedule.
@@ -381,7 +380,7 @@ impl ZoneEngine {
         let timestamp_secs = timestamp_millis / 1000;
         let timestamp_millis_part = timestamp_millis % 1000;
 
-        // `consumed` counts the owed entries a full import executes. The queue defers the rest.
+        // `consumed` counts the owed entries a full import processes. The queue defers the rest.
         let (tempo_import, consumed) = if checkpoint_only {
             (TempoImport::CheckpointOnly(checkpoint_headers), 0)
         } else {
@@ -393,17 +392,9 @@ impl ZoneEngine {
             } else {
                 owed
             };
-            let mut portal_work = self
+            let portal_work = self
                 .deposit_queue
                 .operational_work(l1_num_hash, range_len)?;
-            // The Inbox executes the prefix within its weight budget. Pre-T15 ranges fit it whole.
-            let consumed = executable_len(
-                portal_work
-                    .iter()
-                    .flat_map(|block| &block.events.deposits)
-                    .map(L1Deposit::deposit_type),
-            );
-            let hashed_only = L1BlockDeposits::split_off_deposits(&mut portal_work, consumed);
             let senders = self.deposit_allowlist.as_ref().map(|_| {
                 portal_work
                     .iter()
@@ -416,7 +407,6 @@ impl ZoneEngine {
             });
             let mut prepared = L1BlockDeposits::prepare_many(
                 portal_work,
-                &hashed_only,
                 &self.encryption_keys,
                 self.portal_address,
             )
@@ -433,7 +423,7 @@ impl ZoneEngine {
                         .increment(rejected as u64);
                 }
             }
-            (TempoImport::Full(Box::new(prepared)), consumed)
+            (TempoImport::Full(Box::new(prepared)), range_len)
         };
 
         let attributes = ZonePayloadAttributes {

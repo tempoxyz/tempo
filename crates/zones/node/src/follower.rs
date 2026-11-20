@@ -36,7 +36,7 @@ use zone_payload::{
     ZonePayloadTypes,
     abi::{IZoneInbox, ZONE_INBOX_ADDRESS},
 };
-use zone_primitives::{constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, deposit_queue::executable_len};
+use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
 use zone_prover::VerifierMode;
 use zone_sequencer::{
     DurableBlockReader,
@@ -773,7 +773,7 @@ where
             DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor, executed_deposit_count(deposits))
+                .confirm_operational_through(anchor, deposits.len())
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -825,14 +825,9 @@ fn reconcile_canonical_import(
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
         DecodedTempoImport::Full { deposits, .. } => {
-            deposit_queue.confirm_operational_through(anchor, executed_deposit_count(deposits))
+            deposit_queue.confirm_operational_through(anchor, deposits.len())
         }
     }
-}
-
-/// Returns how many leading entries of a full import's range the Zone executed.
-fn executed_deposit_count(deposits: &[zone_payload::abi::QueuedDeposit]) -> usize {
-    executable_len(deposits.iter().map(|deposit| deposit.depositType))
 }
 
 fn validate_full_portal_inputs(

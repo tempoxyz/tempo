@@ -81,14 +81,6 @@ pub enum L1Deposit {
 }
 
 impl L1Deposit {
-    /// The queue entry type this event becomes in `advanceTempo`.
-    pub fn deposit_type(&self) -> abi::DepositType {
-        match self {
-            Self::WithdrawalBounceBack(_) => abi::DepositType::WithdrawalBounceBack,
-            Self::Deposit(_) => abi::DepositType::Deposit,
-        }
-    }
-
     /// Convert the L1 event payload into its canonical `advanceTempo` queue encoding.
     pub fn to_abi_queued_deposit(&self) -> abi::QueuedDeposit {
         match self {

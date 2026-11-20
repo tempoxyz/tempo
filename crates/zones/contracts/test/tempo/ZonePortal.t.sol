@@ -2535,14 +2535,12 @@ contract ZonePortalTest is BaseTest {
         _depositMany(1, 1);
 
         assertEq(portal.depositCount(), entriesPerBucket + 1);
-        assertEq(portal.depositWeight(), entriesPerBucket + 1);
         assertEq(portal.depositBucketBase(), 0);
         (bytes32 hash0, uint64 weight0) = portal.depositBuckets(0);
         assertEq(hash0, bytes32(0));
         assertEq(weight0, 0);
         (bytes32 hash1, uint64 weight1) = portal.depositBuckets(1);
         assertEq(hash1, checkpointHash);
-        assertEq(weight1, entriesPerBucket);
         vm.expectRevert(bytes(""));
         portal.depositBuckets(2);
     }
@@ -2553,9 +2551,8 @@ contract ZonePortalTest is BaseTest {
         vm.store(address(portal), PORTAL_CURRENT_DEPOSIT_QUEUE_HASH_SLOT, legacyHead);
         vm.store(address(portal), bytes32(uint256(4)), bytes32(uint256(100) | (uint256(90) << 64)));
 
-        // Settling before bootstrap records no weight.
+        // Settling first creates the price snapshot slot, so the deposit only creates bootstrap slots.
         _settleDepositsTo(95, bytes32(0), bytes32("entry 95"));
-        assertEq(portal.settledDepositWeight(), 0);
 
         // Bootstrap creates the base, the array length, and checkpoint 0's hash, one credit each.
         _setStorageCredits(address(portal), 4);
@@ -2565,26 +2562,22 @@ contract ZonePortalTest is BaseTest {
 
         assertEq(portal.depositBucketBase(), 100);
         assertEq(portal.depositCount(), 101);
-        assertEq(portal.depositWeight(), 1);
         (bytes32 hash0, uint64 weight0) = portal.depositBuckets(0);
         assertEq(hash0, legacyHead);
         assertEq(weight0, 0);
         vm.expectRevert(bytes(""));
         portal.depositBuckets(1);
 
-        // Entries at or below the base carry no weight.
-        _settleDepositsTo(100, bytes32("entry 95"), legacyHead);
-        assertEq(portal.settledDepositWeight(), 0);
-        _settleDepositsTo(101, legacyHead, portal.currentDepositQueueHash());
-        assertEq(portal.settledDepositWeight(), 1);
+        // Checkpoint 0 stays until its successor settles.
+        _settleDepositsTo(101, bytes32("entry 95"), portal.currentDepositQueueHash());
         assertEq(portal.nextDepositBucketToPrune(), 0);
     }
 
     function test_deposit_checkpointWriteSpendsStorageCreditsDirectly() public {
         uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
         _depositMany(entriesPerBucket - 1, 1);
-        // The checkpoint's two new slots spend the available credits directly.
-        _setStorageCredits(address(portal), 2);
+        // The checkpoint's new slot spends the available credit directly.
+        _setStorageCredits(address(portal), 1);
         vm.prank(alice);
         uint256 gasBefore = gasleft();
         _deposit(portal, address(pathUSD), bob, 1, bytes32("checkpoint 1"), bob);
@@ -2603,7 +2596,7 @@ contract ZonePortalTest is BaseTest {
         _assertRefundMode();
         emit log_named_uint("checkpoint append with credits", withCredits);
         emit log_named_uint("checkpoint append without credits", withoutCredits);
-        assertGt(withoutCredits, withCredits + 400_000);
+        assertGt(withoutCredits, withCredits + 200_000);
     }
 
     function test_deposit_checkpointSpendsCreditsPrunedInSameAppend() public {
@@ -2624,11 +2617,11 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_deposit_chargesCongestionPremiumFixedPerBlock() public {
-        uint64 tierWeight = portal.CONGESTION_TIER_WEIGHT();
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
         uint128 premium = portal.CONGESTION_MAX_FEE() / portal.CONGESTION_MAX_TIER();
         uint256 adminBalance = pathUSD.balanceOf(admin);
 
-        _depositMany(tierWeight, 1e6);
+        _depositMany(tierDeposits, 1e6);
         // The quote is for the next block. This block keeps the free tier it started at.
         assertEq(portal.calculateDepositFee(), premium);
         _depositMany(1, 1e6);
@@ -2661,24 +2654,24 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_calculateDepositFee_capsPremiumAfterRamp() public {
-        uint64 tierWeight = portal.CONGESTION_TIER_WEIGHT();
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
         uint64 maxTier = portal.CONGESTION_MAX_TIER();
-        // `depositWeight` occupies the low 8 bytes of slot 30. `settledDepositWeight` stays zero.
-        bytes32 depositWeightSlot = bytes32(uint256(30));
+        // `depositCount` occupies the low 8 bytes of slot 4. `lastProcessedDepositNumber` stays zero.
+        bytes32 depositCountSlot = bytes32(uint256(4));
 
-        vm.store(address(portal), depositWeightSlot, bytes32(uint256(tierWeight * (maxTier - 1))));
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * (maxTier - 1))));
         assertEq(
             portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE() * (maxTier - 1) / maxTier
         );
 
-        vm.store(address(portal), depositWeightSlot, bytes32(uint256(tierWeight * maxTier)));
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * maxTier)));
         assertEq(portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE());
 
-        vm.store(address(portal), depositWeightSlot, bytes32(uint256(tierWeight * maxTier * 10)));
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * maxTier * 10)));
         assertEq(portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE());
     }
 
-    function test_submitBatch_settlesWeightAndKeepsLatestSettledCheckpoint() public {
+    function test_submitBatch_keepsLatestSettledCheckpoint() public {
         uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
         uint64 withinBucket = entriesPerBucket + 70;
         uint64 headCount = entriesPerBucket * 6;
@@ -2695,23 +2688,18 @@ contract ZonePortalTest is BaseTest {
 
         // Settling exactly to checkpoint 1 prunes checkpoint 0 and keeps checkpoint 1.
         _settleDepositsTo(entriesPerBucket, bytes32(0), firstCheckpoint);
-        assertEq(portal.settledDepositWeight(), entriesPerBucket);
         assertEq(portal.nextDepositBucketToPrune(), 1);
-        (bytes32 hash, uint64 weight) = portal.depositBuckets(0);
+        (bytes32 hash,) = portal.depositBuckets(0);
         assertEq(hash, bytes32(0));
-        assertEq(weight, 0);
-        (hash, weight) = portal.depositBuckets(1);
+        (hash,) = portal.depositBuckets(1);
         assertEq(hash, firstCheckpoint);
-        assertEq(weight, entriesPerBucket);
 
-        // A later settlement in the same bucket counts the entries past the kept checkpoint.
+        // A later settlement in the same bucket keeps the checkpoint it passed.
         _settleDepositsTo(withinBucket, firstCheckpoint, withinBucketHash);
-        assertEq(portal.settledDepositWeight(), withinBucket);
         assertEq(portal.nextDepositBucketToPrune(), 1);
 
         // Settling past five more checkpoints makes checkpoints 1-5 deletable. One run deletes 2.
         _settleDepositsTo(headCount, withinBucketHash, head);
-        assertEq(portal.settledDepositWeight(), headCount);
         assertEq(portal.nextDepositBucketToPrune(), 3);
         (hash,) = portal.depositBuckets(2);
         assertEq(hash, bytes32(0));
@@ -2726,9 +2714,8 @@ contract ZonePortalTest is BaseTest {
         assertEq(portal.nextDepositBucketToPrune(), 6);
         (hash,) = portal.depositBuckets(5);
         assertEq(hash, bytes32(0));
-        (hash, weight) = portal.depositBuckets(6);
+        (hash,) = portal.depositBuckets(6);
         assertEq(hash, head);
-        assertEq(weight, headCount);
     }
 
     function test_deposit_settlementEarlierInBlockLowersTier() public {
@@ -2765,8 +2752,8 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_deposit_revertsWhenAdminFeeTransferFails() public {
-        uint64 tierWeight = portal.CONGESTION_TIER_WEIGHT();
-        _depositMany(tierWeight, 1e6);
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
+        _depositMany(tierDeposits, 1e6);
         vm.roll(block.number + 1);
         uint128 premium = portal.calculateDepositFee();
         bytes32 queueHash = portal.currentDepositQueueHash();
@@ -2781,7 +2768,7 @@ contract ZonePortalTest is BaseTest {
         portal.depositEncrypted(
             address(pathUSD), 1e6, 0, _depositPayload(bob, "blocked"), bob, premium
         );
-        assertEq(portal.depositCount(), tierWeight);
+        assertEq(portal.depositCount(), tierDeposits);
         assertEq(portal.currentDepositQueueHash(), queueHash);
     }
 
@@ -2838,12 +2825,12 @@ contract ZonePortalTest is BaseTest {
     }
 
     function test_deposit_exemptAppendEarlierInBlockKeepsStartTier() public {
-        uint64 tierWeight = portal.CONGESTION_TIER_WEIGHT();
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
         vm.startPrank(alice);
         pathUSD.approve(address(portal), type(uint256).max);
         _deposit(portal, address(pathUSD), alice, 1000e6, bytes32("escrow"), alice);
         vm.stopPrank();
-        _depositMany(tierWeight - 2, 1);
+        _depositMany(tierDeposits - 2, 1);
 
         Withdrawal memory failing = _withdrawal(
             address(pathUSD),
@@ -2857,10 +2844,10 @@ contract ZonePortalTest is BaseTest {
         );
         _enqueueWithdrawal(failing);
 
-        // The bounce-back fixes the block's tier before its weight reaches the next tier.
+        // The bounce-back fixes the block's tier before it reaches the next tier.
         vm.roll(block.number + 1);
         portal.processWithdrawals(_singleWithdrawal(failing), bytes32(0));
-        assertEq(portal.depositWeight(), tierWeight);
+        assertEq(portal.depositCount(), tierDeposits);
         assertEq(portal.depositPriceBlock(), block.number);
         assertEq(portal.depositPriceTier(), 0);
         assertEq(
@@ -2870,7 +2857,7 @@ contract ZonePortalTest is BaseTest {
         // The legacy entry point caps the fee at the operational fee, so it passes only at tier 0.
         vm.prank(alice);
         _deposit(portal, address(pathUSD), bob, 1, bytes32("start tier"), bob);
-        assertEq(portal.depositCount(), tierWeight + 1);
+        assertEq(portal.depositCount(), tierDeposits + 1);
     }
 
     /// @dev Settles the deposit queue from its settled position to `next` in a new Tempo block.
@@ -3792,7 +3779,7 @@ contract ZonePortalTest is BaseTest {
         );
         _enqueueWithdrawal(withdrawal);
 
-        _depositMany(portal.CONGESTION_TIER_WEIGHT(), 1);
+        _depositMany(portal.DEPOSITS_PER_CONGESTION_TIER(), 1);
         vm.roll(block.number + 1);
         assertGt(portal.calculateDepositFee(), 0);
 
@@ -3817,13 +3804,11 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(admin), adminBalance);
     }
 
-    function test_callbackWithdrawal_completesBucketWithinCreditGas() public {
-        // Enough callback gas for the checkpoint write with credits, but not without.
-        uint64 gasLimit = 400_000;
-        uint256 snapshot = vm.snapshotState();
-        assertTrue(_callbackDepositCompletingBucket(gasLimit, 2));
-        vm.revertToState(snapshot);
-        assertFalse(_callbackDepositCompletingBucket(gasLimit, 0));
+    function test_callbackWithdrawal_completingBucketSpendsCredit() public {
+        // The checkpoint write inside the callback spends the portal's credit directly.
+        assertTrue(_callbackDepositCompletingBucket(400_000, 1));
+        assertEq(StdPrecompiles.STORAGE_CREDITS.balanceOf(address(portal)), 0);
+        _assertRefundMode();
     }
 
     /// @dev Returns whether a callback deposit completing a bucket is appended rather than bounced.

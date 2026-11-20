@@ -314,14 +314,11 @@ crate::sol! {
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
         function DEPOSITS_PER_BUCKET() external view returns (uint64);
         function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
-        function MAX_ENTRY_WEIGHT() external view returns (uint64);
-        function CONGESTION_TIER_WEIGHT() external view returns (uint64);
+        function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64);
         function CONGESTION_MAX_TIER() external view returns (uint64);
         function CONGESTION_MAX_FEE() external view returns (uint128);
         function depositBucketBase() external view returns (uint64);
         function nextDepositBucketToPrune() external view returns (uint64);
-        function depositWeight() external view returns (uint64);
-        function settledDepositWeight() external view returns (uint64);
         function depositPriceBlock() external view returns (uint64);
         function depositPriceTier() external view returns (uint64);
         function depositBuckets(uint256 index) external view returns (bytes32 hash, uint64 cumulativeWeight);

@@ -5,7 +5,7 @@ use alloy_sol_types::{SolCall, SolError, SolInterface, SolValue};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::UnknownFunctionSelector,
-    zones::{DEPOSITS_PER_BUCKET, MAX_DEPOSIT_WEIGHT_PER_BLOCK, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+    zones::{DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -592,7 +592,7 @@ fn queue_checkpointed_deposits(
         for position in (base..=pending).step_by(DEPOSITS_PER_BUCKET) {
             portal.deposit_buckets.push(PortalDepositBucket {
                 hash: hashes[position as usize],
-                cumulative_weight: position - base,
+                cumulative_weight: 0,
             })?;
         }
         Ok(())
@@ -633,8 +633,7 @@ fn t15_range_ends_at_head_or_next_checkpoint(
     let output = env
         .advance_tempo(
             entries[..supplied].to_vec(),
-            // Only the entries within the weight budget execute and consume decryption data.
-            vec![INVALID_DECRYPTION; supplied.min(MAX_DEPOSIT_WEIGHT_PER_BLOCK as usize)],
+            vec![INVALID_DECRYPTION; supplied],
             Vec::new(),
         )
         .unwrap();

@@ -97,7 +97,8 @@ struct TokenEnablementTransition {
 struct DepositBucket {
     /// Queue hash through the checkpoint entry
     bytes32 hash;
-    /// Entry weight appended since bootstrap, through the checkpoint entry
+    /// Reserved for the entry weight appended since bootstrap, through the checkpoint entry.
+    /// Zero while every entry weighs one unit.
     uint64 cumulativeWeight;
 }
 
@@ -634,17 +635,14 @@ interface IZonePortal {
     /// @notice Checkpoints one pruning run may delete.
     function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
 
-    /// @notice Unsettled queue weight per congestion price tier.
-    function CONGESTION_TIER_WEIGHT() external view returns (uint64);
+    /// @notice Unsettled queue entries per congestion price tier.
+    function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64);
 
     /// @notice Price tiers over which the congestion premium rises to its cap.
     function CONGESTION_MAX_TIER() external view returns (uint64);
 
     /// @notice Maximum congestion premium on a deposit, in token units.
     function CONGESTION_MAX_FEE() external view returns (uint128);
-
-    /// @notice Largest queue weight of any entry type.
-    function MAX_ENTRY_WEIGHT() external view returns (uint64);
 
     /// @notice Maximum token enablements that may remain outstanding on this portal.
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
@@ -720,12 +718,6 @@ interface IZonePortal {
 
     /// @notice First checkpoint index not yet pruned.
     function nextDepositBucketToPrune() external view returns (uint64);
-
-    /// @notice Cumulative entry weight appended since checkpoints bootstrapped.
-    function depositWeight() external view returns (uint64);
-
-    /// @notice Monotonic lower bound on the entry weight settled since checkpoints bootstrapped.
-    function settledDepositWeight() external view returns (uint64);
 
     /// @notice Tempo block whose first append or settlement fixed `depositPriceTier`.
     function depositPriceBlock() external view returns (uint64);
