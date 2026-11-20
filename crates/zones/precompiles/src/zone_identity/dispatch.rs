@@ -1,8 +1,8 @@
 //! ABI dispatch for the [`ZoneIdentity`] precompile.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use evm2::precompiles::PrecompileResult;
-use tempo_contracts::zones::IZoneIdentity;
+use tempo_contracts::{precompiles::ZonePortalCapability, zones::IZoneIdentity};
 use tempo_precompiles::{charge_input_cost, dispatch, storage::StorageCtx};
 
 use super::{L1Target, ZoneIdentity};
@@ -13,7 +13,7 @@ use crate::{
 
 impl ZoneIdentity {
     /// Dispatches a ZoneIdentity ABI call. The registrar is read from the portal on the finalized
-    /// Tempo anchor in `l1`.
+    /// Tempo anchor in `l1`, and is zero once the portal's `AccessPolicy` abdication takes effect.
     pub(crate) fn call<P>(
         &mut self,
         l1: &L1State<P>,
@@ -26,7 +26,18 @@ impl ZoneIdentity {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
-        let registrar = || l1.read_portal(|portal| &portal.identity_registrar);
+        let registrar = || -> tempo_precompiles::Result<Address> {
+            // Abdicating `AccessPolicy` freezes the registrar on Tempo; it also ends its powers
+            // here. The Zone block's timestamp is at or after the anchored Tempo block's, so this
+            // never takes effect later than on Tempo.
+            let abdicated_at = l1.read_portal(|portal| {
+                portal.abdication_effective_at(ZonePortalCapability::AccessPolicy)
+            })?;
+            if abdicated_at != 0 && StorageCtx::default().timestamp() >= U256::from(abdicated_at) {
+                return Ok(Address::ZERO);
+            }
+            l1.read_portal(|portal| &portal.identity_registrar)
+        };
 
         // Every read is priced as cold, so a call's gas does not reveal which slots earlier calls
         // warmed, such as the admin slot of an account's org.

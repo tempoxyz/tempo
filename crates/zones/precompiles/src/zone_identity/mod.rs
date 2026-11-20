@@ -1047,4 +1047,62 @@ mod tests {
         });
         assert_eq!(costs[0], costs[1], "orgAdmin: {costs:?}");
     }
+
+    /// Once the portal's `AccessPolicy` abdication takes effect, the registrar can no longer create
+    /// orgs, replace admins or read through the registrar fallback.
+    #[test]
+    fn registrar_loses_its_powers_once_access_policy_is_abdicated() {
+        use crate::test_utils::MockL1Reader;
+        use alloy_primitives::{Bytes, U256};
+        use alloy_sol_types::SolInterface;
+        use tempo_contracts::precompiles::ZonePortalCapability;
+        use tempo_precompiles::zone_factory::ZonePortalStorage;
+
+        let reader = MockL1Reader::default();
+        let l1 = L1State::new(reader.clone(), Address::ZERO);
+        let registrar = Address::repeat_byte(0xbb);
+        let abdicate_at = |at: u64| {
+            reader
+                .with_storage(0, || {
+                    let mut portal = ZonePortalStorage::new(Address::ZERO);
+                    portal.identity_registrar.write(registrar)?;
+                    let slot = portal
+                        .abdication_effective_at(ZonePortalCapability::AccessPolicy)
+                        .slot();
+                    StorageCtx::default().sstore(Address::ZERO, slot, U256::from(at))
+                })
+                .unwrap()
+        };
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        storage.set_timestamp(U256::from(1_000));
+        StorageCtx::enter(&mut storage, || {
+            let mut identity = ZoneIdentity::new();
+            let mut call = |data: Vec<u8>| identity.call(&l1, &data, registrar);
+            let create = || IZoneIdentity::createOrgCall { admin: registrar }.abi_encode();
+            let org_of = || IZoneIdentity::orgOfCall { account: ALICE }.abi_encode();
+
+            // Scheduled for later: the registrar still acts.
+            abdicate_at(1_001);
+            assert!(call(create()).is_ok());
+            assert!(call(org_of()).is_ok());
+
+            // In effect: every registrar path is refused.
+            abdicate_at(1_000);
+            let unauthorized = Bytes::from(ZoneIdentityError::unauthorized().abi_encode());
+            for data in [
+                create(),
+                IZoneIdentity::setOrgAdminCall {
+                    orgId: 1,
+                    admin: ALICE,
+                }
+                .abi_encode(),
+                org_of(),
+            ] {
+                assert!(matches!(
+                    call(data),
+                    Err(evm2::precompiles::PrecompileError::Revert(output)) if output == unauthorized
+                ));
+            }
+        });
+    }
 }
