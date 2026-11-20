@@ -518,7 +518,7 @@ mod tests {
 
     use zone_payload::TransferAllowlist as _;
 
-    use crate::deposit_allowlist::{MAX_DEPOSIT_ALLOWLIST_LEN, status_of};
+    use crate::deposit_allowlist::{ListState, MAX_DEPOSIT_ALLOWLIST_LEN, status_of};
 
     struct RelayFixture {
         relay: AllowlistRelay,
@@ -678,7 +678,10 @@ mod tests {
         for request in fixture.receive().await {
             request
                 .respond(
-                    serde_json::to_vec(&Answer::Ok(Response::Applied(status_of(None)))).unwrap(),
+                    serde_json::to_vec(&Answer::Ok(Response::Applied(status_of(
+                        &ListState::Unset,
+                    ))))
+                    .unwrap(),
                 )
                 .await;
         }

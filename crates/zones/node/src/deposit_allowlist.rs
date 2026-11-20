@@ -23,7 +23,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Signature, keccak256};
 use alloy_sol_types::{Eip712Domain, SolStruct as _, eip712_domain, sol};
 use eyre::{WrapErr as _, ensure};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
@@ -207,7 +207,7 @@ impl From<DepositAllowlistError> for ErrorObjectOwned {
 
 /// Persisted allowlist and the last signed write applied to it. A sequencer without one is
 /// uninitialized and credits every deposit.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct State {
     /// Nonce of the last applied signed write.
@@ -218,20 +218,57 @@ struct State {
     addresses: BTreeSet<Address>,
 }
 
-/// The status of `state`, where `None` is an uninitialized list.
-fn status_of(state: Option<&State>) -> DepositAllowlistStatus {
-    let addresses = state.map(|state| &state.addresses);
-    DepositAllowlistStatus {
-        initialized: state.is_some(),
-        nonce: state.map_or(0, |state| state.nonce),
-        list_hash: keccak256(
-            addresses
-                .into_iter()
-                .flatten()
-                .flat_map(|address| address.0.0)
-                .collect::<Vec<_>>(),
-        ),
-        count: addresses.map_or(0, BTreeSet::len),
+impl AsRef<BTreeSet<Address>> for State {
+    fn as_ref(&self) -> &BTreeSet<Address> {
+        &self.addresses
+    }
+}
+
+/// Whether an allowlist has been written. An unset list allows every address, while a written
+/// one allows only its members, so an empty written list allows nobody. Callers match on both
+/// variants instead of defaulting an unset list to an empty one, which would flip the policy.
+#[derive(Debug, Default)]
+enum ListState<T> {
+    /// No list has been written, or none is known.
+    #[default]
+    Unset,
+    /// A written list.
+    Written(T),
+}
+
+impl<T: AsRef<BTreeSet<Address>>> ListState<T> {
+    /// Whether every one of `addresses` is allowed, which always holds for an empty slice.
+    fn allows_all(&self, addresses: &[Address]) -> bool {
+        match self {
+            Self::Unset => true,
+            Self::Written(list) => addresses
+                .iter()
+                .all(|address| list.as_ref().contains(address)),
+        }
+    }
+}
+
+/// The status of `state`.
+fn status_of(state: &ListState<State>) -> DepositAllowlistStatus {
+    match state {
+        ListState::Unset => DepositAllowlistStatus {
+            initialized: false,
+            nonce: 0,
+            list_hash: KECCAK256_EMPTY,
+            count: 0,
+        },
+        ListState::Written(state) => DepositAllowlistStatus {
+            initialized: true,
+            nonce: state.nonce,
+            list_hash: keccak256(
+                state
+                    .addresses
+                    .iter()
+                    .flat_map(|address| address.0.0)
+                    .collect::<Vec<_>>(),
+            ),
+            count: state.addresses.len(),
+        },
     }
 }
 
@@ -296,8 +333,8 @@ struct Inner {
     path: PathBuf,
     /// Authorizes writes received over RPC.
     admin: DepositAllowlistAdmin,
-    /// Current state, `None` until the first write; the engine reads it on every block build.
-    state: RwLock<Option<State>>,
+    /// Current state, unset until the first write; the engine reads it on every block build.
+    state: RwLock<ListState<State>>,
     /// Serializes writers so updates persist and apply in order without holding `state` across
     /// disk I/O.
     write_lock: Mutex<()>,
@@ -309,30 +346,27 @@ impl DepositAllowlist {
         // Only a missing path means uninitialized. Any other I/O error, or a dangling symlink,
         // fails startup rather than crediting every deposit.
         let state = match std::fs::symlink_metadata(&path) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => ListState::Unset,
             Err(err) => {
                 return Err(err).wrap_err_with(|| {
                     format!("failed to check deposit allowlist {}", path.display())
                 });
             }
-            Ok(_) => Some(read_state(&path)?),
+            Ok(_) => ListState::Written(read_state(&path)?),
         };
-        log_status(status_of(state.as_ref()), "Loaded deposit allowlist");
-        if state.is_none() {
-            warn!(
+        log_status(status_of(&state), "Loaded deposit allowlist");
+        match &state {
+            ListState::Unset => warn!(
                 target: "zone::allowlist",
                 path = %path.display(),
                 "Deposit allowlist is uninitialized: this sequencer credits every deposit until the admin writes the list"
-            );
-        } else if state
-            .as_ref()
-            .is_some_and(|state| state.addresses.is_empty())
-        {
-            warn!(
+            ),
+            ListState::Written(state) if state.addresses.is_empty() => warn!(
                 target: "zone::allowlist",
                 path = %path.display(),
                 "Deposit allowlist is empty: this sequencer bounces every deposit while it leads"
-            );
+            ),
+            ListState::Written(_) => {}
         }
         Ok(Self {
             inner: Arc::new(Inner {
@@ -345,17 +379,17 @@ impl DepositAllowlist {
     }
 
     pub(crate) fn status(&self) -> DepositAllowlistStatus {
-        status_of(self.inner.state.read().as_ref())
+        status_of(&self.inner.state.read())
     }
 
     pub(crate) fn snapshot(&self) -> DepositAllowlistSnapshot {
         let state = self.inner.state.read();
         DepositAllowlistSnapshot {
-            status: status_of(state.as_ref()),
-            addresses: state
-                .iter()
-                .flat_map(|state| state.addresses.iter().copied())
-                .collect(),
+            status: status_of(&state),
+            addresses: match &*state {
+                ListState::Unset => Vec::new(),
+                ListState::Written(state) => state.addresses.iter().copied().collect(),
+            },
         }
     }
 
@@ -363,7 +397,10 @@ impl DepositAllowlist {
     /// list is uninitialized, because a partial first write would stop crediting everyone else.
     pub fn set(&self, addresses: &[Address], allowed: bool) -> Result<(), DepositAllowlistError> {
         self.update(|state| {
-            let mut next = state.ok_or(DepositAllowlistError::Uninitialized)?.clone();
+            let ListState::Written(state) = state else {
+                return Err(DepositAllowlistError::Uninitialized);
+            };
+            let mut next = state.clone();
             apply_set(&mut next.addresses, addresses, allowed);
             Ok(Some(next))
         })
@@ -372,9 +409,14 @@ impl DepositAllowlist {
     /// Replace the whole list, persisting it before it takes effect.
     pub fn replace(&self, addresses: Vec<Address>) -> Result<(), DepositAllowlistError> {
         self.update(|state| {
+            let (nonce, last_write) = match state {
+                ListState::Unset => (0, B256::ZERO),
+                ListState::Written(state) => (state.nonce, state.last_write),
+            };
             Ok(Some(State {
+                nonce,
+                last_write,
                 addresses: addresses.into_iter().collect(),
-                ..state.cloned().unwrap_or_default()
             }))
         })
     }
@@ -385,25 +427,29 @@ impl DepositAllowlist {
     pub(crate) fn apply_signed(&self, write: SignedWrite) -> Result<(), DepositAllowlistError> {
         let hash = self.inner.admin.authorize(&write)?;
         self.update(|state| {
-            if let Some(state) = state {
-                if write.nonce == state.nonce && hash == state.last_write {
-                    return Ok(None);
+            let addresses = match state {
+                ListState::Written(state) => {
+                    if write.nonce == state.nonce && hash == state.last_write {
+                        return Ok(None);
+                    }
+                    if write.nonce <= state.nonce {
+                        return Err(DepositAllowlistError::StaleNonce {
+                            nonce: write.nonce,
+                            applied: state.nonce,
+                        });
+                    }
+                    state.addresses.clone()
                 }
-                if write.nonce <= state.nonce {
-                    return Err(DepositAllowlistError::StaleNonce {
-                        nonce: write.nonce,
-                        applied: state.nonce,
-                    });
+                ListState::Unset if matches!(write.write, Write::Set { .. }) => {
+                    return Err(DepositAllowlistError::Uninitialized);
                 }
-            } else if matches!(write.write, Write::Set { .. }) {
-                return Err(DepositAllowlistError::Uninitialized);
-            }
+                // A replacement initializes the list, and overwrites these below.
+                ListState::Unset => BTreeSet::new(),
+            };
             let mut next = State {
                 nonce: write.nonce,
                 last_write: hash,
-                addresses: state
-                    .map(|state| state.addresses.clone())
-                    .unwrap_or_default(),
+                addresses,
             };
             match &write.write {
                 Write::Set { addresses, allowed } => {
@@ -445,7 +491,7 @@ impl DepositAllowlist {
             decryptions.len()
         );
         let state = self.inner.state.read();
-        let Some(state) = state.as_ref() else {
+        let ListState::Written(state) = &*state else {
             return Ok(0);
         };
         let mut rejected = 0;
@@ -464,11 +510,11 @@ impl DepositAllowlist {
     /// state unchanged.
     fn update(
         &self,
-        next: impl FnOnce(Option<&State>) -> Result<Option<State>, DepositAllowlistError>,
+        next: impl FnOnce(&ListState<State>) -> Result<Option<State>, DepositAllowlistError>,
     ) -> Result<(), DepositAllowlistError> {
         let _writer = self.inner.write_lock.lock();
         // Only writers change `state`, so this snapshot stays current until the swap below.
-        let Some(next) = next(self.inner.state.read().as_ref())? else {
+        let Some(next) = next(&self.inner.state.read())? else {
             return Ok(());
         };
         if next.addresses.len() > MAX_DEPOSIT_ALLOWLIST_LEN {
@@ -478,22 +524,16 @@ impl DepositAllowlist {
         }
         persist(&self.inner.path, &next)
             .map_err(|err| DepositAllowlistError::Persist(format!("{err:#}")))?;
-        log_status(status_of(Some(&next)), "Updated deposit allowlist");
-        *self.inner.state.write() = Some(next);
+        let next = ListState::Written(next);
+        log_status(status_of(&next), "Updated deposit allowlist");
+        *self.inner.state.write() = next;
         Ok(())
     }
 }
 
 impl TransferAllowlist for DepositAllowlist {
     fn allows_all(&self, addresses: &[Address]) -> bool {
-        allows_all(
-            self.inner
-                .state
-                .read()
-                .as_ref()
-                .map(|state| &state.addresses),
-            addresses,
-        )
+        self.inner.state.read().allows_all(addresses)
     }
 }
 
@@ -509,8 +549,8 @@ pub(crate) struct AllowlistMirror {
 
 #[derive(Debug, Default)]
 struct MirrorInner {
-    /// The leader's written list, `None` while the leader has none or none is known.
-    list: RwLock<Option<MirroredList>>,
+    /// The leader's written list, unset while the leader has none or none is known.
+    list: RwLock<ListState<MirroredList>>,
     /// Wakes the refresh task early, after this node relays a write.
     refresh: Notify,
 }
@@ -522,10 +562,19 @@ struct MirroredList {
     addresses: BTreeSet<Address>,
 }
 
+impl AsRef<BTreeSet<Address>> for MirroredList {
+    fn as_ref(&self) -> &BTreeSet<Address> {
+        &self.addresses
+    }
+}
+
 impl AllowlistMirror {
     /// The version of the copy, `None` while the leader has no written list or none is known.
     pub(crate) fn status(&self) -> Option<DepositAllowlistStatus> {
-        self.inner.list.read().as_ref().map(|list| list.status)
+        match &*self.inner.list.read() {
+            ListState::Unset => None,
+            ListState::Written(list) => Some(list.status),
+        }
     }
 
     /// Install the leader's `snapshot`, returning whether its version differs from the current
@@ -536,15 +585,21 @@ impl AllowlistMirror {
             addresses: snapshot.addresses.into_iter().collect(),
         };
         let mut current = self.inner.list.write();
-        let changed = current.as_ref().map(|current| current.status) != Some(list.status);
-        *current = Some(list);
+        let changed = match &*current {
+            ListState::Unset => true,
+            ListState::Written(current) => current.status != list.status,
+        };
+        *current = ListState::Written(list);
         changed
     }
 
     /// Drop the copy once the leader has no written list, so every transfer is admitted again.
     /// Returns whether it held one.
     pub(crate) fn clear(&self) -> bool {
-        self.inner.list.write().take().is_some()
+        matches!(
+            std::mem::take(&mut *self.inner.list.write()),
+            ListState::Written(_)
+        )
     }
 
     /// Ask the refresh task to check the sequencers now instead of at its next interval.
@@ -560,10 +615,7 @@ impl AllowlistMirror {
 
 impl TransferAllowlist for AllowlistMirror {
     fn allows_all(&self, addresses: &[Address]) -> bool {
-        allows_all(
-            self.inner.list.read().as_ref().map(|list| &list.addresses),
-            addresses,
-        )
+        self.inner.list.read().allows_all(addresses)
     }
 }
 
@@ -587,11 +639,6 @@ where
         pool.remove_transactions(unlisted);
     }
     count
-}
-
-/// Whether `list` holds every one of `addresses`. An unwritten list (`None`) allows everyone.
-fn allows_all(list: Option<&BTreeSet<Address>>, addresses: &[Address]) -> bool {
-    list.is_none_or(|list| addresses.iter().all(|address| list.contains(address)))
 }
 
 fn apply_set(list: &mut BTreeSet<Address>, addresses: &[Address], allowed: bool) {

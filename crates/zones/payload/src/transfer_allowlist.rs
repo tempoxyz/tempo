@@ -28,7 +28,8 @@ use crate::abi::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 pub trait TransferAllowlist: fmt::Debug + Send + Sync + 'static {
     /// Whether every one of `addresses` may send or receive Zone transfers, read from a single
     /// version of the list so a concurrent write cannot approve each party under a different
-    /// one. An allowlist that has never been written allows every address.
+    /// one. An allowlist that has never been written allows every address, and every allowlist
+    /// returns `true` for an empty `addresses`.
     fn allows_all(&self, addresses: &[Address]) -> bool;
 }
 

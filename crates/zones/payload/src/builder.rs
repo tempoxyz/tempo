@@ -1222,8 +1222,8 @@ mod tests {
     struct EmptyAllowlist;
 
     impl TransferAllowlist for EmptyAllowlist {
-        fn allows_all(&self, _addresses: &[Address]) -> bool {
-            false
+        fn allows_all(&self, addresses: &[Address]) -> bool {
+            addresses.is_empty()
         }
     }
 
