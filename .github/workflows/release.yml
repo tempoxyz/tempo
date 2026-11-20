@@ -524,10 +524,13 @@ jobs:
           # R2 can take up to a minute to honor a new token even after it
           # verifies as active: https://developers.cloudflare.com/r2/reference/consistency/
           # Not every R2 server honors it at once, so wait for three listings
-          # in a row, which write nothing. Slow responses can stretch the 30
-          # attempts past a minute.
+          # in a row, which write nothing. The token is only seconds old here,
+          # so allow two minutes: the full minute plus the confirming listings.
           accepted=0
-          for attempt in {1..30}; do
+          attempt=0
+          deadline=$((SECONDS + 120))
+          while true; do
+            attempt=$((attempt + 1))
             status="$(curl --silent --show-error --retry 2 --max-time 15 \
               --aws-sigv4 'aws:amz:auto:s3' --user "$id:$secret" \
               --output /dev/null --write-out '%{http_code}' \
@@ -541,12 +544,12 @@ jobs:
               echo "R2 accepted the credentials"
               break
             fi
-            if (( attempt == 30 )); then
-              echo "::error::R2 did not consistently accept the credentials after 30 attempts (last HTTP $status)"
+            if (( SECONDS >= deadline )); then
+              echo "::error::R2 did not consistently accept the credentials within two minutes (last HTTP $status)"
               exit 1
             fi
             if [ "$status" != 200 ]; then
-              echo "Waiting for R2 to accept the credentials (attempt $attempt/30)"
+              echo "Waiting for R2 to accept the credentials (attempt $attempt)"
             fi
             sleep 2
           done
