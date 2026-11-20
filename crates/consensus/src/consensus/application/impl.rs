@@ -1,17 +1,13 @@
 //! Tempo's block building and verification.
 
-use std::{
-    sync::atomic::AtomicU64,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use alloy_consensus::BlockHeader;
 use alloy_primitives::Bytes;
-use commonware_actor::Feedback;
 use commonware_codec::{DecodeExt as _, Encode as _, ReadExt as _};
 use commonware_consensus::{
-    Heightable as _, Reporter,
-    marshal::{Update, ancestry::Ancestry},
+    Heightable as _,
+    marshal::ancestry::Ancestry,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Context},
     types::{Epocher as _, FixedEpocher, Height},
 };
@@ -22,9 +18,9 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{
     Clock, Spawner,
-    telemetry::metrics::{Counter, MetricsExt as _, Registered},
+    telemetry::metrics::{Counter, MetricsExt as _},
 };
-use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
+use commonware_utils::SystemTimeExt as _;
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
 use rand_core::Rng;
@@ -34,8 +30,7 @@ use tempo_chainspec::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::TEMPO_MAXIMUM_EXTRA_DATA_SIZE;
 use tempo_payload_types::{
-    Estimator, EstimatorSnapshot, ProposalKey, ProposalTiming, TempoPayloadAttributes,
-    ValidationLatencyWorkload,
+    Estimator, ProposalKey, ProposalTiming, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_primitives::{TempoConsensusContext, TempoHeader};
 use tempo_telemetry_util::display_duration;
@@ -66,6 +61,9 @@ pub(in crate::consensus) struct Config<TContext> {
     /// Proposal pacing and execution feedback shared with the payload builder.
     pub(in crate::consensus) estimator: Estimator,
 
+    /// The estimator's gauges, shared with [`crate::consensus::estimator::Reporter`].
+    pub(in crate::consensus) estimator_metrics: crate::consensus::estimator::Metrics,
+
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
 }
@@ -77,6 +75,7 @@ pub(crate) struct Inner {
     epoch_strategy: FixedEpocher,
     /// Shared proposal pacing and execution feedback.
     estimator: Estimator,
+    estimator_metrics: crate::consensus::estimator::Metrics,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
@@ -93,6 +92,7 @@ impl Inner {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
             estimator: config.estimator,
+            estimator_metrics: config.estimator_metrics,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
@@ -281,8 +281,8 @@ impl Inner {
             );
         }
 
-        self.metrics
-            .observe_estimator(&self.estimator.snapshot(Instant::now()));
+        self.estimator_metrics
+            .observe(&self.estimator.snapshot(Instant::now()));
 
         #[cfg(feature = "fuzz")]
         antithesis_sdk::assert_sometimes!(
@@ -596,43 +596,6 @@ where
     }
 }
 
-impl Reporter for Inner {
-    type Activity = Update<Block>;
-
-    fn report(&mut self, update: Self::Activity) -> Feedback {
-        if let Update::Block(block, ack) = update {
-            // Only finalized children supply canonical sampling observations.
-            // Derive the parent's epoch from its height, not the child's epoch.
-            if let Some(ctx) = block.inner().header().consensus_context
-                && let Some(parent_height) = block.height().previous()
-            {
-                let parent_epoch = self
-                    .epoch_strategy
-                    .containing(parent_height)
-                    .expect("epoch strategy is for all heights");
-                if self.estimator.on_child_block_finalized(
-                    Instant::now(),
-                    ProposalKey {
-                        epoch: parent_epoch.epoch().get(),
-                        view: ctx.parent_view,
-                    },
-                    ProposalKey {
-                        epoch: ctx.epoch,
-                        view: ctx.view,
-                    },
-                    block.inner().timestamp_millis(),
-                ) {
-                    self.metrics.network_samples.metric().inc();
-                }
-            }
-            self.metrics
-                .observe_estimator(&self.estimator.snapshot(Instant::now()));
-            ack.acknowledge();
-        }
-        Feedback::Ok
-    }
-}
-
 /// Decodes the DKG outcome in a boundary block's `extra_data` after checking its size.
 /// (+T15) With `strict`, the outcome must take up all of the extra data.
 fn read_boundary_outcome(header: &TempoHeader, strict: bool) -> eyre::Result<OnchainDkgOutcome> {
@@ -658,85 +621,16 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
-    network_samples: Counter,
-    /// Network reservation the most recent own proposal subtracted from the
-    /// target block time.
-    estimator_network_reserve_seconds: FloatGauge,
-    /// Unclamped adaptive network reservation target, including warm-up and
-    /// fast rise. Zero in fixed mode or without live network feedback.
-    estimator_network_target_seconds: FloatGauge,
-    /// Proposal return budget of the most recent own proposal.
-    estimator_proposal_return_budget_seconds: FloatGauge,
-    /// Recent P90 execution-layer validation time.
-    estimator_validation_latency_p90_seconds: FloatGauge,
-    /// Build time multiplier in use.
-    estimator_build_time_multiplier: FloatGauge,
-    /// Finish a build reserves once its pool ran dry.
-    estimator_dry_build_finish_seconds: FloatGauge,
 }
-
-/// A gauge that holds a fractional value, such as seconds or a ratio.
-type FloatGauge = Registered<prometheus_client::metrics::gauge::Gauge<f64, AtomicU64>>;
 
 impl Metrics {
     fn init<TContext: commonware_runtime::Metrics>(context: &TContext) -> Self {
-        let parent_ahead_of_local_time = context.counter(
-            "parent_ahead_of_local_time",
-            "number of times the parent block timestamp was ahead of local time when proposing",
-        );
-        let float_gauge = |name: &str, help: &str| -> FloatGauge {
-            context.register(name, help, Default::default())
-        };
-
         Self {
-            parent_ahead_of_local_time,
-            network_samples: context.counter(
-                "network_samples",
-                "number of network samples recorded from finalized successors of own proposals",
-            ),
-            estimator_network_reserve_seconds: float_gauge(
-                "estimator_network_reserve_seconds",
-                "network allowance covering propagation, votes, unprojected validation and next-proposal preparation",
-            ),
-            estimator_network_target_seconds: float_gauge(
-                "estimator_network_target_seconds",
-                "unclamped adaptive network reservation target including warm-up and fast rise; zero in fixed mode or without live samples",
-            ),
-            estimator_proposal_return_budget_seconds: float_gauge(
-                "estimator_proposal_return_budget_seconds",
-                "local proposal return budget of the most recent own proposal",
-            ),
-            estimator_validation_latency_p90_seconds: float_gauge(
-                "estimator_validation_latency_p90_seconds",
-                "recent p90 execution-layer block validation time",
-            ),
-            estimator_build_time_multiplier: float_gauge(
-                "estimator_build_time_multiplier",
-                "payload build time multiplier in use",
-            ),
-            estimator_dry_build_finish_seconds: float_gauge(
-                "estimator_dry_build_finish_seconds",
-                "finish reserved by payload builds whose pool ran dry",
+            parent_ahead_of_local_time: context.counter(
+                "parent_ahead_of_local_time",
+                "number of times the parent block timestamp was ahead of local time when proposing",
             ),
         }
-    }
-
-    fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
-        self.estimator_network_reserve_seconds
-            .set(snapshot.network_reserve.as_secs_f64());
-        self.estimator_network_target_seconds
-            .set(snapshot.network_target.map_or(0.0, |d| d.as_secs_f64()));
-        self.estimator_proposal_return_budget_seconds
-            .set(snapshot.proposal_return_budget.as_secs_f64());
-        self.estimator_validation_latency_p90_seconds.set(
-            snapshot
-                .validation_latency_p90
-                .map_or(0.0, |d| d.as_secs_f64()),
-        );
-        self.estimator_build_time_multiplier
-            .set(snapshot.build_time_multiplier);
-        self.estimator_dry_build_finish_seconds
-            .set(snapshot.dry_build_finish.as_secs_f64());
     }
 }
 

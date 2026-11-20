@@ -32,7 +32,7 @@ use tracing::info;
 
 use crate::{
     alias,
-    consensus::application,
+    consensus::{application, estimator},
     dkg,
     epoch::{self, SchemeProvider},
     peer_manager, storage,
@@ -300,6 +300,13 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
+        // Registered under the application's context to keep the metric names.
+        let estimator_metrics = estimator::Metrics::init(&context.child("application"));
+        let estimator_reporter = estimator::Reporter::new(
+            self.estimator.clone(),
+            epoch_strategy.clone(),
+            estimator_metrics.clone(),
+        );
         let application = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
@@ -310,11 +317,12 @@ where
                 executed_state: self.executed_state.clone(),
             },
             estimator: self.estimator.clone(),
+            estimator_metrics,
             epoch_strategy: epoch_strategy.clone(),
         });
         let deferred = application::Deferred::new(
             context.child("application"),
-            application.clone(),
+            application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
         );
@@ -352,7 +360,7 @@ where
             resolver_config,
             marshal,
 
-            application,
+            estimator_reporter,
             epoch_manager_config,
 
             peer_manager,
@@ -396,8 +404,8 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    /// Receives finalized blocks from marshal.
-    application: application::Inner,
+    /// Feeds finalized blocks from marshal into the proposal estimator.
+    estimator_reporter: estimator::Reporter,
 
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
@@ -517,7 +525,7 @@ where
         ));
 
         let marshal = self.marshal.start(
-            Reporters::from((self.application, reporters)),
+            Reporters::from((self.estimator_reporter, reporters)),
             self.broadcast_mailbox,
             resolver,
         );
