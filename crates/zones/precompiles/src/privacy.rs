@@ -5,7 +5,7 @@ use alloy_sol_types::SolError;
 use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::storage::StorageCtx;
 
-use crate::{ZonePrecompileError, execution::CallCheck, zone_identity::ZoneIdentity};
+use crate::{execution::CallCheck, zone_identity::ZoneIdentity};
 
 /// Allow a read only when the immediate EVM caller owns an account named by the getter, or, from
 /// T15, may read the first of them, the account whose state it is, through `ZoneIdentity` as its
@@ -20,12 +20,7 @@ pub(crate) fn check_caller(caller: Address, accounts: &[Address]) -> CallCheck {
         match ZoneIdentity::new().can_read(caller, subject) {
             Ok(true) => return CallCheck::Continue,
             Ok(false) => {}
-            Err(ZonePrecompileError::Tempo(error)) => return CallCheck::Error(error),
-            Err(error) => {
-                return CallCheck::Error(tempo_precompiles::error::TempoPrecompileError::Fatal(
-                    error.to_string(),
-                ));
-            }
+            Err(error) => return CallCheck::Error(error),
         }
     }
     CallCheck::Revert(Unauthorized {}.abi_encode().into())

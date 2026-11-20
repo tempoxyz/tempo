@@ -18,6 +18,11 @@
 
 mod dispatch;
 
+#[cfg(feature = "std")]
+mod reads;
+#[cfg(feature = "std")]
+pub use reads::{DelegatedRead, audit_reads};
+
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
@@ -158,12 +163,10 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         self.orgs[org].admin.write(admin)?;
-        let epoch = self.orgs[org].admin_epoch.read()?;
-        self.orgs[org].admin_epoch.write(
-            epoch
-                .checked_add(1)
-                .ok_or_else(TempoPrecompileError::under_overflow)?,
-        )?;
+        let epoch = self.orgs[org].admin_epoch.read()?.checked_add(1);
+        self.orgs[org]
+            .admin_epoch
+            .write(epoch.ok_or_else(TempoPrecompileError::under_overflow)?)?;
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
@@ -266,26 +269,27 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// Whether `reader` may read `account`'s account-scoped state: it is the account, or the admin
-    /// or a reader of the account's org. Accounts in org 0 are readable only by themselves.
-    pub fn can_read(&self, reader: Address, account: Address) -> ZoneResult<bool> {
+    /// Whether `reader` is `account` or its org's admin or reader, outside org 0 and not denied.
+    pub fn can_read(&self, reader: Address, account: Address) -> crate::Result<bool> {
         if reader == account {
             return Ok(true);
         }
         Ok(self.read_member(reader, account)?.1)
     }
 
-    /// `account`'s membership, and whether `reader` is the admin, or a reader named by the current
-    /// admin, of its org; never for org 0. Reads the member and its org's admin, admin epoch and
-    /// reader slots whatever the answer, priced as cold, so gas does not reveal the account's org.
-    fn read_member(&self, reader: Address, account: Address) -> ZoneResult<(Member, bool)> {
+    /// `account`'s membership, and whether `reader` may read it as its org's admin or reader.
+    /// Reads the same slots, priced as cold, whatever the answer, so gas does not reveal the org.
+    fn read_member(&self, reader: Address, account: Address) -> crate::Result<(Member, bool)> {
         self.storage.with_cold_pricing(|| {
             let member = self.members[account].read()?;
             let org = &self.orgs[member.org];
             let admin = org.admin.read()?;
             let epoch = org.admin_epoch.read()?;
             let listed = org.readers[epoch][reader].read()?;
-            Ok((member, member.org != 0 && (reader == admin || listed)))
+            let may_read = member.org != 0 && (reader == admin || listed);
+            #[cfg(feature = "std")]
+            let may_read = may_read && reads::admit(DelegatedRead { reader, account });
+            Ok((member, may_read))
         })
     }
 
@@ -475,7 +479,7 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, map::HashSet};
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
@@ -780,6 +784,32 @@ mod tests {
                     "{reader} reads {account}"
                 );
             }
+            // Denied reads are refused, also through `orgOf`, and the others returned as granted.
+            let alice = Member { org, frozen: false };
+            let denied = DelegatedRead {
+                reader: admin,
+                account: ALICE,
+            };
+            let ((), granted) = audit_reads(HashSet::from_iter([denied]), || {
+                assert!(identity.can_read(ALICE, ALICE).unwrap());
+                assert!(!identity.can_read(admin, ALICE).unwrap());
+                assert!(identity.can_read(auditor, ALICE).unwrap());
+                assert!(!identity.can_read(BOB, ALICE).unwrap());
+                assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(alice));
+                assert_eq!(
+                    identity.org_of(admin, registrar, ALICE),
+                    Err(identity_error(ZoneIdentityError::unauthorized()))
+                );
+            });
+            assert_eq!(
+                granted,
+                HashSet::from_iter([DelegatedRead {
+                    reader: auditor,
+                    account: ALICE
+                }])
+            );
+            assert!(identity.can_read(admin, ALICE).unwrap());
+
             identity
                 .set_reader(admin, registrar, org, auditor, false)
                 .unwrap();

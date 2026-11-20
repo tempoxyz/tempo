@@ -1,14 +1,14 @@
 //! ZoneIdentity across the T14 to T15 transition: the predeploy appears at T15, the registrar and
 //! org admins configure orgs through zone transactions, and once the portal admin's L1 config turns
-//! enforcement on, org edges gate transfers, deposits and withdrawals. An org's admin and readers
-//! can read its members' account-scoped state, through precompile getters and the redacted RPC.
+//! enforcement on, org edges gate transfers, deposits and withdrawals.
+//! An org's admin and designated readers can access its members' account-scoped state, txs and logs.
 
 use alloy::network::Ethereum;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_provider::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder};
-use alloy_rpc_types_eth::TransactionRequest;
-use alloy_sol_types::{SolCall, SolInterface};
+use alloy_rpc_types_eth::{Log, TransactionRequest};
+use alloy_sol_types::{SolCall, SolEvent, SolInterface};
 use eyre::OptionExt;
 use tempo_chainspec::{
     hardfork::TempoHardfork,
@@ -316,6 +316,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         let pending = admin.send(ZONE_IDENTITY_ADDRESS, call).await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
+    let members_block = zone.provider().get_block_number().await?;
     let alice_org = alice.identity().orgOf(alice.address).call().await?;
     assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
     // Membership is private to the account, its org's admin and the registrar.
@@ -386,6 +387,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         .await?;
     assert_eq!(mine(&mut fixture, &zone, vec![accept]).await?, [true]);
     let to_carol = alice.transfer(carol.address, 1_000).await?;
+    let before_reader_tx = *to_carol.tx_hash();
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     assert_eq!(
         zone.balance_of(PATH_USD_ADDRESS, carol.address).await?,
@@ -491,6 +493,11 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     };
     let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, add_reader).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    let named_block = zone.provider().get_block_number().await?;
+    let named = format!("{named_block:#x}");
+    let to_carol = alice.transfer(carol.address, 1).await?;
+    let named_tx = *to_carol.tx_hash();
+    assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     let reads = [
         (&admin_a, alice.address, true),
         (&auditor, alice.address, true),
@@ -520,27 +527,32 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         zone_portal: Address::ZERO,
     };
     let redacted = start_redacted_rpc_url(&zone, config).await?;
-    let rpc =
-        async |index: u32, method: &str, account: Address, block: &str| -> eyre::Result<U256> {
-            let token = build_auth_token(&signer_at(index), 0, chain_id);
-            let body: serde_json::Value = reqwest::Client::new()
+    // The redacted RPC's JSON-RPC response to `method` from signer `index`.
+    let rpc = async |index: u32, method: &str, params: serde_json::Value| {
+        let token = build_auth_token(&signer_at(index), 0, chain_id);
+        eyre::Ok(
+            reqwest::Client::new()
                 .post(redacted.as_str())
                 .header("x-authorization-token", token)
                 .json(&serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": method,
-                    "params": [format!("{account:#x}"), block],
+                    "params": params,
                     "id": 1
                 }))
                 .send()
                 .await?
-                .json()
-                .await?;
-            Ok(serde_json::from_value(body["result"].clone())?)
-        };
+                .json::<serde_json::Value>()
+                .await?,
+        )
+    };
+    let read = async |index: u32, method: &str, account: Address, block: &str| {
+        let body = rpc(index, method, serde_json::json!([account, block])).await?;
+        eyre::Ok(serde_json::from_value::<U256>(body["result"].clone())?)
+    };
     // Signers: 163 Alice herself, 161 org A's admin, 170 its reader, 162 org B's admin.
     for method in ["eth_getBalance", "eth_getTransactionCount"] {
-        let own = rpc(163, method, alice.address, "latest").await?;
+        let own = read(163, method, alice.address, "latest").await?;
         assert_ne!(own, U256::ZERO, "{method}");
         for (index, account, expected) in [
             (161, alice.address, own),
@@ -549,24 +561,146 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             (161, dave.address, U256::ZERO),
         ] {
             assert_eq!(
-                rpc(index, method, account, "latest").await?,
+                read(index, method, account, "latest").await?,
                 expected,
                 "{method} of {account} as signer {index}"
             );
         }
     }
+    // At `block`, Alice's admin reads her balance and the reader does not.
+    let assert_history = async |block: &str| {
+        let own = read(163, "eth_getBalance", alice.address, block).await?;
+        assert_ne!(own, U256::ZERO);
+        assert_eq!(
+            read(161, "eth_getBalance", alice.address, block).await?,
+            own
+        );
+        assert_eq!(
+            read(170, "eth_getBalance", alice.address, block).await?,
+            U256::ZERO
+        );
+        eyre::Ok(())
+    };
     // Reads are checked at the requested block: the reader may not read Alice from before it was
     // named, while the admin already could.
-    let own = rpc(163, "eth_getBalance", alice.address, &before_reader).await?;
-    assert_ne!(own, U256::ZERO);
-    assert_eq!(
-        rpc(161, "eth_getBalance", alice.address, &before_reader).await?,
-        own
-    );
-    assert_eq!(
-        rpc(170, "eth_getBalance", alice.address, &before_reader).await?,
-        U256::ZERO
-    );
+    assert_history(&before_reader).await?;
+    // Alice's transactions and receipts follow the same rule at the transaction's block.
+    let assert_tx = async |hash: B256, index: u32, readable: bool| {
+        for method in ["eth_getTransactionByHash", "eth_getTransactionReceipt"] {
+            let body = rpc(index, method, serde_json::json!([hash])).await?;
+            assert_eq!(
+                !body["result"].is_null(),
+                readable,
+                "{method} of {hash} as signer {index}: {body}"
+            );
+        }
+        eyre::Ok(())
+    };
+    for (hash, index, readable) in [
+        (before_reader_tx, 163, true),
+        (before_reader_tx, 161, true),
+        (before_reader_tx, 170, false),
+        (before_reader_tx, 162, false),
+        (named_tx, 170, true),
+        (named_tx, 162, false),
+    ] {
+        assert_tx(hash, index, readable).await?;
+    }
+    // So do the logs of Alice's transfers.
+    let new_filter = serde_json::json!({
+        "address": PATH_USD_ADDRESS,
+        "topics": [ITIP20::Transfer::SIGNATURE_HASH, alice.address.into_word()],
+    });
+    let mut alice_filter = new_filter.clone();
+    alice_filter["fromBlock"] = "0x0".into();
+    let alice_logs = async |index: u32| {
+        let body = rpc(index, "eth_getLogs", serde_json::json!([alice_filter])).await?;
+        eyre::Ok(serde_json::from_value::<Vec<Log>>(body["result"].clone())?)
+    };
+    let own_logs = alice_logs(163).await?;
+    let hashes = own_logs
+        .iter()
+        .filter_map(|log| log.transaction_hash)
+        .collect::<Vec<_>>();
+    assert!(hashes.contains(&before_reader_tx) && hashes.contains(&named_tx));
+    let own_logs_since = |block: u64| {
+        own_logs
+            .iter()
+            .filter(|log| log.block_number >= Some(block))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(alice_logs(161).await?, own_logs_since(members_block));
+    assert_eq!(alice_logs(170).await?, own_logs_since(named_block));
+    assert_eq!(alice_logs(162).await?, []);
+    // A log filter the reader polls returns Alice's new logs.
+    let filter_id =
+        rpc(170, "eth_newFilter", serde_json::json!([new_filter])).await?["result"].clone();
+    let filter_changes = async || {
+        let body = rpc(170, "eth_getFilterChanges", serde_json::json!([filter_id])).await?;
+        let mut hashes = serde_json::from_value::<Vec<Log>>(body["result"].clone())?
+            .into_iter()
+            .filter_map(|log| log.transaction_hash)
+            .collect::<Vec<_>>();
+        hashes.dedup();
+        eyre::Ok(hashes)
+    };
+    // The first poll covers the block the filter was installed at.
+    assert_eq!(filter_changes().await?, [named_tx]);
+    let to_carol = alice.transfer(carol.address, 1).await?;
+    let polled_tx = *to_carol.tx_hash();
+    assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
+    assert_eq!(filter_changes().await?, [polled_tx]);
+    // eth_call and eth_estimateGas at an earlier block apply the same rule to precompile getters.
+    let balance_of_alice = ITIP20::balanceOfCall {
+        account: alice.address,
+    };
+    let unauthorized = Bytes::from(ZoneIdentityError::unauthorized().abi_encode()).to_string();
+    let assert_call = async |method: &str, index: u32, block: &str, allowed: bool| {
+        let call = serde_json::json!({
+            "from": signer_at(index).address(),
+            "to": PATH_USD_ADDRESS,
+            "input": Bytes::from(balance_of_alice.abi_encode()),
+        });
+        let body = rpc(index, method, serde_json::json!([call, block])).await?;
+        let error = body["error"]["message"].as_str();
+        assert_eq!(
+            error.map(|message| message.contains(&unauthorized)),
+            (!allowed).then_some(true),
+            "{method} as signer {index} at {block}: {body}"
+        );
+        eyre::Ok(())
+    };
+    assert_call("eth_call", 170, &named, true).await?;
+    assert_call("eth_call", 170, &before_reader, false).await?;
+
+    // Removing the reader also revokes its reads of blocks where it was named.
+    let remove_reader = IZoneIdentity::setReaderCall {
+        orgId: org_a,
+        reader: auditor.address,
+        allowed: false,
+    };
+    let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, remove_reader).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    assert_history(&named).await?;
+    assert_tx(named_tx, 170, false).await?;
+    assert_tx(named_tx, 161, true).await?;
+    assert_eq!(alice_logs(170).await?, []);
+    let to_carol = alice.transfer(carol.address, 1).await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
+    assert_eq!(filter_changes().await?, Vec::<B256>::new());
+    for (method, index, block, allowed) in [
+        ("eth_call", 163, named.as_str(), true),
+        ("eth_call", 161, named.as_str(), true),
+        ("eth_call", 170, named.as_str(), false),
+        ("eth_call", 161, "latest", true),
+        ("eth_call", 170, "latest", false),
+        ("eth_estimateGas", 163, named.as_str(), true),
+        ("eth_estimateGas", 161, named.as_str(), true),
+        ("eth_estimateGas", 170, named.as_str(), false),
+    ] {
+        assert_call(method, index, block, allowed).await?;
+    }
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);
@@ -574,5 +708,14 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let height = zone.provider().get_block_number().await? + 1;
     zone.wait_for_block_number(height, DEFAULT_TIMEOUT).await?;
     assert_transfer(&zone, dave.address, alice.address, true).await?;
+    // Reads do not depend on enforcement.
+    assert_eq!(
+        revert_of(&zone, admin_a.address, PATH_USD_ADDRESS, balance_of_alice).await?,
+        None
+    );
+    assert_eq!(
+        read(161, "eth_getBalance", alice.address, "latest").await?,
+        read(163, "eth_getBalance", alice.address, "latest").await?
+    );
     Ok(())
 }

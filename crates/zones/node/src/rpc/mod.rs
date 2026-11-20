@@ -20,14 +20,14 @@ use alloy_primitives::{Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, 
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
-    Filter, FilterChanges, FilterId, TransactionRequest,
+    Filter, FilterChanges, FilterId, Log, TransactionRequest,
     error::EthRpcErrorCode,
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
-use futures::{StreamExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use jsonrpsee::{
     RpcModule,
     core::RpcResult,
@@ -35,14 +35,16 @@ use jsonrpsee::{
     types::{ErrorObjectOwned, Params},
 };
 use reth_chainspec::Hardforks;
-use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
+use reth_evm::{
+    ConfigureEvm as _, EvmTypesFor, execute::Executor as _, witness::ExecutionWitnessRecord,
+};
 use reth_execution_types::BundleSource;
 use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
 use reth_rpc_eth_api::{
-    AsEthApiError, EthApiTypes, EthFilterApiServer, RpcConvert,
+    AsEthApiError, EthApiTypes, EthFilterApiServer, FromEvmError, RpcConvert,
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{
@@ -51,7 +53,7 @@ use reth_rpc_eth_types::{
     logs_utils,
 };
 use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
-use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
+use reth_storage_api::{BlockIdReader, BlockReaderIdExt, StateProvider as _, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -64,12 +66,9 @@ use tempo_chainspec::{
     is_valid_native_account,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
-use tempo_contracts::{
-    precompiles::{
-        ACCOUNT_KEYCHAIN_ADDRESS,
-        account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
-    },
-    zones::{IZoneIdentity, ZONE_IDENTITY_ADDRESS},
+use tempo_contracts::precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS,
+    account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{
@@ -91,7 +90,10 @@ use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
-use zone_precompiles::is_zone_precompile;
+use zone_precompiles::{
+    is_zone_precompile,
+    zone_identity::{DelegatedRead, audit_reads},
+};
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
@@ -105,6 +107,10 @@ use zone_rpc::{
 };
 
 use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
+
+mod read_access;
+
+use read_access::ReadAccess;
 
 /// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
 ///
@@ -924,8 +930,15 @@ const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 /// waiting on an unresponsive Tempo RPC.
 const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Most runs of one simulation at an earlier block, each revoking more delegated reads.
+const MAX_REVOKED_READ_PASSES: usize = 8;
+
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
+}
+
+fn eyre_internal(error: eyre::Report) -> JsonRpcError {
+    internal(format!("{error:#}"))
 }
 
 fn map_eth_filter_error(err: EthFilterError) -> JsonRpcError {
@@ -947,6 +960,11 @@ fn map_send_raw_transaction_error(err: impl AsEthApiError + std::fmt::Display) -
     internal(err)
 }
 
+/// `block` if it names a block other than the latest or pending one, else `None`.
+fn filter_earlier_block(block: Option<BlockId>) -> Option<BlockId> {
+    block.filter(|block| !block.is_latest() && !block.is_pending())
+}
+
 fn stale_filter_owner_ids(
     owner_ids: impl IntoIterator<Item = FilterId>,
     active_ids: &HashSet<FilterId>,
@@ -959,7 +977,7 @@ fn stale_filter_owner_ids(
 
 async fn prune_filter_owners<Api: EthApiTypes + 'static>(
     filter: &EthFilter<Api>,
-    owners: &Mutex<HashMap<FilterId, Address>>,
+    owners: &Mutex<HashMap<FilterId, FilterOwner>>,
 ) {
     let owner_ids = {
         let owners = owners.lock().await;
@@ -999,8 +1017,10 @@ async fn prune_filter_owners<Api: EthApiTypes + 'static>(
 ///
 /// - **Block redaction** — zeroing `logsBloom` and clearing transaction
 ///   lists on the redacted RPC.
-/// - **Sender-scoped access** — returning `null` for transactions and
-///   receipts not owned by the authenticated caller.
+/// - **Account-scoped access** — returning `null` for transactions and
+///   receipts, `0x0` for balances and nonces, and no logs, unless the
+///   authenticated caller is the account or may read it through
+///   `ZoneIdentity` per [`ReadAccess`].
 /// - **`from`-enforcement** — `eth_call` / `eth_estimateGas` may only
 ///   simulate from the authenticated account (`-32004` on mismatch,
 ///   auto-set when omitted); state overrides are rejected (`-32602`).
@@ -1014,9 +1034,18 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     l1_provider: DynProvider<TempoNetwork>,
     /// Reads Tempo commitments through the node's L1 state cache.
     l1_state: L1StateProvider,
-    /// Maps filter IDs to the authenticated account that created them.
-    /// The reth filter registry remains the source of truth for filter liveness.
-    filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
+    /// Maps filter IDs to their owners. The reth filter registry remains the source of truth for
+    /// filter liveness.
+    filter_owners: Arc<Mutex<HashMap<FilterId, FilterOwner>>>,
+}
+
+/// Who created a filter, and whose logs it returns.
+#[derive(Clone, Copy, Debug)]
+struct FilterOwner {
+    /// The authenticated account that created the filter.
+    caller: Address,
+    /// The account whose logs a log filter returns, or `None` for a block filter.
+    account: Option<Address>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -1061,7 +1090,8 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         Api: Send + Sync + 'static,
     {
         let filter = self.filter().clone();
-        let owners: Weak<Mutex<HashMap<FilterId, Address>>> = Arc::downgrade(&self.filter_owners);
+        let owners: Weak<Mutex<HashMap<FilterId, FilterOwner>>> =
+            Arc::downgrade(&self.filter_owners);
         tokio::spawn(async move {
             let mut prune_interval = interval(FILTER_OWNER_PRUNE_INTERVAL);
             prune_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1080,23 +1110,20 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
     /// Verify that the filter belongs to the authenticated caller.
     ///
-    /// Returns `Ok(())` if the caller owns the filter or is the sequencer.
+    /// Returns the filter's [`FilterOwner::account`] if the caller owns the filter.
     /// Returns an error indistinguishable from "filter not found" to avoid
     /// leaking filter existence to non-owners.
     async fn ensure_filter_owner(
         &self,
         id: &FilterId,
         auth: &AuthContext,
-    ) -> Result<(), JsonRpcError> {
-        let owner_matches = {
-            let owners = self.filter_owners.lock().await;
-            matches!(owners.get(id), Some(owner) if *owner == auth.caller)
-        };
-        if !owner_matches {
+    ) -> Result<Option<Address>, JsonRpcError> {
+        let owner = self.filter_owners.lock().await.get(id).copied();
+        let Some(owner) = owner.filter(|owner| owner.caller == auth.caller) else {
             return Err(filter_not_found_error());
-        }
+        };
         if self.filter_is_active(id).await {
-            Ok(())
+            Ok(owner.account)
         } else {
             self.filter_owners.lock().await.remove(id);
             Err(filter_not_found_error())
@@ -1147,43 +1174,91 @@ where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
     Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
-    /// Whether `reader` may read `account`'s balance and nonce at `block`: it is the account, or
-    /// `ZoneIdentity.canRead` allows it at `block`, the same rule the precompile getters apply in a
-    /// call at that block. A reader keeps the history it could read before it was revoked, and an
-    /// org cannot read a member's state from before it joined. Before `ZoneIdentity` exists the
-    /// call returns no data, which counts as no.
-    async fn can_read(
+    /// Whether `reader` may read `account`'s balance, nonce or transactions at `block`, or at the
+    /// latest block when it is omitted or pending, per [`ReadAccess`].
+    fn can_read(
         &self,
         reader: Address,
         account: Address,
         block: Option<BlockId>,
     ) -> Result<bool, JsonRpcError> {
-        if reader == account {
-            return Ok(true);
-        }
-        // The call loads `reader`, whose Tempo commitment zone execution reads. Reading it through
-        // the bounded path first keeps a call at the latest block from waiting on Tempo, as for
-        // `getKeychainKey`.
-        zone_rpc::ZoneRpcApi::get_config_commitment(self, reader)
-            .await
-            .map_err(|error| internal(format!("{error:#}")))?;
-        let request = TempoTransactionRequest {
-            inner: TransactionRequest {
-                from: Some(reader),
-                to: Some(ZONE_IDENTITY_ADDRESS.into()),
-                input: IZoneIdentity::canReadCall { account }.abi_encode().into(),
-                ..Default::default()
-            },
-            ..Default::default()
+        let provider = self.eth.api.provider();
+        let Some(access) = self.read_access(reader, account)? else {
+            return Ok(false);
         };
-        let output = tokio::time::timeout(
-            L1_COMMITMENT_READ_TIMEOUT,
-            EthCall::call(&self.eth.api, request, block, EvmOverrides::default()),
-        )
-        .await
-        .map_err(|_| internal("timed out calling ZoneIdentity.canRead"))?
-        .map_err(internal)?;
-        Ok(IZoneIdentity::canReadCall::abi_decode_returns(output.as_ref()).unwrap_or(false))
+        let Some(block) = filter_earlier_block(block) else {
+            return Ok(true);
+        };
+        // An unknown block is the account's own error to see.
+        let Some(block) = provider.block_number_for_id(block).map_err(internal)? else {
+            return Ok(access == ReadAccess::Own);
+        };
+        access.covers(provider, block).map_err(eyre_internal)
+    }
+
+    /// [`ReadAccess::at_latest`] of `reader` to `account`.
+    fn read_access(
+        &self,
+        reader: Address,
+        account: Address,
+    ) -> Result<Option<ReadAccess>, JsonRpcError> {
+        ReadAccess::at_latest(self.eth.api.provider(), reader, account).map_err(eyre_internal)
+    }
+
+    /// `account`'s logs from `query` that `reader` may read, with their ordering redacted.
+    /// `query` runs only with access at the latest block, so its cost reveals nothing otherwise.
+    async fn readable_logs(
+        &self,
+        reader: Address,
+        account: Address,
+        query: impl Future<Output = Result<Vec<Log>, JsonRpcError>>,
+    ) -> Result<Vec<Log>, JsonRpcError> {
+        let Some(access) = self.read_access(reader, account)? else {
+            return Ok(Vec::new());
+        };
+        let logs = query.await?;
+        // Only delegated access reads state per block.
+        let logs = match access {
+            ReadAccess::Own => logs,
+            access => self
+                .eth
+                .api
+                .spawn_blocking_io(move |api| Ok(access.covered_logs(api.provider(), logs)))
+                .await
+                .map_err(internal)?
+                .map_err(eyre_internal)?,
+        };
+        Ok(zone_rpc::filter::filter_logs(logs, &account))
+    }
+
+    /// Reruns `simulate`, a simulation at an earlier block, with the delegated reads the latest
+    /// block no longer allows revoked, until it is granted none. Fails after
+    /// [`MAX_REVOKED_READ_PASSES`] runs.
+    async fn simulate_without_revoked_reads<T, TFuture>(
+        &self,
+        mut simulate: impl FnMut(alloy_primitives::map::HashSet<DelegatedRead>) -> TFuture,
+    ) -> Result<T, JsonRpcError>
+    where
+        TFuture: Future<
+            Output = Result<(T, alloy_primitives::map::HashSet<DelegatedRead>), JsonRpcError>,
+        >,
+    {
+        let mut revoked = alloy_primitives::map::HashSet::default();
+        for _ in 0..MAX_REVOKED_READ_PASSES {
+            let (output, granted) = simulate(revoked.clone()).await?;
+            let revoked_before = revoked.len();
+            for read in granted {
+                if self.read_access(read.reader, read.account)?.is_none() {
+                    revoked.insert(read);
+                }
+            }
+            if revoked.len() == revoked_before {
+                return Ok(output);
+            }
+        }
+        Err(JsonRpcError::internal(
+            "simulation reads too many accounts it may no longer read",
+        ))
     }
 }
 
@@ -1325,7 +1400,7 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block).await? {
+            if !self.can_read(auth.caller, address, block)? {
                 return Ok(raw_zero());
             }
             let balance = EthState::balance(&self.eth.api, address, block)
@@ -1343,7 +1418,7 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block).await? {
+            if !self.can_read(auth.caller, address, block)? {
                 return Ok(raw_zero());
             }
             let count = EthState::transaction_count(&self.eth.api, address, block)
@@ -1379,7 +1454,7 @@ where
                 return Ok(raw_null());
             };
 
-            if tx.from() != auth.caller {
+            if !self.can_read(auth.caller, tx.from(), tx.block_number.map(BlockId::from))? {
                 return Ok(raw_null());
             }
 
@@ -1400,7 +1475,11 @@ where
                 return Ok(raw_null());
             };
 
-            if receipt.from() != auth.caller {
+            if !self.can_read(
+                auth.caller,
+                receipt.from(),
+                receipt.block_number().map(BlockId::from),
+            )? {
                 return Ok(raw_null());
             }
 
@@ -1424,15 +1503,44 @@ where
 
             self.enforce_authorized(&mut request, &auth)?;
 
-            let result = EthCall::call(
-                &self.eth.api,
-                request,
-                block,
-                EvmOverrides::state(state_override),
-            )
-            .await
+            let Some(block) = filter_earlier_block(block) else {
+                let result = EthCall::call(
+                    &self.eth.api,
+                    request,
+                    block,
+                    EvmOverrides::state(state_override),
+                )
+                .await
+                .map_err(internal)?;
+                return to_raw(&result);
+            };
+            let result = self
+                .simulate_without_revoked_reads(|revoked| {
+                    let (evm, request) = (self.eth.api.clone(), request.clone());
+                    async move {
+                        let api = &self.eth.api;
+                        let permit = api.acquire_owned_blocking_io().await.map_err(internal)?;
+                        api.spawn_with_call_at(
+                            request,
+                            block,
+                            EvmOverrides::default(),
+                            move |db, evm_env, tx_env| {
+                                let _permit = permit;
+                                let (result, granted) =
+                                    audit_reads(revoked, || evm.transact(db, evm_env, tx_env));
+                                result.map(|result| (result, granted))
+                            },
+                        )
+                        .await
+                        .map_err(internal)
+                    }
+                })
+                .await?;
+            let output = <Api::Error as FromEvmError<Api::Evm>>::ensure_success::<
+                EvmTypesFor<Api::Evm>,
+            >(result.result)
             .map_err(internal)?;
-            to_raw(&result)
+            to_raw(&output)
         })
     }
 
@@ -1450,14 +1558,37 @@ where
 
             self.enforce_authorized(&mut request, &auth)?;
 
-            let result = EthCall::estimate_gas_at(
-                &self.eth.api,
-                request,
-                block.unwrap_or_default(),
-                EvmOverrides::state(state_override),
-            )
-            .await
-            .map_err(internal)?;
+            let Some(block) = filter_earlier_block(block) else {
+                let result = EthCall::estimate_gas_at(
+                    &self.eth.api,
+                    request,
+                    block.unwrap_or_default(),
+                    EvmOverrides::state(state_override),
+                )
+                .await
+                .map_err(internal)?;
+                return to_raw(&result);
+            };
+            let (evm_env, block) = self.eth.api.evm_env_at(block).await.map_err(internal)?;
+            let result = self
+                .simulate_without_revoked_reads(|revoked| {
+                    let (evm_env, request) = (evm_env.clone(), request.clone());
+                    self.eth
+                        .api
+                        .spawn_blocking_io_with_state(block, move |api, state| {
+                            let (result, granted) = audit_reads(revoked, || {
+                                api.estimate_gas_with(
+                                    evm_env,
+                                    request,
+                                    state.into_evm_state_provider(),
+                                    EvmOverrides::default(),
+                                )
+                            });
+                            result.map(|result| (result, granted))
+                        })
+                        .map_err(internal)
+                })
+                .await?;
             to_raw(&result)
         })
     }
@@ -1510,12 +1641,9 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
-            let logs = EthFilterApiServer::logs(&self.eth.filter, filter)
-                .await
-                .map_err(internal)?;
-            let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-            to_raw(&filtered)
+            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &auth.caller)?;
+            let query = EthFilterApiServer::logs(&self.eth.filter, filter).map_err(internal);
+            to_raw(&self.readable_logs(auth.caller, account, query).await?)
         })
     }
 
@@ -1523,61 +1651,49 @@ where
         Box::pin(async move {
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &auth.caller)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            self.filter_owners.lock().await.insert(
+                id.clone(),
+                FilterOwner {
+                    caller: auth.caller,
+                    account: Some(account),
+                },
+            );
             to_raw(&id)
         })
     }
 
     fn get_filter_logs(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            self.ensure_filter_owner(&id, &auth).await?;
-
-            let logs = self
-                .filter()
-                .filter_logs(id)
-                .await
-                .map_err(map_eth_filter_error)?;
-
-            let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-            to_raw(&filtered)
+            let Some(account) = self.ensure_filter_owner(&id, &auth).await? else {
+                // Block filters have no logs, which reth reports as an unknown filter.
+                return Err(filter_not_found_error());
+            };
+            let query = self.filter().filter_logs(id).map_err(map_eth_filter_error);
+            to_raw(&self.readable_logs(auth.caller, account, query).await?)
         })
     }
 
     fn get_filter_changes(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            self.ensure_filter_owner(&id, &auth).await?;
-
+            let account = self.ensure_filter_owner(&id, &auth).await?;
             let changes = self
                 .filter()
                 .filter_changes(id)
-                .await
-                .map_err(map_eth_filter_error)?;
-
-            match changes {
-                FilterChanges::Logs(logs) => {
-                    let filtered = zone_rpc::filter::filter_logs(logs, &auth.caller);
-                    to_raw(&FilterChanges::<
-                        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-                    >::Logs(filtered))
-                }
-                FilterChanges::Hashes(hashes) => to_raw(&FilterChanges::<
-                    alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-                >::Hashes(hashes)),
-                // Pending transaction filters are disabled — return empty if one somehow exists
-                FilterChanges::Transactions(_) => to_raw(
-                    &FilterChanges::<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>::Empty,
-                ),
-                FilterChanges::Empty => to_raw(
-                    &FilterChanges::<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>>::Empty,
-                ),
-            }
+                .map_err(map_eth_filter_error);
+            let Some(account) = account else {
+                // Block filters return public block hashes.
+                return to_raw(&changes.await?);
+            };
+            let query = changes.map_ok(|changes| match changes {
+                FilterChanges::Logs(logs) => logs,
+                // Log filters return nothing but logs.
+                _ => Vec::new(),
+            });
+            to_raw(&self.readable_logs(auth.caller, account, query).await?)
         })
     }
 
@@ -1586,10 +1702,13 @@ where
             let id = EthFilterApiServer::new_block_filter(&self.eth.filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            self.filter_owners.lock().await.insert(
+                id.clone(),
+                FilterOwner {
+                    caller: auth.caller,
+                    account: None,
+                },
+            );
             to_raw(&id)
         })
     }
@@ -1657,7 +1776,7 @@ where
 
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            zone_rpc::filter::scope_filter_for_caller(&mut filter, &caller)?;
+            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &caller)?;
 
             let stream = provider
                 .canonical_state_stream()
@@ -1693,6 +1812,24 @@ where
                             ),
                         }
                     }
+                    // Checked on every update with logs, so a reader stops receiving them once
+                    // revoked.
+                    if !all_logs.is_empty() {
+                        all_logs = ReadAccess::at_latest(api.provider(), caller, account)
+                            .and_then(|access| {
+                                access.map_or(Ok(Vec::new()), |access| {
+                                    access.covered_logs(api.provider(), all_logs)
+                                })
+                            })
+                            .unwrap_or_else(|error| {
+                                tracing::error!(
+                                    target: "rpc",
+                                    %error,
+                                    "Failed to check subscription log read access"
+                                );
+                                Vec::new()
+                            });
+                    }
                     futures::stream::iter(all_logs)
                 });
 
@@ -1703,7 +1840,7 @@ where
             let mut log_redactor = zone_rpc::filter::LogOrderingRedactor::default();
             let stream = stream.filter_map(move |log| {
                 std::future::ready(
-                    zone_rpc::filter::is_log_visible(&log, &caller)
+                    zone_rpc::filter::is_log_visible(&log, &account)
                         .then(|| to_raw(&log_redactor.redact(log))),
                 )
             });
