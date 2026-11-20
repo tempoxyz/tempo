@@ -563,6 +563,16 @@ jobs:
           source_dir: "${{ needs.get-version.outputs.version }}"
           destination_dir: "${{ steps.dest.outputs.dir }}"
 
-      - name: Skip the upload outside tempoxyz/tempo
+      - name: Report the skipped upload outside tempoxyz/tempo
         if: github.repository != 'tempoxyz/tempo'
-        run: echo "::notice::Skipped the R2 upload. The Cloudflare STS upload-binaries policy authorizes only tempoxyz/tempo."
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # tempo-private-fork uploaded to its private sharing path behind
+          # download.tempo.xyz, so fail its release rather than finish green
+          # without the binaries. Other copies never relied on the upload.
+          if [ "$REPOSITORY" = "tempoxyz/tempo-private-fork" ]; then
+            echo "::error::Did not upload this release to R2. The Cloudflare STS upload-binaries policy authorizes only tempoxyz/tempo; tempo-private-fork needs its own policy and a matching guard here."
+            exit 1
+          fi
+          echo "::notice::Skipped the R2 upload. The Cloudflare STS upload-binaries policy authorizes only tempoxyz/tempo."
