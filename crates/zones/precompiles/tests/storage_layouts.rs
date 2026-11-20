@@ -121,9 +121,12 @@ fn zone_outbox_layout_matches_solidity() {
         memo,
         gas_limit,
         fallback_nonce,
+        sender_org,
         callback_data,
         reveal_to
     );
+    // sender_org shares the gas_limit/fallback_nonce slot, so elements keep their pre-T15 size.
+    assert_eq!(SLOT_COUNT, 9, "PendingWithdrawal grew a slot");
     if let Err(errors) = compare_struct_members(&solidity, "_pendingWithdrawals", &pending) {
         panic_layout_mismatch("PendingWithdrawal layout", errors, &path);
     }

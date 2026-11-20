@@ -442,10 +442,12 @@ struct PendingWithdrawal {
     memo: B256,
     gas_limit: u64,
     fallback_nonce: u64,
+    /// The sender's ZoneIdentity org, or 0 for org 0, bounce-backs and unenforced zones. Packed
+    /// into the `gas_limit`/`fallback_nonce` slot, so every element keeps its pre-T15 slot count
+    /// and a pre-T15 push or delete writes exactly what it did before.
+    sender_org: u64,
     callback_data: Bytes,
     reveal_to: Bytes,
-    /// The sender's ZoneIdentity org, or 0 for org 0, bounce-backs and unenforced zones.
-    sender_org: u64,
 }
 
 impl PendingWithdrawal {

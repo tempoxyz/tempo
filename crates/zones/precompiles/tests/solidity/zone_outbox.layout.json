@@ -4,7 +4,7 @@
       "storage-layout": {
         "storage": [
           {
-            "astId": 25,
+            "astId": 27,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "tempoGasRate",
             "offset": 0,
@@ -12,7 +12,7 @@
             "type": "t_uint128"
           },
           {
-            "astId": 27,
+            "astId": 29,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "nextWithdrawalIndex",
             "offset": 16,
@@ -20,7 +20,7 @@
             "type": "t_uint64"
           },
           {
-            "astId": 29,
+            "astId": 31,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_withdrawalQueueHash",
             "offset": 0,
@@ -28,7 +28,7 @@
             "type": "t_bytes32"
           },
           {
-            "astId": 31,
+            "astId": 33,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_withdrawalBatchIndex",
             "offset": 0,
@@ -36,7 +36,7 @@
             "type": "t_uint64"
           },
           {
-            "astId": 33,
+            "astId": 35,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "maxWithdrawalsPerBlock",
             "offset": 8,
@@ -44,7 +44,7 @@
             "type": "t_uint32"
           },
           {
-            "astId": 35,
+            "astId": 37,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_withdrawalsThisBlock",
             "offset": 12,
@@ -52,7 +52,7 @@
             "type": "t_uint32"
           },
           {
-            "astId": 37,
+            "astId": 39,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_currentBlockNumber",
             "offset": 16,
@@ -60,7 +60,7 @@
             "type": "t_uint64"
           },
           {
-            "astId": 39,
+            "astId": 41,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "lastFinalizedTimestamp",
             "offset": 24,
@@ -68,15 +68,15 @@
             "type": "t_uint64"
           },
           {
-            "astId": 43,
+            "astId": 45,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_pendingWithdrawals",
             "offset": 0,
             "slot": "3",
-            "type": "t_array(t_struct(PendingWithdrawal)22_storage)dyn_storage"
+            "type": "t_array(t_struct(PendingWithdrawal)24_storage)dyn_storage"
           },
           {
-            "astId": 45,
+            "astId": 47,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "lastFallbackNonce",
             "offset": 0,
@@ -84,7 +84,7 @@
             "type": "t_uint64"
           },
           {
-            "astId": 49,
+            "astId": 51,
             "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
             "label": "_zoneFallbackRecipients",
             "offset": 0,
@@ -98,8 +98,8 @@
             "label": "address",
             "numberOfBytes": "20"
           },
-          "t_array(t_struct(PendingWithdrawal)22_storage)dyn_storage": {
-            "base": "t_struct(PendingWithdrawal)22_storage",
+          "t_array(t_struct(PendingWithdrawal)24_storage)dyn_storage": {
+            "base": "t_struct(PendingWithdrawal)24_storage",
             "encoding": "dynamic_array",
             "label": "struct PendingWithdrawal[]",
             "numberOfBytes": "32"
@@ -121,7 +121,7 @@
             "numberOfBytes": "32",
             "value": "t_address"
           },
-          "t_struct(PendingWithdrawal)22_storage": {
+          "t_struct(PendingWithdrawal)24_storage": {
             "encoding": "inplace",
             "label": "struct PendingWithdrawal",
             "members": [
@@ -192,13 +192,21 @@
               {
                 "astId": 19,
                 "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "senderOrg",
+                "offset": 16,
+                "slot": "6",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 21,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
                 "label": "callbackData",
                 "offset": 0,
                 "slot": "7",
                 "type": "t_bytes_storage"
               },
               {
-                "astId": 21,
+                "astId": 23,
                 "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
                 "label": "revealTo",
                 "offset": 0,
