@@ -217,12 +217,9 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a user-supplied filter to whitelisted event topics and to one account named in an
-/// eligible indexed topic before backend log retrieval, and returns that account.
-///
-/// The account is the authenticated `caller` when topic1 or topic2 names it, and otherwise the
-/// only address topic1, or failing that topic2, names. It does not check that `caller` may read
-/// that account's logs.
+/// Scopes a user-supplied filter to whitelisted topics and one account, which it returns: `caller`
+/// if topic1 or topic2 names it, else the only address in topic1, then topic2. Does not check that
+/// `caller` may read that account.
 pub fn scope_filter_to_account(
     filter: &mut Filter,
     caller: &Address,

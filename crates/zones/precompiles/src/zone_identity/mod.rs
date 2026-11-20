@@ -269,7 +269,7 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// Whether `reader` is `account` or its org's admin or reader, outside org 0 and not denied.
+    /// Whether `reader` is `account` or its org's admin or reader, outside org 0, unless audited.
     pub fn can_read(&self, reader: Address, account: Address) -> crate::Result<bool> {
         if reader == account {
             return Ok(true);
@@ -288,7 +288,7 @@ impl ZoneIdentity {
             let listed = org.readers[epoch][reader].read()?;
             let may_read = member.org != 0 && (reader == admin || listed);
             #[cfg(feature = "std")]
-            let may_read = may_read && reads::admit(DelegatedRead { reader, account });
+            let may_read = reads::admit(DelegatedRead { reader, account }, may_read);
             Ok((member, may_read))
         })
     }
@@ -479,7 +479,10 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, map::HashSet};
+    use alloy_primitives::{
+        Address,
+        map::{HashMap, HashSet},
+    };
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
@@ -784,17 +787,19 @@ mod tests {
                     "{reader} reads {account}"
                 );
             }
-            // Denied reads are refused, also through `orgOf`, and the others returned as granted.
+            // Decided reads override `ZoneIdentity`, even via `orgOf`. Others come back undecided.
             let alice = Member { org, frozen: false };
-            let denied = DelegatedRead {
-                reader: admin,
+            let read = |reader| DelegatedRead {
+                reader,
                 account: ALICE,
             };
-            let ((), granted) = audit_reads(HashSet::from_iter([denied]), || {
+            let decided = HashMap::from_iter([(read(admin), false), (read(BOB), true)]);
+            let ((), undecided) = audit_reads(decided, || {
                 assert!(identity.can_read(ALICE, ALICE).unwrap());
                 assert!(!identity.can_read(admin, ALICE).unwrap());
+                assert!(identity.can_read(BOB, ALICE).unwrap());
                 assert!(identity.can_read(auditor, ALICE).unwrap());
-                assert!(!identity.can_read(BOB, ALICE).unwrap());
+                assert_eq!(identity.org_of(ALICE, registrar, ALICE), Ok(alice));
                 assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(alice));
                 assert_eq!(
                     identity.org_of(admin, registrar, ALICE),
@@ -802,11 +807,8 @@ mod tests {
                 );
             });
             assert_eq!(
-                granted,
-                HashSet::from_iter([DelegatedRead {
-                    reader: auditor,
-                    account: ALICE
-                }])
+                undecided,
+                HashSet::from_iter([read(auditor), read(registrar)])
             );
             assert!(identity.can_read(admin, ALICE).unwrap());
 

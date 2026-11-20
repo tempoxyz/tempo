@@ -316,7 +316,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         let pending = admin.send(ZONE_IDENTITY_ADDRESS, call).await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
-    let members_block = zone.provider().get_block_number().await?;
     let alice_org = alice.identity().orgOf(alice.address).call().await?;
     assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
     // Membership is private to the account, its org's admin and the registrar.
@@ -493,11 +492,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     };
     let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, add_reader).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
-    let named_block = zone.provider().get_block_number().await?;
-    let named = format!("{named_block:#x}");
-    let to_carol = alice.transfer(carol.address, 1).await?;
-    let named_tx = *to_carol.tx_hash();
-    assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     let reads = [
         (&admin_a, alice.address, true),
         (&auditor, alice.address, true),
@@ -527,7 +521,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         zone_portal: Address::ZERO,
     };
     let redacted = start_redacted_rpc_url(&zone, config).await?;
-    // The redacted RPC's JSON-RPC response to `method` from signer `index`.
     let rpc = async |index: u32, method: &str, params: serde_json::Value| {
         let token = build_auth_token(&signer_at(index), 0, chain_id);
         eyre::Ok(
@@ -567,8 +560,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
             );
         }
     }
-    // At `block`, Alice's admin reads her balance and the reader does not.
-    let assert_history = async |block: &str| {
+    let assert_history = async |block: &str, reader_reads: bool| {
         let own = read(163, "eth_getBalance", alice.address, block).await?;
         assert_ne!(own, U256::ZERO);
         assert_eq!(
@@ -577,14 +569,12 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         );
         assert_eq!(
             read(170, "eth_getBalance", alice.address, block).await?,
-            U256::ZERO
+            if reader_reads { own } else { U256::ZERO }
         );
         eyre::Ok(())
     };
-    // Reads are checked at the requested block: the reader may not read Alice from before it was
-    // named, while the admin already could.
-    assert_history(&before_reader).await?;
-    // Alice's transactions and receipts follow the same rule at the transaction's block.
+    // A reader reads all of Alice's history, including from before it was named.
+    assert_history(&before_reader, true).await?;
     let assert_tx = async |hash: B256, index: u32, readable: bool| {
         for method in ["eth_getTransactionByHash", "eth_getTransactionReceipt"] {
             let body = rpc(index, method, serde_json::json!([hash])).await?;
@@ -596,17 +586,9 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         }
         eyre::Ok(())
     };
-    for (hash, index, readable) in [
-        (before_reader_tx, 163, true),
-        (before_reader_tx, 161, true),
-        (before_reader_tx, 170, false),
-        (before_reader_tx, 162, false),
-        (named_tx, 170, true),
-        (named_tx, 162, false),
-    ] {
-        assert_tx(hash, index, readable).await?;
+    for (index, readable) in [(163, true), (161, true), (170, true), (162, false)] {
+        assert_tx(before_reader_tx, index, readable).await?;
     }
-    // So do the logs of Alice's transfers.
     let new_filter = serde_json::json!({
         "address": PATH_USD_ADDRESS,
         "topics": [ITIP20::Transfer::SIGNATURE_HASH, alice.address.into_word()],
@@ -618,22 +600,14 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         eyre::Ok(serde_json::from_value::<Vec<Log>>(body["result"].clone())?)
     };
     let own_logs = alice_logs(163).await?;
-    let hashes = own_logs
-        .iter()
-        .filter_map(|log| log.transaction_hash)
-        .collect::<Vec<_>>();
-    assert!(hashes.contains(&before_reader_tx) && hashes.contains(&named_tx));
-    let own_logs_since = |block: u64| {
+    assert!(
         own_logs
             .iter()
-            .filter(|log| log.block_number >= Some(block))
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(alice_logs(161).await?, own_logs_since(members_block));
-    assert_eq!(alice_logs(170).await?, own_logs_since(named_block));
+            .any(|log| log.transaction_hash == Some(before_reader_tx))
+    );
+    assert_eq!(alice_logs(161).await?, own_logs);
+    assert_eq!(alice_logs(170).await?, own_logs);
     assert_eq!(alice_logs(162).await?, []);
-    // A log filter the reader polls returns Alice's new logs.
     let filter_id =
         rpc(170, "eth_newFilter", serde_json::json!([new_filter])).await?["result"].clone();
     let filter_changes = async || {
@@ -645,13 +619,12 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         hashes.dedup();
         eyre::Ok(hashes)
     };
-    // The first poll covers the block the filter was installed at.
-    assert_eq!(filter_changes().await?, [named_tx]);
+    // The first poll covers the install block, which has no Alice transfer.
+    assert_eq!(filter_changes().await?, Vec::<B256>::new());
     let to_carol = alice.transfer(carol.address, 1).await?;
     let polled_tx = *to_carol.tx_hash();
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     assert_eq!(filter_changes().await?, [polled_tx]);
-    // eth_call and eth_estimateGas at an earlier block apply the same rule to precompile getters.
     let balance_of_alice = ITIP20::balanceOfCall {
         account: alice.address,
     };
@@ -671,10 +644,9 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         );
         eyre::Ok(())
     };
-    assert_call("eth_call", 170, &named, true).await?;
-    assert_call("eth_call", 170, &before_reader, false).await?;
+    assert_call("eth_call", 170, &before_reader, true).await?;
 
-    // Removing the reader also revokes its reads of blocks where it was named.
+    // Removing the reader revokes its reads of every block.
     let remove_reader = IZoneIdentity::setReaderCall {
         orgId: org_a,
         reader: auditor.address,
@@ -682,22 +654,22 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     };
     let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, remove_reader).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
-    assert_history(&named).await?;
-    assert_tx(named_tx, 170, false).await?;
-    assert_tx(named_tx, 161, true).await?;
+    assert_history(&before_reader, false).await?;
+    assert_tx(before_reader_tx, 170, false).await?;
+    assert_tx(before_reader_tx, 161, true).await?;
     assert_eq!(alice_logs(170).await?, []);
     let to_carol = alice.transfer(carol.address, 1).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     assert_eq!(filter_changes().await?, Vec::<B256>::new());
     for (method, index, block, allowed) in [
-        ("eth_call", 163, named.as_str(), true),
-        ("eth_call", 161, named.as_str(), true),
-        ("eth_call", 170, named.as_str(), false),
+        ("eth_call", 163, before_reader.as_str(), true),
+        ("eth_call", 161, before_reader.as_str(), true),
+        ("eth_call", 170, before_reader.as_str(), false),
         ("eth_call", 161, "latest", true),
         ("eth_call", 170, "latest", false),
-        ("eth_estimateGas", 163, named.as_str(), true),
-        ("eth_estimateGas", 161, named.as_str(), true),
-        ("eth_estimateGas", 170, named.as_str(), false),
+        ("eth_estimateGas", 163, before_reader.as_str(), true),
+        ("eth_estimateGas", 161, before_reader.as_str(), true),
+        ("eth_estimateGas", 170, before_reader.as_str(), false),
     ] {
         assert_call(method, index, block, allowed).await?;
     }

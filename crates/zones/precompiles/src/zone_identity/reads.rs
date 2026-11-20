@@ -1,8 +1,11 @@
-//! Auditing of the delegated reads `ZoneIdentity` grants while simulating at an earlier block.
+//! Deciding the delegated reads `ZoneIdentity` answers while simulating at an earlier block.
 
 use core::cell::RefCell;
 
-use alloy_primitives::{Address, map::HashSet};
+use alloy_primitives::{
+    Address,
+    map::{HashMap, HashSet},
+};
 
 std::thread_local! {
     /// State of the [`audit_reads`] call running on this thread.
@@ -18,53 +21,53 @@ pub struct DelegatedRead {
     pub account: Address,
 }
 
-/// Runs `f` with the `denied` reads refused, returning its output and the delegated reads granted.
-/// For simulations at an earlier block only. Calls must not nest.
+/// Runs `f` with delegated reads answered by `decided`, else by `ZoneIdentity`, also returning the
+/// reads `decided` lacked. For simulations at an earlier block only. Calls must not nest.
 pub fn audit_reads<R>(
-    denied: HashSet<DelegatedRead>,
+    decided: HashMap<DelegatedRead, bool>,
     f: impl FnOnce() -> R,
 ) -> (R, HashSet<DelegatedRead>) {
-    let guard = AuditGuard::start(denied);
-    let output = f();
-    (output, guard.finish())
+    let guard = AuditGuard::start(decided);
+    (f(), guard.finish())
 }
 
-/// Whether an allowed `read` proceeds: false if denied, else recorded as granted.
-pub(super) fn admit(read: DelegatedRead) -> bool {
+/// Whether `read` proceeds: its decided answer, else `allowed`, recording it as undecided.
+pub(super) fn admit(read: DelegatedRead, allowed: bool) -> bool {
     AUDIT.with_borrow_mut(|audit| match audit {
-        None => true,
-        Some(audit) if audit.denied.contains(&read) => false,
-        Some(audit) => {
-            audit.granted.insert(read);
-            true
+        // Reading one's own account is not delegated.
+        Some(audit) if read.reader != read.account => {
+            audit.decided.get(&read).copied().unwrap_or_else(|| {
+                audit.undecided.insert(read);
+                allowed
+            })
         }
+        _ => allowed,
     })
 }
 
 /// State of an [`audit_reads`] call.
 struct Audit {
-    denied: HashSet<DelegatedRead>,
-    granted: HashSet<DelegatedRead>,
+    decided: HashMap<DelegatedRead, bool>,
+    undecided: HashSet<DelegatedRead>,
 }
 
 /// This thread's [`Audit`] while alive. Clears it on drop, so a panic leaves none behind.
 struct AuditGuard;
 
 impl AuditGuard {
-    fn start(denied: HashSet<DelegatedRead>) -> Self {
+    fn start(decided: HashMap<DelegatedRead, bool>) -> Self {
         AUDIT.with_borrow_mut(|audit| {
             debug_assert!(audit.is_none(), "`audit_reads` calls must not nest");
             *audit = Some(Audit {
-                denied,
-                granted: Default::default(),
+                decided,
+                undecided: Default::default(),
             });
         });
         Self
     }
 
-    /// Ends the audit, returning the reads it granted.
     fn finish(self) -> HashSet<DelegatedRead> {
-        AUDIT.take().expect("set until the guard drops").granted
+        AUDIT.take().expect("set until the guard drops").undecided
     }
 }
 

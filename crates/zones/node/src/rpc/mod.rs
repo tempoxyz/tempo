@@ -53,7 +53,7 @@ use reth_rpc_eth_types::{
     logs_utils,
 };
 use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
-use reth_storage_api::{BlockIdReader, BlockReaderIdExt, StateProvider as _, StateProviderFactory};
+use reth_storage_api::{BlockReaderIdExt, StateProvider as _, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -930,8 +930,8 @@ const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 /// waiting on an unresponsive Tempo RPC.
 const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Most runs of one simulation at an earlier block, each revoking more delegated reads.
-const MAX_REVOKED_READ_PASSES: usize = 8;
+/// Most runs of one simulation at an earlier block, each deciding more delegated reads.
+const MAX_SIMULATION_PASSES: usize = 8;
 
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
@@ -1017,10 +1017,8 @@ async fn prune_filter_owners<Api: EthApiTypes + 'static>(
 ///
 /// - **Block redaction** — zeroing `logsBloom` and clearing transaction
 ///   lists on the redacted RPC.
-/// - **Account-scoped access** — returning `null` for transactions and
-///   receipts, `0x0` for balances and nonces, and no logs, unless the
-///   authenticated caller is the account or may read it through
-///   `ZoneIdentity` per [`ReadAccess`].
+/// - **Account-scoped access** — `null`, `0x0` or no logs unless the
+///   authenticated caller may read the account per [`ReadAccess`].
 /// - **`from`-enforcement** — `eth_call` / `eth_estimateGas` may only
 ///   simulate from the authenticated account (`-32004` on mismatch,
 ///   auto-set when omitted); state overrides are rejected (`-32602`).
@@ -1174,29 +1172,24 @@ where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
     Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
-    /// Whether `reader` may read `account`'s balance, nonce or transactions at `block`, or at the
-    /// latest block when it is omitted or pending, per [`ReadAccess`].
-    fn can_read(
+    /// The block to serve `account`'s balance or nonce to `reader` at, or `None` if unreadable.
+    /// Delegated `latest` reads stay at the block their access was checked at.
+    fn readable_block(
         &self,
         reader: Address,
         account: Address,
         block: Option<BlockId>,
-    ) -> Result<bool, JsonRpcError> {
-        let provider = self.eth.api.provider();
-        let Some(access) = self.read_access(reader, account)? else {
-            return Ok(false);
-        };
-        let Some(block) = filter_earlier_block(block) else {
-            return Ok(true);
-        };
-        // An unknown block is the account's own error to see.
-        let Some(block) = provider.block_number_for_id(block).map_err(internal)? else {
-            return Ok(access == ReadAccess::Own);
-        };
-        access.covers(provider, block).map_err(eyre_internal)
+    ) -> Result<Option<BlockId>, JsonRpcError> {
+        Ok(self
+            .read_access(reader, account)?
+            .map(|access| match access {
+                ReadAccess::Own => block.unwrap_or_default(),
+                ReadAccess::Delegated { latest } => {
+                    filter_earlier_block(block).unwrap_or(latest.into())
+                }
+            }))
     }
 
-    /// [`ReadAccess::at_latest`] of `reader` to `account`.
     fn read_access(
         &self,
         reader: Address,
@@ -1205,59 +1198,43 @@ where
         ReadAccess::at_latest(self.eth.api.provider(), reader, account).map_err(eyre_internal)
     }
 
-    /// `account`'s logs from `query` that `reader` may read, with their ordering redacted.
-    /// `query` runs only with access at the latest block, so its cost reveals nothing otherwise.
+    /// `account`'s redacted logs from `query` if `reader` may read them, else none, unqueried.
     async fn readable_logs(
         &self,
         reader: Address,
         account: Address,
         query: impl Future<Output = Result<Vec<Log>, JsonRpcError>>,
     ) -> Result<Vec<Log>, JsonRpcError> {
-        let Some(access) = self.read_access(reader, account)? else {
+        if self.read_access(reader, account)?.is_none() {
             return Ok(Vec::new());
-        };
-        let logs = query.await?;
-        // Only delegated access reads state per block.
-        let logs = match access {
-            ReadAccess::Own => logs,
-            access => self
-                .eth
-                .api
-                .spawn_blocking_io(move |api| Ok(access.covered_logs(api.provider(), logs)))
-                .await
-                .map_err(internal)?
-                .map_err(eyre_internal)?,
-        };
-        Ok(zone_rpc::filter::filter_logs(logs, &account))
+        }
+        Ok(zone_rpc::filter::filter_logs(query.await?, &account))
     }
 
-    /// Reruns `simulate`, a simulation at an earlier block, with the delegated reads the latest
-    /// block no longer allows revoked, until it is granted none. Fails after
-    /// [`MAX_REVOKED_READ_PASSES`] runs.
-    async fn simulate_without_revoked_reads<T, TFuture>(
+    /// Runs `simulate` at an earlier block with delegated reads decided at the latest block,
+    /// rerunning it while new reads remain undecided.
+    async fn simulate_with_latest_reads<T, TFuture>(
         &self,
-        mut simulate: impl FnMut(alloy_primitives::map::HashSet<DelegatedRead>) -> TFuture,
+        mut simulate: impl FnMut(alloy_primitives::map::HashMap<DelegatedRead, bool>) -> TFuture,
     ) -> Result<T, JsonRpcError>
     where
         TFuture: Future<
             Output = Result<(T, alloy_primitives::map::HashSet<DelegatedRead>), JsonRpcError>,
         >,
     {
-        let mut revoked = alloy_primitives::map::HashSet::default();
-        for _ in 0..MAX_REVOKED_READ_PASSES {
-            let (output, granted) = simulate(revoked.clone()).await?;
-            let revoked_before = revoked.len();
-            for read in granted {
-                if self.read_access(read.reader, read.account)?.is_none() {
-                    revoked.insert(read);
-                }
-            }
-            if revoked.len() == revoked_before {
+        let mut decided = alloy_primitives::map::HashMap::default();
+        for _ in 0..MAX_SIMULATION_PASSES {
+            let (output, undecided) = simulate(decided.clone()).await?;
+            if undecided.is_empty() {
                 return Ok(output);
+            }
+            for read in undecided {
+                let readable = self.read_access(read.reader, read.account)?.is_some();
+                decided.insert(read, readable);
             }
         }
         Err(JsonRpcError::internal(
-            "simulation reads too many accounts it may no longer read",
+            "simulation makes too many delegated reads",
         ))
     }
 }
@@ -1400,10 +1377,10 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block)? {
+            let Some(block) = self.readable_block(auth.caller, address, block)? else {
                 return Ok(raw_zero());
-            }
-            let balance = EthState::balance(&self.eth.api, address, block)
+            };
+            let balance = EthState::balance(&self.eth.api, address, Some(block))
                 .await
                 .map_err(internal)?;
             to_raw(&balance)
@@ -1418,10 +1395,10 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             // Silent dummy: unreadable addresses get "0x0" to avoid leaking account existence.
-            if !self.can_read(auth.caller, address, block)? {
+            let Some(block) = self.readable_block(auth.caller, address, block)? else {
                 return Ok(raw_zero());
-            }
-            let count = EthState::transaction_count(&self.eth.api, address, block)
+            };
+            let count = EthState::transaction_count(&self.eth.api, address, Some(block))
                 .await
                 .map_err(internal)?;
             to_raw(&count)
@@ -1454,7 +1431,7 @@ where
                 return Ok(raw_null());
             };
 
-            if !self.can_read(auth.caller, tx.from(), tx.block_number.map(BlockId::from))? {
+            if self.read_access(auth.caller, tx.from())?.is_none() {
                 return Ok(raw_null());
             }
 
@@ -1475,11 +1452,7 @@ where
                 return Ok(raw_null());
             };
 
-            if !self.can_read(
-                auth.caller,
-                receipt.from(),
-                receipt.block_number().map(BlockId::from),
-            )? {
+            if self.read_access(auth.caller, receipt.from())?.is_none() {
                 return Ok(raw_null());
             }
 
@@ -1515,7 +1488,7 @@ where
                 return to_raw(&result);
             };
             let result = self
-                .simulate_without_revoked_reads(|revoked| {
+                .simulate_with_latest_reads(|decided| {
                     let (evm, request) = (self.eth.api.clone(), request.clone());
                     async move {
                         let api = &self.eth.api;
@@ -1526,9 +1499,9 @@ where
                             EvmOverrides::default(),
                             move |db, evm_env, tx_env| {
                                 let _permit = permit;
-                                let (result, granted) =
-                                    audit_reads(revoked, || evm.transact(db, evm_env, tx_env));
-                                result.map(|result| (result, granted))
+                                let (result, undecided) =
+                                    audit_reads(decided, || evm.transact(db, evm_env, tx_env));
+                                result.map(|result| (result, undecided))
                             },
                         )
                         .await
@@ -1571,12 +1544,12 @@ where
             };
             let (evm_env, block) = self.eth.api.evm_env_at(block).await.map_err(internal)?;
             let result = self
-                .simulate_without_revoked_reads(|revoked| {
+                .simulate_with_latest_reads(|decided| {
                     let (evm_env, request) = (evm_env.clone(), request.clone());
                     self.eth
                         .api
                         .spawn_blocking_io_with_state(block, move |api, state| {
-                            let (result, granted) = audit_reads(revoked, || {
+                            let (result, undecided) = audit_reads(decided, || {
                                 api.estimate_gas_with(
                                     evm_env,
                                     request,
@@ -1584,7 +1557,7 @@ where
                                     EvmOverrides::default(),
                                 )
                             });
-                            result.map(|result| (result, granted))
+                            result.map(|result| (result, undecided))
                         })
                         .map_err(internal)
                 })
@@ -1669,7 +1642,7 @@ where
     fn get_filter_logs(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
             let Some(account) = self.ensure_filter_owner(&id, &auth).await? else {
-                // Block filters have no logs, which reth reports as an unknown filter.
+                // reth reports a block filter's logs as an unknown filter.
                 return Err(filter_not_found_error());
             };
             let query = self.filter().filter_logs(id).map_err(map_eth_filter_error);
@@ -1690,7 +1663,6 @@ where
             };
             let query = changes.map_ok(|changes| match changes {
                 FilterChanges::Logs(logs) => logs,
-                // Log filters return nothing but logs.
                 _ => Vec::new(),
             });
             to_raw(&self.readable_logs(auth.caller, account, query).await?)
@@ -1812,23 +1784,20 @@ where
                             ),
                         }
                     }
-                    // Checked on every update with logs, so a reader stops receiving them once
-                    // revoked.
-                    if !all_logs.is_empty() {
-                        all_logs = ReadAccess::at_latest(api.provider(), caller, account)
-                            .and_then(|access| {
-                                access.map_or(Ok(Vec::new()), |access| {
-                                    access.covered_logs(api.provider(), all_logs)
-                                })
-                            })
+                    // Rechecked per update, so a revoked reader stops receiving logs.
+                    if !all_logs.is_empty()
+                        && ReadAccess::at_latest(api.provider(), caller, account)
                             .unwrap_or_else(|error| {
                                 tracing::error!(
                                     target: "rpc",
                                     %error,
                                     "Failed to check subscription log read access"
                                 );
-                                Vec::new()
-                            });
+                                None
+                            })
+                            .is_none()
+                    {
+                        all_logs.clear();
                     }
                     futures::stream::iter(all_logs)
                 });

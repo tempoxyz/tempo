@@ -68,7 +68,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getBalance(address, block)` — returns the balance of an account.
     ///
-    /// Returns `0x0` when `auth.caller` may not read the account at `block`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_balance(
         &self,
         address: Address,
@@ -78,7 +78,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getTransactionCount(address, block)` — returns the nonce.
     ///
-    /// Returns `0x0` when `auth.caller` may not read the account at `block`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_transaction_count(
         &self,
         address: Address,
@@ -99,12 +99,12 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getTransactionByHash(hash)` — returns a transaction by hash.
     ///
-    /// Returns `null` when `auth.caller` may not read the sender at the transaction's block.
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_by_hash(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getTransactionReceipt(hash)` — returns a transaction receipt.
     ///
-    /// Returns `null` when `auth.caller` may not read the sender at the transaction's block.
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_receipt(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_call(request, block, state_override)` — executes a call without
@@ -153,7 +153,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     fn fill_transaction(&self, request: TempoTransactionRequest, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getLogs(filter)` — returns logs matching the filter, scoped to one account the caller
-    /// may read, from the blocks where it may read it.
+    /// may read.
     fn get_logs(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_newFilter(filter)` — creates a new log filter, scoped like
