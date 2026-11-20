@@ -13,13 +13,13 @@ use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::page
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::{consensus::application::TempoApplication, epoch::scheme_provider::SchemeProvider};
+use crate::{alias, epoch::scheme_provider::SchemeProvider};
 
 pub(crate) struct Config<TContext, TBlocker>
 where
     TContext: Rng + Spawner + Metrics + Clock,
 {
-    pub(crate) application: TempoApplication<TContext>,
+    pub(crate) application: alias::marshal::Deferred<TContext>,
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,

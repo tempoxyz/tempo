@@ -10,8 +10,7 @@ use std::{
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
-    Reporters,
-    marshal::{self, standard::Deferred},
+    Reporters, marshal,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
@@ -313,7 +312,7 @@ where
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let deferred = Deferred::new(
+        let deferred = alias::marshal::Deferred::new(
             context.child("application"),
             application.clone(),
             marshal_mailbox.clone(),

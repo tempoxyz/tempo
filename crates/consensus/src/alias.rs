@@ -49,6 +49,16 @@ pub(crate) mod marshal {
 
     pub(crate) type Mailbox = core::Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>;
 
+    /// Tempo's application in commonware's deferred verification wrapper, as
+    /// every epoch's simplex engine uses it.
+    pub(crate) type Deferred<TContext> = marshal::standard::Deferred<
+        TContext,
+        Scheme<PublicKey, MinSig>,
+        crate::consensus::application::Inner,
+        Block,
+        FixedEpocher,
+    >;
+
     /// Settings shared by both engines when initializing the marshal actor
     /// and its backing finalized-blocks store.
     pub(crate) struct Config {
