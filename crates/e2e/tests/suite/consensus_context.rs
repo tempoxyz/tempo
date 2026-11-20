@@ -13,7 +13,7 @@ use crate::{Setup, metrics::wait_for_height, setup_validators};
 #[test_traced]
 fn verification_across_epochs() {
     let _ = tempo_eyre::install();
-    let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(10);
+    let setup = Setup::new().epoch_length(10);
     let cfg = deterministic::Config::default()
         .with_seed(setup.seed)
         .with_timeout(Some(Duration::from_secs(60)));
@@ -38,10 +38,7 @@ fn verification_across_epochs() {
 fn blocks_have_consensus_context() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
-        .epoch_length(100)
-        .seed(0);
+    let setup = Setup::new().how_many_signers(4).epoch_length(100).seed(0);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);

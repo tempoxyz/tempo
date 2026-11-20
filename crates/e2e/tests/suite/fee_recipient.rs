@@ -18,7 +18,7 @@ const UPDATED_FEE_RECIPIENT: Address = Address::repeat_byte(0xAB);
 fn block_beneficiary_follows_v2_fee_recipient() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(1)
         .epoch_length(100)
         .fee_recipient(ORIGINAL_FEE_RECIPIENT)

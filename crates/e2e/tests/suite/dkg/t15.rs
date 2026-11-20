@@ -27,7 +27,7 @@ fn validators_agree_on_boundary_outcomes_across_t15() {
     // takes on the runner. Three validators tolerate no fault, so every block
     // needs all of them and none can fall behind while the others finish
     // epoch 1.
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(3)
         .epoch_length(EPOCH_LENGTH)
         .t15_time(u64::MAX);

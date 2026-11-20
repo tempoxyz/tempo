@@ -31,7 +31,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    VerificationMode, alias,
+    alias,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -71,7 +71,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub mailbox_size: NonZeroUsize,
     pub max_peers: NonZeroU32,
     pub deque_size: usize,
-    pub verification_mode: VerificationMode,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
     ///
@@ -318,8 +317,6 @@ where
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
-            execution_node.chain_spec(),
-            self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {

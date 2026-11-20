@@ -335,7 +335,7 @@ impl Inner {
         let proposer = &context.leader;
 
         // Commonware's Deferred wrapper already checks the embedded consensus
-        // context, but Inline (immediate mode) does not, so we must check it here.
+        // context; check it here too so verification does not depend on the wrapper.
         let ctx = block
             .header()
             .consensus_context
