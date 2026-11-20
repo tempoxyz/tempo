@@ -10,14 +10,13 @@ use alloy::{
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
     },
-    rpc::types::{BlockId, BlockNumberOrTag, Filter, TransactionReceipt},
+    rpc::types::{BlockId, Filter, TransactionReceipt},
     signers::local::PrivateKeySigner,
     sol_types::SolEvent as _,
     transports::{TransportError, http::reqwest},
 };
 use antithesis_sdk::{
-    assert_always, assert_reachable, assert_sometimes, assert_sometimes_greater_than,
-    random::get_random,
+    assert_always, assert_sometimes, assert_sometimes_greater_than, random::get_random,
 };
 use clap::Parser as _;
 use eyre::{OptionExt as _, WrapErr as _, eyre};
@@ -26,18 +25,22 @@ use std::{path::PathBuf, time::Duration};
 use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
     zones::{
-        DepositPayload, IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState,
-        ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
+        DepositPayload, IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZonePortal,
     },
 };
 use tempo_primitives::transaction::calc_gas_balance_spending;
 use zone_precompiles::ecies::encrypt_deposit;
-use zone_rpc::types::SetLeaderResponse;
 
+use intents::{Chain, Effect};
 use ledger::{Account, Lease, Ledger, Record};
 
 mod checks;
+mod handoff;
+mod intents;
 mod ledger;
+mod outage;
+mod recovery;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -108,6 +111,10 @@ struct Antithesis {
     #[arg(long, env = "WORKLOAD_STATE_DIR", default_value = "/state")]
     state_dir: PathBuf,
 
+    /// Shared test-only sequencer supervisor control directory.
+    #[arg(long, env = "FAULT_CONTROL_DIR", default_value = "/fault-control")]
+    fault_control_dir: PathBuf,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -134,26 +141,69 @@ enum Command {
     /// After a fault-free completion: `check-settled`, then each account's zone balance equals
     /// the transfers its zone logs record.
     CheckLedger,
+    /// After faults stop, reconcile all intents and prove a fresh canary settles canonically.
+    RecoveryProbe,
+    /// Proves backup availability or leader recovery after restart, then fresh victim attestation.
+    SingleSequencerOutage {
+        /// Omitted randomly chooses backup availability or leader restart recovery with admin handoff.
+        #[arg(long, value_enum)]
+        case: Option<outage::Case>,
+    },
+    /// Releases intentional process holds left by an interrupted serial command.
+    ReleaseOutages,
 }
 
 impl Antithesis {
     async fn run(self) -> eyre::Result<()> {
         antithesis_sdk::antithesis_init();
         let ctx = Context::init(&self).await?;
+        // Terminal commands can follow SIGKILL: Drop did not run, so release holds first.
+        // The same lock excludes an in-flight outage and leadership changes until checks finish.
+        let _episode = if matches!(
+            self.command,
+            Command::RecoveryProbe
+                | Command::CheckSettled
+                | Command::CheckLedger
+                | Command::ReleaseOutages
+        ) {
+            let lock = ctx.ledger.episode_lock(true).await?;
+            ctx.release_outages(&self.fault_control_dir).await?;
+            Some(lock)
+        } else {
+            None
+        };
+        // Recovery/check commands own their deadline and reconciliation pass.
+        if matches!(
+            self.command,
+            Command::Seed
+                | Command::Deposit
+                | Command::Transfer
+                | Command::Withdraw
+                | Command::Fanout
+        ) && !ctx.reconcile_intents().await?
+        {
+            println!("some payment intents remain unresolved; their senders stay reserved");
+        }
         let driver = match self.command {
             Command::Seed => return ctx.seed().await,
             Command::CheckConsistency => return ctx.check_consistency().await,
             Command::CheckSettled => return ctx.check_settled().await,
             Command::CheckLedger => return ctx.check_ledger().await,
+            Command::RecoveryProbe => return ctx.recovery_probe().await,
+            Command::SingleSequencerOutage { case } => {
+                return ctx
+                    .single_sequencer_outage(&self.fault_control_dir, case)
+                    .await;
+            }
+            Command::ReleaseOutages => return Ok(()),
             Command::Deposit => ctx.deposit().await,
             Command::Transfer => ctx.transfer().await,
             Command::Withdraw => ctx.withdraw().await,
             Command::Fanout => ctx.fanout().await,
             Command::RotateLeader => ctx.rotate_leader().await,
         };
-        // Under faults, or on a node that lags the sequencer, a send can be rejected (nonce too
-        // low) or never confirm. Drivers record only confirmed operations, so such an RPC error
-        // ends the run without failing the command. Any other error still fails it.
+        // RPC failures leave durable intents unresolved, including nonce-too-low responses.
+        // Only a mined receipt can distinguish success from revert. Other errors fail the run.
         match driver {
             Err(error) if is_rpc_error(&error) => {
                 println!("driver gave up: {error:#}");
@@ -204,12 +254,20 @@ impl Context {
     }
 
     async fn seed(&self) -> eyre::Result<()> {
-        futures::future::try_join_all(
-            FUNDER_INDICES
-                .map(async |index| self.ensure_portal_allowance(&Account::at(index)?).await),
-        )
+        futures::future::try_join_all(FUNDER_INDICES.map(async |index| {
+            let account = Account::at(index)?;
+            let _lease = self
+                .ledger
+                .try_lease(&account)?
+                .ok_or_eyre("seed funder is busy or has unresolved intent")?;
+            self.ensure_portal_allowance(&account).await
+        }))
         .await?;
         let funder = Account::at(*FUNDER_INDICES.start())?;
+        let _lease = self
+            .ledger
+            .try_lease(&funder)?
+            .ok_or_eyre("seed funder is busy or has unresolved intent")?;
         let zone = self.random_zone();
         let mut pending = Vec::with_capacity(SEED_ACCOUNTS);
         for _ in 0..SEED_ACCOUNTS {
@@ -247,16 +305,25 @@ impl Context {
                 .ledger
                 .try_lease(&depositor)?
                 .ok_or_eyre("a new account is already leased")?;
-            let receipt = ITIP20::new(PATH_USD_ADDRESS, self.wallet(&funder, &self.l1_url))
+            let request = ITIP20::new(PATH_USD_ADDRESS, self.wallet(&funder, &self.l1_url))
                 .transfer(
                     depositor.address(),
                     U256::from(amount + NEW_DEPOSITOR_FEE_BUDGET),
                 )
-                .send()
-                .await?
-                .with_timeout(Some(RECEIPT_TIMEOUT))
-                .get_receipt()
+                .into_transaction_request();
+            let intent = self
+                .prepare_intent(
+                    &funder,
+                    Chain::L1,
+                    0,
+                    request,
+                    Effect::Funding {
+                        to: depositor.address(),
+                        amount: amount + NEW_DEPOSITOR_FEE_BUDGET,
+                    },
+                )
                 .await?;
+            let receipt = self.send_intent(&intent).await?;
             eyre::ensure!(receipt.status(), "funding new L1 depositor reverted");
             self.ensure_portal_allowance(&depositor).await?;
             (depositor, lease)
@@ -310,15 +377,21 @@ impl Context {
         let url = &self.zone_urls[node];
         let zone = self.wallet(&sender, url);
         let gas_price = zone.get_gas_price().await?;
-        let receipt = ITIP20::new(PATH_USD_ADDRESS, &zone)
+        let request = ITIP20::new(PATH_USD_ADDRESS, &zone)
             .transfer(to, U256::from(amount))
             .gas(TIP20_TX_GAS)
             .gas_price(gas_price)
-            .send()
-            .await?
-            .with_timeout(Some(RECEIPT_TIMEOUT))
-            .get_receipt()
+            .into_transaction_request();
+        let intent = self
+            .prepare_intent(
+                &sender,
+                Chain::Zone,
+                node,
+                request,
+                Effect::Transfer { to, amount },
+            )
             .await?;
+        let receipt = self.send_intent(&intent).await?;
         let details = json!({
             "tx": receipt.transaction_hash,
             "from": sender.address(),
@@ -337,13 +410,6 @@ impl Context {
             return Ok(());
         }
         let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
-        self.ledger.append(&Record::Transfer {
-            zone_tx: receipt.transaction_hash,
-            zone_block,
-            from: sender.address(),
-            to,
-            amount,
-        })?;
         if new_recipient {
             // Nothing else can spend from a new account before it holds a balance, so the
             // credit must be visible at the transfer's block.
@@ -398,15 +464,23 @@ impl Context {
             .await?
             < U256::from(amount + fee)
         {
-            let receipt = token
+            let request = token
                 .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
                 .gas(TIP20_TX_GAS)
                 .gas_price(gas_price)
-                .send()
-                .await?
-                .with_timeout(Some(RECEIPT_TIMEOUT))
-                .get_receipt()
+                .into_transaction_request();
+            let intent = self
+                .prepare_intent(
+                    &sender,
+                    Chain::Zone,
+                    node,
+                    request,
+                    Effect::Approval {
+                        spender: ZONE_OUTBOX_ADDRESS,
+                    },
+                )
                 .await?;
+            let receipt = self.send_intent(&intent).await?;
             assert_always!(
                 receipt.status(),
                 "Funded zone approval succeeds",
@@ -417,7 +491,7 @@ impl Context {
             }
         }
         let l1_from_block = self.l1.get_block_number().await?;
-        let receipt = outbox
+        let request = outbox
             .requestWithdrawal(
                 PATH_USD_ADDRESS,
                 to,
@@ -430,11 +504,17 @@ impl Context {
             )
             .gas(WITHDRAWAL_TX_GAS)
             .gas_price(gas_price)
-            .send()
-            .await?
-            .with_timeout(Some(RECEIPT_TIMEOUT))
-            .get_receipt()
+            .into_transaction_request();
+        let intent = self
+            .prepare_intent(
+                &sender,
+                Chain::Zone,
+                node,
+                request,
+                Effect::Withdrawal { to, amount },
+            )
             .await?;
+        let receipt = self.send_intent(&intent).await?;
         if !receipt.status() {
             // The sequencer's per-block withdrawal cap can reject a funded request.
             println!("withdraw: reverted {}", receipt.transaction_hash);
@@ -447,7 +527,7 @@ impl Context {
             to,
             amount,
         };
-        self.ledger.append(&withdrawal)?;
+
         let paid = self.wait_withdrawal_paid(to, amount, l1_from_block).await?;
         assert_sometimes!(
             paid,
@@ -482,24 +562,36 @@ impl Context {
             .pending()
             .await?;
         let token = ITIP20::new(PATH_USD_ADDRESS, &zone);
-        let mut pending: Vec<(Address, PendingTransactionBuilder<_>)> = Vec::new();
+        let mut pending: Vec<(intents::Intent, PendingTransactionBuilder<_>)> = Vec::new();
         for _ in 0..count {
             let to = self.ledger.new_account()?.address();
-            let tx = token
+            let request = token
                 .transfer(to, U256::from(amount))
                 .gas(TIP20_TX_GAS)
                 .gas_price(gas_price)
                 .nonce(nonce)
-                .send()
+                .into_transaction_request();
+            let intent = self
+                .prepare_intent(
+                    &sender,
+                    Chain::Zone,
+                    node,
+                    request,
+                    Effect::Transfer { to, amount },
+                )
                 .await?;
-            nonce += 1;
-            pending.push((to, tx));
+            let tx = zone.send_raw_transaction(&intent.raw).await?;
+            nonce = nonce.checked_add(1).ok_or_eyre("fanout nonce overflow")?;
+            pending.push((intent, tx));
         }
         // The fee comes out of the same pathUSD balance, so a funded transfer needs both.
         let max_fee: u128 = calc_gas_balance_spending(TIP20_TX_GAS, gas_price).try_into()?;
-        for (to, tx) in pending {
+        for (intent, tx) in pending {
             let receipt = tx.with_timeout(Some(RECEIPT_TIMEOUT)).get_receipt().await?;
-            let zone_block = receipt.block_number.ok_or_eyre("receipt has no block")?;
+            self.ledger.resolve_intent(&intent, &receipt)?;
+            let Effect::Transfer { to, .. } = intent.effect else {
+                eyre::bail!("fanout intent is not a transfer");
+            };
             let funded_revert = !receipt.status()
                 && self
                     .covered_before(&zone, &receipt, sender.address(), amount + max_fee)
@@ -509,15 +601,6 @@ impl Context {
                 "Funded zone transfer succeeds",
                 &json!({ "tx": receipt.transaction_hash, "from": sender.address(), "to": to })
             );
-            if receipt.status() {
-                self.ledger.append(&Record::Transfer {
-                    zone_tx: receipt.transaction_hash,
-                    zone_block,
-                    from: sender.address(),
-                    to,
-                    amount,
-                })?;
-            }
         }
         let accounts = self.ledger.accounts()?.len();
         assert_sometimes_greater_than!(
@@ -529,131 +612,6 @@ impl Context {
         println!(
             "fanout: {count} new accounts from {}, {accounts} total",
             sender.address()
-        );
-        Ok(())
-    }
-
-    async fn rotate_leader(&self) -> eyre::Result<()> {
-        let portal = ZonePortal::new(self.portal, &self.l1);
-        let leader = portal.leader().call().await?;
-        let mut candidates = Vec::new();
-        for index in SEQUENCER_INDICES {
-            let sequencer = Account::at(index)?.address();
-            if sequencer != leader {
-                candidates.push(sequencer);
-            }
-        }
-        let target = random_choice(candidates).ok_or_eyre("no sequencer besides the leader")?;
-        // Half of the handoffs go through a zone node, which relays them with its own sequencer
-        // key against the finalized epoch. The rpc-only node refuses, which ends this run.
-        let relayed = random_below(2) == 0;
-        let (l1_tx, update) = if relayed {
-            let from_block = self.l1.get_block_number().await?;
-            let node = random_index(self.zones.len());
-            let response: SetLeaderResponse = self.zones[node]
-                .raw_request("zone_setLeader".into(), [target])
-                .await?;
-            // `alreadyActive`: the finalized portal already names the target.
-            let Some(tx) = response.tx_hash else {
-                println!("rotate-leader: {target} already leads");
-                return Ok(());
-            };
-            // The node relays a Tempo transaction, whose receipt the L1 provider's Ethereum
-            // types cannot decode, so look for its event instead. The relay returns once the
-            // transaction is mined.
-            let filter = Filter::new()
-                .address(self.portal)
-                .event_signature(ZonePortal::LeaderUpdated::SIGNATURE_HASH)
-                .from_block(from_block);
-            let update = self
-                .l1
-                .get_logs(&filter)
-                .await?
-                .iter()
-                .find(|log| log.transaction_hash == Some(tx))
-                .map(|log| ZonePortal::LeaderUpdated::decode_log(&log.inner))
-                .transpose()?
-                .map(|log| log.data);
-            (tx, update)
-        } else {
-            let admin = Account::at(ADMIN_INDEX)?;
-            let Some(_lease) = self.ledger.try_lease(&admin)? else {
-                println!("rotate-leader: admin is busy");
-                return Ok(());
-            };
-            let epoch = portal.leaderEpoch().call().await?;
-            let receipt = ZonePortal::new(self.portal, self.wallet(&admin, &self.l1_url))
-                .setLeader(target, epoch)
-                .send()
-                .await?
-                .with_timeout(Some(RECEIPT_TIMEOUT))
-                .get_receipt()
-                .await?;
-            let update = receipt
-                .decoded_log::<ZonePortal::LeaderUpdated>()
-                .map(|log| log.data);
-            (receipt.transaction_hash, update)
-        };
-        // A concurrent handoff can win the epoch or the L1 block, which reverts this one.
-        let Some(update) = update else {
-            println!("rotate-leader: {target} not applied ({l1_tx})");
-            return Ok(());
-        };
-        let details = json!({
-            "l1_tx": l1_tx,
-            "previous": update.previousLeader,
-            "leader": update.newLeader,
-            "epoch": update.epoch,
-            "activation_tempo_block": update.activationTempoBlock,
-            "relayed": relayed,
-        });
-        assert_reachable!("Zone leadership moves to another sequencer", &details);
-        assert_sometimes!(relayed, "A zone node relays a leadership handoff", &details);
-
-        let zone = self.random_zone();
-        let mut produced = None;
-        poll_until(BRIDGE_WAIT, async || {
-            let block = zone
-                .get_block_by_number(BlockNumberOrTag::Latest)
-                .await?
-                .ok_or_eyre("no latest zone block")?;
-            if block.header.beneficiary != target {
-                return Ok(false);
-            }
-            // The target may have led before: only a block anchored at or after the activation
-            // block is from this term.
-            let anchor = TempoState::new(TEMPO_STATE_ADDRESS, zone)
-                .tempoBlockNumber()
-                .block(BlockId::hash(block.header.hash))
-                .call()
-                .await?;
-            if anchor >= update.activationTempoBlock {
-                produced = Some(block.header.number);
-            }
-            Ok(produced.is_some())
-        })
-        .await?;
-        assert_sometimes!(
-            produced.is_some(),
-            "New leader produces zone blocks",
-            &details
-        );
-        let Some(height) = produced else {
-            println!("rotate-leader: {target} produced no block within {BRIDGE_WAIT:?}");
-            return Ok(());
-        };
-        let settled = poll_until(BRIDGE_WAIT, async || {
-            Ok(portal.zoneHeight().call().await? >= U256::from(height))
-        })
-        .await?;
-        assert_sometimes!(
-            settled,
-            "A batch settles after a leadership handoff",
-            &json!({ "handoff": details, "zone_block": height })
-        );
-        println!(
-            "rotate-leader: {leader} -> {target} at epoch {}, settled={settled}",
-            update.epoch
         );
         Ok(())
     }
@@ -689,7 +647,7 @@ impl Context {
             nonce: encrypted.nonce.into(),
             tag: encrypted.tag.into(),
         };
-        let receipt = portal
+        let request = portal
             .deposit(
                 PATH_USD_ADDRESS,
                 amount,
@@ -698,26 +656,21 @@ impl Context {
                 sender.address(),
             )
             .gas(DEPOSIT_TX_GAS)
-            .send()
-            .await?
-            .with_timeout(Some(RECEIPT_TIMEOUT))
-            .get_receipt()
+            .into_transaction_request();
+        let intent = self
+            .prepare_intent(
+                sender,
+                Chain::L1,
+                0,
+                request,
+                Effect::Deposit { to, amount },
+            )
             .await?;
+        let receipt = self.send_intent(&intent).await?;
         if !receipt.status() {
             return Ok(None);
         }
-        let made = receipt
-            .decoded_log::<ZonePortal::DepositMade>()
-            .ok_or_eyre("deposit receipt has no DepositMade log")?;
-        let record = Record::Deposit {
-            l1_tx: receipt.transaction_hash,
-            queue_hash: made.newCurrentDepositQueueHash,
-            sender: sender.address(),
-            to,
-            net_amount: made.netAmount,
-        };
-        self.ledger.append(&record)?;
-        Ok(Some(record))
+        intent.obligation(&receipt)
     }
 
     /// Approves the portal to spend `account`'s L1 pathUSD, unless it already may.
@@ -731,13 +684,21 @@ impl Context {
         {
             return Ok(());
         }
-        let receipt = token
+        let request = token
             .approve(self.portal, U256::MAX)
-            .send()
-            .await?
-            .with_timeout(Some(RECEIPT_TIMEOUT))
-            .get_receipt()
+            .into_transaction_request();
+        let intent = self
+            .prepare_intent(
+                account,
+                Chain::L1,
+                0,
+                request,
+                Effect::Approval {
+                    spender: self.portal,
+                },
+            )
             .await?;
+        let receipt = self.send_intent(&intent).await?;
         eyre::ensure!(
             receipt.status(),
             "portal approval for {} reverted",
