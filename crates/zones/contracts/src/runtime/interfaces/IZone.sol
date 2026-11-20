@@ -609,7 +609,6 @@ interface IZonePortal {
     error InvalidQuorumCertificate();
     error InvalidCallbackTarget();
     error CallbackDidNotReturnToZone();
-    error NoActiveCallback();
     error AccountNotAllowed(address account);
     /// @notice Emitted when an account's portal role is initialized or updated.
     event RoleUpdated(address indexed account, Role prev, Role next);
@@ -654,8 +653,9 @@ interface IZonePortal {
     function messenger() external view returns (address);
 
     /// @notice ZoneIdentity org of the sender of the withdrawal whose callback is running.
-    /// @dev Reverts with `NoActiveCallback` outside a withdrawal callback. Receivers call it on
-    ///      the `sourcePortal` passed to `onWithdrawalReceived`.
+    /// @dev Receivers call it on the `sourcePortal` passed to `onWithdrawalReceived`, at any point
+    ///      in the callback, including after depositing back. Returns 0 outside a callback, which
+    ///      is indistinguishable from org 0: receivers must check that the messenger called them.
     function callbackSenderOrg() external view returns (uint64);
 
     /// @notice Whether account allowlist enforcement is enabled.

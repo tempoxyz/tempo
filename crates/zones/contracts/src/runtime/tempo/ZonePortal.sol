@@ -256,7 +256,7 @@ contract ZonePortal is IZonePortal {
     bool internal _identityEnforced;
 
     /// @notice Sender org of the withdrawal whose callback is running.
-    /// @dev Read only while `_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE`.
+    /// @dev Set before the callback's relay and cleared after it; 0 at any other time.
     uint64 internal transient _callbackSenderOrg;
 
     /*//////////////////////////////////////////////////////////////
@@ -552,9 +552,10 @@ contract ZonePortal is IZonePortal {
 
     /// @inheritdoc IZonePortal
     function callbackSenderOrg() external view returns (uint64) {
-        if (_withdrawalReentrancyStatus != CALLBACK_DEPOSIT_AVAILABLE) {
-            revert NoActiveCallback();
-        }
+        // Only one callback can run at a time: callbacks run only inside `processWithdrawals`,
+        // which is sequencer-only and non-reentrant. The slot is set before each relay and cleared
+        // after it, so it never carries one withdrawal's org into another callback, including
+        // after the callback deposits back.
         return _callbackSenderOrg;
     }
 
@@ -1249,9 +1250,10 @@ contract ZonePortal is IZonePortal {
         IZoneMessenger(messenger)
             .relayMessage(zoneId, token, senderTag, target, amount, gasLimit, data);
 
-        // Return to the normal withdrawal-processing state. If relayMessage reverts, this write
+        // Return to the normal withdrawal-processing state. If relayMessage reverts, these writes
         // and any callback deposit are reverted together.
         _withdrawalReentrancyStatus = WITHDRAWAL_PROCESSING;
+        _callbackSenderOrg = 0;
 
         // In closed access, this proves only that some deposit was appended to this portal; it does
         // not bind that deposit to the callback's token, amount, or recipient. Callback data is

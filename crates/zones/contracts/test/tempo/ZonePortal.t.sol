@@ -151,7 +151,9 @@ contract SuccessfulReceiver is IWithdrawalReceiver {
 
 }
 
-/// @notice Receiver that records the sender org its portal reports during the callback.
+/// @notice Receiver that records the sender org its portal reports during the callback. With
+///         callback data longer than one byte it first deposits the funds back to the zone, using
+///         the encoded `(keyIndex, payload, refundRecipient)`.
 contract OrgReadingReceiver is IWithdrawalReceiver {
 
     uint64 public seenSenderOrg;
@@ -161,13 +163,19 @@ contract OrgReadingReceiver is IWithdrawalReceiver {
         uint32,
         address sourcePortal,
         bytes32,
-        address,
-        uint128,
-        bytes calldata
+        address token,
+        uint128 amount,
+        bytes calldata callbackData
     )
         external
         returns (bytes4)
     {
+        if (callbackData.length > 1) {
+            (uint256 keyIndex, DepositPayload memory payload, address refund) =
+                abi.decode(callbackData, (uint256, DepositPayload, address));
+            ITIP20(token).approve(sourcePortal, amount);
+            IZonePortal(sourcePortal).deposit(token, amount, keyIndex, payload, refund);
+        }
         seenSenderOrg = IZonePortal(sourcePortal).callbackSenderOrg();
         callCount++;
         return IWithdrawalReceiver.onWithdrawalReceived.selector;
@@ -4816,8 +4824,34 @@ contract ZonePortalTest is BaseTest {
 
         assertEq(receiver.callCount(), 1);
         assertEq(receiver.seenSenderOrg(), 7);
-        vm.expectRevert(IZonePortal.NoActiveCallback.selector);
-        portal.callbackSenderOrg();
+        // Cleared once the callback returns.
+        assertEq(portal.callbackSenderOrg(), 0);
+    }
+
+    function test_withdrawal_callbackSeesSenderOrgAfterDepositingBack() public {
+        _openPortalModes();
+        OrgReadingReceiver receiver = new OrgReadingReceiver();
+        bytes memory depositBack = abi.encode(uint256(0), _depositPayload(alice, bytes32(0)), alice);
+        Withdrawal memory w = _withdrawal(
+            address(pathUSD),
+            alice,
+            address(receiver),
+            500e6,
+            bytes32(0),
+            5_000_000,
+            alice,
+            depositBack
+        );
+        w.senderOrg = 7;
+        uint64 depositsBefore = portal.depositCount();
+
+        _processSingleCallback(w);
+
+        assertEq(receiver.callCount(), 1);
+        // The receiver's deposit landed, then it still read the org.
+        assertEq(portal.depositCount(), depositsBefore + 2);
+        assertEq(receiver.seenSenderOrg(), 7);
+        assertEq(portal.callbackSenderOrg(), 0);
     }
 
     function test_withdrawal_callbackSeesOrgZero() public {
@@ -4833,9 +4867,8 @@ contract ZonePortalTest is BaseTest {
         assertEq(receiver.seenSenderOrg(), 0);
     }
 
-    function test_callbackSenderOrg_revertsOutsideCallback() public {
-        vm.expectRevert(IZonePortal.NoActiveCallback.selector);
-        portal.callbackSenderOrg();
+    function test_callbackSenderOrg_isZeroOutsideCallback() public view {
+        assertEq(portal.callbackSenderOrg(), 0);
     }
 
     function test_withdrawal_senderOrgIsCommittedByHash() public {

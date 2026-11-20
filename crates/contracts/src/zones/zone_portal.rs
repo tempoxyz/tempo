@@ -275,7 +275,6 @@ crate::sol! {
         error SequencerConfigurationUnchanged();
         error InvalidQuorumCertificate();
         error CallbackDidNotReturnToZone();
-        error NoActiveCallback();
         error InvalidBouncebackRecipient();
         error TokenNotEnabled();
         error DepositBlockCapacityExceeded(uint64 maximum);
