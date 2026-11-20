@@ -264,25 +264,30 @@ fn canonical_hash_read_error_fails_initialization() {
 }
 
 #[test_traced]
-fn finalized_tip_below_the_floor_fails_initialization() {
+fn finalized_tip_below_the_floor_backfills_to_the_floor() {
     deterministic::Runner::default().start(|context| async move {
         let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
 
-        let result = Harness::builder()
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1);
+        marshal.add_block(b2);
+
+        let h = Harness::builder()
+            .marshal(marshal)
             .harness_options(HarnessOptions {
                 finalized_floor: 2,
-                finalized_tip: (round(1), 1, b1.digest()),
+                finalized_tip: (round(1), 1, d1),
                 ..Default::default()
             })
-            .try_start(&context);
+            .start(&context);
 
-        let Err(error) = result else {
-            panic!("actor initialization should reject a finalized tip below its floor");
-        };
-        assert_eq!(
-            format!("{error:#}"),
-            "failed initializing actor: finalized tip height `1` is below the finalized floor `2`",
-        );
+        h.wait_until(|| h.execution.finalized() == Some((2, d2)))
+            .await;
+        assert_eq!(h.marshal.get_block_log(), vec![1, 2]);
+        assert_eq!(h.execution.new_payloads(), vec![d1, d2]);
+        assert_eq!(h.execution.head(), d2);
     });
 }
 
