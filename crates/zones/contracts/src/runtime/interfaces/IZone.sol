@@ -214,6 +214,22 @@ struct Withdrawal {
     uint64 fallbackNonce; // resolves to the zone bounce-back recipient in ZoneOutbox
     bytes callbackData; // calldata for IWithdrawalReceiver (if gasLimit > 0)
     bytes encryptedSender; // optional encrypted (sender, txHash) reveal payload
+    uint64 senderOrg; // sender's ZoneIdentity org when requested (0 = org 0 or bounce-back)
+}
+
+/// @notice A withdrawal as hashed before T15, without `senderOrg`.
+/// @dev Withdrawals in org 0 keep this encoding in the queue hash chain, so withdrawals queued
+///      before T15 dequeue unchanged.
+struct LegacyWithdrawal {
+    address token;
+    bytes32 senderTag;
+    address to;
+    uint128 amount;
+    bytes32 memo;
+    uint64 gasLimit;
+    uint64 fallbackNonce;
+    bytes callbackData;
+    bytes encryptedSender;
 }
 
 struct PendingWithdrawal {
@@ -593,6 +609,7 @@ interface IZonePortal {
     error InvalidQuorumCertificate();
     error InvalidCallbackTarget();
     error CallbackDidNotReturnToZone();
+    error NoActiveCallback();
     error AccountNotAllowed(address account);
     /// @notice Emitted when an account's portal role is initialized or updated.
     event RoleUpdated(address indexed account, Role prev, Role next);
@@ -635,6 +652,11 @@ interface IZonePortal {
 
     /// @notice Fixed callback messenger assigned during portal initialization.
     function messenger() external view returns (address);
+
+    /// @notice ZoneIdentity org of the sender of the withdrawal whose callback is running.
+    /// @dev Reverts with `NoActiveCallback` outside a withdrawal callback. Receivers call it on
+    ///      the `sourcePortal` passed to `onWithdrawalReceived`.
+    function callbackSenderOrg() external view returns (uint64);
 
     /// @notice Whether account allowlist enforcement is enabled.
     function isAccessEnforced() external view returns (bool);
@@ -925,6 +947,7 @@ interface IZonePortal {
         address target,
         uint128 amount,
         bytes32 senderTag,
+        uint64 senderOrg,
         uint64 gasLimit,
         bytes calldata data
     )
@@ -1203,6 +1226,9 @@ interface IZoneOutbox {
         bytes data,
         bytes revealTo
     );
+
+    /// @notice Emitted after `WithdrawalRequested` when the sender is in an org other than 0.
+    event WithdrawalSenderOrg(uint64 indexed withdrawalIndex, uint64 senderOrg);
 
     event TempoGasRateUpdated(uint128 tempoGasRate);
 

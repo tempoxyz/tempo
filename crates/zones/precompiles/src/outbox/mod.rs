@@ -139,6 +139,12 @@ impl ZoneOutbox {
     fn enqueue(&mut self, pending: PendingWithdrawal, fee: u128) -> ZoneResult<()> {
         let index = self.next_withdrawal_index.read()?;
         self.emit_event(pending.requested_event(index, fee))?;
+        if pending.sender_org != 0 {
+            self.emit_event(ZoneOutboxEvent::withdrawal_sender_org(
+                index,
+                pending.sender_org,
+            ))?;
+        }
 
         self.pending_withdrawals.push(pending)?;
         self.next_withdrawal_index.write(
@@ -197,6 +203,13 @@ impl ZoneOutbox {
                 TransferKind::InZone,
             )?;
         }
+        // The sender's org is public on Tempo, where receivers read it during callbacks. It is
+        // recorded only while ZoneIdentity is enforced; otherwise every withdrawal is in org 0.
+        let sender_org = if enforced {
+            identity.member_org(caller)?
+        } else {
+            0
+        };
         self.enforce_withdrawal_block_cap()?;
 
         // If necessary, validate reveal
@@ -226,7 +239,13 @@ impl ZoneOutbox {
         self.last_fallback_nonce.write(fallback_nonce)?;
         self.fallback_recipients[fallback_nonce].write(call.zoneFallbackRecipient)?;
         self.enqueue(
-            PendingWithdrawal::from_request(caller, current_tx_hash, fallback_nonce, call),
+            PendingWithdrawal::from_request(
+                caller,
+                current_tx_hash,
+                fallback_nonce,
+                sender_org,
+                call,
+            ),
             fee,
         )
     }
@@ -425,6 +444,8 @@ struct PendingWithdrawal {
     fallback_nonce: u64,
     callback_data: Bytes,
     reveal_to: Bytes,
+    /// The sender's ZoneIdentity org, or 0 for org 0, bounce-backs and unenforced zones.
+    sender_org: u64,
 }
 
 impl PendingWithdrawal {
@@ -432,6 +453,7 @@ impl PendingWithdrawal {
         sender: Address,
         tx_hash: B256,
         fallback_nonce: u64,
+        sender_org: u64,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> Self {
         Self {
@@ -445,6 +467,7 @@ impl PendingWithdrawal {
             fallback_nonce,
             callback_data: call.data,
             reveal_to: call.revealTo,
+            sender_org,
         }
     }
 
@@ -498,6 +521,7 @@ impl PendingWithdrawal {
             fallbackNonce: self.fallback_nonce,
             callbackData: self.callback_data,
             encryptedSender: encrypted_sender,
+            senderOrg: self.sender_org,
         })
     }
 }

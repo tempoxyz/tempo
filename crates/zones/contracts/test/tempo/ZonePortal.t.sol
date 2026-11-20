@@ -151,6 +151,30 @@ contract SuccessfulReceiver is IWithdrawalReceiver {
 
 }
 
+/// @notice Receiver that records the sender org its portal reports during the callback.
+contract OrgReadingReceiver is IWithdrawalReceiver {
+
+    uint64 public seenSenderOrg;
+    uint256 public callCount;
+
+    function onWithdrawalReceived(
+        uint32,
+        address sourcePortal,
+        bytes32,
+        address,
+        uint128,
+        bytes calldata
+    )
+        external
+        returns (bytes4)
+    {
+        seenSenderOrg = IZonePortal(sourcePortal).callbackSenderOrg();
+        callCount++;
+        return IWithdrawalReceiver.onWithdrawalReceived.selector;
+    }
+
+}
+
 /// @notice Sequencer-controlled receiver that attempts to process another withdrawal in callback.
 contract ReentrantWithdrawalReceiver is IWithdrawalReceiver {
 
@@ -1106,7 +1130,8 @@ contract ZonePortalTest is BaseTest {
             gasLimit: gasLimit,
             fallbackNonce: uint64(uint160(zoneFallbackRecipient)),
             callbackData: callbackData,
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
     }
 
@@ -2656,8 +2681,9 @@ contract ZonePortalTest is BaseTest {
         state.withdrawals[state.reserve] = state.successfulWithdrawal;
 
         for (uint256 i = state.withdrawals.length; i > 0; --i) {
-            state.withdrawalHash =
-                keccak256(abi.encode(state.withdrawals[i - 1], state.withdrawalHash));
+            state.withdrawalHash = WithdrawalQueueLib.hashWithTailMemory(
+                state.withdrawals[i - 1], state.withdrawalHash
+            );
         }
 
         vm.roll(block.number + 1);
@@ -2707,7 +2733,7 @@ contract ZonePortalTest is BaseTest {
             bounceBacks[i] = state.withdrawal;
         }
         state.successfulWithdrawalHash =
-            keccak256(abi.encode(state.successfulWithdrawal, bytes32(0)));
+            WithdrawalQueueLib.hashWithTailMemory(state.successfulWithdrawal, bytes32(0));
         portal.processWithdrawals(bounceBacks, state.successfulWithdrawalHash);
 
         state.queueHashAtCapacity = portal.currentDepositQueueHash();
@@ -2956,7 +2982,7 @@ contract ZonePortalTest is BaseTest {
         // Batch with withdrawals: assigned the current logical tail (index 0).
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 withdrawalHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 withdrawalHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.expectEmit(true, true, false, true);
         emit IZonePortal.BatchSubmitted(2, 0, bytes32(0), keccak256("state2"), withdrawalHash, 0, 0);
@@ -2983,7 +3009,7 @@ contract ZonePortalTest is BaseTest {
     function test_submitBatch_emitsMonotonicLogicalWithdrawalQueueIndex() public {
         Withdrawal memory firstWithdrawal =
             _withdrawal(address(pathUSD), alice, bob, 0, bytes32(0), 0, alice, "");
-        bytes32 firstHash = keccak256(abi.encode(firstWithdrawal, bytes32(0)));
+        bytes32 firstHash = WithdrawalQueueLib.hashWithTailMemory(firstWithdrawal, bytes32(0));
         bytes32 previousState = portal.blockHash();
 
         vm.roll(block.number + 1);
@@ -3135,7 +3161,7 @@ contract ZonePortalTest is BaseTest {
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
 
         // Build withdrawal hash (oldest = outermost, zero-terminated)
-        bytes32 withdrawalHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 withdrawalHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3190,8 +3216,8 @@ contract ZonePortalTest is BaseTest {
             _withdrawal(address(pathUSD), alice, charlie, 400e6, bytes32(0), 0, alice, "");
 
         // Build queue: w1 is oldest (outermost), w2 is newest (innermost terminates at zero)
-        bytes32 innerHash = keccak256(abi.encode(w2, bytes32(0)));
-        bytes32 batchQueueHash = keccak256(abi.encode(w1, innerHash));
+        bytes32 innerHash = WithdrawalQueueLib.hashWithTailMemory(w2, bytes32(0));
+        bytes32 batchQueueHash = WithdrawalQueueLib.hashWithTailMemory(w1, innerHash);
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3250,9 +3276,9 @@ contract ZonePortalTest is BaseTest {
         Withdrawal memory w3 =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
 
-        bytes32 remainingQueue = keccak256(abi.encode(w3, bytes32(0)));
-        bytes32 innerHash = keccak256(abi.encode(w2, remainingQueue));
-        bytes32 batchQueueHash = keccak256(abi.encode(w1, innerHash));
+        bytes32 remainingQueue = WithdrawalQueueLib.hashWithTailMemory(w3, bytes32(0));
+        bytes32 innerHash = WithdrawalQueueLib.hashWithTailMemory(w2, remainingQueue);
+        bytes32 batchQueueHash = WithdrawalQueueLib.hashWithTailMemory(w1, innerHash);
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -3310,7 +3336,7 @@ contract ZonePortalTest is BaseTest {
         // Batch 1: withdrawal to bob
         Withdrawal memory w1 =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 w1Hash = keccak256(abi.encode(w1, bytes32(0)));
+        bytes32 w1Hash = WithdrawalQueueLib.hashWithTailMemory(w1, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -3334,7 +3360,7 @@ contract ZonePortalTest is BaseTest {
         // Batch 2: withdrawal to charlie
         Withdrawal memory w2 =
             _withdrawal(address(pathUSD), alice, charlie, 600e6, bytes32(0), 0, alice, "");
-        bytes32 w2Hash = keccak256(abi.encode(w2, bytes32(0)));
+        bytes32 w2Hash = WithdrawalQueueLib.hashWithTailMemory(w2, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -3439,7 +3465,7 @@ contract ZonePortalTest is BaseTest {
             alice,
             "callback_data"
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3578,7 +3604,7 @@ contract ZonePortalTest is BaseTest {
     }
 
     function _enqueueWithdrawal(Withdrawal memory withdrawal) internal {
-        bytes32 withdrawalHash = keccak256(abi.encode(withdrawal, bytes32(0)));
+        bytes32 withdrawalHash = WithdrawalQueueLib.hashWithTailMemory(withdrawal, bytes32(0));
         vm.roll(block.number + 1);
 
         _submitBatch(
@@ -3806,7 +3832,8 @@ contract ZonePortalTest is BaseTest {
             gasLimit: 0,
             fallbackNonce: 0,
             callbackData: "",
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
         _enqueueWithdrawal(withdrawal);
         vm.prank(admin);
@@ -3846,7 +3873,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3900,7 +3927,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3940,7 +3967,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         // Advance a block so the history precompile can return a hash
         vm.roll(block.number + 1);
@@ -3992,8 +4019,8 @@ contract ZonePortalTest is BaseTest {
             abi.encode(nested, bytes32(0))
         );
 
-        bytes32 remainingQueue = keccak256(abi.encode(nested, bytes32(0)));
-        bytes32 withdrawalQueue = keccak256(abi.encode(outer, remainingQueue));
+        bytes32 remainingQueue = WithdrawalQueueLib.hashWithTailMemory(nested, bytes32(0));
+        bytes32 withdrawalQueue = WithdrawalQueueLib.hashWithTailMemory(outer, remainingQueue);
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4393,7 +4420,7 @@ contract ZonePortalTest is BaseTest {
         // Create two batches with different withdrawals
         Withdrawal memory w1 =
             _withdrawal(address(pathUSD), alice, bob, 100e6, bytes32("w1"), 0, alice, "");
-        bytes32 w1Hash = keccak256(abi.encode(w1, bytes32(0)));
+        bytes32 w1Hash = WithdrawalQueueLib.hashWithTailMemory(w1, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4414,7 +4441,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w2 =
             _withdrawal(address(pathUSD), alice, charlie, 200e6, bytes32("w2"), 0, alice, "");
-        bytes32 w2Hash = keccak256(abi.encode(w2, bytes32(0)));
+        bytes32 w2Hash = WithdrawalQueueLib.hashWithTailMemory(w2, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4468,7 +4495,7 @@ contract ZonePortalTest is BaseTest {
             alice,
             ""
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4517,7 +4544,7 @@ contract ZonePortalTest is BaseTest {
             alice,
             ""
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4576,8 +4603,8 @@ contract ZonePortalTest is BaseTest {
         // A second, well-behaved withdrawal that must still be delivered.
         withdrawals[1] = _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
 
-        bytes32 tailHash = keccak256(abi.encode(withdrawals[1], bytes32(0)));
-        bytes32 headHash = keccak256(abi.encode(withdrawals[0], tailHash));
+        bytes32 tailHash = WithdrawalQueueLib.hashWithTailMemory(withdrawals[1], bytes32(0));
+        bytes32 headHash = WithdrawalQueueLib.hashWithTailMemory(withdrawals[0], tailHash);
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4629,7 +4656,7 @@ contract ZonePortalTest is BaseTest {
         // Create withdrawal with gasLimit = 0
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4725,7 +4752,7 @@ contract ZonePortalTest is BaseTest {
             alice,
             "test"
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4749,6 +4776,100 @@ contract ZonePortalTest is BaseTest {
         // Callback should have been called
         assertEq(successfulReceiver.callCount(), 1);
         assertEq(pathUSD.balanceOf(address(successfulReceiver)), 500e6);
+    }
+
+    function _processSingleCallback(Withdrawal memory w) internal {
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), alice);
+        vm.stopPrank();
+        bytes32 depositHash = portal.currentDepositQueueHash();
+
+        vm.roll(block.number + 1);
+        _submitBatch(
+            portal,
+            uint64(block.number - 1),
+            0,
+            BlockTransition({ prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("s1") }),
+            DepositQueueTransition({
+                prevProcessedHash: bytes32(0),
+                nextProcessedHash: depositHash,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0
+            }),
+            WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0)),
+            "",
+            ""
+        );
+        portal.processWithdrawals(_singleWithdrawal(w), bytes32(0));
+    }
+
+    function test_withdrawal_callbackSeesSenderOrg() public {
+        _openPortalModes();
+        OrgReadingReceiver receiver = new OrgReadingReceiver();
+        Withdrawal memory w = _withdrawal(
+            address(pathUSD), alice, address(receiver), 500e6, bytes32(0), 5_000_000, alice, "x"
+        );
+        w.senderOrg = 7;
+
+        _processSingleCallback(w);
+
+        assertEq(receiver.callCount(), 1);
+        assertEq(receiver.seenSenderOrg(), 7);
+        vm.expectRevert(IZonePortal.NoActiveCallback.selector);
+        portal.callbackSenderOrg();
+    }
+
+    function test_withdrawal_callbackSeesOrgZero() public {
+        _openPortalModes();
+        OrgReadingReceiver receiver = new OrgReadingReceiver();
+        Withdrawal memory w = _withdrawal(
+            address(pathUSD), alice, address(receiver), 500e6, bytes32(0), 5_000_000, alice, "x"
+        );
+
+        _processSingleCallback(w);
+
+        assertEq(receiver.callCount(), 1);
+        assertEq(receiver.seenSenderOrg(), 0);
+    }
+
+    function test_callbackSenderOrg_revertsOutsideCallback() public {
+        vm.expectRevert(IZonePortal.NoActiveCallback.selector);
+        portal.callbackSenderOrg();
+    }
+
+    function test_withdrawal_senderOrgIsCommittedByHash() public {
+        _openPortalModes();
+        Withdrawal memory w =
+            _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
+        w.senderOrg = 7;
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), alice);
+        vm.stopPrank();
+        bytes32 depositHash = portal.currentDepositQueueHash();
+        vm.roll(block.number + 1);
+        _submitBatch(
+            portal,
+            uint64(block.number - 1),
+            0,
+            BlockTransition({ prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("s1") }),
+            DepositQueueTransition({
+                prevProcessedHash: bytes32(0),
+                nextProcessedHash: depositHash,
+                prevDepositNumber: 0,
+                nextDepositNumber: 0
+            }),
+            WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0)),
+            "",
+            ""
+        );
+
+        // Relaying the withdrawal with a different org does not match the committed hash.
+        Withdrawal memory forged = w;
+        forged.senderOrg = 8;
+        vm.expectRevert();
+        portal.processWithdrawals(_singleWithdrawal(forged), bytes32(0));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -4775,7 +4896,7 @@ contract ZonePortalTest is BaseTest {
             bob,
             ""
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4892,7 +5013,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 500e6, bytes32(0), 0, alice, "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -4934,7 +5055,7 @@ contract ZonePortalTest is BaseTest {
             alice,
             ""
         );
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(
@@ -5759,7 +5880,7 @@ contract ZonePortalTest is BaseTest {
 
         Withdrawal memory w =
             _withdrawal(address(pathUSD), alice, bob, 250e6, bytes32(0), 0, address(0), "");
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.roll(block.number + 1);
         _submitBatch(

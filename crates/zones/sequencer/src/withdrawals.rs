@@ -31,12 +31,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_eips::eip1559::Eip1559Estimation;
-use alloy_network::ReceiptResponse;
+use alloy_consensus::BlockHeader as _;
+use alloy_eips::{BlockNumberOrTag, eip1559::Eip1559Estimation};
+use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider};
+use alloy_sol_types::SolCall as _;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
+use reth_chainspec::ForkCondition;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
@@ -44,7 +47,7 @@ use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-    abi::{self, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
+    abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
     settlement::{WithdrawalPage, find_processed_offset},
@@ -137,6 +140,8 @@ pub struct WithdrawalProcessorConfig {
     pub sequencer_address: Address,
     /// Gas and concurrency limits for withdrawal transactions.
     pub batch_limits: WithdrawalBatchLimits,
+    /// When Tempo L1 activates T15, whose portal takes withdrawals with `senderOrg`.
+    pub l1_t15_activation: ForkCondition,
 }
 
 /// Limits applied while packing and submitting `processWithdrawals` transactions.
@@ -691,6 +696,24 @@ impl WithdrawalProcessor {
         }
     }
 
+    /// Whether the L1 portal still runs a runtime from before T15, which takes withdrawals without
+    /// `senderOrg`. Reads the latest L1 header only while T15 is scheduled but not yet active.
+    async fn l1_portal_is_pre_t15(&self) -> eyre::Result<bool> {
+        let activation = self.config.l1_t15_activation;
+        if activation.active_at_timestamp(0) {
+            return Ok(false);
+        }
+        if activation == ForkCondition::Never {
+            return Ok(true);
+        }
+        let header = self
+            .provider
+            .get_header_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .ok_or_else(|| eyre::eyre!("latest Tempo L1 header is unavailable"))?;
+        Ok(!activation.active_at_timestamp(header.timestamp()))
+    }
+
     /// Run all batches through a bounded queue of consecutive-nonce transactions.
     ///
     /// A failure stops new submissions. Already submitted transactions are still drained because
@@ -722,6 +745,7 @@ impl WithdrawalProcessor {
         let mut submitted = 0usize;
         let mut retry = false;
         let fees = bound_l1_fees(self.provider.estimate_eip1559_fees().await?);
+        let legacy_portal = self.l1_portal_is_pre_t15().await?;
 
         loop {
             while !retry
@@ -760,9 +784,20 @@ impl WithdrawalProcessor {
                     "📤 Broadcasting withdrawal batch to L1"
                 );
 
+                let legacy_input = legacy_portal.then(|| {
+                    LegacyZonePortal::processWithdrawalsCall {
+                        withdrawals: batch_withdrawals.iter().map(|w| w.to_legacy()).collect(),
+                        remainingQueue: remaining_queue,
+                    }
+                    .abi_encode()
+                });
                 let call = self
                     .portal
                     .processWithdrawals(batch_withdrawals, remaining_queue)
+                    .map(|request| match legacy_input {
+                        Some(input) => request.with_input(input),
+                        None => request,
+                    })
                     .from(self.config.sequencer_address)
                     .nonce_key(PROCESS_WITHDRAWAL_NONCE_KEY)
                     .nonce(nonce)
@@ -1091,6 +1126,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         }
     }
 
@@ -1118,8 +1154,23 @@ mod tests {
         let w = test_withdrawal(Address::with_last_byte(0x42), 1000);
         let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
 
-        let expected = keccak256((w, B256::ZERO).abi_encode_params());
+        let expected = keccak256((w.to_legacy(), B256::ZERO).abi_encode_params());
         assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn org_withdrawal_hash_commits_sender_org() {
+        let mut w = test_withdrawal(Address::with_last_byte(0x42), 1000);
+        w.senderOrg = 7;
+        let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
+
+        assert_eq!(hash, keccak256((w.clone(), B256::ZERO).abi_encode_params()));
+        assert_ne!(
+            hash,
+            keccak256((w.to_legacy(), B256::ZERO).abi_encode_params())
+        );
+        w.senderOrg = 8;
+        assert_ne!(hash, abi::Withdrawal::queue_hash(std::slice::from_ref(&w)));
     }
 
     #[test]
@@ -1129,8 +1180,8 @@ mod tests {
 
         let hash = abi::Withdrawal::queue_hash(&[w0.clone(), w1.clone()]);
 
-        let inner = keccak256((w1, B256::ZERO).abi_encode_params());
-        let expected = keccak256((w0, inner).abi_encode_params());
+        let inner = keccak256((w1.to_legacy(), B256::ZERO).abi_encode_params());
+        let expected = keccak256((w0.to_legacy(), inner).abi_encode_params());
         assert_eq!(hash, expected);
     }
 
@@ -1146,6 +1197,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         };
 
         let tuple_value_hash = keccak256((w.clone(), B256::ZERO).abi_encode());
@@ -1409,6 +1461,7 @@ mod tests {
             fallback_poll_interval: Duration::from_secs(1),
             sequencer_address: Address::repeat_byte(0x77),
             batch_limits: WithdrawalBatchLimits::default(),
+            l1_t15_activation: ForkCondition::Timestamp(0),
         };
         WithdrawalProcessor::new(
             config,

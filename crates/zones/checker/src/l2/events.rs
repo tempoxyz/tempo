@@ -629,6 +629,10 @@ fn decode_outbox(
             decode_event::<IZoneOutbox::BatchFinalized>(log, "BatchFinalized", block)?;
             return Ok(None);
         }
+        IZoneOutbox::WithdrawalSenderOrg::SIGNATURE_HASH => {
+            decode_event::<IZoneOutbox::WithdrawalSenderOrg>(log, "WithdrawalSenderOrg", block)?;
+            return Ok(None);
+        }
         IZoneOutbox::TempoGasRateUpdated::SIGNATURE_HASH => {
             decode_event::<IZoneOutbox::TempoGasRateUpdated>(log, "TempoGasRateUpdated", block)?;
             return Ok(None);

@@ -6,6 +6,7 @@ import {
     Withdrawal,
     ZONE_FACTORY_ADDRESS
 } from "../../src/runtime/interfaces/IZone.sol";
+import { WithdrawalQueueLib } from "../../src/runtime/libraries/WithdrawalQueueLib.sol";
 import { ZonePortal } from "../../src/runtime/tempo/ZonePortal.sol";
 import { PortalRuntimeTest } from "../PortalRuntimeTest.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
@@ -124,9 +125,10 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
             gasLimit: portal.MAX_WITHDRAWAL_GAS_LIMIT() + 1,
             fallbackNonce: 1,
             callbackData: "test",
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
 
         vm.store(address(portal), bytes32(WITHDRAWAL_QUEUE_TAIL_SLOT), bytes32(uint256(1)));
         vm.store(address(portal), _withdrawalQueueSlot(0), wHash);
@@ -155,7 +157,8 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
             gasLimit: 0,
             fallbackNonce: 1,
             callbackData: "",
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
         _storeSingleWithdrawal(w);
 
@@ -282,13 +285,18 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
             gasLimit: 0,
             fallbackNonce: 0,
             callbackData: "",
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
     }
 
     function _storeSingleWithdrawal(Withdrawal memory w) internal {
         vm.store(address(portal), bytes32(WITHDRAWAL_QUEUE_TAIL_SLOT), bytes32(uint256(1)));
-        vm.store(address(portal), _withdrawalQueueSlot(0), keccak256(abi.encode(w, bytes32(0))));
+        vm.store(
+            address(portal),
+            _withdrawalQueueSlot(0),
+            WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0))
+        );
     }
 
     function _singleWithdrawal(Withdrawal memory withdrawal)

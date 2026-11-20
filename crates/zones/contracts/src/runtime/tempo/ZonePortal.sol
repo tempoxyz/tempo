@@ -255,6 +255,10 @@ contract ZonePortal is IZonePortal {
     /// @dev Packed after the registrar in slot 28. Defaults to false.
     bool internal _identityEnforced;
 
+    /// @notice Sender org of the withdrawal whose callback is running.
+    /// @dev Read only while `_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE`.
+    uint64 internal transient _callbackSenderOrg;
+
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -544,6 +548,14 @@ contract ZonePortal is IZonePortal {
         _requireCapabilityActive(Capability.AccessPolicy);
         transfersEnabled = enabled;
         emit TransfersEnabledUpdated(enabled);
+    }
+
+    /// @inheritdoc IZonePortal
+    function callbackSenderOrg() external view returns (uint64) {
+        if (_withdrawalReentrancyStatus != CALLBACK_DEPOSIT_AVAILABLE) {
+            revert NoActiveCallback();
+        }
+        return _callbackSenderOrg;
     }
 
     /// @notice Set the zone's ZoneIdentity registrar and whether it enforces org edges.
@@ -1148,7 +1160,7 @@ contract ZonePortal is IZonePortal {
 
         for (uint256 i = withdrawals.length; i > 0; --i) {
             remainingQueues[i - 1] = nextQueue;
-            nextQueue = keccak256(abi.encode(withdrawals[i - 1], nextQueue));
+            nextQueue = WithdrawalQueueLib.hashWithTail(withdrawals[i - 1], nextQueue);
         }
 
         for (uint256 i; i < withdrawals.length; ++i) {
@@ -1189,6 +1201,7 @@ contract ZonePortal is IZonePortal {
                 withdrawal.to,
                 withdrawal.amount,
                 withdrawal.senderTag,
+                withdrawal.senderOrg,
                 withdrawal.gasLimit,
                 withdrawal.callbackData
             ) {
@@ -1213,6 +1226,7 @@ contract ZonePortal is IZonePortal {
         address target,
         uint128 amount,
         bytes32 senderTag,
+        uint64 senderOrg,
         uint64 gasLimit,
         bytes calldata data
     )
@@ -1229,6 +1243,7 @@ contract ZonePortal is IZonePortal {
         bytes32 depositQueueHashBefore = currentDepositQueueHash;
 
         _withdrawalReentrancyStatus = CALLBACK_DEPOSIT_AVAILABLE;
+        _callbackSenderOrg = senderOrg;
 
         // We copy whatever the messenger reverts with, so keep its errors small.
         IZoneMessenger(messenger)

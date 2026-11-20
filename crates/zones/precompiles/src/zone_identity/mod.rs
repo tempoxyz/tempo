@@ -125,6 +125,14 @@ impl ZoneIdentity {
         })
     }
 
+    /// The org `account` is in, 0 when it is in none, for protocol code. Priced as cold.
+    pub fn member_org(&self, account: Address) -> ZoneResult<u64> {
+        Ok(self
+            .storage
+            .with_cold_pricing(|| self.members[account].read())?
+            .org)
+    }
+
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
     pub fn ensure_transfer(
         &self,
