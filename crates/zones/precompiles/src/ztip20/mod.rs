@@ -10,14 +10,14 @@
 //! Zone-local while the EVM context's database adapter exposes selected policy values and, from
 //! T15, the token's pause flag from the finalized Tempo L1 state.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 pub use tempo_contracts::zones::InsufficientBalance;
 use tempo_contracts::zones::{Unauthorized, ZoneIdentityError};
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     error::Result,
-    tip20::{IRolesAuth, ITIP20},
+    tip20::{IRolesAuth, ITIP20, TIP20Token},
 };
 
 use crate::{
@@ -59,13 +59,52 @@ impl<P: L1StorageReader> TIP20Rules<P> {
     /// org edge from `from` to `to` for the token. Upstream TIP-20 then reverts, rather than
     /// diverts, a transfer that the recipient's receive policy blocks on a zone.
     fn admit_transfer(&self, from: Address, to: Address) -> Result<CallCheck> {
-        // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
-        // paths.
+        if let Some(denied) = self.transfers_disabled()? {
+            return Ok(denied);
+        }
+        self.admit_org_edge(from, to)
+    }
+
+    /// Admits a `transferFrom` of `amount` from `from` by `spender`.
+    ///
+    /// The org edge is checked only once the spender may actually move `amount` of `from`'s funds,
+    /// so a spender without allowance can't use the answer to learn `from`'s edges. Upstream
+    /// TIP-20 then rejects an allowance that doesn't cover `amount`, and moves nothing for a zero
+    /// amount.
+    fn admit_transfer_from(
+        &self,
+        spender: Address,
+        from: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<CallCheck> {
+        if let Some(denied) = self.transfers_disabled()? {
+            return Ok(denied);
+        }
+        let allowance =
+            TIP20Token::from_address_unchecked(self.token).allowance(ITIP20::allowanceCall {
+                owner: from,
+                spender,
+            })?;
+        if amount.is_zero() || allowance < amount {
+            return Ok(CallCheck::Continue);
+        }
+        self.admit_org_edge(from, to)
+    }
+
+    /// Rejects every zone-internal transfer before T15 or while the portal admin hasn't opted in.
+    /// Before T15, private asset movement is limited to the protocol-managed inbox and outbox paths.
+    fn transfers_disabled(&self) -> Result<Option<CallCheck>> {
         if !StorageCtx::default().spec().is_t15()
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
-            return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
+            return Ok(Some(CallCheck::Revert(Unauthorized {}.abi_encode().into())));
         }
+        Ok(None)
+    }
+
+    /// Admits a transfer from `from` to `to` if ZoneIdentity allows it.
+    fn admit_org_edge(&self, from: Address, to: Address) -> Result<CallCheck> {
         let enforced = ZoneIdentity::enforced(&self.l1)?;
         if ZoneIdentity::new().allows(enforced, self.token, from, to, TransferKind::InZone)? {
             return Ok(CallCheck::Continue);
@@ -104,11 +143,20 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                     to,
                     ..
                 }) => self.admit_transfer(caller, to).unwrap_or_else(CallCheck::Error),
-                // Checked from the owner whose funds move, whoever the spender is.
-                ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall { from, to, .. })
-                | ITIP20::ITIP20Calls::transferFromWithMemo(
-                    ITIP20::transferFromWithMemoCall { from, to, .. },
-                ) => self.admit_transfer(from, to).unwrap_or_else(CallCheck::Error),
+                // Checked from the owner whose funds move, once the spender may move them.
+                ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
+                    from,
+                    to,
+                    amount,
+                })
+                | ITIP20::ITIP20Calls::transferFromWithMemo(ITIP20::transferFromWithMemoCall {
+                    from,
+                    to,
+                    amount,
+                    ..
+                }) => self
+                    .admit_transfer_from(caller, from, to, amount)
+                    .unwrap_or_else(CallCheck::Error),
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
                 | ITIP20::ITIP20Calls::mintWithMemo(_)
@@ -913,6 +961,83 @@ mod tests {
             U256::from(10_000u64)
         );
 
+        Ok(())
+    }
+
+    /// A spender whose allowance doesn't cover the amount gets TIP-20's own answer, never the org
+    /// decision, so it can't probe the owner's edges.
+    #[test]
+    fn transfer_from_checks_org_edges_only_for_authorized_spenders() -> eyre::Result<()> {
+        use crate::zone_identity::ZoneIdentity;
+        use tempo_contracts::zones::ZoneIdentityError;
+
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        harness.l1_reader.with_storage(TEMPO_BLOCK_NUMBER, || {
+            ZonePortal::new(PORTAL_ADDRESS)
+                .identity_enforced
+                .write(true)
+        })?;
+        // Alice's org opens no edges, so nothing she owns may reach Bob, who is in no org.
+        let registrar = Address::with_last_byte(0xb0);
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut identity = ZoneIdentity::new();
+                let org = identity.create_org(registrar, registrar, registrar)?;
+                identity.add_members(registrar, org, &[harness.alice])?;
+                Ok(())
+            })?;
+        }
+        let (alice, bob) = (harness.alice, harness.bob);
+        let transfer_from = move |amount: u64| -> Bytes {
+            ITIP20::transferFromCall {
+                from: alice,
+                to: bob,
+                amount: U256::from(amount),
+            }
+            .abi_encode()
+            .into()
+        };
+        let forbidden = Bytes::from(
+            ZoneIdentityError::org_policy_forbids(harness.token, harness.alice, harness.bob)
+                .abi_encode(),
+        );
+        let outsider = Address::with_last_byte(0xb1);
+
+        // No allowance: TIP-20 rejects the amount, and a zero amount moves nothing.
+        let call = transfer_from(1);
+        let result = harness.call(outsider, call.clone(), harness.fixed_gas(&call)?, false)?;
+        assert!(result.is_revert());
+        assert_ne!(result.bytes, forbidden);
+        let call = transfer_from(0);
+        let result = harness.call(outsider, call.clone(), harness.fixed_gas(&call)?, false)?;
+        assert!(result.is_success());
+
+        // An allowance beyond what the spender holds is rejected the same way.
+        let call = transfer_from(300_001);
+        let result = harness.call(
+            harness.spender,
+            call.clone(),
+            harness.fixed_gas(&call)?,
+            false,
+        )?;
+        assert!(result.is_revert());
+        assert_ne!(result.bytes, forbidden);
+
+        // Within its allowance, the spender gets the org decision.
+        let call = transfer_from(1);
+        let result = harness.call(
+            harness.spender,
+            call.clone(),
+            harness.fixed_gas(&call)?,
+            false,
+        )?;
+        assert!(result.is_revert());
+        assert_eq!(result.bytes, forbidden);
+
+        assert_eq!(harness.balance_of(harness.bob)?, U256::ZERO);
+        assert_eq!(harness.balance_of(harness.alice)?, U256::from(1_000_000u64));
         Ok(())
     }
 
