@@ -49,9 +49,6 @@ pub(crate) fn verify_finalized_tip(
 
     let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
     if let Some((height, certificate)) = tip {
-        // The tip may sit below the floor: marshal syncs its block and
-        // certificate archives concurrently, so a stop between the two syncs
-        // can leave locally processed blocks above the last stored certificate.
         ensure!(!height.is_zero(), "genesis must not have a certificate");
 
         let cert_epoch = certificate.proposal.round.epoch();
