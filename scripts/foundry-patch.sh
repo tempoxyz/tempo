@@ -59,12 +59,28 @@ if [[ -n "$COMMONWARE_VERSION" ]]; then
     sed -i -E "s/^(commonware-[a-z-]+ = (\{ *version = )?\")=[^\"]+\"/\1=$COMMONWARE_VERSION\"/" "$manifest"
   done < <(find "$FOUNDRY_ROOT" -name Cargo.toml -not -path '*/target/*' -print0)
 
-  while read -r name version; do
-    # One --precise update moves the whole commonware family, so re-check the
-    # lockfile before each package.
-    grep -A1 -xF "name = \"$name\"" "$FOUNDRY_LOCK" | grep -qxF "version = \"$version\"" || continue
-    (cd "$FOUNDRY_ROOT" && cargo update --quiet -p "$name@$version" --precise "$COMMONWARE_VERSION")
-  done < <(awk -v want="$COMMONWARE_VERSION" '/^name = "commonware-/ { n = $3; gsub(/"/, "", n) } /^version = / { if (n) { v = $3; gsub(/"/, "", v); if (v != want) print n, v; n = "" } }' "$FOUNDRY_LOCK" | sort -u)
+  stale_commonware() {
+    awk -v want="$COMMONWARE_VERSION" '/^name = "commonware-/ { n = $3; gsub(/"/, "", n) } /^version = / { if (n) { v = $3; gsub(/"/, "", v); if (v != want) print n, v; n = "" } }' "$FOUNDRY_LOCK" | sort -u
+  }
+
+  # One --precise update moves the whole commonware family, and can move the
+  # family's internal crates (such as commonware-macros) to a newer release
+  # than Tempo's, so repeat until every locked commonware package is aligned.
+  for _ in 1 2 3 4; do
+    stale="$(stale_commonware)"
+    [[ -n "$stale" ]] || break
+    while read -r name version; do
+      # An earlier update in this pass may already have moved this package, or
+      # it may need another family member moved first.
+      grep -A1 -xF "name = \"$name\"" "$FOUNDRY_LOCK" | grep -qxF "version = \"$version\"" || continue
+      (cd "$FOUNDRY_ROOT" && cargo update --quiet -p "$name@$version" --precise "$COMMONWARE_VERSION" 2>/dev/null) || true
+    done <<< "$stale"
+  done
+  if [[ -n "$(stale_commonware)" ]]; then
+    echo "ERROR: commonware packages not aligned at $COMMONWARE_VERSION in Foundry's Cargo.lock:" >&2
+    stale_commonware >&2
+    exit 1
+  fi
 fi
 
 # ── 1. Discover tempo-* workspace crates that have local paths ──────────────
