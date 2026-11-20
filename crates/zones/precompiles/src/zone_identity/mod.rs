@@ -279,8 +279,6 @@ impl ZoneIdentity {
         rules: L1Target,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
-        // Withdrawals are checked against the raw recipient, so a virtual deposit address on Tempo
-        // is listed as itself.
         if target.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
