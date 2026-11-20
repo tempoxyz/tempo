@@ -46,7 +46,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, DeferredCeremonyOutput, ExecutionLayer, Mailbox, Marshal, init},
+    executor::{Config, DeferredCeremonyOutput, ExecutionLayer, Finalized, Mailbox, Marshal, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -1112,6 +1112,32 @@ impl Marshal for FakeMarshal {
     }
 }
 
+/// Records the executor's finalized reports.
+#[derive(Clone, Default)]
+pub(super) struct FinalizedRecorder {
+    reports: Arc<Mutex<Vec<Finalized>>>,
+}
+
+impl FinalizedRecorder {
+    /// The reported `(height, digest)` pairs, in order.
+    pub(super) fn reports(&self) -> Vec<(u64, Digest)> {
+        self.reports
+            .lock()
+            .iter()
+            .map(|finalized| (finalized.height.get(), finalized.digest))
+            .collect()
+    }
+}
+
+impl commonware_consensus::Reporter for FinalizedRecorder {
+    type Activity = Finalized;
+
+    fn report(&mut self, activity: Finalized) -> commonware_actor::Feedback {
+        self.reports.lock().push(activity);
+        commonware_actor::Feedback::Ok
+    }
+}
+
 /// Options for starting the actor under test.
 pub(super) struct HarnessOptions {
     pub(super) finalized_floor: u64,
@@ -1183,6 +1209,7 @@ impl HarnessBuilder {
             marshal,
             options,
         } = self;
+        let finalized_reports = FinalizedRecorder::default();
         let (actor, mailbox) = init(
             context.child("executor"),
             Config {
@@ -1196,6 +1223,7 @@ impl HarnessBuilder {
                 marshal: marshal.clone(),
                 fcu_heartbeat_interval: options.fcu_heartbeat_interval,
                 public_key: options.public_key,
+                finalized_reporter: finalized_reports.clone(),
             },
         )?;
         let actor = actor.start();
@@ -1203,6 +1231,7 @@ impl HarnessBuilder {
             context: context.child("harness"),
             execution,
             marshal,
+            finalized_reports,
             mailbox,
             actor,
         })
@@ -1214,6 +1243,7 @@ pub(super) struct Harness<TContext = deterministic::Context> {
     pub(super) context: TContext,
     pub(super) execution: FakeExecution,
     pub(super) marshal: FakeMarshal,
+    pub(super) finalized_reports: FinalizedRecorder,
     pub(super) mailbox: Mailbox,
     pub(super) actor: Handle<()>,
 }

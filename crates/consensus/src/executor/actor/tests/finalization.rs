@@ -628,3 +628,47 @@ fn finalizing_a_conflicting_branch_moves_the_head() {
         assert_eq!(h.execution.finalized(), Some((1, db1)));
     });
 }
+
+#[test_traced]
+fn finalized_blocks_are_reported_once_finalized_before_they_are_durable() {
+    deterministic::Runner::default().start(|context| async move {
+        let mut h = Harness::start_at_genesis(&context);
+        h.execution.persist_manually();
+
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
+
+        // The startup update does not move finality, so it reports nothing.
+        h.run_for(Duration::from_millis(10)).await;
+        assert!(h.finalized_reports.reports().is_empty());
+
+        h.deliver_tip(round(2), 2, d2);
+        let mut w1 = pin!(h.deliver_finalized(b1));
+        let w2 = pin!(h.deliver_finalized(b2));
+        h.wait_until(|| h.execution.finalized() == Some((2, d2)))
+            .await;
+        h.wait_until(|| h.finalized_reports.reports().last() == Some(&(2, d2)))
+            .await;
+
+        // Reported once the update finalizing them was accepted, while their
+        // acknowledgement still waits for persistence.
+        let reports = h.finalized_reports.reports();
+        assert!(reports.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(
+            reports
+                .iter()
+                .all(|report| [(1, d1), (2, d2)].contains(report))
+        );
+        assert!(poll!(&mut w1).is_pending());
+
+        h.execution.persist(2, d2);
+        w1.await.expect("first block is durable");
+        w2.await.expect("second block is durable");
+
+        // Reaffirming the same finality reports nothing new.
+        let before = h.finalized_reports.reports();
+        h.run_for(Duration::from_millis(10)).await;
+        assert_eq!(h.finalized_reports.reports(), before);
+    });
+}

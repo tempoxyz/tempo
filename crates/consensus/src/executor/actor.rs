@@ -89,7 +89,7 @@ use std::{
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
-    CertifiableBlock as _, Heightable as _,
+    CertifiableBlock as _, Heightable as _, Reporter,
     marshal::Update,
     types::{Height, Round, View},
 };
@@ -122,7 +122,7 @@ use tracing::{
 };
 
 use super::{
-    Config, ExecutionLayer, Marshal,
+    Config, ExecutionLayer, Finalized, Marshal,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -142,7 +142,7 @@ const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// canonical head while finalized catchup continues.
 const DELIVERIES_PER_FORKCHOICE_UPDATE: usize = 8;
 
-pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
+pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -160,6 +160,9 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// The mailbox of the marshal actor. Used to backfill finalized blocks
     /// on startup and to fetch missing notarized block bodies.
     marshal: TMarshal,
+    /// Receives each finalized block once its state is readable from the
+    /// execution layer.
+    finalized_reporter: TReporter,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -340,15 +343,17 @@ impl Metrics {
     }
 }
 
-impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
+impl<TContext, TExecutionLayer, TMarshal, TReporter>
+    Actor<TContext, TExecutionLayer, TMarshal, TReporter>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TReporter: Reporter<Activity = Finalized>,
 {
     pub(super) fn init(
         context: TContext,
-        config: super::Config<TExecutionLayer, TMarshal>,
+        config: super::Config<TExecutionLayer, TMarshal, TReporter>,
         mailbox: UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let Config {
@@ -358,6 +363,7 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
+            finalized_reporter,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
@@ -430,6 +436,7 @@ where
             finalized_floor,
             mailbox,
             marshal,
+            finalized_reporter,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -912,7 +919,10 @@ where
     /// rejected one is fatal: every target named is a block the execution
     /// layer accepted, so the executor's view of the execution layer has
     /// diverged from it. Finalized blocks the update covers are
-    /// acknowledged; a build it carried is driven to completion.
+    /// acknowledged; a build it carried is driven to completion. A higher
+    /// finalized block is reported to the finalized reporter: either the
+    /// execution layer just made it canonical, or it had already finalized
+    /// past it.
     fn handle_forkchoice_response(
         &mut self,
         target: LocalState,
@@ -956,7 +966,12 @@ where
         // with the count left full it would be rescheduled ahead of the
         // mailbox forever.
         self.deliveries_since_forkchoice = 0;
+        let previous_finalized = self.local_state.finalized.0;
         self.local_state = target;
+        if target.finalized.0 > previous_finalized {
+            let (height, digest) = target.finalized;
+            let _ = self.finalized_reporter.report(Finalized { height, digest });
+        }
         self.acknowledge_persisted()?;
 
         // Dropping the build's response channel signals the failure to the
