@@ -2534,7 +2534,7 @@ impl WithdrawalArgs {
             tempo_refund_recipient: args.tempo_refund_recipient,
             min_amount_out: args.min_amount_out,
             // Tests accept any downstream deposit fee.
-            max_fee: u128::MAX,
+            max_fee: Some(u128::MAX),
         }
         .abi_encode();
 
