@@ -286,13 +286,14 @@ where
                 );
             }
 
-            // These headers are hash-chained to a verified finalization, so the boundary's
-            // identity is authenticated: retire the previous fallback in favor of it.
-            let previous = self.verifier.network_identity().clone();
             let identity = NetworkIdentity {
                 from_epoch: onchain_outcome.epoch,
                 identity: *onchain_outcome.network_identity(),
             };
+
+            // These headers are hash-chained to a verified finalization, so the boundary's
+            // identity is authenticated: retire the previous fallback in favor of it.
+            let previous = self.verifier.network_identity().clone();
             if self.verifier.advance_network_identity(identity.clone()) {
                 info!(
                     previous_from_epoch = previous.from_epoch,
