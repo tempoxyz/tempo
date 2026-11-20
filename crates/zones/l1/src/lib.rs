@@ -34,7 +34,7 @@ use reth_storage_api::StateProviderFactory;
 use std::{pin::Pin, sync::Arc};
 use tempo_alloy::TempoNetwork;
 use tempo_primitives::TempoHeader;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, info_span, instrument, warn};
 
 pub mod abi {
     pub use tempo_contracts::zones::*;

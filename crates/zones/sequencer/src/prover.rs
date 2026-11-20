@@ -35,7 +35,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, info, warn};
+use tracing::{Instrument as _, Span, debug, info, info_span, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::TempoStateExt as _;
 use zone_prover::{
@@ -91,6 +91,8 @@ struct ProverJob {
     batch: BatchData,
     anchor: BatchAnchor,
     enqueued_at: Instant,
+    /// Span of the requester, so validation joins the batch's trace.
+    span: Span,
     response: oneshot::Sender<Result<SettlementProof>>,
 }
 
@@ -186,7 +188,16 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
                 .queue_duration_seconds
                 .record(job.enqueued_at.elapsed().as_secs_f64());
             let started = Instant::now();
-            let result = validate_candidate(&context, &job, &proofs, &metrics).await;
+            let span = info_span!(
+                parent: &job.span,
+                "zone.prover.validate",
+                zone_from = job.from,
+                zone_to = job.to,
+                withdrawal_batch_index = job.batch.withdrawal_batch_index,
+            );
+            let result = validate_candidate(&context, &job, &proofs, &metrics)
+                .instrument(span)
+                .await;
             let validation_duration_seconds = if result.is_ok() {
                 &metrics.validation_duration_seconds_success
             } else {
@@ -283,6 +294,7 @@ impl SettlementProver {
                 batch: prepared.batch,
                 anchor: prepared.anchor,
                 enqueued_at: Instant::now(),
+                span: Span::current(),
                 response,
             })
             .await

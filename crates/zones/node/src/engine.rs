@@ -54,7 +54,7 @@ use std::{
 use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_primitives::TempoHeader;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{Instrument as _, error, field, info, info_span};
 
 use crate::deposit_allowlist::DepositAllowlist;
 use zone_chainspec::ZoneChainSpec;
@@ -366,6 +366,16 @@ impl ZoneEngine {
         let checkpoint_only = !checkpoint_headers.is_empty();
         let final_header = checkpoint_headers.last().unwrap_or(&l1_block.header);
         let l1_num_hash = final_header.num_hash();
+        // One root span per Zone block, so every block is its own trace keyed by both heights.
+        let span = info_span!(
+            target: "zone::engine",
+            parent: None,
+            "zone.engine.advance",
+            l1_block = l1_num_hash.number,
+            checkpoint_only,
+            deposits = field::Empty,
+            zone_block = field::Empty,
+        );
 
         let timestamp_millis = zone_timestamp_millis(
             final_header.timestamp_millis(),
@@ -381,6 +391,14 @@ impl ZoneEngine {
             let portal_work = self
                 .deposit_queue
                 .operational_work(l1_block.header.num_hash())?;
+            span.record(
+                "deposits",
+                portal_work
+                    .iter()
+                    .flat_map(|block| &block.events.deposits)
+                    .filter(|deposit| matches!(deposit, L1Deposit::Deposit(_)))
+                    .count(),
+            );
             let senders = self.deposit_allowlist.as_ref().map(|_| {
                 portal_work
                     .iter()
@@ -396,6 +414,7 @@ impl ZoneEngine {
                 &self.encryption_keys,
                 self.portal_address,
             )
+            .instrument(info_span!(target: "zone::engine", parent: &span, "prepare_deposits"))
             .await?;
             if let Some((allowlist, senders)) = self.deposit_allowlist.as_ref().zip(senders) {
                 let rejected = allowlist.reject_unlisted(
@@ -438,6 +457,7 @@ impl ZoneEngine {
         let res = self
             .to_engine
             .fork_choice_updated(self.forkchoice_state(), Some(attributes))
+            .instrument(info_span!(target: "zone::engine", parent: &span, "fcu_build"))
             .await?;
 
         if res.is_invalid() {
@@ -449,6 +469,7 @@ impl ZoneEngine {
         let Some(Ok(payload)) = self
             .payload_builder
             .resolve_kind(payload_id, PayloadKind::WaitForPending)
+            .instrument(info_span!(target: "zone::engine", parent: &span, "build_payload"))
             .await
         else {
             eyre::bail!("No payload");
@@ -456,18 +477,25 @@ impl ZoneEngine {
 
         let header = payload.block().sealed_header().clone();
         let block_number = header.number();
-        let res = self.to_engine.new_payload(payload.into()).await?;
+        span.record("zone_block", block_number);
+        let res = self
+            .to_engine
+            .new_payload(payload.into())
+            .instrument(info_span!(target: "zone::engine", parent: &span, "new_payload"))
+            .await?;
 
         if !res.is_valid() {
             eyre::bail!("Invalid payload for block {block_number}");
         }
 
         if let Some(collector) = &self.proof_collector {
-            stop.run_until_cancelled(collector.collect_for_import(
-                block_number,
-                header.hash(),
-                header.timestamp(),
-            ))
+            stop.run_until_cancelled(
+                collector
+                    .collect_for_import(block_number, header.hash(), header.timestamp())
+                    .instrument(
+                        info_span!(target: "zone::engine", parent: &span, "persist_proofs"),
+                    ),
+            )
             .await
             .ok_or_else(|| eyre::eyre!("engine stopped while waiting for witness persistence"))?
             .wrap_err_with(|| {
@@ -479,7 +507,13 @@ impl ZoneEngine {
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
-            self.deposit_queue.confirm_operational(l1_num_hash)?;
+            // The block is executed and its proofs are durable: deposits it imports are applied.
+            for observed_at in self.deposit_queue.confirm_operational(l1_num_hash)? {
+                metrics::histogram!(
+                    "tempo_zone_latency_deposit_observed_to_zone_block_persisted_seconds"
+                )
+                .record(observed_at.elapsed().as_secs_f64());
+            }
         }
         self.l1_block_tracker.prune_through(l1_num_hash.number);
         if let Some(permit) = &self.production_permit {
@@ -490,7 +524,11 @@ impl ZoneEngine {
         // Canonicalize the new head — FCU-with-attrs above only set the
         // *previous* head as canonical; this bare FCU makes the just-built
         // block the EL's canonical head.
-        if let Err(e) = self.update_forkchoice_state().await {
+        if let Err(e) = self
+            .update_forkchoice_state()
+            .instrument(info_span!(target: "zone::engine", parent: &span, "fcu_canonical"))
+            .await
+        {
             error!(target: "zone::engine", "Error sending post-newPayload FCU: {:?}", e);
         }
 

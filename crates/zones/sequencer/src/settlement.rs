@@ -63,7 +63,7 @@ use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallB
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{Block, TempoReceipt};
 use tokio::time::{Instant, sleep};
-use tracing::{info, instrument, warn};
+use tracing::{Instrument as _, Span, field, info, info_span, instrument, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::{ProofBundle, VerifierMode};
 
@@ -395,6 +395,7 @@ impl BatchSubmitter {
         withdrawal_queue_hash = %prepared.batch.withdrawal_queue_hash,
         withdrawal_batch_index = prepared.batch.withdrawal_batch_index,
         prover_hardfork = ?proof_bundle.map(|proof| proof.hardfork),
+        tx_hash = field::Empty,
     ))]
     pub async fn submit_batch(
         &self,
@@ -533,6 +534,7 @@ impl BatchSubmitter {
                 submission
                     .send_sync()
                     .timeout(Duration::from_secs(30))
+                    .instrument(info_span!("submit_batch_send_sync", nonce))
                     .await
             }
             SettlementAbi::T13 => {
@@ -560,6 +562,7 @@ impl BatchSubmitter {
                 submission
                     .send_sync()
                     .timeout(Duration::from_secs(30))
+                    .instrument(info_span!("submit_batch_send_sync", nonce))
                     .await
             }
         }
@@ -567,6 +570,7 @@ impl BatchSubmitter {
         .map_err(|error| BatchSubmitError::Other(error.into()))?;
 
         let tx_hash = receipt.transaction_hash();
+        Span::current().record("tx_hash", field::display(tx_hash));
         if !receipt.status() {
             return Err(
                 eyre::eyre!("submitBatch tx {tx_hash} was included but reverted on L1").into(),
@@ -1432,6 +1436,8 @@ pub(crate) struct FinalizedBatch {
     pub finalized_index: u64,
     /// Reconstructed withdrawal payloads for the off-chain processor store.
     pub withdrawals: Vec<abi::Withdrawal>,
+    /// Timestamp of the Zone block that requested and finalized the withdrawals, in milliseconds.
+    pub block_timestamp_millis: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1885,6 +1891,7 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
         finalized_hash: target.withdrawal_queue_hash,
         finalized_index: target.withdrawal_batch_index,
         withdrawals,
+        block_timestamp_millis: block.header.timestamp_millis(),
     })
 }
 

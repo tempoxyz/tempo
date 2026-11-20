@@ -15,6 +15,20 @@ pub(crate) struct SequencerMetrics {
     pub(crate) ousd_balance: Gauge,
 }
 
+/// Wall-clock latency between withdrawal pipeline stages, exported with buckets by the node.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_latency")]
+pub(crate) struct LatencyMetrics {
+    /// Seconds from the Zone block that requested and finalized a batch's withdrawals until its
+    /// `submitBatch` confirmed on Tempo L1. Recorded only for batches with withdrawals.
+    pub(crate) withdrawal_included_to_batch_submitted_seconds: Histogram,
+
+    /// Seconds from a batch's `submitBatch` confirmation until every `processWithdrawals`
+    /// transaction for its portal queue slot confirmed. Not recorded for slots submitted before
+    /// the sequencer started.
+    pub(crate) batch_submitted_to_withdrawals_processed_seconds: Histogram,
+}
+
 /// Metrics emitted by the prover.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_prover")]

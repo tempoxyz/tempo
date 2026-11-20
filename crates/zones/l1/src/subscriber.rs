@@ -1115,6 +1115,7 @@ where
         let mut invalidated = HashSet::new();
         let mut portal_logs = self.config.retain_portal_evidence.then(Vec::new);
 
+        let mut deposit_tx_hashes = Vec::new();
         for receipt in receipts {
             let retain_receipt_logs = portal_logs.is_some() && receipt.status();
             for log in receipt.logs() {
@@ -1128,11 +1129,18 @@ where
                     if let Some(address) = portal_event_cache_invalidation_address(log.topic0()) {
                         invalidated.insert(address);
                     }
+                    let deposits_before = portal_events.deposits.len();
                     portal_events
                         .push_log(log, block_number)
                         .wrap_err_with(|| {
                             format!("failed to decode a portal event in L1 block {block_number}")
                         })?;
+                    if portal_events.deposits[deposits_before..]
+                        .iter()
+                        .any(|deposit| matches!(deposit, L1Deposit::Deposit(_)))
+                    {
+                        deposit_tx_hashes.push(receipt.transaction_hash());
+                    }
                 } else if let Some(address) = cache_invalidation_address(address, log.topic0()) {
                     invalidated.extend([address, log.address()]);
                 } else if is_tip20_pause_update(address, log.topic0()) {
@@ -1148,6 +1156,23 @@ where
             invalidated.extend([event.token, TIP403_REGISTRY_ADDRESS]);
         }
         self.record_portal_event_metrics(&portal_events);
+        if !deposit_tx_hashes.is_empty() {
+            // A root span per block, so a trace search on an L1 deposit transaction finds when
+            // this node observed it and the L1 block the Zone engine imports it with.
+            let _observed = info_span!(
+                target: "zone::l1",
+                parent: None,
+                "zone.l1.deposits_observed",
+                l1_block = block_number,
+                deposits = deposit_tx_hashes.len(),
+                l1_tx_hashes = %deposit_tx_hashes
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .entered();
+        }
         Ok((portal_events, invalidated, portal_logs))
     }
 

@@ -1,5 +1,7 @@
 use alloy_primitives::U256;
-use reth_node_core::args::{DefaultRpcServerArgs, DefaultTxPoolValues, GasPriceOracleArgs};
+use reth_node_core::args::{
+    DefaultRpcServerArgs, DefaultTraceValues, DefaultTxPoolValues, GasPriceOracleArgs,
+};
 
 /// Pooled transactions per account, as on Tempo. The same value caps the 2D nonce pool per
 /// authority.
@@ -20,4 +22,11 @@ pub(crate) fn init_defaults() {
         })
         .try_init()
         .expect("failed to initialize RPC defaults");
+
+    // Name exported spans after this binary rather than Reth's default "reth".
+    DefaultTraceValues::default()
+        .with_service_name("tempo-zone")
+        .with_service_version(env!("CARGO_PKG_VERSION"))
+        .try_init()
+        .expect("failed to initialize trace defaults");
 }
