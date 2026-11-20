@@ -308,8 +308,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         let pending = admin.send(ZONE_IDENTITY_ADDRESS, call).await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
-    let alice_org = alice.identity().orgOf(alice.address).call().await?;
-    assert_eq!((alice_org.orgId, alice_org.frozen), (org_a, false));
+    assert_eq!(alice.identity().orgOf(alice.address).call().await?, org_a);
     // Membership is private to the account, its org's admin and the registrar.
     let org_of = IZoneIdentity::orgOfCall {
         account: alice.address,
@@ -367,7 +366,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     fixture.seed_identity_config(registrar.address, true);
 
-    // Inside an org transfers pass; A to B waits for B's half; B to A and org 0 have no edge.
+    // Inside an org transfers pass; A to B waits for B's half; B to A has no edge, and A hasn't
+    // opened its half to or from org 0.
     let to_bob = alice.transfer(bob.address, 1_000).await?;
     let to_carol = alice.transfer(carol.address, 1_000).await?;
     assert_eq!(
@@ -468,14 +468,14 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let pending = alice.send(ZONE_OUTBOX_ADDRESS, withdraw(offramp)).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
 
-    // Freezing a member stops transfers to it, even inside its org.
-    let freeze = IZoneIdentity::setFrozenCall {
-        account: bob.address,
-        frozen: true,
-    };
-    let pending = admin_a.send(ZONE_IDENTITY_ADDRESS, freeze).await?;
-    assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
-    assert_transfer(&zone, alice.address, bob.address, false).await?;
+    // Org 0 has no admin: A's own half toward org 0 lets Alice reach Dave, who is in no org, while
+    // Dave still can't send into A.
+    let open = admin_a
+        .send(ZONE_IDENTITY_ADDRESS, set_edge(org_a, 0))
+        .await?;
+    assert_eq!(mine(&mut fixture, &zone, vec![open]).await?, [true]);
+    assert_transfer(&zone, alice.address, dave.address, true).await?;
+    assert_transfer(&zone, dave.address, alice.address, false).await?;
 
     // Turning enforcement off on Tempo lifts every edge check.
     fixture.seed_identity_config(registrar.address, false);

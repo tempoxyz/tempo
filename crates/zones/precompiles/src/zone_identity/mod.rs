@@ -3,17 +3,18 @@
 //! [`ZoneIdentity`] is the source of truth for which org each Zone address belongs to, which TIP-20s
 //! each org may send to each other org, and which Tempo addresses each org's members may deposit
 //! from and withdraw to. An org is a set of Zone addresses with one admin; an address in no org is
-//! in org 0, whose admin is the registrar.
+//! in org 0, which has no admin.
 //!
 //! - **Transfers on the Zone** follow edges: org A may send token T to org B only when A's admin
 //!   allows T outbound to B and B's admin allows T inbound from A. An org's edge to itself, which
-//!   its admin sets alone, allows transfers between its members.
+//!   its admin sets alone, allows transfers between its members. Org 0 always agrees, so a move to
+//!   or from org 0 needs only the other org's half, and moves within org 0 are allowed.
 //! - **Deposits and withdrawals** follow the member's org alone. Tempo addresses are never members,
 //!   so nobody has to consent for an org to name one: an org lists, per token, the Tempo addresses
 //!   it accepts deposits from and lets members withdraw to ([`L1Target`]), and may open either
-//!   direction to any address or to the member's own address ([`L1Policy`]). Several orgs may list
-//!   the same address, such as an off-ramp or an Earn router on Tempo. An address in no org may
-//!   always withdraw to any Tempo address, so removing a member never strands its funds.
+//!   direction to any address ([`L1Policy`]). Several orgs may list the same address, such as an
+//!   off-ramp or an Earn router on Tempo. An address in no org may always withdraw to any Tempo
+//!   address, so removing a member never strands its funds, and never accepts deposits.
 //!
 //! The portal admin configures it on Tempo: `ZonePortal.setIdentityConfig` sets the registrar and
 //! whether the zone enforces edges, and the zone reads both from finalized Tempo state, so a
@@ -66,10 +67,12 @@ impl ZoneIdentity {
     }
 
     /// Whether `token` may move from `from` to `to`. `enforced` is the portal's flag; when it is off
-    /// nothing is read. Otherwise the Zone party, or both for a transfer, must not be frozen, and:
+    /// nothing is read. Otherwise:
     ///
-    /// - a transfer needs both halves of the edge from the sender's org to the recipient's;
-    /// - a deposit needs the recipient's org to accept `from`, a Tempo address;
+    /// - a transfer needs the edge from the sender's org to the recipient's; org 0's half is always
+    ///   set;
+    /// - a deposit needs the recipient's org to accept `from`, a Tempo address; a recipient in org 0
+    ///   never does;
     /// - a withdrawal needs the sender's org to allow `to`, a Tempo address; a sender in org 0
     ///   may always withdraw.
     pub fn allows(
@@ -92,25 +95,19 @@ impl ZoneIdentity {
                 let sender = self.members[from].read()?;
                 let recipient = self.members[to].read()?;
                 let edge = self.orgs[sender.org].edges[recipient.org][token].read()?;
-                Ok(!sender.frozen && !recipient.frozen && edge.allows())
+                Ok(edge.allows_between(sender.org, recipient.org))
             }
             TransferKind::Deposit => {
                 let recipient = self.members[to].read()?;
+                // Read before deciding, so a recipient in org 0 costs the same as any other.
                 let (policy, target) = self.l1_rules(recipient.org, token, from)?;
-                let allowed = policy.open_deposit
-                    || (policy.self_deposit && from == to)
-                    || target.deposit_from;
-                Ok(!recipient.frozen && allowed)
+                Ok(recipient.org != 0 && (policy.open_deposit || target.deposit_from))
             }
             TransferKind::Withdrawal => {
                 let sender = self.members[from].read()?;
-                let (policy, target) = self.l1_rules(sender.org, token, to)?;
                 // Read before deciding, so a sender in org 0 costs the same as any other.
-                let allowed = sender.org == 0
-                    || policy.open_withdrawal
-                    || (policy.self_withdrawal && to == from)
-                    || target.withdraw_to;
-                Ok(!sender.frozen && allowed)
+                let (policy, target) = self.l1_rules(sender.org, token, to)?;
+                Ok(sender.org == 0 || policy.open_withdrawal || target.withdraw_to)
             }
         })
     }
@@ -200,7 +197,7 @@ impl ZoneIdentity {
             }
         }
         for &account in accounts {
-            self.write_member(account, Member { org, frozen: false })?;
+            self.write_member(account, Member { org })?;
         }
         Ok(())
     }
@@ -212,24 +209,13 @@ impl ZoneIdentity {
         self.write_member(account, Member::default())
     }
 
-    /// Freezes or unfreezes a member of the caller's org.
-    pub fn set_frozen(
-        &mut self,
-        caller: Address,
-        account: Address,
-        frozen: bool,
-    ) -> ZoneResult<()> {
-        let member = self.ensure_member_admin(caller, account)?;
-        self.write_member(account, Member { frozen, ..member })
-    }
-
     /// Sets, for each of `tokens`, the halves of the Zone edge from `from` to `to` that the caller
     /// administers: the sending half as `from`'s admin, the receiving half as `to`'s. An admin of
-    /// both orgs, as for an org's edge to itself, sets both.
+    /// both orgs, as for an org's edge to itself, sets both. Org 0 has no admin: its half is always
+    /// set, so nobody sets it.
     pub fn set_edge(
         &mut self,
         caller: Address,
-        registrar: Address,
         from: u64,
         to: u64,
         tokens: &[Address],
@@ -237,8 +223,8 @@ impl ZoneIdentity {
     ) -> ZoneResult<()> {
         self.ensure_org(from)?;
         self.ensure_org(to)?;
-        let sending = !caller.is_zero() && caller == self.org_admin(registrar, from)?;
-        let receiving = !caller.is_zero() && caller == self.org_admin(registrar, to)?;
+        let sending = self.is_edge_admin(caller, from)?;
+        let receiving = self.is_edge_admin(caller, to)?;
         if !sending && !receiving {
             return Err(ZoneIdentityError::unauthorized().into());
         }
@@ -276,7 +262,8 @@ impl ZoneIdentity {
         rules: L1Target,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
-        if target.is_zero() {
+        // Org 0 accepts no deposits and may withdraw anywhere, so it has no targets.
+        if org == 0 || target.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         for &token in tokens {
@@ -293,8 +280,7 @@ impl ZoneIdentity {
     }
 
     /// Sets, for each of `tokens`, which Tempo addresses `org`'s members may use without a target.
-    /// Org 0's policy, set by the registrar, governs deposits to addresses in no org; they may
-    /// always withdraw.
+    /// Org 0 has no policy: it accepts no deposits and may withdraw anywhere.
     pub fn set_l1_policy(
         &mut self,
         caller: Address,
@@ -304,6 +290,9 @@ impl ZoneIdentity {
         policy: L1Policy,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
+        if org == 0 {
+            return Err(ZoneIdentityError::invalid_address().into());
+        }
         for &token in tokens {
             self.orgs[org].l1[token].policy.write(policy)?;
             self.emit_event(IZoneIdentity::L1PolicyUpdated {
@@ -315,7 +304,7 @@ impl ZoneIdentity {
         Ok(())
     }
 
-    /// Admin of `org`; the registrar for org 0.
+    /// Admin of `org`; the registrar for org 0, which only lets it read org 0's membership.
     pub fn org_admin(&self, registrar: Address, org: u64) -> ZoneResult<Address> {
         if org == 0 {
             return Ok(registrar);
@@ -356,7 +345,9 @@ impl ZoneIdentity {
         if caller != self.org_admin(registrar, from)? && caller != self.org_admin(registrar, to)? {
             ensure_caller(caller, registrar)?;
         }
-        Ok(self.orgs[from].edges[to][token].read()?.allows())
+        Ok(self.orgs[from].edges[to][token]
+            .read()?
+            .allows_between(from, to))
     }
 
     /// What `org` lets its members do with the Tempo address `target` for `token`, for `org`'s
@@ -396,14 +387,18 @@ impl ZoneIdentity {
         Ok(self.emit_event(IZoneIdentity::MemberUpdated {
             account,
             orgId: member.org,
-            frozen: member.frozen,
         })?)
     }
 
-    /// Returns `account`'s membership if the caller administers its org. Every other case,
+    /// Whether `caller` administers `org`'s halves of edges. Nobody does for org 0.
+    fn is_edge_admin(&self, caller: Address, org: u64) -> ZoneResult<bool> {
+        Ok(org != 0 && !caller.is_zero() && caller == self.orgs[org].admin.read()?)
+    }
+
+    /// Checks that the caller administers `account`'s org. Every other case,
     /// including an account in no org, reverts with the same `Unauthorized` after the same two
     /// reads, so the call does not reveal whether an account is a member.
-    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<Member> {
+    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<()> {
         // Reads the member and its org's admin slot whatever the caller, priced as cold.
         let (member, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
             let member = self.members[account].read()?;
@@ -412,7 +407,7 @@ impl ZoneIdentity {
         if member.org == 0 || admin.is_zero() || caller != admin {
             return Err(ZoneIdentityError::unauthorized().into());
         }
-        Ok(member)
+        Ok(())
     }
 
     fn ensure_org(&self, org: u64) -> ZoneResult<()> {
@@ -457,7 +452,7 @@ pub struct L1Rules {
 }
 
 /// Both halves of the Zone edge between two orgs for one token, packed into one slot. A transfer
-/// needs both.
+/// needs both; org 0's half is implied.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub struct Edge {
     /// Set by the sending org's admin.
@@ -467,9 +462,10 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Whether both halves allow the transfer.
-    fn allows(self) -> bool {
-        self.from_ok && self.to_ok
+    /// Whether the edge from org `from` to org `to` allows the transfer: both halves, with org 0's
+    /// half always set.
+    fn allows_between(self, from: u64, to: u64) -> bool {
+        (from == 0 || self.from_ok) && (to == 0 || self.to_ok)
     }
 }
 
@@ -490,10 +486,6 @@ pub struct L1Policy {
     pub open_deposit: bool,
     /// Members may withdraw to any Tempo address.
     pub open_withdrawal: bool,
-    /// A member accepts deposits from its own address on Tempo.
-    pub self_deposit: bool,
-    /// A member may withdraw to its own address on Tempo.
-    pub self_withdrawal: bool,
 }
 
 impl From<IZoneIdentity::L1Policy> for L1Policy {
@@ -501,8 +493,6 @@ impl From<IZoneIdentity::L1Policy> for L1Policy {
         Self {
             open_deposit: policy.openDeposit,
             open_withdrawal: policy.openWithdrawal,
-            self_deposit: policy.selfDeposit,
-            self_withdrawal: policy.selfWithdrawal,
         }
     }
 }
@@ -512,8 +502,6 @@ impl From<L1Policy> for IZoneIdentity::L1Policy {
         Self {
             openDeposit: policy.open_deposit,
             openWithdrawal: policy.open_withdrawal,
-            selfDeposit: policy.self_deposit,
-            selfWithdrawal: policy.self_withdrawal,
         }
     }
 }
@@ -523,8 +511,6 @@ impl From<L1Policy> for IZoneIdentity::L1Policy {
 pub struct Member {
     /// Org the address belongs to; 0 when it is in no org.
     pub org: u64,
-    /// The org admin froze the address: nothing may be sent to or from it.
-    pub frozen: bool,
 }
 
 /// How funds move between `from` and `to`.
@@ -601,9 +587,7 @@ mod tests {
     ) -> (Address, u64) {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, registrar, admin).unwrap();
-        identity
-            .set_edge(admin, registrar, org, org, &[usd], true)
-            .unwrap();
+        identity.set_edge(admin, org, org, &[usd], true).unwrap();
         identity
             .add_members(admin, registrar, org, &[ALICE, BOB])
             .unwrap();
@@ -619,27 +603,54 @@ mod tests {
             let usd = token(1);
             let edge =
                 |identity: &ZoneIdentity| identity.edge(registrar, registrar, a, b, usd).unwrap();
-            identity
-                .set_edge(admin_a, registrar, a, b, &[usd], true)
-                .unwrap();
+            identity.set_edge(admin_a, a, b, &[usd], true).unwrap();
             assert!(!edge(identity));
-            identity
-                .set_edge(admin_b, registrar, a, b, &[usd], true)
-                .unwrap();
+            identity.set_edge(admin_b, a, b, &[usd], true).unwrap();
             assert!(edge(identity));
             // Either admin closes it alone; nobody else can touch it.
-            identity
-                .set_edge(admin_b, registrar, a, b, &[usd], false)
-                .unwrap();
+            identity.set_edge(admin_b, a, b, &[usd], false).unwrap();
             assert!(!edge(identity));
             assert_eq!(
-                identity.set_edge(Address::repeat_byte(9), registrar, a, b, &[usd], true),
+                identity.set_edge(Address::repeat_byte(9), a, b, &[usd], true),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
             assert_eq!(
-                identity.set_edge(admin_a, registrar, a, 9, &[usd], true),
+                identity.set_edge(admin_a, a, 9, &[usd], true),
                 Err(identity_error(ZoneIdentityError::unknown_org(9)))
             );
+        });
+    }
+
+    #[test]
+    fn org_zero_needs_only_the_other_orgs_half() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let (carol, dave) = (Address::repeat_byte(0x55), Address::repeat_byte(0x66));
+            // Moves between addresses in org 0 need nothing.
+            assert!(allows(usd, carol, dave, TransferKind::InZone));
+            // Nobody sets org 0's half, not even the registrar.
+            for caller in [registrar, admin] {
+                assert_eq!(
+                    identity.set_edge(caller, 0, 0, &[usd], true),
+                    Err(identity_error(ZoneIdentityError::unauthorized()))
+                );
+            }
+            assert_eq!(
+                identity.set_edge(registrar, 0, org, &[usd], true),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            // Each direction opens with the org's own half alone.
+            assert!(!allows(usd, ALICE, carol, TransferKind::InZone));
+            assert!(!allows(usd, carol, ALICE, TransferKind::InZone));
+            identity.set_edge(admin, org, 0, &[usd], true).unwrap();
+            assert!(allows(usd, ALICE, carol, TransferKind::InZone));
+            assert!(identity.edge(admin, registrar, org, 0, usd).unwrap());
+            assert!(!allows(usd, carol, ALICE, TransferKind::InZone));
+            identity.set_edge(admin, 0, org, &[usd], true).unwrap();
+            assert!(allows(usd, carol, ALICE, TransferKind::InZone));
+            // Per token, like any edge.
+            assert!(!allows(token(2), ALICE, carol, TransferKind::InZone));
         });
     }
 
@@ -684,15 +695,12 @@ mod tests {
                     identity.remove_member(outsider, account),
                     Err(identity_error(ZoneIdentityError::unauthorized()))
                 );
-                assert_eq!(
-                    identity.set_frozen(outsider, account, true),
-                    Err(identity_error(ZoneIdentityError::unauthorized()))
-                );
             }
             assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
             identity.remove_member(admin, BOB).unwrap();
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
-            // The org's edges and targets no longer apply, but org 0 may withdraw anywhere.
+            // The org's edges and targets no longer apply, but org 0 may withdraw anywhere. The org
+            // hasn't opened its half to org 0, so the two can't reach each other on the zone.
             assert!(!allows(usd, BOB, ALICE, TransferKind::InZone));
             assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
             assert!(allows(usd, BOB, STRANGER, TransferKind::Withdrawal));
@@ -763,21 +771,14 @@ mod tests {
             set_target(identity, admin_b, b, OFFRAMP, false, true);
             assert!(allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
             assert!(allows(usd, ALICE, OFFRAMP, TransferKind::Withdrawal));
-
-            // A frozen member reaches no target.
-            identity.set_frozen(admin, ALICE, true).unwrap();
-            assert!(!allows(usd, ALICE, OFFRAMP, TransferKind::Withdrawal));
-            assert!(!allows(usd, DEPOSITOR, ALICE, TransferKind::Deposit));
         });
     }
 
-    /// Alice deposits from and withdraws to a stranger's Tempo address and her own.
-    #[test_case(L1Policy::default() => [false, false, false, false])]
-    #[test_case(L1Policy { open_deposit: true, ..Default::default() } => [true, true, false, false])]
-    #[test_case(L1Policy { open_withdrawal: true, ..Default::default() } => [false, false, true, true])]
-    #[test_case(L1Policy { self_deposit: true, ..Default::default() } => [false, true, false, false])]
-    #[test_case(L1Policy { self_withdrawal: true, ..Default::default() } => [false, false, false, true])]
-    fn l1_policy_opens_any_or_own_address(policy: L1Policy) -> [bool; 4] {
+    /// Alice deposits from and withdraws to a Tempo address the org doesn't list.
+    #[test_case(L1Policy::default() => [false, false])]
+    #[test_case(L1Policy { open_deposit: true, ..Default::default() } => [true, false])]
+    #[test_case(L1Policy { open_withdrawal: true, ..Default::default() } => [false, true])]
+    fn l1_policy_opens_any_address(policy: L1Policy) -> [bool; 2] {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
@@ -787,39 +788,35 @@ mod tests {
             assert_eq!(identity.l1_policy(admin, registrar, org, usd), Ok(policy));
             [
                 allows(usd, STRANGER, ALICE, TransferKind::Deposit),
-                allows(usd, ALICE, ALICE, TransferKind::Deposit),
                 allows(usd, ALICE, STRANGER, TransferKind::Withdrawal),
-                allows(usd, ALICE, ALICE, TransferKind::Withdrawal),
             ]
         })
     }
 
     #[test]
-    fn org_zero_rules_govern_addresses_in_no_org() {
+    fn org_zero_never_accepts_deposits_and_always_withdraws() {
         with_identity(|identity, registrar| {
             let usd = token(1);
-            let (admin, org) = org_with_members(identity, registrar, usd);
+            org_with_members(identity, registrar, usd);
+            assert!(!allows(usd, OFFRAMP, STRANGER, TransferKind::Deposit));
+            assert!(!allows(usd, STRANGER, STRANGER, TransferKind::Deposit));
+            assert!(allows(usd, STRANGER, OFFRAMP, TransferKind::Withdrawal));
+            // Org 0 has no Tempo rules to set, not even for the registrar.
+            let target = L1Target {
+                deposit_from: true,
+                withdraw_to: true,
+            };
             let open = L1Policy {
                 open_deposit: true,
-                ..Default::default()
+                open_withdrawal: true,
             };
-            // Only the registrar sets org 0's rules.
             assert_eq!(
-                identity.set_l1_policy(admin, registrar, 0, &[usd], open),
-                Err(identity_error(ZoneIdentityError::unauthorized()))
+                identity.set_l1_target(registrar, registrar, 0, OFFRAMP, &[usd], target),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
             );
-            assert!(!allows(usd, STRANGER, STRANGER, TransferKind::Deposit));
-            identity
-                .set_l1_policy(registrar, registrar, 0, &[usd], open)
-                .unwrap();
-            assert!(allows(usd, STRANGER, STRANGER, TransferKind::Deposit));
-            // Org 0 may always withdraw anywhere, whatever its policy.
-            assert!(allows(usd, STRANGER, OFFRAMP, TransferKind::Withdrawal));
-            // Org 0's rules never apply to members.
-            assert!(!allows(usd, STRANGER, ALICE, TransferKind::Deposit));
             assert_eq!(
-                identity.l1_policy(registrar, registrar, org, usd),
-                Ok(L1Policy::default())
+                identity.set_l1_policy(registrar, registrar, 0, &[usd], open),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
             );
         });
     }
@@ -934,7 +931,7 @@ mod tests {
         });
     }
 
-    /// Every org check charges the same gas whatever the orgs, freezes, edges, targets and
+    /// Every org check charges the same gas whatever the orgs, edges, targets and
     /// policies involved, and whether its slots were already warm, so gas cannot reveal an
     /// account's org.
     #[test]
@@ -959,7 +956,6 @@ mod tests {
                 identity
                     .add_members(admin, registrar, org, &[dave])
                     .unwrap();
-                identity.set_frozen(admin, dave, true).unwrap();
                 identity
                     .set_l1_target(
                         admin,
@@ -980,7 +976,7 @@ mod tests {
                         other,
                         &[usd],
                         L1Policy {
-                            self_withdrawal: true,
+                            open_withdrawal: true,
                             ..Default::default()
                         },
                     )
@@ -990,35 +986,30 @@ mod tests {
         };
 
         let scenarios = [
-            // Allowed in an org, denied across orgs, from org 0, and with a frozen party.
+            // Allowed in an org and within org 0, denied across orgs and from org 0.
             (
                 TransferKind::InZone,
                 vec![
                     (ALICE, BOB),
+                    (OFFRAMP, STRANGER),
                     (ALICE, carol),
                     (STRANGER, ALICE),
-                    (ALICE, dave),
                 ],
             ),
-            // Allowed by target, by policy and from org 0, denied, and from a frozen party.
+            // Allowed by target, by policy and from org 0, and denied.
             (
                 TransferKind::Withdrawal,
                 vec![
                     (ALICE, OFFRAMP),
-                    (carol, carol),
-                    (ALICE, carol),
+                    (carol, STRANGER),
                     (STRANGER, OFFRAMP),
-                    (dave, OFFRAMP),
+                    (dave, carol),
                 ],
             ),
+            // Allowed by target, denied, and denied into org 0.
             (
                 TransferKind::Deposit,
-                vec![
-                    (OFFRAMP, ALICE),
-                    (STRANGER, ALICE),
-                    (carol, STRANGER),
-                    (OFFRAMP, dave),
-                ],
+                vec![(OFFRAMP, ALICE), (STRANGER, ALICE), (OFFRAMP, STRANGER)],
             ),
         ];
         for (kind, moves) in scenarios {
@@ -1041,7 +1032,7 @@ mod tests {
             );
         }
 
-        // orgOf by an outsider costs the same for members of either org, frozen or not, and for an
+        // orgOf by an outsider costs the same for members of either org and for an
         // address in no org, before and after its slots are warm.
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
         let costs = StorageCtx::enter(&mut storage, || {

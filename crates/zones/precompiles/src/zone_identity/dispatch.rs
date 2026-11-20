@@ -46,11 +46,8 @@ impl ZoneIdentity {
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
                         self.remove_member(caller, call.account)
                     }),
-                    setFrozen(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_frozen(caller, call.account, call.frozen)
-                    }),
                     setEdge(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_edge(caller, registrar()?, call.fromOrg, call.toOrg, &call.tokens, call.allowed)
+                        self.set_edge(caller, call.fromOrg, call.toOrg, &call.tokens, call.allowed)
                     }),
                     setL1Target(call) => mutate(call, msg_sender, |caller, call| {
                         let rules = L1Target {
@@ -64,12 +61,7 @@ impl ZoneIdentity {
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
-                        self.org_of(msg_sender, registrar()?, call.account).map(|member| {
-                            IZoneIdentity::orgOfReturn {
-                                orgId: member.org,
-                                frozen: member.frozen,
-                            }
-                        })
+                        self.org_of(msg_sender, registrar()?, call.account).map(|member| member.org)
                     }),
                     edge(call) => view(call, |call| {
                         self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)
