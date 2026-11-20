@@ -9,21 +9,21 @@
 //! Other parts of the system interact with the actor through its [`Mailbox`],
 //! which implements [`commonware_p2p::Provider`] (forwarded to the P2P actor)
 //! and [`commonware_consensus::Reporter`] to receive
-//! [`commonware_consensus::marshal::Update`] from the marshal actor.
+//! [`crate::executor::Finalized`] blocks from the executor actor.
 //!
 //! # How peers are determined
 //!
 //! Peers are read from two pieces of finalized state:
 //!
 //! - the DKG outcome in the header of the latest epoch boundary block at or
-//!   below the highest finalized height;
-//! - the Validator Config V2 contract at the highest finalized height.
+//!   below the highest finalized block;
+//! - the Validator Config V2 contract at the highest finalized block.
 //!
-//! The highest finalized height is the execution layer's finalized block,
-//! capped by the finalized floor marshal starts from, or by the highest
-//! finalized block marshal has since delivered. Finalized tips are ignored:
-//! marshal reports them before their blocks are delivered, so execution state
-//! up to a tip may not be the state consensus finalized.
+//! The highest finalized block is the latest one the executor reported. The
+//! executor reports a finalized block only once the execution layer accepted
+//! the forkchoice update finalizing it, so its state is readable by hash.
+//! Before the first report, it is the execution layer's finalized block,
+//! capped by the finalized floor marshal starts from.
 //!
 //! The peer set is split into two tiers:
 //!
@@ -39,8 +39,9 @@
 //!
 //! [`init`] registers the first peer set from execution state, before marshal
 //! or the executor start, because DKG may need these peers to recover the tip.
-//! After that, peers are re-read on every finalized block delivered by marshal
-//! and every 30 seconds otherwise. A new peer set is tracked under the
+//! After that, peers are re-read on every finalized block reported by the
+//! executor, and the latest report is retried every 30 seconds if reading it
+//! failed. A new peer set is tracked under the
 //! finalized height it was read at when its membership changes; when only
 //! addresses change, the existing set's addresses are overwritten.
 
@@ -72,8 +73,8 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     pub(crate) execution_node: Arc<TExecutionNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// The finalized floor marshal starts from. Execution-layer reads must
-    /// not advance beyond it until marshal delivers a higher finalized block.
+    /// The finalized floor marshal starts from. The first peer set is read
+    /// at the execution layer's finalized block, capped by this floor.
     pub(crate) finalized_floor: Height,
     /// The P2P network's maximum peer set size. The network panics on larger
     /// peer sets; a warning is logged past 2/3 of it.

@@ -1,12 +1,12 @@
 use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update};
+use commonware_consensus::Reporter;
 use commonware_p2p::{PeerSetSubscription, Provider, TrackedPeers};
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, error};
 
 use commonware_cryptography::ed25519::PublicKey;
 
-use crate::consensus::block::Block;
+use crate::executor::Finalized;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -41,12 +41,12 @@ pub(super) enum Message {
     Subscribe {
         response: oneshot::Sender<PeerSetSubscription<PublicKey>>,
     },
-    Finalized(Box<Update<Block>>),
+    Finalized(Finalized),
 }
 
-impl From<Update<Block>> for Message {
-    fn from(value: Update<Block>) -> Self {
-        Self::Finalized(Box::new(value))
+impl From<Finalized> for Message {
+    fn from(value: Finalized) -> Self {
+        Self::Finalized(value)
     }
 }
 
@@ -97,7 +97,7 @@ impl Provider for Mailbox {
 }
 
 impl Reporter for Mailbox {
-    type Activity = Update<Block>;
+    type Activity = Finalized;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         if let Err(error) = self

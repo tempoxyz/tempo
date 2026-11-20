@@ -7,6 +7,7 @@ use alloy_rpc_types_engine::{
     PayloadStatusEnum,
 };
 use commonware_consensus::{
+    Reporter,
     marshal::{Identifier, core::DigestFallback},
     types::{Height, Round},
 };
@@ -317,14 +318,18 @@ impl Marshal for crate::alias::marshal::Mailbox {
     }
 }
 
-pub(crate) fn init<TContext, TExecutionLayer, TMarshal>(
+pub(crate) fn init<TContext, TExecutionLayer, TMarshal, TReporter>(
     context: TContext,
-    config: Config<TExecutionLayer, TMarshal>,
-) -> eyre::Result<(Actor<TContext, TExecutionLayer, TMarshal>, Mailbox)>
+    config: Config<TExecutionLayer, TMarshal, TReporter>,
+) -> eyre::Result<(
+    Actor<TContext, TExecutionLayer, TMarshal, TReporter>,
+    Mailbox,
+)>
 where
     TContext: Clock + Metrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TReporter: Reporter<Activity = Finalized>,
 {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox { inner: tx };
@@ -332,7 +337,24 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Config<TExecutionLayer, TMarshal> {
+/// A finalized block whose state the execution layer serves.
+///
+/// Reported by the executor once the execution layer accepted a forkchoice
+/// update finalizing the block, or once the executor found the execution
+/// layer already finalized at or past it. Accepting the update makes the
+/// block canonical, so its header and state are readable by hash and its
+/// header by number. They are not necessarily durable yet: reth persists
+/// canonical blocks in batches.
+///
+/// Reports are strictly increasing in height. A report may skip heights
+/// when one forkchoice update finalizes several blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Finalized {
+    pub(crate) height: Height,
+    pub(crate) digest: Digest,
+}
+
+pub(crate) struct Config<TExecutionLayer, TMarshal, TReporter> {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     pub(crate) execution_node: TExecutionLayer,
@@ -356,4 +378,8 @@ pub(crate) struct Config<TExecutionLayer, TMarshal> {
     /// The node's ed25519 public key if the node is participating in
     /// consensus. Not set if not, for example for followers.
     pub(crate) public_key: Option<PublicKey>,
+
+    /// Receives every [`Finalized`] block once its state is readable from
+    /// the execution layer.
+    pub(crate) finalized_reporter: TReporter,
 }
