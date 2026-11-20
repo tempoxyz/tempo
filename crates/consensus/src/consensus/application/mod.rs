@@ -21,8 +21,10 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 
 use crate::consensus::block::Block;
 
-/// [`Inner`] in commonware's deferred verification wrapper, as every epoch's
-/// simplex engine uses it.
+/// Tempo's application as driven by simplex consensus: [`Inner`] wrapped in
+/// commonware's [`Deferred`](commonware_consensus::marshal::standard::Deferred)
+/// marshal wrapper, which each epoch's simplex engine uses as its automaton,
+/// relay and reporter.
 pub(crate) type Application<TContext> = commonware_consensus::marshal::standard::Deferred<
     TContext,
     Scheme<PublicKey, MinSig>,
