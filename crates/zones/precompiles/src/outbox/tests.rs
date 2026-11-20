@@ -746,59 +746,6 @@ fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> 
     Ok(())
 }
 
-/// With org enforcement on, a virtual fallback recipient is refused even when every Zone edge is
-/// open: a bounce-back to it could never be credited or claimed.
-#[test]
-fn zone_identity_refuses_a_virtual_fallback_recipient() -> eyre::Result<()> {
-    use crate::zone_identity::{L1Policy, ZoneIdentity};
-    use tempo_contracts::zones::ZoneIdentityError;
-    use tempo_primitives::TempoAddressExt as _;
-
-    let mut env = ZoneSpec {
-        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
-        ..spec()
-    }
-    .apply()?;
-    let registrar = Address::with_last_byte(0xee);
-    env.with_storage(|| -> crate::ZoneResult<()> {
-        let mut identity = ZoneIdentity::new();
-        let usd = [PATH_USD_ADDRESS];
-        // Org 0 may send to itself and withdraw anywhere.
-        identity.set_edge(registrar, registrar, 0, 0, &usd, true)?;
-        identity.set_l1_policy(
-            registrar,
-            registrar,
-            0,
-            &usd,
-            L1Policy {
-                open_withdrawal: true,
-                ..Default::default()
-            },
-        )
-    })?;
-    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));
-
-    let virtual_fallback = Address::new_virtual(
-        tempo_primitives::MasterId::repeat_byte(0xee),
-        alloy_primitives::FixedBytes::repeat_byte(1),
-    );
-    assert_revert(
-        env.request_withdrawal(
-            ALICE,
-            ZoneOutboxAbi::requestWithdrawalCall {
-                zoneFallbackRecipient: virtual_fallback,
-                ..withdrawal(1, BOB, 0)
-            },
-        ),
-        ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, virtual_fallback),
-    );
-    assert!(
-        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
-            .is_success()
-    );
-    Ok(())
-}
-
 /// A withdrawal records its sender's org while ZoneIdentity is enforced and commits it to the
 /// queue hash; with enforcement off every withdrawal stays in org 0 with the legacy hash.
 #[test_case(true ; "enforced")]

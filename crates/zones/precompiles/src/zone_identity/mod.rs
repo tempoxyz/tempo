@@ -84,11 +84,6 @@ impl ZoneIdentity {
             return Ok(true);
         }
         // TODO: Resolve virtual addresses through `AddressRegistry` precompile once it activates.
-        // Until then a virtual Zone recipient can never be credited, and a bounce-back to one could
-        // never be claimed, so it is denied; a withdrawal's Tempo recipient is checked as given.
-        if to.is_virtual() && kind != TransferKind::Withdrawal {
-            return Ok(false);
-        }
 
         // The reads depend only on `kind`, which the caller chose, and are priced as
         // cold: the gas shows neither the orgs involved nor whether the move is allowed.
@@ -886,29 +881,7 @@ mod tests {
             identity
                 .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
                 .unwrap();
-            // A virtual Zone recipient is denied even with the master in the org and every
-            // edge open, so it can't become an unclaimable fallback recipient.
-            for kind in [TransferKind::InZone, TransferKind::Deposit] {
-                assert!(!allows(usd, ALICE, virtual_addr, kind));
-            }
-            identity
-                .set_edge(registrar, registrar, 0, 0, &[usd], true)
-                .unwrap();
-            identity
-                .set_l1_policy(
-                    registrar,
-                    registrar,
-                    0,
-                    &[usd],
-                    L1Policy {
-                        open_deposit: true,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-            for kind in [TransferKind::InZone, TransferKind::Deposit] {
-                assert!(!allows(usd, STRANGER, virtual_addr, kind));
-            }
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             let withdraw_to = L1Target {
                 deposit_from: false,
                 withdraw_to: true,
