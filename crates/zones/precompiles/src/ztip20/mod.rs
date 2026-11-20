@@ -13,15 +13,15 @@
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 pub use tempo_contracts::zones::InsufficientBalance;
-use tempo_contracts::zones::Unauthorized;
+use tempo_contracts::zones::{Unauthorized, ZoneIdentityError};
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
-    error::{Result, TempoPrecompileError},
+    error::Result,
     tip20::{IRolesAuth, ITIP20},
 };
 
 use crate::{
-    L1State, L1StorageReader, ZonePrecompileError,
+    L1State, L1StorageReader,
     execution::{CallCheck, CallRules},
     privacy::check_caller,
     storage::StorageCtx,
@@ -67,20 +67,14 @@ impl<P: L1StorageReader> TIP20Rules<P> {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
         let enforced = self.l1.read_portal(|portal| &portal.identity_enforced)?;
-        match ZoneIdentity::new().ensure_transfer(
-            enforced,
-            self.token,
-            from,
-            to,
-            TransferKind::InZone,
-        ) {
-            Ok(()) => Ok(CallCheck::Continue),
-            Err(ZonePrecompileError::Identity(error)) => {
-                Ok(CallCheck::Revert(error.abi_encode().into()))
-            }
-            Err(ZonePrecompileError::Tempo(error)) => Err(error),
-            Err(error) => Err(TempoPrecompileError::Fatal(error.to_string())),
+        if ZoneIdentity::new().allows(enforced, self.token, from, to, TransferKind::InZone)? {
+            return Ok(CallCheck::Continue);
         }
+        Ok(CallCheck::Revert(
+            ZoneIdentityError::org_policy_forbids(self.token, from, to)
+                .abi_encode()
+                .into(),
+        ))
     }
 }
 

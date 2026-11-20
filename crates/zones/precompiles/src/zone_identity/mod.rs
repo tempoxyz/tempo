@@ -82,7 +82,7 @@ impl ZoneIdentity {
         from: Address,
         to: Address,
         kind: TransferKind,
-    ) -> ZoneResult<bool> {
+    ) -> tempo_precompiles::Result<bool> {
         if !enforced {
             return Ok(true);
         }
@@ -113,10 +113,9 @@ impl ZoneIdentity {
     }
 
     /// The org `account` is in, 0 when it is in none, for protocol code. Priced as cold.
-    pub fn member_org(&self, account: Address) -> ZoneResult<u64> {
-        Ok(self
-            .storage
-            .with_cold_pricing(|| self.members[account].read())?)
+    pub fn member_org(&self, account: Address) -> tempo_precompiles::Result<u64> {
+        self.storage
+            .with_cold_pricing(|| self.members[account].read())
     }
 
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
@@ -371,7 +370,12 @@ impl ZoneIdentity {
     }
 
     /// `org`'s policy for `token` and its target entry for `l1`, always reading both slots.
-    fn l1_rules(&self, org: u64, token: Address, l1: Address) -> ZoneResult<(L1Policy, L1Target)> {
+    fn l1_rules(
+        &self,
+        org: u64,
+        token: Address,
+        l1: Address,
+    ) -> tempo_precompiles::Result<(L1Policy, L1Target)> {
         let rules = &self.orgs[org].l1[token];
         Ok((rules.policy.read()?, rules.targets[l1].read()?))
     }
