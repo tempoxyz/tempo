@@ -1064,13 +1064,14 @@ contract ZonePortal is IZonePortal {
     /// @dev Deletes up to `DEPOSIT_BUCKETS_PRUNED_PER_CALL` checkpoints whose successor is settled.
     function _pruneDepositBuckets() internal {
         uint64 first = nextDepositBucketToPrune;
-        uint64 next = first;
         uint64 end = first + DEPOSIT_BUCKETS_PRUNED_PER_CALL;
         uint256 length = depositBuckets.length;
         uint64 base = depositBucketBase;
         uint64 settled = lastProcessedDepositNumber;
-        while (next < end && next < length && base + (next + 1) * DEPOSITS_PER_BUCKET <= settled) {
-            delete depositBuckets[next++];
+        uint64 next;
+        for (next = first; next < end && next < length; ++next) {
+            if (base + (next + 1) * DEPOSITS_PER_BUCKET > settled) break;
+            delete depositBuckets[next];
         }
         if (next != first) nextDepositBucketToPrune = next;
     }
