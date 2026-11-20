@@ -103,13 +103,7 @@ impl AddressRegistry {
         msg_sender: Address,
         call: IAddressRegistry::registerVirtualMasterCall,
     ) -> Result<MasterId> {
-        // Validate master address
-        // TIP-1094 reserves zone deposit addresses from T15; neither resolver forwards into the
-        // other.
-        if !msg_sender.is_valid_master()
-            || (self.storage.spec().is_t15()
-                && tempo_contracts::zones::ZoneDepositAddress::is_reserved(&msg_sender))
-        {
+        if !msg_sender.is_valid_master(self.storage.spec()) {
             return Err(AddrRegistryError::invalid_master_address().into());
         }
 
@@ -490,9 +484,12 @@ mod tests {
 
     #[test]
     fn test_is_valid_master_address() {
-        assert!(!Address::ZERO.is_valid_master());
-        assert!(!Address::new_virtual(MasterId::ZERO, UserTag::ZERO).is_valid_master());
-        assert!(!crate::PATH_USD_ADDRESS.is_valid_master());
-        assert!(Address::repeat_byte(0x42).is_valid_master());
+        assert!(!Address::ZERO.is_valid_master(TempoHardfork::T15));
+        assert!(
+            !Address::new_virtual(MasterId::ZERO, UserTag::ZERO)
+                .is_valid_master(TempoHardfork::T15)
+        );
+        assert!(!crate::PATH_USD_ADDRESS.is_valid_master(TempoHardfork::T15));
+        assert!(Address::repeat_byte(0x42).is_valid_master(TempoHardfork::T15));
     }
 }
