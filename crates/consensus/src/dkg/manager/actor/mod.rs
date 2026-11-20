@@ -1282,25 +1282,11 @@ where
                         .map(|(_, info)| info.height)
             {
                 if let Some(block) = storage.get_notarized_reduced_block(&round.epoch(), &digest) {
-                    if let Some((dealer, log)) = block.log.clone() {
-                        // Trigger for notarized logs overriding finalized ones: the
-                        // same dealer has a finalized log and a different notarized one.
-                        #[cfg(feature = "fuzz")]
-                        if let Some(finalized) = finalized_logs.get(&dealer) {
-                            use commonware_codec::Encode as _;
-                            let differs = finalized.encode() != log.encode();
-                            antithesis_sdk::assert_reachable!(
-                                "DKG ancestry walk finds a notarized log for a dealer with a finalized log",
-                                &serde_json::json!({ "epoch": round.epoch().get(), "differs": differs })
-                            );
-                            antithesis_sdk::assert_sometimes!(
-                                differs,
-                                "DKG ancestry walk finds a notarized dealer log that differs from its finalized log",
-                                &serde_json::json!({ "epoch": round.epoch().get() })
-                            );
-                        }
+                    if let Some((dealer, log)) = block.log.clone()
+                        && !finalized_logs.contains_key(&dealer)
+                    {
                         // The ancestry walk is newest-to-oldest, so older logs replace
-                        // newer ancestry duplicates.
+                        // newer ancestry duplicates while finalized logs stay authoritative.
                         notarized_logs.insert(dealer, log);
                     }
                     height = if let Some(height) = block.height.previous() {
@@ -1318,7 +1304,9 @@ where
                     return Ok(Outcome::NeedsAncestor(height, digest, ancestor_round));
                 }
             }
-            finalized_logs.extend(notarized_logs);
+            for (dealer, log) in notarized_logs {
+                finalized_logs.entry(dealer).or_insert(log);
+            }
 
             let player = self.ad_hoc_player(storage, round, player_state.is_some());
             let (output, share) = self.conclude_ceremony(round, state, player, finalized_logs);
