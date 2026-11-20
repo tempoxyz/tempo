@@ -14,6 +14,7 @@ use reth_chain_state::{CanonStateSubscriptions, PersistedBlockSubscriptions};
 pub use reth_storage_api::DurableBlockReader;
 use reth_storage_api::{BlockReader, StateProviderFactory};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks as _};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use tokio::sync::Notify;
 use zone_chainspec::ZoneChainSpec;
@@ -181,6 +182,7 @@ where
         fallback_poll_interval: config.withdrawal_poll_interval,
         sequencer_address,
         batch_limits: config.withdrawal_batch_limits,
+        l1_t15_activation: config.chain_spec.tempo_fork_activation(TempoHardfork::T15),
     };
 
     let monitor_config = ZoneMonitorConfig {

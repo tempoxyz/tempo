@@ -79,7 +79,7 @@ library WithdrawalQueueLib {
 
         bytes32 currentSlot = queue.slots[head];
 
-        if (keccak256(abi.encode(withdrawal, remainingQueue)) != currentSlot) {
+        if (hashWithTail(withdrawal, remainingQueue) != currentSlot) {
             revert InvalidWithdrawalProof();
         }
 
@@ -87,6 +87,75 @@ library WithdrawalQueueLib {
         if (remainingQueue == bytes32(0)) {
             queue.head = head + 1;
         }
+    }
+
+    /// @notice Hash a withdrawal as one link of a queue hash chain.
+    /// @dev A withdrawal in org 0 hashes as `abi.encode(LegacyWithdrawal, tail)`, the encoding used
+    ///      before T15, so withdrawals queued before T15 dequeue unchanged. A withdrawal in any
+    ///      other org hashes as `abi.encode(Withdrawal, tail)`, which commits `senderOrg`.
+    function hashWithTail(
+        Withdrawal calldata withdrawal,
+        bytes32 tail
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
+        if (withdrawal.senderOrg != 0) {
+            return keccak256(abi.encode(withdrawal, tail));
+        }
+        // Same bytes as `abi.encode(LegacyWithdrawal, tail)`: tuple offset, tail, then the
+        // legacy fields encoded as parameters.
+        return keccak256(
+            bytes.concat(
+                bytes32(uint256(0x40)),
+                tail,
+                abi.encode(
+                    withdrawal.token,
+                    withdrawal.senderTag,
+                    withdrawal.to,
+                    withdrawal.amount,
+                    withdrawal.memo,
+                    withdrawal.gasLimit,
+                    withdrawal.fallbackNonce,
+                    withdrawal.callbackData,
+                    withdrawal.encryptedSender
+                )
+            )
+        );
+    }
+
+    /// @notice `hashWithTail` for a withdrawal held in memory.
+    function hashWithTailMemory(
+        Withdrawal memory withdrawal,
+        bytes32 tail
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
+        if (withdrawal.senderOrg != 0) {
+            return keccak256(abi.encode(withdrawal, tail));
+        }
+        // Same bytes as `abi.encode(LegacyWithdrawal, tail)`: tuple offset, tail, then the
+        // legacy fields encoded as parameters.
+        return keccak256(
+            bytes.concat(
+                bytes32(uint256(0x40)),
+                tail,
+                abi.encode(
+                    withdrawal.token,
+                    withdrawal.senderTag,
+                    withdrawal.to,
+                    withdrawal.amount,
+                    withdrawal.memo,
+                    withdrawal.gasLimit,
+                    withdrawal.fallbackNonce,
+                    withdrawal.callbackData,
+                    withdrawal.encryptedSender
+                )
+            )
+        );
     }
 
     /// @notice Check if the queue has any pending withdrawals

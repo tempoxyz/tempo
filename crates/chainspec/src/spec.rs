@@ -501,6 +501,30 @@ mod tests {
         assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
     }
 
+    /// `tempo node --dev` must ship the same T15 ZonePortal runtime that T15 activation installs,
+    /// so zone sequencers against it encode withdrawals for the portal it actually runs.
+    #[test]
+    #[cfg(feature = "cli")]
+    fn dev_genesis_installs_current_t15_zone_portal() {
+        use tempo_contracts::{
+            precompiles::ZONE_PORTAL_IMPL_ADDRESS, zones::T15_ZONE_PORTAL_RUNTIME,
+        };
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let portal = chainspec
+            .genesis()
+            .alloc
+            .get(&ZONE_PORTAL_IMPL_ADDRESS)
+            .expect("dev genesis must install the shared ZonePortal implementation");
+
+        assert_eq!(
+            portal.code.as_ref(),
+            Some(&T15_ZONE_PORTAL_RUNTIME),
+            "regenerate dev.json after changing the T15 ZonePortal runtime"
+        );
+    }
+
     #[test]
     #[cfg(feature = "cli")]
     fn test_tempo_chainspec_has_tempo_hardforks() {

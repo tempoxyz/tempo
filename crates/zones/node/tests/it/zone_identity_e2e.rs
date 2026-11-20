@@ -1,6 +1,7 @@
 //! ZoneIdentity across the T14 to T15 transition: the predeploy appears at T15, the registrar and
 //! org admins configure orgs through zone transactions, and once the portal admin's L1 config turns
-//! enforcement on, org edges gate transfers, deposits and withdrawals.
+//! enforcement on, org edges gate transfers and each org's Tempo targets gate deposits and
+//! withdrawals.
 
 use alloy::network::Ethereum;
 use alloy_consensus::BlockHeader as _;
@@ -16,8 +17,7 @@ use tempo_chainspec::{
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
-        IZoneIdentity::{self, OrgKey},
-        IZoneOutbox, ZONE_IDENTITY_ADDRESS, ZONE_OUTBOX_ADDRESS, ZoneIdentityError,
+        IZoneIdentity, IZoneOutbox, ZONE_IDENTITY_ADDRESS, ZONE_OUTBOX_ADDRESS, ZoneIdentityError,
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
@@ -271,14 +271,9 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         fixture.seed_transfer_recipient(recipient)?;
     }
 
-    // Orgs: A and B for members, and two endpoint orgs Tempo administers.
-    let (org_a, org_b, funding, exits) = (1, 2, 3, 4);
-    let org_admins = [
-        (org_a, admin_a.address),
-        (org_b, admin_b.address),
-        (funding, registrar.address),
-        (exits, registrar.address),
-    ];
+    // Orgs A and B. The depositor and the off-ramp are Tempo addresses, so they join no org.
+    let (org_a, org_b) = (1, 2);
+    let org_admins = [(org_a, admin_a.address), (org_b, admin_b.address)];
     for (_, admin) in org_admins {
         let pending = registrar
             .send(
@@ -304,8 +299,6 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let members = [
         (&admin_a, org_a, vec![alice.address, bob.address]),
         (&admin_b, org_b, vec![carol.address]),
-        (&registrar, funding, vec![bridge]),
-        (&registrar, exits, vec![offramp]),
     ];
     for (admin, org, accounts) in members {
         let call = IZoneIdentity::addMembersCall {
@@ -326,34 +319,43 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         Some(ZoneIdentityError::unauthorized().abi_encode().into())
     );
 
-    // Edges: A internally; A offers B transfers, which B has not accepted yet; deposits from the
-    // approved depositor's Tempo address into A; withdrawals from A to the off-ramp's Tempo address.
+    // Edges: A internally, and A offers B transfers, which B has not accepted yet. A's admin sets
+    // both halves of A's edge to itself in one call.
     let usd = vec![PATH_USD_ADDRESS];
     let set_edge = |from, to| IZoneIdentity::setEdgeCall {
-        from,
-        to,
+        fromOrg: from,
+        toOrg: to,
         tokens: usd.clone(),
         allowed: true,
     };
-    // Each admin sets its own halves; A's admin sets both halves of A's edge to itself in one call.
-    let edges = [
-        (&admin_a, OrgKey::zone(org_a), OrgKey::zone(org_a)),
-        (&admin_a, OrgKey::zone(org_a), OrgKey::zone(org_b)),
-        (&registrar, OrgKey::l1(funding), OrgKey::zone(org_a)),
-        (&admin_a, OrgKey::l1(funding), OrgKey::zone(org_a)),
-        (&admin_a, OrgKey::zone(org_a), OrgKey::l1(exits)),
-        (&registrar, OrgKey::zone(org_a), OrgKey::l1(exits)),
-    ];
-    for (admin, from, to) in edges {
-        let pending = admin
+    // Tempo targets, set by A's admin alone: deposits from the approved depositor and
+    // withdrawals to the off-ramp.
+    let set_target = |target, deposit_from, withdraw_to| IZoneIdentity::setL1TargetCall {
+        orgId: org_a,
+        target,
+        tokens: usd.clone(),
+        depositFrom: deposit_from,
+        withdrawTo: withdraw_to,
+    };
+    for (from, to) in [(org_a, org_a), (org_a, org_b)] {
+        let pending = admin_a
             .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
+            .await?;
+        assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
+    }
+    for (target, deposit_from, withdraw_to) in [(bridge, true, false), (offramp, false, true)] {
+        let pending = admin_a
+            .send(
+                ZONE_IDENTITY_ADDRESS,
+                set_target(target, deposit_from, withdraw_to),
+            )
             .await?;
         assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
     }
     let edge = async |from, to| {
         admin_a
             .identity()
-            .edge(OrgKey::zone(from), OrgKey::zone(to), PATH_USD_ADDRESS)
+            .edge(from, to, PATH_USD_ADDRESS)
             .call()
             .await
     };
@@ -378,10 +380,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     );
     assert_transfer(&zone, alice.address, carol.address, false).await?;
     let accept = admin_b
-        .send(
-            ZONE_IDENTITY_ADDRESS,
-            set_edge(OrgKey::zone(org_a), OrgKey::zone(org_b)),
-        )
+        .send(ZONE_IDENTITY_ADDRESS, set_edge(org_a, org_b))
         .await?;
     assert_eq!(mine(&mut fixture, &zone, vec![accept]).await?, [true]);
     let to_carol = alice.transfer(carol.address, 1_000).await?;
@@ -418,7 +417,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         .await?,
         Some(forbids(alice.address, dave.address))
     );
-    // The off-ramp's edge is to its Tempo address only, so a Zone transfer to it is refused.
+    // The off-ramp is a Tempo target only, so a Zone transfer to it is refused.
     assert_transfer(&zone, alice.address, offramp, false).await?;
 
     // Deposits: the approved depositor reaches A; any other sender bounces.

@@ -289,7 +289,7 @@ impl ZoneInbox {
             return self.fail_deposit(outbox, current_hash, deposit);
         };
 
-        // Bounce a deposit whose L1 sender's org has no edge to the recipient's org.
+        // Bounce a deposit whose recipient's org does not accept its L1 sender.
         if !ZoneIdentity::new().allows(
             identity_enforced,
             deposit.token,
