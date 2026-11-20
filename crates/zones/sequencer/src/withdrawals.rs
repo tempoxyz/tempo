@@ -31,15 +31,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use alloy_consensus::BlockHeader as _;
-use alloy_eips::{BlockNumberOrTag, eip1559::Eip1559Estimation};
+use alloy_eips::eip1559::Eip1559Estimation;
 use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_sol_types::SolCall as _;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
-use reth_chainspec::ForkCondition;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
@@ -50,9 +48,12 @@ use crate::{
     abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
+    prover_config::active_l1_hardfork,
     settlement::{WithdrawalPage, find_processed_offset},
 };
 use tempo_alloy::rpc::TempoCallBuilderExt;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks as _};
+use zone_chainspec::ZoneChainSpec;
 use zone_primitives::constants::{MAX_UNPROCESSED_DEPOSITS, WITHDRAWAL_BOUNCEBACK_RESERVE};
 
 const PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
@@ -140,8 +141,8 @@ pub struct WithdrawalProcessorConfig {
     pub sequencer_address: Address,
     /// Gas and concurrency limits for withdrawal transactions.
     pub batch_limits: WithdrawalBatchLimits,
-    /// When Tempo L1 activates T15, whose portal takes withdrawals with `senderOrg`.
-    pub l1_t15_activation: ForkCondition,
+    /// Zone chainspec containing the inherited Tempo hardfork schedule.
+    pub chain_spec: Arc<ZoneChainSpec>,
 }
 
 /// Limits applied while packing and submitting `processWithdrawals` transactions.
@@ -697,21 +698,13 @@ impl WithdrawalProcessor {
     }
 
     /// Whether the L1 portal still runs a runtime from before T15, which takes withdrawals without
-    /// `senderOrg`. Reads the latest L1 header only while T15 is scheduled but not yet active.
+    /// `senderOrg`. Skips the L1 header read when T15 is active from genesis.
     async fn l1_portal_is_pre_t15(&self) -> eyre::Result<bool> {
-        let activation = self.config.l1_t15_activation;
-        if activation.active_at_timestamp(0) {
+        let chain_spec = self.config.chain_spec.as_ref();
+        if chain_spec.is_t15_active_at_timestamp(0) {
             return Ok(false);
         }
-        if activation == ForkCondition::Never {
-            return Ok(true);
-        }
-        let header = self
-            .provider
-            .get_header_by_number(BlockNumberOrTag::Latest)
-            .await?
-            .ok_or_else(|| eyre::eyre!("latest Tempo L1 header is unavailable"))?;
-        Ok(!activation.active_at_timestamp(header.timestamp()))
+        Ok(active_l1_hardfork(&self.provider, chain_spec).await? < TempoHardfork::T15)
     }
 
     /// Run all batches through a bounded queue of consecutive-nonce transactions.
@@ -1461,7 +1454,9 @@ mod tests {
             fallback_poll_interval: Duration::from_secs(1),
             sequencer_address: Address::repeat_byte(0x77),
             batch_limits: WithdrawalBatchLimits::default(),
-            l1_t15_activation: ForkCondition::Timestamp(0),
+            chain_spec: Arc::new(ZoneChainSpec {
+                inner: tempo_chainspec::spec::DEV.clone(),
+            }),
         };
         WithdrawalProcessor::new(
             config,
