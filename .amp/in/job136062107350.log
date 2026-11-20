@@ -1,0 +1,360 @@
+﻿2026-11-20T03:29:23.2393953Z Current runner version: '2.338.2'
+2026-11-20T03:29:23.2421470Z ##[group]Runner Image Provisioner
+2026-11-20T03:29:23.2422396Z Hosted Compute Agent
+2026-11-20T03:29:23.2423022Z Version: 20261111.635
+2026-11-20T03:29:23.2423693Z Commit: b8a594ea514ff44cadb5342986c68b1eac6e22ed
+2026-11-20T03:29:23.2424543Z Build Date: 2026-11-11T01:49:01Z
+2026-11-20T03:29:23.2425278Z Worker ID: {c2708705-ada3-495a-92a5-070e5f41c347}
+2026-11-20T03:29:23.2426315Z Region: eastus
+2026-11-20T03:29:23.2426945Z Cloud: Azure
+2026-11-20T03:29:23.2427491Z ##[endgroup]
+2026-11-20T03:29:23.2429167Z ##[group]Operating System
+2026-11-20T03:29:23.2429821Z Ubuntu
+2026-11-20T03:29:23.2430316Z 26.04.1
+2026-11-20T03:29:23.2430896Z LTS
+2026-11-20T03:29:23.2431411Z ##[endgroup]
+2026-11-20T03:29:23.2432025Z ##[group]Runner Image
+2026-11-20T03:29:23.2432694Z Image: ubuntu-26.04
+2026-11-20T03:29:23.2433287Z Version: 20261116.202.1
+2026-11-20T03:29:23.2434582Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261116.202/images/ubuntu/Ubuntu2604-Readme.md
+2026-11-20T03:29:23.2436628Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261116.202
+2026-11-20T03:29:23.2437695Z ##[endgroup]
+2026-11-20T03:29:23.2438841Z ##[group]GITHUB_TOKEN Permissions
+2026-11-20T03:29:23.2441171Z Contents: read
+2026-11-20T03:29:23.2441884Z Metadata: read
+2026-11-20T03:29:23.2442467Z ##[endgroup]
+2026-11-20T03:29:23.2444533Z Secret source: Actions
+2026-11-20T03:29:23.2445573Z Cache mode: write
+2026-11-20T03:29:23.2447346Z Prepare workflow directory
+2026-11-20T03:29:23.2847178Z Prepare all required actions
+2026-11-20T03:29:23.2895586Z Getting action download info
+2026-11-20T03:29:23.4799820Z Download action repository 'tempoxyz/gh-actions@35019557465e3c38ee3468be171771fd73577584' (SHA:35019557465e3c38ee3468be171771fd73577584)
+2026-11-20T03:29:24.6055395Z Download action repository 'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd' (SHA:de0fac2e4500dabe0009e67214ff5f5447ce83dd)
+2026-11-20T03:29:24.8368019Z Complete job name: Foundry Resolver Smoke
+2026-11-20T03:29:24.9463724Z ##[group]Run tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584
+2026-11-20T03:29:24.9465857Z with:
+2026-11-20T03:29:24.9466966Z   step-security-sts-host: ss-sts.tempoxyz.net
+2026-11-20T03:29:24.9468271Z   socket-sts-host: socket-sts.tempoxyz.net
+2026-11-20T03:29:24.9469402Z   egress-policy: audit
+2026-11-20T03:29:24.9470329Z   disable-telemetry: false
+2026-11-20T03:29:24.9471341Z   disable-sudo-and-containers: false
+2026-11-20T03:29:24.9472458Z   disable-file-monitoring: false
+2026-11-20T03:29:24.9473518Z   deploy-on-self-hosted-vm: false
+2026-11-20T03:29:24.9474580Z   disable-enforcement: false
+2026-11-20T03:29:24.9482981Z   token: ***
+2026-11-20T03:29:24.9484208Z env:
+2026-11-20T03:29:24.9485032Z   CARGO_HTTP_TIMEOUT: 180
+2026-11-20T03:29:24.9486142Z   CARGO_TERM_COLOR: always
+2026-11-20T03:29:24.9487118Z   RUSTC_WRAPPER: sccache
+2026-11-20T03:29:24.9488215Z   FOUNDRY_REF: 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:24.9489505Z ##[endgroup]
+2026-11-20T03:29:26.1495791Z [harden-runner] pre-step
+2026-11-20T03:29:26.1507530Z Fetching policy from policy store
+2026-11-20T03:29:26.1509423Z Attempt: 1
+2026-11-20T03:29:26.5670452Z Policy found: Audit mode
+2026-11-20T03:29:26.5671938Z [!] Current Configuration: 
+2026-11-20T03:29:26.5677390Z {"repo":"tempoxyz/tempo","run_id":"44667981783","correlation_id":"1c38e076-ad5f-40ef-b9a6-868d39fe987b","working_directory":"/home/runner/work/tempo/tempo","api_url":"https://agent.api.stepsecurity.io/v1","telemetry_url":"https://prod.app-api.stepsecurity.io/v1","allowed_endpoints":"github.com:443","denied_endpoints":"","egress_policy":"audit","disable_telemetry":false,"disable_sudo":false,"disable_sudo_and_containers":false,"disable_file_monitoring":false,"private":false,"is_github_hosted":true,"is_debug":false,"one_time_key":"","api_key":"***","use_policy_store":true,"deploy_on_self_hosted_vm":false}
+2026-11-20T03:29:26.5681262Z 
+2026-11-20T03:29:26.5682040Z View security insights and recommended policy at:
+2026-11-20T03:29:26.5683675Z https://app.stepsecurity.io/github/tempoxyz/tempo/actions/runs/44667981783
+2026-11-20T03:29:26.5684700Z RUNNER_NAME: GitHub Actions 1001951275
+2026-11-20T03:29:26.8508612Z Runner IP Address: 172.172.205.212
+2026-11-20T03:29:26.8557353Z Step Security Job Correlation ID: 1c38e076-ad5f-40ef-b9a6-868d39fe987b
+2026-11-20T03:29:26.8903312Z [!] Checking TLS_STATUS: tempoxyz
+2026-11-20T03:29:26.9945535Z [!] TLS_ENABLED: tempoxyz
+2026-11-20T03:29:27.2410313Z ✅ Checksum verification passed. checksum=b4efa8356de128c3daba6a7e334779877faafb08b49f9a4ef4152826c66ff4c2
+2026-11-20T03:29:27.2544375Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/c10867c6-9ef3-4691-882a-710f816d17f1 -f /home/runner/work/_temp/c1d3cb9a-a406-4e7b-a31e-432aa2f9c630
+2026-11-20T03:29:28.9934265Z Selecting previously unselected package aegis.
+2026-11-20T03:29:30.6257835Z Initialized
+2026-11-20T03:29:31.8721745Z (Reading database ... 214296 files and directories currently installed.)
+2026-11-20T03:29:31.8772524Z Preparing to unpack .../aegis-0.51.0-linux-amd64.deb ...
+2026-11-20T03:29:31.8798516Z Unpacking aegis (0.51.0) ...
+2026-11-20T03:29:31.9939348Z Setting up aegis (0.51.0) ...
+2026-11-20T03:29:32.4028992Z Created symlink '/etc/systemd/system/multi-user.target.wants/aegis.service' → '/usr/lib/systemd/system/aegis.service'.
+2026-11-20T03:29:36.1276401Z Aegis installed at /usr/bin/aegis; runtime warning verdicts are reported at job end.
+2026-11-20T03:29:36.1703465Z ##[group]Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+2026-11-20T03:29:36.1703906Z with:
+2026-11-20T03:29:36.1704102Z   path: tempo
+2026-11-20T03:29:36.1704335Z   persist-credentials: false
+2026-11-20T03:29:36.1704595Z   repository: tempoxyz/tempo
+2026-11-20T03:29:36.1707111Z   token: ***
+2026-11-20T03:29:36.1707332Z   ssh-strict: true
+2026-11-20T03:29:36.1707554Z   ssh-user: git
+2026-11-20T03:29:36.1707762Z   clean: true
+2026-11-20T03:29:36.1707976Z   sparse-checkout-cone-mode: true
+2026-11-20T03:29:36.1708258Z   fetch-depth: 1
+2026-11-20T03:29:36.1708463Z   fetch-tags: false
+2026-11-20T03:29:36.1708678Z   show-progress: true
+2026-11-20T03:29:36.1708900Z   lfs: false
+2026-11-20T03:29:36.1709094Z   submodules: false
+2026-11-20T03:29:36.1709311Z   set-safe-directory: true
+2026-11-20T03:29:36.1709545Z env:
+2026-11-20T03:29:36.1709746Z   CARGO_HTTP_TIMEOUT: 180
+2026-11-20T03:29:36.1709985Z   CARGO_TERM_COLOR: always
+2026-11-20T03:29:36.1710282Z   RUSTC_WRAPPER: sccache
+2026-11-20T03:29:36.1710606Z   FOUNDRY_REF: 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:36.1710952Z   NODE_EXTRA_CA_CERTS: /etc/aegis/bundle.pem
+2026-11-20T03:29:36.1711236Z ##[endgroup]
+2026-11-20T03:29:36.3131091Z Syncing repository: tempoxyz/tempo
+2026-11-20T03:29:36.3132510Z ##[group]Getting Git version info
+2026-11-20T03:29:36.3132926Z Working directory is '/home/runner/work/tempo/tempo/tempo'
+2026-11-20T03:29:36.3133532Z [command]/usr/bin/git version
+2026-11-20T03:29:36.3197163Z git version 2.56.1
+2026-11-20T03:29:36.3238120Z ##[endgroup]
+2026-11-20T03:29:36.3257209Z Temporarily overriding HOME='/home/runner/work/_temp/9388d8d7-703b-4344-9196-844f88a3bd9f' before making global git config changes
+2026-11-20T03:29:36.3268896Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-20T03:29:36.3270074Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/tempo/tempo/tempo
+2026-11-20T03:29:36.3370464Z ##[group]Initializing the repository
+2026-11-20T03:29:36.3376898Z [command]/usr/bin/git init /home/runner/work/tempo/tempo/tempo
+2026-11-20T03:29:36.3753684Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-20T03:29:36.3777104Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-20T03:29:36.3778730Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-20T03:29:36.3779983Z hint: call:
+2026-11-20T03:29:36.3780643Z hint:
+2026-11-20T03:29:36.3782112Z hint: 	git config --global init.defaultBranch <name>
+2026-11-20T03:29:36.3783080Z hint:
+2026-11-20T03:29:36.3784029Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-20T03:29:36.3786982Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-20T03:29:36.3788182Z hint:
+2026-11-20T03:29:36.3788848Z hint: 	git branch -m <name>
+2026-11-20T03:29:36.3789686Z hint:
+2026-11-20T03:29:36.3790653Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-20T03:29:36.3792126Z Initialized empty Git repository in /home/runner/work/tempo/tempo/tempo/.git/
+2026-11-20T03:29:36.3794654Z [command]/usr/bin/git remote add origin https://github.com/tempoxyz/tempo
+2026-11-20T03:29:36.3898018Z ##[endgroup]
+2026-11-20T03:29:36.3899997Z ##[group]Disabling automatic garbage collection
+2026-11-20T03:29:36.3904479Z [command]/usr/bin/git config --local gc.auto 0
+2026-11-20T03:29:36.3989098Z ##[endgroup]
+2026-11-20T03:29:36.3990911Z ##[group]Setting up auth
+2026-11-20T03:29:36.3992471Z Removing SSH command configuration
+2026-11-20T03:29:36.3993983Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:29:36.4079486Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:29:36.4694113Z Removing HTTP extra header
+2026-11-20T03:29:36.4707955Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:29:36.4757900Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:29:36.5122847Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:29:36.5130203Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:29:36.5190105Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:29:36.5563635Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-20T03:29:36.5662754Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/tempo/tempo/tempo/.git.path /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:36.5719568Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/tempo/tempo/tempo/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:36.5779137Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/tempo/.git.path /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:36.5835632Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/tempo/.git/worktrees/*.path /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:36.5888494Z ##[endgroup]
+2026-11-20T03:29:36.5889204Z ##[group]Fetching the repository
+2026-11-20T03:29:36.5898016Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +ed13f70e9398cd51af6834aff8867e7ab25bb8cd:refs/remotes/pull/9477/merge
+2026-11-20T03:29:37.0262360Z From https://github.com/tempoxyz/tempo
+2026-11-20T03:29:37.0263732Z  * [new ref]         ed13f70e9398cd51af6834aff8867e7ab25bb8cd -> pull/9477/merge
+2026-11-20T03:29:37.0277953Z ##[endgroup]
+2026-11-20T03:29:37.0278937Z ##[group]Determining the checkout info
+2026-11-20T03:29:37.0280046Z ##[endgroup]
+2026-11-20T03:29:37.0280778Z [command]/usr/bin/git sparse-checkout disable
+2026-11-20T03:29:37.0397517Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-20T03:29:37.0460038Z ##[group]Checking out the ref
+2026-11-20T03:29:37.0460803Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/9477/merge
+2026-11-20T03:29:37.3548624Z Note: switching to 'refs/remotes/pull/9477/merge'.
+2026-11-20T03:29:37.3595008Z 
+2026-11-20T03:29:37.3621088Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-11-20T03:29:37.3622789Z changes and commit them, and you can discard any commits you make in this
+2026-11-20T03:29:37.3634155Z state without impacting any branches by switching back to a branch.
+2026-11-20T03:29:37.3646358Z 
+2026-11-20T03:29:37.3665410Z If you want to create a new branch to retain commits you create, you may
+2026-11-20T03:29:37.3666925Z do so (now or later) by using -c with the switch command. Example:
+2026-11-20T03:29:37.3667493Z 
+2026-11-20T03:29:37.3667746Z   git switch -c <new-branch-name>
+2026-11-20T03:29:37.3668077Z 
+2026-11-20T03:29:37.3668320Z Or undo this operation with:
+2026-11-20T03:29:37.3668639Z 
+2026-11-20T03:29:37.3668855Z   git switch -
+2026-11-20T03:29:37.3669747Z 
+2026-11-20T03:29:37.3670134Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-11-20T03:29:37.3670646Z 
+2026-11-20T03:29:37.3671226Z HEAD is now at ed13f70 Merge 6ccda197d32e8898888d8f5c41c115d9ae8aa3aa into af285c19158b1813c8a362460e6b2fd261d64d17
+2026-11-20T03:29:37.3673100Z ##[endgroup]
+2026-11-20T03:29:37.3674072Z [command]/usr/bin/git log -1 --format=%H
+2026-11-20T03:29:37.3732627Z ed13f70e9398cd51af6834aff8867e7ab25bb8cd
+2026-11-20T03:29:37.3778758Z ##[group]Removing auth
+2026-11-20T03:29:37.3780960Z Removing SSH command configuration
+2026-11-20T03:29:37.3782004Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:29:37.3855392Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:29:37.4256742Z Removing HTTP extra header
+2026-11-20T03:29:37.4257840Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:29:37.4323476Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:29:37.4714011Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:29:37.4730167Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:29:37.4767982Z includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git.path
+2026-11-20T03:29:37.4769475Z includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git/worktrees/*.path
+2026-11-20T03:29:37.4774288Z includeif.gitdir:/github/workspace/tempo/.git.path
+2026-11-20T03:29:37.4775844Z includeif.gitdir:/github/workspace/tempo/.git/worktrees/*.path
+2026-11-20T03:29:37.4784532Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git.path
+2026-11-20T03:29:37.4835070Z /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.4847140Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git.path /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.4948272Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git/worktrees/*.path
+2026-11-20T03:29:37.4998216Z /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5016602Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/tempo/tempo/tempo/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5117528Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/tempo/.git.path
+2026-11-20T03:29:37.5131208Z /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5144089Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/tempo/.git.path /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5207337Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/tempo/.git/worktrees/*.path
+2026-11-20T03:29:37.5251912Z /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5263214Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/tempo/.git/worktrees/*.path /github/runner_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config
+2026-11-20T03:29:37.5332916Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:29:37.5715455Z Removing credentials config '/home/runner/work/_temp/git-credentials-170622d6-53da-41f2-93ab-b9515cd00852.config'
+2026-11-20T03:29:37.5728285Z ##[endgroup]
+2026-11-20T03:29:37.5984362Z ##[group]Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+2026-11-20T03:29:37.5984770Z with:
+2026-11-20T03:29:37.5984988Z   repository: foundry-rs/foundry
+2026-11-20T03:29:37.5985277Z   ref: 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:37.5985565Z   path: foundry
+2026-11-20T03:29:37.5985785Z   persist-credentials: false
+2026-11-20T03:29:37.5988546Z   token: ***
+2026-11-20T03:29:37.5988775Z   ssh-strict: true
+2026-11-20T03:29:37.5988988Z   ssh-user: git
+2026-11-20T03:29:37.5989188Z   clean: true
+2026-11-20T03:29:37.5989403Z   sparse-checkout-cone-mode: true
+2026-11-20T03:29:37.5989669Z   fetch-depth: 1
+2026-11-20T03:29:37.5989875Z   fetch-tags: false
+2026-11-20T03:29:37.5990092Z   show-progress: true
+2026-11-20T03:29:37.5990307Z   lfs: false
+2026-11-20T03:29:37.5990497Z   submodules: false
+2026-11-20T03:29:37.5990713Z   set-safe-directory: true
+2026-11-20T03:29:37.5990963Z env:
+2026-11-20T03:29:37.5991157Z   CARGO_HTTP_TIMEOUT: 180
+2026-11-20T03:29:37.5991442Z   CARGO_TERM_COLOR: always
+2026-11-20T03:29:37.5991675Z   RUSTC_WRAPPER: sccache
+2026-11-20T03:29:37.5991950Z   FOUNDRY_REF: 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:37.5992288Z   NODE_EXTRA_CA_CERTS: /etc/aegis/bundle.pem
+2026-11-20T03:29:37.5992578Z ##[endgroup]
+2026-11-20T03:29:37.6938472Z Syncing repository: foundry-rs/foundry
+2026-11-20T03:29:37.6945897Z ##[group]Getting Git version info
+2026-11-20T03:29:37.6946960Z Working directory is '/home/runner/work/tempo/tempo/foundry'
+2026-11-20T03:29:37.6983522Z [command]/usr/bin/git version
+2026-11-20T03:29:37.7041763Z git version 2.56.1
+2026-11-20T03:29:37.7065930Z ##[endgroup]
+2026-11-20T03:29:37.7081838Z Temporarily overriding HOME='/home/runner/work/_temp/bdd7c312-8e0d-424d-83d1-f6d3939f0f22' before making global git config changes
+2026-11-20T03:29:37.7083209Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-20T03:29:37.7088911Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/tempo/tempo/foundry
+2026-11-20T03:29:37.7141284Z ##[group]Initializing the repository
+2026-11-20T03:29:37.7146347Z [command]/usr/bin/git init /home/runner/work/tempo/tempo/foundry
+2026-11-20T03:29:37.7225515Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-20T03:29:37.7227303Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-20T03:29:37.7230313Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-20T03:29:37.7231501Z hint: call:
+2026-11-20T03:29:37.7232172Z hint:
+2026-11-20T03:29:37.7233034Z hint: 	git config --global init.defaultBranch <name>
+2026-11-20T03:29:37.7233434Z hint:
+2026-11-20T03:29:37.7233761Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-20T03:29:37.7234526Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-20T03:29:37.7235491Z hint:
+2026-11-20T03:29:37.7235855Z hint: 	git branch -m <name>
+2026-11-20T03:29:37.7236463Z hint:
+2026-11-20T03:29:37.7236797Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-20T03:29:37.7237522Z Initialized empty Git repository in /home/runner/work/tempo/tempo/foundry/.git/
+2026-11-20T03:29:37.7244789Z [command]/usr/bin/git remote add origin https://github.com/foundry-rs/foundry
+2026-11-20T03:29:37.7302075Z ##[endgroup]
+2026-11-20T03:29:37.7302534Z ##[group]Disabling automatic garbage collection
+2026-11-20T03:29:37.7309509Z [command]/usr/bin/git config --local gc.auto 0
+2026-11-20T03:29:37.7365154Z ##[endgroup]
+2026-11-20T03:29:37.7365783Z ##[group]Setting up auth
+2026-11-20T03:29:37.7367909Z Removing SSH command configuration
+2026-11-20T03:29:37.7375277Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:29:37.7430676Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:29:37.7767580Z Removing HTTP extra header
+2026-11-20T03:29:37.7773038Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:29:37.7827814Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:29:37.8167993Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:29:37.8175353Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:29:37.8228152Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:29:37.8580793Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-20T03:29:37.8643319Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/tempo/tempo/foundry/.git.path /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:29:37.8696727Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/tempo/tempo/foundry/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:29:37.8750388Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/foundry/.git.path /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:29:37.8809308Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/foundry/.git/worktrees/*.path /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:29:37.8864264Z ##[endgroup]
+2026-11-20T03:29:37.8864942Z ##[group]Fetching the repository
+2026-11-20T03:29:37.8874931Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:38.0275904Z ##[error]fatal: remote error: upload-pack: not our ref 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:38.0293920Z The process '/usr/bin/git' failed with exit code 128
+2026-11-20T03:29:38.0294433Z Waiting 18 seconds before trying again
+2026-11-20T03:29:56.0313847Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:56.1788979Z ##[error]fatal: remote error: upload-pack: not our ref 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:29:56.1828857Z The process '/usr/bin/git' failed with exit code 128
+2026-11-20T03:29:56.1829280Z Waiting 19 seconds before trying again
+2026-11-20T03:30:15.1883741Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:30:15.3233228Z ##[error]fatal: remote error: upload-pack: not our ref 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+2026-11-20T03:30:15.3269663Z ##[group]Removing auth
+2026-11-20T03:30:15.3269987Z Removing SSH command configuration
+2026-11-20T03:30:15.3275787Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:30:15.3329141Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:30:15.3680171Z Removing HTTP extra header
+2026-11-20T03:30:15.3685772Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:30:15.3742257Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:30:15.4083021Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:30:15.4087387Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:30:15.4133066Z includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git.path
+2026-11-20T03:30:15.4133683Z includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git/worktrees/*.path
+2026-11-20T03:30:15.4134476Z includeif.gitdir:/github/workspace/foundry/.git.path
+2026-11-20T03:30:15.4135217Z includeif.gitdir:/github/workspace/foundry/.git/worktrees/*.path
+2026-11-20T03:30:15.4146119Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git.path
+2026-11-20T03:30:15.4186937Z /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4198402Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git.path /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4255035Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git/worktrees/*.path
+2026-11-20T03:30:15.4294771Z /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4306494Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/tempo/tempo/foundry/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4366557Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/foundry/.git.path
+2026-11-20T03:30:15.4415857Z /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4425407Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/foundry/.git.path /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4484637Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/foundry/.git/worktrees/*.path
+2026-11-20T03:30:15.4528995Z /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4541913Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/foundry/.git/worktrees/*.path /github/runner_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config
+2026-11-20T03:30:15.4609925Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:30:15.4964498Z Removing credentials config '/home/runner/work/_temp/git-credentials-5f4a323d-9529-4f67-a581-ec1fca6db36f.config'
+2026-11-20T03:30:15.4975460Z ##[endgroup]
+2026-11-20T03:30:15.4994705Z ##[error]The process '/usr/bin/git' failed with exit code 128
+2026-11-20T03:30:15.5209237Z Post job cleanup.
+2026-11-20T03:30:15.6172468Z [command]/usr/bin/git version
+2026-11-20T03:30:15.6233544Z git version 2.56.1
+2026-11-20T03:30:15.6280342Z Temporarily overriding HOME='/home/runner/work/_temp/900fb9a1-5435-4daf-b85c-a5ae56abaab8' before making global git config changes
+2026-11-20T03:30:15.6281692Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-20T03:30:15.6288056Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/tempo/tempo/foundry
+2026-11-20T03:30:15.6343767Z Removing SSH command configuration
+2026-11-20T03:30:15.6351511Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:30:15.6408197Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:30:15.6760198Z Removing HTTP extra header
+2026-11-20T03:30:15.6767118Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:30:15.6826655Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:30:15.7168514Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:30:15.7177219Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:30:15.7234726Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:30:15.7749217Z Post job cleanup.
+2026-11-20T03:30:15.8770909Z [command]/usr/bin/git version
+2026-11-20T03:30:15.8835159Z git version 2.56.1
+2026-11-20T03:30:15.8880573Z Temporarily overriding HOME='/home/runner/work/_temp/f0dff02e-96a6-43be-91f6-3e2362f22553' before making global git config changes
+2026-11-20T03:30:15.8882266Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-20T03:30:15.8886630Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/tempo/tempo/tempo
+2026-11-20T03:30:15.8945887Z Removing SSH command configuration
+2026-11-20T03:30:15.8954850Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-20T03:30:15.9019400Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-20T03:30:15.9438586Z Removing HTTP extra header
+2026-11-20T03:30:15.9444256Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-20T03:30:15.9507524Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-20T03:30:15.9860127Z Removing includeIf entries pointing to credentials config files
+2026-11-20T03:30:15.9869187Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-20T03:30:15.9924767Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-20T03:30:16.0447466Z Post job cleanup.
+2026-11-20T03:30:16.3446519Z Artifact name is valid!
+2026-11-20T03:30:16.3448995Z Root directory input is valid!
+2026-11-20T03:30:16.5889265Z Uploading artifact: aegis-service-log-foundry-resolver-smoke-__tempoxyz_gh-actions.zip
+2026-11-20T03:30:16.5930006Z Beginning upload of artifact content to blob storage
+2026-11-20T03:30:16.6438483Z Uploaded bytes 270
+2026-11-20T03:30:16.6618301Z Finished uploading artifact content to blob storage!
+2026-11-20T03:30:16.6620100Z SHA256 digest of uploaded artifact is e21950c58ca50e87ba153fdb41961d2da11b1f859653e17aceade609e1fd9c45
+2026-11-20T03:30:16.6624156Z Finalizing artifact upload
+2026-11-20T03:30:16.8208900Z Socket API token revoked.
+2026-11-20T03:30:17.0270964Z Artifact aegis-service-log-foundry-resolver-smoke-__tempoxyz_gh-actions successfully finalized. Artifact ID 14598417363
+2026-11-20T03:30:17.0273104Z Uploaded Aegis audit log as artifact aegis-service-log-foundry-resolver-smoke-__tempoxyz_gh-actions (ID 14598417363).
+2026-11-20T03:30:17.5029609Z StepSecurity telemetry flushed; skipping agent teardown on this GitHub-hosted runner.
+2026-11-20T03:30:17.5873891Z [harden-runner] post-step
+2026-11-20T03:30:17.5881042Z Post step already executed, skipping
+2026-11-20T03:30:17.8639960Z Step Security STS lease closed.
+2026-11-20T03:30:17.8879496Z Cleaning up orphan processes
