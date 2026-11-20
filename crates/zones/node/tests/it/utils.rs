@@ -4660,6 +4660,12 @@ impl L1Fixture {
             .sload(portal_address, portal::slots::TRANSFERS_ENABLED)
             .expect("in-memory portal read succeeds")
             .into();
+        // ZoneIdentity also reads whether `AccessPolicy` is abdicated; it is not.
+        let abdication_slot = ZonePortalStorage::new(portal_address)
+            .abdication_effective_at(
+                tempo_contracts::precompiles::ZonePortalCapability::AccessPolicy,
+            )
+            .slot();
         // Later anchors inherit the last value, but blocks the initial seed covered hold their own,
         // so overwrite a window past them.
         let anchor = self.next_block_number.saturating_sub(1);
@@ -4672,6 +4678,7 @@ impl L1Fixture {
                     block,
                     word,
                 );
+                cache.set(portal_address, abdication_slot.into(), block, B256::ZERO);
             }
         }
     }
