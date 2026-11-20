@@ -10,7 +10,8 @@ use std::{
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
-    Reporters, marshal,
+    Reporters,
+    marshal::{self, standard::Deferred},
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
@@ -312,15 +313,15 @@ where
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Factory::new(
-            &context,
-            application,
+        let deferred = Deferred::new(
+            context.child("application"),
+            application.clone(),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
         );
 
         let epoch_manager_config = epoch::manager::Config {
-            application,
+            application: deferred,
             execution_node: execution_node.clone(),
             blocker: self.blocker.clone(),
             page_cache: page_cache_ref,
@@ -352,6 +353,7 @@ where
             resolver_config,
             marshal,
 
+            application,
             epoch_manager_config,
 
             peer_manager,
@@ -394,6 +396,9 @@ where
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
+
+    /// Receives finalized blocks from marshal.
+    application: application::Inner,
 
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
@@ -513,7 +518,7 @@ where
         ));
 
         let marshal = self.marshal.start(
-            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
+            Reporters::from((self.application, reporters)),
             self.broadcast_mailbox,
             resolver,
         );

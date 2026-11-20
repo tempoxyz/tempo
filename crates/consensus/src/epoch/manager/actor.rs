@@ -378,7 +378,6 @@ where
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
-        let application = self.config.application.deferred();
         info!(boundary_timestamp, "starting simplex engine");
 
         let engine = simplex::Engine::new(
@@ -390,7 +389,7 @@ where
                 elector: elector::Random::<commonware_cryptography::Sha256>::new(elector),
                 strategy: Sequential,
 
-                reporter: application.clone(),
+                reporter: self.config.application.clone(),
                 partition: format!(
                     "{partition_prefix}_consensus_epoch_{epoch}",
                     partition_prefix = self.config.partition_prefix
@@ -400,8 +399,8 @@ where
                 write_buffer: WRITE_BUFFER,
 
                 blocker: self.config.blocker.clone(),
-                automaton: application.clone(),
-                relay: application,
+                automaton: self.config.application.clone(),
+                relay: self.config.application.clone(),
                 page_cache: self.config.page_cache.clone(),
                 leader_timeout: self.config.time_to_propose,
                 certification_timeout: self.config.time_to_collect_notarizations,
