@@ -312,7 +312,7 @@ where
             estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
-        let deferred = alias::marshal::Deferred::new(
+        let deferred = application::Deferred::new(
             context.child("application"),
             application.clone(),
             marshal_mailbox.clone(),
