@@ -111,6 +111,16 @@ pub struct Args {
     )]
     pub message_backlog: Option<usize>,
 
+    /// Deprecated compatibility flag. Consensus always uses deferred
+    /// verification, so any value is accepted and ignored.
+    #[arg(
+        long = "consensus.verification-mode",
+        value_name = "MODE",
+        hide = true,
+        help = "Deprecated: ignored; consensus always uses deferred verification. Will be removed in a future release."
+    )]
+    pub verification_mode: Option<String>,
+
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
     #[arg(long = "consensus.mailbox-size", default_value = "16384")]
@@ -843,6 +853,20 @@ mod tests {
                 .message_backlog,
             Some(16384),
         );
+    }
+
+    #[test]
+    fn deprecated_verification_mode_accepts_any_value() {
+        assert_eq!(parse(&["--dev"]).consensus.verification_mode, None);
+        for value in ["immediate", "deferred", "hardfork", "anything"] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.verification-mode", value])
+                    .consensus
+                    .verification_mode
+                    .as_deref(),
+                Some(value),
+            );
+        }
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

@@ -551,6 +551,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 "deprecated flag ignored; P2P queue capacities are derived from peer-set limits and channel quotas"
             );
         }
+        if let Some(value) = &args.consensus.verification_mode {
+            warn!(
+                flag = "--consensus.verification-mode",
+                value,
+                "deprecated flag ignored; the node always uses deferred verification. \
+                 The flag will be removed in a future release"
+            );
+        }
         if let Some(value) = args.consensus.inactive_views_until_leader_skip {
             warn!(
                 flag = "--consensus.inactive-views-until-leader-skip",
