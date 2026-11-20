@@ -320,8 +320,9 @@ impl Inner {
             == height
     }
 
-    /// Checks the header of a proposal before it is handed to the execution
-    /// layer: the consensus context it claims and the DKG data in `extra_data`.
+    /// Checks the DKG data in the `extra_data` of a proposal's header before
+    /// it is handed to the execution layer. Commonware's `Deferred` wrapper
+    /// already checked the consensus context the header claims.
     ///
     /// For a boundary block, this only decodes the DKG outcome and returns it.
     /// [`Self::verify_boundary_outcome`] compares it after execution.
@@ -333,26 +334,6 @@ impl Inner {
     ) -> eyre::Result<Option<OnchainDkgOutcome>> {
         let round = context.round;
         let proposer = &context.leader;
-
-        // Commonware's Deferred wrapper already checks the embedded consensus
-        // context; check it here too so verification does not depend on the wrapper.
-        let ctx = block
-            .header()
-            .consensus_context
-            .ok_or_eyre("missing consensus context")?;
-
-        let expected_ctx = TempoConsensusContext {
-            epoch: round.epoch().get(),
-            view: round.view().get(),
-            parent_view: context.parent.0.get(),
-            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
-        };
-
-        ensure!(
-            ctx == expected_ctx,
-            "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
-            block.digest()
-        );
 
         if self.is_boundary(block.height()) {
             let proposed_outcome =
