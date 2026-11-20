@@ -267,29 +267,11 @@ impl<'a> ZoneBlockExecutor<'a> {
     /// account is never empty. Runs before every T15 block and changes nothing once the code is
     /// set.
     fn deploy_t15_precompiles(&mut self) -> Result<(), BlockExecutionError> {
-        let address = tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS;
-        let original = self
-            .inner
-            .evm_mut()
-            .state_mut()
-            .account_info_untracked(&address)
-            .map_err(map_database_error)?;
-        if original
-            .as_ref()
-            .is_some_and(|info| !info.is_empty_code_hash())
-        {
-            return Ok(());
-        }
-        let current = original
-            .clone()
-            .unwrap_or_default()
-            .with_code(Bytecode::new_legacy(alloy_primitives::Bytes::from_static(
-                &[0xef],
-            )));
-        let mut state = PendingState::default();
-        state.insert_account(address, original, Some(current));
-        self.inner.commit_pending_state(&state);
-        Ok(())
+        tempo_evm::deploy_precompile_at_boundary(
+            &mut self.inner,
+            tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
+            &[],
+        )
     }
 }
 
