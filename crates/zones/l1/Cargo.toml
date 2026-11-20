@@ -31,10 +31,12 @@ reth-storage-api.workspace = true
 # alloy
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
+alloy-json-rpc.workspace = true
 alloy-network.workspace = true
 alloy-primitives = { workspace = true, features = ["k256"] }
 alloy-provider = { workspace = true, features = ["ws"] }
-alloy-rpc-client = { workspace = true, default-features = true }
+alloy-pubsub.workspace = true
+alloy-rpc-client = { workspace = true, default-features = true, features = ["ws"] }
 alloy-rpc-types-eth = { workspace = true, features = ["account-ext"] }
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
@@ -51,6 +53,7 @@ schnellru.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
 thiserror.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tracing.workspace = true
 url = "2"
 
@@ -59,3 +62,4 @@ alloy-rlp.workspace = true
 const-hex.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true, default-features = true }
+tokio = { workspace = true, features = ["test-util"] }

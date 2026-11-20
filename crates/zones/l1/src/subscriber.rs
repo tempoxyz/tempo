@@ -2,7 +2,8 @@ use crate::queue::DeferredPortalWork;
 
 use super::*;
 use crate::{
-    EncryptionKeyRing, L1StateCache, metrics::L1SubscriberMetrics, state::EnabledTokenRegistry,
+    EncryptionKeyRing, L1StateCache, metrics::L1SubscriberMetrics, rpc::L1Connect,
+    state::EnabledTokenRegistry,
 };
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::stream;
@@ -648,7 +649,7 @@ where
         }
 
         let client = RpcClient::builder()
-            .connect_with_config(&self.config.l1_rpc_url, conn_config)
+            .connect_with(L1Connect::new(&self.config.l1_rpc_url, conn_config))
             .await?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
