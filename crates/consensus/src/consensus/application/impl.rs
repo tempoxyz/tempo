@@ -561,8 +561,8 @@ where
                     duration,
                 );
                 // The EL has checked timestamp encoding and parent ordering.
-                // Only the local clock gates voting: in deferred mode this
-                // delays certification, while notarization may happen earlier.
+                // Only the local clock gates voting: this delays
+                // certification, while notarization may happen earlier.
                 wait_until_timestamp(&runtime, block.inner().timestamp_millis()).await;
             }
             Ok(None) => return false,

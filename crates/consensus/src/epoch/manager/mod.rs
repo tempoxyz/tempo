@@ -19,7 +19,7 @@ pub(crate) struct Config<TContext, TBlocker>
 where
     TContext: Rng + Spawner + Metrics + Clock,
 {
-    pub(crate) application: application::Deferred<TContext>,
+    pub(crate) application: application::Application<TContext>,
     pub(crate) execution_node: Arc<TempoFullNode>,
     pub(crate) blocker: TBlocker,
     pub(crate) page_cache: CacheRef,

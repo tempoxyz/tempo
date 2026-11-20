@@ -320,7 +320,7 @@ where
             estimator_metrics,
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Deferred::new(
+        let application = application::Application::new(
             context.child("application"),
             inner,
             marshal_mailbox.clone(),
