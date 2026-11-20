@@ -379,7 +379,6 @@ where
     context: ContextCell<TContext>,
 
     /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
     broadcast:
         buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, TBlocker, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
