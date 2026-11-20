@@ -9,6 +9,8 @@
 //!   owner chose: a hold's placer and payee, a holder the owner approved, a creditor or payee the
 //!   owner set terms for, and a lien's authority. Anyone else is refused, as `balanceOf` refuses
 //!   anyone but the account.
+//!   `releaseExpired`, which anyone may call, refuses a stranger to a live hold with the error a
+//!   missing hold gives.
 //!
 //! [TIP-1153]: <https://docs.tempo.xyz/protocol/tips/tip-1153>
 
@@ -82,6 +84,32 @@ impl<P: L1StorageReader> ReservationRules<P> {
         ))
     }
 
+    /// Admits `releaseExpired` of the hold `id` that `placer` placed on `owner`'s balance. Anyone
+    /// may release an expired hold, but a caller other than the owner, placer or payee is refused
+    /// with `HoldNotFound` for a live hold as for a missing one, so it learns nothing about
+    /// holds it cannot release.
+    fn admit_release_expired(
+        &self,
+        caller: Address,
+        owner: Address,
+        placer: Address,
+        id: B256,
+    ) -> Result<CallCheck> {
+        let check = self.admit_write()?;
+        if !matches!(check, CallCheck::Continue) || caller == owner || caller == placer {
+            return Ok(check);
+        }
+        let hold = Reservations::new().get_hold(owner, placer, id)?;
+        let now: u64 = StorageCtx::default().timestamp().saturating_to();
+        let expired = hold.kind != 0 && hold.expiresAt != 0 && now >= hold.expiresAt;
+        if expired || caller == hold.payee {
+            return Ok(check);
+        }
+        Ok(CallCheck::Revert(
+            IReservationCore::HoldNotFound {}.abi_encode().into(),
+        ))
+    }
+
     /// Admits a read of `owner`'s debts in `token`: the owner, one of its creditors, or an
     /// approved holder.
     fn admit_debt(caller: Address, owner: Address, token: Address) -> Result<CallCheck> {
@@ -111,10 +139,12 @@ impl<P: L1StorageReader> ReservationRules<P> {
             | C::adjust(_)
             | C::capture(_)
             | C::release(_)
-            | C::releaseExpired(_)
             | C::charge(_)
             | C::refund(_)
             | C::clearLapsedDebt(_) => self.admit_write()?,
+            C::releaseExpired(IReservationCore::releaseExpiredCall { owner, placer, id }) => {
+                self.admit_release_expired(caller, owner, placer, id)?
+            }
             C::getHold(IReservationCore::getHoldCall { owner, placer, id }) => {
                 Self::admit_hold(caller, owner, placer, id)?
             }
@@ -208,6 +238,11 @@ mod tests {
     /// Runs `f` at `spec` in a zone where OWNER approved HOLDER and HOLDER placed a hold for
     /// PAYEE.
     fn in_zone<R>(spec: TempoHardfork, f: impl FnOnce() -> R) -> R {
+        in_zone_after(spec, 0, f)
+    }
+
+    /// Like `in_zone`, with `f` run `seconds` after the hold was placed.
+    fn in_zone_after<R>(spec: TempoHardfork, seconds: u64, f: impl FnOnce() -> R) -> R {
         let mut ctx = test_context();
         ctx.cfg.spec = spec;
         let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
@@ -247,8 +282,10 @@ mod tests {
             };
             core.call(&hold.abi_encode(), HOLDER)
                 .expect("place the hold");
-            f()
-        })
+        });
+        ctx.block.timestamp += U256::from(seconds);
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, f)
     }
 
     fn allowed(check: &CallCheck) -> bool {
@@ -374,5 +411,55 @@ mod tests {
         .abi_encode();
         let checks = admit_all(&rules(transfers_enabled), spec, &[(release, HOLDER)]);
         assert_eq!(allowed(&checks[0]), expected);
+    }
+
+    /// `releaseExpired` tells a stranger nothing about a live hold: it is refused as a missing
+    /// hold is, while the owner, placer and payee get the core's own answer, and anyone may
+    /// release the hold once it has expired.
+    #[test]
+    fn release_expired_hides_live_holds_from_strangers() {
+        let release = |id: B256| {
+            IReservationCore::releaseExpiredCall {
+                owner: OWNER,
+                placer: HOLDER,
+                id,
+            }
+            .abi_encode()
+        };
+        let (live, missing) = (release(B256::repeat_byte(1)), release(B256::repeat_byte(2)));
+        let not_found: Vec<u8> = IReservationCore::HoldNotFound {}.abi_encode();
+        let refused = |check: &CallCheck| matches!(check, CallCheck::Revert(output) if output.as_ref() == not_found.as_slice());
+        let rules = rules(true);
+
+        let checks = admit_all(
+            &rules,
+            TempoHardfork::T16,
+            &[
+                (live.clone(), OUTSIDER),
+                (missing.clone(), OUTSIDER),
+                (live.clone(), OWNER),
+                (live.clone(), HOLDER),
+                (live.clone(), PAYEE),
+            ],
+        );
+        assert!(refused(&checks[0]));
+        assert!(refused(&checks[1]));
+        assert!(checks[2..].iter().all(allowed));
+        // The core answers a missing hold the same way, so a stranger reads one outcome.
+        assert!(in_zone(TempoHardfork::T16, || {
+            matches!(
+                Reservations::new().call(&missing, OUTSIDER),
+                Err(PrecompileError::Revert(output)) if output.as_ref() == not_found.as_slice()
+            )
+        }));
+
+        let checks = in_zone_after(TempoHardfork::T16, 3_600, || {
+            [(live.clone(), OUTSIDER), (missing.clone(), OUTSIDER)]
+                .iter()
+                .map(|(data, caller)| rules.admit(data, *caller))
+                .collect::<Vec<_>>()
+        });
+        assert!(allowed(&checks[0]));
+        assert!(refused(&checks[1]));
     }
 }
