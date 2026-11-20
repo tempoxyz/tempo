@@ -14,7 +14,7 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -314,9 +314,9 @@ where
 
             // Retire the previous fallback in memory too. Otherwise a missing later epoch would
             // still verify against the identity this boundary rotated away from until restart.
-            let previous = self.verifier.network_identity();
+            let previous = self.verifier.network_identity().clone();
             if self.verifier.advance_network_identity(identity.clone()) {
-                warn!(
+                info!(
                     previous_from_epoch = previous.from_epoch,
                     previous_network_identity = %previous.identity,
                     from_epoch = identity.from_epoch,

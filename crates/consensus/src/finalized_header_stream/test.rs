@@ -339,7 +339,7 @@ fn rotation_boundary_retires_the_previous_fallback() {
     };
     let epoch_strategy = commonware_consensus::types::FixedEpocher::new(EPOCH_LENGTH);
     let genesis = make_block(0, Some(&retired.outcome));
-    let state = super::State {
+    let mut state = super::State {
         rpc: super::Rpc {
             provider: mock_provider(Asserter::new()),
             fetch_concurrency: 1,

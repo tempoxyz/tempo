@@ -180,8 +180,8 @@ where
             {
                 warn!(
                     configured_from_epoch = configured.from_epoch,
-                    active_from_epoch = active.from_epoch,
                     configured_network_identity = %configured.identity,
+                    active_from_epoch = active.from_epoch,
                     active_network_identity = %active.identity,
                     "Network identity derived from the trusted start block differs from the configured network identity!!! Update the binary with the latest network identity"
                 );
@@ -256,7 +256,7 @@ where
     }
 
     /// Registers boundaries for the provided headers in [`Self::verifier`].
-    fn register_boundaries(&self, headers: &[SealedHeader<TempoHeader>]) -> Result<(), Error> {
+    fn register_boundaries(&mut self, headers: &[SealedHeader<TempoHeader>]) -> Result<(), Error> {
         for header in headers {
             let info = self
                 .epoch_strategy
@@ -288,7 +288,7 @@ where
 
             // These headers are hash-chained to a verified finalization, so the boundary's
             // identity is authenticated: retire the previous fallback in favor of it.
-            let previous = self.verifier.network_identity();
+            let previous = self.verifier.network_identity().clone();
             let identity = NetworkIdentity {
                 from_epoch: onchain_outcome.epoch,
                 identity: *onchain_outcome.network_identity(),

@@ -140,7 +140,7 @@ fn advanced_identity_retires_the_previous_fallback() {
     deterministic::Runner::default().start(|mut context| async move {
         let retired = dkg_fixture(&mut context, Epoch::zero());
         let rotated = dkg_fixture(&mut context, Epoch::new(1));
-        let verifier = FinalizationVerifier::new(
+        let mut verifier = FinalizationVerifier::new(
             NetworkIdentity {
                 from_epoch: 0,
                 identity: *retired.outcome.network_identity(),
@@ -157,6 +157,12 @@ fn advanced_identity_retires_the_previous_fallback() {
             from_epoch: 0,
             identity: *retired.outcome.network_identity(),
         }));
+        // A later boundary that keeps the key (a reshare) must not move the fallback forward.
+        assert!(!verifier.advance_network_identity(NetworkIdentity {
+            from_epoch: 2,
+            identity: *rotated.outcome.network_identity(),
+        }));
+        assert_eq!(verifier.network_identity().from_epoch, 1);
 
         // Epoch 2 has no registered scheme, so it falls back to the advanced identity.
         let height = 2 * EPOCH_LENGTH.get();
