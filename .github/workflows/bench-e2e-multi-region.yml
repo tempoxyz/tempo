@@ -188,6 +188,7 @@ on:
           - state-read-cold-disk
           - state-write-cold
           - state-write-dependent
+          - state-write-cold-disk
       duration:
         description: Benchmark duration in seconds.
         type: string
@@ -344,7 +345,7 @@ jobs:
       # The *-lowmem state-read presets cap tempo-node at 45 GB, below the 100 GB bloat, so reads hit disk.
       # Dependent and capped state-read runs include ~1 tx per block; give the pool reset more than txgen's 300s receipt timeout.
       TEMPO_BENCH_POST_WARMUP_RESET_TIMEOUT_SECONDS: ${{ startsWith(inputs.preset, 'state-read-') && '900' || '' }}
-      # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk.
+      # *-disk caps tempo-node at 16 GB so random reads over the 100 GB bloat come from disk, and writes flush to disk.
       # Runs with a long consensus target block time can't cover every proposer in the auto warmup window; skip warmup.
       BENCH_INPUT_WARMUP_TIMEOUT: ${{ (contains(inputs.baseline-args, 'target-block-time') || contains(inputs.feature-args, 'target-block-time')) && '0' || '' }}
       BENCH_INPUT_NODE_MEMORY_MAX: ${{ endsWith(inputs.preset, '-lowmem') && '45G' || (endsWith(inputs.preset, '-disk') && '16G' || '') }}

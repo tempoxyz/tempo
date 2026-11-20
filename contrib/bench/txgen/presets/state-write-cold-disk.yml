@@ -1,0 +1,79 @@
+# Sustained worst-case state writes with tempo-node capped at 16 GB, so the write caches
+# and page cache fill and persistence has to flush to disk during the run. Same workload as
+# state-write-cold (10M-gas txs of pathUSD transfers overwriting existing bloat slots); run
+# it for 30-60 min with metrics on and watch persistence save_blocks duration and block time.
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+# Unused by the templates; declaring it makes the helper export the bloat's
+# existing-account range as TXGEN_EXISTING_RECIPIENTS_START/END.
+address_pools:
+  existing_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+
+artifacts:
+  StateWriter: ../state-write/StateWriter.json
+  ERC20: ../tip20.abi.json
+
+setup:
+  steps:
+    - id: writer
+      deploy:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        artifact: StateWriter
+        gas_limit: 5000000
+        constructor_args: []
+    # users[0] is the devnet TIP20 issuer: mint the writer enough pathUSD for every transfer.
+    - id: fund_writer
+      tx:
+        type: eip1559
+        from: {pool: users, select: {index: 0}}
+        gas_limit: 1000000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: mint
+          args:
+            - {var: setup.writer.address}
+            - "1000000000000000000"
+
+templates:
+  state_write:
+    type: tempo
+    from: {pool: users, select: random}
+    gas_limit: 10000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    nonce: { uniform: [0, 18446744073709551615] } # TIP-1106, requires T12+
+    valid_for_secs: 25
+    call:
+      to: {var: setup.writer.address}
+      abi: StateWriter
+      function: writeRandom
+      args:
+        - "0x20c0000000000000000000000000000000000000"
+        # keccak256 of the bloat mnemonic: the seed of its fast address derivation.
+        - "0xcb5663e69e67237b807f68117b1d2f7f0f49a1e1d22ac4aa18dfa52527f2feff"
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+        - {random_bytes: 32}
+        - 200000
+
+mix:
+  - template: state_write
+    weight: 100
