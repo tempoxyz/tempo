@@ -265,8 +265,6 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
-                // An account without code is cleared after every transaction that touches it, which
-                // would drop ZoneIdentity's storage.
                 deploy_precompile_at_boundary(&mut self.inner, ZONE_IDENTITY_ADDRESS, &[])?;
             }
             Ok(())
