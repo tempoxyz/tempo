@@ -56,7 +56,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
-    zone_factory::ZoneFactory,
+    zone_factory::{ZoneFactory, ZonePortalStorage},
     zone_verifier::ZoneVerifier,
 };
 use std::{
@@ -176,6 +176,14 @@ sol! {
     error DelegateCallNotAllowed();
 }
 
+/// Returns whether `address` runs a native Tempo precompile under `spec`.
+///
+/// From T15, every `ZONE_PORTAL_PREFIX` address dispatches to the native ZonePortal, which
+/// takes precedence over the ERC-1167 proxy code installed by the factory.
+fn is_tempo_precompile(address: &Address, spec: TempoHardfork) -> bool {
+    address.is_precompile(spec) || (spec.is_t15() && address.zone_portal_id().is_some())
+}
+
 /// Tempo's built-in and protocol precompiles for EVM2.
 ///
 /// The Ethereum precompiles run through `B`, the plain table by default.
@@ -279,6 +287,8 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
             ZoneFactory::new().call(calldata, caller)
         } else if address == ZONE_VERIFIER_ADDRESS {
             ZoneVerifier::new().call(calldata, caller)
+        } else if address.zone_portal_id().is_some() {
+            ZonePortalStorage::new(address).call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
@@ -338,7 +348,7 @@ where
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.base.contains(address) || address.is_precompile(self.spec)
+        self.base.contains(address) || is_tempo_precompile(address, self.spec)
     }
 
     fn execute(
@@ -354,7 +364,7 @@ where
         // Dispatch on the requested callee like evm2's membership check: code stored at a
         // precompile address, such as EIP-7702 delegation code from a state override, never
         // replaces the native precompile.
-        if !message.call_target.is_precompile(self.spec) {
+        if !is_tempo_precompile(&message.call_target, self.spec) {
             return None;
         }
         if message.destination != message.call_target {
