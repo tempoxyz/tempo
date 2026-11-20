@@ -66,7 +66,6 @@ impl<P: L1StorageReader> TIP20Rules<P> {
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        // Shares the slot just read, so this read is warm.
         let enforced = self.l1.read_portal(|portal| &portal.identity_enforced)?;
         match ZoneIdentity::new().ensure_transfer(
             enforced,
