@@ -306,12 +306,14 @@ impl SpamDeposits {
             tag: encrypted.tag.into(),
         };
 
-        Ok(ZonePortal::depositCall {
+        Ok(ZonePortal::depositEncrypted_1Call {
             token: self.token,
             amount: self.amount,
             keyIndex: key_index,
             encrypted: payload,
             tempoRefundRecipient: recipient,
+            // The spam raises the congestion premium, so accept any fee the amount covers.
+            maxFee: self.amount,
         }
         .abi_encode())
     }

@@ -5,11 +5,8 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! Runtime execution processes a contiguous prefix of the portal deposit queue and reads its
-//! canonical head at the selected child anchor. The batch proof, not this precompile, proves that
-//! the post-state processed hash is an ancestor of that head by validating the unprocessed suffix.
-//! Observing the head read in the execution witness is not sufficient without that explicit proof
-//! constraint.
+//! From T15 (TIP-1171), each full block executes a bounded deposit-queue range and binds it to a
+//! checkpoint or the queue head. Before T15 it binds every entry to the head.
 
 mod dispatch;
 
@@ -33,7 +30,10 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::{
+    constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    deposit_queue::DepositRangeEnd,
+};
 
 use crate::{
     ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
@@ -143,6 +143,9 @@ impl ZoneInbox {
         };
 
         // Step 2: Process deposits and build hash chain
+        //
+        // TODO: execute only the prefix within the TIP-1171 weight budget, and only hash the rest,
+        // once an entry type weighs more than 1 unit (T16 forced exits).
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
@@ -176,25 +179,52 @@ impl ZoneInbox {
             return Err(ZoneInboxError::extra_decryption_data().into());
         }
 
-        // Step 3: Bind the canonical Tempo queue head into the execution witness.
+        // Step 3: Bind the supplied range to its commitment on Tempo.
         //
-        // `current_hash` may be an ancestor of this value when the sequencer processes only a
-        // bounded prefix of pending deposits. The batch proof validates that hashing the
-        // unprocessed suffix from `current_hash` reaches `tempo_current_hash`; requiring equality
-        // here would incorrectly forbid partial processing.
+        // A range ending at a checkpoint must hash to it, and every other range to the queue head.
+        // (+T15) the entries must be exactly the range up to the head or next checkpoint.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
+        let previous_number = self.processed_deposit_number.read()?;
         if !portal.is_zero() {
-            let tempo_current_hash = l1.read_portal(|portal| &portal.current_deposit_queue_hash)?;
-            if tempo_current_hash != current_hash {
+            let checkpoint_hash = if StorageCtx.spec().is_t15() {
+                let head = l1.read_portal(|portal| &portal.deposit_count)?;
+                let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
+                let checkpoint_base = (bucket_count != 0)
+                    .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
+                    .transpose()?;
+                let end = DepositRangeEnd::new(previous_number, head, checkpoint_base)
+                    .ok_or_else(ZoneInboxError::invalid_deposit_queue_hash)?;
+                if end.target.checked_sub(previous_number) != Some(deposit_count) {
+                    return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                }
+                match end.checkpoint_index {
+                    None => None,
+                    Some(index) => {
+                        let index = usize::try_from(index)
+                            .map_err(|_| TempoPrecompileError::under_overflow())?;
+                        // Checkpoints between the settled position and the head are never pruned.
+                        if index >= bucket_count {
+                            return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                        }
+                        Some(l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
+                    }
+                }
+            } else {
+                None
+            };
+            let expected_hash = match checkpoint_hash {
+                Some(checkpoint_hash) => checkpoint_hash,
+                None => l1.read_portal(|portal| &portal.current_deposit_queue_hash)?,
+            };
+            if expected_hash != current_hash {
                 return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
             }
         }
 
         // Step 4: Update state
         self.processed_deposit_queue_hash.write(current_hash)?;
-        let previous_number = self.processed_deposit_number.read()?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;

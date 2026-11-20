@@ -42,14 +42,50 @@ fn zone_portal_slot_constants_match_solidity() {
             "abdicationEffectiveAt",
             portal::slots::ABDICATION_EFFECTIVE_AT,
         ),
+        ("depositBuckets", portal::slots::DEPOSIT_BUCKETS),
     ]
     .map(|(name, slot)| RustStorageSlot::new(name, slot));
-    let transfers_enabled =
-        RustStorageSlot::new("transfersEnabled", portal::slots::TRANSFERS_ENABLED)
-            .with_offset(portal::slots::TRANSFERS_ENABLED_OFFSET);
+    let packed = [
+        (
+            "transfersEnabled",
+            portal::slots::TRANSFERS_ENABLED,
+            portal::slots::TRANSFERS_ENABLED_OFFSET,
+        ),
+        (
+            "depositBucketBase",
+            portal::slots::DEPOSIT_BUCKET_BASE,
+            portal::slots::DEPOSIT_BUCKET_BASE_OFFSET,
+        ),
+        (
+            "nextDepositBucketToPrune",
+            portal::slots::NEXT_DEPOSIT_BUCKET_TO_PRUNE,
+            portal::slots::NEXT_DEPOSIT_BUCKET_TO_PRUNE_OFFSET,
+        ),
+        (
+            "depositWeight",
+            portal::slots::DEPOSIT_WEIGHT,
+            portal::slots::DEPOSIT_WEIGHT_OFFSET,
+        ),
+        (
+            "settledDepositWeight",
+            portal::slots::SETTLED_DEPOSIT_WEIGHT,
+            portal::slots::SETTLED_DEPOSIT_WEIGHT_OFFSET,
+        ),
+        (
+            "depositPriceBlock",
+            portal::slots::DEPOSIT_PRICE_BLOCK,
+            portal::slots::DEPOSIT_PRICE_BLOCK_OFFSET,
+        ),
+        (
+            "depositPriceTier",
+            portal::slots::DEPOSIT_PRICE_TIER,
+            portal::slots::DEPOSIT_PRICE_TIER_OFFSET,
+        ),
+    ]
+    .map(|(name, slot, offset)| RustStorageSlot::new(name, slot).with_offset(offset));
     assert_foundry_slots(
         &artifact("ZonePortal"),
-        &[&fields[..], &[transfers_enabled]].concat(),
+        &[&fields[..], &packed[..]].concat(),
     );
 }
 
