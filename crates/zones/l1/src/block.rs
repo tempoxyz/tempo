@@ -65,7 +65,7 @@ impl L1BlockDeposits {
         let (total_deposits, deposits) = (self.events.deposits.len(), self.events.deposits);
 
         // Resolve keys in deposit order before parallel work so missing-key errors remain stable.
-        let mut keys: BTreeMap<U256, k256::SecretKey> = BTreeMap::new();
+        let mut keys: BTreeMap<U256, Option<k256::SecretKey>> = BTreeMap::new();
         let mut encrypted_deposits = 0;
         for deposit in &deposits {
             if let L1Deposit::Deposit(d) = deposit {
@@ -162,7 +162,7 @@ pub struct PreparedL1Block {
 /// verification expects along with the decrypted recipient, if decryption succeeded.
 fn prepare_deposit(
     deposit: &L1Deposit,
-    keys: &BTreeMap<U256, k256::SecretKey>,
+    keys: &BTreeMap<U256, Option<k256::SecretKey>>,
     portal_address: Address,
     l1_block_number: u64,
 ) -> (
@@ -173,9 +173,20 @@ fn prepare_deposit(
     let L1Deposit::Deposit(d) = deposit else {
         return (queued, None);
     };
-    let decryption_key = keys
+    let Some(decryption_key) = keys
         .get(&d.key_index)
-        .expect("every deposit's key index is resolved before decryption");
+        .expect("every deposit's key index is resolved before decryption")
+    else {
+        warn!(
+            target: "zone::payload",
+            sender = %d.sender,
+            amount = %d.amount,
+            key_index = %d.key_index,
+            "No private decryption key is configured for the deposit's key index, refunding it"
+        );
+        ::metrics::counter!("zone_deposit_missing_decryption_key_total").increment(1);
+        return (queued, Some((FAILED_DECRYPTION, None)));
+    };
 
     // Attempt full ECIES decryption.
     let dec = ecies::decrypt_deposit(

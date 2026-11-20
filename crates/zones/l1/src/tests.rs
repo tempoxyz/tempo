@@ -1249,6 +1249,63 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
 }
 
 #[tokio::test]
+async fn deposit_to_a_key_without_local_private_key_is_refunded() {
+    let token = address!("0x0000000000000000000000000000000000001000");
+    let sender = address!("0x0000000000000000000000000000000000001234");
+    let recipient = address!("0x000000000000000000000000000000000000BEEF");
+    let portal = address!("0x0000000000000000000000000000000000000ABC");
+    let unknown = k256::SecretKey::from_slice(&[0x22; 32]).unwrap();
+    let encryption_keys =
+        EncryptionKeyRing::new([k256::SecretKey::from_slice(&[0x11; 32]).unwrap()]);
+    let (x, y_parity) =
+        crate::precompiles::ecies::compressed_x_and_parity(unknown.public_key().as_affine());
+    encryption_keys
+        .apply_rotation(&EncryptionKeyRotation {
+            x,
+            y_parity,
+            pubkey: encryption_key_address(x, y_parity).unwrap(),
+            key_index: U256::ONE,
+            activation_block: 10,
+        })
+        .unwrap();
+    let encrypted = crate::precompiles::ecies::encrypt_deposit(
+        &x,
+        y_parity,
+        recipient,
+        B256::ZERO,
+        sender,
+        portal,
+        U256::ONE,
+    )
+    .unwrap();
+    let deposit = L1Deposit::Deposit(Deposit {
+        token,
+        sender,
+        amount: 1_000_000,
+        fee: 0,
+        tempo_refund_recipient: sender,
+        key_index: U256::ONE,
+        ephemeral_pubkey_x: encrypted.eph_pub_x,
+        ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        tag: encrypted.tag,
+    });
+
+    let prepared = L1BlockDeposits {
+        header: seal(make_test_header(20)),
+        events: L1PortalEvents::from_deposits(vec![deposit]),
+    }
+    .prepare(&encryption_keys, portal)
+    .await
+    .unwrap();
+
+    assert_eq!(prepared.queued_deposits.len(), 1);
+    assert_eq!(prepared.decryptions, vec![FAILED_DECRYPTION]);
+    assert_eq!(prepared.recipients, vec![None]);
+}
+
+#[tokio::test]
 async fn deposits_select_the_private_key_by_portal_index() {
     let token = address!("0x0000000000000000000000000000000000001000");
     let sender = address!("0x0000000000000000000000000000000000001234");
@@ -1794,7 +1851,7 @@ fn encryption_key_event_binds_private_key_to_portal_index() {
     ring.apply_rotation(&events.encryption_key_rotations[0])
         .unwrap();
     assert_eq!(
-        ring.key(key_index).unwrap().to_bytes(),
+        ring.key(key_index).unwrap().unwrap().to_bytes(),
         private_key.to_bytes()
     );
 }
@@ -2114,6 +2171,46 @@ async fn sync_fails_fatally_when_the_leadership_sink_rejects_the_transition() {
     // Nothing was enqueued and no observation advanced: the block was not half-applied.
     assert_eq!(queue.last_enqueued(), None);
     assert_eq!(subscriber.block_tracker.latest(), None);
+}
+
+#[tokio::test]
+async fn sync_records_a_rotation_without_local_private_key_and_keeps_ingesting() {
+    let mut subscriber = test_subscriber(9);
+    let portal = subscriber.config.portal_address;
+    let queue = subscriber.deposit_queue.clone();
+    let configured = k256::SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let unknown = k256::SecretKey::from_slice(&[0x22; 32]).unwrap();
+    let ring = EncryptionKeyRing::new([configured]);
+    subscriber.encryption_keys = Some(ring.clone());
+
+    let (x, y_parity) =
+        crate::precompiles::ecies::compressed_x_and_parity(unknown.public_key().as_affine());
+    let pubkey = encryption_key_address(x, y_parity).unwrap();
+    let key_index = U256::from(1);
+    let log = encryption_key_updated_log(portal, x, y_parity, pubkey, key_index, 10);
+    let mut header_10 = make_test_header(10);
+    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
+    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+
+    let asserter = Asserter::new();
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(vec![receipt]));
+    asserter.push_success(&Some(header_response(header_10)));
+
+    assert_eq!(
+        subscriber
+            .sync_to_finalized(&l1_provider, 10)
+            .await
+            .unwrap(),
+        11
+    );
+    assert_eq!(queue.last_enqueued().unwrap().number, 10);
+
+    assert!(ring.key(key_index).unwrap().is_none());
 }
 
 #[test]

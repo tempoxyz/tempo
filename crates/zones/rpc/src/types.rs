@@ -351,6 +351,9 @@ pub struct BoundDecryptionKey {
 pub struct DecryptionKeyStatus {
     pub candidates: Vec<DecryptionKeyCandidate>,
     pub bound: Vec<BoundDecryptionKey>,
+    /// Portal key indexes registered without private material on this node.
+    #[serde(default)]
+    pub unbound: Vec<BoundDecryptionKey>,
 }
 
 /// Response payload for `zone_getSequencerInfo`.

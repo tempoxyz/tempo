@@ -560,6 +560,10 @@ file while it remains Portal grace-valid or has queued deposits. Retire a
 specific old key only after Portal expiry and deposit-queue drainage. File order
 does not matter: finalized Portal registrations bind each configured key to its
 on-chain index. The active sequencer key is included automatically.
+A node that has no private key for a registered key index refunds deposits
+encrypted to that index to their `tempoRefundRecipient` (minus the bounce-back
+fee) instead of halting. Confirm every node that may sequence reports the index
+as bound in `zone_getSequencerInfo` before registering or retiring a key.
 
 Set `ZONE_RPC_URL` to poll the zone for processing confirmation:
 
