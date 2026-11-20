@@ -52,8 +52,8 @@ pub struct ZoneIdentity {
     pub org_count: u64,
     /// Each org's configuration, keyed by org ID.
     pub orgs: Mapping<u64, Org>,
-    /// Each Zone address's membership.
-    pub members: Mapping<Address, Member>,
+    /// The org each Zone address belongs to; 0 for an address in no org.
+    pub members: Mapping<Address, u64>,
 }
 
 impl ZoneIdentity {
@@ -94,20 +94,20 @@ impl ZoneIdentity {
             TransferKind::InZone => {
                 let sender = self.members[from].read()?;
                 let recipient = self.members[to].read()?;
-                let edge = self.orgs[sender.org].edges[recipient.org][token].read()?;
-                Ok(edge.allows_between(sender.org, recipient.org))
+                let edge = self.orgs[sender].edges[recipient][token].read()?;
+                Ok(edge.allows_between(sender, recipient))
             }
             TransferKind::Deposit => {
                 let recipient = self.members[to].read()?;
                 // Read before deciding, so a recipient in org 0 costs the same as any other.
-                let (policy, target) = self.l1_rules(recipient.org, token, from)?;
-                Ok(recipient.org != 0 && (policy.open_deposit || target.deposit_from))
+                let (policy, target) = self.l1_rules(recipient, token, from)?;
+                Ok(recipient != 0 && (policy.open_deposit || target.deposit_from))
             }
             TransferKind::Withdrawal => {
                 let sender = self.members[from].read()?;
                 // Read before deciding, so a sender in org 0 costs the same as any other.
-                let (policy, target) = self.l1_rules(sender.org, token, to)?;
-                Ok(sender.org == 0 || policy.open_withdrawal || target.withdraw_to)
+                let (policy, target) = self.l1_rules(sender, token, to)?;
+                Ok(sender == 0 || policy.open_withdrawal || target.withdraw_to)
             }
         })
     }
@@ -116,8 +116,7 @@ impl ZoneIdentity {
     pub fn member_org(&self, account: Address) -> ZoneResult<u64> {
         Ok(self
             .storage
-            .with_cold_pricing(|| self.members[account].read())?
-            .org)
+            .with_cold_pricing(|| self.members[account].read())?)
     }
 
     /// Reverts with `OrgPolicyForbids` unless `token` may move from `from` to `to`.
@@ -192,12 +191,12 @@ impl ZoneIdentity {
             if account.is_zero() || account.is_virtual() {
                 return Err(ZoneIdentityError::invalid_address().into());
             }
-            if self.members[account].read()? != Member::default() {
+            if self.members[account].read()? != 0 {
                 return Err(ZoneIdentityError::already_member(account).into());
             }
         }
         for &account in accounts {
-            self.write_member(account, Member { org })?;
+            self.write_member(account, org)?;
         }
         Ok(())
     }
@@ -206,7 +205,7 @@ impl ZoneIdentity {
     /// to escape its org's outbound rules.
     pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
         self.ensure_member_admin(caller, account)?;
-        self.write_member(account, Member::default())
+        self.write_member(account, 0)
     }
 
     /// Sets, for each of `tokens`, the halves of the Zone edge from `from` to `to` that the caller
@@ -312,24 +311,19 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// Membership of `account` for a caller that may see it: the account itself, its org's admin or
+    /// The org `account` is in, for a caller that may see it: the account itself, its org's admin or
     /// the registrar.
-    pub fn org_of(
-        &self,
-        caller: Address,
-        registrar: Address,
-        account: Address,
-    ) -> ZoneResult<Member> {
-        // Reads the member and its org's admin slot whatever the answer, priced as cold.
-        let (member, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
-            let member = self.members[account].read()?;
-            Ok((member, self.orgs[member.org].admin.read()?))
+    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
+        // Reads the membership and its org's admin slot whatever the answer, priced as cold.
+        let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+            let org = self.members[account].read()?;
+            Ok((org, self.orgs[org].admin.read()?))
         })?;
-        let admin = if member.org == 0 { registrar } else { admin };
+        let admin = if org == 0 { registrar } else { admin };
         if caller != account && caller != admin {
             ensure_caller(caller, registrar)?;
         }
-        Ok(member)
+        Ok(org)
     }
 
     /// Whether `token` may move along the Zone edge from `from` to `to`, for the admin of either
@@ -382,11 +376,11 @@ impl ZoneIdentity {
         Ok((rules.policy.read()?, rules.targets[l1].read()?))
     }
 
-    fn write_member(&mut self, account: Address, member: Member) -> ZoneResult<()> {
-        self.members[account].write(member)?;
+    fn write_member(&mut self, account: Address, org: u64) -> ZoneResult<()> {
+        self.members[account].write(org)?;
         Ok(self.emit_event(IZoneIdentity::MemberUpdated {
             account,
-            orgId: member.org,
+            orgId: org,
         })?)
     }
 
@@ -400,11 +394,11 @@ impl ZoneIdentity {
     /// reads, so the call does not reveal whether an account is a member.
     fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<()> {
         // Reads the member and its org's admin slot whatever the caller, priced as cold.
-        let (member, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
-            let member = self.members[account].read()?;
-            Ok((member, self.orgs[member.org].admin.read()?))
+        let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+            let org = self.members[account].read()?;
+            Ok((org, self.orgs[org].admin.read()?))
         })?;
-        if member.org == 0 || admin.is_zero() || caller != admin {
+        if org == 0 || admin.is_zero() || caller != admin {
             return Err(ZoneIdentityError::unauthorized().into());
         }
         Ok(())
@@ -504,13 +498,6 @@ impl From<L1Policy> for IZoneIdentity::L1Policy {
             openWithdrawal: policy.open_withdrawal,
         }
     }
-}
-
-/// An address's membership, packed into one slot: zero for an address in no org.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct Member {
-    /// Org the address belongs to; 0 when it is in no org.
-    pub org: u64,
 }
 
 /// How funds move between `from` and `to`.
@@ -721,7 +708,7 @@ mod tests {
                 identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
                 Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
-            assert_eq!(identity.members[BOB].read().unwrap().org, 0);
+            assert_eq!(identity.members[BOB].read().unwrap(), 0);
         });
     }
 

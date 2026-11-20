@@ -61,7 +61,7 @@ impl ZoneIdentity {
                     }),
                     orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
                     orgOf(call) => view(call, |call| {
-                        self.org_of(msg_sender, registrar()?, call.account).map(|member| member.org)
+                        self.org_of(msg_sender, registrar()?, call.account)
                     }),
                     edge(call) => view(call, |call| {
                         self.edge(msg_sender, registrar()?, call.fromOrg, call.toOrg, call.token)
