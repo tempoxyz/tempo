@@ -30,7 +30,6 @@ mod dispatch;
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
-    address_registry::AddressRegistry,
     error::TempoPrecompileError,
     storage::{Handler, Mapping},
 };
@@ -84,18 +83,12 @@ impl ZoneIdentity {
         if !enforced {
             return Ok(true);
         }
-        // TIP-20 credits a TIP-1022 virtual recipient's master, so the master decides. The Zone's
-        // registry holds no masters, so every virtual recipient is denied for now; it is denied
-        // rather than an error, so a deposit to one bounces instead of failing the block.
-        let to = if to.is_virtual() {
-            match AddressRegistry::new().resolve_virtual_address(to)? {
-                master if master.is_zero() => return Ok(false),
-                master => master,
-            }
-        } else {
-            to
-        };
-        // From here the reads depend only on `kind`, which the caller chose, and are priced as
+        // TODO: Resolve TIP-1022 virtual recipients to their master once zones can read Tempo's
+        // `AddressRegistry`. Zones neither install nor mirror it, so for now `to` is checked as
+        // given: a withdrawal to a virtual Tempo address needs that exact address as a target or an
+        // open policy, and Zone TIP-20 already rejects virtual recipients.
+        //
+        // The reads depend only on `kind`, which the caller chose, and are priced as
         // cold: the gas shows neither the orgs involved nor whether the move is allowed.
         self.storage.with_cold_pricing(|| match kind {
             TransferKind::InZone => {
@@ -201,7 +194,7 @@ impl ZoneIdentity {
         }
         // Check every account first, so a rejected batch writes nothing.
         for &account in accounts {
-            // A virtual address never holds funds; moves to it are checked as its master.
+            // A virtual address never holds funds, so it can't be a member.
             if account.is_zero() || account.is_virtual() {
                 return Err(ZoneIdentityError::invalid_address().into());
             }
@@ -286,8 +279,9 @@ impl ZoneIdentity {
         rules: L1Target,
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, registrar, org)?;
-        // Withdrawals to a virtual address are checked as its master, so the master is listed.
-        if target.is_zero() || target.is_virtual() {
+        // Withdrawals are checked against the raw recipient, so a virtual deposit address on Tempo
+        // is listed as itself.
+        if target.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         for &token in tokens {
@@ -564,6 +558,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
     use tempo_precompiles::{
+        address_registry::AddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{VIRTUAL_MASTER, register_virtual_master},
     };
@@ -856,13 +851,10 @@ mod tests {
                 identity.set_l1_policy(outsider, registrar, org, &[usd], L1Policy::default()),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
-            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
-            for target in [Address::ZERO, virtual_addr] {
-                assert_eq!(
-                    identity.set_l1_target(admin, registrar, org, target, &[usd], rules),
-                    Err(identity_error(ZoneIdentityError::invalid_address()))
-                );
-            }
+            assert_eq!(
+                identity.set_l1_target(admin, registrar, org, Address::ZERO, &[usd], rules),
+                Err(identity_error(ZoneIdentityError::invalid_address()))
+            );
             identity
                 .set_l1_target(admin, registrar, org, OFFRAMP, &[usd], rules)
                 .unwrap();
@@ -884,50 +876,56 @@ mod tests {
     }
 
     #[test]
-    fn virtual_recipients_are_checked_as_their_master() {
+    fn virtual_recipients_are_checked_as_given() {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
+            // Even with the master registered locally, nothing resolves it: the master's
+            // membership and targets don't apply to its virtual addresses.
             let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
-            // A virtual address of a member's master is in the member's org.
-            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             identity
                 .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
                 .unwrap();
-            assert!(allows(usd, ALICE, virtual_addr, TransferKind::InZone));
-            // A withdrawal to a virtual Tempo address follows its master's target.
-            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
+            let withdraw_to = L1Target {
+                deposit_from: false,
+                withdraw_to: true,
+            };
             identity
-                .set_l1_target(
+                .set_l1_target(admin, registrar, org, VIRTUAL_MASTER, &[usd], withdraw_to)
+                .unwrap();
+            assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+
+            // A virtual Tempo deposit address listed as itself is a target like any other.
+            identity
+                .set_l1_target(admin, registrar, org, virtual_addr, &[usd], withdraw_to)
+                .unwrap();
+            assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+            // An open withdrawal policy covers unlisted virtual addresses too.
+            let unlisted = Address::new_virtual(
+                tempo_primitives::MasterId::repeat_byte(0xee),
+                alloy_primitives::FixedBytes::repeat_byte(1),
+            );
+            assert!(!allows(usd, ALICE, unlisted, TransferKind::Withdrawal));
+            identity
+                .set_l1_policy(
                     admin,
                     registrar,
                     org,
-                    VIRTUAL_MASTER,
                     &[usd],
-                    L1Target {
-                        deposit_from: false,
-                        withdraw_to: true,
+                    L1Policy {
+                        open_withdrawal: true,
+                        ..Default::default()
                     },
                 )
                 .unwrap();
-            assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
+            assert!(allows(usd, ALICE, unlisted, TransferKind::Withdrawal));
+
             // Virtual addresses themselves cannot be members.
             assert_eq!(
                 identity.add_members(admin, registrar, org, &[virtual_addr]),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
-            // An unregistered virtual recipient is denied, not an error, for every kind of move.
-            let unregistered = Address::new_virtual(
-                tempo_primitives::MasterId::repeat_byte(0xee),
-                alloy_primitives::FixedBytes::repeat_byte(1),
-            );
-            for kind in [
-                TransferKind::InZone,
-                TransferKind::Deposit,
-                TransferKind::Withdrawal,
-            ] {
-                assert!(!allows(usd, ALICE, unregistered, kind));
-            }
         });
     }
 
