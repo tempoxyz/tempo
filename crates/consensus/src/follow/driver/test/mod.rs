@@ -1293,6 +1293,66 @@ fn finalization_failing_the_identity_fallback_hints_current_epoch_boundary() {
     });
 }
 
+/// After a boundary rotates the network identity, epochs without a registered
+/// scheme must fall back to the rotated identity, not the one it replaced.
+#[test_traced]
+fn rotation_boundary_retires_the_previous_identity_fallback() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let rig = start_rig(&mut context).await;
+        let rotated = dkg_fixture(&mut context, Epoch::new(1));
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let boundary = strategy.last(Epoch::zero()).unwrap();
+
+        let (ack, waiter) = Exact::handle();
+        let _ = rig.mailbox.to_marshal_reporter().report(Update::Block(
+            make_block(boundary.get(), Some(&rotated.outcome)).into(),
+            ack,
+        ));
+        context
+            .timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("boundary acknowledgement deadline")
+            .expect("rotation boundary should be acknowledged");
+        assert!(
+            rig.schemes.scoped(Epoch::new(2)).is_none(),
+            "epoch two must fall back to the network identity",
+        );
+
+        // Epoch two is signed with the retired identity's shares: it must be
+        // dropped and the driver must ask for epoch one's boundary instead.
+        let block = make_block(EPOCH_LENGTH.get() * 2, None);
+        let forged = make_finalization(&block, Epoch::new(2), &rig.fixture.schemes);
+        let mut reporter = rig.mailbox.to_event_reporter();
+        assert!(
+            reporter
+                .report(Event::Finalized {
+                    block: make_certified_block(block.clone(), &forged),
+                    seen: 0,
+                })
+                .accepted()
+        );
+        wait_until(&context, || !rig.marshal.hints().is_empty()).await;
+        assert_eq!(
+            rig.marshal.hints(),
+            vec![strategy.last(Epoch::new(1)).unwrap()]
+        );
+        assert!(rig.marshal.certified().is_empty());
+
+        // The same block signed with the rotated identity verifies.
+        let finalization = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+        assert!(
+            reporter
+                .report(Event::Finalized {
+                    block: make_certified_block(block.clone(), &finalization),
+                    seen: 0,
+                })
+                .accepted()
+        );
+        wait_until(&context, || rig.marshal.certified().len() == 1).await;
+        assert_eq!(rig.marshal.certified()[0].1, block);
+    });
+}
+
 #[test_traced]
 fn mismatched_finalization_digest_is_dropped_without_stopping_driver() {
     deterministic::Runner::default().start(|mut context| async move {

@@ -280,7 +280,7 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
-        self.is_tip1045_payment(0, false)
+        self.is_tip1045_payment(PaymentRules::V2)
     }
 
     /// T15+ [TIP-20 payment] (TIP-1045) classification.
@@ -292,49 +292,26 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v3(&self) -> bool {
-        self.is_tip1045_payment(MAX_PAYMENT_TRAILING_BYTES, true)
+        self.is_tip1045_payment(PaymentRules::V3)
     }
 
-    /// TIP-1045 classification allowing `max_trailing_bytes` after static-only payment calls, and
-    /// configurable account voucher signatures when `configurable_vouchers` is set.
-    fn is_tip1045_payment(&self, max_trailing_bytes: usize, configurable_vouchers: bool) -> bool {
+    /// TIP-1045 classification under `rules`.
+    fn is_tip1045_payment(&self, rules: PaymentRules) -> bool {
         match self {
-            Self::Legacy(tx) => is_tip1045_call(
-                tx.tx().to.to(),
-                &tx.tx().input,
-                max_trailing_bytes,
-                configurable_vouchers,
-            ),
+            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input, rules),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty()
-                    && is_tip1045_call(
-                        tx.to.to(),
-                        &tx.input,
-                        max_trailing_bytes,
-                        configurable_vouchers,
-                    )
+                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty()
-                    && is_tip1045_call(
-                        tx.to.to(),
-                        &tx.input,
-                        max_trailing_bytes,
-                        configurable_vouchers,
-                    )
+                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_tip1045_call(
-                        Some(&tx.to),
-                        &tx.input,
-                        max_trailing_bytes,
-                        configurable_vouchers,
-                    )
+                    && is_tip1045_call(Some(&tx.to), &tx.input, rules)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -345,14 +322,10 @@ impl TempoTxEnvelope {
                         .key_authorization
                         .as_ref()
                         .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                    && tx.calls.iter().all(|call| {
-                        is_tip1045_call(
-                            call.to.to(),
-                            &call.input,
-                            max_trailing_bytes,
-                            configurable_vouchers,
-                        )
-                    })
+                    && tx
+                        .calls
+                        .iter()
+                        .all(|call| is_tip1045_call(call.to.to(), &call.input, rules))
             }
         }
     }
@@ -615,17 +588,39 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
     to.is_some_and(|to| to.is_tip20())
 }
 
-/// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
-///
-/// Voucher signatures must be primitive, or also configurable account signatures when
-/// `configurable_vouchers` is set. Only their encoding is checked.
+/// TIP-1045 payment lane rules, which differ by hardfork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaymentRules {
+    /// T5+: exact ABI-encoded calldata and primitive voucher signatures.
+    V2,
+    /// T15+: static-only payment calls may carry up to [`MAX_PAYMENT_TRAILING_BYTES`] trailing
+    /// bytes, and voucher signatures may also be configurable account signatures (TIP-1166).
+    V3,
+}
+
+impl PaymentRules {
+    /// Bytes allowed after the ABI-encoded arguments of static-only payment calls.
+    const fn max_trailing_bytes(self) -> usize {
+        match self {
+            Self::V2 => 0,
+            Self::V3 => MAX_PAYMENT_TRAILING_BYTES,
+        }
+    }
+
+    /// Returns `true` if `signature` is an allowed voucher signature encoding. Only the encoding
+    /// is checked.
+    fn is_valid_voucher_signature(self, signature: &[u8]) -> bool {
+        super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
+            || (self == Self::V3
+                && super::tt_signature::TempoSignature::from_bytes(signature)
+                    .is_ok_and(|signature| signature.as_configurable_account().is_some()))
+    }
+}
+
+/// Returns `true` if the call is in the TIP-1045 payment lane allow-list under `rules`.
 #[inline]
-fn is_tip1045_call(
-    to: Option<&Address>,
-    input: &[u8],
-    max_trailing_bytes: usize,
-    configurable_vouchers: bool,
-) -> bool {
+fn is_tip1045_call(to: Option<&Address>, input: &[u8], rules: PaymentRules) -> bool {
+    let max_trailing_bytes = rules.max_trailing_bytes();
     match to {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input, max_trailing_bytes),
@@ -634,14 +629,7 @@ fn is_tip1045_call(
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
                 max_trailing_bytes,
-                |signature| {
-                    super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
-                        || (configurable_vouchers
-                            && super::tt_signature::TempoSignature::from_bytes(signature)
-                                .is_ok_and(|signature| {
-                                    signature.as_configurable_account().is_some()
-                                }))
-                },
+                |signature| rules.is_valid_voucher_signature(signature),
             )
         }
         _ => false,
