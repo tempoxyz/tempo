@@ -45,6 +45,8 @@ impl commonware_consensus::Reporter for Reporter {
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
         if let Update::Block(block, ack) = update {
+            // Sampling only feeds pacing, so marshal need not wait for it.
+            ack.acknowledge();
             // Only finalized children supply canonical sampling observations.
             // Derive the parent's epoch from its height, not the child's epoch.
             if let Some(ctx) = block.inner().header().consensus_context
@@ -71,7 +73,6 @@ impl commonware_consensus::Reporter for Reporter {
             }
             self.metrics
                 .observe(&self.estimator.snapshot(Instant::now()));
-            ack.acknowledge();
         }
         Feedback::Ok
     }
