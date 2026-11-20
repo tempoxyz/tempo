@@ -97,7 +97,7 @@ for contract in CallbackPortalFixture ZoneMessengerFixture ZoneToZoneGatewayFixt
     ".bench-tmp/zones-out/ZoneToZoneFixture.sol/$contract.json" \
     > "contrib/bench/txgen/zones/$contract.json"
 done
-jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
+jq -S '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
   .bench-tmp/zones-out/PortalFixture.sol/IPortal.json \
   > contrib/bench/txgen/zones/portal.abi.json
 ```
