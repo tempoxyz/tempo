@@ -253,7 +253,8 @@ pub trait TempoStateAccess<M = ()> {
         })
     }
 
-    /// Returns the balance of the given token for the given account.
+    /// Returns the balance of `token` that `account` can spend, which is what fee collection may
+    /// debit. From T15 it excludes reserved funds (TIP-1153), which sit outside the balance slot.
     ///
     /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
     fn get_token_balance(
@@ -267,8 +268,8 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         self.with_read_only_storage_ctx(spec, actions, || {
-            // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances[account].read()
+            let token = TIP20Token::from_address(token)?;
+            token.balances[account].read()
         })
     }
 

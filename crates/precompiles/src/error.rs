@@ -24,11 +24,12 @@ use evm2::{
 use tempo_contracts::{
     TempoHardfork,
     precompiles::{
-        AccountKeychainError, AddrRegistryError, ConfigurableAccountError, CurrentCommitteeError,
-        FeeManagerError, NonceError, ReceivePolicyGuardError, RolesAuthError,
-        SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
-        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
+        AccountKeychainError, AddrRegistryError, CardsError, ConfigurableAccountError,
+        CurrentCommitteeError, FeeManagerError, NonceError, ReceivePolicyGuardError,
+        ReservationsError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
+        StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError,
+        TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+        ZoneFactoryError,
     },
 };
 use tempo_primitives::transaction::ConfigurableAccountConfigError;
@@ -121,6 +122,14 @@ pub enum TempoPrecompileError {
     #[error("configurable account error: {0:?}")]
     ConfigurableAccountError(ConfigurableAccountError),
 
+    /// Error from the account reservations precompile
+    #[error("Reservations error: {0:?}")]
+    ReservationsError(ReservationsError),
+
+    /// Error from the card records precompile
+    #[error("Cards error: {0:?}")]
+    CardsError(CardsError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -192,6 +201,8 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
+            | TempoPrecompileError::ReservationsError(_)
+            | TempoPrecompileError::CardsError(_)
             | TempoPrecompileError::InvalidConfigCommitmentWrite
             | TempoPrecompileError::NestedCallUnavailable
             | TempoPrecompileError::NestedCallHalted(_)
@@ -261,6 +272,8 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
             Self::ConfigurableAccountError(e) => e.selector(),
+            Self::ReservationsError(e) => e.selector(),
+            Self::CardsError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas
@@ -305,6 +318,8 @@ impl TempoPrecompileError {
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
             | Self::ConfigurableAccountError(_)
+            | Self::ReservationsError(_)
+            | Self::CardsError(_)
             | Self::UnknownFunctionSelector(_)
             | Self::InvalidConfigCommitmentWrite => false,
         }
@@ -356,6 +371,8 @@ impl TempoPrecompileError {
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::ConfigurableAccountError(e) => e.abi_encode().into(),
+            Self::ReservationsError(e) => e.abi_encode().into(),
+            Self::CardsError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
             }
@@ -424,6 +441,10 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
+    // Registered first so that selectors shared with older interfaces (`PolicyForbids`,
+    // `Unauthorized`, `InvalidAmount`) keep decoding as those interfaces' errors.
+    add_errors_to_registry(&mut registry, TempoPrecompileError::CardsError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ReservationsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);

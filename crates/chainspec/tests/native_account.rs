@@ -16,12 +16,11 @@ fn reserved_addresses_are_not_native_accounts() {
         address!("5ad0000000000000000000000000000000000001"),
     ]
     .into_iter()
-    .chain(SYSTEM_PRECOMPILES.iter().map(|&(precompile, _)| precompile));
-    for address in reserved {
-        assert!(
-            !is_valid_native_account(address, TempoHardfork::T14),
-            "{address}"
-        );
+    .map(|address| (address, TempoHardfork::T14))
+    // Each system precompile is reserved from the hardfork that activates it.
+    .chain(SYSTEM_PRECOMPILES.iter().copied());
+    for (address, hardfork) in reserved {
+        assert!(!is_valid_native_account(address, hardfork), "{address}");
     }
 }
 
