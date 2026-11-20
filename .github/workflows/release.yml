@@ -559,8 +559,32 @@ jobs:
             echo "secret-access-key=$secret"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Upload to R2
+        id: upload
         if: github.repository == 'tempoxyz/tempo'
+        # Retried once below, so a failure here doesn't fail the job by itself.
+        continue-on-error: true
+        uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          aws_key_id: ${{ steps.r2-credentials.outputs.access-key-id }}
+          aws_secret_access_key: ${{ steps.r2-credentials.outputs.secret-access-key }}
+          aws_bucket: ${{ env.R2_BUCKET }}
+          endpoint: ${{ steps.r2-credentials.outputs.endpoint-url }}
+          source_dir: "${{ needs.get-version.outputs.version }}"
+          destination_dir: "${{ steps.dest.outputs.dir }}"
+
+      # An R2 server can still reject the new credentials briefly after others
+      # accept them (see "Derive R2 credentials"). The retry rewrites the same
+      # keys with the same files, so it is safe after a partial upload.
+      - name: Wait before retrying the upload
+        if: steps.upload.outcome == 'failure'
+        run: |
+          echo "::warning::The R2 upload failed; retrying it in 10 seconds"
+          sleep 10
+
+      - name: Retry the upload to R2
+        if: steps.upload.outcome == 'failure'
+        uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           aws_key_id: ${{ steps.r2-credentials.outputs.access-key-id }}
           aws_secret_access_key: ${{ steps.r2-credentials.outputs.secret-access-key }}
