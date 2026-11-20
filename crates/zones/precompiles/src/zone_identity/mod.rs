@@ -155,7 +155,7 @@ impl ZoneIdentity {
         Ok(org)
     }
 
-    /// Replaces an org's admin. Org 0 is always administered by the registrar.
+    /// Replaces an org's admin. Org 0 has no admin.
     pub fn set_org_admin(
         &mut self,
         caller: Address,
@@ -176,11 +176,10 @@ impl ZoneIdentity {
     pub fn add_members(
         &mut self,
         caller: Address,
-        registrar: Address,
         org: u64,
         accounts: &[Address],
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
+        self.ensure_org_admin(caller, org)?;
         if org == 0 {
             return Err(ZoneIdentityError::invalid_address().into());
         }
@@ -253,15 +252,13 @@ impl ZoneIdentity {
     pub fn set_l1_target(
         &mut self,
         caller: Address,
-        registrar: Address,
         org: u64,
         target: Address,
         tokens: &[Address],
         rules: L1Target,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
-        // Org 0 accepts no deposits and may withdraw anywhere, so it has no targets.
-        if org == 0 || target.is_zero() {
+        self.ensure_org_admin(caller, org)?;
+        if target.is_zero() {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         for &token in tokens {
@@ -282,12 +279,11 @@ impl ZoneIdentity {
     pub fn set_l1_policy(
         &mut self,
         caller: Address,
-        registrar: Address,
         org: u64,
         tokens: &[Address],
         policy: L1Policy,
     ) -> ZoneResult<()> {
-        self.ensure_org_admin(caller, registrar, org)?;
+        self.ensure_org_admin(caller, org)?;
         if org == 0 {
             return Err(ZoneIdentityError::invalid_address().into());
         }
@@ -302,11 +298,8 @@ impl ZoneIdentity {
         Ok(())
     }
 
-    /// Admin of `org`; the registrar for org 0, which only lets it read org 0's membership.
-    pub fn org_admin(&self, registrar: Address, org: u64) -> ZoneResult<Address> {
-        if org == 0 {
-            return Ok(registrar);
-        }
+    /// Admin of `org`; zero for org 0, which has none.
+    pub fn org_admin(&self, org: u64) -> ZoneResult<Address> {
         Ok(self.orgs[org].admin.read()?)
     }
 
@@ -318,7 +311,6 @@ impl ZoneIdentity {
             let org = self.members[account].read()?;
             Ok((org, self.orgs[org].admin.read()?))
         })?;
-        let admin = if org == 0 { registrar } else { admin };
         if caller != account && caller != admin {
             ensure_caller(caller, registrar)?;
         }
@@ -335,7 +327,7 @@ impl ZoneIdentity {
         to: u64,
         token: Address,
     ) -> ZoneResult<bool> {
-        if caller != self.org_admin(registrar, from)? && caller != self.org_admin(registrar, to)? {
+        if caller != self.org_admin(from)? && caller != self.org_admin(to)? {
             ensure_caller(caller, registrar)?;
         }
         Ok(self.orgs[from].edges[to][token]
@@ -415,14 +407,15 @@ impl ZoneIdentity {
         Ok(())
     }
 
-    fn ensure_org_admin(&self, caller: Address, registrar: Address, org: u64) -> ZoneResult<()> {
+    /// Rejects a caller that isn't `org`'s admin. Org 0 has none, so nobody configures it.
+    fn ensure_org_admin(&self, caller: Address, org: u64) -> ZoneResult<()> {
         self.ensure_org(org)?;
-        ensure_caller(caller, self.org_admin(registrar, org)?)
+        ensure_caller(caller, self.org_admin(org)?)
     }
 
     /// Rejects a caller that is neither `org`'s admin nor the registrar.
     fn ensure_org_reader(&self, caller: Address, registrar: Address, org: u64) -> ZoneResult<()> {
-        if caller != self.org_admin(registrar, org)? {
+        if caller != self.org_admin(org)? {
             ensure_caller(caller, registrar)?;
         }
         Ok(())
@@ -579,9 +572,7 @@ mod tests {
         let admin = Address::repeat_byte(1);
         let org = identity.create_org(registrar, registrar, admin).unwrap();
         identity.set_edge(admin, org, org, &[usd], true).unwrap();
-        identity
-            .add_members(admin, registrar, org, &[ALICE, BOB])
-            .unwrap();
+        identity.add_members(admin, org, &[ALICE, BOB]).unwrap();
         (admin, org)
     }
 
@@ -664,7 +655,6 @@ mod tests {
             identity
                 .set_l1_target(
                     admin,
-                    registrar,
                     org,
                     OFFRAMP,
                     &[usd],
@@ -704,12 +694,10 @@ mod tests {
             let (admin_a, admin_b) = (Address::repeat_byte(1), Address::repeat_byte(2));
             let a = identity.create_org(registrar, registrar, admin_a).unwrap();
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            identity
-                .add_members(admin_a, registrar, a, &[ALICE])
-                .unwrap();
+            identity.add_members(admin_a, a, &[ALICE]).unwrap();
             // The whole batch is refused, so BOB is not added either.
             assert_eq!(
-                identity.add_members(admin_b, registrar, b, &[BOB, ALICE]),
+                identity.add_members(admin_b, b, &[BOB, ALICE]),
                 Err(identity_error(ZoneIdentityError::already_member(ALICE)))
             );
             assert_eq!(identity.members[BOB].read().unwrap(), 0);
@@ -726,7 +714,6 @@ mod tests {
                     identity
                         .set_l1_target(
                             admin,
-                            registrar,
                             org,
                             target,
                             &[usd],
@@ -755,9 +742,7 @@ mod tests {
             let carol = Address::repeat_byte(0x55);
             let admin_b = Address::repeat_byte(2);
             let b = identity.create_org(registrar, registrar, admin_b).unwrap();
-            identity
-                .add_members(admin_b, registrar, b, &[carol])
-                .unwrap();
+            identity.add_members(admin_b, b, &[carol]).unwrap();
             assert!(!allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
             set_target(identity, admin_b, b, OFFRAMP, false, true);
             assert!(allows(usd, carol, OFFRAMP, TransferKind::Withdrawal));
@@ -773,9 +758,7 @@ mod tests {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
-            identity
-                .set_l1_policy(admin, registrar, org, &[usd], policy)
-                .unwrap();
+            identity.set_l1_policy(admin, org, &[usd], policy).unwrap();
             assert_eq!(identity.l1_policy(admin, registrar, org, usd), Ok(policy));
             [
                 allows(usd, STRANGER, ALICE, TransferKind::Deposit),
@@ -802,13 +785,18 @@ mod tests {
                 open_withdrawal: true,
             };
             assert_eq!(
-                identity.set_l1_target(registrar, registrar, 0, OFFRAMP, &[usd], target),
-                Err(identity_error(ZoneIdentityError::invalid_address()))
+                identity.set_l1_target(registrar, 0, OFFRAMP, &[usd], target),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
             );
             assert_eq!(
-                identity.set_l1_policy(registrar, registrar, 0, &[usd], open),
-                Err(identity_error(ZoneIdentityError::invalid_address()))
+                identity.set_l1_policy(registrar, 0, &[usd], open),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
             );
+            assert_eq!(
+                identity.add_members(registrar, 0, &[STRANGER]),
+                Err(identity_error(ZoneIdentityError::unauthorized()))
+            );
+            assert_eq!(identity.org_admin(0), Ok(Address::ZERO));
         });
     }
 
@@ -823,23 +811,23 @@ mod tests {
                 withdraw_to: true,
             };
             assert_eq!(
-                identity.set_l1_target(outsider, registrar, org, OFFRAMP, &[usd], rules),
+                identity.set_l1_target(outsider, org, OFFRAMP, &[usd], rules),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
             assert_eq!(
-                identity.set_l1_target(admin, registrar, 9, OFFRAMP, &[usd], rules),
+                identity.set_l1_target(admin, 9, OFFRAMP, &[usd], rules),
                 Err(identity_error(ZoneIdentityError::unknown_org(9)))
             );
             assert_eq!(
-                identity.set_l1_policy(outsider, registrar, org, &[usd], L1Policy::default()),
+                identity.set_l1_policy(outsider, org, &[usd], L1Policy::default()),
                 Err(identity_error(ZoneIdentityError::unauthorized()))
             );
             assert_eq!(
-                identity.set_l1_target(admin, registrar, org, Address::ZERO, &[usd], rules),
+                identity.set_l1_target(admin, org, Address::ZERO, &[usd], rules),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
             identity
-                .set_l1_target(admin, registrar, org, OFFRAMP, &[usd], rules)
+                .set_l1_target(admin, org, OFFRAMP, &[usd], rules)
                 .unwrap();
             for reader in [admin, registrar] {
                 assert_eq!(
@@ -866,22 +854,20 @@ mod tests {
             // Even with the master registered locally, nothing resolves it: the master's
             // membership and targets don't apply to its virtual addresses.
             let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new()).unwrap();
-            identity
-                .add_members(admin, registrar, org, &[VIRTUAL_MASTER])
-                .unwrap();
+            identity.add_members(admin, org, &[VIRTUAL_MASTER]).unwrap();
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::InZone));
             let withdraw_to = L1Target {
                 deposit_from: false,
                 withdraw_to: true,
             };
             identity
-                .set_l1_target(admin, registrar, org, VIRTUAL_MASTER, &[usd], withdraw_to)
+                .set_l1_target(admin, org, VIRTUAL_MASTER, &[usd], withdraw_to)
                 .unwrap();
             assert!(!allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
 
             // A virtual Tempo deposit address listed as itself is a target like any other.
             identity
-                .set_l1_target(admin, registrar, org, virtual_addr, &[usd], withdraw_to)
+                .set_l1_target(admin, org, virtual_addr, &[usd], withdraw_to)
                 .unwrap();
             assert!(allows(usd, ALICE, virtual_addr, TransferKind::Withdrawal));
             // An open withdrawal policy covers unlisted virtual addresses too.
@@ -893,7 +879,6 @@ mod tests {
             identity
                 .set_l1_policy(
                     admin,
-                    registrar,
                     org,
                     &[usd],
                     L1Policy {
@@ -906,7 +891,7 @@ mod tests {
 
             // Virtual addresses themselves cannot be members.
             assert_eq!(
-                identity.add_members(admin, registrar, org, &[virtual_addr]),
+                identity.add_members(admin, org, &[virtual_addr]),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
         });
@@ -941,16 +926,11 @@ mod tests {
                 let other = identity
                     .create_org(registrar, registrar, registrar)
                     .unwrap();
-                identity
-                    .add_members(registrar, registrar, other, &[carol])
-                    .unwrap();
-                identity
-                    .add_members(admin, registrar, org, &[dave])
-                    .unwrap();
+                identity.add_members(registrar, other, &[carol]).unwrap();
+                identity.add_members(admin, org, &[dave]).unwrap();
                 identity
                     .set_l1_target(
                         admin,
-                        registrar,
                         org,
                         OFFRAMP,
                         &[usd],
@@ -962,7 +942,6 @@ mod tests {
                     .unwrap();
                 identity
                     .set_l1_policy(
-                        registrar,
                         registrar,
                         other,
                         &[usd],

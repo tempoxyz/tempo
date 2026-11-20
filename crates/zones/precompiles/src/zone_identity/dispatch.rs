@@ -41,7 +41,7 @@ impl ZoneIdentity {
                         self.set_org_admin(caller, registrar()?, call.orgId, call.admin)
                     }),
                     addMembers(call) => mutate(call, msg_sender, |caller, call| {
-                        self.add_members(caller, registrar()?, call.orgId, &call.accounts)
+                        self.add_members(caller, call.orgId, &call.accounts)
                     }),
                     removeMember(call) => mutate(call, msg_sender, |caller, call| {
                         self.remove_member(caller, call.account)
@@ -54,12 +54,12 @@ impl ZoneIdentity {
                             deposit_from: call.depositFrom,
                             withdraw_to: call.withdrawTo,
                         };
-                        self.set_l1_target(caller, registrar()?, call.orgId, call.target, &call.tokens, rules)
+                        self.set_l1_target(caller, call.orgId, call.target, &call.tokens, rules)
                     }),
                     setL1Policy(call) => mutate(call, msg_sender, |caller, call| {
-                        self.set_l1_policy(caller, registrar()?, call.orgId, &call.tokens, call.policy.into())
+                        self.set_l1_policy(caller, call.orgId, &call.tokens, call.policy.into())
                     }),
-                    orgAdmin(call) => view(call, |call| self.org_admin(registrar()?, call.orgId)),
+                    orgAdmin(call) => view(call, |call| self.org_admin(call.orgId)),
                     orgOf(call) => view(call, |call| {
                         self.org_of(msg_sender, registrar()?, call.account)
                     }),
