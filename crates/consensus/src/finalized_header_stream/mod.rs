@@ -114,7 +114,6 @@ struct Chunk {
 struct State<P> {
     rpc: Rpc<P>,
     verifier: FinalizationVerifier,
-    configured_identity: Option<NetworkIdentity>,
     epoch_strategy: FixedEpocher,
     cursor: BlockNumHash,
     chunk_size: u64,
@@ -191,7 +190,6 @@ where
         Ok(Self {
             rpc,
             verifier,
-            configured_identity: config.network_identity,
             epoch_strategy,
             cursor: start_after,
             chunk_size,
@@ -273,13 +271,13 @@ where
                     reason: error.to_string(),
                 })?;
 
-            if let Some(configured) = &self.configured_identity
-                && onchain_outcome.epoch >= configured.from_epoch
-                && configured.identity != *onchain_outcome.network_identity()
+            let network_identity = self.verifier.network_identity();
+            if onchain_outcome.epoch >= network_identity.from_epoch
+                && network_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    configured_from_epoch = configured.from_epoch,
-                    configured_network_identity = %configured.identity,
+                    configured_from_epoch = network_identity.from_epoch,
+                    configured_network_identity = %network_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"

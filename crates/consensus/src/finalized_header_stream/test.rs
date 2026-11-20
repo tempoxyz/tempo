@@ -345,10 +345,9 @@ fn rotation_boundary_retires_the_previous_fallback() {
             fetch_concurrency: 1,
         },
         verifier: crate::finalization_verifier::FinalizationVerifier::new(
-            configured.clone(),
+            configured,
             epoch_strategy.clone(),
         ),
-        configured_identity: Some(configured),
         epoch_strategy,
         cursor: alloy_rpc_types_eth::BlockNumHash::new(0, genesis.digest().0),
         chunk_size: 1,
