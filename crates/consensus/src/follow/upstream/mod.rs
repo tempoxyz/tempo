@@ -134,10 +134,14 @@ impl fmt::Debug for UpstreamUrl {
 }
 
 fn parse_upstream_url(url: &str) -> eyre::Result<Url> {
-    let BuiltInConnectionString::Ws(url, _) = BuiltInConnectionString::try_as_ws(url)? else {
-        unreachable!("try_as_ws always returns a websocket connection string on success")
-    };
-    Ok(url)
+    match BuiltInConnectionString::try_as_ws(url) {
+        Ok(BuiltInConnectionString::Ws(url, _)) => Ok(url),
+        Ok(_) => unreachable!("try_as_ws always returns a websocket connection string on success"),
+        // alloy's error quotes the scheme, which is the start of a value that has none.
+        Err(_) => Err(eyre::eyre!(
+            "expected a `ws://` or `wss://` URL, `localhost:<port>` or a socket address"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +166,12 @@ mod tests {
     fn upstream_url_displays_deeply_nested_blob() {
         let url = UpstreamUrl::new(format!("{}ws://upstream.example", "blob:".repeat(100_000)));
         assert_eq!(url.to_string(), "<redacted>");
+    }
+
+    #[test]
+    fn parse_upstream_url_error_omits_the_value() {
+        let err = parse_upstream_url("secret:secret@upstream.example:8546").unwrap_err();
+        assert!(!format!("{err:?}").contains("secret"));
     }
 
     #[test]
