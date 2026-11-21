@@ -50,6 +50,12 @@ pub const MAX_ALLOWLIST_PAYLOAD_SIZE: usize =
 /// to raise the pool limit without allowing block-sized frames into transaction event queues.
 pub const MAX_TRANSACTION_MESSAGE_SIZE: usize = 1024 * 1024;
 
+/// Maximum settlement proposal or signature frame accepted from a peer.
+///
+/// The largest legitimate ABI-encoded frame is a 608-byte signed attestation (416-byte
+/// attestation plus a 65-byte signature), so 4 KiB leaves headroom.
+pub(crate) const MAX_SETTLEMENT_MESSAGE_SIZE: usize = 4 * 1024;
+
 // At 30M gas, calldata is bounded below 7.5 MiB; leave headroom for block overhead.
 pub(crate) const MAX_MESSAGE_SIZE: u32 = 20 * 1024 * 1024;
 
