@@ -74,7 +74,7 @@ impl WitnessDatabase {
         let state = StatelessSparseTrie::new(state_root, &index_witness_nodes(&node_pool)?)?;
         let mut code_by_hash = B256Map::default();
         for code in bytecodes {
-            let bytecode = Bytecode::new_raw(code);
+            let bytecode = Bytecode::from_stored(code);
             let code_hash = bytecode.hash_slow();
             if code_by_hash.insert(code_hash, bytecode).is_some() {
                 return Err(WitnessDatabaseError::DuplicateBytecodeHash { code_hash }.into());

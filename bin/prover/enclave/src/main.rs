@@ -3,6 +3,7 @@
 use std::{
     future::Future,
     io,
+    panic::{self, AssertUnwindSafe},
     path::PathBuf,
     process::ExitCode,
     sync::Arc,
@@ -365,8 +366,13 @@ fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyR
     let config = SpfConfig::new(Arc::new(zone_spec));
 
     let public_inputs = request.witness.public_inputs.clone();
-    match prove_zone_batch(&config, request.witness) {
-        Ok(output) => match build_proof_bundle(&public_inputs, &output, |digest| {
+    // The witness is untrusted, so a panic inside the SPF must fail this request rather than
+    // the whole service.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        prove_zone_batch(&config, request.witness)
+    }));
+    match result {
+        Ok(Ok(output)) => match build_proof_bundle(&public_inputs, &output, |digest| {
             nitro_attestation(digest.as_slice(), None)
         }) {
             Ok(proof_bundle) => VerifyResponse::Ok {
@@ -382,11 +388,17 @@ fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyR
                 message,
             },
         },
-        Err(error) => VerifyResponse::Error {
+        Ok(Err(error)) => VerifyResponse::Error {
             version: PROTOCOL_VERSION,
             request_id: Some(request.request_id),
             code: ErrorCode::VerificationFailed,
             message: error.to_string(),
+        },
+        Err(_) => VerifyResponse::Error {
+            version: PROTOCOL_VERSION,
+            request_id: Some(request.request_id),
+            code: ErrorCode::VerificationFailed,
+            message: "SPF execution panicked".into(),
         },
     }
 }
