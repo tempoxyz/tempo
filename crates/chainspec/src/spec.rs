@@ -7,7 +7,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, FixedBytes, U256};
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -21,7 +21,7 @@ use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
 use tempo_hardfork::TempoHardfork;
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
@@ -41,6 +41,9 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Contract calls classified as payments from T16, beside TIP-1045 payments.
+                #[serde(default, skip_serializing_if = "Vec::is_empty")]
+                payment_lane_calls: Vec<PaymentLaneCall>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +84,41 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Contract calls the payment lane admits from T16, beside TIP-1045 payments.
+    pub fn payment_lane_calls(&self) -> &[PaymentLaneCall] {
+        &self.payment_lane_calls
+    }
+
+    /// Returns whether a call to `to` with `input` matches one of the payment lane calls.
+    pub fn is_payment_lane_call(&self, to: &Address, input: &[u8]) -> bool {
+        self.payment_lane_calls
+            .iter()
+            .any(|call| call.matches(to, input))
+    }
+}
+
+/// A contract call the chain classifies as a payment from T16: calls to `to` whose 4-byte
+/// selector is one of `selectors`.
+///
+/// Every node must hold the same list, since the general lane limit depends on it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentLaneCall {
+    /// The called contract.
+    pub to: Address,
+    /// Function selectors admitted at `to`. Calls with any other selector stay general.
+    pub selectors: Vec<FixedBytes<4>>,
+}
+
+impl PaymentLaneCall {
+    /// Returns whether a call to `to` with `input` matches this entry.
+    pub fn matches(&self, to: &Address, input: &[u8]) -> bool {
+        *to == self.to
+            && input
+                .get(..4)
+                .is_some_and(|selector| self.selectors.iter().any(|s| s.as_slice() == selector))
     }
 }
 
@@ -194,6 +232,31 @@ impl TempoChainSpec {
         shared_gas_limit: u64,
     ) -> u64 {
         TempoConsensusSpec::general_gas_limit_at(self, timestamp, gas_limit, shared_gas_limit)
+    }
+
+    /// Returns whether `tx` counts toward the payment lane rather than the general lane at
+    /// `hardfork`.
+    ///
+    /// T16+: TIP-1045 payments ([`TempoTxEnvelope::is_payment_v3`]) plus transactions whose every
+    /// call is a TIP-1045 payment call or one of the chain's payment lane calls.
+    /// T15: [`TempoTxEnvelope::is_payment_v3`]. T5-T14: [`TempoTxEnvelope::is_payment_v2`].
+    /// Earlier: [`TempoTxEnvelope::is_payment_v1`].
+    pub fn is_payment_at(&self, hardfork: TempoHardfork, tx: &TempoTxEnvelope) -> bool {
+        if self.has_payment_lane_calls_at(hardfork) {
+            tx.is_payment_v3_or(|to, input| self.info.is_payment_lane_call(to, input))
+        } else if hardfork.is_t15() {
+            tx.is_payment_v3()
+        } else if hardfork.is_t5() {
+            tx.is_payment_v2()
+        } else {
+            tx.is_payment_v1()
+        }
+    }
+
+    /// Returns whether the chain's payment lane calls apply at `hardfork`: from T16, when the
+    /// chain lists any.
+    pub fn has_payment_lane_calls_at(&self, hardfork: TempoHardfork) -> bool {
+        hardfork.is_t16() && !self.info.payment_lane_calls.is_empty()
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -653,6 +716,106 @@ mod tests {
 
         assert_eq!(chainspec.info.general_gas_limit(), Some(123456789));
         assert_eq!(chainspec.general_gas_limit_at(0, 500_000_000, 0), 123456789);
+    }
+
+    fn payment_lane_chainspec() -> super::TempoChainSpec {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "t1Time": 0,
+                "t5Time": 0,
+                "t15Time": 0,
+                "t16Time": 100,
+                "paymentLaneCalls": [
+                    { "to": "0x5200000000000000000000000000000000000052", "selectors": ["0x01020304", "0x0a0b0c0d"] }
+                ]
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+        super::TempoChainSpec::from_genesis(genesis)
+    }
+
+    fn aa_envelope(
+        calls: Vec<(alloy_primitives::Address, Vec<u8>)>,
+    ) -> tempo_primitives::TempoTxEnvelope {
+        let calls = calls
+            .into_iter()
+            .map(|(to, input)| {
+                tempo_primitives::transaction::Call::new(to, alloy_primitives::Bytes::from(input))
+            })
+            .collect();
+        let tx = tempo_primitives::TempoTransaction {
+            calls,
+            ..Default::default()
+        };
+        tempo_primitives::TempoTxEnvelope::AA(
+            tx.into_signed(alloy_primitives::Signature::test_signature().into()),
+        )
+    }
+
+    #[test]
+    fn test_payment_lane_calls_from_genesis() {
+        use alloy_primitives::{Address, address};
+
+        let chainspec = payment_lane_chainspec();
+        let program = address!("0x5200000000000000000000000000000000000052");
+        assert_eq!(chainspec.info.payment_lane_calls().len(), 1);
+        assert!(chainspec.info.is_payment_lane_call(&program, &[1, 2, 3, 4]));
+        assert!(
+            chainspec
+                .info
+                .is_payment_lane_call(&program, &[10, 11, 12, 13, 0xff])
+        );
+        assert!(!chainspec.info.is_payment_lane_call(&program, &[1, 2, 3]));
+        assert!(!chainspec.info.is_payment_lane_call(&program, &[1, 2, 3, 5]));
+        assert!(
+            !chainspec
+                .info
+                .is_payment_lane_call(&Address::ZERO, &[1, 2, 3, 4])
+        );
+
+        // The list round-trips and stays out of genesis files that leave it unset.
+        let json = serde_json::to_value(&chainspec.info).unwrap();
+        assert_eq!(
+            json["paymentLaneCalls"][0]["selectors"],
+            serde_json::json!(["0x01020304", "0x0a0b0c0d"])
+        );
+        let unset = serde_json::to_value(super::TempoGenesisInfo::default()).unwrap();
+        assert!(unset.get("paymentLaneCalls").is_none());
+    }
+
+    #[test]
+    fn test_is_payment_at_admits_payment_lane_calls_from_t16() {
+        use super::TempoHardfork;
+        use alloy_primitives::{Address, address};
+
+        let chainspec = payment_lane_chainspec();
+        let program = address!("0x5200000000000000000000000000000000000052");
+        let listed = aa_envelope(vec![(program, vec![1, 2, 3, 4])]);
+        let unlisted = aa_envelope(vec![(program, vec![1, 2, 3, 5])]);
+        let mixed = aa_envelope(vec![(program, vec![1, 2, 3, 4]), (Address::ZERO, vec![])]);
+
+        assert_eq!(chainspec.tempo_hardfork_at(99), TempoHardfork::T15);
+        assert!(!chainspec.has_payment_lane_calls_at(TempoHardfork::T15));
+        assert!(chainspec.has_payment_lane_calls_at(TempoHardfork::T16));
+        for hardfork in [TempoHardfork::T1, TempoHardfork::T5, TempoHardfork::T15] {
+            assert!(!chainspec.is_payment_at(hardfork, &listed));
+        }
+        assert!(chainspec.is_payment_at(TempoHardfork::T16, &listed));
+        assert!(!chainspec.is_payment_at(TempoHardfork::T16, &unlisted));
+        assert!(!chainspec.is_payment_at(TempoHardfork::T16, &mixed));
+
+        // Without a list, T16 classifies as T15 does.
+        let plain = super::TempoChainSpec::from_genesis(
+            serde_json::from_value(serde_json::json!({
+                "config": { "chainId": 1234, "t1Time": 0, "t16Time": 0 },
+                "alloc": {}
+            }))
+            .unwrap(),
+        );
+        assert!(!plain.has_payment_lane_calls_at(TempoHardfork::T16));
+        assert!(!plain.is_payment_at(TempoHardfork::T16, &listed));
     }
 
     fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {

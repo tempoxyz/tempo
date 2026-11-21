@@ -810,3 +810,92 @@ async fn test_payment_lane_trailing_bytes_from_t15() -> eyre::Result<()> {
 
     Ok(())
 }
+
+/// From T16 the chain's payment lane calls go in the payment lane, and the builder admits a
+/// general-lane transaction whose gas limit passes the lane's remaining gas when its gas used fits.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_payment_lane_calls_and_gas_used_admission_from_t16() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    const GAS_LIMIT: u64 = 1_000_000;
+    const LISTED: Address = Address::repeat_byte(0x52);
+
+    // (fork, general gas limit, listed call included, unlisted call included)
+    for (fork, general_gas_limit, listed_included, unlisted_included) in [
+        (TempoHardfork::T15, GAS_LIMIT / 2, false, false),
+        (TempoHardfork::T16, GAS_LIMIT / 2, true, true),
+        // Below the gas of any transaction the general lane admits nothing; the listed call is a
+        // payment.
+        (TempoHardfork::T16, 20_000, true, false),
+    ] {
+        let mut genesis: serde_json::Value = serde_json::from_str(&make_genesis_at(fork))?;
+        genesis["config"]["generalGasLimit"] = serde_json::json!(general_gas_limit);
+        genesis["config"]["paymentLaneCalls"] =
+            serde_json::json!([{ "to": LISTED, "selectors": ["0x01020304"] }]);
+        let setup = TestNodeBuilder::new()
+            .with_genesis(serde_json::to_string(&genesis)?)
+            .build_http_only()
+            .await?;
+
+        let funder = ProviderBuilder::new()
+            .wallet(test_signer(0))
+            .connect_http(setup.http_url.clone());
+        let path_usd = ITIP20::new(PATH_USD_ADDRESS, funder.clone());
+        let mut senders = Vec::new();
+        for _ in 0..2 {
+            let signer = PrivateKeySigner::random();
+            path_usd
+                .transfer(signer.address(), U256::from(10_000_000u64))
+                .gas(GAS_LIMIT)
+                .send()
+                .await?
+                .successful_receipt()
+                .await
+                .wrap_err("funding transfer is a payment")?;
+            senders.push(
+                ProviderBuilder::new()
+                    .wallet(signer)
+                    .connect_http(setup.http_url.clone()),
+            );
+        }
+
+        // Both calls carry a gas limit past the general lane's limit.
+        let call = |selector: [u8; 4]| {
+            TransactionRequest::default()
+                .to(LISTED)
+                .gas_limit(GAS_LIMIT)
+                .input(selector.to_vec().into())
+        };
+        let listed = senders[0].send_transaction(call([1, 2, 3, 4])).await?;
+        let unlisted = senders[1].send_transaction(call([1, 2, 3, 5])).await?;
+
+        let canonical = path_usd
+            .transfer(Address::random(), U256::ONE)
+            .gas(GAS_LIMIT)
+            .send()
+            .await?
+            .successful_receipt()
+            .await?;
+        let included_by = canonical.block_number.expect("mined receipt has a block") + 2;
+        while funder.get_block_number().await? < included_by {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        for (name, hash, included) in [
+            ("listed", *listed.tx_hash(), listed_included),
+            ("unlisted", *unlisted.tx_hash(), unlisted_included),
+        ] {
+            let receipt = funder.get_transaction_receipt(hash).await?;
+            assert_eq!(
+                receipt.is_some(),
+                included,
+                "{name} call at {fork:?} with general gas limit {general_gas_limit}"
+            );
+            if let Some(receipt) = receipt {
+                assert!(receipt.status(), "{name} call succeeds");
+            }
+        }
+    }
+
+    Ok(())
+}

@@ -671,6 +671,8 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
     ///
+    /// T16+: TIP-1045 classification plus the chain's payment lane calls
+    /// ([`TempoChainSpec::is_payment_at`]).
     /// T15+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
     /// T5+: TIP-1045 classification ([`is_payment_v2`]).
     /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
@@ -679,14 +681,8 @@ impl<'a> TempoBlockExecutor<'a> {
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        let spec = self.evm().config_spec_id();
-        if spec.is_t15() {
-            tx.is_payment_v3()
-        } else if spec.is_t5() {
-            tx.is_payment_v2()
-        } else {
-            tx.is_payment_v1()
-        }
+        self.chain_spec
+            .is_payment_at(self.evm().config_spec_id(), tx)
     }
 
     /// Returns the section an executed transaction enters at the current position in the block.
@@ -2329,6 +2325,62 @@ mod tests {
             .with_spec(TempoHardfork::T5)
             .build(&mut db, &chainspec);
         assert!(!t5_executor.is_payment(&tx));
+    }
+
+    #[test]
+    fn test_is_payment_admits_payment_lane_calls_from_t16() {
+        let program = Address::repeat_byte(0x52);
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1,
+                "t1Time": 0,
+                "paymentLaneCalls": [{ "to": program, "selectors": ["0x01020304"] }]
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+        let chainspec = std::sync::Arc::new(TempoChainSpec::from_genesis(genesis));
+        let tx = |input: Vec<u8>| {
+            TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1),
+                    gas_limit: 1_200_000,
+                    to: TxKind::Call(program),
+                    input: input.into(),
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature()),
+            )
+        };
+        let listed = tx(vec![1, 2, 3, 4]);
+        let unlisted = tx(vec![1, 2, 3, 5]);
+
+        // Gas used past the general lane's remaining gas leaves the lane only for a general
+        // transaction; a payment counts toward the block alone.
+        let general_gas_limit = 1_000_000;
+        let gas_used = 1_100_000;
+        for (spec, listed_is_payment) in [(TempoHardfork::T15, false), (TempoHardfork::T16, true)] {
+            let mut db = InMemoryDB::default();
+            let executor = TestExecutorBuilder::default()
+                .with_spec(spec)
+                .with_general_gas_limit(general_gas_limit)
+                .build(&mut db, &chainspec);
+            assert_eq!(executor.is_payment(&listed), listed_is_payment);
+            assert!(!executor.is_payment(&unlisted));
+
+            let section = |tx: &TempoTxEnvelope| {
+                executor
+                    .validate_tx(*tx.tx_hash(), false, executor.is_payment(tx), gas_used)
+                    .unwrap()
+            };
+            let listed_section = if listed_is_payment {
+                BlockSection::NonShared
+            } else {
+                BlockSection::GasIncentive
+            };
+            assert_eq!(section(&listed), listed_section);
+            assert_eq!(section(&unlisted), BlockSection::GasIncentive);
+        }
     }
 
     #[test]
