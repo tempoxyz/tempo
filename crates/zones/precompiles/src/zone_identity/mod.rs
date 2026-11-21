@@ -180,13 +180,11 @@ impl ZoneIdentity {
         accounts: &[Address],
     ) -> ZoneResult<()> {
         self.ensure_org_admin(caller, org)?;
-        if org == 0 {
-            return Err(ZoneIdentityError::invalid_address().into());
-        }
+        let spec = tempo_precompiles::storage::StorageCtx.spec();
         // Check every account first, so a rejected batch writes nothing.
         for &account in accounts {
-            // A virtual address never holds funds, so it can't be a member.
-            if account.is_zero() || account.is_virtual() {
+            if account.is_zero() || account.is_virtual() || crate::is_zone_precompile(account, spec)
+            {
                 return Err(ZoneIdentityError::invalid_address().into());
             }
             if self.members[account].read()? != 0 {
@@ -894,6 +892,18 @@ mod tests {
                 identity.add_members(admin, org, &[virtual_addr]),
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
+            // Nor can precompiles, including the outbox and ZoneIdentity itself.
+            for precompile in [
+                tempo_contracts::zones::ZONE_OUTBOX_ADDRESS,
+                zone_primitives::constants::ZONE_INBOX_ADDRESS,
+                ZONE_IDENTITY_ADDRESS,
+                usd,
+            ] {
+                assert_eq!(
+                    identity.add_members(admin, org, &[precompile]),
+                    Err(identity_error(ZoneIdentityError::invalid_address()))
+                );
+            }
         });
     }
 
