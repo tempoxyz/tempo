@@ -655,8 +655,9 @@ jobs:
               body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Replay benchmark failed. [View logs](${jobUrl})`,
             });
 
+      # Scheduled failures page through incident.io from bench-replay-scheduled.yml.
       - name: Send Slack notification (failure)
-        if: failure() && env.BENCH_SLACK != 'never' && env.BENCH_SLACK != 'on-win'
+        if: failure() && env.BENCH_SLACK != 'never' && env.BENCH_SLACK != 'on-win' && github.event_name != 'schedule'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
