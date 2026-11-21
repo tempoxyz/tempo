@@ -139,7 +139,7 @@ On Tempo, each zone has a **portal** that locks deposited tokens. All user depos
 
 [TIP-1096: Multi-block Tempo Imports for Zones](https://github.com/tempoxyz/tempo/blob/main/tips/tip-1096.md) allows a zone to catch up after downtime without generating historical state proofs for every missed Tempo block. See [Multi-block Tempo Imports](#multi-block-tempo-imports).
 
-Users transact on the zone privately. Balances, transfers, and transaction history are only visible to the account holder and the sequencer nodes. The zone does not post transaction data, and data availability is entrusted to the sequencer fleet. Sequencers have full visibility into zone activity. Privacy protects against public observers on Tempo, not against sequencers.
+Users transact on the zone privately. Balances, transfers, and transaction history are only visible to the account holder and the sequencer nodes. From T15, an account's balance, account-scoped state, transactions and logs are also visible to the admin of its `ZoneIdentity` org and the readers that admin names (see [Method Access Control](#method-access-control)). The zone does not post transaction data, and data availability is entrusted to the sequencer fleet. Sequencers have full visibility into zone activity. Privacy protects against public observers on Tempo, not against sequencers.
 
 Zones rely on the following trust assumptions: the verifier must be sound for state transition integrity, the sequencers are trusted for liveness and data availability, and there is no forced inclusion or permissionless exit mechanism.
 
@@ -924,7 +924,7 @@ be recreated.
 
 Zone execution differs from standard Tempo execution in three areas. These changes are enforced at the EVM level, not just at the RPC layer, so they apply to all code paths including user transactions, `eth_call` simulations, and prover re-execution.
 
-- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls as well as direct calls.
+- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. From T15, TIP-20 `balanceOf`, `allowance` and permit nonces, Nonce Manager lanes, AccountKeychain getters and storage-credit getters also authorize a caller that `ZoneIdentity.canRead` allows for the account, the owner for `allowance`, in the state the call executes against (in the latest state for redacted RPC simulations at an earlier block): the admin of the account's org and the readers that admin names. An account in no org is readable only by itself. Enforcement applies to nested calls as well as direct calls.
 - **Fixed gas for transfers.** All TIP-20 transfer and approve operations charge a fixed 100,000 gas regardless of storage layout. This eliminates a side channel where variable gas costs reveal whether a recipient has previously received tokens.
 - **Contract creation disabled.** `CREATE` and `CREATE2` revert. The zone runs only predeploys and TIP-20 token precompiles. Arbitrary contract deployment would allow users to circumvent the execution-level privacy controls.
 - **No Permit2 or Multicall3.** Zone genesis omits both. Before executing each T15 block, the zone clears any code still at either address, keeping its balance, nonce, and storage, so zones created before T15 lose them at activation. Permit2's public `allowance` and `nonceBitmap` getters would expose approvals, and Multicall3 lets anyone call a TIP-20 token as Multicall3. Funds held at either address stay there.
@@ -1046,15 +1046,17 @@ The RPC uses a default-deny model. Any method not explicitly listed returns `-32
 
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
-**Scoped.** Available to any authenticated caller but filtered to the caller's account:
+**Readable accounts.** A caller may read an account's balance, nonce, the transactions it sent and its logs, at any block or `pending`, when it is the account or, from T15, when `ZoneIdentity.canRead` allows it at the latest block. Removing a reader or replacing an org admin therefore also revokes its reads of earlier blocks. Data the caller may not read gets the same response as missing data.
 
-- `eth_getBalance`, `eth_getTransactionCount`: return `0x0` for non-self queries (no error, to avoid leaking account existence).
-- `eth_getTransactionByHash`, `eth_getTransactionReceipt`: return `null` if the caller is not the sender.
+**Scoped.** Available to any authenticated caller but filtered to the accounts it may read:
+
+- `eth_getBalance`, `eth_getTransactionCount`: return `0x0` for accounts the caller may not read (no error, to avoid leaking account existence).
+- `eth_getTransactionByHash`, `eth_getTransactionReceipt`: return `null` if the caller may not read the sender. A receipt's logs are filtered as for the sender.
 - `eth_sendRawTransaction`, `eth_sendRawTransactionSync`: reject if the transaction sender does not match the authenticated account.
 - `eth_fillTransaction`: fills but does not sign an unsigned transaction, with the same authenticated `from` enforcement as simulation methods.
-- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected.
-- `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where the caller is a relevant party (see [Event Filtering](#event-filtering)).
-- `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed, filters are scoped to the authenticated account.
+- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. At a block other than `latest` or `pending`, `ZoneIdentity` answers each read as at the latest block, like the methods above. State override sets and block override objects are rejected.
+- `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where one account the caller may read is a relevant party (see [Event Filtering](#event-filtering)).
+- `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed. Only the account that created a filter can poll or uninstall it. A log filter is scoped to one account like `eth_getLogs`, and read access is rechecked on every poll.
 
 Methods outside this allowlist are not classified separately as restricted or disabled. Raw state and full block endpoints, mining and mempool methods, and all `debug_*`, `admin_*`, and `txpool_*` methods return `-32601`. Sequencers and operators use the unrestricted RPC on port 8545 instead of receiving elevated access through an authorization token. Requests for full transactions through the otherwise-allowed `eth_getBlockByNumber` and `eth_getBlockByHash` methods return `-32005` and must likewise use the unrestricted endpoint.
 
@@ -1080,17 +1082,17 @@ Sequencers and operators retrieve full block data from the unrestricted RPC on p
 
 ### Event Filtering
 
-All log queries are restricted to TIP-20 events where the authenticated account is a relevant party:
+Every log query names one account in its indexed address topics: the authenticated caller when it names the caller, and otherwise the only address its first, or else its second, indexed topic names. Queries naming no account this way are rejected. Results are restricted to TIP-20 events where that account is a relevant party:
 
 | Event | Relevant if |
 |-------|-------------|
-| `Transfer(from, to, amount)` | `from == caller` OR `to == caller` |
-| `Approval(owner, spender, amount)` | `owner == caller` OR `spender == caller` |
-| `TransferWithMemo(from, to, amount, memo)` | `from == caller` OR `to == caller` |
-| `Mint(to, amount)` | `to == caller` |
-| `Burn(from, amount)` | `from == caller` |
+| `Transfer(from, to, amount)` | `from == account` OR `to == account` |
+| `Approval(owner, spender, amount)` | `owner == account` OR `spender == account` |
+| `TransferWithMemo(from, to, amount, memo)` | `from == account` OR `to == account` |
+| `Mint(to, amount)` | `to == account` |
+| `Burn(from, amount)` | `from == account` |
 
-All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
+All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the account, then post-filters results as a final pass. When the account is not the caller, a caller that may not read it gets no logs, without the logs being queried (see [Method Access Control](#method-access-control)).
 
 To avoid leaking how much activity occurred in a block, some fields of returned logs are redacted:
 
@@ -1103,7 +1105,7 @@ To avoid leaking how much activity occurred in a block, some fields of returned 
 WebSocket connections follow the same authorization model. The authorization token is provided during the handshake and scopes all subscriptions for that connection.
 
 - `eth_subscribe("newHeads")`: allowed, pushes block headers with the same header redaction as HTTP block responses.
-- `eth_subscribe("logs")`: scoped to the authenticated account using the same event filtering rules.
+- `eth_subscribe("logs")`: scoped to one account using the same event filtering rules, with read access rechecked for every new block.
 - `eth_subscribe("newPendingTransactions")`: disabled.
 
 The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it rechecks the session's signer every second and terminates the connection once the zone's anchor has retired its signing key, or changed the configuration commitment its configurable-account signer signed with.
@@ -1622,7 +1624,7 @@ Every enabled TIP-20 token is exposed as a precompile. Encrypted-deposit verific
 
 Each enabled TIP-20 token is deployed as a precompile at the same address as on Tempo. The precompile implements the standard TIP-20 interface with privacy modifications:
 
-- `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
+- `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender. From T15, both also admit a caller that `ZoneIdentity.canRead` allows for the account, the owner for `allowance`.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
 - `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T15 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with one zone difference:
   - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. The zone registers no virtual masters, so transfers to TIP-1022 virtual addresses revert with `VirtualAddressUnregistered`.

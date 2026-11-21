@@ -1,8 +1,9 @@
 //! Privacy-enforced log filtering for the zone's redacted RPC.
 //!
-//! Only whitelisted TIP-20 and receipt-recovery event logs are returned to callers. A caller must
-//! appear in an eligible indexed topic or, for `TransferBlocked`, be a stakeholder encoded in the
-//! claim receipt. This prevents users from observing other users' token activity.
+//! Only whitelisted TIP-20 and receipt-recovery event logs of one account are returned to callers:
+//! logs where the account appears in an eligible indexed topic or, for `TransferBlocked`, is a
+//! stakeholder encoded in the claim receipt. The account is the caller itself or one whose logs the
+//! caller may read. This prevents users from observing other users' token activity.
 
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
@@ -48,8 +49,8 @@ const TWO_PARTY_TOPICS: [B256; 4] = [
     TRANSFER_WITH_MEMO_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
 ];
-const CALLER_SCOPED_FILTER_ERROR: &str =
-    "private log filter must include authenticated caller in topic1 or topic2";
+const ACCOUNT_SCOPED_FILTER_ERROR: &str =
+    "private log filter must name the caller, or one other account, in topic1 or topic2";
 
 /// Returns `true` if `caller` appears in an eligible indexed-topic position
 /// for the log's event type.
@@ -105,13 +106,13 @@ fn is_transfer_blocked_caller_eligible(log: &Log, caller: &Address) -> bool {
         || (!receipt.recoveryAuthority.is_zero() && *caller == receipt.recoveryAuthority)
 }
 
-/// Filters logs to only those the caller is allowed to see.
+/// Whether `log` is one of `account`'s logs.
 ///
 /// A log is included only when **both** of the following hold:
 /// 1. Its topic0 is one of the [`WHITELISTED_TOPICS`].
-/// 2. The `caller` is eligible per [`is_caller_eligible`].
-pub fn is_log_visible(log: &Log, caller: &Address) -> bool {
-    log.topic0().is_some_and(|t| WHITELISTED_TOPICS.contains(t)) && is_caller_eligible(log, caller)
+/// 2. `account` is eligible per [`is_caller_eligible`].
+pub fn is_log_visible(log: &Log, account: &Address) -> bool {
+    log.topic0().is_some_and(|t| WHITELISTED_TOPICS.contains(t)) && is_caller_eligible(log, account)
 }
 
 /// Renumbers ordering fields on a sequence of logs so that
@@ -141,12 +142,11 @@ impl LogOrderingRedactor {
     }
 }
 
-/// Filters logs to only those the caller is allowed to see, renumbering the
-/// `log_index` via [`LogOrderingRedactor`].
-pub fn filter_logs(logs: Vec<Log>, caller: &Address) -> Vec<Log> {
+/// Filters logs to `account`'s, renumbering the `log_index` via [`LogOrderingRedactor`].
+pub fn filter_logs(logs: Vec<Log>, account: &Address) -> Vec<Log> {
     let mut redactor = LogOrderingRedactor::default();
     logs.into_iter()
-        .filter(|log| is_log_visible(log, caller))
+        .filter(|log| is_log_visible(log, account))
         .map(|log| redactor.redact(log))
         .collect()
 }
@@ -217,43 +217,51 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a user-supplied filter to whitelisted event topics and requires the
-/// authenticated caller to appear in an eligible indexed topic before backend
-/// log retrieval.
-pub fn scope_filter_for_caller(filter: &mut Filter, caller: &Address) -> Result<(), JsonRpcError> {
+/// Scopes a user-supplied filter to whitelisted topics and one account, which it returns: `caller`
+/// if topic1 or topic2 names it, else the only address in topic1, then topic2. Does not check that
+/// `caller` may read that account.
+pub fn scope_filter_to_account(
+    filter: &mut Filter,
+    caller: &Address,
+) -> Result<Address, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
-        return Ok(());
+        return Ok(*caller);
     }
 
-    let caller_word = caller.into_word();
-    if filter.topics[1].contains(&caller_word) {
+    // The account a topic position names: the caller if among them, or else its only address.
+    let named = |position: usize| {
+        let topics = &filter.topics[position];
+        if topics.contains(&caller.into_word()) {
+            return Some(*caller);
+        }
+        let word = topics.iter().next().filter(|_| topics.len() == 1)?;
+        let account = Address::from_word(*word);
+        (account.into_word() == *word).then_some(account)
+    };
+    let mut candidates = [(1, named(1)), (2, named(2))];
+    // Positions naming the caller come first, so the caller's own filters keep their meaning.
+    candidates.sort_by_key(|(_, account)| *account != Some(*caller));
+    for (position, account) in candidates.into_iter().filter_map(|(p, a)| Some((p, a?))) {
         let topic0 = filter.topics[0]
             .iter()
             .copied()
-            .filter(|topic| *topic != TRANSFER_BLOCKED_TOPIC)
+            .filter(|topic| {
+                if position == 1 {
+                    *topic != TRANSFER_BLOCKED_TOPIC
+                } else {
+                    TWO_PARTY_TOPICS.contains(topic)
+                }
+            })
             .collect::<Vec<_>>();
         if !topic0.is_empty() {
             filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[1] = FilterSet::from(caller_word);
-            return Ok(());
+            filter.topics[position] = FilterSet::from(account.into_word());
+            return Ok(account);
         }
     }
 
-    if filter.topics[2].contains(&caller_word) {
-        let topic0 = filter.topics[0]
-            .iter()
-            .copied()
-            .filter(|topic| TWO_PARTY_TOPICS.contains(topic))
-            .collect::<Vec<_>>();
-        if !topic0.is_empty() {
-            filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[2] = FilterSet::from(caller_word);
-            return Ok(());
-        }
-    }
-
-    Err(JsonRpcError::invalid_params(CALLER_SCOPED_FILTER_ERROR))
+    Err(JsonRpcError::invalid_params(ACCOUNT_SCOPED_FILTER_ERROR))
 }
 
 #[cfg(test)]
@@ -265,6 +273,7 @@ mod tests {
     use alloy_sol_types::SolValue;
     use tempo_alloy::rpc::TempoTransactionReceipt;
     use tempo_primitives::{TempoReceipt, TempoTxType};
+    use test_case::test_case;
 
     /// Build a test `Log` with the given emitting address and topics.
     fn make_log(emitter: Address, topics: Vec<B256>) -> Log {
@@ -798,18 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_broad_filter() {
-        let caller = Address::with_last_byte(1);
-        let mut filter = Filter::default();
-
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
-
-        assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
-    }
-
-    #[test]
-    fn scope_filter_for_caller_scopes_topic1_caller() {
+    fn scope_filter_to_account_scopes_topic1_caller() {
         let caller = Address::with_last_byte(1);
         let other = Address::with_last_byte(2);
         let caller_topic = caller.into_word();
@@ -818,7 +816,10 @@ mod tests {
         filter.topics[1] = FilterSet::from(vec![caller_topic, other_topic]);
         filter.topics[2] = FilterSet::from(other_topic);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        assert_eq!(
+            scope_filter_to_account(&mut filter, &caller).unwrap(),
+            caller
+        );
 
         assert!(!filter.topics[0].contains(&TRANSFER_BLOCKED_TOPIC));
         assert_eq!(filter.topics[0].len(), WHITELISTED_TOPICS.len() - 1);
@@ -827,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_scopes_topic2_caller_for_two_party_events() {
+    fn scope_filter_to_account_scopes_topic2_caller_for_two_party_events() {
         let caller = Address::with_last_byte(1);
         let other = Address::with_last_byte(2);
         let caller_topic = caller.into_word();
@@ -838,7 +839,10 @@ mod tests {
         filter.topics[1] = FilterSet::from(other_topic);
         filter.topics[2] = FilterSet::from(vec![caller_topic, other.into_word()]);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        assert_eq!(
+            scope_filter_to_account(&mut filter, &caller).unwrap(),
+            caller
+        );
 
         assert_eq!(
             filter.topics[0],
@@ -849,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_wrong_caller() {
+    fn scope_filter_to_account_scopes_the_only_other_account() {
         let caller = Address::with_last_byte(1);
         let a = Address::with_last_byte(2);
         let b = Address::with_last_byte(3);
@@ -857,24 +861,41 @@ mod tests {
         filter.topics[0] = FilterSet::from(TRANSFER_TOPIC);
         filter.topics[1] = FilterSet::from(a.into_word());
         filter.topics[2] = FilterSet::from(b.into_word());
+        assert_eq!(scope_filter_to_account(&mut filter, &caller).unwrap(), a);
+        assert_eq!(filter.topics[1], FilterSet::from(a.into_word()));
+        assert_eq!(filter.topics[2], FilterSet::from(b.into_word()));
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let mut filter = Filter::default();
+        filter.topics[0] = FilterSet::from(vec![TRANSFER_TOPIC, MINT_TOPIC]);
+        filter.topics[2] = FilterSet::from(b.into_word());
+        assert_eq!(scope_filter_to_account(&mut filter, &caller).unwrap(), b);
+        assert_eq!(filter.topics[0], FilterSet::from(TRANSFER_TOPIC));
+    }
+
+    #[test_case(vec![Address::with_last_byte(2).into_word(), Address::with_last_byte(3).into_word()])]
+    #[test_case(vec![B256::repeat_byte(0xff)])]
+    #[test_case(vec![])]
+    fn scope_filter_to_account_rejects_unnamed_account(topic1: Vec<B256>) {
+        let mut filter = Filter::default();
+        filter.topics[1] = FilterSet::from(topic1);
+
+        let err = scope_filter_to_account(&mut filter, &Address::with_last_byte(1)).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
+        assert_eq!(err.message, ACCOUNT_SCOPED_FILTER_ERROR);
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_topic2_only_for_one_party_events() {
+    fn scope_filter_to_account_rejects_topic2_only_for_one_party_events() {
         let caller = Address::with_last_byte(1);
         let mut filter = Filter::default();
         filter.topics[0] = FilterSet::from(MINT_TOPIC);
         filter.topics[2] = FilterSet::from(caller.into_word());
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let err = scope_filter_to_account(&mut filter, &caller).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
+        assert_eq!(err.message, ACCOUNT_SCOPED_FILTER_ERROR);
     }
 
     #[test]
