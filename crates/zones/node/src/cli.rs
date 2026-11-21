@@ -387,7 +387,10 @@ async fn configure_sequencing(
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
         let mut virtual_address_keys = Vec::new();
         for (version, path) in &args.virtual_address_key_files {
-            if let Some(key) = load_virtual_address_key(Some(path)).await? {
+            if let Some(key) = load_virtual_address_key(Some(path))
+                .await
+                .map_err(|err| eyre::eyre!("virtual address key version {version}: {err}"))?
+            {
                 virtual_address_keys.push((*version, key));
             }
         }
@@ -503,6 +506,9 @@ async fn load_virtual_address_key(
         .trim()
         .parse::<alloy_primitives::B256>()
         .map_err(|_| eyre::eyre!("invalid virtual address key in {display_path}"))?;
+    if key.is_zero() {
+        eyre::bail!("virtual address key in {display_path} is zero");
+    }
     Ok(Some(zone_payload::VirtualAddressKey::new(key)))
 }
 
@@ -1229,11 +1235,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(&path).unwrap();
 
         assert_eq!(key.expose(), alloy_primitives::B256::repeat_byte(0x5a));
         assert!(!format!("{key:?}").contains("5a5a"));
         assert!(load_virtual_address_key(None).await.unwrap().is_none());
+
+        let zero = path.with_extension("zero");
+        std::fs::write(&zero, format!("{}\n", alloy_primitives::B256::ZERO)).unwrap();
+        let result = load_virtual_address_key(Some(&zero)).await;
+        std::fs::remove_file(&zero).unwrap();
+        assert!(result.unwrap_err().to_string().contains("is zero"));
+
         let error = ZoneArgsParser::try_parse_from([
             "tempo-zone",
             "--l1.rpc-url",
