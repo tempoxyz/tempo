@@ -4651,6 +4651,46 @@ impl L1Fixture {
         })
     }
 
+    /// Seed the portal's ZoneIdentity config from the current anchor on, as
+    /// `ZonePortal.setIdentityConfig(registrar, enforced)` would. Zone transfers stay enabled, like
+    /// the rest of the synthetic fixture.
+    pub(crate) fn seed_identity_config(&self, registrar: Address, enforced: bool) {
+        let portal_address = Address::ZERO;
+        let mut portal_storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut portal_storage, || -> tempo_precompiles::Result<()> {
+            let mut portal = ZonePortalStorage::new(portal_address);
+            portal.transfers_enabled.write(true)?;
+            portal.identity_registrar.write(registrar)?;
+            portal.identity_enforced.write(enforced)
+        })
+        .expect("in-memory portal write succeeds");
+        let word: B256 = portal_storage
+            .sload(portal_address, portal::slots::TRANSFERS_ENABLED)
+            .expect("in-memory portal read succeeds")
+            .into();
+        // ZoneIdentity also reads whether `AccessPolicy` is abdicated; it is not.
+        let abdication_slot = ZonePortalStorage::new(portal_address)
+            .abdication_effective_at(
+                tempo_contracts::precompiles::ZonePortalCapability::AccessPolicy,
+            )
+            .slot();
+        // Later anchors inherit the last value, but blocks the initial seed covered hold their own,
+        // so overwrite a window past them.
+        let anchor = self.next_block_number.saturating_sub(1);
+        for cache in self.caches.lock().unwrap().iter() {
+            let mut cache = cache.lock();
+            for block in anchor..=anchor + 64 {
+                cache.set(
+                    portal_address,
+                    portal::slots::TRANSFERS_ENABLED.into(),
+                    block,
+                    word,
+                );
+                cache.set(portal_address, abdication_slot.into(), block, B256::ZERO);
+            }
+        }
+    }
+
     /// Seed the Tempo state a transfer recipient needs at the current Zone anchor: no address-level
     /// TIP-403 receive policy and no TIP-1108 commitment.
     pub(crate) fn seed_transfer_recipient(&self, recipient: Address) -> eyre::Result<()> {

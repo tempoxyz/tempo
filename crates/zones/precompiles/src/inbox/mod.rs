@@ -41,6 +41,7 @@ use crate::{
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// ABI selector for the block-opening `advanceTempo` system call.
@@ -141,6 +142,13 @@ impl ZoneInbox {
         } else {
             0
         };
+        // Read only when a deposit needs it, so deposit-free batches stay free of L1 reads, as in
+        // offline re-execution. Deposits already read the sequencer key from L1.
+        let identity_enforced = if deposits.iter().any(DecodedQueuedDeposit::checks_identity) {
+            ZoneIdentity::enforced(l1)?
+        } else {
+            false
+        };
 
         // Step 2: Process deposits and build hash chain
         //
@@ -170,6 +178,7 @@ impl ZoneInbox {
                         deposit,
                         decryption,
                         key,
+                        identity_enforced,
                     )
                 }
             }?;
@@ -300,11 +309,23 @@ impl ZoneInbox {
         deposit: Deposit,
         decryption: DecryptionData,
         key: (B256, u8),
+        identity_enforced: bool,
     ) -> ZoneResult<()> {
         let Some((to, memo)) = recover_encrypted_payload(portal, &deposit, &decryption, key)?
         else {
             return self.fail_deposit(outbox, current_hash, deposit);
         };
+
+        // Bounce a deposit whose recipient's org does not accept its L1 sender.
+        if !ZoneIdentity::new().allows(
+            identity_enforced,
+            deposit.token,
+            deposit.sender,
+            to,
+            TransferKind::Deposit,
+        )? {
+            return self.fail_deposit(outbox, current_hash, deposit);
+        }
 
         if self.try_mint(deposit.token, to, deposit.amount)? {
             self.emit_event(deposit.processed_event(current_hash, to, memo))?;
@@ -450,6 +471,15 @@ enum DecodedQueuedDeposit {
 }
 
 impl DecodedQueuedDeposit {
+    /// Whether processing this entry checks ZoneIdentity, so its batch must read the enforcement
+    /// flag from Tempo. No wildcard: a new variant must decide.
+    fn checks_identity(&self) -> bool {
+        match self {
+            Self::Deposit(_) => true,
+            Self::WithdrawalBounceBack(_) => false,
+        }
+    }
+
     fn hash_with_tail(&self, tail: B256) -> tempo_precompiles::Result<B256> {
         let encoded = match self {
             Self::WithdrawalBounceBack(deposit) => {

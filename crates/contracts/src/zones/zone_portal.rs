@@ -13,6 +13,27 @@ use alloc::format;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::SolValue;
 
+crate::sol! {
+    /// A withdrawal as the portal took it before T15, without `senderOrg`.
+    #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
+    struct LegacyWithdrawal {
+        address token;
+        bytes32 senderTag;
+        address to;
+        uint128 amount;
+        bytes32 memo;
+        uint64 gasLimit;
+        uint64 fallbackNonce;
+        bytes callbackData;
+        bytes encryptedSender;
+    }
+
+    /// `processWithdrawals` as the portal took it before T15.
+    interface LegacyZonePortal {
+        function processWithdrawals(LegacyWithdrawal[] calldata withdrawals, bytes32 remainingQueue) external;
+    }
+}
+
 /// Maximum UTF-8 byte length of each enabled token metadata string.
 pub const MAX_TOKEN_METADATA_BYTES: usize = 31;
 
@@ -44,6 +65,7 @@ crate::sol! {
             uint64 fallbackNonce;
             bytes callbackData;
             bytes encryptedSender;
+            uint64 senderOrg;
         }
 
         /// Deposit payload (ECIES-encrypted recipient and memo).
@@ -202,6 +224,7 @@ crate::sol! {
         event RoleUpdated(address indexed account, Role prev, Role next);
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
         event TransfersEnabledUpdated(bool enabled);
+        event IdentityConfigUpdated(address registrar, bool enforced);
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
 
         /// Emitted when block-production leadership transitions to a new sequencer.
@@ -268,12 +291,14 @@ crate::sol! {
         function zoneId() external view returns (uint32);
         function admin() external view returns (address);
         function messenger() external view returns (address);
+        function callbackSenderOrg() external view returns (uint64);
         function isAccessEnforced() external view returns (bool);
         function setAccessMode(bool enforced) external;
         function isGatewayOpen() external view returns (bool);
         function setGatewayMode(bool enforced) external;
         function transfersEnabled() external view returns (bool);
         function setTransfersEnabled(bool enabled) external;
+        function setIdentityConfig(address registrar, bool enforced) external;
         function hasRole(address account, Role role) external view returns (bool);
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;
@@ -308,7 +333,7 @@ crate::sol! {
         function areDepositsActive(address token) external view returns (bool);
         function tokenConfig(address token) external view returns (TokenConfig memory);
         function initialize(uint32 zoneId, address initialToken, bool accessMode, bool gatewayMode, address[] calldata allowedAccounts, address[] calldata zoneGateways, address admin, address messenger, address[] calldata sequencers, uint8 threshold, address verifier, string calldata rpcUrl) external;
-        function deliverWithdrawal(address to, address token, uint128 amount, bytes32 memo, uint64 gasLimit, bytes calldata callbackData) external;
+        function deliverWithdrawal(address token, address target, uint128 amount, bytes32 senderTag, uint64 senderOrg, uint64 gasLimit, bytes calldata data) external;
         function MAX_DEPOSITS_PER_TEMPO_BLOCK() external view returns (uint64);
         /// Pre-T15 only.
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
@@ -772,6 +797,7 @@ impl Withdrawal {
         event: &IZoneOutbox::WithdrawalRequested,
         tx_hash: B256,
         encrypted_sender: Bytes,
+        sender_org: u64,
     ) -> Self {
         Self {
             token: event.token,
@@ -783,12 +809,34 @@ impl Withdrawal {
             fallbackNonce: event.fallbackNonce,
             callbackData: event.data.clone(),
             encryptedSender: encrypted_sender,
+            senderOrg: sender_org,
         }
     }
 
     /// Hash this withdrawal as one link in a withdrawal queue.
+    ///
+    /// A withdrawal in org 0 hashes without `senderOrg`, as every withdrawal did before T15, so
+    /// withdrawals queued before T15 keep their hashes. Any other withdrawal commits its org.
     pub fn hash_with_tail(&self, tail: B256) -> B256 {
-        keccak256((self.clone(), tail).abi_encode_params())
+        if self.senderOrg != 0 {
+            return keccak256((self.clone(), tail).abi_encode_params());
+        }
+        keccak256((self.to_legacy(), tail).abi_encode_params())
+    }
+
+    /// This withdrawal without `senderOrg`, as the portal took it before T15.
+    pub fn to_legacy(&self) -> LegacyWithdrawal {
+        LegacyWithdrawal {
+            token: self.token,
+            senderTag: self.senderTag,
+            to: self.to,
+            amount: self.amount,
+            memo: self.memo,
+            gasLimit: self.gasLimit,
+            fallbackNonce: self.fallbackNonce,
+            callbackData: self.callbackData.clone(),
+            encryptedSender: self.encryptedSender.clone(),
+        }
     }
 
     /// Compute the withdrawal queue hash for a slice of withdrawals.

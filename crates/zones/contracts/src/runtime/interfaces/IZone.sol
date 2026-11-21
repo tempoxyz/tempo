@@ -224,6 +224,22 @@ struct Withdrawal {
     uint64 fallbackNonce; // resolves to the zone bounce-back recipient in ZoneOutbox
     bytes callbackData; // calldata for IWithdrawalReceiver (if gasLimit > 0)
     bytes encryptedSender; // optional encrypted (sender, txHash) reveal payload
+    uint64 senderOrg; // sender's ZoneIdentity org when requested (0 = org 0 or bounce-back)
+}
+
+/// @notice A withdrawal as hashed before T15, without `senderOrg`.
+/// @dev Withdrawals in org 0 keep this encoding in the queue hash chain, so withdrawals queued
+///      before T15 dequeue unchanged.
+struct LegacyWithdrawal {
+    address token;
+    bytes32 senderTag;
+    address to;
+    uint128 amount;
+    bytes32 memo;
+    uint64 gasLimit;
+    uint64 fallbackNonce;
+    bytes callbackData;
+    bytes encryptedSender;
 }
 
 struct PendingWithdrawal {
@@ -561,6 +577,9 @@ interface IZonePortal {
     /// @notice Emitted when zone-internal TIP-20 transfers are enabled or disabled.
     event TransfersEnabledUpdated(bool enabled);
 
+    /// @notice Emitted when the ZoneIdentity registrar or enforcement flag changes.
+    event IdentityConfigUpdated(address registrar, bool enforced);
+
     error NotSequencer();
     error NotAdmin();
     error NotPauseAuthority();
@@ -661,6 +680,12 @@ interface IZonePortal {
     /// @notice Fixed callback messenger assigned during portal initialization.
     function messenger() external view returns (address);
 
+    /// @notice ZoneIdentity org of the sender of the withdrawal whose callback is running.
+    /// @dev Receivers call it on the `sourcePortal` passed to `onWithdrawalReceived`, at any point
+    ///      in the callback, including after depositing back. Returns 0 outside a callback, which
+    ///      is indistinguishable from org 0: receivers must check that the messenger called them.
+    function callbackSenderOrg() external view returns (uint64);
+
     /// @notice Whether account allowlist enforcement is enabled.
     function isAccessEnforced() external view returns (bool);
 
@@ -678,6 +703,9 @@ interface IZonePortal {
 
     /// @notice Enable or disable zone-internal TIP-20 transfers. Only callable by the admin.
     function setTransfersEnabled(bool enabled) external;
+
+    /// @notice Set the ZoneIdentity registrar and enforcement flag. Only callable by the admin.
+    function setIdentityConfig(address registrar, bool enforced) external;
 
     /// @notice Whether an account has a Portal role.
     function hasRole(address account, Role role) external view returns (bool);
@@ -992,6 +1020,7 @@ interface IZonePortal {
         address target,
         uint128 amount,
         bytes32 senderTag,
+        uint64 senderOrg,
         uint64 gasLimit,
         bytes calldata data
     )
@@ -1270,6 +1299,9 @@ interface IZoneOutbox {
         bytes data,
         bytes revealTo
     );
+
+    /// @notice Emitted after `WithdrawalRequested` when the sender is in an org other than 0.
+    event WithdrawalSenderOrg(uint64 indexed withdrawalIndex, uint64 senderOrg);
 
     event TempoGasRateUpdated(uint128 tempoGasRate);
 

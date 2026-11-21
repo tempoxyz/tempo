@@ -26,11 +26,13 @@ use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     zones::{IZoneOutbox, TempoAdvanced},
 };
-use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, deploy_precompile_at_boundary,
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::constants::{ZONE_IDENTITY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
     ZoneEvm,
@@ -263,6 +265,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
             }
             if self.inner.evm().config_spec_id().is_t15() {
                 self.remove_t15_predeploys()?;
+                deploy_precompile_at_boundary(&mut self.inner, ZONE_IDENTITY_ADDRESS, &[])?;
             }
             Ok(())
         } else {

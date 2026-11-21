@@ -230,6 +230,11 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
             ZonePortal::TransfersEnabledUpdated,
             "TransfersEnabledUpdated"
         ),
+        // Org edges only constrain moves within and across the Zone's boundary; the config change
+        // itself leaves L1 liabilities unchanged.
+        ZonePortal::IdentityConfigUpdated::SIGNATURE_HASH => {
+            ignored!(ZonePortal::IdentityConfigUpdated, "IdentityConfigUpdated")
+        }
         ZonePortal::LeaderUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::LeaderUpdated, "LeaderUpdated")
         }
