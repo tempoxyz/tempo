@@ -127,3 +127,8 @@ required-features = ["test-utils"]
 name = "tempo_precompiles"
 harness = false
 required-features = ["test-utils"]
+
+[[bench]]
+name = "reservations"
+harness = false
+required-features = ["test-utils"]
