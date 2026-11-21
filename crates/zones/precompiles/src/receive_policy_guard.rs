@@ -15,6 +15,7 @@ use tempo_contracts::{precompiles::IReceivePolicyGuard, zones::Unauthorized};
 use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
+    receive_policy_guard::decode_receipt,
 };
 
 /// Stakeholder-only admission for receipt balance lookups.
@@ -41,8 +42,9 @@ impl CallRules for ReceivePolicyGuardRules {
             // Preserve the upstream ABI error for malformed calldata.
             return CallCheck::Continue;
         };
-        let Ok(receipt) = IReceivePolicyGuard::ClaimReceiptV1::try_from(call.receipt) else {
-            // Preserve the upstream InvalidReceipt error for malformed receipt bytes.
+        let Ok(receipt) = decode_receipt(call.receipt) else {
+            // Defer receipts upstream rejects (malformed, or non-canonical from T15) so callers get
+            // upstream's InvalidReceipt.
             return CallCheck::Continue;
         };
 
@@ -237,6 +239,35 @@ mod tests {
             CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
         ));
         assert!(matches!(admit_at(TempoHardfork::T11), CallCheck::Continue));
+    }
+
+    #[test]
+    fn t15_defers_noncanonical_receipt_to_upstream() {
+        let rules = ReceivePolicyGuardRules;
+        let canonical = receipt(RECEIVER, RECOVERY).abi_encode();
+        let mut trailing = canonical.clone();
+        trailing.extend([0u8; 32]);
+        let mut dirty = canonical;
+        dirty[32] = 0xff;
+
+        for bytes in [trailing, dirty] {
+            let data = IReceivePolicyGuard::balanceOfCall {
+                receipt: bytes.into(),
+            }
+            .abi_encode();
+            let admit_at = |spec| {
+                let mut ctx = test_context();
+                ctx.cfg.spec = spec;
+                let mut storage = test_storage_provider(&mut ctx, u64::MAX, true);
+                StorageCtx::enter(&mut storage, || rules.admit(&data, OUTSIDER))
+            };
+
+            assert!(matches!(
+                admit_at(TempoHardfork::T14),
+                CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
+            ));
+            assert!(matches!(admit_at(TempoHardfork::T15), CallCheck::Continue));
+        }
     }
 
     #[test]
