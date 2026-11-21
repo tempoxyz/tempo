@@ -7,7 +7,7 @@ use alloy_eips::eip2718::Decodable2718;
 use alloy_network::TransactionBuilder;
 use alloy_primitives::Address;
 use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoTxEnvelope, transaction::FEE_PAYER_SIGNATURE_MARKER};
 use zone_primitives::constants::CONTRACT_DEPLOYER_ALLOWLIST;
 
 use crate::{auth::AuthContext, types::JsonRpcError};
@@ -18,6 +18,7 @@ pub fn enforce_authorized(
     auth: &AuthContext,
 ) -> Result<(), JsonRpcError> {
     enforce_from(request, auth)?;
+    enforce_no_fee_payer_signature(request)?;
     enforce_contract_creation(request, auth.caller)
 }
 
@@ -35,6 +36,29 @@ pub fn enforce_from(
             request.set_from(auth.caller);
             Ok(())
         }
+        _ => Ok(()),
+    }
+}
+
+/// Reject requests that carry a concrete fee payer signature.
+///
+/// A concrete signature makes the simulation resolve the sponsor as the fee payer, so the
+/// sponsor's private fee-token balance bounds the gas allowance that estimation errors report.
+/// Zone execution also charges fee-payer-dependent costs (e.g. outbox withdrawal fees), so the
+/// outcome would depend on sponsor state as well. Since T2 a fee payer signature always names an
+/// account other than the sender, so there is no self-sponsored case to preserve.
+///
+/// [`FEE_PAYER_SIGNATURE_MARKER`] stays allowed: it never resolves to an account and only flags
+/// the request as sponsored by a not-yet-known fee payer. Requests are rejected rather than
+/// stripped because dropping the signature would make the sender the fee payer, changing
+/// execution semantics.
+pub fn enforce_no_fee_payer_signature(
+    request: &TempoTransactionRequest,
+) -> Result<(), JsonRpcError> {
+    match request.fee_payer_signature {
+        Some(signature) if signature != FEE_PAYER_SIGNATURE_MARKER => Err(
+            JsonRpcError::invalid_params("fee payer signature not allowed"),
+        ),
         _ => Ok(()),
     }
 }
@@ -90,12 +114,17 @@ pub fn verify_raw_tx_sender(data: &[u8], auth: &AuthContext) -> Result<(), JsonR
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
     use tempo_alloy::rpc::TempoTransactionRequest;
-    use tempo_primitives::transaction::Call;
+    use tempo_primitives::transaction::{Call, FEE_PAYER_SIGNATURE_MARKER};
+    use test_case::test_case;
 
-    use super::{enforce_contract_creation, enforce_contract_creation_with_allowlist};
+    use super::{
+        enforce_authorized, enforce_contract_creation, enforce_contract_creation_with_allowlist,
+        enforce_no_fee_payer_signature,
+    };
+    use crate::auth::{AuthContext, AuthSigner};
 
     fn call_target(byte: u8) -> TxKind {
         TxKind::Call(Address::repeat_byte(byte))
@@ -167,5 +196,44 @@ mod tests {
 
         assert!(enforce_contract_creation_with_allowlist(&request, caller, &[]).is_err());
         assert!(enforce_contract_creation_with_allowlist(&request, caller, &[caller]).is_ok());
+    }
+
+    #[test_case(None, true; "no signature")]
+    #[test_case(Some(FEE_PAYER_SIGNATURE_MARKER), true; "fee payer marker")]
+    #[test_case(Some(Signature::test_signature()), false; "concrete signature")]
+    fn fee_payer_signature_policy(signature: Option<Signature>, allowed: bool) {
+        let mut request = call_request(Some(call_target(0x11)));
+        request.fee_payer_signature = signature;
+
+        let result = enforce_no_fee_payer_signature(&request);
+        if allowed {
+            assert!(result.is_ok());
+        } else {
+            let err = result.unwrap_err();
+            assert_eq!(err.code, -32602);
+            assert_eq!(err.message, "fee payer signature not allowed");
+        }
+    }
+
+    #[test]
+    fn enforce_authorized_rejects_concrete_fee_payer_signature() {
+        let caller = Address::repeat_byte(0x01);
+        let auth = AuthContext {
+            caller,
+            expires_at: u64::MAX,
+            signer: AuthSigner::Root,
+        };
+
+        let mut request = call_request(Some(call_target(0x11)));
+        request.inner.from = Some(caller);
+        assert!(enforce_authorized(&mut request, &auth).is_ok());
+
+        request.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        assert!(enforce_authorized(&mut request, &auth).is_ok());
+
+        request.fee_payer_signature = Some(Signature::test_signature());
+        let err = enforce_authorized(&mut request, &auth).unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, "fee payer signature not allowed");
     }
 }

@@ -41,7 +41,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoTxEnvelope,
-    transaction::{Call, TempoTransaction},
+    transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, TempoTransaction},
 };
 use tokio_tungstenite::{
     connect_async,
@@ -1124,6 +1124,96 @@ async fn test_simulation_validation_rejects_create_and_overrides() -> eyre::Resu
     assert_eq!(
         fill_resp["error"]["message"].as_str().unwrap(),
         "contract creation not supported on zones",
+    );
+
+    Ok(())
+}
+
+/// Simulations must not resolve a concrete sponsor as the fee payer, otherwise the sponsor's
+/// private balance bounds the gas allowance reported in estimation errors. The fee payer marker
+/// stays accepted.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_simulation_rejects_concrete_fee_payer_signature() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let ctx = start_zone_with_redacted_rpc().await?;
+    let user_signer = PrivateKeySigner::random();
+    let sponsor_signer = PrivateKeySigner::random();
+    let target = Address::repeat_byte(0x11);
+
+    let transaction = TempoTransaction {
+        chain_id: ctx.config.chain_id,
+        max_priority_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
+        max_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: TxKind::Call(target),
+            value: U256::ZERO,
+            input: Default::default(),
+        }],
+        fee_token: Some(PATH_USD_ADDRESS),
+        ..Default::default()
+    };
+    let sponsor_signature = sponsor_signer
+        .sign_hash_sync(&transaction.fee_payer_signature_hash(user_signer.address()))?;
+
+    let request = |fee_payer_signature: &alloy_primitives::Signature| {
+        json!({
+            "from": user_signer.address(),
+            "calls": [{ "to": target, "value": "0x0", "input": "0x" }],
+            "gas": format!("{:#x}", transaction.gas_limit),
+            "maxFeePerGas": format!("{:#x}", TEMPO_T0_BASE_FEE),
+            "maxPriorityFeePerGas": format!("{:#x}", TEMPO_T0_BASE_FEE),
+            "feeToken": PATH_USD_ADDRESS,
+            "feePayerSignature": fee_payer_signature,
+        })
+    };
+
+    for method in ["eth_call", "eth_estimateGas"] {
+        let resp = ctx
+            .call_as_user(
+                method,
+                json!([request(&sponsor_signature), "latest"]),
+                &user_signer,
+            )
+            .await?;
+        assert_eq!(
+            resp["error"]["code"].as_i64().unwrap(),
+            -32602,
+            "{method} should reject a concrete fee payer signature: {resp}",
+        );
+        assert_eq!(
+            resp["error"]["message"].as_str().unwrap(),
+            "fee payer signature not allowed",
+        );
+
+        // The marker never resolves to an account, so it is not rejected by the policy. The
+        // simulation itself may still fail downstream.
+        let resp = ctx
+            .call_as_user(
+                method,
+                json!([request(&FEE_PAYER_SIGNATURE_MARKER), "latest"]),
+                &user_signer,
+            )
+            .await?;
+        assert_ne!(
+            resp["error"]["message"].as_str(),
+            Some("fee payer signature not allowed"),
+            "{method} should accept the fee payer marker: {resp}",
+        );
+    }
+
+    let fill_resp = ctx
+        .call_as_user(
+            "eth_fillTransaction",
+            json!([request(&sponsor_signature)]),
+            &user_signer,
+        )
+        .await?;
+    assert_eq!(fill_resp["error"]["code"].as_i64().unwrap(), -32602);
+    assert_eq!(
+        fill_resp["error"]["message"].as_str().unwrap(),
+        "fee payer signature not allowed",
     );
 
     Ok(())

@@ -1051,8 +1051,8 @@ Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price
 - `eth_getBalance`, `eth_getTransactionCount`: return `0x0` for non-self queries (no error, to avoid leaking account existence).
 - `eth_getTransactionByHash`, `eth_getTransactionReceipt`: return `null` if the caller is not the sender.
 - `eth_sendRawTransaction`, `eth_sendRawTransactionSync`: reject if the transaction sender does not match the authenticated account.
-- `eth_fillTransaction`: fills but does not sign an unsigned transaction, with the same authenticated `from` enforcement as simulation methods.
-- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected.
+- `eth_fillTransaction`: fills but does not sign an unsigned transaction, with the same authenticated `from` enforcement and fee payer signature rejection as simulation methods.
+- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected. Requests carrying a fee payer signature other than the fee payer marker are rejected, because simulating with the sponsor as fee payer would expose its balance.
 - `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where the caller is a relevant party (see [Event Filtering](#event-filtering)).
 - `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed, filters are scoped to the authenticated account.
 
