@@ -207,7 +207,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    tempo_node::init_version_metadata(tempo_node::tempo_version_metadata!());
+    // The `tempo` binary stamps its version before it calls this. Expanding the stamp here would
+    // compile this library again whenever the build time changes.
+    tempo_node::init_unstamped_version_metadata();
     defaults::init_defaults();
 
     // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
