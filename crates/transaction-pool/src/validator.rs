@@ -209,7 +209,7 @@ where
     ///
     /// These enforce propagation-liveness constraints that are stricter than the EVM's
     /// block-timestamp checks:
-    /// - `valid_before` must be far enough in the future (propagation buffer)
+    /// - `valid_before` must be far enough past the tip, or past `valid_after` when that is later
     /// - `valid_after` must not be too far in the future (wall-clock bound)
     fn ensure_pool_time_bounds(
         &self,
@@ -220,7 +220,10 @@ where
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
-        let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+        let min_allowed = min_allowed_deadline(
+            tip_timestamp,
+            tx.valid_after.map(|valid_after| valid_after.get()),
+        );
         tx.ensure_valid_before(min_allowed)?;
 
         // Reject AA txs where `valid_after` is too far in the future.
@@ -602,16 +605,14 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
 
-        // Pool-only key-expiry checks: reject keychain txs whose key expires too soon
-        // (within AA_VALID_BEFORE_MIN_SECS of tip timestamp) or at or before `valid_after`,
-        // since such a transaction can never execute.
+        // Pool-only key-expiry checks: reject keychain txs whose key expires within
+        // AA_VALID_BEFORE_MIN_SECS of the tip, or of `valid_after` when that is later, since
+        // maintenance would evict such a transaction before it could execute.
         if let Some(key_expiry) = key_expiry {
-            let min_allowed = self
-                .inner
-                .fork_tracker()
-                .tip_timestamp()
-                .saturating_add(AA_VALID_BEFORE_MIN_SECS)
-                .max(transaction.inner().valid_after().unwrap_or_default());
+            let min_allowed = min_allowed_deadline(
+                self.inner.fork_tracker().tip_timestamp(),
+                transaction.inner().valid_after(),
+            );
             if key_expiry <= min_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
@@ -962,6 +963,17 @@ impl<T> ConfigureTempoPoolEvm for T where
             >,
         > + 'static
 {
+}
+
+/// Earliest deadline (`valid_before` or key expiry) the pool admits.
+///
+/// Maintenance evicts transactions within [`AA_VALID_BEFORE_MIN_SECS`] of their deadline, so
+/// the buffer counts from the later of the tip and `valid_after`: a shorter window would be
+/// evicted before it ever opens.
+fn min_allowed_deadline(tip_timestamp: u64, valid_after: Option<u64>) -> u64 {
+    valid_after
+        .map_or(tip_timestamp, |valid_after| valid_after.max(tip_timestamp))
+        .saturating_add(AA_VALID_BEFORE_MIN_SECS)
 }
 
 #[cfg(test)]
@@ -2200,6 +2212,49 @@ mod tests {
         }
     }
 
+    #[test_case(AA_VALID_BEFORE_MIN_SECS, false)]
+    #[test_case(AA_VALID_BEFORE_MIN_SECS + 1, true)]
+    #[tokio::test]
+    async fn test_aa_valid_before_buffer_counts_from_future_valid_after(
+        window: u64,
+        admitted: bool,
+    ) {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid_after = current_time + 20;
+        let valid_before = valid_after + window;
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .valid_after(valid_after)
+            .valid_before(valid_before)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        if admitted {
+            assert!(
+                outcome.is_valid(),
+                "window outliving the buffer should be admitted: {outcome:?}"
+            );
+            return;
+        }
+        let TransactionValidationOutcome::Invalid(_, ref err) = outcome else {
+            panic!("window within the buffer should be rejected: {outcome:?}");
+        };
+        let Some(TempoPoolTransactionError::InvalidValidBefore(err)) =
+            err.downcast_other_ref::<TempoPoolTransactionError>()
+        else {
+            panic!("Expected InvalidValidBefore, got: {err:?}");
+        };
+        assert_eq!(err.valid_before, valid_before);
+        assert_eq!(err.min_allowed, valid_after + AA_VALID_BEFORE_MIN_SECS);
+    }
+
     #[tokio::test]
     async fn test_aa_valid_after_and_valid_before_both_valid() {
         let current_time = std::time::SystemTime::now()
@@ -2240,7 +2295,8 @@ mod tests {
         let root = PrivateKeySigner::random();
         let access_key = PrivateKeySigner::random();
 
-        for (expiry, admitted) in [(valid_after, false), (valid_after + 1, true)] {
+        let min_allowed_expiry = valid_after + AA_VALID_BEFORE_MIN_SECS;
+        for (expiry, admitted) in [(min_allowed_expiry, false), (min_allowed_expiry + 1, true)] {
             let authorization = KeyAuthorization::unrestricted(
                 MODERATO.chain_id(),
                 SignatureType::Secp256k1,
@@ -2278,9 +2334,9 @@ mod tests {
                         Some(TempoPoolTransactionError::AccessKeyExpired {
                             expiry: rejected_expiry,
                             min_allowed,
-                        }) if *rejected_expiry == expiry && *min_allowed == valid_after
+                        }) if *rejected_expiry == expiry && *min_allowed == min_allowed_expiry
                     ),
-                    "Expected AccessKeyExpired bounded by valid_after, got: {err:?}"
+                    "Expected AccessKeyExpired bounded by valid_after plus the buffer, got: {err:?}"
                 );
             }
         }
