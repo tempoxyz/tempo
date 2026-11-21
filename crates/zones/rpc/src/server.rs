@@ -344,10 +344,8 @@ pub(crate) async fn authenticate_token(
             let key_id = keychain_signature
                 .key_id(&token.digest)
                 .map_err(|_| AuthError::InvalidSignature)?;
-            let (key_info, commitment) = tokio::try_join!(
-                api.get_keychain_key(caller, key_id),
-                api.get_config_commitment(key_id),
-            )?;
+            let (key_info, commitment) =
+                api.get_keychain_key_and_commitment(caller, key_id).await?;
             validate_keychain_key_info(&key_info)?;
             let signature_type: KeyInfoSignatureType =
                 keychain_signature.signature.signature_type().into();

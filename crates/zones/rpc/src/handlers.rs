@@ -34,6 +34,21 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// accounts (T14). Fails when Tempo state cannot be read in time.
     fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>>;
 
+    /// [`Self::get_keychain_key`] of `(account, key_id)` and [`Self::get_config_commitment`] of
+    /// `key_id`, read at one zone head so both come from the same state.
+    fn get_keychain_key_and_commitment(
+        &self,
+        account: Address,
+        key_id: Address,
+    ) -> BoxEyreFut<'_, (KeyInfo, Option<B256>)> {
+        Box::pin(async move {
+            tokio::try_join!(
+                self.get_keychain_key(account, key_id),
+                self.get_config_commitment(key_id),
+            )
+        })
+    }
+
     /// `eth_blockNumber` — returns the latest block number.
     fn block_number(&self) -> BoxFut<'_>;
 
