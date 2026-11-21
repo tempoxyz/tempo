@@ -1090,7 +1090,7 @@ All log queries are restricted to TIP-20 events where the authenticated account 
 | `Mint(to, amount)` | `to == caller` |
 | `Burn(from, amount)` | `from == caller` |
 
-All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
+All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server queries with only server-derived constraints (enabled zone tokens, the whitelisted events and the caller in its indexed position), then applies the caller's requested addresses and topics and the visibility rules to the results. The node's per-response log limit therefore counts all of the caller's logs for the matching events in the queried range.
 
 To avoid leaking how much activity occurred in a block, some fields of returned logs are redacted:
 
