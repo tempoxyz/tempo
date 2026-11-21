@@ -31,8 +31,8 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    VerificationMode, alias,
-    consensus::application,
+    alias,
+    consensus::{application, estimator},
     dkg,
     epoch::{self, SchemeProvider},
     peer_manager, storage,
@@ -71,7 +71,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub mailbox_size: NonZeroUsize,
     pub max_peers: NonZeroU32,
     pub deque_size: usize,
-    pub verification_mode: VerificationMode,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
     ///
@@ -302,7 +301,14 @@ where
         .await
         .wrap_err("failed initializing dkg manager")?;
 
-        let application = application::Inner::new(application::Config {
+        // Registered under the application's context to keep the metric names.
+        let estimator_metrics = estimator::Metrics::init(&context.child("application"));
+        let estimator_reporter = estimator::Reporter::new(
+            self.estimator.clone(),
+            epoch_strategy.clone(),
+            estimator_metrics.clone(),
+        );
+        let inner = application::Inner::new(application::Config {
             context: context.child("application"),
             public_key: self.signer.public_key(),
             executor: executor_mailbox.clone(),
@@ -312,15 +318,14 @@ where
                 executed_state: self.executed_state.clone(),
             },
             estimator: self.estimator.clone(),
+            estimator_metrics,
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Factory::new(
-            &context,
-            application,
+        let application = application::Application::new(
+            context.child("application"),
+            inner,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
-            execution_node.chain_spec(),
-            self.verification_mode,
         );
 
         let epoch_manager_config = epoch::manager::Config {
@@ -356,6 +361,7 @@ where
             resolver_config,
             marshal,
 
+            estimator_reporter,
             epoch_manager_config,
 
             peer_manager,
@@ -398,6 +404,9 @@ where
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
+
+    /// Feeds finalized blocks from marshal into the proposal estimator.
+    estimator_reporter: estimator::Reporter,
 
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
@@ -517,7 +526,7 @@ where
         ));
 
         let marshal = self.marshal.start(
-            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
+            Reporters::from((self.estimator_reporter, reporters)),
             self.broadcast_mailbox,
             resolver,
         );

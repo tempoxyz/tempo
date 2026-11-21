@@ -41,7 +41,7 @@ pub use crate::config::{
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-pub use args::{Args, PositiveDuration, VerificationMode};
+pub use args::{Args, PositiveDuration};
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.
@@ -138,7 +138,6 @@ pub async fn run_consensus_stack(
         mailbox_size: config.mailbox_size,
         max_peers: config.max_peers_per_set,
         deque_size: config.deque_size,
-        verification_mode: config.verification_mode,
 
         time_to_propose: config.wait_for_proposal.into_duration(),
         time_to_collect_notarizations: config.wait_for_notarizations.into_duration(),

@@ -38,9 +38,7 @@ static EPOCH_LENGTH: u64 = 10;
 async fn follower_rpc_survives_execution_node_handle_drop() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let (addr_tx, addr_rx) = oneshot::channel::<SocketAddr>();
     let (done_tx, done_rx) = oneshot::channel::<()>();
@@ -381,9 +379,7 @@ fn follower_bootstraps_from_validator() {
 
     let target_height = 15;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -425,7 +421,7 @@ fn follower_progresses_over_devp2p_without_upstream() {
 
     let warmup_height = 5;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(1)
         .epoch_length(EPOCH_LENGTH)
         .gossip(true);
@@ -473,9 +469,7 @@ fn follower_syncs_historical_state() {
     let start_height = 2 * EPOCH_LENGTH + 1;
     let follower_target_height = start_height + 1;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -534,9 +528,7 @@ fn follower_reads_boundaries_after_full_dkg() {
     let start_height = 2 * EPOCH_LENGTH + 1;
     let follower_target_height = start_height + 1;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -587,9 +579,7 @@ fn follower_bootstraps_from_follower() {
 
     let target_height = 15;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);
@@ -635,9 +625,7 @@ fn follower_starts_from_validator_archives() {
     let _ = tempo_eyre::install();
     let target_height = 15;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
-        .epoch_length(EPOCH_LENGTH);
+    let setup = Setup::new().how_many_signers(4).epoch_length(EPOCH_LENGTH);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
 
     let executor = Runner::from(cfg);

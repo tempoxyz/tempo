@@ -21,9 +21,7 @@ use crate::{
 #[test_traced]
 fn signers_sample_the_children_other_leaders_build() {
     let _ = tempo_eyre::install();
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
-        .epoch_length(100);
+    let setup = Setup::new().how_many_signers(4).epoch_length(100);
     let cfg = deterministic::Config::default()
         .with_seed(setup.seed)
         .with_timeout(Some(Duration::from_secs(60)));

@@ -59,7 +59,7 @@ impl AssertValidatorIsAdded {
             epoch_length,
         } = self;
         let _ = tempo_eyre::install();
-        let setup = Setup::new(crate::VERIFICATION_MODE)
+        let setup = Setup::new()
             .how_many_signers(how_many_initial)
             .how_many_verifiers(1)
             .epoch_length(epoch_length);
@@ -154,7 +154,7 @@ impl AssertValidatorIsRemoved {
             epoch_length,
         } = self;
         let _ = tempo_eyre::install();
-        let setup = Setup::new(crate::VERIFICATION_MODE)
+        let setup = Setup::new()
             .how_many_signers(how_many_initial)
             .epoch_length(epoch_length);
 

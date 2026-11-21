@@ -31,7 +31,7 @@ impl FullDkgTest {
     fn run(self) {
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new(crate::VERIFICATION_MODE)
+        let setup = Setup::new()
             .how_many_signers(self.how_many_signers)
             .epoch_length(self.epoch_length);
 
