@@ -370,88 +370,60 @@ pub(crate) fn gen_layout_ctx_expr(
     }
 }
 
-/// Generate collision detection debug assertions for a field against all other fields.
+/// Generate compile-time assertions that a field's storage doesn't overlap any later field.
 ///
-/// This function generates runtime checks that verify storage slots don't overlap.
-/// Checks are generated for all fields (both manual and auto-assigned) to ensure
-/// comprehensive collision detection.
-pub(crate) fn gen_collision_check_fn(
+/// The assertions are emitted inside a `const` block, so an overlapping layout fails the build
+/// in every profile and valid layouts add no runtime code.
+pub(crate) fn gen_collision_assertions(
     idx: usize,
     field: &LayoutField<'_>,
     all_fields: &[LayoutField<'_>],
-) -> (Ident, TokenStream) {
+) -> TokenStream {
     fn gen_slot_count_expr(ty: &Type) -> TokenStream {
         quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
     }
 
-    let check_fn_name = format_ident!("__check_collision_{}", field.name);
-    let consts = PackingConstants::new(field.name);
-    let (slot_const, offset_const) = consts.into_tuple();
-    let (field_name, field_ty) = (field.name, field.ty);
+    let (slot_const, offset_const) = PackingConstants::new(field.name).into_tuple();
+    let field_ty = field.ty;
+    let current_count_expr = gen_slot_count_expr(field_ty);
 
     let mut checks = TokenStream::new();
 
-    // Check against all other fields
-    for (other_idx, other_field) in all_fields.iter().enumerate() {
-        if other_idx == idx {
-            continue;
-        }
-
-        let other_consts = PackingConstants::new(other_field.name);
-        let (other_slot_const, other_offset_const) = other_consts.into_tuple();
-        let other_name = other_field.name;
+    // Each pair is checked once, against the fields after this one.
+    for other_field in &all_fields[idx + 1..] {
+        let (other_slot_const, other_offset_const) =
+            PackingConstants::new(other_field.name).into_tuple();
         let other_ty = other_field.ty;
+        let other_count_expr = gen_slot_count_expr(other_ty);
+        let message = format!(
+            "Storage slot collision: field `{}` overlaps with field `{}`",
+            field.name, other_field.name
+        );
 
-        // Generate slot count expressions
-        let current_count_expr = gen_slot_count_expr(field.ty);
-        let other_count_expr = gen_slot_count_expr(other_field.ty);
-
-        // Generate runtime assertion that checks for overlap
-        // Two fields collide if their slot ranges overlap AND (if same slot) their byte ranges overlap
+        // Two fields collide if their slot ranges overlap AND (if same slot) their byte ranges overlap.
+        // Ranges use inclusive last slots so a field ending at `U256::MAX` can't overflow.
+        // `a < b` is written as `a.checked_sub(b).is_none()` because `U256` comparisons aren't const.
         checks.extend(quote! {
             {
                 let slot = #slot_const;
-                let slot_end = slot.checked_add(#current_count_expr).expect("slot range overflow");
+                let slot_last = slot.saturating_add(#current_count_expr).saturating_sub(::alloy::primitives::U256::ONE);
                 let other_slot = #other_slot_const;
-                let other_slot_end = other_slot.checked_add(#other_count_expr).expect("slot range overflow");
+                let other_slot_last = other_slot.saturating_add(#other_count_expr).saturating_sub(::alloy::primitives::U256::ONE);
 
-                // Determine if there's no overlap:
-                // - If starting in different slots: rely on slot range check
-                // - If starting in same slot (packed fields): check byte ranges
-                let no_overlap = if slot == other_slot {
+                let no_overlap = if slot.const_eq(&other_slot) {
                     let byte_end = #offset_const + <#field_ty as crate::storage::StorableType>::BYTES;
                     let other_byte_end = #other_offset_const + <#other_ty as crate::storage::StorableType>::BYTES;
                     byte_end <= #other_offset_const || other_byte_end <= #offset_const
                 } else {
-                    slot_end.le(&other_slot) || other_slot_end.le(&slot)
+                    slot_last.checked_sub(other_slot).is_none() || other_slot_last.checked_sub(slot).is_none()
                 };
 
-                debug_assert!(
-                    no_overlap,
-                    "Storage slot collision: field `{}` (slot {:?}, offset {}) overlaps with field `{}` (slot {:?}, offset {})",
-                    stringify!(#field_name),
-                    slot,
-                    #offset_const,
-                    stringify!(#other_name),
-                    other_slot,
-                    #other_offset_const
-                );
+                assert!(no_overlap, #message);
             }
         });
     }
 
-    let check_fn = quote! {
-        // Never inline: unoptimized builds keep every inlined check's temporaries in the caller's
-        // frame, which for large contracts outgrows a 2 MiB thread stack.
-        #[cfg(all(debug_assertions, not(feature = "fuzz")))]
-        #[inline(never)]
-        #[allow(non_snake_case)]
-        fn #check_fn_name() {
-            #checks
-        }
-    };
-
-    (check_fn_name, check_fn)
+    checks
 }
 
 #[cfg(test)]
@@ -681,5 +653,26 @@ mod tests {
             },
             U256::from(u64::MAX),
         );
+    }
+
+    #[test]
+    fn collision_checks_are_const_evaluated() {
+        let fields = [
+            field("a", parse_quote!(U256), Some(5), None),
+            field("b", parse_quote!(U256), Some(5), None),
+        ];
+        let allocated = allocate_slots(&fields).unwrap();
+        let slots = crate::layout::gen_slots_module(&allocated).to_string();
+        assert!(slots.contains("const _ : () ="), "{slots}");
+        assert!(!slots.contains("debug_assertions"), "{slots}");
+        assert!(!slots.contains("cfg"), "{slots}");
+        assert!(
+            slots.contains("Storage slot collision: field `a` overlaps with field `b`"),
+            "{slots}"
+        );
+
+        let name = Ident::new("Layout", proc_macro2::Span::call_site());
+        let constructor = crate::layout::gen_constructor(&name, &allocated, None).to_string();
+        assert!(!constructor.contains("collision"), "{constructor}");
     }
 }
