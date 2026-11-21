@@ -31,8 +31,10 @@ pub(crate) use views::ViewCache;
 mod configurable_account;
 mod reader;
 mod views;
+mod zone_account;
 
 pub(crate) use configurable_account::authority;
+pub(crate) use zone_account::{ZoneContext, ZoneMirror};
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;

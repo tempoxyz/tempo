@@ -8,12 +8,14 @@ use std::{
 };
 
 use alloy_consensus::{
-    BlockHeader as _, proofs::calculate_transaction_root, transaction::Transaction as _,
+    BlockHeader as _, Sealable as _, proofs::calculate_transaction_root,
+    transaction::Transaction as _,
 };
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::bytecode::Bytecode;
 use invariants_core::Report;
+use reth_chainspec::EthChainSpec as _;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
@@ -32,11 +34,12 @@ use tempo_fuzz_types::{
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
 use tempo_invariants::Tx;
-use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
 use crate::{
     chain, invariants,
     state::{self, Contracts, Db, Net},
+    zone::{self, Anchor},
 };
 
 type ExecutionBlock = RecoveredBlock<Block>;
@@ -58,6 +61,8 @@ pub(crate) enum Check {
     Header,
     SenderCount,
     IncompletePreState,
+    /// A zone input breaks the contract of [`tempo_fuzz_types::TempoZoneInput`], for this reason.
+    Zone(&'static str),
     /// An error class no check recorded a reason for.
     Unclassified,
 }
@@ -75,6 +80,7 @@ impl Display for Check {
             Self::Header => "header does not resolve",
             Self::SenderCount => "sender count differs from the transaction count",
             Self::IncompletePreState => "pre-state could not answer a read",
+            Self::Zone(why) => why,
             Self::Unclassified => "no reason recorded",
         })
     }
@@ -130,21 +136,24 @@ pub(crate) fn run(input: TempoHarnessInput) -> TempoHarnessOutcome {
                 &input.chain_spec,
                 &PreState::Genesis(input.pre_state),
                 std::slice::from_ref(&block),
+                None,
             ))
         }
         TempoHarnessInput::Blockchain(input) => TempoHarnessOutcome::Blockchain(execute(
             &input.chain_spec,
             &input.pre_state,
             input.blocks.as_slice(),
+            None,
         )),
+        TempoHarnessInput::Zone(input) => TempoHarnessOutcome::Zone(zone::run(&input)),
     };
     // An error with no reason recorded still gets its class, so an empty reason always means the
     // input applied in full.
     let error = match &outcome {
         TempoHarnessOutcome::Transaction(outcome) => outcome.error,
-        TempoHarnessOutcome::State(outcome) | TempoHarnessOutcome::Blockchain(outcome) => {
-            outcome.error
-        }
+        TempoHarnessOutcome::State(outcome)
+        | TempoHarnessOutcome::Blockchain(outcome)
+        | TempoHarnessOutcome::Zone(outcome) => outcome.error,
     };
     if error != ErrorClass::None && with_rejection(str::is_empty) {
         reject(error, Check::Unclassified);
@@ -174,28 +183,36 @@ fn transaction(input: &TempoTransactionInput) -> TransactionOutcome {
     }
 }
 
-fn decode_tx(bytes: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
+/// Decodes an EIP-2718 encoded transaction, rejecting trailing bytes.
+pub(crate) fn decode_tx(bytes: &[u8]) -> Result<TempoTxEnvelope, ErrorClass> {
     TempoTxEnvelope::decode_2718_exact(bytes).map_err(|err| reject(ErrorClass::RlpDecode, err))
 }
 
 /// Executes `blocks` in order on `pre_state`, stopping at the first block that fails. An input that
 /// is not executable at all leaves an empty outcome with only its error set.
-fn execute(
+///
+/// With `anchors`, the blocks are numbered from 1 and each header's parent hash links it to the one
+/// before, from the chain's genesis header. `anchors` then receives the genesis header with the
+/// pre-state, and each applied block with the state after it.
+pub(crate) fn execute(
     chain: &ChainSpecInput,
     pre_state: &PreState,
     blocks: &[TempoBlock],
+    mut anchors: Option<&mut Vec<Anchor>>,
 ) -> TempoExecutionOutcome {
     let prepared = chain::chain_spec(chain)
         .map_err(|class| reject(class, Check::HardforkSchedule))
         .and_then(|spec| {
+            let mut parent = anchors.is_some().then(|| spec.genesis_header().clone());
             let blocks = blocks
                 .iter()
-                .map(|block| recover_block(&spec, block))
+                .map(|block| recover_block(&spec, block, parent.as_mut()))
                 .collect::<Result<Vec<_>, _>>()?;
             if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
                 return Err(reject(ErrorClass::InvalidInput, Check::TimestampOrder));
             }
-            let db = state::seed(pre_state).map_err(|class| reject(class, Check::PreState))?;
+            let db = state::seed(&state::GENESIS, pre_state)
+                .map_err(|class| reject(class, Check::PreState))?;
             Ok((Arc::new(spec), blocks, db))
         });
     let (spec, blocks, db) = match prepared {
@@ -209,11 +226,14 @@ fn execute(
     };
 
     let pre = db.cache.borrow().clone();
+    if let Some(anchors) = anchors.as_deref_mut() {
+        anchors.push(Anchor::new(&spec, spec.genesis_header(), &db));
+    }
     let evm_config = TempoEvmConfig::new(Arc::clone(&spec));
     let consensus = TempoConsensus::new(spec);
     let mut outcome = TempoExecutionOutcome::default();
     let (applied, failed_logs) =
-        execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome);
+        execute_blocks(&evm_config, &consensus, &db, &blocks, &mut outcome, anchors);
     if !outcome.invariant_failures.is_empty() {
         let invariant_failures = broken_start(
             &evm_config,
@@ -259,7 +279,10 @@ fn broken_start(
     if !*invariants::ENABLED {
         return Vec::new();
     }
-    let (Ok(env), Ok(start)) = (evm_config.evm_env(block.header()), state::seed(pre_state)) else {
+    let (Ok(env), Ok(start)) = (
+        evm_config.evm_env(block.header()),
+        state::seed(&state::GENESIS, pre_state),
+    ) else {
         return Vec::new();
     };
     let (PreState::Genesis(listed) | PreState::Exact { state: listed, .. }) = pre_state;
@@ -292,10 +315,13 @@ fn broken_start(
     failures
 }
 
-/// `block` with its header resolved, its transactions decoded and their senders known.
+/// `block` with its header resolved, its transactions decoded and their senders known. With
+/// `parent`, a context header follows it: it takes the next number and links to its hash, and then
+/// becomes the parent.
 pub(crate) fn recover_block(
     spec: &TempoChainSpec,
     block: &TempoBlock,
+    parent: Option<&mut TempoHeader>,
 ) -> Result<ExecutionBlock, ErrorClass> {
     let mut header =
         chain::header(spec, &block.header).map_err(|class| reject(class, Check::Header))?;
@@ -318,6 +344,12 @@ pub(crate) fn recover_block(
     };
     if matches!(block.header, BlockHeaderInput::Context(_)) {
         header.inner.transactions_root = calculate_transaction_root(&txs);
+        if let Some(parent) = parent {
+            // Blocks are numbered from 1, so no input holds enough to overflow.
+            header.inner.number = parent.inner.number + 1;
+            header.inner.parent_hash = parent.hash_slow();
+            *parent = header.clone();
+        }
     }
     let body = BlockBody {
         transactions: txs,
@@ -332,14 +364,16 @@ pub(crate) fn recover_block(
 }
 
 /// Executes `blocks` on `db`, appending each applied block's outputs to `outcome` and setting its
-/// error at the first block that fails. Returns the changes of the blocks that applied, and the logs
-/// of the failed block's transactions before it failed.
+/// error at the first block that fails, and each applied block with the state after it to
+/// `anchors`. Returns the changes of the blocks that applied, and the logs of the failed block's
+/// transactions before it failed.
 pub(crate) fn execute_blocks(
     evm_config: &TempoEvmConfig,
     consensus: &TempoConsensus,
     db: &Db,
     blocks: &[ExecutionBlock],
     outcome: &mut TempoExecutionOutcome,
+    mut anchors: Option<&mut Vec<Anchor>>,
 ) -> (Net, Vec<Log>) {
     let mut applied = Net::default();
     let mut failed_logs = Vec::new();
@@ -370,6 +404,9 @@ pub(crate) fn execute_blocks(
                         .entry(id.into())
                         .or_default()
                         .add(counts);
+                }
+                if let Some(anchors) = anchors.as_deref_mut() {
+                    anchors.push(Anchor::new(evm_config.chain_spec(), block.header(), db));
                 }
             }
             Err(BlockFailure {
@@ -425,7 +462,7 @@ impl BlockFailure {
 }
 
 /// The state updates an executor has emitted since they were last taken.
-type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+pub(crate) type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
 /// Executes `block` on `db`, returning its state updates and outputs, or why it failed.
 fn execute_block(
@@ -581,7 +618,7 @@ fn execute_txs(
 }
 
 /// The updates `hooked` holds, which it then no longer does.
-fn take(hooked: &Updates) -> Vec<StateUpdate> {
+pub(crate) fn take(hooked: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *hooked.lock().expect("the hook does not panic"))
 }
 
@@ -638,7 +675,7 @@ fn step(
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.
-fn class(err: &BlockExecutionError) -> ErrorClass {
+pub(crate) fn class(err: &BlockExecutionError) -> ErrorClass {
     match err {
         // A transaction's error is classed by its Tempo variant when it has one.
         BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) => {

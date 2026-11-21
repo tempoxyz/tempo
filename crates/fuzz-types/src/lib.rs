@@ -168,6 +168,7 @@ pub enum HarnessInputKind {
     Transaction,
     State,
     Blockchain,
+    Zone,
 }
 
 /// What to execute. Each mode has the [`TempoHarnessOutcome`] variant of the same name.
@@ -176,6 +177,7 @@ pub enum TempoHarnessInput {
     Transaction(TempoTransactionInput),
     State(TempoStateInput),
     Blockchain(TempoBlockchainInput),
+    Zone(TempoZoneInput),
 }
 
 /// A transaction to decode and recover the sender of, without executing it.
@@ -223,6 +225,31 @@ pub enum PreState {
     },
 }
 
+/// Tempo blocks, then the blocks of a zone anchored to them.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TempoZoneInput {
+    /// The Tempo chain. Its pre-state must be [`PreState::Genesis`] and its headers
+    /// [`BlockHeaderInput::Context`]: the harness numbers the blocks from 1 and links their parent
+    /// hashes from the genesis header, ignoring `block_number`.
+    pub tempo: TempoBlockchainInput,
+    /// Accounts added to the zone dev genesis, as [`PreState::Genesis`] adds them to Tempo's. None
+    /// may hold the account marker code or an EIP-7702 delegation, which a zone never stores.
+    pub pre_state: StateInput,
+    /// Zone block `i` anchors to `tempo.blocks[i]`: it opens with the system `advanceTempo`
+    /// transaction importing that block's header. A zone block whose anchor did not apply is not
+    /// executed. No more blocks than `tempo.blocks`.
+    pub blocks: Vec<ZoneBlock>,
+}
+
+/// A zone block's user transactions.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ZoneBlock {
+    /// EIP-2718 encoded transactions, signed for the zone's chain ID (zone 1 of the Tempo chain).
+    /// The harness builds the block as a zone sequencer would: it leaves out system transactions
+    /// and each transaction the zone rejects, rather than failing the block.
+    pub txs: Vec<Bytes>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct TempoBlock {
     pub header: BlockHeaderInput,
@@ -261,11 +288,15 @@ pub struct InvariantFailure {
     pub scope: InvariantScope,
 }
 
+/// Where an invariant failed. `ZoneBlock` is after a zone block's pre-execution changes and its
+/// opening `advanceTempo`; `ZoneTransaction` is after transaction `tx_index` of [`ZoneBlock::txs`].
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum InvariantScope {
     Transaction { block_index: u64, tx_index: u64 },
     Block { block_index: u64 },
     Execution,
+    ZoneBlock { block_index: u64 },
+    ZoneTransaction { block_index: u64, tx_index: u64 },
 }
 
 /// The outcome of a [`TempoHarnessInput`], in the variant of the same name.
@@ -274,6 +305,9 @@ pub enum TempoHarnessOutcome {
     Transaction(TransactionOutcome),
     State(TempoExecutionOutcome),
     Blockchain(TempoExecutionOutcome),
+    /// The Tempo chain's outcome, with the zone's invariant failures and counts added to it. A
+    /// zone block that fails sets `error` when every Tempo block applied.
+    Zone(TempoExecutionOutcome),
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

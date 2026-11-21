@@ -19,6 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
+alloy-genesis.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
@@ -31,6 +32,7 @@ reth-consensus.workspace = true
 reth-evm.workspace = true
 reth-execution-types.workspace = true
 reth-trie-common.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 tempo-fuzz-types.workspace = true
 tempo-invariants.workspace = true
 tempo-chainspec.workspace = true
@@ -38,10 +40,16 @@ tempo-contracts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
+zone-chainspec.workspace = true
+zone-evm.workspace = true
+zone-precompiles = { workspace = true, features = ["std"] }
+zone-primitives.workspace = true
 
 [dev-dependencies]
 commonware-codec.workspace = true
 criterion.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 
 [[bench]]

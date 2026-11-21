@@ -14566,8 +14566,11 @@ version = "1.19.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
  "alloy-sol-types",
  "bincode",
  "codspeed-criterion-compat",
@@ -14580,6 +14583,7 @@ dependencies = [
  "reth-execution-types",
  "reth-primitives-traits",
  "reth-trie-common",
+ "serde_json",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
@@ -14588,6 +14592,10 @@ dependencies = [
  "tempo-invariants",
  "tempo-precompiles",
  "tempo-primitives",
+ "zone-chainspec",
+ "zone-evm",
+ "zone-precompiles",
+ "zone-primitives",
 ]
 
 [[package]]
