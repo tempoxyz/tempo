@@ -907,6 +907,7 @@ provision_up() {
         --initial-token "$zone_token"
         --admin "$admin_address"
         --sequencer "$sequencer_address"
+        --allow-single-sequencer
         --gas-limit "$zone_gas_limit"
         --access-mode
     )

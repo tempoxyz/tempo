@@ -204,12 +204,14 @@ ZONE_FACTORY_OWNER_KEY="$SEQUENCER_KEY" cargo zone-xtask create-zone \
   --output generated/my-zone \
   --initial-token 0x20c0000000000000000000000000000000000001 \
   --admin "$ADMIN_ADDR" \
-  --sequencer "$SEQUENCER_ADDR"
+  --sequencer "$SEQUENCER_ADDR" \
+  --allow-single-sequencer
 ```
 
-`create-zone` requires the admin address explicitly. Keep the matching `ADMIN_KEY`
-available for admin-only portal calls such as changing either mode or account roles,
-enabling tokens, and pausing or resuming deposits.
+`create-zone` requires the admin address explicitly. `--threshold` defaults to a majority of
+the sequencers, and a threshold of 1 (including a single-sequencer zone) needs
+`--allow-single-sequencer`. Keep the matching `ADMIN_KEY` available for admin-only portal calls
+such as changing either mode or account roles, enabling tokens, and pausing or resuming deposits.
 
 #### Safe-owned ZoneFactory
 
