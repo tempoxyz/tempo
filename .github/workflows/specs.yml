@@ -40,7 +40,7 @@ env:
   # (foundry-rs/foundry#18325), plus the trace record accessors of evm2 35aa328
   # (alloy-rs/evm2#1083, branch alexey/evm2-35aa328-trace-records). Pin to a
   # commit and move the pin to Foundry master once those changes merge.
-  FOUNDRY_REF: 29ebd57ad9d942d90af0492d85bad3791c9c93ed
+  FOUNDRY_REF: fcee0988b56b1739cd5513ac74b64eaa4591e955
 
 jobs:
   check-specs-changes:
