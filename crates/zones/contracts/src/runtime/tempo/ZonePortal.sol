@@ -5,6 +5,7 @@ import {
     BlockTransition,
     Capability,
     Deposit,
+    DepositBucket,
     DepositPayload,
     DepositQueueTransition,
     DepositType,
@@ -29,6 +30,7 @@ import { ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE } from "../libraries/EncryptedDeposit.
 import { Secp256k1Lib } from "../libraries/Secp256k1Lib.sol";
 import { WithdrawalQueue, WithdrawalQueueLib } from "../libraries/WithdrawalQueueLib.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
+import { IStorageCredits } from "tempo-std/interfaces/IStorageCredits.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
@@ -53,11 +55,30 @@ contract ZonePortal is IZonePortal {
     ///      to adjust the zoneGasRate based on operational costs.
     uint64 public constant FIXED_DEPOSIT_GAS = 100_000;
 
-    /// @notice Maximum deposits that may be appended to this portal in one Tempo block.
-    /// @dev Under T9, processing 230 encrypted deposits rejected by the issuer's
-    ///      TIP-403 transfer policy uses 193,044,874 gas, leaving 6,955,126 gas
-    ///      below the buffered 200,000,000 gas ceiling.
-    uint64 public constant MAX_UNPROCESSED_DEPOSITS = 230;
+    /// @notice Queue entries between consecutive deposit-queue checkpoints.
+    /// @dev Matches the replaced runtime's cap, so the first range after bootstrap fits a block.
+    uint64 public constant DEPOSITS_PER_BUCKET = 230;
+
+    /// @notice Unsettled queue entries per congestion price tier.
+    /// @dev The first tier is free, matching the depth the replaced runtime admitted.
+    uint64 public constant DEPOSITS_PER_CONGESTION_TIER = 230;
+
+    /// @notice Price tiers over which the congestion premium rises linearly to its cap.
+    uint64 public constant CONGESTION_MAX_TIER = 32;
+
+    /// @notice Maximum congestion premium on a deposit, in token units.
+    uint128 public constant CONGESTION_MAX_FEE = 100_000;
+
+    /// @notice Checkpoints one pruning run may delete.
+    /// @dev Appends add at most one checkpoint each, so pruning keeps pace while settlement does.
+    uint64 public constant DEPOSIT_BUCKETS_PRUNED_PER_CALL = 2;
+
+    /// @dev Most storage slots one checkpoint write creates: the checkpoint's hash. Its weight
+    ///      stays unwritten while every entry weighs one unit.
+    uint64 internal constant CHECKPOINT_CREATED_SLOTS = 1;
+
+    /// @dev Most storage slots the bootstrap creates: the base, the array length, and checkpoint 0.
+    uint64 internal constant BOOTSTRAP_CREATED_SLOTS = 3;
 
     /// @notice Maximum enabled tokens that may remain unprocessed by the Zone.
     /// @dev Under T9, processing 230 worst-case deposits plus 8 token enablements with maximum
@@ -67,12 +88,6 @@ contract ZonePortal is IZonePortal {
     /// @notice Maximum byte length of each token metadata string copied into the zone.
     /// @dev Keeps name, symbol, and currency in Solidity's one-slot short-string representation.
     uint256 public constant MAX_TOKEN_METADATA_BYTES = 31;
-
-    /// @dev Reserves deposit-queue capacity for one maximum-size withdrawal batch.
-    ///      Each withdrawal can append at most one deposit: either a callback-triggered
-    ///      deposit on success or a bounce-back deposit on failure.
-    ///      The 20M batch gas ceiling fits at most 19 withdrawals, plus one slot of margin.
-    uint64 internal constant WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE = 20;
 
     uint256 internal constant WITHDRAWAL_NOT_ENTERED = 0;
     uint256 internal constant WITHDRAWAL_PROCESSING = 1;
@@ -212,7 +227,7 @@ contract ZonePortal is IZonePortal {
     /// @notice Tempo block number that recorded the most recent leader transition.
     uint64 public leaderActivationTempoBlock;
 
-    /// @dev Per-Tempo-block deposit admission counter. Appended for upgrade-safe storage layout.
+    /// @dev Retired per-Tempo-block deposit admission counters, retained for storage compatibility.
     uint64 internal _depositCountBlock;
     uint64 internal _depositsInCurrentBlock;
 
@@ -258,6 +273,30 @@ contract ZonePortal is IZonePortal {
     /// @notice Sender org of the withdrawal whose callback is running.
     /// @dev Set before the callback's relay and cleared after it; 0 at any other time.
     uint64 internal transient _callbackSenderOrg;
+    /// @notice Deposit-queue checkpoints (slot 29). Pruning zeroes entries, keeping indices stable.
+    DepositBucket[] public depositBuckets;
+
+    // Every append and settlement writes slot 30, so the per-block price snapshot shares it.
+
+    /// @dev Reserved for the cumulative entry weight appended since bootstrap (slot 30).
+    ///      Unwritten while every entry weighs one unit.
+    uint64 internal depositWeight;
+
+    /// @dev Reserved for the lower bound on the entry weight settled since bootstrap (slot 30).
+    ///      Unwritten while every entry weighs one unit.
+    uint64 internal settledDepositWeight;
+
+    /// @notice Tempo block whose first append or settlement fixed `depositPriceTier` (slot 30).
+    uint64 public depositPriceBlock;
+
+    /// @notice Tier charged in `depositPriceBlock`: start tier, lowered by settlement (slot 30).
+    uint64 public depositPriceTier;
+
+    /// @notice `depositCount` when checkpoints bootstrapped (slot 31).
+    uint64 public depositBucketBase;
+
+    /// @notice First checkpoint index not yet pruned (slot 31).
+    uint64 public nextDepositBucketToPrune;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -923,11 +962,24 @@ contract ZonePortal is IZonePortal {
                                DEPOSITS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Calculate the fee for a deposit
-    /// @dev Fee = FIXED_DEPOSIT_GAS * zoneGasRate
+    /// @inheritdoc IZonePortal
     /// @return fee The deposit fee in zone token units
-    function calculateDepositFee() public view returns (uint128 fee) {
-        fee = uint128(FIXED_DEPOSIT_GAS) * zoneGasRate;
+    function calculateDepositFee() external view returns (uint128 fee) {
+        fee = _operationalDepositFee() + _congestionFee(_unsettledCongestionTier());
+    }
+
+    function _operationalDepositFee() internal view returns (uint128) {
+        return uint128(FIXED_DEPOSIT_GAS) * zoneGasRate;
+    }
+
+    /// @dev The tier of the entries unsettled in the current state.
+    function _unsettledCongestionTier() internal view returns (uint64) {
+        return (depositCount - lastProcessedDepositNumber) / DEPOSITS_PER_CONGESTION_TIER;
+    }
+
+    function _congestionFee(uint64 tier) internal pure returns (uint128) {
+        uint64 rampedTiers = tier < CONGESTION_MAX_TIER ? tier : CONGESTION_MAX_TIER;
+        return CONGESTION_MAX_FEE * rampedTiers / CONGESTION_MAX_TIER;
     }
 
     /// @notice Calculate the reserved fee for a failed-deposit bounce-back
@@ -963,14 +1015,22 @@ contract ZonePortal is IZonePortal {
 
     function _collectDepositFunds(
         address _token,
-        uint128 amount
+        uint128 amount,
+        uint128 maxFee
     )
         internal
         returns (uint128 fee, uint128 netAmount)
     {
-        fee = calculateDepositFee();
-        uint128 bouncebackFee = calculateBouncebackFee();
-        if (amount < fee + bouncebackFee) revert DepositTooSmall();
+        fee = _operationalDepositFee();
+        // A withdrawal callback may return one deposit, which already paid Zone fees.
+        if (_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE) {
+            _withdrawalReentrancyStatus = CALLBACK_DEPOSIT_CONSUMED;
+        } else {
+            // Neither entries nor settlements earlier in the block can raise the tier.
+            fee += _congestionFee(_snapshotCongestionTier());
+        }
+        if (fee > maxFee) revert FeeTooHigh(fee, maxFee);
+        if (amount < fee + calculateBouncebackFee()) revert DepositTooSmall();
         netAmount = amount - fee;
 
         // TIP-20 transfers revert on failure, so no boolean check is needed here.
@@ -980,19 +1040,62 @@ contract ZonePortal is IZonePortal {
         }
     }
 
-    function _recordDeposit(
-        bytes32 newCurrentDepositQueueHash,
-        uint64 maximum
-    )
+    /// @dev Returns this block's tier, fixed from the state before the block's first change.
+    function _snapshotCongestionTier() internal returns (uint64 tier) {
+        if (depositPriceBlock == block.number) return depositPriceTier;
+        tier = _unsettledCongestionTier();
+        depositPriceBlock = uint64(block.number);
+        depositPriceTier = tier;
+    }
+
+    /// @dev Appends one entry, checkpointing every `DEPOSITS_PER_BUCKET` entries.
+    /// TODO: weigh entries as TIP-1171 specifies once an entry type weighs more than 1 unit.
+    function _recordDeposit(bytes32 newCurrentDepositQueueHash)
         internal
         returns (uint64 thisDeposit)
     {
-        if (depositCount - lastProcessedDepositNumber >= maximum) {
-            revert DepositBlockCapacityExceeded(maximum);
+        // Checkpoint writes spend TIP-1060 credits directly. No external call runs before `Refund`.
+
+        // Older runtimes stored no checkpoints. The first append starts them at the queue head.
+        if (depositBuckets.length == 0) {
+            StdPrecompiles.STORAGE_CREDITS.setBudget(BOOTSTRAP_CREATED_SLOTS);
+            depositBucketBase = depositCount;
+            depositBuckets.push().hash = currentDepositQueueHash;
+            StdPrecompiles.STORAGE_CREDITS.setMode(IStorageCredits.Mode.Refund);
         }
+
+        // Exempt entries also fix the block's price before they count toward it.
+        _snapshotCongestionTier();
 
         currentDepositQueueHash = newCurrentDepositQueueHash;
         thisDeposit = ++depositCount;
+
+        // Prune first so the checkpoint write can spend the credits that frees.
+        // `processWithdrawals` prunes once, before the entries it appends.
+        if (_withdrawalReentrancyStatus == WITHDRAWAL_NOT_ENTERED) {
+            _pruneDepositBuckets();
+        }
+
+        if ((thisDeposit - depositBucketBase) % DEPOSITS_PER_BUCKET == 0) {
+            StdPrecompiles.STORAGE_CREDITS.setBudget(CHECKPOINT_CREATED_SLOTS);
+            depositBuckets.push().hash = newCurrentDepositQueueHash;
+            StdPrecompiles.STORAGE_CREDITS.setMode(IStorageCredits.Mode.Refund);
+        }
+    }
+
+    /// @dev Deletes up to `DEPOSIT_BUCKETS_PRUNED_PER_CALL` checkpoints whose successor is settled.
+    function _pruneDepositBuckets() internal {
+        uint64 first = nextDepositBucketToPrune;
+        uint64 end = first + DEPOSIT_BUCKETS_PRUNED_PER_CALL;
+        uint256 length = depositBuckets.length;
+        uint64 base = depositBucketBase;
+        uint64 settled = lastProcessedDepositNumber;
+        uint64 next;
+        for (next = first; next < end && next < length; ++next) {
+            if (base + (next + 1) * DEPOSITS_PER_BUCKET > settled) break;
+            delete depositBuckets[next];
+        }
+        if (next != first) nextDepositBucketToPrune = next;
     }
 
     /// @notice Alias for `depositEncrypted`.
@@ -1007,7 +1110,25 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
-        return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
+        return _deposit(
+            _token, amount, keyIndex, encrypted, tempoRefundRecipient, _operationalDepositFee()
+        );
+    }
+
+    /// @inheritdoc IZonePortal
+    function deposit(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
     }
 
     /// @notice Deposit with encrypted recipient and memo
@@ -1027,11 +1148,29 @@ contract ZonePortal is IZonePortal {
         DepositPayload calldata encrypted,
         address tempoRefundRecipient
     )
-        public
+        external
         whenNotPaused
         returns (bytes32 newCurrentDepositQueueHash)
     {
-        return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
+        return _deposit(
+            _token, amount, keyIndex, encrypted, tempoRefundRecipient, _operationalDepositFee()
+        );
+    }
+
+    /// @inheritdoc IZonePortal
+    function depositEncrypted(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
     }
 
     function _deposit(
@@ -1039,7 +1178,8 @@ contract ZonePortal is IZonePortal {
         uint128 amount,
         uint256 keyIndex,
         DepositPayload calldata encrypted,
-        address tempoRefundRecipient
+        address tempoRefundRecipient,
+        uint128 maxFee
     )
         internal
         returns (bytes32 newCurrentDepositQueueHash)
@@ -1089,7 +1229,7 @@ contract ZonePortal is IZonePortal {
             revert EncryptionKeyExpired(keyIndex, key.activationBlock, nextKey.activationBlock);
         }
 
-        (uint128 fee, uint128 netAmount) = _collectDepositFunds(_token, amount);
+        (uint128 fee, uint128 netAmount) = _collectDepositFunds(_token, amount, maxFee);
 
         // Build the queued deposit.
         Deposit memory depositData = Deposit({
@@ -1104,16 +1244,7 @@ contract ZonePortal is IZonePortal {
         // Insert the deposit into the queue.
         newCurrentDepositQueueHash =
             DepositQueueLib.enqueueDeposit(currentDepositQueueHash, depositData);
-        uint64 maximum = MAX_UNPROCESSED_DEPOSITS - WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE;
-
-        // A withdrawal callback may return one deposit through the capacity reserved from
-        // public deposits. Further deposits remain subject to the public cap.
-        if (_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE) {
-            _withdrawalReentrancyStatus = CALLBACK_DEPOSIT_CONSUMED;
-            maximum = MAX_UNPROCESSED_DEPOSITS;
-        }
-
-        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash, maximum);
+        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash);
 
         emit DepositMade(
             newCurrentDepositQueueHash,
@@ -1149,13 +1280,6 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         nonReentrantWithdrawal
     {
-        uint256 unprocessed = depositCount - lastProcessedDepositNumber;
-        if (
-            unprocessed > MAX_UNPROCESSED_DEPOSITS
-                || withdrawals.length > MAX_UNPROCESSED_DEPOSITS - unprocessed
-        ) {
-            revert DepositBlockCapacityExceeded(MAX_UNPROCESSED_DEPOSITS);
-        }
         bytes32[] memory remainingQueues = new bytes32[](withdrawals.length);
         bytes32 nextQueue = remainingQueue;
 
@@ -1164,6 +1288,8 @@ contract ZonePortal is IZonePortal {
             nextQueue = WithdrawalQueueLib.hashWithTail(withdrawals[i - 1], nextQueue);
         }
 
+        // One pruning run frees credits for every checkpoint this call appends.
+        _pruneDepositBuckets();
         for (uint256 i; i < withdrawals.length; ++i) {
             _processWithdrawal(withdrawals[i], remainingQueues[i]);
         }
@@ -1351,7 +1477,7 @@ contract ZonePortal is IZonePortal {
 
         bytes32 newCurrentDepositQueueHash =
             DepositQueueLib.enqueue(currentDepositQueueHash, depositData);
-        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash, MAX_UNPROCESSED_DEPOSITS);
+        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash);
 
         emit WithdrawalBounceBack(
             newCurrentDepositQueueHash, fallbackNonce, _token, amount, thisDeposit
@@ -1484,7 +1610,7 @@ contract ZonePortal is IZonePortal {
         withdrawalBatchIndex++;
         blockHash = blockTransition.nextBlockHash;
         lastSyncedTempoBlockNumber = tempoBlockNumber;
-        lastProcessedDepositNumber = depositQueueTransition.nextDepositNumber;
+        _settleDeposits(depositQueueTransition.nextDepositNumber);
         if (
             tokenEnablementCursorInitialized
                 || tokenEnablementTransition.nextProcessedTokenCount != 0
@@ -1506,6 +1632,18 @@ contract ZonePortal is IZonePortal {
             lastProcessedDepositNumber,
             lastProcessedEnabledTokenCount
         );
+    }
+
+    /// @dev Advances settlement, may lower this block's tier, then prunes.
+    /// TODO: weigh entries as TIP-1171 specifies once an entry type weighs more than 1 unit.
+    function _settleDeposits(uint64 settled) internal {
+        _snapshotCongestionTier();
+        lastProcessedDepositNumber = settled;
+
+        // Appends only raise the tier, so every deposit later in the block can pay the lower one.
+        uint64 tier = _unsettledCongestionTier();
+        if (tier < depositPriceTier) depositPriceTier = tier;
+        _pruneDepositBuckets();
     }
 
     function _verifySettlement(

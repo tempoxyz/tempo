@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 # zones
 zone-precompiles = { workspace = true, features = ["std"] }
+tempo-precompiles = { workspace = true, default-features = false }
 zone-primitives = { workspace = true }
 
 # tempo
@@ -59,3 +60,4 @@ alloy-rlp.workspace = true
 const-hex.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 serde_json = { workspace = true, default-features = true }
+test-case.workspace = true

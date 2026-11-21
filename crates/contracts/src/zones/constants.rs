@@ -14,8 +14,8 @@ pub const NO_QUEUE_INDEX: U256 = U256::MAX;
 /// `processWithdrawals` transaction well below a 30M gas block.
 pub const MAX_WITHDRAWAL_GAS_LIMIT: u64 = 10_000_000;
 
-/// Maximum deposit entries that may remain outstanding on a ZonePortal.
-pub const MAX_UNPROCESSED_DEPOSITS: usize = 230;
+/// Deposit-queue entries between ZonePortal checkpoints, the most a full Zone block processes.
+pub const DEPOSITS_PER_BUCKET: usize = 230;
 
 /// Maximum token enablements that may remain outstanding on a ZonePortal.
 pub const MAX_UNPROCESSED_TOKEN_ENABLEMENTS: usize = 8;

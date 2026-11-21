@@ -770,10 +770,10 @@ where
                 .wrap_err_with(|| {
                     format!("cannot defer checkpoint work from block {block_number}")
                 })?,
-            DecodedTempoImport::Full { .. } => self
+            DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor)
+                .confirm_operational_through(anchor, deposits.len())
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -824,7 +824,9 @@ fn reconcile_canonical_import(
         .num_hash();
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
-        DecodedTempoImport::Full { .. } => deposit_queue.confirm_operational_through(anchor),
+        DecodedTempoImport::Full { deposits, .. } => {
+            deposit_queue.confirm_operational_through(anchor, deposits.len())
+        }
     }
 }
 
@@ -834,7 +836,8 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let work = deposit_queue.operational_work(anchor)?;
+    // A full import's range is a prefix of the owed entries. Longer calldata fails the count check.
+    let work = deposit_queue.operational_work(anchor, deposits.len())?;
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {

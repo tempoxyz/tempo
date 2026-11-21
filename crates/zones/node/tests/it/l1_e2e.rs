@@ -513,7 +513,8 @@ async fn test_many_concurrent_withdrawals_are_batched() -> eyre::Result<()> {
     const WITHDRAWAL_COUNT: usize =
         ACCOUNT_COUNT as usize + REPEATED_ACCOUNT_COUNT * (WITHDRAWALS_PER_REPEATED_ACCOUNT - 1);
     const MAX_WITHDRAWALS_PER_BATCH: usize = 2;
-    const TEST_MAX_BATCH_GAS: u64 = 2_500_000;
+    // The 1.25M per-transaction overhead plus two 1M simple withdrawals.
+    const TEST_MAX_BATCH_GAS: u64 = 3_250_000;
     const TEST_MAX_IN_FLIGHT_BATCHES: usize = 2;
     const DEPOSIT_AMOUNT: u128 = 2_000_000;
     const WITHDRAWAL_AMOUNT: u128 = 250_000;
@@ -889,7 +890,7 @@ async fn test_closed_mode_rejects_unlisted_deposit_and_withdrawal_recipient() ->
             .await?;
         assert!(
             portal
-                .deposit(PATH_USD_ADDRESS, 100_000, key_index, encrypted, outsider,)
+                .deposit_0(PATH_USD_ADDRESS, 100_000, key_index, encrypted, outsider,)
                 .call()
                 .await
                 .is_err(),
@@ -2048,7 +2049,7 @@ async fn test_deposit_policy_failure_bounces_to_tempo_refund_recipient() -> eyre
         )
         .await?;
     let receipt = portal
-        .deposit(
+        .deposit_0(
             PATH_USD_ADDRESS,
             deposit_amount,
             key_index,
@@ -2857,7 +2858,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     )
     .ok_or_else(|| eyre::eyre!("current-key encryption failed"))?;
     let current_receipt = portal
-        .deposit(
+        .deposit_0(
             PATH_USD_ADDRESS,
             current_amount,
             U256::ONE,
@@ -2888,7 +2889,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     )
     .ok_or_else(|| eyre::eyre!("historical-key encryption failed"))?;
     let historical_receipt = portal
-        .deposit(
+        .deposit_0(
             PATH_USD_ADDRESS,
             historical_amount,
             U256::ZERO,
@@ -2991,7 +2992,7 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
             .await?;
 
         let receipt = portal
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 deposit_amount,
                 key_index,
@@ -3103,7 +3104,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
             .encrypt_deposit_for_portal(portal_address, l1.admin_address(), alice, B256::ZERO)
             .await?;
         let receipt = portal
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 deposit_amount,
                 key_index,

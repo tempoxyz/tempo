@@ -590,12 +590,7 @@ def "main run" [
 
     if $tracy != "off" {
         for run in $runs {
-            let profile = $"($results_dir)/tracy-profile-($run.label).tracy"
-            let tracy_urls = (upload-tracy-profile $profile $run.label $run.git_ref)
-            if $tracy_urls != null {
-                $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.label)-url.txt"
-                $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.label)-profile-url.txt"
-            }
+            print-tracy-profile $"($results_dir)/tracy-profile-($run.label).tracy" $run.label
         }
     }
 

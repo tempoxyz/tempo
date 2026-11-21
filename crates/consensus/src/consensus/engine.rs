@@ -234,6 +234,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                blocker: self.blocker.clone(),
                 strategy: Sequential,
             },
         );
@@ -378,8 +379,8 @@ where
     context: ContextCell<TContext>,
 
     /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
+    broadcast:
+        buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, TBlocker, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext, TBlocker>,

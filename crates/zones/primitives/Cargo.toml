@@ -18,6 +18,9 @@ serde = { workspace = true, optional = true, features = ["alloc"] }
 tempo-hardfork = { workspace = true }
 thiserror = { version = "2", default-features = false }
 
+[dev-dependencies]
+test-case.workspace = true
+
 [features]
 default = ["std", "serde"]
 std = [

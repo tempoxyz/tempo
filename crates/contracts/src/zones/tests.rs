@@ -78,19 +78,37 @@ fn test_router_callback_encoding_matches_tuple() {
         encrypted: encrypted.clone(),
         tempo_refund_recipient: address!("0x0000000000000000000000000000000000004002"),
         min_amount_out: 5678,
+        max_fee: None,
     };
 
     let tuple_encoding = (
         callback.token_out,
         callback.target_portal,
         callback.key_index,
-        encrypted,
+        encrypted.clone(),
         callback.tempo_refund_recipient,
         callback.min_amount_out,
     )
         .abi_encode_params();
 
     assert_eq!(callback.abi_encode(), tuple_encoding);
+
+    let callback = SwapAndDepositRouterCallback {
+        max_fee: Some(9012),
+        ..callback
+    };
+    let max_fee_encoding = (
+        callback.token_out,
+        callback.target_portal,
+        callback.key_index,
+        encrypted,
+        callback.tempo_refund_recipient,
+        callback.min_amount_out,
+        9012_u128,
+    )
+        .abi_encode_params();
+
+    assert_eq!(callback.abi_encode(), max_fee_encoding);
 }
 
 /// The runtimes installed by the latest hardfork must be what `crates/zones/contracts` compiles
