@@ -89,6 +89,9 @@ pub struct L1State<P> {
     /// when a subcall reverts, preserving charges for potentially incurred L1 fetch work and
     /// simplifying the accounting model.
     access_set: Arc<Mutex<HashSet<(Address, B256)>>>,
+    /// Checkpoint of the Zone state this EVM holds, which outlives transactions, and whether a
+    /// read outside a transaction resolved at it.
+    checkpoint: Arc<Mutex<Option<(U256, bool)>>>,
     /// Underlying cache/RPC-backed reader for storage at an explicit Tempo block number.
     provider: P,
     /// ZonePortal read through the L1 provider by explicit storage operations.
@@ -102,6 +105,7 @@ impl<P> L1State<P> {
             initial_anchor: Arc::new(Mutex::new(None)),
             anchor: Arc::new(Mutex::new(None)),
             access_set: Arc::new(Mutex::new(HashSet::default())),
+            checkpoint: Arc::new(Mutex::new(None)),
             provider,
             portal_address,
         }
@@ -129,6 +133,28 @@ impl<P> L1State<P> {
     /// Returns the anchor selected for the current transaction, if any.
     pub fn get_anchor(&self) -> Option<u64> {
         self.anchor.lock().map(|(anchor, _)| anchor)
+    }
+
+    /// Returns the checkpoint of the Zone state this EVM holds, once known.
+    pub fn checkpoint(&self) -> Option<U256> {
+        self.checkpoint.lock().map(|(checkpoint, _)| checkpoint)
+    }
+
+    /// Records the checkpoint of the Zone state this EVM holds. Fails once a read outside a
+    /// transaction resolved at another one, since the accepted cache keeps that view.
+    pub fn set_checkpoint(&self, new: U256) -> Result<(), L1StateError> {
+        let mut checkpoint = self.checkpoint.lock();
+        match *checkpoint {
+            Some((current, true)) if current != new => Err(L1StateError::AnchorConflict {
+                current: current.saturating_to(),
+                new: new.saturating_to(),
+            }),
+            Some((_, true)) => Ok(()),
+            _ => {
+                *checkpoint = Some((new, false));
+                Ok(())
+            }
+        }
     }
 
     /// Returns the configured ZonePortal address.
@@ -194,6 +220,19 @@ impl<P: L1StorageReader> L1State<P> {
         block_number: u64,
     ) -> Result<B256, L1StateError> {
         self.set_anchor(block_number)?;
+        self.provider.read_l1_commitment(account, block_number)
+    }
+
+    /// Reads the TIP-1108 commitment of `account` outside a transaction at checkpoint
+    /// `block_number`, which this EVM's checkpoint can then no longer leave.
+    pub fn read_l1_commitment_at_checkpoint(
+        &self,
+        account: Address,
+        block_number: u64,
+    ) -> Result<B256, L1StateError> {
+        let checkpoint = U256::from(block_number);
+        self.set_checkpoint(checkpoint)?;
+        *self.checkpoint.lock() = Some((checkpoint, true));
         self.provider.read_l1_commitment(account, block_number)
     }
 

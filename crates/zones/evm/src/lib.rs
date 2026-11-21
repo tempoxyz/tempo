@@ -478,13 +478,14 @@ pub struct TempoStorageRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::zone_evm::tests::transaction;
 
     use alloy_consensus::{Sealable as _, SignableTransaction, TxLegacy};
     use alloy_primitives::{B256, Bytes, U256, address};
     use alloy_sol_types::SolCall;
     use evm2::{
         bytecode::Bytecode,
-        evm::{AccountInfo, InMemoryDB},
+        evm::{AccountInfo, HISTORY_STORAGE_ADDRESS, InMemoryDB, SystemTx},
     };
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
@@ -664,6 +665,55 @@ mod tests {
             assert!(evm.transact(tx).unwrap().discard().status);
         }
         assert_eq!(reader.storage_requests().len(), reads_before);
+    }
+
+    /// A system call, then `advanceTempo`, then a transaction on one EVM: pre-execution reads
+    /// nothing from L1, and reads after the advance resolve at the child checkpoint.
+    #[test]
+    fn system_call_then_advance_tempo_then_transaction() {
+        const CHILD: u64 = 1;
+        let portal = Address::repeat_byte(0x42);
+        let token = address!("0x20C00000000000000000000000000000000000AA");
+        let retired = Address::repeat_byte(0x0b);
+        let reader = MockL1Reader::default();
+        // Only the child checkpoint retires the primitive root key.
+        reader.insert_commitment(retired, CHILD, B256::repeat_byte(7));
+        let mut evm = genesis_zone_evm(&reader, portal, token, TempoHardfork::T15);
+
+        let system = SystemTx::new(HISTORY_STORAGE_ADDRESS, B256::ZERO.0.into());
+        assert!(evm.system_call(system).unwrap().commit().status);
+        let child = child_header(TempoHeader::default().hash_slow(), CHILD);
+        let result = evm
+            .transact(&advance_tempo_tx(&child, Vec::new()))
+            .unwrap()
+            .commit();
+        assert!(result.status, "advanceTempo reverted: {result:?}");
+
+        // As `eth_callBundle` reads its coinbase between transactions.
+        let info = reth_evm::Evm::account_info(&mut evm, &retired)
+            .unwrap()
+            .unwrap();
+        assert!(!info.extension.is_empty());
+        let tx = TxLegacy {
+            gas_limit: 100_000,
+            to: Address::repeat_byte(0x33).into(),
+            ..Default::default()
+        };
+        let error = evm
+            .transact(&transaction(
+                retired,
+                tx.into_signed(alloy_primitives::Signature::test_signature()),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.external_ref::<tempo_evm::TempoInvalidTransaction>(),
+                Some(tempo_evm::TempoInvalidTransaction::RootKeyRetired { account, .. })
+                    if *account == retired
+            ),
+            "{error:?}"
+        );
+        assert_eq!(reader.commitment_requests(), [(retired, CHILD)]);
     }
 
     #[test]
