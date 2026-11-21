@@ -516,23 +516,19 @@ impl<ChainSpec> TempoReceiptConverter<ChainSpec> {
         Self {
             inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
-                    let mut log_index = next_log_index;
-                    receipt
-                        .map_logs(|log| {
-                            let idx = log_index;
-                            log_index += 1;
-                            Log {
-                                inner: log,
-                                block_hash: Some(meta.block_hash),
-                                block_number: Some(meta.block_number),
-                                block_timestamp: Some(meta.timestamp),
-                                transaction_hash: Some(meta.tx_hash),
-                                transaction_index: Some(meta.index),
-                                log_index: Some(idx as u64),
-                                removed: false,
-                            }
-                        })
-                        .into()
+                    let TempoReceipt {
+                        tx_type,
+                        success,
+                        cumulative_gas_used,
+                        logs,
+                    } = receipt;
+                    TempoReceipt {
+                        tx_type,
+                        success,
+                        cumulative_gas_used,
+                        logs: Log::collect_for_receipt(next_log_index, meta, logs),
+                    }
+                    .into()
                 },
             ),
         }

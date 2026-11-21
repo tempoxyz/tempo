@@ -124,6 +124,19 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
                 net_amount: e.netAmount,
             }
         }
+        // TIP-1094: a transfer to a zone deposit address escrows new external backing exactly
+        // like an encrypted deposit.
+        ZonePortal::VirtualDepositMade::SIGNATURE_HASH => {
+            let e =
+                decode_event::<ZonePortal::VirtualDepositMade>(log, "VirtualDepositMade", block)?;
+            L1PortalEvent::DepositMade {
+                token: e.token,
+                net_amount: e.netAmount,
+            }
+        }
+        ZonePortal::AddressVersionsRetired::SIGNATURE_HASH => {
+            ignored!(ZonePortal::AddressVersionsRetired, "AddressVersionsRetired")
+        }
         ZonePortal::TokenEnabled::SIGNATURE_HASH => {
             let e = decode_event::<ZonePortal::TokenEnabled>(log, "TokenEnabled", block)?;
             L1PortalEvent::TokenEnabled { token: e.token }
@@ -223,6 +236,12 @@ fn decode_portal_event(log: &Log, block: u64) -> eyre::Result<Option<L1PortalEve
         ZonePortal::EnforcementModesUpdated::SIGNATURE_HASH => ignored!(
             ZonePortal::EnforcementModesUpdated,
             "EnforcementModesUpdated"
+        ),
+        // Zone-internal transfers move balances within the Zone, so they leave L1 liabilities
+        // unchanged.
+        ZonePortal::TransfersEnabledUpdated::SIGNATURE_HASH => ignored!(
+            ZonePortal::TransfersEnabledUpdated,
+            "TransfersEnabledUpdated"
         ),
         ZonePortal::LeaderUpdated::SIGNATURE_HASH => {
             ignored!(ZonePortal::LeaderUpdated, "LeaderUpdated")
@@ -447,6 +466,16 @@ mod tests {
     }
 
     #[test]
+    fn ignores_transfers_enabled_updates() {
+        for enabled in [true, false] {
+            let update = log(ZonePortal::TransfersEnabledUpdated { enabled }.encode_log_data());
+            let events = collect(&[receipt(true, B256::ZERO, vec![update])])
+                .expect("transfer opt-in updates must not stop the checker");
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
     fn reject_malformed_known_event() {
         let bad = log(alloy_primitives::LogData::new_unchecked(
             vec![ZonePortal::DepositMade::SIGNATURE_HASH],
@@ -473,7 +502,7 @@ mod tests {
             collect(&[receipt(true, B256::ZERO, vec![bad])])
                 .unwrap_err()
                 .to_string()
-                .contains("non-canonical DepositMade")
+                .contains("malformed DepositMade")
         );
     }
 

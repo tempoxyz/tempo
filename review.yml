@@ -1,3 +1,15 @@
 required-approvals: 1
 require-codeowners: false
 allow-self-reviews: false
+
+# Deployments to the release environment need two VK approvals:
+# the user who triggered the run, then a CODEOWNER of the released product.
+deployments:
+  release:
+    codeowner-approval:
+      - ref: refs/tags/tempo/v*
+        path: bin/tempo/
+      - ref: refs/tags/zones/v*
+        path: bin/tempo-zone/
+      - ref: refs/tags/prover/v*
+        path: bin/prover/

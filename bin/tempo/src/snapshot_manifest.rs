@@ -590,10 +590,10 @@ mod tests {
             .collect::<Vec<_>>();
         paths.sort();
 
-        assert!(paths.contains(&"partition-key/nested/00".to_string()));
-        assert!(paths.contains(&"partition-value/00".to_string()));
+        assert!(paths.iter().any(|p| p == "partition-key/nested/00"));
+        assert!(paths.iter().any(|p| p == "partition-value/00"));
         assert!(paths.contains(&format!("partition-value/{COMMONWARE_HOLD_FILE}")));
-        assert!(!paths.contains(&COMMONWARE_HOLD_FILE.to_string()));
+        assert!(!paths.iter().any(|p| p == COMMONWARE_HOLD_FILE));
 
         let mut listed = consensus_archive_output_files(dir.path())
             .unwrap()

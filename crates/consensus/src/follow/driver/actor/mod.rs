@@ -1,18 +1,20 @@
 use alloy_consensus::BlockHeader as _;
+use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
     types::{Epoch, Epocher as _, Height, Round},
 };
-use commonware_runtime::{BufferPooler, Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
+use commonware_cryptography::Digested;
+use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -33,7 +35,7 @@ pub(super) async fn try_init<TContext, P, M>(
     config: Config<P, M>,
 ) -> eyre::Result<super::Initialized<TContext, P, M>>
 where
-    TContext: Clock + Spawner + Metrics + Storage + BufferPooler + CryptoRng,
+    TContext: Clock + Spawner + Metrics + Storage + CryptoRng,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -53,6 +55,21 @@ where
         &config.scheme_provider,
     )?;
 
+    // Marshal resumes from the floor, so bound the floor's epoch like the DKG
+    // manager does: an execution layer that lags the floor must not hide it.
+    let floor_epoch = config
+        .epoch_strategy
+        .containing(config.last_finalized_height.next())
+        .expect("strategy valid for all heights and epochs")
+        .epoch();
+    crate::startup::ensure_outcome_within_tip_epoch(floor_epoch, tip.map(|(_, tip)| tip))
+        .wrap_err_with(|| {
+            format!(
+                "the finalized floor at height `{}`",
+                config.last_finalized_height
+            )
+        })?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -61,23 +78,37 @@ where
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let last_finalized_number = config.execution_provider.finalized_block_number()?;
+    let mut last_finalized_number = config.execution_provider.finalized_block_number()?;
+    // The execution layer can be finalized past the consensus tip, such as after
+    // restoring a newer execution snapshot. Start no later than the tip epoch's
+    // last block so the outcome stays within the epoch after the tip's.
+    if let Some((_, tip)) = tip {
+        let tip_epoch_last = config
+            .epoch_strategy
+            .last(tip.proposal.round.epoch())
+            .expect("strategy valid for all heights and epochs");
+        last_finalized_number = last_finalized_number.min(tip_epoch_last.get());
+    }
 
     let epoch_info = config
         .epoch_strategy
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
-        epoch_info.last()
-    } else if let Some(previous) = epoch_info.epoch().previous() {
-        config
-            .epoch_strategy
-            .last(previous)
-            .expect("strategy valid for all heights and epochs")
-    } else {
-        Height::zero()
-    };
+    let (startup_execution_boundary, boundary_outcome_epoch) =
+        if epoch_info.last().get() == last_finalized_number {
+            (epoch_info.last(), epoch_info.epoch().next())
+        } else if let Some(previous) = epoch_info.epoch().previous() {
+            (
+                config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy valid for all heights and epochs"),
+                epoch_info.epoch(),
+            )
+        } else {
+            (Height::zero(), Epoch::zero())
+        };
 
     let boundary_header = config
         .execution_provider
@@ -90,6 +121,20 @@ where
                 from the execution layer"
             )
         })?;
+
+    let claimed_epoch =
+        OnchainDkgOutcome::read(&mut commonware_codec::Copying(boundary_header.extra_data().as_ref()))
+            .wrap_err_with(|| {
+                format!(
+                    "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+                )
+            })?
+            .epoch();
+    ensure!(
+        claimed_epoch == boundary_outcome_epoch,
+        "the last boundary (`{startup_execution_boundary}`) contains an outcome for epoch \
+         `{claimed_epoch}`, expected epoch `{boundary_outcome_epoch}`",
+    );
 
     let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
         .with_scheme_provider(config.scheme_provider.clone());
@@ -116,7 +161,7 @@ where
     Ok((actor, mailbox))
 }
 
-pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, M> {
+pub(crate) struct Driver<TContext: Clock + Metrics + Storage, P, M> {
     state: State<TContext>,
     context: ContextCell<TContext>,
     config: Config<P, M>,
@@ -130,7 +175,7 @@ pub(crate) struct Driver<TContext: Clock + Metrics + Storage + BufferPooler, P, 
 
 impl<C, P, M> Driver<C, P, M>
 where
-    C: Clock + Rng + CryptoRng + Spawner + Metrics + Storage + BufferPooler,
+    C: Clock + Rng + CryptoRng + Spawner + Metrics + Storage,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -213,11 +258,26 @@ where
                 return Ok(());
             };
 
+            let extra_data = boundary_block.inner().header().extra_data();
+            let claimed_epoch =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err_with(|| {
+                        format!(
+                            "the boundary block at height `{last_consensus_boundary}` \
+                            contained no or a malformed DKG outcome"
+                        )
+                    })?
+                    .epoch();
+            ensure!(
+                claimed_epoch == previous.next(),
+                "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
+                 epoch `{claimed_epoch}`, expected the next epoch `{}`",
+                previous.next(),
+            );
+
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(extra_data.as_ref())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -250,7 +310,20 @@ where
                 identity: *outcome.network_identity(),
             };
 
-            self.state.observe(identity).await?
+            self.state.observe(identity.clone()).await?;
+
+            // Retire the previous fallback in memory too. Otherwise a missing later epoch would
+            // still verify against the identity this boundary rotated away from until restart.
+            let previous = self.verifier.network_identity().clone();
+            if self.verifier.advance_network_identity(identity.clone()) {
+                info!(
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
+                );
+            }
         }
 
         Ok(())
@@ -298,7 +371,13 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block = Block::from_execution_block_unchecked(certified.block);
+        let consensus_block = match Block::try_from_execution_block(certified.block) {
+            Ok(block) => Digested::from(block),
+            Err(error) => {
+                warn!(%error, "upstream finalized block failed validation");
+                return Ok(());
+            }
+        };
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);
@@ -420,7 +499,9 @@ where
         if epoch_info.last() == block.height() {
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(block.header().extra_data().as_ref())
+                .decode_dkg_outcome_and_register_boundary(
+                    block.inner().header().extra_data().as_ref(),
+                )
                 .expect("boundary blocks must contain DKG outcomes");
 
             // Prevent an outcome from advancing the persisted trust anchor to an arbitrary epoch.
@@ -435,9 +516,9 @@ where
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured_identity.from_epoch,
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );
@@ -450,6 +531,11 @@ where
                 .epoch_sync_target
                 .is_some_and(|target| self.current_epoch >= target)
             {
+                #[cfg(feature = "fuzz")]
+                antithesis_sdk::assert_reachable!(
+                    "Follower catches up across epochs after its network identity fallback failed",
+                    &serde_json::json!({ "epoch": self.current_epoch.get() })
+                );
                 self.epoch_sync_target = None;
             } else if self.epoch_sync_target.is_some() {
                 // Advance one boundary at a time. Each processed boundary

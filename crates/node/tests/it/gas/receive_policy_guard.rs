@@ -7,13 +7,11 @@ use alloy::{
 use alloy_rpc_types_eth::TransactionReceipt;
 use eyre::OptionExt;
 use reth_e2e_test_utils::wallet::test_signer;
-use tempo_contracts::precompiles::{
-    IReceivePolicyGuard, IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry,
-};
+use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::{BLOCKED_RECEIPT_VERSION, InboundKind, RECOVERY_ORIGINATOR},
-    tip20::ISSUER_ROLE,
+    test_util::TIP20Setup,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 
@@ -24,43 +22,6 @@ struct BlockedTransfer {
     receiver: Address,
     receipt: Bytes,
     gas_used: u64,
-}
-
-async fn create_token<P>(provider: P, admin: Address, salt: B256) -> eyre::Result<Address>
-where
-    P: Provider + Clone,
-{
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    let receipt = factory
-        .createToken_0(
-            "TIP1028 Gas".to_string(),
-            "T1028".to_string(),
-            "USD".to_string(),
-            PATH_USD_ADDRESS,
-            admin,
-            salt,
-        )
-        .gas(GAS_LIMIT)
-        .send_sync()
-        .await?;
-    assert!(receipt.status(), "createToken failed");
-
-    let created = receipt
-        .logs()
-        .iter()
-        .find_map(|log| ITIP20Factory::TokenCreated::decode_log(&log.inner).ok())
-        .ok_or_eyre("TokenCreated event missing")?;
-    let token = created.token;
-
-    let roles = IRolesAuth::new(token, provider);
-    let grant = roles
-        .grantRole(ISSUER_ROLE, admin)
-        .gas(GAS_LIMIT)
-        .send_sync()
-        .await?;
-    assert!(grant.status(), "grantRole failed");
-
-    Ok(token)
 }
 
 async fn set_receive_policy<P: Provider + Clone>(
@@ -203,19 +164,11 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let admin_provider = provider(&admin);
     let originator_provider = provider(&originator);
 
-    let token = create_token(
-        admin_provider.clone(),
-        admin.address(),
-        B256::with_last_byte(0x28),
-    )
-    .await?;
-    let admin_token = ITIP20::new(token, admin_provider);
-    let mint = admin_token
-        .mint(originator.address(), U256::from(30_000))
-        .gas(GAS_LIMIT)
-        .send_sync()
+    let token = TIP20Setup::create("TIP1028 Gas", "T1028", admin.address())
+        .with_salt(B256::with_last_byte(0x28))
+        .with_mint(originator.address(), U256::from(30_000))
+        .apply_rpc(&admin_provider)
         .await?;
-    assert!(mint.status(), "mint failed");
 
     let mut gas = GasSnapshot::new();
 

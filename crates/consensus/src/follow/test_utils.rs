@@ -1,5 +1,6 @@
 //! Test doubles and deterministic block construction for the follower driver.
 
+use commonware_cryptography::Digested;
 use std::{
     collections::HashMap,
     future::Future,
@@ -180,9 +181,15 @@ impl StubMarshal {
 }
 
 impl Marshal for StubMarshal {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send {
         self.inner.block_reads.lock().push(height);
-        let block = self.inner.blocks.lock().get(&height.get()).cloned();
+        let block = self
+            .inner
+            .blocks
+            .lock()
+            .get(&height.get())
+            .cloned()
+            .map(Digested::from);
         async move { block }
     }
 
@@ -191,8 +198,11 @@ impl Marshal for StubMarshal {
         async {}
     }
 
-    fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send {
-        self.inner.certified.lock().push((round, block));
+    fn certified(&self, round: Round, block: Digested<Block>) -> impl Future<Output = bool> + Send {
+        self.inner
+            .certified
+            .lock()
+            .push((round, block.inner().clone()));
         async { true }
     }
 

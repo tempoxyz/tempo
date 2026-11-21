@@ -3,9 +3,16 @@
 use crate::{defaults, follow, tempo_cmd};
 use reth_ethereum_cli::Cli;
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+use std::num::NonZeroUsize;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_faucet::args::FaucetArgs;
-use tempo_node::TempoNodeArgs;
+use tempo_node::{
+    TempoNodeArgs,
+    rpc::consensus::{
+        DEFAULT_MAX_CONCURRENT_LOOKUPS, DEFAULT_MAX_SUBSCRIPTIONS,
+        DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+    },
+};
 
 pub type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -91,6 +98,31 @@ pub struct TempoArgs {
         env = "TEMPO_BOOTNODES_ENDPOINT"
     )]
     pub(crate) bootnodes_endpoint: String,
+
+    /// Maximum concurrent `consensus_subscribe` subscriptions across all connections.
+    #[arg(
+        long = "rpc.consensus-max-subscriptions",
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_SUBSCRIPTIONS
+    )]
+    pub(crate) consensus_max_subscriptions: NonZeroUsize,
+
+    /// Maximum concurrent `consensus_subscribe` subscriptions on one HTTP or WS connection.
+    #[arg(
+        long = "rpc.consensus-max-subscriptions-per-connection",
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION
+    )]
+    pub(crate) consensus_max_subscriptions_per_connection: NonZeroUsize,
+
+    /// Maximum concurrent `consensus_getFinalization` height lookups across all connections.
+    /// Further ones fail with the server-busy error.
+    #[arg(
+        long = "rpc.consensus-max-concurrent-lookups",
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_CONCURRENT_LOOKUPS
+    )]
+    pub(crate) consensus_max_concurrent_lookups: NonZeroUsize,
 
     #[command(flatten)]
     pub(crate) telemetry: defaults::TelemetryArgs,

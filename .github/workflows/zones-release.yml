@@ -37,6 +37,10 @@ jobs:
   resolve-release:
     if: github.repository == 'tempoxyz/tempo'
     name: Resolve release inputs
+    # Publishing needs the triggering user and a code owner of bin/tempo-zone/
+    # to approve in VK (review.yml deployments). The environment
+    # only admits release tags, so publishing dispatches run from the tag.
+    environment: ${{ (github.event_name == 'push' || inputs.dry_run == false) && 'release' || '' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -70,6 +74,12 @@ jobs:
             }
           elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
             echo "Provide a release tag, or set dry_run to verify a commit" >&2
+            exit 1
+          fi
+          # VK picks the approving code owners from the dispatched ref, so a
+          # publishing dispatch must run from the tag it releases.
+          if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/tags/$INPUT_TAG" ]]; then
+            echo "Publishing dispatches must run from refs/tags/$INPUT_TAG, not $GITHUB_REF" >&2
             exit 1
           fi
 
@@ -138,7 +148,12 @@ jobs:
             echo "Protected main was not fetched" >&2
             exit 1
           }
-          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+          # Releases come from main or a protected release/* branch.
+          on_protected_branch() {
+            [[ -n "$(git for-each-ref --contains "$1" --format='%(refname)' \
+              refs/remotes/origin/main 'refs/remotes/origin/release/*')" ]]
+          }
+          if ! on_protected_branch "$commit_sha"; then
             # Prepare Zones Release tags the commit on its pre-release branch,
             # which a squash merge keeps off main. Accept it only as one commit
             # on main that changes nothing but Zones version lines.
@@ -156,7 +171,7 @@ jobs:
                 grep -Ev '^(\+\+\+|---) ' | grep -Ev '^[+-]version = "[^"]+"$' || true
             )"
             if [[ "${#ancestry[@]}" -ne 2 ]] ||
-               ! git merge-base --is-ancestor "$parent" refs/remotes/origin/main ||
+               ! on_protected_branch "$parent" ||
                [[ -z "$changed_files" || -n "$unexpected_files" || -n "$unexpected_lines" ]]; then
               echo "Release source $commit_sha is not a commit on main or a Zones version bump on one" >&2
               exit 1
@@ -555,6 +570,8 @@ jobs:
         env:
           CARGO_TARGET_DIR: target
           TARGET: ${{ matrix.platform.target }}
+          # Release binaries carry the real build timestamp.
+          VERGEN_IDEMPOTENT: "0"
         run: >-
           cargo build --locked --bin tempo-zone --features "asm-keccak,jemalloc"
           --profile maxperf --target "$TARGET"

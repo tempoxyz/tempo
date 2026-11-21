@@ -14,12 +14,12 @@ use commonware_consensus::{
     types::{FixedEpocher, Height, Round},
 };
 use commonware_cryptography::{
-    Signer as _,
+    Digested, Signer as _,
     bls12381::primitives::variant::MinSig,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_utils::vec::NonEmptyVec;
 use rand_core::CryptoRng;
 use reth_primitives_traits::NodePrimitives;
@@ -76,7 +76,7 @@ pub(super) async fn try_init<TContext, P, M>(
     config: Config<P, M>,
 ) -> eyre::Result<Initialized<TContext, P, M>>
 where
-    TContext: Clock + Spawner + Metrics + Storage + BufferPooler + CryptoRng,
+    TContext: Clock + Spawner + Metrics + Storage + CryptoRng,
     P: ExecutionProvider + 'static,
     M: Marshal + 'static,
 {
@@ -91,8 +91,8 @@ pub(super) trait ExecutionProvider: Send + Sync {
 
 /// Marshal operations used by the follower driver.
 pub(super) trait Marshal: Send + Sync {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send;
-    fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send;
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send;
+    fn certified(&self, round: Round, block: Digested<Block>) -> impl Future<Output = bool> + Send;
     fn report(&self, activity: ConsensusActivity) -> impl Future<Output = ()> + Send;
     fn hint_finalized(&self, height: Height) -> impl Future<Output = ()> + Send;
 }
@@ -112,7 +112,7 @@ where
 }
 
 impl Marshal for crate::alias::marshal::Mailbox {
-    fn get_block(&self, height: Height) -> impl Future<Output = Option<Block>> + Send {
+    fn get_block(&self, height: Height) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let mailbox = self.clone();
         async move { mailbox.get_block(height).await }
     }
@@ -125,7 +125,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
         }
     }
 
-    fn certified(&self, round: Round, block: Block) -> impl Future<Output = bool> + Send {
+    fn certified(&self, round: Round, block: Digested<Block>) -> impl Future<Output = bool> + Send {
         let mailbox = self.clone();
         async move { mailbox.certified(round, block).await }
     }

@@ -12,7 +12,7 @@ use alloy::{
 };
 use eyre::{WrapErr as _, eyre};
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::zones::{DepositPayload, IZoneInbox, ZonePortal};
+use tempo_contracts::zones::{DepositPayload, IZoneInbox, ZONE_INBOX_ADDRESS, ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -113,7 +113,7 @@ impl Deposit {
 
         println!("Sending deposit of {} to {to}...", self.amount);
         let receipt = portal
-            .deposit(self.token, self.amount, key_index, payload, sender)
+            .deposit_0(self.token, self.amount, key_index, payload, sender)
             .send_sync()
             .await
             .wrap_err("failed to send deposit transaction")?;
@@ -144,8 +144,6 @@ impl Deposit {
         sender: Address,
         to: Address,
     ) -> eyre::Result<()> {
-        use tempo_contracts::zones::ZONE_INBOX_ADDRESS;
-
         println!("Waiting for deposit to be processed on L2...");
         let l2 = ProviderBuilder::new().connect(zone_rpc).await?;
 

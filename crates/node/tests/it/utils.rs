@@ -492,7 +492,7 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
         )
         .with_poll_interval(provider.client().poll_interval());
         let provider = RootProvider::<TempoNetwork>::new(client);
-        PendingTransactionBuilder::from_config(provider, config)
+        config.with_provider(provider)
     }
 }
 

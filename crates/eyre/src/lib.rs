@@ -27,6 +27,8 @@
 //! full source chain: [top error, middle error, bottom error]
 //! ```
 
+use core::fmt::Write as _;
+
 /// Installs the hook as the global error report hook.
 ///
 /// **NOTE**: It must be called before any `eyre::Report`s are constructed
@@ -51,8 +53,6 @@ impl eyre::EyreHandler for ErrorHandler {
         error: &(dyn std::error::Error + 'static),
         f: &mut core::fmt::Formatter<'_>,
     ) -> core::fmt::Result {
-        use core::fmt::Write as _;
-
         if f.alternate() {
             return core::fmt::Debug::fmt(error, f);
         }
