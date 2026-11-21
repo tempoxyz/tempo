@@ -1,6 +1,6 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmTypes, transaction::ExecutionContext,
+    TempoEvmTypes, TxLane, is_stateless_payment, transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -30,11 +30,12 @@ use tempo_chainspec::{
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
     ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
-    RECEIVE_POLICY_GUARD_ADDRESS, RESERVATIONS_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
-    t15_zone_factory_state,
+    PAYMENT_CALL_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, RESERVATIONS_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
+    t14_zone_factory_state, t15_zone_factory_state,
 };
+use tempo_precompiles::payment_call_registry::RegisteredClassification;
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
@@ -90,6 +91,15 @@ impl<'de> serde::Deserialize<'de> for BlockSection {
     }
 }
 
+/// Gas left in a block's budgets, copied so section validation can run while the inner executor
+/// is borrowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LaneBudgets {
+    non_shared_gas_left: u64,
+    non_payment_gas_left: u64,
+    registered_payment_gas_left: u64,
+}
+
 /// Block-level counters of a [`TempoBlockExecutor`] between transactions, from
 /// [`TempoBlockExecutor::executor_state`]. The section serializes as its numeric id, and
 /// deserializing an unknown id fails.
@@ -102,6 +112,10 @@ pub struct ExecutorState {
     non_shared_gas_left: u64,
     /// Gas left for non-payment transactions.
     non_payment_gas_left: u64,
+    /// Gas left for registered payments (TIP-1180). States saved before it existed restore it
+    /// unbounded, since no registered payment preceded them.
+    #[serde(default = "unbounded_gas")]
+    registered_payment_gas_left: u64,
     /// Gas used by the gas incentive section.
     incentive_gas_used: u64,
     /// Block gas used.
@@ -110,6 +124,11 @@ pub struct ExecutorState {
     cumulative_gas_used: u64,
     /// Inner executor's blob gas used.
     blob_gas_used: u64,
+}
+
+/// Default for budgets missing from a saved [`ExecutorState`].
+const fn unbounded_gas() -> u64 {
+    u64::MAX
 }
 
 /// Builder for [`TempoReceipt`].
@@ -160,8 +179,8 @@ pub struct TempoTxResult {
     /// one that produced them (e.g. BAL workers), so [`TempoBlockExecutor::commit_transaction`]
     /// derives it from the committing executor's state.
     is_system_tx: bool,
-    /// Whether the transaction is a payment transaction.
-    is_payment: bool,
+    /// The block budget the transaction counts toward.
+    lane: TxLane,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
 }
@@ -174,7 +193,7 @@ impl Clone for TempoTxResult {
             tx_hash: self.tx_hash,
             execution_context: self.execution_context,
             is_system_tx: self.is_system_tx,
-            is_payment: self.is_payment,
+            lane: self.lane,
             block_gas_used: self.block_gas_used,
         }
     }
@@ -188,7 +207,7 @@ impl TempoTxResult {
         result: TxResult<TempoEvmTypes>,
         state: PendingState,
         is_system_tx: bool,
-        is_payment: bool,
+        lane: TxLane,
         block_gas_used: u64,
     ) -> Self {
         Self {
@@ -205,7 +224,7 @@ impl TempoTxResult {
             tx_hash: *tx.tx_hash(),
             execution_context,
             is_system_tx,
-            is_payment,
+            lane,
             block_gas_used,
         }
     }
@@ -218,6 +237,11 @@ impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
+    }
+
+    /// Returns the block budget the transaction counts toward.
+    pub fn lane(&self) -> TxLane {
+        self.lane
     }
 
     /// Returns the state gas consumed by this transaction.
@@ -270,6 +294,10 @@ pub struct TempoBlockExecutor<'a> {
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
+    /// Gas left for registered payments (TIP-1180), from T17.
+    registered_payment_gas_left: u64,
+    /// The payment call registry's version in the parent state, read on first use.
+    registry_version: Option<u64>,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
     block_gas_used: u64,
@@ -325,6 +353,18 @@ pub fn apply_t16_state_changes(
     deploy_precompile_at_boundary(executor, RESERVATIONS_ADDRESS, &[])
 }
 
+/// Applies the state changes the T17 fork makes on Tempo L1: the payment call registry's account
+/// gets its native-precompile marker. Zones do not run the registry. Does nothing before T17, and
+/// changes nothing once applied.
+pub fn apply_t17_state_changes(
+    executor: &mut EthBlockExecutor<'_, TempoEvmTypes, TempoReceiptBuilder>,
+) -> Result<(), BlockExecutionError> {
+    if !executor.evm().config_spec_id().is_t17() {
+        return Ok(());
+    }
+    deploy_precompile_at_boundary(executor, PAYMENT_CALL_REGISTRY_ADDRESS, &[])
+}
+
 impl<'a> TempoBlockExecutor<'a> {
     pub(crate) fn new(
         evm: TempoEvm<'a>,
@@ -340,6 +380,10 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
+        let registered_payment_gas_left = evm
+            .config_spec_id()
+            .registered_payment_gas_limit(block_gas_limit)
+            .unwrap_or_default();
         let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
         inner.set_spec_id(spec_id);
         Self {
@@ -348,6 +392,8 @@ impl<'a> TempoBlockExecutor<'a> {
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
+            registered_payment_gas_left,
+            registry_version: None,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data,
             inner,
@@ -368,6 +414,7 @@ impl<'a> TempoBlockExecutor<'a> {
             section: self.section,
             non_shared_gas_left: self.non_shared_gas_left,
             non_payment_gas_left: self.non_payment_gas_left,
+            registered_payment_gas_left: self.registered_payment_gas_left,
             incentive_gas_used: self.incentive_gas_used,
             block_gas_used: self.block_gas_used,
             cumulative_gas_used: self.inner.inner.cumulative_gas_used,
@@ -384,6 +431,7 @@ impl<'a> TempoBlockExecutor<'a> {
         self.section = state.section;
         self.non_shared_gas_left = state.non_shared_gas_left;
         self.non_payment_gas_left = state.non_payment_gas_left;
+        self.registered_payment_gas_left = state.registered_payment_gas_left;
         self.incentive_gas_used = state.incentive_gas_used;
         self.block_gas_used = state.block_gas_used;
         self.inner.inner.cumulative_gas_used = state.cumulative_gas_used;
@@ -669,20 +717,63 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
-    /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
+    /// Returns the block budget `tx` counts toward under the active hardfork.
     ///
-    /// T16+: TIP-1045 classification plus the chain's payment lane calls
-    /// ([`TempoChainSpec::is_payment_at`]).
-    /// T15+: TIP-1045 classification with bounded trailing calldata ([`is_payment_v3`]).
-    /// T5+: TIP-1045 classification ([`is_payment_v2`]).
-    /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
-    ///
-    /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
-    /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
-    /// [`is_payment_v3`]: TempoTxEnvelope::is_payment_v3
-    pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        self.chain_spec
-            .is_payment_at(self.evm().config_spec_id(), tx)
+    /// TIP-1045 payments ([`is_stateless_payment`]) are payments. From T17 a transaction whose
+    /// every call is a registered payment call (TIP-1180) within its gas caps is a registered
+    /// payment. The registry is read from the backing database, which holds the parent state, as
+    /// [`Self::check_boundary_outcome`] reads ValidatorConfigV2. Registry changes take effect at
+    /// later blocks only, so the answer would be the same at any point of the block.
+    pub fn tx_lane(&mut self, tx: &TempoTxEnvelope) -> Result<TxLane, BlockExecutionError> {
+        let spec = self.evm().config_spec_id();
+        if is_stateless_payment(spec, tx) {
+            return Ok(TxLane::Payment);
+        }
+        if !spec.is_t17() || self.payment_call_registry_version()? == 0 {
+            return Ok(TxLane::General);
+        }
+        Ok(
+            if self.classify_registered_payment(tx)?.is_registered_payment {
+                TxLane::RegisteredPayment
+            } else {
+                TxLane::General
+            },
+        )
+    }
+
+    /// Returns the payment call registry's version (TIP-1180) in the parent state, zero before
+    /// T17 or while nothing was ever registered. Read once per block.
+    pub fn payment_call_registry_version(&mut self) -> Result<u64, BlockExecutionError> {
+        if let Some(version) = self.registry_version {
+            return Ok(version);
+        }
+        let spec = self.evm().config_spec_id();
+        let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
+        let version = crate::TempoStateAccess::<((), ())>::payment_call_registry_version(
+            &mut parent_state,
+            spec,
+        )
+        .map_err(BlockExecutionError::other)?;
+        self.registry_version = Some(version);
+        Ok(version)
+    }
+
+    /// Classifies `tx` against the payment call registry (TIP-1180) in the parent state for this
+    /// block, without the TIP-1045 check [`Self::tx_lane`] applies first.
+    pub fn classify_registered_payment(
+        &mut self,
+        tx: &TempoTxEnvelope,
+    ) -> Result<RegisteredClassification, BlockExecutionError> {
+        let spec = self.evm().config_spec_id();
+        let block = self.evm().block().number.saturating_to::<u64>();
+        let mut parent_state: &mut dyn evm2::evm::DynDatabase = self.evm_mut().database_mut();
+        crate::TempoStateAccess::<((), ())>::classify_registered_payment(
+            &mut parent_state,
+            spec,
+            tx,
+            block,
+        )
+        .map_err(BlockExecutionError::other)
     }
 
     /// Returns the section an executed transaction enters at the current position in the block.
@@ -690,31 +781,43 @@ impl<'a> TempoBlockExecutor<'a> {
         &self,
         tx_hash: B256,
         is_system_tx: bool,
-        is_payment: bool,
+        lane: TxLane,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
         Self::next_section(
             self.section,
-            self.non_shared_gas_left,
-            self.non_payment_gas_left,
+            self.lane_budgets(),
             tx_hash,
             is_system_tx,
-            is_payment,
+            lane,
             gas_used,
         )
+    }
+
+    /// Returns the gas left in the block's budgets.
+    fn lane_budgets(&self) -> LaneBudgets {
+        LaneBudgets {
+            non_shared_gas_left: self.non_shared_gas_left,
+            non_payment_gas_left: self.non_payment_gas_left,
+            registered_payment_gas_left: self.registered_payment_gas_left,
+        }
     }
 
     /// Implements [`Self::validate_tx`] over copied section state, so it can run while the inner
     /// executor is borrowed.
     fn next_section(
         section: BlockSection,
-        non_shared_gas_left: u64,
-        non_payment_gas_left: u64,
+        budgets: LaneBudgets,
         tx_hash: B256,
         is_system_tx: bool,
-        is_payment: bool,
+        lane: TxLane,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        let LaneBudgets {
+            non_shared_gas_left,
+            non_payment_gas_left,
+            registered_payment_gas_left,
+        } = budgets;
         if is_system_tx {
             // End-of-block system transactions are limited to a single subblocks metadata
             // transaction.
@@ -735,11 +838,15 @@ impl<'a> TempoBlockExecutor<'a> {
 
         match section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
-                if gas_used > non_shared_gas_left
-                    || (!is_payment && gas_used > non_payment_gas_left)
-                {
+                let lane_gas_left = match lane {
+                    TxLane::General => non_payment_gas_left,
+                    TxLane::Payment => u64::MAX,
+                    TxLane::RegisteredPayment => registered_payment_gas_left,
+                };
+                if gas_used > non_shared_gas_left || gas_used > lane_gas_left {
                     // Historical blocks can use the gas incentive section after
-                    // exhausting the non-shared or general gas budget.
+                    // exhausting the non-shared or general gas budget. From T4 the section
+                    // has no gas, so a transaction past its lane's budget fails the block.
                     Ok(BlockSection::GasIncentive)
                 } else {
                     Ok(BlockSection::NonShared)
@@ -760,7 +867,7 @@ impl<'a> TempoBlockExecutor<'a> {
         &mut self,
         next_section: BlockSection,
         block_gas_used: u64,
-        is_payment: bool,
+        lane: TxLane,
         execution_context: ExecutionContext,
     ) {
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
@@ -773,8 +880,12 @@ impl<'a> TempoBlockExecutor<'a> {
             }
             BlockSection::NonShared => {
                 self.non_shared_gas_left -= block_gas_used;
-                if !is_payment {
-                    self.non_payment_gas_left -= block_gas_used;
+                match lane {
+                    TxLane::General => self.non_payment_gas_left -= block_gas_used,
+                    TxLane::Payment => {}
+                    TxLane::RegisteredPayment => {
+                        self.registered_payment_gas_left -= block_gas_used;
+                    }
                 }
             }
             BlockSection::GasIncentive => {
@@ -884,6 +995,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
         }
         apply_t16_state_changes(&mut self.inner)?;
+        apply_t17_state_changes(&mut self.inner)?;
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
@@ -917,7 +1029,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
-        let is_payment = self.is_payment(original);
+        let lane = self.tx_lane(original)?;
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
@@ -932,14 +1044,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // Reject before the result is observed; `commit_transaction` derives the section again
         // from the committing executor's state.
-        self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
+        self.validate_tx(tx_hash, is_system_tx, lane, block_gas_used)?;
         Ok(TempoTxResult {
             inner,
             tx_type,
             tx_hash,
             execution_context,
             is_system_tx,
-            is_payment,
+            lane,
             block_gas_used,
         })
     }
@@ -954,16 +1066,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             tx_hash,
             execution_context,
             is_system_tx,
-            is_payment,
+            lane,
             block_gas_used,
         } = output;
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
+        let next_section = self.validate_tx(tx_hash, is_system_tx, lane, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
-        self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+        self.record_committed_tx(next_section, block_gas_used, lane, execution_context);
 
         Ok(gas_output)
     }
@@ -980,13 +1092,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let original = recovered.tx();
         let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
-        let is_payment = self.is_payment(original);
+        let lane = self.tx_lane(original)?;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let (section, non_shared_gas_left, non_payment_gas_left) = (
-            self.section,
-            self.non_shared_gas_left,
-            self.non_payment_gas_left,
-        );
+        let (section, budgets) = (self.section, self.lane_budgets());
 
         // Validate the section inside the commit condition so the transaction commits in place
         // instead of detaching its state and reattaching it in `commit_transaction`.
@@ -1001,11 +1109,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 };
                 let next_section = Self::next_section(
                     section,
-                    non_shared_gas_left,
-                    non_payment_gas_left,
+                    budgets,
                     tx_hash,
                     is_system_tx,
-                    is_payment,
+                    lane,
                     block_gas_used,
                 );
                 let commit = if next_section.is_ok() {
@@ -1025,7 +1132,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             };
         };
         if let Some(Ok((next_section, block_gas_used))) = validated {
-            self.record_committed_tx(next_section, block_gas_used, is_payment, execution_context);
+            self.record_committed_tx(next_section, block_gas_used, lane, execution_context);
         }
         Ok(Some(gas_output))
     }
@@ -1974,7 +2081,7 @@ mod tests {
                 0,
             ),
             is_system_tx,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used,
         }
     }
@@ -2110,7 +2217,7 @@ mod tests {
         let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         executor.validate_system_tx(&system_tx).unwrap();
-        let result = executor.validate_tx(*system_tx.tx_hash(), true, false, 0);
+        let result = executor.validate_tx(*system_tx.tx_hash(), true, TxLane::General, 0);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2186,6 +2293,7 @@ mod tests {
                 section,
                 non_shared_gas_left: 11,
                 non_payment_gas_left: 12,
+                registered_payment_gas_left: 17,
                 incentive_gas_used: 13,
                 block_gas_used: 14,
                 cumulative_gas_used: 15,
@@ -2213,6 +2321,7 @@ mod tests {
             },
             non_shared_gas_left: 1,
             non_payment_gas_left: 2,
+            registered_payment_gas_left: 7,
             incentive_gas_used: 3,
             block_gas_used: 4,
             cumulative_gas_used: 5,
@@ -2316,82 +2425,219 @@ mod tests {
 
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
-        let pre_t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-        assert!(pre_t5_executor.is_payment(&tx));
+        let mut pre_t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        assert_eq!(pre_t5_executor.tx_lane(&tx).unwrap(), TxLane::Payment);
 
         let chainspec = DEV.clone();
         let mut db = InMemoryDB::default();
-        let t5_executor = TestExecutorBuilder::default()
+        let mut t5_executor = TestExecutorBuilder::default()
             .with_spec(TempoHardfork::T5)
             .build(&mut db, &chainspec);
-        assert!(!t5_executor.is_payment(&tx));
+        assert_eq!(t5_executor.tx_lane(&tx).unwrap(), TxLane::General);
+    }
+
+    /// A program instance registered with the payment call registry (TIP-1180) whose
+    /// `0x01020304` selector takes one static argument with a 1,500,000 gas cap, active from
+    /// block 1, and the registry state holding it.
+    fn registered_program() -> (Address, InMemoryDB) {
+        use tempo_precompiles::{
+            PAYMENT_CALL_REGISTRY_ADDRESS,
+            payment_call_registry::{IPaymentCallRegistry, PaymentCallRegistry},
+            validator_config_v2::ValidatorConfigV2,
+        };
+
+        let program = Address::repeat_byte(0x52);
+        let governance = Address::repeat_byte(0xAA);
+        // PUSH20 <immutable> POP STOP
+        let code = |immutable: u8| {
+            let mut code = vec![0x73];
+            code.extend([immutable; 20]);
+            code.extend([0x50, 0x00]);
+            code
+        };
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T17);
+        storage.set_block_number(0);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            ValidatorConfigV2::new().initialize(governance)?;
+            // Genesis overrides: a one-second timelock and a one-block activation delay.
+            StorageCtx.sstore(
+                PAYMENT_CALL_REGISTRY_ADDRESS,
+                U256::from(1),
+                U256::from(1u64) | (U256::from(1u64) << 64),
+            )?;
+            let mut registry = PaymentCallRegistry::new();
+            let id = registry.propose_template(
+                governance,
+                IPaymentCallRegistry::proposeTemplateCall {
+                    code: code(0).into(),
+                    ranges: vec![IPaymentCallRegistry::CodeRange {
+                        offset: 1,
+                        length: 20,
+                    }],
+                    selectors: vec![IPaymentCallRegistry::PaymentSelector {
+                        selector: [1, 2, 3, 4].into(),
+                        calldataLength: 36,
+                        gasCap: 1_500_000,
+                    }],
+                },
+            )?;
+            let now = StorageCtx.timestamp();
+            StorageCtx.set_timestamp(now + U256::from(1));
+            registry.activate_template(governance, id)?;
+            StorageCtx.set_code(program, code(0x77).into())?;
+            registry.register_instance(program)?;
+            Ok(())
+        })
+        .unwrap();
+        let mut db = InMemoryDB::default();
+        for (address, slot, value) in storage.into_storage() {
+            db.insert_account_storage(&address, &slot, &value);
+        }
+        (program, db)
+    }
+
+    fn tip20_transfer_tx() -> TempoTxEnvelope {
+        let input = tempo_contracts::precompiles::ITIP20::transferCall {
+            to: Address::repeat_byte(0x01),
+            amount: U256::ONE,
+        }
+        .abi_encode();
+        program_call(
+            tempo_contracts::precompiles::PATH_USD_ADDRESS,
+            input,
+            100_000,
+        )
+    }
+
+    fn program_call(program: Address, input: Vec<u8>, gas_limit: u64) -> TempoTxEnvelope {
+        TempoTxEnvelope::Legacy(
+            TxLegacy {
+                chain_id: Some(1),
+                gas_limit,
+                to: TxKind::Call(program),
+                input: input.into(),
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature()),
+        )
     }
 
     #[test]
-    fn test_is_payment_admits_payment_lane_calls_from_t16() {
-        let program = Address::repeat_byte(0x52);
-        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
-            "config": {
-                "chainId": 1,
-                "t1Time": 0,
-                "paymentLaneCalls": [{ "to": program, "selectors": ["0x01020304"] }]
-            },
-            "alloc": {}
-        }))
-        .unwrap();
-        let chainspec = std::sync::Arc::new(TempoChainSpec::from_genesis(genesis));
-        let tx = |input: Vec<u8>| {
-            TempoTxEnvelope::Legacy(
-                TxLegacy {
-                    chain_id: Some(1),
-                    gas_limit: 1_200_000,
-                    to: TxKind::Call(program),
-                    input: input.into(),
-                    ..Default::default()
-                }
-                .into_signed(Signature::test_signature()),
-            )
-        };
-        let listed = tx(vec![1, 2, 3, 4]);
-        let unlisted = tx(vec![1, 2, 3, 5]);
+    fn test_registered_payments_classified_from_t17() {
+        let (program, mut db) = registered_program();
+        let chainspec = DEV.clone();
+        let mut call = vec![1, 2, 3, 4];
+        call.extend([0u8; 32]);
+        let registered = program_call(program, call.clone(), 1_500_000);
+        let over_cap = program_call(program, call.clone(), 1_500_001);
+        let mut long = call;
+        long.push(0);
+        let wrong_length = program_call(program, long, 1_000_000);
+        let transfer = tip20_transfer_tx();
 
-        // Gas used past the general lane's remaining gas leaves the lane only for a general
-        // transaction; a payment counts toward the block alone.
-        let general_gas_limit = 1_000_000;
-        let gas_used = 1_100_000;
-        for (spec, listed_is_payment) in [(TempoHardfork::T15, false), (TempoHardfork::T16, true)] {
-            let mut db = InMemoryDB::default();
-            let executor = TestExecutorBuilder::default()
+        for (spec, block, expected) in [
+            (TempoHardfork::T16, 1, TxLane::General),
+            // The instance activates at block 1.
+            (TempoHardfork::T17, 0, TxLane::General),
+            (TempoHardfork::T17, 1, TxLane::RegisteredPayment),
+        ] {
+            let mut executor = TestExecutorBuilder::default()
                 .with_spec(spec)
-                .with_general_gas_limit(general_gas_limit)
+                .with_block_number(block)
                 .build(&mut db, &chainspec);
-            assert_eq!(executor.is_payment(&listed), listed_is_payment);
-            assert!(!executor.is_payment(&unlisted));
-
-            let section = |tx: &TempoTxEnvelope| {
-                executor
-                    .validate_tx(*tx.tx_hash(), false, executor.is_payment(tx), gas_used)
-                    .unwrap()
-            };
-            let listed_section = if listed_is_payment {
-                BlockSection::NonShared
-            } else {
-                BlockSection::GasIncentive
-            };
-            assert_eq!(section(&listed), listed_section);
-            assert_eq!(section(&unlisted), BlockSection::GasIncentive);
+            assert_eq!(
+                executor.tx_lane(&registered).unwrap(),
+                expected,
+                "{spec:?} block {block}"
+            );
+            assert_eq!(executor.tx_lane(&over_cap).unwrap(), TxLane::General);
+            assert_eq!(executor.tx_lane(&wrong_length).unwrap(), TxLane::General);
+            assert_eq!(executor.tx_lane(&transfer).unwrap(), TxLane::Payment);
         }
+
+        // Without registry state nothing is registered.
+        let mut empty = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T17)
+            .build(&mut empty, &chainspec);
+        assert_eq!(executor.payment_call_registry_version().unwrap(), 0);
+        assert_eq!(executor.tx_lane(&registered).unwrap(), TxLane::General);
+    }
+
+    #[test]
+    fn test_registered_payments_use_their_own_budget_from_t17() {
+        let (program, mut db) = registered_program();
+        let chainspec = DEV.clone();
+        let mut call = vec![1, 2, 3, 4];
+        call.extend([0u8; 32]);
+        let registered = program_call(program, call, 1_500_000);
+        let transfer = tip20_transfer_tx();
+        let general = create_legacy_tx();
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T17)
+            .with_general_gas_limit(1_000_000)
+            .build(&mut db, &chainspec);
+        // Half the 30M block gas limit.
+        assert_eq!(executor.registered_payment_gas_left, 15_000_000);
+        let lane = executor.tx_lane(&registered).unwrap();
+        assert_eq!(lane, TxLane::RegisteredPayment);
+
+        // Past the general lane's remaining gas, a registered payment still fits its budget.
+        let section = |executor: &TempoBlockExecutor<'_>, tx: &TempoTxEnvelope, lane, gas_used| {
+            executor
+                .validate_tx(*tx.tx_hash(), false, lane, gas_used)
+                .unwrap()
+        };
+        assert_eq!(
+            section(&executor, &registered, lane, 1_100_000),
+            BlockSection::NonShared
+        );
+        assert_eq!(
+            section(&executor, &general, TxLane::General, 1_100_000),
+            BlockSection::GasIncentive
+        );
+
+        // It counts toward its budget and the block, not the general lane.
+        executor.record_committed_tx(
+            BlockSection::NonShared,
+            1_100_000,
+            lane,
+            ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
+        );
+        assert_eq!(executor.registered_payment_gas_left, 13_900_000);
+        assert_eq!(executor.non_payment_gas_left, 1_000_000);
+
+        // Past its own budget it leaves the non-shared section, which from T4 fails the block.
+        executor.registered_payment_gas_left = 1_000_000;
+        assert_eq!(
+            section(&executor, &registered, lane, 1_000_001),
+            BlockSection::GasIncentive
+        );
+        assert_eq!(
+            section(&executor, &registered, lane, 1_000_000),
+            BlockSection::NonShared
+        );
+        // Plain payments are not limited by it.
+        executor.registered_payment_gas_left = 0;
+        assert_eq!(
+            section(&executor, &transfer, TxLane::Payment, 5_000_000),
+            BlockSection::NonShared
+        );
     }
 
     #[test]
     fn test_validate_tx() {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
-        let executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
+        let lane = executor.tx_lane(&tx).unwrap();
+        let result = executor.validate_tx(*tx.tx_hash(), false, lane, 21_000);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -2448,7 +2694,7 @@ mod tests {
         let mut db = InMemoryDB::default();
 
         // Set section to System
-        let executor = TestExecutorBuilder::default()
+        let mut executor = TestExecutorBuilder::default()
             .with_section(BlockSection::System {
                 seen_subblocks_signatures: false,
             })
@@ -2456,7 +2702,8 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
+        let lane = executor.tx_lane(&tx).unwrap();
+        let result = executor.validate_tx(*tx.tx_hash(), false, lane, 21_000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2496,7 +2743,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 21000,
         };
 
@@ -2639,7 +2886,7 @@ mod tests {
                 tx_type: TempoTxType::Legacy,
                 tx_hash: B256::ZERO,
                 is_system_tx: false,
-                is_payment: false,
+                lane: TxLane::General,
                 block_gas_used: 21_000,
             })
             .unwrap();
@@ -2765,7 +3012,7 @@ mod tests {
                         0,
                     ),
                     is_system_tx: false,
-                    is_payment: false,
+                    lane: TxLane::General,
                     block_gas_used: 21_000,
                 })
                 .unwrap();
@@ -2811,7 +3058,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 21000,
         };
 
@@ -2853,7 +3100,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 21000,
         };
         executor.commit_transaction(output1).unwrap();
@@ -2879,7 +3126,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 50000,
         };
         executor.commit_transaction(output2).unwrap();
@@ -2923,7 +3170,7 @@ mod tests {
                     0,
                 ),
                 is_system_tx: false,
-                is_payment: false,
+                lane: TxLane::General,
                 block_gas_used: 21000,
             })
             .unwrap();
@@ -2966,7 +3213,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 50_000,
         };
         executor.commit_transaction(output).unwrap();
@@ -3015,7 +3262,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 200_000,
         };
         executor.commit_transaction(output).unwrap();
@@ -3068,7 +3315,7 @@ mod tests {
                 0,
             ),
             is_system_tx: false,
-            is_payment: false,
+            lane: TxLane::General,
             block_gas_used: 200_000,
         };
         executor.commit_transaction(output).unwrap();
@@ -3264,7 +3511,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            for fork in ["t14Time", "t15Time", "t16Time"] {
+            for fork in ["t14Time", "t15Time", "t16Time", "t17Time"] {
                 genesis
                     .config
                     .extra_fields
@@ -3349,6 +3596,10 @@ mod tests {
             .config
             .extra_fields
             .insert("t16Time".into(), serde_json::Value::Null);
+        genesis
+            .config
+            .extra_fields
+            .insert("t17Time".into(), serde_json::Value::Null);
         for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
             genesis
                 .config
@@ -3414,6 +3665,10 @@ mod tests {
             .config
             .extra_fields
             .insert("t16Time".into(), serde_json::Value::Null);
+        genesis
+            .config
+            .extra_fields
+            .insert("t17Time".into(), serde_json::Value::Null);
         let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()
@@ -3604,7 +3859,7 @@ mod tests {
                     0,
                 ),
                 is_system_tx: false,
-                is_payment: false,
+                lane: TxLane::General,
                 block_gas_used: regular_gas,
             })
             .unwrap();
@@ -3654,7 +3909,7 @@ mod tests {
                     0,
                 ),
                 is_system_tx: false,
-                is_payment: false,
+                lane: TxLane::General,
                 block_gas_used: 100_000,
             })
             .unwrap();
@@ -3705,7 +3960,7 @@ mod tests {
                     0,
                 ),
                 is_system_tx: false,
-                is_payment: false,
+                lane: TxLane::General,
                 block_gas_used: cumulative,
             })
             .unwrap();

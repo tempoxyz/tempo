@@ -19,6 +19,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
+    payment_call_registry::{PaymentCallRegistry, RegisteredClassification},
     storage::{
         ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
         StorageActions, StorageCtx, account_config_commitment,
@@ -306,6 +307,45 @@ pub trait TempoStateAccess<M = ()> {
                 )) => Ok(None),
                 Err(err) => Err(err),
             }
+        })
+    }
+
+    /// Returns the payment call registry's version (TIP-1180): zero before T17 and while the
+    /// registry was never changed.
+    fn payment_call_registry_version(&mut self, spec: TempoHardfork) -> TempoResult<u64>
+    where
+        Self: Sized,
+    {
+        if !spec.is_t17() {
+            return Ok(0);
+        }
+        self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+            PaymentCallRegistry::new().version()
+        })
+    }
+
+    /// Classifies `tx` against the payment call registry (TIP-1180) for the block numbered
+    /// `block`. Before T17 no transaction is a registered payment.
+    ///
+    /// Reads bypass the journal; registry changes take effect at later blocks only, so reading
+    /// before or after earlier transactions of the same block gives the same answer.
+    fn classify_registered_payment(
+        &mut self,
+        spec: TempoHardfork,
+        tx: &TempoTxEnvelope,
+        block: u64,
+    ) -> TempoResult<RegisteredClassification>
+    where
+        Self: Sized,
+    {
+        if !spec.is_t17() {
+            return Ok(RegisteredClassification {
+                is_registered_payment: false,
+                changes_at: u64::MAX,
+            });
+        }
+        self.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
+            PaymentCallRegistry::new().classify(tx, block)
         })
     }
 

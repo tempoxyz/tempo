@@ -18,6 +18,7 @@ mod handler;
 mod instructions;
 #[cfg(feature = "jit")]
 pub mod jit;
+mod lane;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
@@ -31,7 +32,7 @@ pub use action_replay::{
 pub use assemble::TempoBlockAssembler;
 pub use block::{
     ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult, apply_t16_state_changes,
-    deploy_precompile_at_boundary,
+    apply_t17_state_changes, deploy_precompile_at_boundary,
 };
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -45,6 +46,7 @@ pub use handler::{
     TempoTxResultExt, build_tempo_evm, configurable_account::account_access_gas,
     tempo_execution_config, tempo_opcode_config, tempo_tx_registry,
 };
+pub use lane::{TxLane, is_stateless_payment};
 pub use transaction::{ExecutionContext, RecoveredTxEnvelope, TempoAaTx, TempoEvmTx, TempoTxEnv};
 pub use transaction_error::{FeePaymentError, TempoInvalidTransaction};
 #[cfg(feature = "genesis")]

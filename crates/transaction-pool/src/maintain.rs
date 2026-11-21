@@ -21,10 +21,11 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool, ValidPoolTransaction};
 use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::VecDeque, iter, sync::Arc, time::Instant};
-use tempo_chainspec::hardfork::TempoHardforks;
+use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_contracts::precompiles::{
     IAccountKeychain, IFeeManager, IReservationCore, ITIP20, ITIP403Registry,
 };
+use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, RESERVATIONS_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     TIP403_REGISTRY_ADDRESS,
@@ -588,6 +589,76 @@ impl RevalidationQueue {
     }
 }
 
+/// Keeps pooled transactions' registered payment classifications (TIP-1180) current.
+///
+/// The pool caches each classification keyed by the payment call registry version. On a new
+/// canonical block this re-classifies every pooled transaction that is not a TIP-1045 payment
+/// when the version changed, or when a block is reached at which a cached classification may
+/// change (an instance or template activation or removal).
+#[derive(Debug)]
+struct RegistryMaintenance {
+    /// Registry version the cached classifications were read at.
+    version: Option<u64>,
+    /// Earliest block at which a cached classification may change without a version change.
+    next_change: u64,
+}
+
+impl Default for RegistryMaintenance {
+    fn default() -> Self {
+        Self {
+            version: None,
+            next_change: u64::MAX,
+        }
+    }
+}
+
+impl RegistryMaintenance {
+    /// Returns the registry version if the cached classifications need refreshing for
+    /// `next_block`.
+    fn due<M>(
+        &self,
+        state: &mut impl TempoStateAccess<M>,
+        spec: TempoHardfork,
+        next_block: u64,
+    ) -> Result<Option<u64>, String> {
+        let version = state
+            .payment_call_registry_version(spec)
+            .map_err(|err| err.to_string())?;
+        Ok((self.version != Some(version) || next_block >= self.next_change).then_some(version))
+    }
+
+    /// Re-classifies every transaction that is not a TIP-1045 payment for `next_block` at
+    /// registry `version`, and returns how many it classified.
+    fn reclassify<'a, M>(
+        &mut self,
+        state: &mut impl TempoStateAccess<M>,
+        spec: TempoHardfork,
+        next_block: u64,
+        version: u64,
+        transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> Result<usize, String> {
+        let mut next_change = u64::MAX;
+        let mut classified = 0;
+        if version != 0 {
+            for tx in transactions {
+                let pooled = &tx.transaction;
+                if pooled.is_payment_v3() {
+                    continue;
+                }
+                let classification = state
+                    .classify_registered_payment(spec, pooled.inner().inner(), next_block)
+                    .map_err(|err| err.to_string())?;
+                pooled.cache_registered_payment(version, next_block, classification);
+                next_change = next_change.min(classification.changes_at);
+                classified += 1;
+            }
+        }
+        self.version = Some(version);
+        self.next_change = next_change;
+        Ok(classified)
+    }
+}
+
 /// Unified maintenance task for the Tempo transaction pool.
 ///
 /// Handles:
@@ -616,6 +687,8 @@ where
     let mut chain_events = pool.client().canonical_state_stream();
 
     let amm_cache = pool.amm_liquidity_cache();
+
+    let mut registry_maintenance = RegistryMaintenance::default();
 
     let mut revalidation_queue = RevalidationQueue::default();
     // The batch being revalidated. The next one starts once it finishes.
@@ -867,6 +940,42 @@ where
 
                 debug!(target: "txpool", count, reason, "Queued transactions for revalidation");
                 revalidate_txs.extend(removed_txs);
+            }
+        }
+
+        // TIP-1180: re-classify registered payments when the payment call registry changed or a
+        // pending activation or removal is reached. Classification only picks the block budget a
+        // transaction counts toward, so nothing is removed from the pool.
+        if spec.is_t17() {
+            let next_block = tip.tip().number() + 1;
+            let result = pool
+                .client()
+                .latest()
+                .map_err(|err| err.to_string())
+                .and_then(|mut state| {
+                    let Some(version) = registry_maintenance.due(&mut state, spec, next_block)?
+                    else {
+                        return Ok(0);
+                    };
+                    let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                    registry_maintenance.reclassify(
+                        &mut state,
+                        spec,
+                        next_block,
+                        version,
+                        all_txs
+                            .iter()
+                            .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                    )
+                });
+            match result {
+                Ok(0) => {}
+                Ok(reclassified) => {
+                    debug!(target: "txpool", reclassified, "Re-classified registered payments");
+                }
+                Err(err) => {
+                    error!(target: "txpool", %err, "Registered payment re-classification failed");
+                }
             }
         }
 
@@ -1684,6 +1793,180 @@ mod tests {
                 updates.validator_token_changes.get(&validator).copied(),
                 Some(token_b),
                 "last-write-wins: second token should overwrite the first"
+            );
+        }
+    }
+
+    mod registry_maintenance {
+        use super::*;
+        use crate::test_utils::{MockProviderStorageExt, create_mock_provider, wrap_valid_tx};
+        use alloy_primitives::{Bytes, U256};
+        use alloy_sol_types::SolCall;
+        use reth_storage_api::StateProviderFactory;
+        use reth_transaction_pool::TransactionOrigin;
+        use tempo_contracts::precompiles::{
+            ITIP20, PATH_USD_ADDRESS, PAYMENT_CALL_REGISTRY_ADDRESS,
+        };
+        use tempo_precompiles::{
+            payment_call_registry::{IPaymentCallRegistry, PaymentCallRegistry},
+            storage::StorageCtx,
+            validator_config_v2::ValidatorConfigV2,
+        };
+        use tempo_primitives::transaction::Call;
+
+        const PROGRAM: Address = Address::repeat_byte(0x52);
+        /// The instance registers at block 0 and activates at block 3.
+        const ACTIVATION: u64 = 3;
+
+        /// Registry state with one template and one instance of it at [`PROGRAM`].
+        fn registry_provider() -> reth_provider::test_utils::MockEthProvider<
+            tempo_primitives::TempoPrimitives,
+            tempo_chainspec::TempoChainSpec,
+        > {
+            let provider = create_mock_provider();
+            provider.setup_storage(TempoHardfork::T17, || {
+                let governance = Address::repeat_byte(0xAA);
+                ValidatorConfigV2::new().initialize(governance).unwrap();
+                // Genesis overrides: a one-second timelock and a three-block activation delay.
+                StorageCtx
+                    .sstore(
+                        PAYMENT_CALL_REGISTRY_ADDRESS,
+                        U256::from(1),
+                        U256::from(1u64) | (U256::from(ACTIVATION) << 64),
+                    )
+                    .unwrap();
+                StorageCtx.set_block_number(0);
+                let code = |immutable: u8| {
+                    let mut code = vec![0x73];
+                    code.extend([immutable; 20]);
+                    code.extend([0x50, 0x00]);
+                    code
+                };
+                let mut registry = PaymentCallRegistry::new();
+                let id = registry
+                    .propose_template(
+                        governance,
+                        IPaymentCallRegistry::proposeTemplateCall {
+                            code: code(0).into(),
+                            ranges: vec![IPaymentCallRegistry::CodeRange {
+                                offset: 1,
+                                length: 20,
+                            }],
+                            selectors: vec![IPaymentCallRegistry::PaymentSelector {
+                                selector: [1, 2, 3, 4].into(),
+                                calldataLength: 4,
+                                gasCap: 1_000_000,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let now = StorageCtx.timestamp();
+                StorageCtx.set_timestamp(now + U256::from(1));
+                registry.activate_template(governance, id).unwrap();
+                StorageCtx.set_code(PROGRAM, code(0x77).into()).unwrap();
+                registry.register_instance(PROGRAM).unwrap();
+            });
+            provider
+        }
+
+        #[test]
+        fn reclassifies_on_activation_and_version_change() {
+            let provider = registry_provider();
+            let spec = TempoHardfork::T17;
+            let tx = Arc::new(wrap_valid_tx(
+                TxBuilder::aa(Address::random())
+                    .calls(vec![Call::new(PROGRAM, Bytes::from_static(&[1, 2, 3, 4]))])
+                    .gas_limit(1_000_000)
+                    .build(),
+                TransactionOrigin::External,
+            ));
+            let transfer_input = ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::ONE,
+            }
+            .abi_encode();
+            let transfer = Arc::new(wrap_valid_tx(
+                TxBuilder::aa(Address::random())
+                    .calls(vec![Call::new(PATH_USD_ADDRESS, transfer_input)])
+                    .build(),
+                TransactionOrigin::External,
+            ));
+            assert!(transfer.transaction.is_payment_v3());
+            let txs = [tx.clone(), transfer];
+            let mut maintenance = RegistryMaintenance::default();
+            let mut state = provider.latest().unwrap();
+
+            // First block seen: classify, before the instance activates.
+            let version = maintenance
+                .due(&mut state, spec, ACTIVATION - 1)
+                .unwrap()
+                .expect("nothing cached yet");
+            assert_eq!(
+                maintenance
+                    .reclassify(&mut state, spec, ACTIVATION - 1, version, &txs)
+                    .unwrap(),
+                1,
+                "only the call that is not a TIP-1045 payment is classified"
+            );
+            assert_eq!(
+                tx.transaction
+                    .cached_registered_payment(version, ACTIVATION - 1),
+                Some(false)
+            );
+            // The cached answer expires at the activation block.
+            assert_eq!(
+                tx.transaction
+                    .cached_registered_payment(version, ACTIVATION),
+                None
+            );
+            assert_eq!(
+                maintenance.due(&mut state, spec, ACTIVATION - 1).unwrap(),
+                None
+            );
+
+            // Reaching the activation re-classifies.
+            assert_eq!(
+                maintenance.due(&mut state, spec, ACTIVATION).unwrap(),
+                Some(version)
+            );
+            maintenance
+                .reclassify(&mut state, spec, ACTIVATION, version, &txs)
+                .unwrap();
+            assert_eq!(
+                tx.transaction
+                    .cached_registered_payment(version, ACTIVATION),
+                Some(true)
+            );
+            assert_eq!(
+                tx.transaction
+                    .cached_registered_payment(version, u64::MAX - 1),
+                Some(true)
+            );
+            assert_eq!(
+                maintenance.due(&mut state, spec, ACTIVATION + 1).unwrap(),
+                None
+            );
+            // A cached answer never serves another registry version.
+            assert_eq!(
+                tx.transaction
+                    .cached_registered_payment(version + 1, ACTIVATION),
+                None
+            );
+
+            // A registry change bumps the version, which re-classifies.
+            provider.setup_storage(spec, || {
+                StorageCtx
+                    .sstore(
+                        PAYMENT_CALL_REGISTRY_ADDRESS,
+                        U256::ZERO,
+                        U256::from(version + 1) | (U256::from(1u64) << 64),
+                    )
+                    .unwrap();
+            });
+            let mut state = provider.latest().unwrap();
+            assert_eq!(
+                maintenance.due(&mut state, spec, ACTIVATION + 1).unwrap(),
+                Some(version + 1)
             );
         }
     }

@@ -104,6 +104,13 @@ impl HashMapStorageProvider {
         self
     }
 
+    /// Returns self with the block environment's epoch length overridden (builder pattern).
+    pub fn with_epoch_length(mut self, epoch_length: u64) -> Self {
+        self.block_env.ext.epoch_length =
+            core::num::NonZeroU64::new(epoch_length).expect("epoch length is non-zero");
+        self
+    }
+
     /// Returns self executing over an EVM of `kind` (builder pattern).
     pub fn with_kind(mut self, kind: TempoEvmKind) -> Self {
         self.kind = kind;
@@ -150,6 +157,21 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         self.with_account_info(address, f)
+    }
+
+    fn with_account_code(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&[u8]),
+    ) -> Result<(), TempoPrecompileError> {
+        let code = self
+            .accounts
+            .get(&address)
+            .and_then(|account| account.code.as_ref())
+            .map(|code| code.original_bytes())
+            .unwrap_or_default();
+        f(&code);
+        Ok(())
     }
 
     fn sstore(

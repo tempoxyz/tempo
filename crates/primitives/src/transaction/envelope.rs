@@ -280,7 +280,7 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
-        self.is_tip1045_payment(|to, input| is_tip1045_call(to, input, 0, false))
+        self.is_payment_with(|to, input| is_tip1045_call(to, input, 0, false))
     }
 
     /// T15+ [TIP-20 payment] (TIP-1045) classification.
@@ -292,25 +292,21 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v3(&self) -> bool {
-        self.is_payment_v3_or(|_, _| false)
-    }
-
-    /// [`is_payment_v3`](Self::is_payment_v3) that also admits every call for which
-    /// `listed(to, input)` holds, under the same transaction-level constraints.
-    ///
-    /// The chain specification supplies `listed` from its payment lane calls.
-    pub fn is_payment_v3_or(&self, listed: impl Fn(&Address, &[u8]) -> bool) -> bool {
-        self.is_tip1045_payment(|to, input| {
+        self.is_payment_with(|to, input| {
             is_tip1045_call(to, input, MAX_PAYMENT_TRAILING_BYTES, true)
-                || to.is_some_and(|to| listed(to, input))
         })
     }
 
-    /// TIP-1045 transaction-level classification: every call satisfies `is_payment_call`, and
-    /// access lists, authorization lists and key authorizations are bounded as TIP-1045 requires.
-    fn is_tip1045_payment(
+    /// TIP-1045 transaction-level classification with a caller-supplied call predicate: every
+    /// call satisfies `is_payment_call`, and access lists, authorization lists and key
+    /// authorizations are bounded as TIP-1045 requires. An AA transaction needs at least one call.
+    ///
+    /// Calls are checked in order and checking stops at the first that fails, so the predicate
+    /// may accumulate state such as gas caps. TIP-1180 classifies registered payment calls
+    /// through it.
+    pub fn is_payment_with(
         &self,
-        is_payment_call: impl Fn(Option<&Address>, &[u8]) -> bool,
+        mut is_payment_call: impl FnMut(Option<&Address>, &[u8]) -> bool,
     ) -> bool {
         match self {
             Self::Legacy(tx) => is_payment_call(tx.tx().to.to(), &tx.tx().input),
@@ -1186,22 +1182,24 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_v3_or_admits_listed_calls() {
+    fn test_payment_with_admits_listed_calls() {
         let program = Address::repeat_byte(0x52);
-        let listed =
-            |to: &Address, input: &[u8]| *to == program && input.starts_with(&[1, 2, 3, 4]);
+        let listed = |to: Option<&Address>, input: &[u8]| {
+            is_tip1045_call(to, input, MAX_PAYMENT_TRAILING_BYTES, true)
+                || (to == Some(&program) && input.starts_with(&[1, 2, 3, 4]))
+        };
         let program_call: Bytes = vec![1, 2, 3, 4, 0xff].into();
 
         for envelope in payment_envelopes_to(program, program_call.clone()) {
             assert!(!envelope.is_payment_v3());
-            assert!(envelope.is_payment_v3_or(listed));
+            assert!(envelope.is_payment_with(listed));
         }
         // Another selector, or another contract, stays general.
         for envelope in payment_envelopes_to(program, vec![1, 2, 3, 5].into()) {
-            assert!(!envelope.is_payment_v3_or(listed));
+            assert!(!envelope.is_payment_with(listed));
         }
         for envelope in payment_envelopes_to(Address::repeat_byte(0x53), program_call.clone()) {
-            assert!(!envelope.is_payment_v3_or(listed));
+            assert!(!envelope.is_payment_with(listed));
         }
         // TIP-1045 payments still qualify.
         let transfer: Bytes = ITIP20::transferCall {
@@ -1211,14 +1209,14 @@ mod tests {
         .abi_encode()
         .into();
         for envelope in payment_envelopes_to(PAYMENT_TKN, transfer.clone()) {
-            assert!(envelope.is_payment_v3_or(listed));
+            assert!(envelope.is_payment_with(listed));
         }
         // Transaction-level constraints apply to listed calls too.
         let access_list = AccessList(vec![Default::default()]);
         for envelope in
             payment_envelopes_with_access_list_to(program, program_call.clone(), access_list)
         {
-            assert!(!envelope.is_payment_v3_or(listed));
+            assert!(!envelope.is_payment_with(listed));
         }
 
         let batch = |calls: Vec<Call>| {
@@ -1235,13 +1233,13 @@ mod tests {
             Call::new(program, program_call.clone()),
             Call::new(PAYMENT_TKN, transfer),
         ]);
-        assert!(mixed.is_payment_v3_or(listed));
+        assert!(mixed.is_payment_with(listed));
         let with_general = batch(vec![
             Call::new(program, program_call),
             Call::new(Address::repeat_byte(0x53), Bytes::new()),
         ]);
-        assert!(!with_general.is_payment_v3_or(listed));
-        assert!(!batch(vec![]).is_payment_v3_or(listed));
+        assert!(!with_general.is_payment_with(listed));
+        assert!(!batch(vec![]).is_payment_with(listed));
     }
 
     #[test]

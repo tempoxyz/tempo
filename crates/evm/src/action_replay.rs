@@ -63,12 +63,8 @@ impl TempoBlockExecutor<'_> {
         } else {
             gas.tx_gas_used()
         };
-        self.validate_tx(
-            *original.tx_hash(),
-            is_system_tx,
-            self.is_payment(original),
-            block_gas_used,
-        )?;
+        let lane = self.tx_lane(original)?;
+        self.validate_tx(*original.tx_hash(), is_system_tx, lane, block_gas_used)?;
 
         let result = TempoTxResult::new_precomputed(
             original,
@@ -76,7 +72,7 @@ impl TempoBlockExecutor<'_> {
             result,
             state,
             is_system_tx,
-            self.is_payment(original),
+            lane,
             block_gas_used,
         );
         result_closure(&result);

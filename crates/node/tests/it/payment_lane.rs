@@ -811,27 +811,24 @@ async fn test_payment_lane_trailing_bytes_from_t15() -> eyre::Result<()> {
     Ok(())
 }
 
-/// From T16 the chain's payment lane calls go in the payment lane, and the builder admits a
-/// general-lane transaction whose gas limit passes the lane's remaining gas when its gas used fits.
+/// From T16 the builder admits a general-lane transaction whose gas limit passes the lane's
+/// remaining gas when its gas used fits.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_payment_lane_calls_and_gas_used_admission_from_t16() -> eyre::Result<()> {
+async fn test_gas_used_admission_from_t16() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     const GAS_LIMIT: u64 = 1_000_000;
-    const LISTED: Address = Address::repeat_byte(0x52);
+    const TARGET: Address = Address::repeat_byte(0x52);
 
-    // (fork, general gas limit, listed call included, unlisted call included)
-    for (fork, general_gas_limit, listed_included, unlisted_included) in [
-        (TempoHardfork::T15, GAS_LIMIT / 2, false, false),
-        (TempoHardfork::T16, GAS_LIMIT / 2, true, true),
-        // Below the gas of any transaction the general lane admits nothing; the listed call is a
-        // payment.
-        (TempoHardfork::T16, 20_000, true, false),
+    // (fork, general gas limit, call included)
+    for (fork, general_gas_limit, included) in [
+        (TempoHardfork::T15, GAS_LIMIT / 2, false),
+        (TempoHardfork::T16, GAS_LIMIT / 2, true),
+        // Below the gas of any transaction the general lane admits nothing.
+        (TempoHardfork::T16, 20_000, false),
     ] {
         let mut genesis: serde_json::Value = serde_json::from_str(&make_genesis_at(fork))?;
         genesis["config"]["generalGasLimit"] = serde_json::json!(general_gas_limit);
-        genesis["config"]["paymentLaneCalls"] =
-            serde_json::json!([{ "to": LISTED, "selectors": ["0x01020304"] }]);
         let setup = TestNodeBuilder::new()
             .with_genesis(serde_json::to_string(&genesis)?)
             .build_http_only()
@@ -841,33 +838,28 @@ async fn test_payment_lane_calls_and_gas_used_admission_from_t16() -> eyre::Resu
             .wallet(test_signer(0))
             .connect_http(setup.http_url.clone());
         let path_usd = ITIP20::new(PATH_USD_ADDRESS, funder.clone());
-        let mut senders = Vec::new();
-        for _ in 0..2 {
-            let signer = PrivateKeySigner::random();
-            path_usd
-                .transfer(signer.address(), U256::from(10_000_000u64))
-                .gas(GAS_LIMIT)
-                .send()
-                .await?
-                .successful_receipt()
-                .await
-                .wrap_err("funding transfer is a payment")?;
-            senders.push(
-                ProviderBuilder::new()
-                    .wallet(signer)
-                    .connect_http(setup.http_url.clone()),
-            );
-        }
+        let signer = PrivateKeySigner::random();
+        path_usd
+            .transfer(signer.address(), U256::from(10_000_000u64))
+            .gas(GAS_LIMIT)
+            .send()
+            .await?
+            .successful_receipt()
+            .await
+            .wrap_err("funding transfer is a payment")?;
+        let sender = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(setup.http_url.clone());
 
-        // Both calls carry a gas limit past the general lane's limit.
-        let call = |selector: [u8; 4]| {
-            TransactionRequest::default()
-                .to(LISTED)
-                .gas_limit(GAS_LIMIT)
-                .input(selector.to_vec().into())
-        };
-        let listed = senders[0].send_transaction(call([1, 2, 3, 4])).await?;
-        let unlisted = senders[1].send_transaction(call([1, 2, 3, 5])).await?;
+        // The call's gas limit passes the general lane's limit; its gas used does not.
+        let call = sender
+            .send_transaction(
+                TransactionRequest::default()
+                    .to(TARGET)
+                    .gas_limit(GAS_LIMIT)
+                    .input(vec![1, 2, 3, 4].into()),
+            )
+            .await?;
 
         let canonical = path_usd
             .transfer(Address::random(), U256::ONE)
@@ -881,21 +873,264 @@ async fn test_payment_lane_calls_and_gas_used_admission_from_t16() -> eyre::Resu
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
 
-        for (name, hash, included) in [
-            ("listed", *listed.tx_hash(), listed_included),
-            ("unlisted", *unlisted.tx_hash(), unlisted_included),
-        ] {
-            let receipt = funder.get_transaction_receipt(hash).await?;
-            assert_eq!(
-                receipt.is_some(),
-                included,
-                "{name} call at {fork:?} with general gas limit {general_gas_limit}"
-            );
-            if let Some(receipt) = receipt {
-                assert!(receipt.status(), "{name} call succeeds");
-            }
-        }
+        let receipt = funder.get_transaction_receipt(*call.tx_hash()).await?;
+        assert_eq!(
+            receipt.is_some(),
+            included,
+            "call at {fork:?} with general gas limit {general_gas_limit}"
+        );
     }
+
+    Ok(())
+}
+
+/// Runtime code of a payment program for the registry test: `PUSH20 <immutable> POP`, then a loop
+/// that burns gas until 32,768 is left. Every call uses about its gas limit.
+fn program_runtime(immutable: u8) -> Vec<u8> {
+    let mut code = vec![0x73];
+    code.extend([immutable; 20]);
+    code.push(0x50);
+    // JUMPDEST GAS PUSH3 0x008000 LT PUSH1 22 JUMPI STOP
+    code.extend([
+        0x5b, 0x5a, 0x62, 0x00, 0x80, 0x00, 0x10, 0x60, 0x16, 0x57, 0x00,
+    ]);
+    code
+}
+
+/// Creation code returning [`program_runtime`].
+fn program_initcode(immutable: u8) -> Vec<u8> {
+    let runtime = program_runtime(immutable);
+    let mut code = vec![
+        0x60,
+        runtime.len() as u8,
+        0x80,
+        0x60,
+        0x0b,
+        0x60,
+        0x00,
+        0x39,
+        0x60,
+        0x00,
+        0xf3,
+    ];
+    code.extend(runtime);
+    code
+}
+
+/// From T17 a template and instance registered with the payment call registry (TIP-1180) put the
+/// instance's calls in the payment lane once the instance activates, within the registered payment
+/// budget of half the block, while TIP-20 payments keep the rest. Removal returns its calls to the
+/// general lane from the next block.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_registered_payment_calls_from_t17() -> eyre::Result<()> {
+    use alloy::network::TransactionBuilder;
+    use tempo_contracts::precompiles::{IPaymentCallRegistry, PAYMENT_CALL_REGISTRY_ADDRESS};
+
+    reth_tracing::init_test_tracing();
+
+    const BLOCK_GAS_LIMIT: u64 = 20_000_000;
+    const GENERAL_GAS_LIMIT: u64 = 5_000_000;
+    // Uses about 5.97M: more than the general lane, and two exceed the 10M registered budget,
+    // though three fit the block.
+    const PROGRAM_GAS: u64 = 6_000_000;
+    const SELECTOR: [u8; 4] = [1, 2, 3, 4];
+    const ACTIVATION_DELAY: u64 = 3;
+
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(&make_genesis_at(TempoHardfork::T17))?;
+    genesis["gasLimit"] = serde_json::json!(format!("{BLOCK_GAS_LIMIT:#x}"));
+    genesis["config"]["generalGasLimit"] = serde_json::json!(GENERAL_GAS_LIMIT);
+    // Genesis-only delay overrides: a one-second timelock and a three-block activation delay.
+    let overrides = U256::from(1u64) | (U256::from(ACTIVATION_DELAY) << 64);
+    genesis["alloc"][PAYMENT_CALL_REGISTRY_ADDRESS.to_string()] = serde_json::json!({
+        "balance": "0x0",
+        "code": "0xef",
+        "storage": { format!("{:#066x}", U256::from(1)): format!("{overrides:#066x}") },
+    });
+    let first_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_block_time(std::time::Duration::from_millis(500))
+        .with_block_timestamps_from(first_timestamp)
+        .build_http_only()
+        .await?;
+
+    // The ValidatorConfigV2 owner governs the registry.
+    let governance = ProviderBuilder::new()
+        .wallet(test_signer(0))
+        .connect_http(setup.http_url.clone());
+    let registry = IPaymentCallRegistry::new(PAYMENT_CALL_REGISTRY_ADDRESS, governance.clone());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, governance.clone());
+
+    let mut senders = Vec::new();
+    // 0: before activation, 1-3: within the budget, 4: after removal, 5: registers, 6-10: transfers.
+    for _ in 0..11 {
+        let signer = PrivateKeySigner::random();
+        path_usd
+            .transfer(signer.address(), U256::from(100_000_000u64))
+            .gas(1_000_000)
+            .send()
+            .await?
+            .successful_receipt()
+            .await?;
+        senders.push(
+            ProviderBuilder::new()
+                .wallet(signer)
+                .connect_http(setup.http_url.clone()),
+        );
+    }
+
+    let program = governance
+        .send_transaction(
+            TransactionRequest::default()
+                .with_deploy_code(program_initcode(0x77))
+                .gas_limit(1_000_000),
+        )
+        .await?
+        .successful_receipt()
+        .await?
+        .contract_address
+        .expect("deployment has an address");
+    assert_eq!(
+        governance.get_code_at(program).await?.to_vec(),
+        program_runtime(0x77)
+    );
+
+    registry
+        .proposeTemplate(
+            program_runtime(0).into(),
+            vec![IPaymentCallRegistry::CodeRange {
+                offset: 1,
+                length: 20,
+            }],
+            vec![IPaymentCallRegistry::PaymentSelector {
+                selector: SELECTOR.into(),
+                calldataLength: 36,
+                gasCap: PROGRAM_GAS,
+            }],
+        )
+        .gas(GENERAL_GAS_LIMIT)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("template proposal")?;
+    let template_id = registry.templateCount().call().await?;
+    // Each block advances the timestamp by a second, past the one-second timelock.
+    registry
+        .activateTemplate(template_id)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("template activation")?;
+
+    // Anyone registers the instance.
+    let registered = IPaymentCallRegistry::new(PAYMENT_CALL_REGISTRY_ADDRESS, senders[5].clone())
+        .registerInstance(program)
+        .gas(GENERAL_GAS_LIMIT)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("instance registration")?;
+    let activation_block = registry.getInstance(program).call().await?.activationBlock;
+    assert_eq!(
+        activation_block,
+        registered.block_number.expect("mined receipt has a block") + ACTIVATION_DELAY
+    );
+
+    let call = |sender: usize| {
+        let mut input = SELECTOR.to_vec();
+        input.extend([0u8; 32]);
+        senders[sender].send_transaction(
+            TransactionRequest::default()
+                .to(program)
+                .gas_limit(PROGRAM_GAS)
+                .input(input.into()),
+        )
+    };
+
+    // Before activation the call is general and its gas used does not fit the general lane.
+    let early = call(0).await?;
+    while governance.get_block_number().await? < activation_block - 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        governance
+            .get_transaction_receipt(*early.tx_hash())
+            .await?
+            .is_none(),
+        "the call stays in the pool until the instance activates"
+    );
+    let early = early.successful_receipt().await?;
+    assert!(early.block_number.expect("mined receipt has a block") >= activation_block);
+
+    // Three registered calls and five transfers sent together: the transfers fit the first block,
+    // and the registered budget takes one call per block.
+    let start = governance.get_block_number().await?;
+    while governance.get_block_number().await? == start {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let calls = join_all((1..4).map(call)).await;
+    let tokens: Vec<_> = (6..11)
+        .map(|sender| ITIP20::new(PATH_USD_ADDRESS, senders[sender].clone()))
+        .collect();
+    let transfer_calls: Vec<_> = tokens
+        .iter()
+        .map(|token| token.transfer(Address::random(), U256::ONE).gas(1_000_000))
+        .collect();
+    let transfers = join_all(transfer_calls.iter().map(|call| call.send())).await;
+    let mut call_blocks = Vec::new();
+    for pending in calls {
+        let receipt = pending?.successful_receipt().await?;
+        call_blocks.push(receipt.block_number.expect("mined receipt has a block"));
+    }
+    let mut transfer_blocks = Vec::new();
+    for pending in transfers {
+        let receipt = pending?.successful_receipt().await?;
+        transfer_blocks.push(receipt.block_number.expect("mined receipt has a block"));
+    }
+    call_blocks.sort_unstable();
+    call_blocks.dedup();
+    assert_eq!(
+        call_blocks.len(),
+        3,
+        "one registered call per block: {call_blocks:?}"
+    );
+    assert!(
+        transfer_blocks.iter().all(|block| *block <= call_blocks[0]),
+        "transfers are not held back by registered calls: {transfer_blocks:?} vs {call_blocks:?}"
+    );
+
+    // Removal takes effect from the next block: later calls are general again.
+    let removed = registry
+        .removeInstance(program)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("instance removal")?;
+    let after_removal = call(4).await?;
+    let removed_block = removed.block_number.expect("mined receipt has a block");
+    while governance.get_block_number().await? < removed_block + 4 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        governance
+            .get_transaction_receipt(*after_removal.tx_hash())
+            .await?
+            .is_none(),
+        "calls to a removed instance are general"
+    );
+    assert_eq!(
+        registry.getInstance(program).call().await?.removedAtBlock,
+        removed_block + 1
+    );
 
     Ok(())
 }

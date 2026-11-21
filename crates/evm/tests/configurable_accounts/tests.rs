@@ -380,6 +380,10 @@ fn activation_config() -> TempoEvmConfig {
         .config
         .extra_fields
         .insert("t16Time".into(), serde_json::Value::Null);
+    genesis
+        .config
+        .extra_fields
+        .insert("t17Time".into(), serde_json::Value::Null);
     TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)))
 }
 
