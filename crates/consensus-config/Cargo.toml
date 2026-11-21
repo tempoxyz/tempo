@@ -23,10 +23,10 @@ commonware-math.workspace = true
 const-hex.workspace = true
 rand_core.workspace = true
 secrecy.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 commonware-cryptography = { workspace = true, features = ["std"] }
 commonware-utils.workspace = true
 rand.workspace = true
-tempfile.workspace = true

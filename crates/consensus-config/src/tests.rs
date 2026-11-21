@@ -223,3 +223,59 @@ fn signing_share_roundtrip() {
         SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn signing_share_write_to_file_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let signing_share = SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let new_path = dir.path().join("signing.share");
+    signing_share.write_to_file(&new_path).unwrap();
+    let mode = std::fs::metadata(&new_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(
+        SigningShare::read_from_file(&new_path).unwrap(),
+        signing_share
+    );
+
+    let existing_path = dir.path().join("existing.share");
+    std::fs::write(
+        &existing_path,
+        "stale contents that are longer than the share",
+    )
+    .unwrap();
+    std::fs::set_permissions(&existing_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    signing_share.write_to_file(&existing_path).unwrap();
+    let mode = std::fs::metadata(&existing_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(
+        SigningShare::read_from_file(&existing_path).unwrap(),
+        signing_share
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_share_write_to_file_replaces_existing_file() {
+    use std::io::Read as _;
+
+    let signing_share = SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("signing.share");
+    std::fs::write(&path, "old contents").unwrap();
+
+    let mut stale_reader = std::fs::File::open(&path).unwrap();
+    signing_share.write_to_file(&path).unwrap();
+
+    let mut stale = String::new();
+    stale_reader.read_to_string(&mut stale).unwrap();
+    assert_eq!(stale, "old contents");
+    assert_eq!(SigningShare::read_from_file(&path).unwrap(), signing_share);
+}

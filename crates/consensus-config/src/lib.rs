@@ -263,8 +263,42 @@ impl SigningShare {
         Ok(Self { inner })
     }
 
+    /// Writes the signing share to `path` as hex, readable and writable only
+    /// by the owner on unix.
+    ///
+    /// The share is written to a new owner-only temporary file next to `path`
+    /// and renamed over it, so an existing file is replaced rather than
+    /// rewritten in place: descriptors opened on the old file never see the
+    /// new share, and a failure before the rename leaves the old file intact.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        use std::io::Write as _;
+
+        let path = path.as_ref();
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+
+        // `tempfile` creates the file with mode 0o600 on unix.
+        let mut file =
+            tempfile::NamedTempFile::new_in(dir).map_err(SigningShareErrorKind::Write)?;
+        file.write_all(self.to_string().as_bytes())
+            .map_err(SigningShareErrorKind::Write)?;
+        file.as_file()
+            .sync_all()
+            .map_err(SigningShareErrorKind::Write)?;
+        // Open the directory before replacing the target, so a failure to open
+        // it leaves the old file intact.
+        #[cfg(unix)]
+        let dir = std::fs::File::open(dir).map_err(SigningShareErrorKind::Write)?;
+
+        file.persist(path)
+            .map_err(|err| SigningShareErrorKind::Write(err.error))?;
+
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        dir.sync_all().map_err(SigningShareErrorKind::Write)?;
+
         Ok(())
     }
 }
