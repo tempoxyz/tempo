@@ -330,7 +330,7 @@ impl ZoneEngine {
         fcu_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // Send initial FCU to establish head
-        if let Err(e) = self.update_forkchoice_state().await {
+        if let Err(e) = self.update_forkchoice_state(self.last_header.hash()).await {
             error!(target: "zone::engine", "Error sending initial FCU: {:?}", e);
         }
 
@@ -352,7 +352,7 @@ impl ZoneEngine {
                     if let Some(exit) = self.advance_all_available(&stop).await {
                         return exit;
                     }
-                    if let Err(e) = self.update_forkchoice_state().await {
+                    if let Err(e) = self.update_forkchoice_state(self.last_header.hash()).await {
                         error!(target: "zone::engine", "Error updating fork choice: {:?}", e);
                     }
                 }
@@ -372,9 +372,9 @@ impl ZoneEngine {
         ForkchoiceState::same_hash(self.last_header.hash())
     }
 
-    /// Send an FCU without payload attributes (heartbeat).
-    async fn update_forkchoice_state(&self) -> eyre::Result<()> {
-        let state = self.forkchoice_state();
+    /// Send an FCU without payload attributes for the given head.
+    async fn update_forkchoice_state(&self, head: B256) -> eyre::Result<()> {
+        let state = ForkchoiceState::same_hash(head);
         let res = self.to_engine.fork_choice_updated(state, None).await?;
 
         if !res.is_valid() {
@@ -564,7 +564,12 @@ impl ZoneEngine {
             })?;
         }
 
-        // Consume the L1 input only after witness persistence succeeds (or, before T15, is skipped).
+        // FCU-with-attrs only canonicalized the previous head. Publish progress only once
+        // the new head is canonical, so the role controller reads its updated checkpoint.
+        self.update_forkchoice_state(header.hash()).await?;
+        self.last_header = header;
+
+        // Consume the L1 input only after witness persistence and canonicalization succeed.
         if checkpoint_only {
             self.deposit_queue.defer_through(l1_num_hash)?;
         } else {
@@ -574,14 +579,6 @@ impl ZoneEngine {
         self.l1_block_tracker.prune_through(l1_num_hash.number);
         if let Some(permit) = &self.production_permit {
             permit.record_applied_anchor(l1_num_hash.number);
-        }
-        self.last_header = header;
-
-        // Canonicalize the new head — FCU-with-attrs above only set the
-        // *previous* head as canonical; this bare FCU makes the just-built
-        // block the EL's canonical head.
-        if let Err(e) = self.update_forkchoice_state().await {
-            error!(target: "zone::engine", "Error sending post-newPayload FCU: {:?}", e);
         }
 
         Ok(())
@@ -807,14 +804,21 @@ fn reject_unlisted_virtual(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::U256;
+    use alloy_rpc_types_engine::{ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec as _;
+    use reth_node_api::{BeaconEngineMessage, OnForkChoiceUpdated};
+    use reth_payload_builder::{EthBuiltPayload, PayloadServiceCommand};
+    use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::{
         collections::VecDeque,
         sync::atomic::{AtomicBool, Ordering},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tokio::sync::oneshot;
+    use tempo_payload_types::{EncodedBlock, TempoBuiltPayload};
+    use test_case::test_matrix;
+    use tokio::sync::{mpsc, oneshot};
     use zone_chainspec::test_utils::set_tempo_fork;
     use zone_p2p::LeadershipState;
 
@@ -960,6 +964,216 @@ mod tests {
 
     fn finalized_target(number: u64, ready: bool) -> Option<FinalizedTarget> {
         Some(FinalizedTarget { number, ready })
+    }
+
+    #[test_matrix([false, true], [PayloadStatusEnum::Valid, PayloadStatusEnum::Syncing])]
+    #[tokio::test]
+    async fn canonicalization_precedes_recovery_progress(
+        checkpoint_only: bool,
+        canonical_status: PayloadStatusEnum,
+    ) {
+        let outgoing = PrivateKey::from_seed(1).public_key();
+        let incoming = PrivateKey::from_seed(2).public_key();
+        let applied_anchor = if checkpoint_only { 98 } else { 99 };
+        let parent = header(1, applied_anchor);
+        let first = header(99, 99);
+        let anchor = SealedHeader::seal_slow(TempoHeader {
+            inner: alloy_consensus::Header {
+                parent_hash: first.hash(),
+                number: 100,
+                timestamp: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, outgoing, 0));
+        schedule.record_applied_anchor(applied_anchor);
+        assert!(
+            schedule
+                .install_forced_recovery(2, incoming.clone(), parent.hash(), 99)
+                .unwrap()
+        );
+        assert!(
+            schedule
+                .publish(LeadershipState::new(2, incoming.clone(), 100))
+                .unwrap()
+        );
+        let recovery = schedule.forced_recovery().unwrap();
+        assert_eq!(recovery.portal_activation_tempo_block, Some(100));
+        let applied_epoch = schedule.locally_applied_epoch();
+        let changed = schedule.subscribe();
+
+        let queue = DepositQueue::default();
+        let tracker = L1BlockTracker::default();
+        if checkpoint_only {
+            assert!(queue.enqueue_sealed(first.clone(), Default::default()));
+            tracker.record(first.num_hash()).unwrap();
+        }
+        assert!(queue.enqueue_sealed(anchor.clone(), Default::default()));
+        tracker.record(anchor.num_hash()).unwrap();
+        let queued_anchor = queue.peek().unwrap().header.num_hash();
+        let observations = [99, 100].map(|number| tracker.observed_hash(number));
+        let available = AvailableTempoImport {
+            l1_block: queue.peek().unwrap(),
+            checkpoint_headers: if checkpoint_only {
+                vec![first, anchor.clone()]
+            } else {
+                Vec::new()
+            },
+            wall_clock_timestamp_millis: 100_000,
+        };
+        let built_block = SealedBlock::seal_slow(tempo_primitives::Block {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    parent_hash: parent.hash(),
+                    number: 2,
+                    timestamp: 100,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        let built_header = built_block.sealed_header().clone();
+        let payload = TempoBuiltPayload::new(
+            EthBuiltPayload::new(
+                Arc::new(RecoveredBlock::new_sealed(built_block, Vec::new())),
+                U256::ZERO,
+                None,
+                None,
+            ),
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            0,
+            EncodedBlock::default(),
+        );
+        let (to_engine, mut engine_rx) = mpsc::unbounded_channel();
+        let (to_builder, mut builder_rx) = mpsc::unbounded_channel();
+        let mut engine = ZoneEngine::new(
+            Arc::new(t13_spec(0)),
+            ConsensusEngineHandle::new(to_engine),
+            PayloadBuilderHandle::new(to_builder),
+            queue.clone(),
+            tracker.clone(),
+            parent.clone(),
+            Address::ZERO,
+            EncryptionKeyRing::default(),
+            Address::ZERO,
+            None,
+        )
+        .with_production_permit(ProductionPermit::new(schedule.clone(), incoming.clone()));
+
+        let execution_layer = async {
+            let Some(BeaconEngineMessage::ForkchoiceUpdated {
+                state,
+                payload_attrs: Some(_),
+                tx,
+                ..
+            }) = engine_rx.recv().await
+            else {
+                panic!("expected a payload-building forkchoice update");
+            };
+            assert_eq!(state, ForkchoiceState::same_hash(parent.hash()));
+            let payload_id = PayloadId::new([1; 8]);
+            let (id_tx, id_rx) = oneshot::channel();
+            id_tx.send(Ok(payload_id)).unwrap();
+            tx.send(Ok(OnForkChoiceUpdated::updated_with_pending_payload_id(
+                PayloadStatus::from_status(PayloadStatusEnum::Valid),
+                id_rx,
+            )))
+            .unwrap();
+
+            let Some(PayloadServiceCommand::Resolve(id, kind, tx)) = builder_rx.recv().await else {
+                panic!("expected the built payload to be resolved");
+            };
+            assert_eq!(id, payload_id);
+            assert_eq!(kind, PayloadKind::WaitForPending);
+            assert!(
+                tx.send(Some(Box::pin(std::future::ready(Ok(payload)))))
+                    .is_ok()
+            );
+            let Some(BeaconEngineMessage::NewPayload { tx, .. }) = engine_rx.recv().await else {
+                panic!("expected newPayload before canonicalization");
+            };
+            tx.send(Ok(PayloadStatus::from_status(PayloadStatusEnum::Valid)))
+                .unwrap();
+
+            let Some(BeaconEngineMessage::ForkchoiceUpdated {
+                state,
+                payload_attrs: None,
+                tx,
+                ..
+            }) = engine_rx.recv().await
+            else {
+                panic!("expected the canonicalizing forkchoice update");
+            };
+            assert_eq!(state, ForkchoiceState::same_hash(built_header.hash()));
+
+            // Withhold the FCU reply: the controller still reads the previous checkpoint here.
+            let before_fcu = (
+                schedule.forced_recovery(),
+                changed.has_changed().unwrap(),
+                queue.peek().map(|block| block.header.num_hash()),
+                [99, 100].map(|number| tracker.observed_hash(number)),
+                schedule.locally_applied_epoch(),
+                schedule.leader_for(99).unwrap().leader,
+            );
+            tx.send(Ok(OnForkChoiceUpdated::valid(PayloadStatus::from_status(
+                canonical_status.clone(),
+            ))))
+            .unwrap();
+            before_fcu
+        };
+        let stop = CancellationToken::new();
+        let (result, (pending_recovery, notified, queued, observed, epoch, leader)) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(engine.advance(available, &stop), execution_layer)
+            })
+            .await
+            .expect("engine handshake must finish");
+
+        // Assert after replying, so the VALID case also proves that FCU succeeds.
+        assert_eq!(pending_recovery, Some(recovery.clone()));
+        assert!(
+            !notified,
+            "recovery must not wake the controller before FCU"
+        );
+        assert_eq!(queued, Some(queued_anchor));
+        assert_eq!(observed, observations);
+        assert_eq!(epoch, applied_epoch);
+        assert_eq!(leader, incoming);
+
+        if canonical_status == PayloadStatusEnum::Valid {
+            result.unwrap();
+            assert_eq!(engine.last_header, built_header);
+            assert!(queue.peek().is_none());
+            assert_eq!(
+                [99, 100].map(|number| tracker.observed_hash(number)),
+                [None, None]
+            );
+            assert_eq!(schedule.forced_recovery(), None);
+            assert_eq!(schedule.locally_applied_epoch(), Some(2));
+            assert!(changed.has_changed().unwrap());
+        } else {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                format!(
+                    "Invalid fork choice update {:?}: {:?}",
+                    ForkchoiceState::same_hash(built_header.hash()),
+                    ForkchoiceUpdated::new(PayloadStatus::from_status(canonical_status)),
+                )
+            );
+            assert_eq!(engine.last_header, parent);
+            assert_eq!(queue.peek().unwrap().header.num_hash(), queued_anchor);
+            assert_eq!(
+                [99, 100].map(|number| tracker.observed_hash(number)),
+                observations
+            );
+            assert_eq!(schedule.forced_recovery(), Some(recovery));
+            assert_eq!(schedule.locally_applied_epoch(), applied_epoch);
+            assert!(!changed.has_changed().unwrap());
+        }
     }
 
     #[test]
