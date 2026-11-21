@@ -3,6 +3,11 @@
 
 mod dispatch;
 
+#[cfg(feature = "std")]
+mod reads;
+#[cfg(feature = "std")]
+pub use reads::{DelegatedRead, audit_reads};
+
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
@@ -129,6 +134,10 @@ impl ZoneIdentity {
             return Err(ZoneIdentityError::invalid_address().into());
         }
         self.orgs[org].admin.write(admin)?;
+        let epoch = self.orgs[org].admin_epoch.read()?.checked_add(1);
+        self.orgs[org]
+            .admin_epoch
+            .write(epoch.ok_or_else(TempoPrecompileError::under_overflow)?)?;
         Ok(self.emit_event(IZoneIdentity::OrgAdminUpdated { orgId: org, admin })?)
     }
 
@@ -250,13 +259,56 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// The org `account` is in, for the account, its org's admin or the registrar.
-    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
-        let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+    /// Whether `reader` is `account` or its org's admin or reader, outside org 0, unless audited.
+    pub fn can_read(&self, reader: Address, account: Address) -> crate::Result<bool> {
+        if reader == account {
+            return Ok(true);
+        }
+        Ok(self.read_member(reader, account)?.1)
+    }
+
+    /// `account`'s membership, and whether `reader` may read it as its org's admin or reader.
+    /// Reads the same slots, priced as cold, whatever the answer, so gas does not reveal the org.
+    fn read_member(&self, reader: Address, account: Address) -> crate::Result<(u64, bool)> {
+        self.storage.with_cold_pricing(|| {
             let org = self.members[account].read()?;
-            Ok((org, self.orgs[org].admin.read()?))
-        })?;
-        if caller != account && caller != admin {
+            let config = &self.orgs[org];
+            let admin = config.admin.read()?;
+            let epoch = config.admin_epoch.read()?;
+            let listed = config.readers[epoch][reader].read()?;
+            let may_read = org != 0 && (reader == admin || listed);
+            #[cfg(feature = "std")]
+            let may_read = reads::admit(DelegatedRead { reader, account }, may_read);
+            Ok((org, may_read))
+        })
+    }
+
+    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only; not org 0. The
+    /// entry belongs to the current admin and lapses when the registrar replaces it.
+    pub fn set_reader(
+        &mut self,
+        caller: Address,
+        org: u64,
+        reader: Address,
+        allowed: bool,
+    ) -> ZoneResult<()> {
+        self.ensure_org_admin(caller, org)?;
+        if org == 0 || reader.is_zero() {
+            return Err(ZoneIdentityError::invalid_address().into());
+        }
+        let epoch = self.orgs[org].admin_epoch.read()?;
+        self.orgs[org].readers[epoch][reader].write(allowed)?;
+        Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
+            orgId: org,
+            reader,
+            allowed,
+        })?)
+    }
+
+    /// The org `account` is in, for a caller that may read it, or the registrar.
+    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
+        let (org, may_read) = self.read_member(caller, account)?;
+        if caller != account && !may_read {
             ensure_caller(caller, registrar)?;
         }
         Ok(org)
@@ -371,6 +423,12 @@ pub struct Org {
     pub edges: Mapping<u64, Mapping<Address, Edge>>,
     /// Tempo rules, by token.
     pub l1: Mapping<Address, L1Rules>,
+    /// How many times the registrar has replaced this org's admin.
+    pub admin_epoch: u64,
+    /// Addresses besides the admin that may read this org's members' account-scoped state, keyed by
+    /// the admin epoch they were named in, so replacing the admin revokes every reader at once, even
+    /// if an earlier admin is later reappointed.
+    pub readers: Mapping<u64, Mapping<Address, bool>>,
 }
 
 /// One org's Tempo rules for one token.
@@ -455,7 +513,10 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Address;
+    use alloy_primitives::{
+        Address,
+        map::{HashMap, HashSet},
+    };
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
@@ -852,6 +913,97 @@ mod tests {
         });
     }
 
+    #[test]
+    fn readers_follow_the_current_admin() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let auditor = Address::repeat_byte(0x77);
+            let stray = Address::repeat_byte(0x55);
+            let other_admin = Address::repeat_byte(2);
+            identity
+                .create_org(registrar, registrar, other_admin)
+                .unwrap();
+            identity.set_reader(admin, org, auditor, true).unwrap();
+            for (reader, account, readable) in [
+                (ALICE, ALICE, true),
+                (stray, stray, true),
+                (admin, ALICE, true),
+                (auditor, ALICE, true),
+                (BOB, ALICE, false),
+                (other_admin, ALICE, false),
+                (admin, stray, false),
+                (registrar, stray, false),
+            ] {
+                assert_eq!(
+                    identity.can_read(reader, account).unwrap(),
+                    readable,
+                    "{reader} reads {account}"
+                );
+            }
+            // Decided reads override `ZoneIdentity`, even via `orgOf`. Others are allowed and come
+            // back undecided.
+            let read = |reader| DelegatedRead {
+                reader,
+                account: ALICE,
+            };
+            let decided = HashMap::from_iter([(read(admin), false), (read(BOB), true)]);
+            let ((), undecided) = audit_reads(decided, || {
+                assert!(identity.can_read(ALICE, ALICE).unwrap());
+                assert!(!identity.can_read(admin, ALICE).unwrap());
+                assert!(identity.can_read(BOB, ALICE).unwrap());
+                assert!(identity.can_read(auditor, ALICE).unwrap());
+                assert!(identity.can_read(stray, ALICE).unwrap());
+                assert_eq!(identity.org_of(ALICE, registrar, ALICE), Ok(org));
+                assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(org));
+                assert_eq!(
+                    identity.org_of(admin, registrar, ALICE),
+                    Err(identity_error(ZoneIdentityError::unauthorized()))
+                );
+            });
+            assert_eq!(
+                undecided,
+                HashSet::from_iter([read(auditor), read(stray), read(registrar)])
+            );
+            assert!(identity.can_read(admin, ALICE).unwrap());
+
+            identity.set_reader(admin, org, auditor, false).unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+
+            // Replacing the admin revokes the readers it named.
+            identity.set_reader(admin, org, auditor, true).unwrap();
+            let new_admin = Address::repeat_byte(3);
+            identity
+                .set_org_admin(registrar, registrar, org, new_admin)
+                .unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+            assert!(!identity.can_read(admin, ALICE).unwrap());
+            assert!(identity.can_read(new_admin, ALICE).unwrap());
+            // Reappointing the earlier admin does not bring its readers back.
+            identity
+                .set_org_admin(registrar, registrar, org, admin)
+                .unwrap();
+            assert!(identity.can_read(admin, ALICE).unwrap());
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+
+            for (caller, org_id, reader, error) in [
+                (new_admin, org, auditor, ZoneIdentityError::unauthorized()),
+                (registrar, 0, auditor, ZoneIdentityError::unauthorized()),
+                (
+                    admin,
+                    org,
+                    Address::ZERO,
+                    ZoneIdentityError::invalid_address(),
+                ),
+            ] {
+                assert_eq!(
+                    identity.set_reader(caller, org_id, reader, true),
+                    Err(identity_error(error))
+                );
+            }
+        });
+    }
+
     /// Every org check charges the same gas whatever the orgs, edges, targets and
     #[test]
     fn org_checks_cost_the_same_whatever_the_state() {
@@ -963,6 +1115,30 @@ mod tests {
             costs.iter().all(|cost| *cost == costs[0]),
             "orgOf: {costs:?}"
         );
+
+        // canRead costs the same whatever the account's org and the answer: the registrar, as
+        // `other`'s admin, may read carol but not the rest.
+        for reader in [Address::repeat_byte(0x99), registrar] {
+            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+            let costs = StorageCtx::enter(&mut storage, || {
+                let identity = ZoneIdentity::new();
+                let accounts = [ALICE, BOB, carol, dave, STRANGER];
+                let mut costs = Vec::new();
+                for &account in accounts.iter().chain(accounts.iter()) {
+                    let before = identity.storage.gas_used();
+                    assert_eq!(
+                        identity.can_read(reader, account).unwrap(),
+                        reader == registrar && account == carol
+                    );
+                    costs.push(identity.storage.gas_used() - before);
+                }
+                costs
+            });
+            assert!(
+                costs.iter().all(|cost| *cost == costs[0]),
+                "canRead by {reader}: {costs:?}"
+            );
+        }
 
         // After an outsider's orgOf(Alice) warms her org's admin slot, orgAdmin costs the same for
         ctx.evm().state_mut().commit_transaction();

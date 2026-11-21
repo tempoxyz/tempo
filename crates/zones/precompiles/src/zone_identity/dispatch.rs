@@ -70,6 +70,10 @@ impl ZoneIdentity {
                     setL1Policy(call) => mutate(call, msg_sender, |caller, call| {
                         self.set_l1_policy(caller, call.orgId, &call.tokens, call.policy.into())
                     }),
+                    setReader(call) => mutate(call, msg_sender, |caller, call| {
+                        self.set_reader(caller, call.orgId, call.reader, call.allowed)
+                    }),
+                    canRead(call) => view(call, |call| self.can_read(msg_sender, call.account)),
                     orgAdmin(call) => view(call, |call| self.org_admin(call.orgId)),
                     orgOf(call) => view(call, |call| {
                         self.org_of(msg_sender, registrar()?, call.account)

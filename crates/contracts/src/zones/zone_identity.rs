@@ -38,14 +38,16 @@ crate::sol! {
         function setEdge(uint64 fromOrg, uint64 toOrg, address[] calldata tokens, bool allowed) external;
         function setL1Target(uint64 orgId, address target, address[] calldata tokens, bool depositFrom, bool withdrawTo) external;
         function setL1Policy(uint64 orgId, address[] calldata tokens, L1Policy policy) external;
+        function setReader(uint64 orgId, address reader, bool allowed) external;
 
-        // Views. Membership is visible to the account, its org admin and the registrar; an org's
+        // Views. Membership is visible to whoever may read the account and to the registrar; an org's
         // edges, targets and policy to its admin and the registrar.
         function orgAdmin(uint64 orgId) external view returns (address);
         function orgOf(address account) external view returns (uint64 orgId);
         function edge(uint64 fromOrg, uint64 toOrg, address token) external view returns (bool allowed);
         function l1Target(uint64 orgId, address target, address token) external view returns (bool depositFrom, bool withdrawTo);
         function l1Policy(uint64 orgId, address token) external view returns (L1Policy policy);
+        function canRead(address account) external view returns (bool);
 
         event OrgCreated(uint64 indexed orgId, address admin);
         event OrgAdminUpdated(uint64 indexed orgId, address admin);
@@ -53,6 +55,7 @@ crate::sol! {
         event EdgeUpdated(uint64 indexed fromOrg, uint64 indexed toOrg, address indexed token, bool fromOk, bool toOk);
         event L1TargetUpdated(uint64 indexed orgId, address indexed target, address indexed token, bool depositFrom, bool withdrawTo);
         event L1PolicyUpdated(uint64 indexed orgId, address indexed token, L1Policy policy);
+        event ReaderUpdated(uint64 indexed orgId, address indexed reader, bool allowed);
 
         error Unauthorized();
         error UnknownOrg(uint64 orgId);
