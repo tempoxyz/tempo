@@ -53,58 +53,35 @@ pub(crate) struct TIP20Rules<P> {
 }
 
 impl<P: L1StorageReader> TIP20Rules<P> {
-    /// Admits a transfer-family call.
+    /// Admits a transfer of `from`'s funds to `to`; `spent` is `(spender, amount)` for `transferFrom`.
     ///
-    /// Transfers require T15, the portal admin's opt-in and, once `ZoneIdentity` is active, an
-    /// org edge from `from` to `to` for the token. Upstream TIP-20 then reverts, rather than
-    /// diverts, a transfer that the recipient's receive policy blocks on a zone.
-    fn admit_transfer(&self, from: Address, to: Address) -> Result<CallCheck> {
-        if let Some(denied) = self.transfers_disabled()? {
-            return Ok(denied);
-        }
-        self.admit_org_edge(from, to)
-    }
-
-    /// Admits a `transferFrom` of `amount` from `from` by `spender`.
-    ///
-    /// The org edge is checked only once the spender may actually move `amount` of `from`'s funds,
-    /// so a spender without allowance can't use the answer to learn `from`'s edges. Upstream
-    /// TIP-20 then rejects an allowance that doesn't cover `amount`, and moves nothing for a zero
-    /// amount.
-    fn admit_transfer_from(
+    /// Requires T15 and the portal admin's opt-in, then a ZoneIdentity edge from `from` to `to`.
+    /// Upstream TIP-20 then reverts, rather than diverts, a transfer the recipient's receive policy
+    /// blocks on a zone.
+    /// For `transferFrom` the edge is checked only when the spender's allowance covers a nonzero
+    /// amount, so a spender without one can't learn `from`'s edges; TIP-20 rejects the rest.
+    fn admit_transfer(
         &self,
-        spender: Address,
         from: Address,
         to: Address,
-        amount: U256,
+        spent: Option<(Address, U256)>,
     ) -> Result<CallCheck> {
-        if let Some(denied) = self.transfers_disabled()? {
-            return Ok(denied);
-        }
-        let allowance =
-            TIP20Token::from_address_unchecked(self.token).allowance(ITIP20::allowanceCall {
-                owner: from,
-                spender,
-            })?;
-        if amount.is_zero() || allowance < amount {
-            return Ok(CallCheck::Continue);
-        }
-        self.admit_org_edge(from, to)
-    }
-
-    /// Rejects every zone-internal transfer before T15 or while the portal admin hasn't opted in.
-    /// Before T15, private asset movement is limited to the protocol-managed inbox and outbox paths.
-    fn transfers_disabled(&self) -> Result<Option<CallCheck>> {
         if !StorageCtx::default().spec().is_t15()
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
-            return Ok(Some(CallCheck::Revert(Unauthorized {}.abi_encode().into())));
+            return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
         }
-        Ok(None)
-    }
-
-    /// Admits a transfer from `from` to `to` if ZoneIdentity allows it.
-    fn admit_org_edge(&self, from: Address, to: Address) -> Result<CallCheck> {
+        if let Some((spender, amount)) = spent {
+            let allowance = TIP20Token::from_address_unchecked(self.token).allowance(
+                ITIP20::allowanceCall {
+                    owner: from,
+                    spender,
+                },
+            )?;
+            if amount.is_zero() || allowance < amount {
+                return Ok(CallCheck::Continue);
+            }
+        }
         let enforced = ZoneIdentity::enforced(&self.l1)?;
         if ZoneIdentity::new().allows(enforced, self.token, from, to, TransferKind::InZone)? {
             return Ok(CallCheck::Continue);
@@ -142,7 +119,7 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                 | ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
                     to,
                     ..
-                }) => self.admit_transfer(caller, to).unwrap_or_else(CallCheck::Error),
+                }) => self.admit_transfer(caller, to, None).unwrap_or_else(CallCheck::Error),
                 // Checked from the owner whose funds move, once the spender may move them.
                 ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall {
                     from,
@@ -155,7 +132,7 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                     amount,
                     ..
                 }) => self
-                    .admit_transfer_from(caller, from, to, amount)
+                    .admit_transfer(from, to, Some((caller, amount)))
                     .unwrap_or_else(CallCheck::Error),
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
