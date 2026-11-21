@@ -12,6 +12,7 @@ use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
 use reth_consensus::HeaderValidator as _;
 use reth_execution_types::{AccountUpdate, StateUpdate};
+use reth_primitives_traits::SignedTransaction as _;
 use reth_trie_common::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
@@ -31,7 +32,15 @@ use tempo_fuzz_types::{
     TxOutcome,
 };
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
-use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoHeader, TempoTxEnvelope,
+    transaction::{
+        Call, TempoTransaction,
+        tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
+    },
+};
+
+use tempo_primitives::fuzz_crypto;
 
 use crate::{
     bincode_options, chain, execute,
@@ -790,5 +799,163 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS
+    );
+}
+
+/// A block of `txs` whose senders the harness recovers from their signatures.
+fn recovered_block(txs: Vec<Bytes>) -> TempoBlock {
+    TempoBlock {
+        senders: Vec::new(),
+        ..t4_block(txs)
+    }
+}
+
+/// A legacy transaction signed with `signer`'s secp256k1 stand-in.
+fn stand_in_legacy(signer: Address, nonce: u64, to: Address, input: Bytes) -> Bytes {
+    let tx = TxLegacy {
+        chain_id: Some(CHAIN_ID),
+        nonce,
+        gas_price: 0,
+        gas_limit: 1_000_000,
+        to: TxKind::Call(to),
+        value: U256::ZERO,
+        input,
+    };
+    let signature = fuzz_crypto::secp256k1_signature(signer, &tx.signature_hash());
+    TempoTxEnvelope::Legacy(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
+}
+
+#[test]
+fn a_secp256k1_stand_in_signs_as_its_signer_and_only_for_its_transaction() {
+    assert_eq!(
+        crate::tempo_fuzz_enable_stand_in_crypto_v1(),
+        fuzz_crypto::VERSION
+    );
+    let input = ITIP20::transferCall {
+        to: RECIPIENT,
+        amount: U256::from(7),
+    }
+    .abi_encode();
+    let tx = stand_in_legacy(SENDER, 0, PATH_USD_ADDRESS, input.into());
+
+    let outcome = run(genesis(), vec![recovered_block(vec![tx.clone()])]);
+    assert_eq!(outcome.error, ErrorClass::None);
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Success);
+    let sender = outcome.state_diff.blocks[0].txs[0]
+        .accounts
+        .iter()
+        .find(|account| account.address == SENDER)
+        .expect("the stand-in's signer sent it");
+    assert_eq!(sender.nonce, Some(1));
+
+    // The same signature on another transaction doesn't recover the signer.
+    let mut other = TempoTxEnvelope::decode_2718_exact(&tx).unwrap();
+    let TempoTxEnvelope::Legacy(signed) = &mut other else {
+        unreachable!()
+    };
+    let mut changed = signed.tx().clone();
+    changed.nonce = 1;
+    let moved = TempoTxEnvelope::Legacy(changed.into_signed(*signed.signature()));
+    assert_ne!(moved.try_recover().ok(), Some(SENDER));
+}
+
+#[test]
+fn the_ecrecover_and_p256verify_precompiles_accept_stand_ins() {
+    assert_eq!(
+        crate::tempo_fuzz_enable_stand_in_crypto_v1(),
+        fuzz_crypto::VERSION
+    );
+    let digest = B256::repeat_byte(0x5a);
+    let signer = address!("00000000000000000000000000000000000000c0");
+
+    let (r, s) = fuzz_crypto::secp256k1(signer, &digest);
+    let mut ecrecover = digest.to_vec();
+    ecrecover.extend_from_slice(&U256::from(27).to_be_bytes::<32>());
+    ecrecover.extend_from_slice(&r.to_be_bytes::<32>());
+    ecrecover.extend_from_slice(&s.to_be_bytes::<32>());
+
+    let (_, x, y, _) = p256_keypair();
+    let (r, s) = fuzz_crypto::p256(&digest, &x, &y);
+    let p256verify = [digest, r, s, x, y].concat();
+    let mut wrong = p256verify.clone();
+    wrong[0] ^= 1;
+
+    let txs = vec![
+        stand_in_legacy(
+            SENDER,
+            0,
+            address!("0000000000000000000000000000000000000001"),
+            ecrecover.into(),
+        ),
+        stand_in_legacy(
+            SENDER,
+            1,
+            address!("0000000000000000000000000000000000000100"),
+            p256verify.into(),
+        ),
+        stand_in_legacy(
+            SENDER,
+            2,
+            address!("0000000000000000000000000000000000000100"),
+            wrong.into(),
+        ),
+    ];
+    let outcome = run(genesis(), vec![recovered_block(txs)]);
+    assert_eq!(outcome.error, ErrorClass::None);
+    let outputs: Vec<_> = outcome
+        .receipts
+        .iter()
+        .map(|receipt| receipt.output.clone())
+        .collect();
+    assert_eq!(outputs[0], Bytes::from(signer.into_word().0));
+    assert_eq!(outputs[1], Bytes::from(U256::from(1).to_be_bytes::<32>()));
+    assert_eq!(
+        outputs[2],
+        Bytes::new(),
+        "a stand-in for another digest fails"
+    );
+}
+
+#[test]
+fn a_tempo_transaction_runs_on_webauthn_and_fee_payer_stand_ins() {
+    assert_eq!(
+        crate::tempo_fuzz_enable_stand_in_crypto_v1(),
+        fuzz_crypto::VERSION
+    );
+    let (_, x, y, sender) = p256_keypair();
+
+    let mut tx = TempoTransaction {
+        chain_id: CHAIN_ID,
+        fee_token: Some(PATH_USD_ADDRESS),
+        calls: vec![Call::new(RECIPIENT, Bytes::new())],
+        gas_limit: 1_000_000,
+        ..Default::default()
+    };
+    // SENDER, funded with pathUSD, sponsors the fees without its key.
+    tx.fee_payer_signature = Some(fuzz_crypto::secp256k1_signature(
+        SENDER,
+        &tx.fee_payer_signature_hash(sender),
+    ));
+    let hash = tx.signature_hash();
+    let webauthn_data = fuzz_crypto::webauthn_data(&hash);
+    let signature = fuzz_crypto::webauthn_signature(&hash, x, y, webauthn_data).unwrap();
+    let tx = TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
+        PrimitiveSignature::WebAuthn(signature),
+    )));
+
+    let outcome = run(
+        genesis(),
+        vec![recovered_block(vec![tx.encoded_2718().into()])],
+    );
+    assert_eq!(outcome.error, ErrorClass::None, "{outcome:?}");
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Success);
+    let accounts = &outcome.state_diff.blocks[0].txs[0].accounts;
+    assert!(
+        accounts
+            .iter()
+            .any(|account| account.address == sender && account.nonce == Some(1)),
+        "the WebAuthn key's account sent it: {accounts:?}"
     );
 }

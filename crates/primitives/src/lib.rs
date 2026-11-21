@@ -9,6 +9,8 @@ pub use alloy_consensus::Header;
 mod address;
 pub use address::{MasterId, TempoAddressExt, UserTag, is_tip20_prefix};
 pub mod ed25519;
+#[cfg(feature = "fuzz-crypto")]
+pub mod fuzz_crypto;
 pub mod gas;
 
 #[cfg(feature = "evm")]

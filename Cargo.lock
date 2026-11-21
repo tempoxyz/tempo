@@ -14580,6 +14580,7 @@ dependencies = [
  "reth-execution-types",
  "reth-primitives-traits",
  "reth-trie-common",
+ "secp256k1 0.30.0",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",

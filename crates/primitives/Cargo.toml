@@ -79,6 +79,8 @@ rand = "0.9"
 
 [features]
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+# Keyed signature stand-ins for fuzzing harnesses (`fuzz_crypto`), accepted only once enabled.
+fuzz-crypto = []
 test-utils = [
 	"std",
 	"dep:rand",
