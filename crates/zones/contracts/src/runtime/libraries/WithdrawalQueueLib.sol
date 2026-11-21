@@ -125,39 +125,6 @@ library WithdrawalQueueLib {
         );
     }
 
-    /// @notice `hashWithTail` for a withdrawal held in memory.
-    function hashWithTailMemory(
-        Withdrawal memory withdrawal,
-        bytes32 tail
-    )
-        internal
-        pure
-        returns (bytes32)
-    {
-        if (withdrawal.senderOrg != 0) {
-            return keccak256(abi.encode(withdrawal, tail));
-        }
-        // Same bytes as `abi.encode(LegacyWithdrawal, tail)`: tuple offset, tail, then the
-        // legacy fields encoded as parameters.
-        return keccak256(
-            bytes.concat(
-                bytes32(uint256(0x40)),
-                tail,
-                abi.encode(
-                    withdrawal.token,
-                    withdrawal.senderTag,
-                    withdrawal.to,
-                    withdrawal.amount,
-                    withdrawal.memo,
-                    withdrawal.gasLimit,
-                    withdrawal.fallbackNonce,
-                    withdrawal.callbackData,
-                    withdrawal.encryptedSender
-                )
-            )
-        );
-    }
-
     /// @notice Check if the queue has any pending withdrawals
     /// @param queue The withdrawal queue
     /// @return True if there are withdrawals to process

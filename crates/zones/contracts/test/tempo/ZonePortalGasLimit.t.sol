@@ -6,9 +6,9 @@ import {
     Withdrawal,
     ZONE_FACTORY_ADDRESS
 } from "../../src/runtime/interfaces/IZone.sol";
-import { WithdrawalQueueLib } from "../../src/runtime/libraries/WithdrawalQueueLib.sol";
 import { ZonePortal } from "../../src/runtime/tempo/ZonePortal.sol";
 import { PortalRuntimeTest } from "../PortalRuntimeTest.sol";
+import { WithdrawalHasher } from "../mocks/WithdrawalHasher.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
@@ -44,6 +44,8 @@ contract MockPortalToken {
 }
 
 contract ZonePortalGasLimitTest is PortalRuntimeTest {
+
+    WithdrawalHasher internal hasher = new WithdrawalHasher();
 
     uint256 internal constant WITHDRAWAL_QUEUE_TAIL_SLOT = 10;
     uint256 internal constant WITHDRAWAL_QUEUE_SLOTS_MAPPING_SLOT = 11;
@@ -128,7 +130,7 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
             encryptedSender: "",
             senderOrg: 0
         });
-        bytes32 wHash = WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0));
+        bytes32 wHash = hasher.hashWithTail(w, bytes32(0));
 
         vm.store(address(portal), bytes32(WITHDRAWAL_QUEUE_TAIL_SLOT), bytes32(uint256(1)));
         vm.store(address(portal), _withdrawalQueueSlot(0), wHash);
@@ -292,11 +294,7 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
 
     function _storeSingleWithdrawal(Withdrawal memory w) internal {
         vm.store(address(portal), bytes32(WITHDRAWAL_QUEUE_TAIL_SLOT), bytes32(uint256(1)));
-        vm.store(
-            address(portal),
-            _withdrawalQueueSlot(0),
-            WithdrawalQueueLib.hashWithTailMemory(w, bytes32(0))
-        );
+        vm.store(address(portal), _withdrawalQueueSlot(0), hasher.hashWithTail(w, bytes32(0)));
     }
 
     function _singleWithdrawal(Withdrawal memory withdrawal)
