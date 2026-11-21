@@ -4696,3 +4696,106 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
     )));
     Ok(())
 }
+
+/// Gas of a TIP-20 payment transfer run directly on the EVM, as RPC calls, gas estimation and
+/// tracers run it, with the lane selector installed or removed and with or without an inspector.
+fn payment_transfer_gas(
+    spec: TempoHardfork,
+    lane_pricing: bool,
+    inspect: bool,
+) -> eyre::Result<u64> {
+    let caller = Address::repeat_byte(0x11);
+    let mut evm = funded_evm(spec, 0, caller);
+    with_fee_fallback_storage(&mut evm, || {
+        TIP20Setup::path_usd(caller)
+            .with_issuer(caller)
+            .with_mint(caller, U256::from(10_000_000))
+            .apply()
+    })?;
+    if !lane_pricing {
+        evm.set_tx_gas_schedule(None);
+    }
+    let input = ITIP20::transferCall {
+        to: Address::repeat_byte(0x22),
+        amount: U256::ONE,
+    }
+    .abi_encode();
+    let tx = legacy_tx_env(caller, 0, PATH_USD_ADDRESS.into(), input.into(), 1_000_000);
+    assert!(tx.is_payment_v3());
+    let tx = Recovered::new_unchecked(tx, caller);
+    let general = *evm.version();
+    let result = if inspect {
+        let mut inspector = CountInspector::new();
+        let result = evm.transact_with_inspector(&tx, &mut inspector)?.discard();
+        assert!(
+            inspector.call_count() > 0,
+            "the inspector observed the transfer"
+        );
+        result
+    } else {
+        evm.transact(&tx)?.discard()
+    };
+    assert!(result.status);
+    assert_eq!(
+        evm.version().gas_params,
+        general.gas_params,
+        "the EVM's schedule is restored"
+    );
+    Ok(result.tx_gas_used())
+}
+
+/// From T15, a payment transfer run outside the block executor, with or without an inspector, is
+/// priced at the payment lane's state-loading discount, matching block execution.
+#[test]
+fn test_payment_lane_pricing_applies_outside_block_executor() -> eyre::Result<()> {
+    let general = payment_transfer_gas(TempoHardfork::T15, false, false)?;
+    let payment = payment_transfer_gas(TempoHardfork::T15, true, false)?;
+    let traced = payment_transfer_gas(TempoHardfork::T15, true, true)?;
+    assert!(payment < general, "payment {payment} >= general {general}");
+    assert_eq!(traced, payment, "tracing reports the gas execution charges");
+    Ok(())
+}
+
+#[test]
+fn test_payment_lane_priced_as_general_before_t15() -> eyre::Result<()> {
+    assert_eq!(
+        payment_transfer_gas(TempoHardfork::T14, true, true)?,
+        payment_transfer_gas(TempoHardfork::T14, false, false)?
+    );
+    Ok(())
+}
+
+/// Lane pricing selects payment transactions only: not a payment transaction whose access list is
+/// set, as `eth_createAccessList` does, nor a call.
+#[test]
+fn test_lane_pricing_selects_payment_transactions_only() {
+    let caller = Address::repeat_byte(0x11);
+
+    let transfer = ITIP20::transferCall {
+        to: Address::repeat_byte(0x22),
+        amount: U256::ONE,
+    }
+    .abi_encode();
+    let mut payment = legacy_tx_env(
+        caller,
+        0,
+        PATH_USD_ADDRESS.into(),
+        transfer.into(),
+        1_000_000,
+    );
+    assert!(payment.is_payment_v3());
+    reth_evm::TransactionEnvMut::set_access_list(
+        &mut payment,
+        alloy_eips::eip2930::AccessList(vec![Default::default()]),
+    );
+    assert!(!payment.is_payment_v3());
+
+    let call = legacy_tx_env(
+        caller,
+        0,
+        IDENTITY_PRECOMPILE.into(),
+        Bytes::new(),
+        1_000_000,
+    );
+    assert!(!call.is_payment_v3());
+}

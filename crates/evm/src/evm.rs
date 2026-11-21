@@ -209,6 +209,7 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let precompiles = self.precompiles(&env, &ext);
         *evm.ext_mut() = ext;
         evm.set_precompiles(precompiles);
+        crate::handler::install_lane_pricing(evm);
         #[cfg(feature = "jit")]
         self.configure_jit(evm);
     }
