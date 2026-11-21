@@ -124,6 +124,12 @@ pub(crate) async fn validate_registered_sequencer_set(
         "ZonePortal sequencer set changed during startup validation ({sequencer_set_version} -> {validated_version})"
     );
 
+    eyre::ensure!(
+        registered.len() == quorum.len(),
+        "ZonePortal returned {} sequencer membership answers for {} manifest quorum nodes",
+        registered.len(),
+        quorum.len()
+    );
     for ((node, address), is_registered) in quorum.iter().zip(registered) {
         let name = node.name();
         eyre::ensure!(
@@ -436,6 +442,7 @@ mod tests {
     use reth_provider::test_utils::MockEthProvider;
     use tempo_alloy::TempoNetwork;
     use tempo_primitives::{TempoPrimitives, TempoReceipt, TempoTxType};
+    use test_case::test_case;
     use zone_p2p::ZoneManifest;
 
     #[test]
@@ -714,30 +721,27 @@ mod tests {
         }
     }
 
+    #[test_case([2, 3], 1, "does not follow previous zone batch index 0")]
+    #[test_case([1, 3], 2, "does not follow previous zone batch index 1")]
+    #[test_case([1, 1], 2, "does not follow previous zone batch index 1")]
+    #[test_case([u64::MAX, 0], 2, "previous zone withdrawal batch index overflow")]
     #[tokio::test]
-    async fn settlement_rejects_nonconsecutive_zone_batch_indices() {
-        for (indices, number, expected_error) in [
-            ([2, 3], 1, "does not follow previous zone batch index 0"),
-            ([1, 3], 2, "does not follow previous zone batch index 1"),
-            ([1, 1], 2, "does not follow previous zone batch index 1"),
-            (
-                [u64::MAX, 0],
-                2,
-                "previous zone withdrawal batch index overflow",
-            ),
-        ] {
-            let (provider, context, _, l1_header) = attestation_fixture(indices);
-            let error = build_settlement_attestation(
-                &provider,
-                number,
-                &context,
-                (104, l1_header.hash_slow()),
-                VerifierMode::NitroV1,
-            )
-            .await
-            .unwrap_err();
-            assert!(error.to_string().contains(expected_error), "{error}");
-        }
+    async fn settlement_rejects_nonconsecutive_zone_batch_indices(
+        indices: [u64; 2],
+        number: u64,
+        expected_error: &str,
+    ) {
+        let (provider, context, _, l1_header) = attestation_fixture(indices);
+        let error = build_settlement_attestation(
+            &provider,
+            number,
+            &context,
+            (104, l1_header.hash_slow()),
+            VerifierMode::NitroV1,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error}");
     }
 
     fn test_manifest() -> ZoneManifest {

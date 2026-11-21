@@ -12,7 +12,7 @@ use reth_storage_api::{
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use tempo_primitives::TempoPrimitives;
 
-use crate::{TempoNode, node::TempoEngineValidatorBuilder};
+use crate::{TempoNode, engine::EagerHeaderValidatorBuilder, node::TempoEngineValidatorBuilder};
 
 /// Reads the post-state of blocks that the engine has executed, including
 /// blocks on forks.
@@ -88,7 +88,7 @@ impl ExecutedState {
 /// [`ExecutedState`].
 #[derive(Clone, Debug)]
 pub struct TempoEngineTreeValidatorBuilder {
-    inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+    inner: EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>>,
     executed_state: ExecutedState,
 }
 
@@ -97,7 +97,7 @@ impl TempoEngineTreeValidatorBuilder {
     /// engine.
     pub fn new(executed_state: ExecutedState) -> Self {
         Self {
-            inner: BasicEngineValidatorBuilder::default(),
+            inner: EagerHeaderValidatorBuilder::default(),
             executed_state,
         }
     }
@@ -106,12 +106,12 @@ impl TempoEngineTreeValidatorBuilder {
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
     Node: FullNodeComponents<Types = TempoNode>,
-    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
+    EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>>:
+        EngineValidatorBuilder<Node>,
 {
-    type EngineValidator =
-        <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
-            Node,
-        >>::EngineValidator;
+    type EngineValidator = <EagerHeaderValidatorBuilder<
+        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+    > as EngineValidatorBuilder<Node>>::EngineValidator;
 
     async fn build_tree_validator(
         self,

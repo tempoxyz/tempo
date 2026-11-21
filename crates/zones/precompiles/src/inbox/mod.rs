@@ -5,11 +5,8 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! Runtime execution processes a contiguous prefix of the portal deposit queue and reads its
-//! canonical head at the selected child anchor. The batch proof, not this precompile, proves that
-//! the post-state processed hash is an ancestor of that head by validating the unprocessed suffix.
-//! Observing the head read in the execution witness is not sufficient without that explicit proof
-//! constraint.
+//! From T15 (TIP-1171), each full block executes a bounded deposit-queue range and binds it to a
+//! checkpoint or the queue head. Before T15 it binds every entry to the head.
 
 mod dispatch;
 
@@ -18,12 +15,12 @@ mod tests;
 
 use alloc::vec::Vec;
 
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, FixedBytes, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use tempo_contracts::zones::{
     DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
-    ZoneInboxEvent,
+    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, VirtualDeposit, WithdrawalBounceBackDeposit,
+    ZoneDepositAddress, ZoneInboxError, ZoneInboxEvent,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -33,11 +30,17 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::{
+    constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    deposit_queue::DepositRangeEnd,
+};
 
 use crate::{
-    ZonePrecompileError, ZoneResult, aes_gcm, chaum_pedersen,
+    ZonePrecompileError, ZoneResult,
+    address_registry::ZoneAddressRegistry,
+    aes_gcm, chaum_pedersen,
     ecies::{ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE, hkdf_info, hkdf_sha256},
+    ff1,
     outbox::ZoneOutbox,
     storage::{L1State, L1StorageReader},
     tempo_state::TempoState,
@@ -61,6 +64,8 @@ pub struct ZoneInbox {
     processed_token_enablement_hash: B256,
     /// Number of entries from the portal's append-only enabled-token array applied by this zone.
     processed_enabled_token_count: u64,
+    /// TIP-1094 address keys by version; zero means the version is not initialized.
+    address_keys: Mapping<u8, B256>,
 }
 
 impl ZoneInbox {
@@ -82,7 +87,7 @@ impl ZoneInbox {
 
         let deposit_count = u64::try_from(call.deposits.len())
             .map_err(|_| TempoPrecompileError::under_overflow())?;
-        let deposits = decode_deposits(call.deposits)?;
+        let deposits = decode_deposits(call.deposits, StorageCtx.spec().is_t15())?;
 
         let mut tempo_state = TempoState::new();
 
@@ -143,10 +148,14 @@ impl ZoneInbox {
         };
 
         // Step 2: Process deposits and build hash chain
+        //
+        // TODO: execute only the prefix within the TIP-1171 weight budget, and only hash the rest,
+        // once an entry type weighs more than 1 unit (T16 forced exits).
         let tempo_block_hash = tempo_state.tempo_block_hash()?;
         let mut current_hash = self.processed_deposit_queue_hash.read()?;
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
+        let zone_id = crate::address_registry::zone_id(portal);
 
         for queued in deposits {
             current_hash = queued.hash_with_tail(current_hash)?;
@@ -169,6 +178,19 @@ impl ZoneInbox {
                         key,
                     )
                 }
+                DecodedQueuedDeposit::ZoneVirtual {
+                    deposit,
+                    rejected: true,
+                } => self.fail_virtual_deposit(
+                    &mut outbox,
+                    current_hash,
+                    deposit,
+                    VirtualDepositFailure::default(),
+                ),
+                DecodedQueuedDeposit::ZoneVirtual {
+                    deposit,
+                    rejected: false,
+                } => self.process_virtual_deposit(&mut outbox, zone_id, current_hash, deposit),
             }?;
         }
 
@@ -176,25 +198,52 @@ impl ZoneInbox {
             return Err(ZoneInboxError::extra_decryption_data().into());
         }
 
-        // Step 3: Bind the canonical Tempo queue head into the execution witness.
+        // Step 3: Bind the supplied range to its commitment on Tempo.
         //
-        // `current_hash` may be an ancestor of this value when the sequencer processes only a
-        // bounded prefix of pending deposits. The batch proof validates that hashing the
-        // unprocessed suffix from `current_hash` reaches `tempo_current_hash`; requiring equality
-        // here would incorrectly forbid partial processing.
+        // A range ending at a checkpoint must hash to it, and every other range to the queue head.
+        // (+T15) the entries must be exactly the range up to the head or next checkpoint.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
+        let previous_number = self.processed_deposit_number.read()?;
         if !portal.is_zero() {
-            let tempo_current_hash = l1.read_portal(|portal| &portal.current_deposit_queue_hash)?;
-            if tempo_current_hash != current_hash {
+            let checkpoint_hash = if StorageCtx.spec().is_t15() {
+                let head = l1.read_portal(|portal| &portal.deposit_count)?;
+                let bucket_count = l1.read_portal_vec_len(|portal| &portal.deposit_buckets)?;
+                let checkpoint_base = (bucket_count != 0)
+                    .then(|| l1.read_portal(|portal| &portal.deposit_bucket_base))
+                    .transpose()?;
+                let end = DepositRangeEnd::new(previous_number, head, checkpoint_base)
+                    .ok_or_else(ZoneInboxError::invalid_deposit_queue_hash)?;
+                if end.target.checked_sub(previous_number) != Some(deposit_count) {
+                    return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                }
+                match end.checkpoint_index {
+                    None => None,
+                    Some(index) => {
+                        let index = usize::try_from(index)
+                            .map_err(|_| TempoPrecompileError::under_overflow())?;
+                        // Checkpoints between the settled position and the head are never pruned.
+                        if index >= bucket_count {
+                            return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
+                        }
+                        Some(l1.read_portal(|p| &p.deposit_buckets[index].hash)?)
+                    }
+                }
+            } else {
+                None
+            };
+            let expected_hash = match checkpoint_hash {
+                Some(checkpoint_hash) => checkpoint_hash,
+                None => l1.read_portal(|portal| &portal.current_deposit_queue_hash)?,
+            };
+            if expected_hash != current_hash {
                 return Err(ZoneInboxError::invalid_deposit_queue_hash().into());
             }
         }
 
         // Step 4: Update state
         self.processed_deposit_queue_hash.write(current_hash)?;
-        let previous_number = self.processed_deposit_number.read()?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
@@ -302,6 +351,165 @@ impl ZoneInbox {
         Ok(())
     }
 
+    /// TIP-1094: decrypt the deposit address, look up its master ID and mint to the registered
+    /// recipient, or refund `originator` on Tempo. No sequencer input reaches this path.
+    fn process_virtual_deposit(
+        &mut self,
+        outbox: &mut ZoneOutbox,
+        zone_id: u32,
+        current_hash: B256,
+        deposit: VirtualDeposit,
+    ) -> ZoneResult<()> {
+        let resolved = match self.resolve_virtual_deposit(zone_id, deposit.destination, true)? {
+            Ok(resolved) => resolved,
+            Err(failure) => {
+                return self.fail_virtual_deposit(outbox, current_hash, deposit, failure);
+            }
+        };
+
+        let memo = deposit.hasMemo.then_some(deposit.memo);
+        if !self.try_mint_with_memo(deposit.token, resolved.recipient, deposit.amount, memo)? {
+            return self.fail_virtual_deposit(
+                outbox,
+                current_hash,
+                deposit,
+                VirtualDepositFailure {
+                    to: resolved.recipient,
+                    master_id: resolved.master_id,
+                    user_tag: resolved.user_tag,
+                },
+            );
+        }
+
+        self.emit_event(ZoneInboxEvent::virtual_deposit_processed(
+            resolved.recipient,
+            deposit.originator,
+            current_hash,
+            deposit.token,
+            deposit.amount,
+            resolved.version,
+            resolved.master_id,
+            resolved.user_tag,
+            deposit.memo,
+        ))?;
+        Ok(())
+    }
+
+    /// Resolves a deposit address to its registered recipient. A recipient failure returns the
+    /// failure with the recipient if one was found; system failures (gas, missing witnesses)
+    /// propagate as errors and never become a refund. `charge_gas` is false only for read-only
+    /// node-side lookups, which run outside a metered call.
+    pub fn resolve_virtual_deposit(
+        &self,
+        zone_id: u32,
+        destination: Address,
+        charge_gas: bool,
+    ) -> ZoneResult<Result<ResolvedVirtualDeposit, VirtualDepositFailure>> {
+        let Some(address) = ZoneDepositAddress::decode(&destination)
+            .filter(|address| address.version != 0 && address.zone_id == zone_id)
+        else {
+            return Ok(Err(VirtualDepositFailure::default()));
+        };
+        let Some(key) = self.virtual_address_key(address.version)? else {
+            return Ok(Err(VirtualDepositFailure::default()));
+        };
+
+        if charge_gas {
+            ff1::charge_gas()?;
+        }
+        let plaintext = ff1::decrypt(&key.0, address.version, zone_id, address.ciphertext.0);
+        let master_id = FixedBytes::<4>::from_slice(&plaintext[..4]);
+        let user_tag = FixedBytes::<2>::from_slice(&plaintext[4..]);
+
+        let recipient = ZoneAddressRegistry::new().recipient_of(master_id)?;
+        if recipient.is_zero() {
+            return Ok(Err(VirtualDepositFailure::default()));
+        }
+        Ok(Ok(ResolvedVirtualDeposit {
+            recipient,
+            version: address.version,
+            master_id,
+            user_tag,
+        }))
+    }
+
+    fn fail_virtual_deposit(
+        &mut self,
+        outbox: &mut ZoneOutbox,
+        current_hash: B256,
+        deposit: VirtualDeposit,
+        failure: VirtualDepositFailure,
+    ) -> ZoneResult<()> {
+        outbox.enqueue_deposit_bounce_back(
+            ZONE_INBOX_ADDRESS,
+            IZoneOutbox::enqueueDepositBounceBackCall {
+                token: deposit.token,
+                amount: deposit.amount,
+                tempoRefundRecipient: deposit.originator,
+            },
+        )?;
+        // Only a resolved recipient can be served this log; earlier failures are refunded
+        // silently, like a rejected ECIES deposit.
+        if !failure.to.is_zero() {
+            self.emit_event(ZoneInboxEvent::virtual_deposit_failed(
+                failure.to,
+                deposit.originator,
+                current_hash,
+                deposit.token,
+                deposit.amount,
+                failure.master_id,
+                failure.user_tag,
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// TIP-1094 key initialization: versions start at 1, run in order and are set exactly once.
+    ///
+    /// The zone block executor accepts at most one such call per block, only directly after
+    /// `advanceTempo` and only in canonical encoding, which the prover replays.
+    fn initialize_virtual_address_key(
+        &mut self,
+        caller: Address,
+        version: u8,
+        key: B256,
+    ) -> ZoneResult<()> {
+        if !caller.is_zero() {
+            return Err(ZoneInboxError::only_sequencer().into());
+        }
+        let in_order = match version {
+            0 => false,
+            1 => true,
+            _ => self.virtual_address_key(version - 1)?.is_some(),
+        };
+        if !in_order || self.virtual_address_key(version)?.is_some() {
+            return Err(ZoneInboxError::invalid_address_key_version(version).into());
+        }
+        // A zero key would read back as an uninitialized version.
+        if key.is_zero() {
+            return Err(ZoneInboxError::invalid_address_key_version(version).into());
+        }
+        self.address_keys[version].write(key)?;
+        self.emit_event(ZoneInboxEvent::virtual_address_key_initialized(version))?;
+        Ok(())
+    }
+
+    /// Writes `key` as address key `version` directly, for tests in other crates.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialize_virtual_address_key_for_test(
+        &mut self,
+        version: u8,
+        key: B256,
+    ) -> tempo_precompiles::Result<()> {
+        self.address_keys[version].write(key)
+    }
+
+    /// The committed key for `version`, or `None` when that version is not initialized.
+    pub fn virtual_address_key(&self, version: u8) -> tempo_precompiles::Result<Option<B256>> {
+        let key = self.address_keys[version].read()?;
+        Ok((!key.is_zero()).then_some(key))
+    }
+
     fn process_withdrawal_bounce_back(
         &mut self,
         outbox: &mut ZoneOutbox,
@@ -326,14 +534,26 @@ impl ZoneInbox {
     /// Mint with Solidity `try/catch` semantics: ordinary reverts are caught while fatal and
     /// out-of-gas failures abort the outer Inbox call.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
-        match self.mint(token, to, amount) {
+        self.try_mint_with_memo(token, to, amount, None)
+    }
+
+    /// [`Self::try_mint`], minting with `mintWithMemo` when a memo is given.
+    fn try_mint_with_memo(
+        &mut self,
+        token: Address,
+        to: Address,
+        amount: u128,
+        memo: Option<B256>,
+    ) -> ZoneResult<bool> {
+        match self.mint(token, to, amount, memo) {
             Ok(()) => Ok(true),
             Err(err) if err.is_system_error() => Err(err.into()),
             Err(_) => Ok(false),
         }
     }
 
-    /// Mints bridged `amount` of `token` to `to`, discarding any changes on failure.
+    /// Mints bridged `amount` of `token` to `to`, with `mintWithMemo` when `memo` is given,
+    /// discarding any changes on failure.
     ///
     /// Reverts with `PolicyForbids` when `to`'s receive policy blocks the Inbox, and otherwise
     /// with the token's own mint error.
@@ -343,6 +563,7 @@ impl ZoneInbox {
         token: Address,
         to: Address,
         amount: u128,
+        memo: Option<B256>,
     ) -> Result<(), TempoPrecompileError> {
         // TODO: Resolve virtual addresses through `AddressRegistry`precompile once it activates.
         if TIP403Registry::new()
@@ -353,13 +574,15 @@ impl ZoneInbox {
         }
 
         let checkpoint = self.storage.checkpoint();
-        TIP20Token::from_address(token)?.mint(
-            ZONE_INBOX_ADDRESS,
-            ITIP20::mintCall {
-                to,
-                amount: U256::from(amount),
-            },
-        )?;
+        let mut token = TIP20Token::from_address(token)?;
+        let amount = U256::from(amount);
+        match memo {
+            None => token.mint(ZONE_INBOX_ADDRESS, ITIP20::mintCall { to, amount })?,
+            Some(memo) => token.mint_with_memo(
+                ZONE_INBOX_ADDRESS,
+                ITIP20::mintWithMemoCall { to, amount, memo },
+            )?,
+        }
         checkpoint.commit();
         Ok(())
     }
@@ -372,7 +595,7 @@ impl ZoneInbox {
         // +T15: Revert with the mint's own error, such as `ContractPaused` for a token paused on
         // Tempo.
         if self.storage.spec().is_t15() {
-            self.mint(token, caller, amount)?;
+            self.mint(token, caller, amount, None)?;
         } else if !self.try_mint(token, caller, amount)? {
             return Err(TempoPrecompileError::from(TIP20Error::policy_forbids()).into());
         }
@@ -413,10 +636,37 @@ impl ZoneInbox {
     }
 }
 
+/// A virtual deposit whose address resolved to a registered recipient.
+/// A failed virtual deposit, with the recipient and decrypted identifiers when lookup reached them.
+#[derive(Debug, Default)]
+pub struct VirtualDepositFailure {
+    /// The registered recipient, or zero before a successful lookup.
+    to: Address,
+    master_id: FixedBytes<4>,
+    user_tag: FixedBytes<2>,
+}
+
+/// A virtual deposit's registered recipient and decrypted identifiers.
+#[derive(Debug)]
+pub struct ResolvedVirtualDeposit {
+    /// The recipient to credit.
+    pub recipient: Address,
+    version: u8,
+    master_id: FixedBytes<4>,
+    user_tag: FixedBytes<2>,
+}
+
 /// A queue entry whose nested ABI payload has been validated before execution begins.
 enum DecodedQueuedDeposit {
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     Deposit(Deposit),
+    /// `rejected` is the sequencer's verdict: a rejected virtual deposit is refunded without being
+    /// resolved. The flag is read only for virtual deposits; encrypted deposits are rejected by
+    /// withholding decryption data, and bounce-backs cannot be rejected.
+    ZoneVirtual {
+        deposit: VirtualDeposit,
+        rejected: bool,
+    },
 }
 
 impl DecodedQueuedDeposit {
@@ -428,18 +678,25 @@ impl DecodedQueuedDeposit {
             Self::Deposit(deposit) => {
                 (DepositType::Deposit, deposit.clone(), tail).abi_encode_params()
             }
+            Self::ZoneVirtual { deposit, .. } => {
+                (DepositType::ZoneVirtual, deposit.clone(), tail).abi_encode_params()
+            }
         };
         StorageCtx::default().keccak256(&encoded)
     }
 }
 
-fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
+fn decode_deposits(
+    deposits: Vec<QueuedDeposit>,
+    virtual_deposits: bool,
+) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
     // Nested deposits must match their canonical L1 event encoding on every hardfork.
     let config = AbiDecoderConfig::new().strict(true);
 
     deposits
         .into_iter()
         .map(|queued| {
+            let rejected = queued.rejected;
             match queued.depositType {
                 DepositType::WithdrawalBounceBack => {
                     WithdrawalBounceBackDeposit::abi_decode_with_config(&queued.depositData, config)
@@ -448,6 +705,10 @@ fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueued
                 DepositType::Deposit => {
                     Deposit::abi_decode_with_config(&queued.depositData, config)
                         .map(DecodedQueuedDeposit::Deposit)
+                }
+                DepositType::ZoneVirtual if virtual_deposits => {
+                    VirtualDeposit::abi_decode_with_config(&queued.depositData, config)
+                        .map(|deposit| DecodedQueuedDeposit::ZoneVirtual { deposit, rejected })
                 }
                 _ => return Err(ZonePrecompileError::MalformedCalldata),
             }

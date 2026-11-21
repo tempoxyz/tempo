@@ -17,7 +17,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 use crate::{
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     storage::{
-        ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
+        CallOutcome, ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageActions,
         evm::{EvmPrecompileStorageProvider, EvmStorageExt},
     },
 };
@@ -47,7 +47,8 @@ impl StorageCtx {
     /// # IMPORTANT
     ///
     /// The caller must ensure that:
-    /// 1. Only one `enter` call is active at a time, in the same thread.
+    /// 1. Only one `enter` call is active at a time, in the same thread. The exception is a
+    ///    callee of [`StorageCtx::call`], which enters its own context while the caller waits.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
@@ -220,8 +221,8 @@ impl StorageCtx {
         Self::with_storage(|s| s.gas_used())
     }
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    pub fn state_gas_used(&self) -> u64 {
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    pub fn state_gas_used(&self) -> i64 {
         Self::with_storage(|s| s.state_gas_used())
     }
 
@@ -260,6 +261,25 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// The precompile this call frame runs, see [`PrecompileStorageProvider::call_frame_address`].
+    pub fn call_frame_address(&self) -> Option<Address> {
+        Self::with_storage(|s| s.call_frame_address())
+    }
+
+    /// Calls `target` from the running precompile, see [`PrecompileStorageProvider::call`].
+    ///
+    /// A callee that is a Tempo precompile, the caller included, runs in its own storage context
+    /// over the same state, so write state before the call and read it again afterwards.
+    pub fn call(
+        &mut self,
+        target: Address,
+        input: Bytes,
+        gas_limit: u64,
+        is_static: bool,
+    ) -> Result<CallOutcome> {
+        Self::try_with_storage(|s| s.call(target, input, gas_limit, is_static))
     }
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
@@ -365,7 +385,7 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
 
-    /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
+    /// Returns whether `address` is a retired root key (TIP-1113): from T14, an address with a
     /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
     /// at call time, so a migration earlier in the block counts.
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {

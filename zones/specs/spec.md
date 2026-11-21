@@ -533,9 +533,9 @@ currentDepositQueueHash = keccak256(abi.encode(DepositType.Deposit, deposit, cur
 
 The newest deposit is always outermost, making onchain addition O(1). The zone tracks its own `processedDepositQueueHash` and `processedDepositNumber` in state. During `advanceTempo()`, the zone processes deposits oldest-first, rebuilding the hash chain and validating that the result matches `currentDepositQueueHash` read from Tempo L1 at the zone's finalized checkpoint.
 
-At most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load.
+Before T15, at most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load. Before T15, `advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint and must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
 
-`advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint. The call must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
+From T15 (TIP-1171), the queue is unbounded. Each full zone block receives at most `DEPOSITS_PER_BUCKET` (230) entries after `processedDepositNumber`, ending at the queue head or the next portal checkpoint, and executes all of them. Deposits pay a congestion premium of up to `CONGESTION_MAX_FEE`; the `maxFee` overloads revert with `FeeTooHigh` above the caller's cap.
 
 After a batch is accepted, the portal updates `lastSyncedTempoBlockNumber` to record how far Tempo state was synced, and updates `lastProcessedDepositNumber` from the proven `DepositQueueTransition`. Users should track deposit inclusion by deposit number: `DepositMade` emits `depositNumber`, `ZoneInbox.TempoAdvanced` emits the inbox's `lastProcessedDepositNumber`, and `ZonePortal.BatchSubmitted` emits the accepted portal value. A deposit with number `N` is processed once `lastProcessedDepositNumber >= N`.
 
@@ -783,7 +783,7 @@ When `submitBatch` includes a non-zero `withdrawalQueueHash`, the current `tail`
 
 The sequencer processes ordered withdrawals atomically on Tempo by calling `processWithdrawals(withdrawals, remainingQueue)` on the portal. `remainingQueue` is the queue suffix after the last supplied withdrawal, or `0x00` when the call exhausts the current slot. The portal derives each intermediate queue hash by folding the withdrawals backward from that suffix, then verifies and processes them in order.
 
-Before each call, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes.
+Before T15, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity before each call. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes. From T15, `processWithdrawals` has no capacity check.
 
 The portal dequeues before executing the withdrawal, then independently requires `withdrawal.token` to be enabled. Failed callbacks roll back in an external self-call and become bounce-backs, so the dequeue remains committed and cannot block the FIFO. If `remainingQueue` is zero (last item in the slot), processing deletes the slot and advances `head`; otherwise it updates the slot to `remainingQueue`.
 
@@ -1018,6 +1018,8 @@ The RPC server rejects authorization tokens where:
 - `issuedAt > now + 60`.
 - The signature is malformed or does not verify.
 - For Keychain signatures: the signing key is not authorized, revoked, or expired in the zone's `AccountKeychain`.
+- For primitive signatures and Keychain signatures with a primitive approval: the signing key's address has a nonzero Tempo configuration commitment at the zone's anchor, so it is a retired root (TIP-1113).
+- For configurable-account signatures, and Keychain signatures whose access key is a configurable account: the owners' configuration does not match the account's Tempo configuration commitment at the zone's anchor or, while the account has none, does not derive the account (TIP-1154). A primitive grant accepts its key's owner quorum only once the key has a nonzero commitment.
 
 Requests without an authorization token receive HTTP `401`. Requests with an invalid or expired token receive HTTP `403`.
 
@@ -1030,8 +1032,9 @@ Authorization token signatures follow the same format as Tempo transaction signa
 | secp256k1 | 65 bytes, no prefix | Standard `ecrecover` |
 | P256 | Prefix `0x01`, 130 bytes | Public key embedded in signature |
 | WebAuthn | Prefix `0x02`, variable length | P256 key via WebAuthn assertion |
-| Keychain V1 | Prefix `0x03` | Wraps inner sig + `user_address`, authenticates as root account |
-| Keychain V2 | Prefix `0x04` | Same as V1 but binds `user_address` into signing hash |
+| Keychain V1 | Prefix `0x03` | Not accepted: its signing hash does not bind `user_address`. Rejected as an invalid signature. |
+| Keychain V2 | Prefix `0x04` | Wraps inner sig + `user_address` (binding it into the signing hash), authenticates as root account |
+| Configurable account | Prefix `0x05` | Owner quorum of a configurable account, authenticates as the account |
 
 Keychain keys allow session keys and scoped access keys to authenticate to the RPC with the same permissions as the root account. The zone has its own independent `AccountKeychain` instance, not mirrored from Tempo. Users must register keychain keys on the zone directly.
 
@@ -1040,6 +1043,8 @@ Keychain keys allow session keys and scoped access keys to authenticate to the R
 The RPC uses a default-deny model. Any method not explicitly listed returns `-32601` (method not found). Exposed methods fall into two categories:
 
 **Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, and `zone_getEncryptionKey`.
+
+**Recipient-scoped.** `zone_deriveDepositAddresses` derives TIP-1094 deposit addresses only for a master ID registered to the authenticated account, from the last settled zone block.
 
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
@@ -1086,8 +1091,10 @@ All log queries are restricted to TIP-20 events where the authenticated account 
 | `TransferWithMemo(from, to, amount, memo)` | `from == caller` OR `to == caller` |
 | `Mint(to, amount)` | `to == caller` |
 | `Burn(from, amount)` | `from == caller` |
+| `VirtualDepositProcessed(to, originator, depositHash, ...)` (zone inbox) | `to == caller` |
+| `VirtualDepositFailed(to, originator, depositHash, ...)` (zone inbox) | `to == caller` |
 
-All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
+All other events (system events, configuration events) are filtered out. The two TIP-1094 virtual deposit result events count only when the zone inbox emitted them. The `address` filter parameter must be a zone token address, the receive-policy guard, the zone inbox, or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
 
 To avoid leaking how much activity occurred in a block, some fields of returned logs are redacted:
 
@@ -1103,7 +1110,7 @@ WebSocket connections follow the same authorization model. The authorization tok
 - `eth_subscribe("logs")`: scoped to the authenticated account using the same event filtering rules.
 - `eth_subscribe("newPendingTransactions")`: disabled.
 
-The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key.
+The connection is terminated when the authorization token expires. For keychain-authenticated connections, the server must also terminate the connection within 1 second of importing a block that revokes the keychain key. Likewise, it rechecks the session's signer every second and terminates the connection once the zone's anchor has retired its signing key, or changed the configuration commitment its configurable-account signer signed with.
 
 ### Zone-Specific Methods
 
@@ -1115,6 +1122,7 @@ operator RPC transports and the authenticated redacted RPC.
 | `zone_getAuthorizationTokenInfo` | Authenticated redacted RPC only | Returns the authenticated account address and token expiry |
 | `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
 | `zone_getEncryptionKey` | Operator RPC and authenticated redacted RPC | Returns the active sequencer encryption key at the current Tempo L1 head |
+| `zone_deriveDepositAddresses` | Authenticated redacted RPC only | Returns TIP-1094 deposit addresses for the caller's master ID and up to 1024 user tags, using the registry and key versions at the zone block the portal last settled |
 
 `zone_getEncryptionKey` reads the active key directly from the portal at the current Tempo L1 head.
 Its response is:
@@ -1429,7 +1437,7 @@ The stateless execution function must reject the witness on any failed check, mi
 6. **Execute the opening system transaction.**
    For `CheckpointOnly`, execute `ZoneInbox.advanceTempoHeaders(headers)`. It advances only the authenticated checkpoint and is the block's sole transaction.
 
-   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most `MAX_UNPROCESSED_DEPOSITS` (230) deposits and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
+   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most 230 deposits (`MAX_UNPROCESSED_DEPOSITS` before T15, `DEPOSITS_PER_BUCKET` from T15) and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
 
    Process deposits oldest-first under the [Deposit Queue](#deposit-queue) rules. Every encrypted user deposit consumes exactly one `DecryptionData` entry in deposit order; missing or extra entries make the system transaction revert. Verify the Chaum-Pedersen proof and AES-GCM ciphertext as described in [Onchain Decryption Verification](#onchain-decryption-verification). Invalid encryption or a failed recipient mint enqueues a bounce-back, while malformed queue inputs or inconsistent queue commitments reject the witness. Token initialization precedes deposit processing. In either import form, the opening transaction must leave `TempoState.tempoBlockHash` equal to `keccak256` of the final imported header. All system calldata, logs, receipts, and state changes contribute to the resulting block hash.
 
@@ -1510,7 +1518,7 @@ The Nitro verifier MUST validate the COSE signature and certificate chain, enfor
 
 ### Prover Service and Deployment
 
-The settlement prover runs the state transition function inside a Nitro Enclave. The parent node collects the complete `BatchWitness`; the enclave performs no RPC or filesystem reads while handling it. A configured settlement sequencer MUST use a remote attesting prover. In-process execution is available for observational shadow validation but does not produce a settlement proof.
+The settlement prover runs the state transition function inside a Nitro Enclave. The parent node collects the complete `BatchWitness`; the enclave performs no RPC or filesystem reads while handling it. A configured settlement sequencer MUST use a remote attesting prover.
 
 The service accepts one request and returns one response per connection. Each frame is a four-byte big-endian payload length followed by CBOR and is bounded by a configurable limit of 2 GiB by default. The request contains `version`, a caller-selected `requestId`, and `witness`; byte-heavy witness fields use CBOR byte strings rather than human-readable hex. Decoding is schema-driven and rejects unknown, duplicate, or trailing request data. A successful response echoes the version and request ID and contains both `BatchOutput` and `ProofBundle`. The prover accepts only chain specifications configured by its operator; a witness cannot supply its own trusted chain schedule. A production deployment MUST select the canonical per-zone chain specification independently of the witness and derive the portal from its zone ID.
 
@@ -1929,7 +1937,8 @@ interface IZonePortal {
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
     error InvalidProofOfPossession();
     error DepositTooSmall();
-    error DepositBlockCapacityExceeded(uint64 maximum);
+    error DepositBlockCapacityExceeded(uint64 maximum); // before T15
+    error FeeTooHigh(uint128 fee, uint128 maxFee); // T15+
     error TokenEnablementBlockCapacityExceeded(uint64 maximum);
     error TokenMetadataTooLong();
     error GasFeeRateTooHigh();
@@ -1948,7 +1957,11 @@ interface IZonePortal {
     error StaleLeadershipEpoch(uint64 expected, uint64 actual);
 
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
-    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64); // before T15
+    function DEPOSITS_PER_BUCKET() external view returns (uint64); // T15+
+    function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64); // T15+
+    function CONGESTION_MAX_TIER() external view returns (uint64); // T15+
+    function CONGESTION_MAX_FEE() external view returns (uint128); // T15+
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
     function MAX_TOKEN_METADATA_BYTES() external view returns (uint256);
     function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
@@ -2001,6 +2014,17 @@ interface IZonePortal {
         address token, uint128 amount, uint256 keyIndex,
         DepositPayload calldata encrypted, address tempoRefundRecipient
     ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function deposit(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function depositEncrypted(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev From T15, includes the congestion premium for the next block.
     function calculateDepositFee() external view returns (uint128 fee);
     function calculateBouncebackFee() external view returns (uint128 fee);
     function bouncebackGas() external view returns (uint64);
@@ -2225,6 +2249,7 @@ interface IZoneOutbox {
     event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
 
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TokenNotEnabled();

@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
-use alloy::primitives::Bytes;
+use alloy::primitives::{Address, B256, Bytes};
 use evm2::precompiles::{PrecompileError, PrecompileHalt, PrecompileResult};
+use tempo_precompiles::storage::{ConfigCommitmentWriteGas, StorageCtx};
 
 /// How a precompile call ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,4 +42,10 @@ impl PrecompileOutput {
     pub(crate) const fn is_revert(&self) -> bool {
         matches!(self.status, PrecompileStatus::Revert)
     }
+}
+
+pub(crate) fn seed_commitment(account: Address, commitment: B256) {
+    StorageCtx
+        .set_config_commitment(account, commitment, ConfigCommitmentWriteGas::Intrinsic)
+        .unwrap();
 }

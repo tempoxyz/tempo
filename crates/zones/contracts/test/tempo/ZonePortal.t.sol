@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ISignatureVerifier } from "tempo-std/interfaces/ISignatureVerifier.sol";
+import { IStorageCredits } from "tempo-std/interfaces/IStorageCredits.sol";
 import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
@@ -19,6 +20,7 @@ import {
     IWithdrawalReceiver,
     IZoneMessenger,
     IZonePortal,
+    PORTAL_CURRENT_DEPOSIT_QUEUE_HASH_SLOT,
     PORTAL_ENABLED_TOKENS_SLOT,
     PORTAL_ENCRYPTION_KEYS_SLOT,
     PORTAL_LEADER_ACTIVATION_TEMPO_BLOCK_SLOT,
@@ -26,6 +28,7 @@ import {
     PORTAL_ROLE_SLOT,
     Role,
     TokenEnablementTransition,
+    VirtualDeposit,
     Withdrawal,
     WithdrawalBounceBackDeposit,
     ZONE_FACTORY_ADDRESS,
@@ -595,21 +598,6 @@ contract ZonePortalTest is BaseTest {
         uint256 withdrawalQueueTail;
         uint64 lastProcessedDepositNumber;
         uint64 lastSyncedTempoBlockNumber;
-    }
-
-    struct WithdrawalCapacityTestState {
-        bytes32 processedDepositHash;
-        Withdrawal withdrawal;
-        uint256 reserve;
-        Withdrawal[] withdrawals;
-        Withdrawal successfulWithdrawal;
-        bytes32 withdrawalHash;
-        uint64 maximum;
-        uint64 maximumPublicDeposits;
-        bytes32 queueHashAtPublicCapacity;
-        uint256 bobBalanceBefore;
-        bytes32 successfulWithdrawalHash;
-        bytes32 queueHashAtCapacity;
     }
 
     function setUp() public override {
@@ -1582,7 +1570,7 @@ contract ZonePortalTest is BaseTest {
         assertTrue(portal.areDepositsActive(address(pathUSD)));
     }
 
-    function test_pause_blocksDepositsAndWithdrawalProcessingButAllowsBatchSubmission() public {
+    function test_pause_blocksValueMovementButAllowsBatchSubmission() public {
         vm.prank(sequencer);
         portal.pause();
 
@@ -1598,13 +1586,18 @@ contract ZonePortalTest is BaseTest {
         vm.expectRevert(IZonePortal.PortalIsPaused.selector);
         portal.processWithdrawals(new Withdrawal[](0), bytes32(0));
 
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.PortalIsPaused.selector);
+        portal.claimRefund(address(pathUSD));
+
         vm.roll(block.number + 1);
+        bytes32 prevBlockHash = portal.blockHash();
         _submitBatch(
             portal,
             uint64(block.number - 1),
             0,
             BlockTransition({
-                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("paused-settlement")
+                prevBlockHash: prevBlockHash, nextBlockHash: keccak256("paused-settlement")
             }),
             DepositQueueTransition({
                 prevProcessedHash: bytes32(0),
@@ -2534,59 +2527,260 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(portal)), amount1 + amount2);
     }
 
-    function test_deposit_enforcesOutstandingCapAcrossDepositTypes() public {
-        uint64 maximum = portal.MAX_UNPROCESSED_DEPOSITS();
-        uint64 maximumPublicDeposits = maximum - 20;
-        assertEq(maximum, 230);
-        _setEncKeyWithPoP(ENC_KEY_1);
+    function test_deposit_admitsPastFormerCapAndStoresCheckpoints() public {
+        uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
+        assertEq(entriesPerBucket, 230);
 
-        uint128 amount = 1;
-        vm.startPrank(alice);
-        pathUSD.approve(address(portal), uint256(maximum) + 2);
-        for (uint256 i; i < maximumPublicDeposits - 1; ++i) {
-            _deposit(portal, address(pathUSD), bob, amount, bytes32(i), bob);
-        }
-        portal.deposit(address(pathUSD), amount, 0, _makeDepositPayload(), alice);
+        _depositMany(entriesPerBucket, 1);
+        bytes32 checkpointHash = portal.currentDepositQueueHash();
+        _depositMany(1, 1);
 
-        bytes32 queueHashAtCapacity = portal.currentDepositQueueHash();
-        uint256 aliceBalanceAtCapacity = pathUSD.balanceOf(alice);
-        uint256 portalBalanceAtCapacity = pathUSD.balanceOf(address(portal));
-        assertEq(portal.depositCount(), maximumPublicDeposits);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IZonePortal.DepositBlockCapacityExceeded.selector, maximumPublicDeposits
-            )
-        );
-        _deposit(portal, address(pathUSD), bob, amount, bytes32("over cap"), bob);
-
-        assertEq(portal.currentDepositQueueHash(), queueHashAtCapacity);
-        assertEq(portal.depositCount(), maximumPublicDeposits);
-        assertEq(pathUSD.balanceOf(alice), aliceBalanceAtCapacity);
-        assertEq(pathUSD.balanceOf(address(portal)), portalBalanceAtCapacity);
-
-        vm.roll(block.number + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IZonePortal.DepositBlockCapacityExceeded.selector, maximumPublicDeposits
-            )
-        );
-        _deposit(portal, address(pathUSD), bob, amount, bytes32("next block"), bob);
-        vm.stopPrank();
-
-        assertEq(portal.depositCount(), maximumPublicDeposits);
+        assertEq(portal.depositCount(), entriesPerBucket + 1);
+        assertEq(portal.depositBucketBase(), 0);
+        (bytes32 hash0, uint64 weight0) = portal.depositBuckets(0);
+        assertEq(hash0, bytes32(0));
+        assertEq(weight0, 0);
+        (bytes32 hash1, uint64 weight1) = portal.depositBuckets(1);
+        assertEq(hash1, checkpointHash);
+        vm.expectRevert(bytes(""));
+        portal.depositBuckets(2);
     }
 
-    function test_processWithdrawals_preflightsRemainingDepositCapacity() public {
-        WithdrawalCapacityTestState memory state;
+    function test_deposit_bootstrapsCheckpointsAtExistingQueueHead() public {
+        // State written by a runtime without checkpoints: 100 entries, 90 settled.
+        bytes32 legacyHead = keccak256("legacy head");
+        vm.store(address(portal), PORTAL_CURRENT_DEPOSIT_QUEUE_HASH_SLOT, legacyHead);
+        vm.store(address(portal), bytes32(uint256(4)), bytes32(uint256(100) | (uint256(90) << 64)));
 
+        // Settling first creates the price snapshot slot, so the deposit only creates bootstrap slots.
+        _settleDepositsTo(95, bytes32(0), bytes32("entry 95"));
+
+        // Bootstrap creates the base, the array length, and checkpoint 0's hash, one credit each.
+        _setStorageCredits(address(portal), 4);
+        _depositMany(1, 1);
+        assertEq(StdPrecompiles.STORAGE_CREDITS.balanceOf(address(portal)), 1);
+        _assertRefundMode();
+
+        assertEq(portal.depositBucketBase(), 100);
+        assertEq(portal.depositCount(), 101);
+        (bytes32 hash0, uint64 weight0) = portal.depositBuckets(0);
+        assertEq(hash0, legacyHead);
+        assertEq(weight0, 0);
+        vm.expectRevert(bytes(""));
+        portal.depositBuckets(1);
+
+        // Checkpoint 0 stays until its successor settles.
+        _settleDepositsTo(101, bytes32("entry 95"), portal.currentDepositQueueHash());
+        assertEq(portal.nextDepositBucketToPrune(), 0);
+    }
+
+    function test_deposit_checkpointWriteSpendsStorageCreditsDirectly() public {
+        uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
+        _depositMany(entriesPerBucket - 1, 1);
+        // The checkpoint's new slot spends the available credit directly.
+        _setStorageCredits(address(portal), 1);
+        vm.prank(alice);
+        uint256 gasBefore = gasleft();
+        _deposit(portal, address(pathUSD), bob, 1, bytes32("checkpoint 1"), bob);
+        uint256 withCredits = gasBefore - gasleft();
+        assertEq(StdPrecompiles.STORAGE_CREDITS.balanceOf(address(portal)), 0);
+        _assertRefundMode();
+
+        _depositMany(entriesPerBucket - 1, 1);
+        // Without credits the write pays the full creation cost and still succeeds.
+        vm.prank(alice);
+        gasBefore = gasleft();
+        _deposit(portal, address(pathUSD), bob, 1, bytes32("checkpoint 2"), bob);
+        uint256 withoutCredits = gasBefore - gasleft();
+        (bytes32 hash,) = portal.depositBuckets(2);
+        assertEq(hash, portal.currentDepositQueueHash());
+        _assertRefundMode();
+        emit log_named_uint("checkpoint append with credits", withCredits);
+        emit log_named_uint("checkpoint append without credits", withoutCredits);
+        assertGt(withoutCredits, withCredits + 200_000);
+    }
+
+    function test_deposit_checkpointSpendsCreditsPrunedInSameAppend() public {
+        uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
+        _depositMany(entriesPerBucket * 4 - 1, 1);
+        // Settlement prunes checkpoints 0 and 1 and leaves checkpoint 2 eligible.
+        _settleDepositsTo(entriesPerBucket * 3, bytes32(0), bytes32("checkpoint 3"));
+        assertEq(portal.nextDepositBucketToPrune(), 2);
+        _setStorageCredits(address(portal), 0);
+
+        // The append prunes checkpoint 2 before writing checkpoint 4 with the credits it earns.
+        vm.roll(block.number + 1);
+        _depositMany(1, 1);
+        assertEq(portal.nextDepositBucketToPrune(), 3);
+        assertEq(StdPrecompiles.STORAGE_CREDITS.balanceOf(address(portal)), 0);
+        (bytes32 hash,) = portal.depositBuckets(4);
+        assertEq(hash, portal.currentDepositQueueHash());
+    }
+
+    function test_deposit_chargesCongestionPremiumFixedPerBlock() public {
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
+        uint128 premium = portal.CONGESTION_MAX_FEE() / portal.CONGESTION_MAX_TIER();
+        uint256 adminBalance = pathUSD.balanceOf(admin);
+
+        _depositMany(tierDeposits, 1e6);
+        // The quote is for the next block. This block keeps the free tier it started at.
+        assertEq(portal.calculateDepositFee(), premium);
+        _depositMany(1, 1e6);
+        assertEq(pathUSD.balanceOf(admin), adminBalance);
+        assertEq(portal.depositPriceTier(), 0);
+
+        vm.roll(block.number + 1);
+        assertEq(portal.calculateDepositFee(), premium);
+
+        // Entry points without `maxFee` cap the fee at the operational fee.
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, premium, 0));
+        portal.deposit(address(pathUSD), 1e6, 0, _depositPayload(bob, "capped"), bob);
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, premium, premium - 1)
+        );
+        portal.depositEncrypted(
+            address(pathUSD), 1e6, 0, _depositPayload(bob, "under"), bob, premium - 1
+        );
+
+        // The premium is paid to the admin with the operational fee.
+        vm.prank(alice);
+        portal.deposit(address(pathUSD), 1e6, 0, _depositPayload(bob, "paid"), bob, premium);
+
+        assertEq(pathUSD.balanceOf(admin), adminBalance + premium);
+        assertEq(portal.depositPriceBlock(), block.number);
+        assertEq(portal.depositPriceTier(), 1);
+    }
+
+    function test_calculateDepositFee_capsPremiumAfterRamp() public {
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
+        uint64 maxTier = portal.CONGESTION_MAX_TIER();
+        // `depositCount` occupies the low 8 bytes of slot 4. `lastProcessedDepositNumber` stays zero.
+        bytes32 depositCountSlot = bytes32(uint256(4));
+
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * (maxTier - 1))));
+        assertEq(
+            portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE() * (maxTier - 1) / maxTier
+        );
+
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * maxTier)));
+        assertEq(portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE());
+
+        vm.store(address(portal), depositCountSlot, bytes32(uint256(tierDeposits * maxTier * 10)));
+        assertEq(portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE());
+    }
+
+    function test_submitBatch_keepsLatestSettledCheckpoint() public {
+        uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
+        uint64 withinBucket = entriesPerBucket + 70;
+        uint64 headCount = entriesPerBucket * 6;
+        bytes32 withinBucketHash;
         vm.startPrank(alice);
-        pathUSD.approve(address(portal), 1000e6);
+        pathUSD.approve(address(portal), type(uint256).max);
+        for (uint256 i; i < headCount; ++i) {
+            _deposit(portal, address(pathUSD), bob, 1, bytes32(i), bob);
+            if (i + 1 == withinBucket) withinBucketHash = portal.currentDepositQueueHash();
+        }
+        vm.stopPrank();
+        (bytes32 firstCheckpoint,) = portal.depositBuckets(1);
+        bytes32 head = portal.currentDepositQueueHash();
+
+        // Settling exactly to checkpoint 1 prunes checkpoint 0 and keeps checkpoint 1.
+        _settleDepositsTo(entriesPerBucket, bytes32(0), firstCheckpoint);
+        assertEq(portal.nextDepositBucketToPrune(), 1);
+        (bytes32 hash,) = portal.depositBuckets(0);
+        assertEq(hash, bytes32(0));
+        (hash,) = portal.depositBuckets(1);
+        assertEq(hash, firstCheckpoint);
+
+        // A later settlement in the same bucket keeps the checkpoint it passed.
+        _settleDepositsTo(withinBucket, firstCheckpoint, withinBucketHash);
+        assertEq(portal.nextDepositBucketToPrune(), 1);
+
+        // Settling past five more checkpoints makes checkpoints 1-5 deletable. One run deletes 2.
+        _settleDepositsTo(headCount, withinBucketHash, head);
+        assertEq(portal.nextDepositBucketToPrune(), 3);
+        (hash,) = portal.depositBuckets(2);
+        assertEq(hash, bytes32(0));
+        (hash,) = portal.depositBuckets(3);
+        assertTrue(hash != bytes32(0));
+
+        // Each later append prunes two more, and pruning keeps the latest settled checkpoint.
+        vm.roll(block.number + 1);
+        _depositMany(1, 1);
+        assertEq(portal.nextDepositBucketToPrune(), 5);
+        _depositMany(1, 1);
+        assertEq(portal.nextDepositBucketToPrune(), 6);
+        (hash,) = portal.depositBuckets(5);
+        assertEq(hash, bytes32(0));
+        (hash,) = portal.depositBuckets(6);
+        assertEq(hash, head);
+    }
+
+    function test_deposit_settlementEarlierInBlockLowersTier() public {
+        uint64 entriesPerBucket = portal.DEPOSITS_PER_BUCKET();
+        uint128 maxFee = portal.CONGESTION_MAX_FEE();
+        uint64 maxTier = portal.CONGESTION_MAX_TIER();
+        _depositMany(entriesPerBucket * 2, 1e6);
+        (bytes32 firstCheckpoint,) = portal.depositBuckets(1);
+
+        // Settlement drops the tier from 2 to 1 within the block and lowers the block's tier.
+        _settleDepositsTo(entriesPerBucket, bytes32(0), firstCheckpoint);
+        assertEq(portal.depositPriceBlock(), block.number);
+        assertEq(portal.depositPriceTier(), 1);
+        uint128 quote = portal.calculateDepositFee();
+        assertEq(quote, maxFee / maxTier);
+
+        // Appends after the quote raise the current tier back to 2, but not the block's.
+        vm.startPrank(alice);
+        for (uint256 i; i < entriesPerBucket; ++i) {
+            portal.depositEncrypted(
+                address(pathUSD), 1e6, 0, _depositPayload(bob, bytes32(i)), bob, quote
+            );
+        }
+        vm.stopPrank();
+        assertEq(portal.calculateDepositFee(), maxFee * 2 / maxTier);
+
+        uint256 adminBalance = pathUSD.balanceOf(admin);
+        vm.prank(alice);
+        portal.depositEncrypted(
+            address(pathUSD), 1e6, 0, _depositPayload(bob, "quoted"), bob, quote
+        );
+        assertEq(pathUSD.balanceOf(admin), adminBalance + quote);
+        assertEq(portal.depositPriceTier(), 1);
+    }
+
+    function test_deposit_revertsWhenAdminFeeTransferFails() public {
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
+        _depositMany(tierDeposits, 1e6);
+        vm.roll(block.number + 1);
+        uint128 premium = portal.calculateDepositFee();
+        bytes32 queueHash = portal.currentDepositQueueHash();
+
+        vm.mockCallRevert(
+            address(pathUSD),
+            abi.encodeCall(ITIP20.transfer, (admin, uint256(premium))),
+            "admin blocked"
+        );
+        vm.expectRevert("admin blocked");
+        vm.prank(alice);
+        portal.depositEncrypted(
+            address(pathUSD), 1e6, 0, _depositPayload(bob, "blocked"), bob, premium
+        );
+        assertEq(portal.depositCount(), tierDeposits);
+        assertEq(portal.currentDepositQueueHash(), queueHash);
+    }
+
+    function test_processWithdrawals_appendsBounceBacksPastFormerCap() public {
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), type(uint256).max);
         _deposit(portal, address(pathUSD), alice, 1000e6, bytes32("escrow"), alice);
         vm.stopPrank();
+        bytes32 processedDepositHash = portal.currentDepositQueueHash();
 
-        state.processedDepositHash = portal.currentDepositQueueHash();
-        state.withdrawal = _withdrawal(
+        Withdrawal memory failing = _withdrawal(
             address(pathUSD),
             alice,
             address(gasConsumingReceiver),
@@ -2596,18 +2790,11 @@ contract ZonePortalTest is BaseTest {
             bob,
             ""
         );
-        state.reserve = 20;
-        state.withdrawals = new Withdrawal[](state.reserve + 1);
-        for (uint256 i; i < state.reserve; ++i) {
-            state.withdrawals[i] = state.withdrawal;
-        }
-        state.successfulWithdrawal =
-            _withdrawal(address(pathUSD), alice, bob, 1, bytes32("success"), 0, alice, "");
-        state.withdrawals[state.reserve] = state.successfulWithdrawal;
-
-        for (uint256 i = state.withdrawals.length; i > 0; --i) {
-            state.withdrawalHash =
-                keccak256(abi.encode(state.withdrawals[i - 1], state.withdrawalHash));
+        Withdrawal[] memory withdrawals = new Withdrawal[](21);
+        bytes32 withdrawalHash;
+        for (uint256 i; i < withdrawals.length; ++i) {
+            withdrawals[i] = failing;
+            withdrawalHash = keccak256(abi.encode(failing, withdrawalHash));
         }
 
         vm.roll(block.number + 1);
@@ -2616,92 +2803,84 @@ contract ZonePortalTest is BaseTest {
             uint64(block.number - 1),
             0,
             BlockTransition({
-                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("bounce-back-cap")
+                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("bounce-backs")
             }),
             DepositQueueTransition({
                 prevProcessedHash: bytes32(0),
-                nextProcessedHash: state.processedDepositHash,
+                nextProcessedHash: processedDepositHash,
                 prevDepositNumber: 0,
                 nextDepositNumber: 1
             }),
-            state.withdrawalHash,
+            withdrawalHash,
             "",
             ""
         );
 
-        state.maximum = portal.MAX_UNPROCESSED_DEPOSITS();
-        state.maximumPublicDeposits = state.maximum - uint64(state.reserve);
+        _depositMany(portal.DEPOSITS_PER_BUCKET(), 1);
+        uint64 countBefore = portal.depositCount();
+
+        portal.processWithdrawals(withdrawals, bytes32(0));
+
+        assertEq(portal.depositCount(), countBefore + withdrawals.length);
+        assertEq(portal.withdrawalQueueHead(), 1);
+    }
+
+    function test_deposit_exemptAppendEarlierInBlockKeepsStartTier() public {
+        uint64 tierDeposits = portal.DEPOSITS_PER_CONGESTION_TIER();
         vm.startPrank(alice);
-        pathUSD.approve(address(portal), state.maximum);
-        for (uint256 i; i < state.maximumPublicDeposits; ++i) {
-            _deposit(portal, address(pathUSD), bob, 1, bytes32(i), bob);
-        }
+        pathUSD.approve(address(portal), type(uint256).max);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32("escrow"), alice);
         vm.stopPrank();
+        _depositMany(tierDeposits - 2, 1);
 
-        state.queueHashAtPublicCapacity = portal.currentDepositQueueHash();
-        state.bobBalanceBefore = pathUSD.balanceOf(bob);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(IZonePortal.DepositBlockCapacityExceeded.selector, state.maximum)
+        Withdrawal memory failing = _withdrawal(
+            address(pathUSD),
+            alice,
+            address(gasConsumingReceiver),
+            1,
+            bytes32("failed"),
+            50_000,
+            bob,
+            ""
         );
-        portal.processWithdrawals(state.withdrawals, bytes32(0));
+        _enqueueWithdrawal(failing);
 
-        assertEq(portal.currentDepositQueueHash(), state.queueHashAtPublicCapacity);
-        assertEq(portal.depositCount(), state.maximumPublicDeposits + 1);
-        assertEq(pathUSD.balanceOf(bob), state.bobBalanceBefore);
-        assertEq(portal.withdrawalQueueHead(), 0);
-        assertEq(portal.withdrawalQueueSlot(0), state.withdrawalHash);
-
-        Withdrawal[] memory bounceBacks = new Withdrawal[](state.reserve);
-        for (uint256 i; i < state.reserve; ++i) {
-            bounceBacks[i] = state.withdrawal;
-        }
-        state.successfulWithdrawalHash =
-            keccak256(abi.encode(state.successfulWithdrawal, bytes32(0)));
-        portal.processWithdrawals(bounceBacks, state.successfulWithdrawalHash);
-
-        state.queueHashAtCapacity = portal.currentDepositQueueHash();
-        assertTrue(state.queueHashAtCapacity != state.queueHashAtPublicCapacity);
-        assertEq(portal.depositCount(), state.maximum + 1);
-        assertEq(pathUSD.balanceOf(bob), state.bobBalanceBefore);
-        assertEq(portal.withdrawalQueueHead(), 0);
-        assertEq(portal.withdrawalQueueSlot(0), state.successfulWithdrawalHash);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(IZonePortal.DepositBlockCapacityExceeded.selector, state.maximum)
+        // The bounce-back fixes the block's tier before it reaches the next tier.
+        vm.roll(block.number + 1);
+        portal.processWithdrawals(_singleWithdrawal(failing), bytes32(0));
+        assertEq(portal.depositCount(), tierDeposits);
+        assertEq(portal.depositPriceBlock(), block.number);
+        assertEq(portal.depositPriceTier(), 0);
+        assertEq(
+            portal.calculateDepositFee(), portal.CONGESTION_MAX_FEE() / portal.CONGESTION_MAX_TIER()
         );
-        portal.processWithdrawals(_singleWithdrawal(state.successfulWithdrawal), bytes32(0));
 
-        assertEq(portal.currentDepositQueueHash(), state.queueHashAtCapacity);
-        assertEq(portal.depositCount(), state.maximum + 1);
-        assertEq(pathUSD.balanceOf(bob), state.bobBalanceBefore);
-        assertEq(portal.withdrawalQueueHead(), 0);
-        assertEq(portal.withdrawalQueueSlot(0), state.successfulWithdrawalHash);
+        // The legacy entry point caps the fee at the operational fee, so it passes only at tier 0.
+        vm.prank(alice);
+        _deposit(portal, address(pathUSD), bob, 1, bytes32("start tier"), bob);
+        assertEq(portal.depositCount(), tierDeposits + 1);
+    }
 
+    /// @dev Settles the deposit queue from its settled position to `next` in a new Tempo block.
+    function _settleDepositsTo(uint64 next, bytes32 prevHash, bytes32 nextHash) internal {
         vm.roll(block.number + 1);
         _submitBatch(
             portal,
             uint64(block.number - 1),
             0,
             BlockTransition({
-                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256("capacity-reopened")
+                prevBlockHash: portal.blockHash(), nextBlockHash: keccak256(abi.encode(next))
             }),
             DepositQueueTransition({
-                prevProcessedHash: state.processedDepositHash,
-                nextProcessedHash: state.queueHashAtCapacity,
-                prevDepositNumber: 1,
-                nextDepositNumber: state.maximum + 1
+                prevProcessedHash: prevHash,
+                nextProcessedHash: nextHash,
+                prevDepositNumber: portal.lastProcessedDepositNumber(),
+                nextDepositNumber: next
             }),
             bytes32(0),
             "",
             ""
         );
-
-        portal.processWithdrawals(_singleWithdrawal(state.successfulWithdrawal), bytes32(0));
-
-        assertEq(pathUSD.balanceOf(bob), state.bobBalanceBefore + state.successfulWithdrawal.amount);
-        assertEq(portal.withdrawalQueueHead(), 1);
-        assertEq(portal.withdrawalQueueSlot(0), bytes32(0));
     }
 
     function test_deposit_hashChainStructure() public {
@@ -3584,7 +3763,7 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(portal)), amount);
     }
 
-    function test_callbackWithdrawal_usesReservedCapacityAtPublicCap() public {
+    function test_callbackWithdrawal_returnedDepositPaysNoPremium() public {
         uint128 amount = 500e6;
         _fundCallbackWithdrawal(amount);
 
@@ -3601,36 +3780,102 @@ contract ZonePortalTest is BaseTest {
         );
         _enqueueWithdrawal(withdrawal);
 
-        uint64 publicCapacity = portal.MAX_UNPROCESSED_DEPOSITS() - 20;
-        uint64 outstanding = portal.depositCount() - portal.lastProcessedDepositNumber();
-
-        vm.startPrank(alice);
-        pathUSD.approve(address(portal), publicCapacity - outstanding);
-        for (uint256 i; i < publicCapacity - outstanding; ++i) {
-            _deposit(portal, address(pathUSD), bob, 1, bytes32(i), bob);
-        }
-        vm.stopPrank();
-
-        assertEq(portal.depositCount() - portal.lastProcessedDepositNumber(), publicCapacity);
+        _depositMany(portal.DEPOSITS_PER_CONGESTION_TIER(), 1);
+        vm.roll(block.number + 1);
+        assertGt(portal.calculateDepositFee(), 0);
 
         bytes32 queueHashBefore = portal.currentDepositQueueHash();
         GatewayCallbackData memory callback = abi.decode(callbackData, (GatewayCallbackData));
         Deposit memory expectedDeposit = Deposit({
             token: address(pathUSD),
             sender: address(zoneGateway),
-            amount: amount - portal.calculateDepositFee(),
+            amount: amount,
             tempoRefundRecipient: alice,
             keyIndex: callback.keyIndex,
             encrypted: callback.encrypted
         });
 
+        uint256 adminBalance = pathUSD.balanceOf(admin);
         portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
 
         assertEq(
             portal.currentDepositQueueHash(),
             DepositQueueLib.enqueueDeposit(queueHashBefore, expectedDeposit)
         );
-        assertEq(portal.depositCount() - portal.lastProcessedDepositNumber(), publicCapacity + 1);
+        assertEq(pathUSD.balanceOf(admin), adminBalance);
+    }
+
+    function test_callbackWithdrawal_completingBucketSpendsCredit() public {
+        // The checkpoint write inside the callback spends the portal's credit directly.
+        assertTrue(_callbackDepositCompletingBucket(400_000, 1));
+        assertEq(StdPrecompiles.STORAGE_CREDITS.balanceOf(address(portal)), 0);
+        _assertRefundMode();
+    }
+
+    /// @dev Returns whether a callback deposit completing a bucket is appended rather than bounced.
+    function _callbackDepositCompletingBucket(
+        uint64 gasLimit,
+        uint64 credits
+    )
+        internal
+        returns (bool)
+    {
+        uint128 amount = 500e6;
+        _fundCallbackWithdrawal(amount);
+        Withdrawal memory withdrawal = _withdrawal(
+            address(pathUSD),
+            alice,
+            address(zoneGateway),
+            amount,
+            bytes32(0),
+            gasLimit,
+            alice,
+            _callbackData(GatewayFlow.Deposit)
+        );
+        _enqueueWithdrawal(withdrawal);
+        _depositMany(portal.DEPOSITS_PER_BUCKET() - 1 - portal.depositCount(), 1);
+        GatewayCallbackData memory callback =
+            abi.decode(withdrawal.callbackData, (GatewayCallbackData));
+        bytes32 expectedHash = DepositQueueLib.enqueueDeposit(
+            portal.currentDepositQueueHash(),
+            Deposit({
+                token: address(pathUSD),
+                sender: address(zoneGateway),
+                amount: amount,
+                tempoRefundRecipient: alice,
+                keyIndex: callback.keyIndex,
+                encrypted: callback.encrypted
+            })
+        );
+        _setStorageCredits(address(portal), credits);
+        portal.processWithdrawals(_singleWithdrawal(withdrawal), bytes32(0));
+        assertEq(portal.depositCount(), portal.DEPOSITS_PER_BUCKET());
+        return portal.currentDepositQueueHash() == expectedHash;
+    }
+
+    /// @dev Appends `count` deposits of `amount` from alice to bob.
+    function _depositMany(uint256 count, uint128 amount) internal {
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), type(uint256).max);
+        for (uint256 i; i < count; ++i) {
+            _deposit(portal, address(pathUSD), bob, amount, bytes32(i), bob);
+        }
+        vm.stopPrank();
+    }
+
+    function _assertRefundMode() internal view {
+        assertEq(
+            uint8(StdPrecompiles.STORAGE_CREDITS.modeOf(address(portal))),
+            uint8(IStorageCredits.Mode.Refund)
+        );
+    }
+
+    function _setStorageCredits(address account, uint64 credits) internal {
+        vm.store(
+            StdPrecompiles.STORAGE_CREDITS_ADDRESS,
+            bytes32(uint256(uint160(account))),
+            bytes32(uint256(credits))
+        );
     }
 
     function test_callbackWithdrawal_failureBouncesAndAdvancesQueue() public {
@@ -5788,6 +6033,41 @@ contract ZonePortalTest is BaseTest {
         assertEq(pathUSD.balanceOf(bob), bobBalanceBefore + amount);
     }
 
+    /// @notice A virtual address can't be a refund recipient, since it can never claim a refund.
+    function test_deposit_revertsForVirtualRefundRecipient() public {
+        address virtualRecipient = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(0x58e21090), bytes10(0xfdfdfdfdfdfdfdfdfdfd), bytes6(uint48(1))
+                )
+            )
+        );
+        assertTrue(StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(virtualRecipient));
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), virtualRecipient);
+        vm.stopPrank();
+    }
+
+    /// @notice A zone deposit address can't be a refund recipient, since it can never claim one.
+    function test_deposit_revertsForZoneDepositAddressRefundRecipient() public {
+        address depositAddress = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(uint32(7)), bytes9(0xfcfcfcfcfcfcfcfcfc), uint8(1), bytes6(uint48(1))
+                )
+            )
+        );
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), depositAddress);
+        vm.stopPrank();
+    }
+
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.
     function test_withdrawalQueue_acceptsBacklogBeyondFormerCapacity() public {
         vm.roll(genesisTempoBlockNumber + 1);
@@ -5965,6 +6245,187 @@ contract ZonePortalTest is BaseTest {
     function _setBouncebackGas(uint64 gasAmount) internal {
         vm.prank(admin);
         portal.setBouncebackGas(gasAmount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                     TIP-1094 VIRTUAL DEPOSITS
+    //////////////////////////////////////////////////////////////*/
+
+    uint128 internal constant VIRTUAL_GROSS = 1000e6;
+
+    function _virtualDestination(uint32 zone, uint8 version) internal pure returns (address) {
+        return address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(zone),
+                    bytes9(0xfcfcfcfcfcfcfcfcfc),
+                    bytes1(version),
+                    bytes6(0x010203040506)
+                )
+            )
+        );
+    }
+
+    /// Simulates routing: debit alice, credit the portal, then call from the token address.
+    function _routeVirtual(
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        internal
+        returns (bytes32)
+    {
+        vm.prank(alice);
+        pathUSD.transfer(address(portal), VIRTUAL_GROSS);
+        vm.prank(address(pathUSD));
+        return portal.depositVirtual(alice, VIRTUAL_GROSS, destination, hasMemo, memo);
+    }
+
+    function test_depositVirtual_queuesNetAmountAndHashesAsZoneVirtual() public {
+        address destination = _virtualDestination(testZoneId, 1);
+        bytes32 previous = portal.currentDepositQueueHash();
+        uint64 countBefore = portal.depositCount();
+        uint128 fee = portal.calculateDepositFee();
+
+        bytes32 head = _routeVirtual(destination, true, bytes32(uint256(7)));
+
+        VirtualDeposit memory expected = VirtualDeposit({
+            token: address(pathUSD),
+            originator: alice,
+            amount: VIRTUAL_GROSS - fee,
+            destination: destination,
+            hasMemo: true,
+            memo: bytes32(uint256(7))
+        });
+        assertEq(head, DepositQueueLib.enqueueVirtual(previous, expected));
+        assertEq(portal.currentDepositQueueHash(), head);
+        assertEq(portal.depositCount(), countBefore + 1);
+    }
+
+    function test_depositVirtual_rejectsNonTokenCallers() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.TokenNotEnabled.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
+    }
+
+    function test_depositVirtual_rejectsOtherZonesAndBadMemos() public {
+        vm.startPrank(address(pathUSD));
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId + 1, 1), false, bytes32(0)
+        );
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(uint256(1))
+        );
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(alice, VIRTUAL_GROSS, bob, false, bytes32(0));
+        vm.stopPrank();
+    }
+
+    /// @notice Checks run in the documented order: memo, format and zone, version, originator.
+    function test_depositVirtual_errorOrder() public {
+        address retired = _virtualDestination(testZoneId, 1);
+        vm.prank(admin);
+        portal.retireAddressVersionsBelow(2);
+
+        vm.startPrank(address(pathUSD));
+        // A nonzero memo without hasMemo wins over a retired version and a portal originator.
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(uint256(1)));
+        // A retired version wins over a portal originator.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AddressVersionRetired.selector, 1));
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(0));
+        vm.stopPrank();
+    }
+
+    /// @notice A gateway can't originate a virtual deposit: the originator is also the refund
+    ///         recipient, which must be an allowed account, as for ECIES deposits.
+    function test_depositVirtual_rejectsGatewayOriginatorUnderAccessControl() public {
+        address gateway = address(0x6a7e);
+        vm.startPrank(admin);
+        portal.setAccessMode(true);
+        portal.setGatewayMode(true);
+        portal.setGateway(gateway, true);
+        vm.stopPrank();
+
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AccountNotAllowed.selector, gateway));
+        portal.depositVirtual(
+            gateway, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
+    }
+
+    function test_retireAddressVersionsBelow_isRaiseOnly() public {
+        assertEq(portal.minimumAddressVersion(), 1);
+
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.retireAddressVersionsBelow(2);
+
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 1));
+        portal.retireAddressVersionsBelow(1);
+        // One version per call: skipping ahead reverts.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 255));
+        portal.retireAddressVersionsBelow(255);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 3));
+        portal.retireAddressVersionsBelow(3);
+        portal.retireAddressVersionsBelow(2);
+        portal.retireAddressVersionsBelow(3);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 2));
+        portal.retireAddressVersionsBelow(2);
+        vm.stopPrank();
+        assertEq(portal.minimumAddressVersion(), 3);
+
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AddressVersionRetired.selector, 2));
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 2), false, bytes32(0)
+        );
+
+        _routeVirtual(_virtualDestination(testZoneId, 3), false, bytes32(0));
+    }
+
+    function test_depositVirtual_rejectsPortalOriginators() public {
+        address destination = _virtualDestination(testZoneId, 1);
+        vm.startPrank(address(pathUSD));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, destination, false, bytes32(0));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(
+            address(0x5Ad0000000000000000000000000000000000002),
+            VIRTUAL_GROSS,
+            destination,
+            false,
+            bytes32(0)
+        );
+        vm.stopPrank();
+    }
+
+    function test_depositVirtual_rejectsDepositsBelowFees() public {
+        vm.fee(1e12);
+        _setZoneGasRate(1);
+        _setBouncebackGas(300_000);
+        vm.prank(address(pathUSD));
+        vm.expectRevert(IZonePortal.DepositTooSmall.selector);
+        portal.depositVirtual(alice, 0, _virtualDestination(testZoneId, 1), false, bytes32(0));
+    }
+
+    function test_depositVirtual_revertsDuringCongestion() public {
+        uint128 premium = portal.CONGESTION_MAX_FEE() / portal.CONGESTION_MAX_TIER();
+        _depositMany(portal.DEPOSITS_PER_CONGESTION_TIER(), 1e6);
+        vm.roll(block.number + 1);
+        assertEq(portal.calculateDepositFee(), premium);
+
+        // A plain transfer cannot pass `maxFee`, so it accepts only the operational fee.
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, premium, 0));
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
     }
 
 }

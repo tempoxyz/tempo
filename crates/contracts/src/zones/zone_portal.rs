@@ -112,6 +112,20 @@ crate::sol! {
             uint64 depositNumber
         );
 
+        /// TIP-1094: a TIP-20 transfer to a zone deposit address was queued.
+        event VirtualDepositMade(
+            bytes32 indexed newCurrentDepositQueueHash,
+            address indexed originator,
+            address token,
+            address destination,
+            uint128 netAmount,
+            uint128 fee,
+            uint64 depositNumber,
+            bool hasMemo,
+            bytes32 memo
+        );
+        event AddressVersionsRetired(uint8 minimumVersion);
+
         /// Event emitted when a new TIP-20 token is enabled for bridging.
         /// Includes token metadata so the zone can create a matching TIP-20.
         event TokenEnabled(address indexed token, string name, string symbol, string currency);
@@ -239,6 +253,7 @@ crate::sol! {
         error InvalidCiphertextLength(uint256 actual, uint256 expected);
         error InvalidProofOfPossession();
         error DepositTooSmall();
+        error FeeTooHigh(uint128 fee, uint128 maxFee);
         error TokenEnablementBlockCapacityExceeded(uint64 maximum);
         error TokenMetadataTooLong();
         error GasFeeRateTooHigh();
@@ -253,6 +268,9 @@ crate::sol! {
         error InvalidQuorumCertificate();
         error CallbackDidNotReturnToZone();
         error InvalidBouncebackRecipient();
+        error AddressVersionRetired(uint8 version);
+        error InvalidVersionRetirement(uint8 minimumVersion);
+        error InvalidVirtualDeposit();
         error TokenNotEnabled();
         error DepositBlockCapacityExceeded(uint64 maximum);
         error InvalidCallbackTarget();
@@ -273,6 +291,16 @@ crate::sol! {
         function setGatewayMode(bool enforced) external;
         function transfersEnabled() external view returns (bool);
         function setTransfersEnabled(bool enabled) external;
+        /// TIP-1094: called by native TIP-20 routing after crediting the portal. Active from T15.
+        function depositVirtual(
+            address originator,
+            uint128 grossAmount,
+            address destination,
+            bool hasMemo,
+            bytes32 memo
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+        function minimumAddressVersion() external view returns (uint8);
+        function retireAddressVersionsBelow(uint8 minimumVersion) external;
         function hasRole(address account, Role role) external view returns (bool);
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;
@@ -309,7 +337,18 @@ crate::sol! {
         function initialize(uint32 zoneId, address initialToken, bool accessMode, bool gatewayMode, address[] calldata allowedAccounts, address[] calldata zoneGateways, address admin, address messenger, address[] calldata sequencers, uint8 threshold, address verifier, string calldata rpcUrl) external;
         function deliverWithdrawal(address to, address token, uint128 amount, bytes32 memo, uint64 gasLimit, bytes calldata callbackData) external;
         function MAX_DEPOSITS_PER_TEMPO_BLOCK() external view returns (uint64);
+        /// Pre-T15 only.
         function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+        function DEPOSITS_PER_BUCKET() external view returns (uint64);
+        function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
+        function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64);
+        function CONGESTION_MAX_TIER() external view returns (uint64);
+        function CONGESTION_MAX_FEE() external view returns (uint128);
+        function depositBucketBase() external view returns (uint64);
+        function nextDepositBucketToPrune() external view returns (uint64);
+        function depositPriceBlock() external view returns (uint64);
+        function depositPriceTier() external view returns (uint64);
+        function depositBuckets(uint256 index) external view returns (bytes32 hash, uint64 cumulativeWeight);
         function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
         function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
         function paused() external view returns (bool);
@@ -371,12 +410,30 @@ crate::sol! {
             address tempoRefundRecipient
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
+        function deposit(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient,
+            uint128 maxFee
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
         function depositEncrypted(
             address token,
             uint128 amount,
             uint256 keyIndex,
             DepositPayload calldata encrypted,
             address tempoRefundRecipient
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
+        function depositEncrypted(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient,
+            uint128 maxFee
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
         function setSequencerEncryptionKey(

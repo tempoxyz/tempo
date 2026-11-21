@@ -121,9 +121,14 @@ contract PortalFixture {
 /// @notice Local-only dummy verifier and synthetic batch submitter. No zone or prover runs.
 contract SettlementFixture {
     mapping(address => bytes32) private processedHash;
+    /// Batches anchor to Tempo block `block.number - anchorOffset`. The portal reads that hash
+    /// from EIP-2935, so the offset must be at least 1. Nodes whose history contract lags the
+    /// head (deferred execution) need a larger offset.
+    uint256 private immutable anchorOffset;
 
-    constructor() {
+    constructor(uint256 anchorOffset_) {
         require(block.chainid == 1337, "local benchmark chain only");
+        anchorOffset = anchorOffset_;
     }
 
     // Accept either verifier ABI (before or after TIP-1096). No proof is checked.
@@ -149,7 +154,7 @@ contract SettlementFixture {
             portal.depositCount()
         );
         // The real portal authenticates a recent Tempo anchor even with a dummy verifier.
-        uint64 anchor = uint64(block.number - 1);
+        uint64 anchor = uint64(block.number - anchorOffset);
         bytes[] memory signatures = new bytes[](0);
         // TIP-1096 adds the enabled-token cursor to the settlement ABI.
         try portal.lastProcessedEnabledTokenCount() returns (uint64 tokens) {

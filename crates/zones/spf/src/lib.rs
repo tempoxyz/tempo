@@ -15,7 +15,7 @@ use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
 use zone_primitives::constants::{
-    MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
+    DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
     ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
 
@@ -458,7 +458,7 @@ fn validate_system_inputs(block: &ZoneBlock, index: usize) -> Result<(), Error> 
             enabled_tokens,
             ..
         } => {
-            if deposits.len() > MAX_UNPROCESSED_DEPOSITS
+            if deposits.len() > DEPOSITS_PER_BUCKET
                 || enabled_tokens.len() > MAX_UNPROCESSED_TOKEN_ENABLEMENTS
             {
                 return Err(Error::PortalWorkCapacityExceeded { block_index: index });
@@ -466,6 +466,7 @@ fn validate_system_inputs(block: &ZoneBlock, index: usize) -> Result<(), Error> 
         }
         TempoImport::CheckpointOnly { .. } => {
             if !block.transactions.is_empty()
+                || block.virtual_address_key.is_some()
                 || block.finalize_withdrawal_batch_count.is_some()
                 || !block.finalize_withdrawal_batch_encrypted_senders.is_empty()
             {
@@ -504,11 +505,15 @@ pub enum Error {
     /// A read against the provided state witness failed.
     #[error(transparent)]
     WitnessDatabase(#[from] WitnessDatabaseError),
-    /// The Tempo witness omitted an L1 storage proof required by execution.
-    #[error("Tempo witness is missing account {account:?} slot {slot:?} at block {block_number}")]
+    /// The Tempo witness omitted an L1 account or storage proof required by execution. `slot` is
+    /// `None` when the read needed only the account proof.
+    #[error(
+        "Tempo witness is missing account {account:?}{} at block {block_number}",
+        .slot.map(|slot| format!(" slot {slot:?}")).unwrap_or_default()
+    )]
     MissingTempoStorage {
         account: alloy_primitives::Address,
-        slot: B256,
+        slot: Option<B256>,
         block_number: u64,
     },
     /// A batch must execute at least one Zone block.
@@ -614,6 +619,9 @@ pub enum Error {
         reason: String,
         output: alloy_primitives::Bytes,
     },
+    /// The TIP-1094 key initialization system transaction failed.
+    #[error("failed to execute initializeVirtualAddressKey in zone block {block_index}")]
+    VirtualAddressKeyExecution { block_index: usize },
     /// The ZoneOutbox system transaction failed while finalizing withdrawals.
     #[error("failed to execute finalizeWithdrawalBatch in zone block {block_index}")]
     FinalizeWithdrawalBatchExecution { block_index: usize },
@@ -804,6 +812,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         }
     }
 
@@ -926,6 +935,7 @@ mod tests {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: Vec::new(),
                 transactions: Vec::new(),
+                virtual_address_key: None,
             });
         }
         validate_system_inputs(&witness.zone_blocks[0], 0).unwrap();
@@ -947,6 +957,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         validate_system_inputs(&block, 0).unwrap();
@@ -966,11 +977,37 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         });
         validate_system_inputs(&witness.zone_blocks[0], 0).unwrap();
         assert_eq!(
             validate_batch_block_shape(&witness.zone_blocks[0], true),
             Err(Error::InvalidBatchShape)
+        );
+    }
+
+    #[test]
+    fn checkpoint_only_blocks_reject_virtual_address_key_initialization() {
+        let mut block = ZoneBlock {
+            number: 1,
+            parent_hash: B256::ZERO,
+            timestamp: 100,
+            timestamp_millis_part: 0,
+            beneficiary: Address::ZERO,
+            tempo_import: checkpoint_import(vec![Bytes::from([0x01])]),
+            finalize_withdrawal_batch_count: None,
+            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
+            transactions: Vec::new(),
+            virtual_address_key: None,
+        };
+        validate_system_inputs(&block, 0).unwrap();
+        block.virtual_address_key = Some(VirtualAddressKeyInit {
+            version: 1,
+            key: B256::repeat_byte(0x5a),
+        });
+        assert_eq!(
+            validate_system_inputs(&block, 0),
+            Err(Error::InvalidCheckpointOnlyBlock { block_index: 0 })
         );
     }
 
@@ -989,6 +1026,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         });
 
         assert_eq!(
@@ -1178,37 +1216,76 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_exact_missing_tempo_storage_proof() {
+    fn reports_the_exact_missing_tempo_proof() {
         let account = Address::repeat_byte(0x33);
         let slot = B256::repeat_byte(0x07);
         let block_number = 9;
-        let header = TempoHeader {
-            inner: Header {
-                number: block_number,
-                state_root: B256::repeat_byte(0x44),
+        // A witness without the checkpoint's state root.
+        let database = || {
+            let header = TempoHeader {
+                inner: Header {
+                    number: block_number,
+                    state_root: B256::repeat_byte(0x44),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
+            };
+            TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
+                initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
+                node_pool: Vec::new(),
+            })
+            .unwrap()
         };
-        let database = TempoWitnessDatabase::from_tempo_state_witness(TempoStateWitness {
-            initial_tempo_header_rlp: Bytes::from(alloy_rlp::encode(header)),
-            node_pool: Vec::new(),
-        })
-        .unwrap();
 
+        let storage = database();
         assert!(
-            database
+            storage
                 .read_l1_storage(account, slot, block_number)
                 .is_err()
         );
-        let missing = database.missing_read().unwrap();
+        let missing = storage.missing_read().unwrap();
         assert_eq!(missing.account, account);
-        assert_eq!(missing.slot, slot);
+        assert_eq!(missing.slot, Some(slot));
+        assert_eq!(missing.block_number, block_number);
+
+        let commitment = database();
+        assert_eq!(
+            commitment.read_l1_commitment(account, block_number),
+            Err(zone_precompiles::L1StateError::AccountUnavailable {
+                account,
+                block_number,
+                reason: "witness does not include the checkpoint state root".into(),
+            })
+        );
+        let missing = commitment.missing_read().unwrap();
+        assert_eq!(missing.account, account);
+        assert_eq!(missing.slot, None);
         assert_eq!(missing.block_number, block_number);
     }
 
     #[test]
-    fn fully_reveals_the_active_tempo_checkpoint() {
+    fn missing_tempo_storage_names_the_slot_only_for_storage_reads() {
+        let account = Address::repeat_byte(0x33);
+        let missing = |slot| Error::MissingTempoStorage {
+            account,
+            slot,
+            block_number: 9,
+        };
+        assert_eq!(
+            missing(None).to_string(),
+            format!("Tempo witness is missing account {account:?} at block 9")
+        );
+        assert_eq!(
+            missing(Some(B256::ZERO)).to_string(),
+            format!(
+                "Tempo witness is missing account {account:?} slot {:?} at block 9",
+                B256::ZERO
+            )
+        );
+    }
+
+    #[test]
+    fn reads_storage_from_the_active_tempo_checkpoint() {
         let account = Address::repeat_byte(0x34);
         let slot = U256::from(7);
         let value = U256::from(11);
@@ -1253,6 +1330,7 @@ mod tests {
             finalize_withdrawal_batch_count: Some(U256::ZERO),
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         let config = test_config();
@@ -1282,7 +1360,7 @@ mod tests {
     #[test]
     fn rejects_portal_work_above_capacity() {
         for (deposit_count, token_count) in [
-            (MAX_UNPROCESSED_DEPOSITS + 1, 0),
+            (DEPOSITS_PER_BUCKET + 1, 0),
             (0, MAX_UNPROCESSED_TOKEN_ENABLEMENTS + 1),
         ] {
             let block = ZoneBlock {
@@ -1315,6 +1393,7 @@ mod tests {
                 finalize_withdrawal_batch_count: None,
                 finalize_withdrawal_batch_encrypted_senders: Vec::new(),
                 transactions: Vec::new(),
+                virtual_address_key: None,
             };
             assert_eq!(
                 validate_system_inputs(&block, 0),
@@ -1336,6 +1415,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         assert_eq!(validate_system_inputs(&block, 0), Ok(()));
@@ -1365,6 +1445,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         assert_eq!(validate_system_inputs(&block, 0), Ok(()));
@@ -1383,32 +1464,7 @@ mod tests {
             finalize_withdrawal_batch_count: Some(U256::ZERO),
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: vec![Bytes::from([0x01])],
-        });
-
-        assert!(matches!(
-            prove_zone_batch(&test_config(), witness),
-            Err(Error::InitialTempoCheckpointMismatch {
-                expected_number: 0,
-                expected_hash: B256::ZERO,
-                actual_number: 2,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn initial_tempo_checkpoint_binding_precedes_header_import_validation() {
-        let mut witness = minimal_batch_witness();
-        witness.zone_blocks.push(ZoneBlock {
-            number: 1,
-            parent_hash: witness.parent_header.hash_slow(),
-            timestamp: 0,
-            timestamp_millis_part: 0,
-            beneficiary: Address::ZERO,
-            tempo_import: full_import(Bytes::from([0x01])),
-            finalize_withdrawal_batch_count: Some(U256::ZERO),
-            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
-            transactions: vec![Bytes::from([0x01])],
+            virtual_address_key: None,
         });
 
         assert!(matches!(

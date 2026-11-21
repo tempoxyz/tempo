@@ -71,13 +71,61 @@ impl Deposit {
     }
 }
 
-/// A queue entry from L1: either an internal withdrawal bounce-back or a user deposit.
+/// A TIP-1094 transfer to a zone deposit address, extracted from L1.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VirtualDeposit {
+    /// TIP-20 token that was transferred.
+    pub token: Address,
+    /// Debited Tempo account; a failed deposit refunds it.
+    pub originator: Address,
+    /// Net amount queued (fee already deducted on L1).
+    pub amount: u128,
+    /// Fee paid on L1.
+    pub fee: u128,
+    /// The zone deposit address the transfer was sent to.
+    pub destination: Address,
+    /// Whether the transfer entrypoint carried a memo.
+    pub has_memo: bool,
+    /// Public memo; zero when [`Self::has_memo`] is false.
+    pub memo: B256,
+}
+
+impl VirtualDeposit {
+    /// Create a virtual deposit from its portal event.
+    pub fn from_event(event: VirtualDepositMade) -> Self {
+        Self {
+            token: event.token,
+            originator: event.originator,
+            amount: event.netAmount,
+            fee: event.fee,
+            destination: event.destination,
+            has_memo: event.hasMemo,
+            memo: event.memo,
+        }
+    }
+
+    fn to_abi(&self) -> abi::VirtualDeposit {
+        abi::VirtualDeposit {
+            token: self.token,
+            originator: self.originator,
+            amount: self.amount,
+            destination: self.destination,
+            hasMemo: self.has_memo,
+            memo: self.memo,
+        }
+    }
+}
+
+/// A queue entry from L1: an internal withdrawal bounce-back, an encrypted user deposit, or a
+/// TIP-1094 virtual deposit.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum L1Deposit {
     /// An internal withdrawal bounce-back.
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     /// A user deposit whose recipient and memo are encrypted.
     Deposit(Deposit),
+    /// A transfer to a zone deposit address. It needs no sequencer decryption.
+    ZoneVirtual(VirtualDeposit),
 }
 
 impl L1Deposit {
@@ -114,6 +162,11 @@ impl L1Deposit {
                 }
                 .abi_encode()
                 .into(),
+            },
+            Self::ZoneVirtual(d) => abi::QueuedDeposit {
+                depositType: abi::DepositType::ZoneVirtual,
+                rejected: false,
+                depositData: d.to_abi().abi_encode().into(),
             },
         }
     }
@@ -153,6 +206,9 @@ impl L1Deposit {
                     prev_hash,
                 )
                     .abi_encode_params(),
+            ),
+            Self::ZoneVirtual(d) => keccak256(
+                (abi::DepositType::ZoneVirtual, d.to_abi(), prev_hash).abi_encode_params(),
             ),
         }
     }

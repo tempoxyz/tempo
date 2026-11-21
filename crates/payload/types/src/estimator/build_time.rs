@@ -6,8 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{BuildTimeMultiplier, FinishedBuild, RESERVE_PERCENTILE};
+use super::{BuildTimeMultiplier, FinishedBuild};
 use crate::samples::{is_expired, record_sample, sample_percentile, step_toward};
+use tracing::debug;
+
+/// Percentile followed by build-work estimates.
+const RESERVE_PERCENTILE: usize = 75;
 
 /// Largest change of the multiplier, up or down, per busy build, in
 /// [`BuildTimeMultiplier`] fixed-point units.
@@ -57,9 +61,13 @@ impl BuildTimeTracker {
             idle_elapsed,
         } = finished_build;
         if !idle_elapsed.is_zero() {
-            self.dry_finish.observe(
-                now,
-                validation_work.saturating_sub(validation_work_at_tx_cutoff),
+            let finish = validation_work.saturating_sub(validation_work_at_tx_cutoff);
+            self.dry_finish.observe(now, finish);
+            debug!(
+                ?finish,
+                dry_build_finish = ?self.dry_finish(now),
+                samples = self.dry_finish.samples.len(),
+                "recorded dry build finish sample"
             );
             return;
         }
@@ -75,6 +83,12 @@ impl BuildTimeTracker {
             u64::try_from(ratio_scaled).unwrap_or(u64::MAX),
         );
         self.multiplier_scaled.observe(now, observed.scaled);
+        debug!(
+            observed_multiplier = observed.get(),
+            build_time_multiplier = self.multiplier(now).get(),
+            samples = self.multiplier_scaled.samples.len(),
+            "recorded build time multiplier sample"
+        );
     }
 
     /// The learned multiplier at `now`.

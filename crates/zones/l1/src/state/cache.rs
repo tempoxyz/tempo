@@ -19,7 +19,7 @@
 //! - The [`L1StateProvider`](super::provider::L1StateProvider) writes RPC-fetched values on
 //!   cache miss, tagged with the block number that was requested.
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, map::AddressSet};
 use derive_more::Deref;
 use parking_lot::Mutex;
 use schnellru::{Limiter, LruMap};
@@ -67,8 +67,8 @@ impl L1StateCache {
 /// at the current floor and ends at the latest finalized block whose receipts were processed.
 #[derive(Debug)]
 pub struct L1StateCacheInner {
-    /// Bounded per-slot value histories, promoted as a unit on access.
-    slots: LruMap<(Address, B256), BTreeMap<u64, B256>, ByVersionCount>,
+    /// Bounded per-slot and per-account-commitment value histories, promoted as a unit on access.
+    slots: LruMap<CacheKey, BTreeMap<u64, B256>, ByVersionCount>,
     /// Per-address block heights that prevent reuse across possible mutations.
     invalidations: HashMap<Address, BTreeSet<u64>>,
     /// Total number of retained mutation barriers.
@@ -112,11 +112,28 @@ impl L1StateCacheInner {
     /// only when the subscriber has processed receipts through `block_number` and no mutation
     /// barrier exists after the value was populated.
     pub fn get(&mut self, address: Address, slot: B256, block_number: u64) -> Option<B256> {
-        let (&cached_block, &value) = self
-            .slots
-            .get(&(address, slot))?
-            .range(..=block_number)
-            .next_back()?;
+        self.get_versioned(CacheKey::Storage(address, slot), block_number)
+    }
+
+    /// Returns the cached TIP-1108 commitment of `account` at the given block number, with the
+    /// inheritance rules of [`Self::get`].
+    ///
+    /// Every commitment change on Tempo (registration, owner update, migration) emits an event
+    /// that adds a mutation barrier for the account.
+    pub fn get_commitment(&mut self, account: Address, block_number: u64) -> Option<B256> {
+        self.get_versioned(CacheKey::Commitment(account), block_number)
+    }
+
+    /// Sets the TIP-1108 commitment of `account` at the given block number, with the admission
+    /// rules of [`Self::set`].
+    pub fn set_commitment(&mut self, account: Address, block_number: u64, commitment: B256) {
+        self.set_versioned(CacheKey::Commitment(account), block_number, commitment);
+    }
+
+    /// Returns the value for `key` at `block_number`.
+    fn get_versioned(&mut self, key: CacheKey, block_number: u64) -> Option<B256> {
+        let (&cached_block, &value) = self.slots.get(&key)?.range(..=block_number).next_back()?;
+        let (CacheKey::Storage(address, _) | CacheKey::Commitment(address)) = key;
 
         // On exact match, just return the value
         if cached_block == block_number {
@@ -146,11 +163,14 @@ impl L1StateCacheInner {
     /// Values below the current coverage floor are deliberately not admitted, so historical
     /// reads cannot later be inherited by canonical execution.
     pub fn set(&mut self, address: Address, slot: B256, block_number: u64, value: B256) {
+        self.set_versioned(CacheKey::Storage(address, slot), block_number, value);
+    }
+
+    fn set_versioned(&mut self, key: CacheKey, block_number: u64, value: B256) {
         if block_number < *self.coverage.start() {
             return;
         }
 
-        let key = (address, slot);
         let mut history = self.slots.remove(&key).unwrap_or_default();
         history.insert(block_number, value);
 
@@ -170,6 +190,23 @@ impl L1StateCacheInner {
         self.invalidations.clear();
         self.invalidation_count = 0;
         self.coverage = floor..=floor;
+    }
+
+    /// Returns every address with a mutation barrier at a height in `blocks`, such as an account
+    /// whose Tempo commitment changed there, or `None` when receipt processing has not recorded
+    /// the barriers of every block in `blocks`.
+    pub fn mutated_addresses(&self, blocks: RangeInclusive<u64>) -> Option<AddressSet> {
+        // The cache resets at its coverage floor without recording that block's barriers.
+        if blocks.start() <= self.coverage.start() || blocks.end() > self.coverage.end() {
+            return None;
+        }
+        Some(
+            self.invalidations
+                .iter()
+                .filter(|(_, heights)| heights.range(blocks.clone()).next().is_some())
+                .map(|(address, _)| *address)
+                .collect(),
+        )
     }
 
     /// Records mutation barriers and publishes receipt coverage for one finalized block.
@@ -213,6 +250,15 @@ impl L1StateCacheInner {
 
         self.coverage = *self.coverage.start()..=anchor;
     }
+}
+
+/// Versioned value cached for one Tempo account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CacheKey {
+    /// A storage slot of the account.
+    Storage(Address, B256),
+    /// The account's TIP-1108 configuration commitment.
+    Commitment(Address),
 }
 
 /// [`schnellru`] limiter which measures capacity by the number of versions in all slot histories.
@@ -384,6 +430,42 @@ mod tests {
         cache.set(PORTAL, slot, 11, new);
         assert_eq!(cache.get(PORTAL, slot, 11), Some(new));
         assert_eq!(cache.get(PORTAL, slot, 12), Some(new));
+    }
+
+    #[test]
+    fn zero_commitment_is_inherited_until_the_account_changes() {
+        let mut cache = L1StateCacheInner::new();
+        let account = Address::repeat_byte(0x11);
+        cache.set_commitment(account, 10, B256::ZERO);
+        cover_through(&mut cache, 12);
+        assert_eq!(cache.get_commitment(account, 12), Some(B256::ZERO));
+
+        // A registration log at 13 is a mutation barrier for the account.
+        cache.invalidate_and_set_anchor(13, [account]);
+        assert_eq!(cache.get_commitment(account, 12), Some(B256::ZERO));
+        assert_eq!(cache.get_commitment(account, 13), None);
+    }
+
+    #[test]
+    fn mutated_addresses_require_recorded_barriers() {
+        let mut cache = L1StateCacheInner::new();
+        let (account, other) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
+        cache.invalidate_and_set_anchor(1, [other]);
+        cache.invalidate_and_set_anchor(2, [account]);
+        cache.invalidate_and_set_anchor(3, []);
+
+        assert_eq!(
+            cache.mutated_addresses(2..=3),
+            Some(AddressSet::from_iter([account]))
+        );
+        assert_eq!(cache.mutated_addresses(3..=3), Some(AddressSet::default()));
+        assert_eq!(cache.mutated_addresses(3..=4), None);
+
+        // A reset at block 5 records none of its barriers.
+        cache.invalidate_and_set_anchor(5, [account]);
+        cache.invalidate_and_set_anchor(6, []);
+        assert_eq!(cache.mutated_addresses(5..=6), None);
+        assert_eq!(cache.mutated_addresses(6..=6), Some(AddressSet::default()));
     }
 
     #[test]

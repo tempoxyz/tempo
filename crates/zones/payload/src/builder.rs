@@ -4,12 +4,13 @@
 //! followed by pool transactions and a withdrawal batch finalization.
 
 use crate::{
-    WithdrawalRevealEncryptor,
+    TransferAllowlist, WithdrawalRevealEncryptor,
     abi::{self, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS},
+    validate_transfer_calls,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy};
 use alloy_eips::eip4895::Withdrawals;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{B256, Bytes, TxHash, U256};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -23,6 +24,7 @@ use reth_evm::{
         BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, WithTxEnv, map_handler_error,
     },
 };
+use reth_metrics::{Metrics, metrics::Histogram};
 use reth_node_api::{FullNodeTypes, NodeTypes};
 use reth_node_builder::{BuilderContext, components::PayloadBuilderBuilder};
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -72,12 +74,37 @@ const BLOCK_SIZE_SAFETY_MARGIN: usize = 1024 * 1024;
 /// Diagnostic retained when upstream Tempo precompile storage stringifies an [`L1StateError`].
 const L1_STORAGE_UNAVAILABLE_ERROR_PREFIX: &str = "Tempo L1 storage unavailable";
 
+/// TIP-1094 FF1 address key. It decrypts every deposit address of its version, so its `Debug`
+/// output is redacted like the zone's other sequencer keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct VirtualAddressKey(B256);
+
+impl VirtualAddressKey {
+    /// Wrap a 32-byte FF1 key.
+    pub const fn new(key: B256) -> Self {
+        Self(key)
+    }
+
+    /// The raw key.
+    pub const fn expose(&self) -> B256 {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for VirtualAddressKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("VirtualAddressKey(<redacted>)")
+    }
+}
+
 /// Factory for constructing the zone payload builder.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ZonePayloadFactory {
     withdrawal_batch_interval_blocks: u64,
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    virtual_address_keys: Vec<(u8, VirtualAddressKey)>,
 }
 
 impl ZonePayloadFactory {
@@ -86,7 +113,24 @@ impl ZonePayloadFactory {
         Self {
             withdrawal_batch_interval_blocks: withdrawal_batch_interval_blocks.max(1),
             withdrawal_reveal_encryptor: None,
+            transfer_allowlist: None,
+            virtual_address_keys: Vec::new(),
         }
+    }
+
+    /// TIP-1094: address keys to initialize, each with its version. From T15, each block this
+    /// node builds initializes the lowest listed version that is not yet in state, once the
+    /// version before it is. Keys already initialized are read from state, so a node only needs
+    /// keys it has not rotated in yet.
+    pub fn with_virtual_address_keys(mut self, mut keys: Vec<(u8, VirtualAddressKey)>) -> Self {
+        keys.sort_by_key(|(version, _)| *version);
+        self.virtual_address_keys = keys;
+        self
+    }
+
+    /// TIP-1094: configure `key` as address key version 1.
+    pub fn with_virtual_address_key(self, key: VirtualAddressKey) -> Self {
+        self.with_virtual_address_keys(vec![(1, key)])
     }
 
     pub fn with_withdrawal_reveal_encryptor(
@@ -94,6 +138,13 @@ impl ZonePayloadFactory {
         encryptor: Arc<dyn WithdrawalRevealEncryptor>,
     ) -> Self {
         self.withdrawal_reveal_encryptor = Some(encryptor);
+        self
+    }
+
+    /// Leave out pool transactions that move funds to or from accounts `allowlist` does not
+    /// allow, and drop them from the pool.
+    pub fn with_transfer_allowlist(mut self, allowlist: Arc<dyn TransferAllowlist>) -> Self {
+        self.transfer_allowlist = Some(allowlist);
         self
     }
 }
@@ -130,6 +181,9 @@ where
             task_executor: ctx.task_executor().clone(),
             withdrawal_batch_interval_blocks: self.withdrawal_batch_interval_blocks,
             withdrawal_reveal_encryptor: self.withdrawal_reveal_encryptor.clone(),
+            transfer_allowlist: self.transfer_allowlist.clone(),
+            metrics: ZonePayloadBuilderMetrics::default(),
+            virtual_address_keys: self.virtual_address_keys.clone(),
         })
     }
 }
@@ -143,12 +197,18 @@ pub struct ZonePayloadBuilder<Provider> {
     provider: Provider,
     /// Zone-specific EVM configuration (precompiles, hardfork spec, gas params).
     evm_config: ZoneEvmConfig,
-    /// Runs disposable simulations on Reth's dedicated prewarming pool.
+    /// Runs disposable simulations on Reth's dedicated prewarming pool, and transfer allowlist
+    /// pool evictions off the build path.
     task_executor: TaskExecutor,
     /// Number of zone blocks between withdrawal batch boundaries.
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data for batch finalization.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    /// Accounts that may send and receive TIP-20 transfers. `None` admits every transfer.
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
+    metrics: ZonePayloadBuilderMetrics,
+    /// TIP-1094 address key version 1, initialized once when still unset.
+    virtual_address_keys: Vec<(u8, VirtualAddressKey)>,
 }
 
 impl<Provider> PayloadBuilder for ZonePayloadBuilder<Provider>
@@ -185,7 +245,6 @@ where
         };
         validate_l1_continuity(state_provider.as_ref(), imported_headers)?;
         let final_imported = imported_headers.last().expect("validated nonempty import");
-        let checkpoint_only = tempo_import.is_checkpoint_only();
         let follows_checkpoint_blocks = tempo_import.follows_checkpoint_blocks();
         let total_deposits = tempo_import.total_deposits();
         let enabled_tokens = tempo_import.enabled_tokens();
@@ -253,19 +312,27 @@ where
         })?;
 
         // Prewarm L1 reads in parallel with canonical `advanceTempo` (the pool bounds concurrency).
-        let prewarming = match tempo_import {
-            TempoImport::Full(prepared) => Some(
-                PrewarmingExecutionContext {
-                    provider: self.provider.clone(),
-                    evm_config: self.evm_config.clone(),
-                    parent_hash: parent_header.hash(),
-                    parent_header: (*parent_header).clone(),
+        let (prewarming, pool_txs) = match tempo_import {
+            TempoImport::Full(prepared) => {
+                let context = PrewarmingExecutionContext::new(
+                    self.task_executor.clone(),
+                    self.provider.clone(),
+                    &self.evm_config,
+                    (*parent_header).clone(),
                     next_block_env_attributes,
                     chain_id,
-                }
-                .start(&self.task_executor, prepared),
-            ),
-            TempoImport::CheckpointOnly(_) => None,
+                    prepared.header.number(),
+                );
+                (
+                    context.start(prepared),
+                    Some(
+                        context.lookahead(self.pool.best_transactions_with_attributes(
+                            BestTransactionsAttributes::new(base_fee, None),
+                        )),
+                    ),
+                )
+            }
+            TempoImport::CheckpointOnly(_) => Default::default(),
         };
 
         // Execute advanceTempo system transaction — exactly one per zone block.
@@ -290,17 +357,46 @@ where
             })?;
         drop(prewarming);
 
-        if !checkpoint_only {
+        // TIP-1094: the executor accepts key initialization only directly after a full
+        // advanceTempo, at most once per block.
+        if !tempo_import.is_checkpoint_only() && builder.evm().config_spec_id().is_t15() {
+            let next = self
+                .virtual_address_keys
+                .iter()
+                .find(|(version, _)| {
+                    let initialized = |version: u8| {
+                        zone_precompiles::inbox::ZoneInbox::new()
+                            .virtual_address_key(version)
+                            .map(|key| key.is_some())
+                            .unwrap_or(false)
+                    };
+                    read_parent_state(state_provider.as_ref(), || {
+                        !initialized(*version) && (*version == 1 || initialized(*version - 1))
+                    })
+                })
+                .copied();
+            if let Some((version, key)) = next {
+                info!(target: "zone::payload", version, "Initializing TIP-1094 address key");
+                builder
+                    .execute_transaction(build_initialize_virtual_address_key_tx(
+                        version,
+                        key.expose(),
+                        chain_id,
+                    ))
+                    .map(|_| ())
+                    .map_err(PayloadBuilderError::evm)?;
+            }
+        }
+
+        if let Some(pool_txs) = pool_txs {
             // Execute pool transactions until either all of them fit or their packed RLP bytes reach
             // the size budget
             // The block executor owns gas-capacity accounting.
             let pool_tx_size_budget = MAX_RLP_BLOCK_SIZE - BLOCK_SIZE_SAFETY_MARGIN;
-            let raw_best_txs = self
-                .pool
-                .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
             // Zones resolve fee tokens without a fallback list.
-            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
-            if execute_pool_transactions(
+            let mut best_txs = StateAwareBestTransactions::new(pool_txs, &[]);
+            let mut unlisted = Vec::new();
+            let outcome = execute_pool_transactions(
                 |tx, best_txs| {
                     builder
                         .execute_transaction_with_result_closure(tx, |result| {
@@ -311,8 +407,26 @@ where
                 &mut best_txs,
                 &cancel,
                 pool_tx_size_budget,
-            )? == PoolExecutionOutcome::Cancelled
-            {
+                self.transfer_allowlist.as_deref(),
+                &mut unlisted,
+            );
+            // Stop prewarming txs that can no longer make this block.
+            drop(best_txs);
+            if !unlisted.is_empty() {
+                // Otherwise every later build would check and skip them again. Removal locks the
+                // pool, so it runs off the build path; a build that starts first skips them again.
+                info!(
+                    target: "zone::payload",
+                    count = unlisted.len(),
+                    "Dropping pool transactions that move funds outside the transfer allowlist"
+                );
+                let pool = self.pool.clone();
+                self.task_executor
+                    .spawn_blocking_named("zone-allowlist-evict", move || {
+                        pool.remove_transactions(unlisted);
+                    });
+            }
+            if outcome? == PoolExecutionOutcome::Cancelled {
                 return Ok(BuildOutcome::Cancelled);
             }
 
@@ -354,6 +468,7 @@ where
         }
 
         let elapsed = start.elapsed();
+        self.metrics.build_duration_seconds.record(elapsed);
         info!(
             number = sealed_block.number(),
             l1_block = final_imported.number(),
@@ -419,6 +534,14 @@ where
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
     }
+}
+
+/// Zone payload builder metrics.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_payload")]
+struct ZonePayloadBuilderMetrics {
+    /// Time to build one Zone block, from the parent state lookup to the sealed payload.
+    build_duration_seconds: Histogram,
 }
 
 /// Validate that the prepared L1 block is the next block expected by TempoState.
@@ -496,11 +619,17 @@ enum PoolExecutionOutcome {
 
 /// Execute the best pool transactions, skipping any whose RLP size would push the packed pool
 /// transaction bytes past `pool_tx_size_budget`.
+///
+/// Transactions that `transfer_allowlist` rejects against its current list are skipped without
+/// executing them, and their hashes are pushed to `unlisted`. This catches list changes after
+/// pool admission.
 fn execute_pool_transactions<T, F>(
     mut execute_tx: F,
     best_txs: &mut T,
     cancel: &CancelOnDrop,
     pool_tx_size_budget: usize,
+    transfer_allowlist: Option<&dyn TransferAllowlist>,
+    unlisted: &mut Vec<TxHash>,
 ) -> Result<PoolExecutionOutcome, PayloadBuilderError>
 where
     T: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -513,6 +642,14 @@ where
     while let Some(pool_tx) = best_txs.next() {
         if cancel.is_cancelled() {
             return Ok(PoolExecutionOutcome::Cancelled);
+        }
+
+        if let Some(allowlist) = transfer_allowlist
+            && let Err(error) = validate_transfer_calls(allowlist, &pool_tx.transaction)
+        {
+            best_txs.mark_invalid(&pool_tx, error);
+            unlisted.push(*pool_tx.hash());
+            continue;
         }
 
         let packed_bytes_with_tx =
@@ -580,7 +717,7 @@ fn is_l1_storage_unavailable(error: &(dyn Error + 'static)) -> bool {
     while let Some(error) = current {
         if error
             .downcast_ref::<L1StateError>()
-            .is_some_and(L1StateError::is_storage_unavailable)
+            .is_some_and(L1StateError::is_unavailable)
             || error
                 .to_string()
                 .contains(L1_STORAGE_UNAVAILABLE_ERROR_PREFIX)
@@ -827,6 +964,40 @@ fn build_advance_tempo_tx_from_parts(
     )
 }
 
+/// Runs `f` against the parent block's state in a read-only storage context.
+fn read_parent_state<R>(state: &dyn reth_storage_api::StateProvider, f: impl FnOnce() -> R) -> R {
+    use tempo_evm::TempoStateAccess as _;
+    let mut state = state;
+    state.with_read_only_storage_ctx(
+        tempo_chainspec::hardfork::TempoHardfork::T15,
+        tempo_precompiles::storage::StorageActions::disabled(),
+        f,
+    )
+}
+
+/// Build the TIP-1094 `initializeVirtualAddressKey(version, key)` system transaction.
+fn build_initialize_virtual_address_key_tx(
+    version: u8,
+    key: B256,
+    chain_id: u64,
+) -> Recovered<TempoTxEnvelope> {
+    let tx = TxLegacy {
+        chain_id: Some(chain_id),
+        nonce: 0,
+        gas_price: 0,
+        gas_limit: 0,
+        to: ZONE_INBOX_ADDRESS.into(),
+        value: U256::ZERO,
+        input: abi::IZoneInbox::initializeVirtualAddressKeyCall { version, key }
+            .abi_encode()
+            .into(),
+    };
+    Recovered::new_unchecked(
+        TempoTxEnvelope::Legacy(tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+        TEMPO_SYSTEM_TX_SENDER,
+    )
+}
+
 /// Build a checkpoint-only `advanceTempoHeaders(headers)` system transaction.
 ///
 /// The executor requires this transaction to be the complete body of its Zone block. Portal
@@ -865,7 +1036,7 @@ pub fn build_advance_tempo_headers_tx(
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Header, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Address, B256, U256, address};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
     use alloy_sol_types::SolCall;
     use reth_primitives_traits::{Recovered, SealedHeader};
     use reth_tasks::cancel::CancelOnDrop;
@@ -874,15 +1045,43 @@ mod tests {
         error::InvalidPoolTransactionError,
         identifier::{SenderId, TransactionId},
     };
-    use std::{collections::VecDeque, sync::Arc, time::Instant};
+    use std::{collections::VecDeque, num::NonZeroU64, sync::Arc, time::Instant};
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
-        TempoHeader, TempoTxEnvelope,
-        transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+        TempoAddressExt as _, TempoHeader, TempoTransaction, TempoTxEnvelope,
+        transaction::{
+            Call,
+            envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+        },
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
-    use crate::abi::{self, DepositType, IZoneInbox};
+    use crate::{
+        TransferAllowlist,
+        abi::{self, DepositType, IZoneInbox},
+        prewarming::PoolLookahead,
+    };
     use zone_l1::PreparedL1Block;
+
+    #[test]
+    fn stringified_l1_unavailability_is_recognized() {
+        for error in [
+            zone_precompiles::L1StateError::StorageUnavailable {
+                account: Address::ZERO,
+                slot: B256::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+            zone_precompiles::L1StateError::AccountUnavailable {
+                account: Address::ZERO,
+                block_number: 1,
+                reason: "RPC unavailable".into(),
+            },
+        ] {
+            let stringified = std::io::Error::other(error.to_string());
+            assert!(super::is_l1_storage_unavailable(&stringified), "{error}");
+        }
+    }
 
     #[test]
     fn withdrawal_batch_boundary_conditions() {
@@ -994,6 +1193,84 @@ mod tests {
         })
     }
 
+    /// The lookahead simulates txs before yielding them in order, and drops an invalid tx's lane.
+    #[test]
+    fn pool_lookahead_simulates_ahead_and_drops_invalid_lanes() {
+        let txs: Vec<_> = (0..3)
+            .map(|nonce| pool_tx_with_calldata(0, nonce))
+            .collect();
+        let (simulated, simulations) = std::sync::mpsc::channel();
+        let mut lookahead = PoolLookahead::new(
+            MockBestTransactions {
+                queue: txs.iter().cloned().collect(),
+                oversized_marked: 0,
+            },
+            Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
+        );
+        assert_eq!(
+            simulations.try_iter().collect::<Vec<_>>(),
+            txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        );
+
+        let first = lookahead.next().unwrap();
+        assert_eq!(first.hash(), txs[0].hash());
+        assert_eq!(lookahead.next().unwrap().hash(), txs[1].hash());
+        // The last tx shares the invalid tx's sender, so it's dropped.
+        lookahead.mark_invalid(
+            &first,
+            InvalidPoolTransactionError::OversizedData { size: 1, limit: 0 },
+        );
+        assert!(lookahead.next().is_none());
+    }
+
+    /// An invalid expiring-nonce tx keeps its sender's other txs.
+    #[test]
+    fn pool_lookahead_keeps_expiring_nonce_txs() {
+        let expiring = |gas_limit| {
+            let tx = TempoTransaction {
+                gas_limit,
+                calls: vec![Call {
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                nonce_key: U256::MAX,
+                valid_before: NonZeroU64::new(100),
+                ..Default::default()
+            };
+            let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+            Arc::new(ValidPoolTransaction {
+                transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                    envelope,
+                    Address::repeat_byte(1),
+                )),
+                transaction_id: TransactionId::new(SenderId::from(0u64), 0),
+                propagate: false,
+                timestamp: Instant::now(),
+                origin: TransactionOrigin::External,
+                authority_ids: None,
+            })
+        };
+        let (large, small) = (expiring(10), expiring(1));
+        let (simulated, simulations) = std::sync::mpsc::channel();
+        let mut lookahead = PoolLookahead::new(
+            MockBestTransactions {
+                queue: [large.clone(), small.clone()].into(),
+                oversized_marked: 0,
+            },
+            Box::new(move |tx| simulated.send(*tx.hash()).unwrap()),
+        );
+        assert_eq!(
+            simulations.try_iter().collect::<Vec<_>>(),
+            vec![*large.hash(), *small.hash()]
+        );
+
+        let first = lookahead.next().unwrap();
+        assert_eq!(first.hash(), large.hash());
+        lookahead.mark_invalid(&first, InvalidPoolTransactionError::ExceedsGasLimit(10, 5));
+        assert_eq!(lookahead.next().unwrap().hash(), small.hash());
+    }
+
     /// Feed the pool loop far more large transactions than fit in the size budget, and assert it
     /// stops including them once the packed bytes reach the budget — i.e. the block is actually
     /// capped by the size gate rather than growing unbounded.
@@ -1025,6 +1302,8 @@ mod tests {
         let mut executed = 0usize;
         let cancel = CancelOnDrop::default();
 
+        let mut unlisted = Vec::new();
+
         let outcome = super::execute_pool_transactions(
             |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
                 executed += 1;
@@ -1033,6 +1312,8 @@ mod tests {
             &mut best_txs,
             &cancel,
             budget,
+            None,
+            &mut unlisted,
         )
         .expect("pool execution should not error");
 
@@ -1041,6 +1322,78 @@ mod tests {
         // Only the transactions that fit were executed; the rest were rejected for size.
         assert_eq!(executed, expected_fit);
         assert_eq!(best_txs.oversized_marked, total - expected_fit);
+        assert!(unlisted.is_empty());
+    }
+
+    /// Lists no account, so every transfer between accounts is rejected.
+    #[derive(Debug)]
+    struct EmptyAllowlist;
+
+    impl TransferAllowlist for EmptyAllowlist {
+        fn allows_all(&self, _addresses: &[Address]) -> bool {
+            false
+        }
+    }
+
+    /// Transactions the current allowlist rejects are skipped without executing, marked invalid,
+    /// reported for pool removal, and take no block space, so a later transaction still fits.
+    #[test]
+    fn unlisted_pool_transactions_are_skipped_without_using_block_space() {
+        let per_tx = pool_tx_with_calldata(1_000_000, 0).encoded_length();
+        let transfer = TxLegacy {
+            to: Address::new_tip20(0).into(),
+            input: ITIP20::transferCall {
+                to: address!("0x0000000000000000000000000000000000000b0b"),
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            ..Default::default()
+        };
+        let transfer = Arc::new(ValidPoolTransaction {
+            transaction: TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(transfer.into_signed(TEMPO_SYSTEM_TX_SIGNATURE)),
+                address!("0x00000000000000000000000000000000000a11ce"),
+            )),
+            transaction_id: TransactionId::new(SenderId::from(1u64), 0),
+            propagate: false,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        });
+        let left_out = *transfer.hash();
+        let queue = [
+            transfer,
+            pool_tx_with_calldata(1_000_000, 0),
+            pool_tx_with_calldata(1_000_000, 1),
+        ]
+        .into_iter()
+        .collect::<VecDeque<_>>();
+        let mut best_txs = MockBestTransactions {
+            queue,
+            oversized_marked: 0,
+        };
+        let mut executed = 0usize;
+        let mut unlisted = Vec::new();
+
+        // The budget fits two transactions; the transfer is skipped, so both others are included.
+        let outcome = super::execute_pool_transactions(
+            |_tx, _best_txs| -> Result<(), reth_evm::BlockExecutionError> {
+                executed += 1;
+                Ok(())
+            },
+            &mut best_txs,
+            &CancelOnDrop::default(),
+            2 * per_tx,
+            Some(&EmptyAllowlist),
+            &mut unlisted,
+        )
+        .expect("pool execution should not error");
+
+        assert_eq!(outcome, super::PoolExecutionOutcome::Complete);
+        assert_eq!(executed, 2);
+        assert_eq!(best_txs.oversized_marked, 0);
+        assert_eq!(unlisted, vec![left_out]);
     }
 
     /// Verify calldata for an internal withdrawal bounce-back followed by an
@@ -1102,6 +1455,7 @@ mod tests {
                     c: B256::ZERO,
                 },
             }],
+            recipients: vec![None],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };

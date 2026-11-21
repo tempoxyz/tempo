@@ -2,7 +2,9 @@ use crate::rpc::{
     ConfigurableAccountSimulationSpec, PrimitiveSignatureType, TempoHeaderResponse,
     TempoTransactionRequest,
 };
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError, transaction::Recovered};
+use alloy_consensus::{
+    EthereumTxEnvelope, SignableTransaction, TxEip4844, error::ValueError, transaction::Recovered,
+};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use reth_primitives_traits::SealedHeader;
@@ -34,6 +36,10 @@ const MAX_OWNER_WEBAUTHN_DATA_LEN: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 4 * s
 
 /// Largest `WebAuthn` data modeled for a transaction's own signature.
 const MAX_MOCK_WEBAUTHN_DATA_LEN: usize = 8192;
+
+/// Placeholder signature for a simulated legacy transaction, distinct from
+/// [`TEMPO_SYSTEM_TX_SIGNATURE`](tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE).
+const SIMULATED_LEGACY_SIGNATURE: Signature = Signature::new(U256::ONE, U256::ONE, false);
 
 /// Error text for a configurable account simulation without the sender it needs.
 const MISSING_FROM: &str = "configurable account simulation requires `from`";
@@ -71,14 +77,20 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
             | TempoTxType::Eip7702 => {
-                match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
+                let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     self.inner.clone(),
                 ) {
-                    Err(e) => Err(e.map(|inner| Self { inner, ..self })),
-                    Ok(envelope) => envelope
-                        .try_into()
-                        .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| e.map(|_| self)),
-                }
+                    Err(e) => return Err(e.map(|inner| Self { inner, ..self })),
+                    // alloy's all-zero placeholder signature marks a legacy transaction as a Tempo
+                    // system transaction, which the block executor rejects for ordinary calls.
+                    Ok(EthereumTxEnvelope::Legacy(tx)) => EthereumTxEnvelope::Legacy(
+                        tx.strip_signature().into_signed(SIMULATED_LEGACY_SIGNATURE),
+                    ),
+                    Ok(envelope) => envelope,
+                };
+                envelope
+                    .try_into()
+                    .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| e.map(|_| self))
             }
         }
     }
@@ -162,12 +174,12 @@ impl TempoTransactionRequest {
         {
             let parent = parent()?;
             let grant = grant
-                .authorization
+                .authorization()
                 .clone()
                 .into_signed(spec.mock_signature(spec.signer.unwrap_or(parent))?);
             self.set_key_authorization(grant);
         } else if let Some(grant) = &self.key_authorization
-            && let Some(signature) = grant.signature.as_configurable_account()
+            && let Some(signature) = grant.signature().as_configurable_account()
         {
             signature
                 .verify_approvals(grant.signature_hash())
@@ -499,11 +511,7 @@ mod tests {
                 max_priority_fee_per_gas: Some(2),
                 ..Default::default()
             },
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x22)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x22), Bytes::new())],
             ..Default::default()
         };
         let expected_calls = request.calls.clone();
@@ -726,11 +734,7 @@ mod tests {
             max_priority_fee_per_gas: 1_000_000,
             fee_token: None,
             access_list: Default::default(),
-            calls: vec![Call {
-                to: target.into(),
-                value: Default::default(),
-                input: Default::default(),
-            }],
+            calls: vec![Call::new(target, Bytes::new())],
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
@@ -771,16 +775,8 @@ mod tests {
     #[test]
     fn test_aa_roundtrip_via_tx_env() {
         let calls = vec![
-            Call {
-                to: Address::repeat_byte(0x11).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xaa]),
-            },
-            Call {
-                to: Address::repeat_byte(0x22).into(),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0xbb]),
-            },
+            Call::new(Address::repeat_byte(0x11), vec![0xaa]),
+            Call::new(Address::repeat_byte(0x22), vec![0xbb]),
         ];
 
         let tx = TempoTransaction {

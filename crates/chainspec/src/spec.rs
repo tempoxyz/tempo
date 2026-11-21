@@ -470,6 +470,28 @@ mod tests {
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
 
+    /// `dev.json` and the node test genesis activate T15 at genesis, which skips the T15 runtime
+    /// upgrade, so their portal implementation must already be the current T15 runtime.
+    #[test]
+    fn genesis_portal_runtime_matches_t15_runtime() {
+        let impl_address = tempo_contracts::precompiles::ZONE_PORTAL_IMPL_ADDRESS;
+        for (name, json) in [
+            ("dev.json", include_str!("./genesis/dev.json")),
+            (
+                "test-genesis.json",
+                include_str!("../../node/tests/assets/test-genesis.json"),
+            ),
+        ] {
+            let genesis: Genesis = serde_json::from_str(json).unwrap();
+            let code = genesis.alloc[&impl_address].code.clone().unwrap();
+            assert_eq!(
+                code,
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+                "{name} holds a stale T15 portal runtime"
+            );
+        }
+    }
+
     #[test]
     #[cfg(feature = "cli")]
     fn can_load_testnet() {
@@ -902,9 +924,17 @@ mod tests {
             assert!(cs.is_t13_active_at_timestamp(1793718000));
             assert_eq!(cs.tempo_hardfork_at(1793718000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793718001), TempoHardfork::T13);
-            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+
+            // Before T14 activation (1796742000 = Dec 8th 2026 16:00 CET)
+            assert!(!cs.is_t14_active_at_timestamp(1796741999));
+            assert_eq!(cs.tempo_hardfork_at(1796741999), TempoHardfork::T13);
+
+            // At and after T14 activation
+            assert!(cs.is_t14_active_at_timestamp(1796742000));
+            assert_eq!(cs.tempo_hardfork_at(1796742000), TempoHardfork::T14);
+            assert_eq!(cs.tempo_hardfork_at(1796742001), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 
         #[test]
@@ -1031,9 +1061,17 @@ mod tests {
             assert!(cs.is_t13_active_at_timestamp(1793286000));
             assert_eq!(cs.tempo_hardfork_at(1793286000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793286001), TempoHardfork::T13);
-            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+
+            // Before T14 activation (1795532400 = Nov 24th 2026 16:00 CET)
+            assert!(!cs.is_t14_active_at_timestamp(1795532399));
+            assert_eq!(cs.tempo_hardfork_at(1795532399), TempoHardfork::T13);
+
+            // At and after T14 activation
+            assert!(cs.is_t14_active_at_timestamp(1795532400));
+            assert_eq!(cs.tempo_hardfork_at(1795532400), TempoHardfork::T14);
+            assert_eq!(cs.tempo_hardfork_at(1795532401), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 
         #[test]

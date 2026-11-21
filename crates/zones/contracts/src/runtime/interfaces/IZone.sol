@@ -92,11 +92,33 @@ struct TokenEnablementTransition {
     uint64 nextProcessedTokenCount;
 }
 
+/// @notice Deposit-queue checkpoint stored every `DEPOSITS_PER_BUCKET` entries.
+/// @dev Checkpoint `j` covers entry `depositBucketBase + j * DEPOSITS_PER_BUCKET`.
+struct DepositBucket {
+    /// Queue hash through the checkpoint entry
+    bytes32 hash;
+    /// Reserved for the entry weight appended since bootstrap, through the checkpoint entry.
+    /// Zero while every entry weighs one unit.
+    uint64 cumulativeWeight;
+}
+
 /// @notice Deposit type discriminator for the unified deposit queue
 /// @dev Used in hash chain: keccak256(abi.encode(depositType, depositData, prevHash))
 enum DepositType {
     WithdrawalBounceBack, // Internal withdrawal bounce-back entry
-    Deposit // User deposit with hidden recipient and memo
+    Deposit, // User deposit with hidden recipient and memo
+    ZoneVirtual // TIP-1094 TIP-20 transfer to a zone deposit address (T15)
+}
+
+/// @notice TIP-1094 queue entry for a TIP-20 transfer to a zone deposit address
+/// @dev The zone decrypts `destination` to a registered recipient; a failure refunds `originator`.
+struct VirtualDeposit {
+    address token; // TIP-20 token that was transferred
+    address originator; // Debited Tempo account; refunds go here
+    uint128 amount; // Net of the deposit fee
+    address destination; // The 20-byte zone deposit address
+    bool hasMemo; // True only for memo-bearing transfer entrypoints
+    bytes32 memo; // Zero when hasMemo is false
 }
 
 struct WithdrawalBounceBackDeposit {
@@ -278,6 +300,12 @@ address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 //   slot 25: _tokensEnabledInCurrentBlock (uint64) + pauseExpiry (uint64) [packed]
 //   slot 26: tokenEnablementHash (bytes32)
 //   slot 27: abdicationEffectiveAt (mapping(Capability => uint64))
+//   slot 28: lastProcessedEnabledTokenCount (uint64) + tokenEnablementCursorInitialized (bool)
+//            + transfersEnabled (bool) [packed]
+//   slot 29: depositBuckets (DepositBucket[])
+//   slot 30: depositWeight (uint64) + settledDepositWeight (uint64) + depositPriceBlock (uint64)
+//            + depositPriceTier (uint64) [packed]
+//   slot 31: depositBucketBase (uint64) + nextDepositBucketToPrune (uint64) [packed]
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneInbox and ZoneOutbox use them to read portal state via
@@ -478,6 +506,22 @@ interface IZonePortal {
         uint64 depositNumber
     );
 
+    /// @notice TIP-1094: a TIP-20 transfer to a zone deposit address was queued
+    event VirtualDepositMade(
+        bytes32 indexed newCurrentDepositQueueHash,
+        address indexed originator,
+        address token,
+        address destination,
+        uint128 netAmount,
+        uint128 fee,
+        uint64 depositNumber,
+        bool hasMemo,
+        bytes32 memo
+    );
+
+    /// @notice TIP-1094: the admin raised the minimum accepted address key version
+    event AddressVersionsRetired(uint8 minimumVersion);
+
     event DepositBounceBack(
         address indexed tempoRefundRecipient, address token, uint128 amount, uint128 bouncebackFee
     );
@@ -569,7 +613,7 @@ interface IZonePortal {
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
     error InvalidProofOfPossession();
     error DepositTooSmall();
-    error DepositBlockCapacityExceeded(uint64 maximum);
+    error FeeTooHigh(uint128 fee, uint128 maxFee);
     error TokenEnablementBlockCapacityExceeded(uint64 maximum);
     error TokenMetadataTooLong();
     error GasFeeRateTooHigh();
@@ -579,6 +623,9 @@ interface IZonePortal {
     error TokenTransferPolicyNotSet();
     error TokenEnablementCursorNotInitialized();
     error InvalidBouncebackRecipient();
+    error AddressVersionRetired(uint8 version);
+    error InvalidVersionRetirement(uint8 minimumVersion);
+    error InvalidVirtualDeposit();
     error InvalidDepositTransition();
     error InvalidTokenEnablementTransition();
     error InvalidSequencerSet();
@@ -613,8 +660,20 @@ interface IZonePortal {
     /// @notice Fixed gas value for deposit fee calculation (100,000 gas)
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
 
-    /// @notice Maximum deposits that may remain outstanding on this portal.
-    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+    /// @notice Queue entries between consecutive deposit-queue checkpoints.
+    function DEPOSITS_PER_BUCKET() external view returns (uint64);
+
+    /// @notice Checkpoints one pruning run may delete.
+    function DEPOSIT_BUCKETS_PRUNED_PER_CALL() external view returns (uint64);
+
+    /// @notice Unsettled queue entries per congestion price tier.
+    function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64);
+
+    /// @notice Price tiers over which the congestion premium rises to its cap.
+    function CONGESTION_MAX_TIER() external view returns (uint64);
+
+    /// @notice Maximum congestion premium on a deposit, in token units.
+    function CONGESTION_MAX_FEE() external view returns (uint128);
 
     /// @notice Maximum token enablements that may remain outstanding on this portal.
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
@@ -650,6 +709,23 @@ interface IZonePortal {
 
     /// @notice Enable or disable zone-internal TIP-20 transfers. Only callable by the admin.
     function setTransfersEnabled(bool enabled) external;
+    /// @notice TIP-1094: queue a transfer a canonical TIP-20 already credited to this portal.
+    /// @dev Called only by TIP-20 transfer routing; `msg.sender` identifies the token.
+    function depositVirtual(
+        address originator,
+        uint128 grossAmount,
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
+    /// @notice TIP-1094: lowest address key version still accepted (at least 1).
+    function minimumAddressVersion() external view returns (uint8);
+
+    /// @notice TIP-1094: raise the minimum accepted address key version. Only the admin.
+    function retireAddressVersionsBelow(uint8 minimumVersion) external;
 
     /// @notice Whether an account has a Portal role.
     function hasRole(address account, Role role) external view returns (bool);
@@ -684,6 +760,24 @@ interface IZonePortal {
     function depositCount() external view returns (uint64);
 
     function lastProcessedDepositNumber() external view returns (uint64);
+
+    /// @notice `depositCount` when checkpoints bootstrapped. Zero before bootstrap.
+    function depositBucketBase() external view returns (uint64);
+
+    /// @notice First checkpoint index not yet pruned.
+    function nextDepositBucketToPrune() external view returns (uint64);
+
+    /// @notice Tempo block whose first append or settlement fixed `depositPriceTier`.
+    function depositPriceBlock() external view returns (uint64);
+
+    /// @notice Tier charged in `depositPriceBlock`: its start tier, lowered by settlement.
+    function depositPriceTier() external view returns (uint64);
+
+    /// @notice Checkpoint `index`, zeroed once pruned. Reverts if `index` is out of range.
+    function depositBuckets(uint256 index)
+        external
+        view
+        returns (bytes32 hash, uint64 cumulativeWeight);
 
     function lastSyncedTempoBlockNumber() external view returns (uint64);
 
@@ -755,7 +849,7 @@ interface IZonePortal {
     /// @notice Append-only commitment to enabled token addresses and metadata
     function tokenEnablementHash() external view returns (bytes32);
 
-    /// @notice Whether new deposits and withdrawal processing are paused.
+    /// @notice Whether deposits, withdrawal processing, and refund claims are paused.
     function paused() external view returns (bool);
 
     /// @notice Timestamp at which the current Portal pause expires.
@@ -764,10 +858,10 @@ interface IZonePortal {
     /// @notice Timestamp at which permanent abdication of a capability takes effect.
     function abdicationEffectiveAt(Capability capability) external view returns (uint64);
 
-    /// @notice Pause deposits and withdrawal processing for 30 days.
+    /// @notice Pause deposits, withdrawal processing, and refund claims for 30 days.
     function pause() external;
 
-    /// @notice Resume deposits and withdrawal processing before the pause expires.
+    /// @notice Resume deposits, withdrawal processing, and refund claims before expiry.
     function resume() external;
 
     /// @notice Schedule permanent abdication of a Portal capability. Only callable by admin.
@@ -862,7 +956,8 @@ interface IZonePortal {
     /// @param _bouncebackGas Gas amount used in the Tempo-side bounce-back fee calculation
     function setBouncebackGas(uint64 _bouncebackGas) external;
 
-    /// @notice Calculate the fee for a deposit
+    /// @notice Total deposit fee from the current state: operational fee plus congestion premium.
+    /// @dev Exact for the next block, and never below a later deposit's fee in the current block.
     function calculateDepositFee() external view returns (uint128 fee);
 
     /// @notice Calculate the reserved Tempo-side fee for a failed-deposit bounce-back
@@ -892,6 +987,18 @@ interface IZonePortal {
         external
         returns (bytes32 newCurrentDepositQueueHash);
 
+    /// @notice Alias for the `depositEncrypted` overload with `maxFee`.
+    function deposit(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
     /// @notice Deposit with encrypted recipient and memo
     /// @dev The encrypted payload contains (to, memo) encrypted to the sequencer's key
     ///      at the specified keyIndex. The user must specify which key they encrypted to,
@@ -912,6 +1019,20 @@ interface IZonePortal {
         external
         returns (bytes32 newCurrentDepositQueueHash);
 
+    /// @notice Deposit with a cap on the total fee.
+    /// @param maxFee Most the caller accepts to pay: operational fee plus congestion premium.
+    /// @dev Reverts with `FeeTooHigh` above `maxFee`. Other overloads cap at the operational fee.
+    function depositEncrypted(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
     function processWithdrawals(Withdrawal[] calldata withdrawals, bytes32 remainingQueue) external;
 
     function deliverWithdrawal(
@@ -926,6 +1047,8 @@ interface IZonePortal {
 
     function refunds(address token, address owner) external view returns (uint128);
 
+    /// @notice Claim the caller's parked refund for a token while the portal is unpaused.
+    /// @dev Reverts with PortalIsPaused while the portal is paused.
     function claimRefund(address token) external returns (uint128 amount);
 
     /// @notice Submit a batch with an n-of-m certificate for its zone tip.
@@ -1091,6 +1214,35 @@ interface IZoneInbox {
     /// @notice Emitted when a TIP-20 token is enabled on the zone via advanceTempo
     event TokenEnabled(address indexed token, string name, string symbol, string currency);
 
+    /// @notice TIP-1094: a virtual deposit credited its registered recipient (visible to `to`).
+    event VirtualDepositProcessed(
+        address indexed to,
+        address indexed originator,
+        bytes32 indexed depositHash,
+        address token,
+        uint128 amount,
+        uint8 version,
+        bytes4 masterId,
+        bytes2 userTag,
+        bytes32 memo
+    );
+
+    /// @notice TIP-1094: a virtual deposit reached its recipient but the mint failed, so it was
+    ///         queued as a refund to the originator.
+    event VirtualDepositFailed(
+        address indexed to,
+        address indexed originator,
+        bytes32 indexed depositHash,
+        address token,
+        uint128 amount,
+        bytes4 masterId,
+        bytes2 userTag
+    );
+
+    /// @notice TIP-1094: an address key version was initialized. Carries no key material.
+    event VirtualAddressKeyInitialized(uint8 version);
+
+    error InvalidAddressKeyVersion(uint8 version);
     error InvalidTokenEnablementHash();
     error OnlySequencer();
     error InvalidDepositQueueHash();
@@ -1100,6 +1252,9 @@ interface IZoneInbox {
     error NoRefund();
     error InvalidSharedSecretProof();
     error Unauthorized();
+
+    /// @notice TIP-1094: initialize the next address key version. System-only, from T15.
+    function initializeVirtualAddressKey(uint8 version, bytes32 key) external;
 
     /// @notice Get the number of enabled tokens processed by the Zone Inbox
     function processedEnabledTokenCount() external view returns (uint64);
@@ -1159,6 +1314,7 @@ interface IZoneOutbox {
     error InvalidEncryptedSenderCount(uint256 actual, uint256 expected);
     error InvalidEncryptedSenderLength(uint256 actual, uint256 expected);
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TransferFailed();

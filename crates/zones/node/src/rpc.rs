@@ -16,7 +16,7 @@ use std::{
 use alloy_consensus::{BlockHeader, Sealable as _, Transaction as _, transaction::TxHashRef};
 use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
 use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U64, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
@@ -27,8 +27,13 @@ use alloy_rpc_types_eth::{
 use alloy_sol_types::SolCall;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
-use futures::StreamExt;
-use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use futures::{StreamExt, TryStreamExt};
+use jsonrpsee::{
+    RpcModule,
+    core::RpcResult,
+    proc_macros::rpc,
+    types::{ErrorObjectOwned, Params},
+};
 use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
 use reth_execution_types::BundleSource;
@@ -37,11 +42,16 @@ use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
 use reth_rpc_eth_api::{
-    EthApiTypes, EthFilterApiServer, RpcConvert,
+    AsEthApiError, EthApiTypes, EthFilterApiServer, RpcConvert,
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
-use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::StateProviderFactory;
+use reth_rpc_eth_types::{
+    EthApiError,
+    error::{RpcInvalidTransactionError, RpcPoolError},
+    logs_utils,
+};
+use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
+use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -51,6 +61,7 @@ use tempo_alloy::{
 use tempo_chainspec::{
     TempoHardforks,
     constants::gas,
+    is_valid_native_account,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
 use tempo_contracts::precompiles::{
@@ -58,30 +69,54 @@ use tempo_contracts::precompiles::{
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
-use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    account::{
+        CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, encode_config_commitment,
+    },
+};
 use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
 };
-use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
+use zone_l1::{
+    TempoStateExt as _,
+    state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
+};
+use zone_sequencer::DurableBlockReader;
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
+use zone_precompiles::is_zone_precompile;
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
-        DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        DecryptionKeyCandidate, DecryptionKeyStatus, DeriveDepositAddressesRequest,
+        DeriveDepositAddressesResponse, JsonRpcError, LocalSequencerInfo,
+        MAX_DERIVE_DEPOSIT_ADDRESSES, PeerTipInfo, SequencerInfoResponse, SequencerPeerInfo,
+        SequencerProgress, SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness,
+        ZoneInfoResponse, internal, raw_null, raw_zero, to_raw,
     },
 };
 
 use crate::{follower::PeerTipRegistry, role::SharedRoleStatus};
+
+/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
+///
+/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
+/// collection timeout.
+const MULTI_PROOF_RETRIES: usize = 7;
+/// Delay before each `eth_getMultiProof` retry.
+const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
+/// Smallest request worth splitting off.
+const MULTI_PROOF_MIN_CHUNK: usize = 128;
+/// Most `eth_getMultiProof` requests in flight per witness. Each holds one of the L1 node's shared
+/// tracing permits.
+const MULTI_PROOF_MAX_PARALLEL: usize = 8;
 
 /// Multi-sequencer handles for the sequencer RPC methods.
 ///
@@ -178,7 +213,6 @@ impl<P> OperatorZoneApi<P> {
     }
 }
 
-#[jsonrpsee::core::async_trait]
 impl<P> ZoneApiServer for OperatorZoneApi<P>
 where
     P: StateProviderFactory + Clone + 'static,
@@ -218,6 +252,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
     P: HeaderProvider
+        + DurableBlockReader
         + StateProviderFactory
         + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + Clone
@@ -226,7 +261,7 @@ where
     let mut module = RpcModule::new(());
     module.merge(TempoForkScheduleRpc::new(provider.clone()).into_rpc())?;
     let set_leader_sequencer = sequencer.clone();
-    module.register_async_method("zone_setLeader", move |params, _, _| {
+    module.register_async_method("zone_setLeader", move |params, _| {
         let sequencer = set_leader_sequencer.clone();
         async move {
             let (target,) = params.parse::<(Address,)>()?;
@@ -235,7 +270,7 @@ where
                 .map_err(operator_rpc_error)
         }
     })?;
-    module.register_async_method("zone_getSequencerInfo", move |_, _, _| {
+    module.register_async_method("zone_getSequencerInfo", move |_, _| {
         let sequencer = sequencer.clone();
         let provider = provider.clone();
         async move {
@@ -246,11 +281,151 @@ where
     Ok(module)
 }
 
+/// Operator `eth_getCode`, `eth_getAccountInfo` and `eth_getAccount`, which return what zone
+/// execution sees (TIP-1154): for an account without zone code whose Tempo commitment at the
+/// block's anchor is nonzero, the account marker code (or its hash) and, where the response has
+/// one, the commitment extension, so off-chain verifiers that check code before `ecrecover`
+/// reject a retired original key.
+pub(crate) fn operator_get_code_module<E>(
+    eth_api: E,
+    l1_state: L1StateProvider,
+) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
+where
+    E: FullEthApi + Clone + 'static,
+    E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    let mut module = RpcModule::new(());
+    let (code_eth_api, code_l1_state) = (eth_api.clone(), l1_state.clone());
+    module.register_async_method("eth_getCode", move |params, _| {
+        let eth_api = code_eth_api.clone();
+        let l1_state = code_l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block_number(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id.unwrap_or_default());
+            let code = EthState::get_code(&eth_api, address, Some(block_id))
+                .await
+                .map_err(Into::into)?;
+            if !code.is_empty() {
+                return Ok(code);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            Ok::<_, ErrorObjectOwned>(if commitment.is_zero() {
+                code
+            } else {
+                CONFIGURABLE_ACCOUNT_CODE
+            })
+        }
+    })?;
+    let (info_eth_api, info_l1_state) = (eth_api.clone(), l1_state.clone());
+    module.register_async_method("eth_getAccountInfo", move |params, _| {
+        let eth_api = info_eth_api.clone();
+        let l1_state = info_l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let mut info = EthState::get_account_info(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if !info.code.is_empty() {
+                return Ok(info);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if !commitment.is_zero() {
+                info.code = CONFIGURABLE_ACCOUNT_CODE;
+                info.extension = encode_config_commitment(commitment).into();
+            }
+            Ok::<_, ErrorObjectOwned>(info)
+        }
+    })?;
+    module.register_async_method("eth_getAccount", move |params, _| {
+        let eth_api = eth_api.clone();
+        let l1_state = l1_state.clone();
+        async move {
+            let (address, block_id) = address_and_block(&params)?;
+            // The header and anchor lookups below have no pending block to fall back from.
+            let block_id = zone_rpc::handlers::normalize_block_id(block_id);
+            let account = EthState::get_account(&eth_api, address, block_id)
+                .await
+                .map_err(Into::into)?;
+            if account
+                .as_ref()
+                .is_some_and(|account| account.code_hash != KECCAK256_EMPTY)
+            {
+                return Ok(account);
+            }
+            let commitment = operator_commitment(&eth_api, &l1_state, address, block_id).await?;
+            if commitment.is_zero() {
+                return Ok(account);
+            }
+            // Zone execution sees the account even when the zone holds none for it.
+            let mut account = account.unwrap_or_default();
+            account.code_hash = CONFIGURABLE_ACCOUNT_CODE_HASH;
+            account.extension = encode_config_commitment(commitment).into();
+            Ok::<_, ErrorObjectOwned>(Some(account))
+        }
+    })?;
+    Ok(module)
+}
+
+/// `eth_getCode`'s address and optional block. Positional only, as reth's generated handlers
+/// accept them.
+fn address_and_block_number(
+    params: &Params<'_>,
+) -> Result<(Address, Option<BlockId>), ErrorObjectOwned> {
+    let mut params = params.sequence();
+    Ok((params.next()?, params.optional_next()?))
+}
+
+/// `eth_getAccount`'s and `eth_getAccountInfo`'s address and block. Positional only, as reth's
+/// generated handlers accept them.
+fn address_and_block(params: &Params<'_>) -> Result<(Address, BlockId), ErrorObjectOwned> {
+    let mut params = params.sequence();
+    Ok((params.next()?, params.next()?))
+}
+
+/// The Tempo commitment zone execution reads for a codeless `address` at `block_id`, or zero for
+/// accounts it reads none for.
+async fn operator_commitment<E>(
+    eth_api: &E,
+    l1_state: &L1StateProvider,
+    address: Address,
+    block_id: BlockId,
+) -> Result<B256, ErrorObjectOwned>
+where
+    E: FullEthApi,
+    E::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    async {
+        let provider = eth_api.provider();
+        let header = provider
+            .header_by_id(block_id)?
+            .ok_or_eyre("zone block not found")?;
+        let spec = provider.chain_spec().tempo_hardfork_at(header.timestamp());
+        // The same accounts zone execution reads a Tempo commitment for.
+        if !spec.is_t14()
+            || !is_valid_native_account(address, spec)
+            || is_zone_precompile(address, spec)
+        {
+            return eyre::Ok(B256::ZERO);
+        }
+        let anchor = provider.state_by_block_id(block_id)?.tempo_block_number()?;
+        Ok(tokio::time::timeout(
+            L1_COMMITMENT_READ_TIMEOUT,
+            l1_state.read_l1_commitment_async(address, anchor),
+        )
+        .await
+        .wrap_err("timed out reading the Tempo commitment")??)
+    }
+    .await
+    .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))
+}
+
 /// Operator Web3 API backed by the globally initialized Zone version metadata.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OperatorWeb3Api;
 
-#[jsonrpsee::core::async_trait]
 impl Web3ApiServer for OperatorWeb3Api {
     async fn client_version(&self) -> RpcResult<String> {
         Ok(crate::version::client_version().to_owned())
@@ -277,105 +452,101 @@ impl<E> NodeZoneDebugApi<E> {
     }
 }
 
-#[jsonrpsee::core::async_trait]
 impl<E> ZoneDebugApi for NodeZoneDebugApi<E>
 where
     E: FullEthApi<Evm = ZoneEvmConfig, Primitives = TempoPrimitives>,
 {
-    async fn zone_execution_witness(&self, block_id: BlockId) -> RpcResult<ZoneExecutionWitness> {
-        let _permit = self
-            .eth_api
-            .tracing_task_guard()
-            .clone()
-            .acquire_owned()
-            .await;
-
-        let pending = if let BlockId::Hash(hash) = block_id
-            && hash.require_canonical != Some(true)
-        {
-            self.eth_api
-                .provider()
-                .pending_block()
-                .map_err(|error| operator_rpc_error(internal(error)))?
-                .filter(|block| block.hash() == hash.block_hash)
-        } else {
-            None
-        };
-        let block = match pending {
-            Some(block) => Some(block),
-            None => self
+    fn zone_execution_witness(
+        &self,
+        block_id: BlockId,
+    ) -> futures::future::BoxFuture<'_, RpcResult<ZoneExecutionWitness>> {
+        Box::pin(async move {
+            let _permit = self
                 .eth_api
-                .recovered_block(block_id)
+                .tracing_task_guard()
+                .clone()
+                .acquire_owned()
+                .await;
+
+            let pending = if let BlockId::Hash(hash) = block_id
+                && hash.require_canonical != Some(true)
+            {
+                self.eth_api
+                    .provider()
+                    .pending_block()
+                    .map_err(|error| operator_rpc_error(internal(error)))?
+                    .filter(|block| block.hash() == hash.block_hash)
+            } else {
+                None
+            };
+            let block = match pending {
+                Some(block) => Some(block),
+                None => self
+                    .eth_api
+                    .recovered_block(block_id)
+                    .await
+                    .map_err(|error| operator_rpc_error(internal(error)))?,
+            }
+            .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
+            let block_number = block.header().number();
+            let block_hash = block.hash();
+            let parent_hash = block.parent_hash();
+            let first_tx_input = block
+                .body()
+                .transactions
+                .first()
+                .map(|tx| tx.input().clone());
+
+            let (execution_witness, reads, initial_tempo) = self
+                .eth_api
+                .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
+                    let initial_tempo = db
+                        .db
+                        .inner()
+                        .0
+                        .tempo_num_hash()
+                        .map_err(EthApiError::from)?;
+                    let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
+                    let block_executor = evm_config.executor(&mut db);
+                    let mode = ExecutionWitnessMode::default();
+                    let output = block_executor
+                        .execute(&block)
+                        .map_err(|error| EthApiError::Internal(error.into()))?;
+                    db.commit_source(&BundleSource(&output.state));
+
+                    let witness = ExecutionWitnessRecord::new(&db)
+                        .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
+                        .into_execution_witness(
+                            &db.db.inner().0.0,
+                            eth_api.provider(),
+                            block_number,
+                            mode,
+                        )
+                        .map_err(EthApiError::from)?;
+                    Ok((witness, recorder.take_reads(), initial_tempo))
+                })
                 .await
-                .map_err(|error| operator_rpc_error(internal(error)))?,
-        }
-        .ok_or_else(|| operator_rpc_error(internal(format!("block {block_id} not found"))))?;
-        let block_number = block.header().number();
-        let block_hash = block.hash();
-        let parent_hash = block.parent_hash();
-        let first_tx_input = block
-            .body()
-            .transactions
-            .first()
-            .map(|tx| tx.input().clone());
+                .map_err(|error| operator_rpc_error(internal(error)))?;
 
-        let (execution_witness, reads, initial_tempo) = self
-            .eth_api
-            .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                let initial_tempo = db
-                    .db
-                    .inner()
-                    .0
-                    .tempo_num_hash()
-                    .map_err(EthApiError::from)?;
-                let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
-                let block_executor = evm_config.executor(&mut db);
-                let mode = ExecutionWitnessMode::default();
-                let output = block_executor
-                    .execute(&block)
-                    .map_err(|error| EthApiError::Internal(error.into()))?;
-                db.commit_source(&BundleSource(&output.state));
-
-                let witness = ExecutionWitnessRecord::new(&db)
-                    .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
-                    .into_execution_witness(
-                        &db.db.inner().0.0,
-                        eth_api.provider(),
-                        block_number,
-                        mode,
-                    )
-                    .map_err(EthApiError::from)?;
-                Ok((witness, recorder.take_reads(), initial_tempo))
-            })
+            let (initial_tempo_header, tempo_state) = collect_tempo_witness(
+                &self.l1_provider,
+                initial_tempo,
+                first_tx_input.as_ref().map(|input| input.as_ref()),
+                &reads,
+            )
             .await
-            .map_err(|error| operator_rpc_error(internal(error)))?;
-
-        let (initial_tempo_header, tempo_state) = collect_tempo_witness(
-            &self.l1_provider,
-            initial_tempo,
-            first_tx_input.as_ref().map(|input| input.as_ref()),
-            &reads,
-        )
-        .await
-        .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
-        Ok(ZoneExecutionWitness {
-            block_number,
-            block_hash,
-            parent_hash,
-            execution_witness,
-            initial_tempo_header,
-            tempo_state,
+            .map_err(|error| operator_rpc_error(internal(format!("{error:#}"))))?;
+            Ok(ZoneExecutionWitness {
+                block_number,
+                block_hash,
+                parent_hash,
+                execution_witness,
+                initial_tempo_header,
+                tempo_state,
+            })
         })
     }
 }
-
-/// Retries of `eth_getMultiProof` while the serving L1 node has not imported the block.
-///
-/// With [`MULTI_PROOF_RETRY_DELAY`] this bounds the wait to 175 ms, under the pre-T15 witness
-/// collection timeout.
-const MULTI_PROOF_RETRIES: usize = 7;
-/// Delay before each `eth_getMultiProof` retry.
-const MULTI_PROOF_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 /// Fetch all L1 read proofs at the checkpoint selected by the opening advanceTempo transaction.
 async fn collect_tempo_witness(
@@ -411,48 +582,87 @@ async fn collect_tempo_witness(
 
     let mut targets = BTreeMap::<Address, BTreeSet<B256>>::new();
     for read in reads {
-        targets.entry(read.account).or_default().insert(read.slot);
+        // An account-only read still needs the account proof, which every target carries.
+        targets.entry(read.account).or_default().extend(read.slot);
     }
-    let targets = targets
-        .into_iter()
-        .map(|(account, slots)| (account, slots.into_iter().collect::<Vec<_>>()))
-        .collect::<Vec<_>>();
     // The L1 RPC may balance connections across nodes whose heads differ by a few
     // milliseconds, so the node serving this request can lack a block the subscriber already
     // saw finalized. Retry only that answer (`block not found`); return every other error.
-    let proofs = (|| {
-        provider
-            .client()
-            .request::<_, Vec<EIP1186AccountProofResponse>>(
-                "eth_getMultiProof",
-                (targets.clone(), BlockId::number(tempo_block_number)),
+    let nodes = futures::stream::iter(multi_proof_chunks(targets))
+        .map(|chunk| {
+            (move || {
+                provider
+                    .client()
+                    .request::<_, Vec<EIP1186AccountProofResponse>>(
+                        "eth_getMultiProof",
+                        (chunk.clone(), BlockId::number(tempo_block_number)),
+                    )
+            })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(MULTI_PROOF_RETRY_DELAY)
+                    .with_max_times(MULTI_PROOF_RETRIES),
             )
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(MULTI_PROOF_RETRY_DELAY)
-            .with_max_times(MULTI_PROOF_RETRIES),
-    )
-    .when(|error| {
-        error.as_error_resp().is_some_and(|response| {
-            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+            .when(|error| {
+                error.as_error_resp().is_some_and(|response| {
+                    response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                })
+            })
         })
-    })
-    .await
-    .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+        .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
+        // Merge responses as they arrive.
+        .try_fold(BTreeMap::new(), |mut nodes, proofs| {
+            for proof in proofs {
+                for node in proof.account_proof.into_iter().chain(
+                    proof
+                        .storage_proof
+                        .into_iter()
+                        .flat_map(|proof| proof.proof),
+                ) {
+                    nodes.entry(keccak256(&node)).or_insert(node);
+                }
+            }
+            futures::future::ready(Ok(nodes))
+        })
+        .await
+        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+    Ok((initial_header, nodes.into_values().collect()))
+}
 
-    let mut nodes = BTreeMap::new();
-    for proof in proofs {
-        for node in proof.account_proof.into_iter().chain(
-            proof
-                .storage_proof
-                .into_iter()
-                .flat_map(|proof| proof.proof),
-        ) {
-            nodes.entry(keccak256(&node)).or_insert(node);
+/// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
+/// [`DEFAULT_MAX_PROOF_SLOTS`] limit on targets and slots.
+fn multi_proof_chunks(
+    targets: BTreeMap<Address, BTreeSet<B256>>,
+) -> Vec<Vec<(Address, Vec<B256>)>> {
+    let total = targets.len().max(targets.values().map(BTreeSet::len).sum());
+    let parallel = total
+        .div_ceil(MULTI_PROOF_MIN_CHUNK)
+        .clamp(1, MULTI_PROOF_MAX_PARALLEL);
+    let size = total.div_ceil(parallel).min(DEFAULT_MAX_PROOF_SLOTS);
+
+    let mut chunks = Vec::new();
+    let mut chunk = Vec::new();
+    let mut chunk_slots = 0;
+    for (account, slots) in targets {
+        let mut slots = slots.into_iter().peekable();
+        // Runs once for an account-only target.
+        loop {
+            let piece = slots.by_ref().take(size).collect::<Vec<_>>();
+            if chunk.len() == size || chunk_slots + piece.len() > size {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_slots = 0;
+            }
+            chunk_slots += piece.len();
+            chunk.push((account, piece));
+            if slots.peek().is_none() {
+                break;
+            }
         }
     }
-    Ok((initial_header, nodes.into_values().collect()))
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
 }
 
 /// Build storage targets for SPF reads not necessarily covered by execution.
@@ -581,7 +791,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -710,6 +920,10 @@ where
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Bounds the Tempo reads of token authentication and session rechecks, so they fail instead of
+/// waiting on an unresponsive Tempo RPC.
+const L1_COMMITMENT_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
 }
@@ -719,6 +933,18 @@ fn map_eth_filter_error(err: EthFilterError) -> JsonRpcError {
         EthFilterError::FilterNotFound(_) => filter_not_found_error(),
         other => internal(other),
     }
+}
+
+/// Maps a transaction submission error, dropping the balance and cost from insufficient-funds
+/// rejections because they belong to the fee payer, which can be a sponsor other than the caller.
+fn map_send_raw_transaction_error(err: impl AsEthApiError + std::fmt::Display) -> JsonRpcError {
+    if let Some(EthApiError::PoolError(RpcPoolError::Invalid(
+        RpcInvalidTransactionError::InsufficientFunds { .. },
+    ))) = err.as_err()
+    {
+        return JsonRpcError::internal("insufficient funds for gas * price + value");
+    }
+    internal(err)
 }
 
 fn stale_filter_owner_ids(
@@ -786,24 +1012,35 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Reads Tempo commitments through the node's L1 state cache.
+    l1_state: L1StateProvider,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
-    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub) and an L1 provider.
+    /// Wrap reth's [`EthHandlers`] (api + filter + pubsub), an L1 provider, and the node's L1 state
+    /// cache, which commitment reads share with execution.
     pub fn new(
         eth: EthHandlers<Api>,
         config: zone_rpc::RedactedRpcConfig,
         enabled_tokens: EnabledTokenRegistry,
         l1_provider: DynProvider<TempoNetwork>,
+        l1_state_cache: L1StateCache,
     ) -> Self {
+        let l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            l1_state_cache,
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
         let rpc = Self {
             eth,
             config,
             enabled_tokens,
             l1_provider,
+            l1_state,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
@@ -908,9 +1145,13 @@ where
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
+            // The call loads `account`, whose Tempo commitment zone execution reads. Reading it
+            // through the bounded path first keeps the call from waiting on Tempo.
+            Self::get_config_commitment(self, account).await?;
             let request = TempoTransactionRequest {
                 inner: TransactionRequest {
                     from: Some(account),
@@ -926,11 +1167,41 @@ where
                 ..Default::default()
             };
 
-            let output = EthCall::call(&self.eth.api, request, None, EvmOverrides::default())
-                .await
-                .wrap_err("AccountKeychain.getKey eth_call failed")?;
+            let output = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                EthCall::call(&self.eth.api, request, None, EvmOverrides::default()),
+            )
+            .await
+            .wrap_err("timed out calling AccountKeychain.getKey")?
+            .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn get_config_commitment(&self, account: Address) -> BoxEyreFut<'_, Option<B256>> {
+        Box::pin(async move {
+            let provider = self.eth.api.provider();
+            let header = provider
+                .latest_header()?
+                .ok_or_eyre("zone has no latest header")?;
+            if !provider
+                .chain_spec()
+                .tempo_hardfork_at(header.timestamp())
+                .is_t14()
+            {
+                return Ok(None);
+            }
+            let anchor = provider
+                .state_by_block_hash(header.hash())?
+                .tempo_block_number()?;
+            let commitment = tokio::time::timeout(
+                L1_COMMITMENT_READ_TIMEOUT,
+                self.l1_state.read_l1_commitment_async(account, anchor),
+            )
+            .await
+            .wrap_err("timed out reading the Tempo commitment")??;
+            Ok(Some(commitment))
         })
     }
 
@@ -1107,6 +1378,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::call(
                 &self.eth.api,
@@ -1133,6 +1405,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::estimate_gas_at(
                 &self.eth.api,
@@ -1152,7 +1425,7 @@ where
 
             let hash = EthTransactions::send_raw_transaction(&self.eth.api, data)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
             to_raw(&hash)
         })
     }
@@ -1163,7 +1436,7 @@ where
 
             let mut receipt = EthTransactions::send_raw_transaction_sync(&self.eth.api, data, None)
                 .await
-                .map_err(internal)?;
+                .map_err(map_send_raw_transaction_error)?;
 
             receipt = zone_rpc::filter::filter_receipt_logs(receipt);
 
@@ -1178,6 +1451,10 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
+            // Filling without a gas limit estimates gas, which simulates the call.
+            if request.inner.gas.is_none() {
+                zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
+            }
 
             // Prefill the users request so the `fill_transaction` doesnt leak dynamic fee estimates via
             // missing fee fields.
@@ -1433,25 +1710,139 @@ where
             to_raw(&key)
         })
     }
+
+    fn zone_derive_deposit_addresses(
+        &self,
+        request: DeriveDepositAddressesRequest,
+        auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async move {
+            if request.user_tags.is_empty()
+                || request.user_tags.len() > MAX_DERIVE_DEPOSIT_ADDRESSES
+            {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "userTags must hold 1 to {MAX_DERIVE_DEPOSIT_ADDRESSES} tags"
+                )));
+            }
+            // Derive only from settled state as of finalized Tempo, so an address never depends
+            // on a zone block, or a Tempo settlement, that could still be replaced.
+            let l1_block = self
+                .l1_provider
+                .get_block_by_number(alloy_eips::BlockNumberOrTag::Finalized)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| JsonRpcError::internal("no finalized Tempo block"))?
+                .header
+                .number();
+            let portal = ZonePortal::new(self.config.zone_portal, &self.l1_provider);
+            let settled = portal
+                .blockHash()
+                .block(BlockId::number(l1_block))
+                .call()
+                .await
+                .map_err(internal)?;
+            // The minimum only rises, so read it at the latest Tempo head: a version retired after
+            // the finalized block must not be issued.
+            let minimum_version = portal
+                .minimumAddressVersion()
+                .block(BlockId::latest())
+                .call()
+                .await
+                .map_err(internal)?;
+            let mut state = self
+                .eth
+                .api
+                .provider()
+                .state_by_block_hash(settled)
+                .map_err(|_| JsonRpcError::internal("settled zone block is not available"))?;
+            let derived = crate::engine::read_zone_state(&mut state, || {
+                derive_deposit_addresses(
+                    self.config.zone_id,
+                    minimum_version,
+                    auth.caller,
+                    &request,
+                )
+            })?;
+            to_raw(&DeriveDepositAddressesResponse {
+                zone_block_hash: settled,
+                version: derived.0,
+                addresses: derived.1,
+            })
+        })
+    }
+}
+
+/// Derives TIP-1094 deposit addresses for `request` from zone state in the current storage context.
+///
+/// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
+/// fail alike, so the method does not reveal registrations. The version defaults to the highest
+/// initialized key version and must not be below the portal's minimum.
+fn derive_deposit_addresses(
+    zone_id: u32,
+    minimum_version: u8,
+    caller: Address,
+    request: &DeriveDepositAddressesRequest,
+) -> Result<(u8, Vec<Address>), JsonRpcError> {
+    let recipient = zone_precompiles::address_registry::ZoneAddressRegistry::new()
+        .recipient_of(request.master_id)
+        .map_err(internal)?;
+    if recipient.is_zero() || recipient != caller {
+        return Err(JsonRpcError::invalid_params(
+            "masterId is not registered to the caller",
+        ));
+    }
+
+    // Keys initialize in order, so the initialized versions are 1 through the first gap.
+    let inbox = zone_precompiles::inbox::ZoneInbox::new();
+    let mut keys = Vec::new();
+    for version in 1..=u8::MAX {
+        match inbox.virtual_address_key(version).map_err(internal)? {
+            Some(key) => keys.push(key),
+            None => break,
+        }
+    }
+    let highest = keys.len() as u8;
+    let version = request.version.unwrap_or(highest);
+    if version == 0 || version > highest || version < minimum_version {
+        return Err(JsonRpcError::invalid_params(
+            "address version is not initialized or is retired",
+        ));
+    }
+
+    let key = keys[usize::from(version - 1)];
+    let addresses = request
+        .user_tags
+        .iter()
+        .map(|tag| {
+            let mut plaintext = [0u8; 6];
+            plaintext[..4].copy_from_slice(request.master_id.as_slice());
+            plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+            tempo_contracts::zones::ZoneDepositAddress {
+                zone_id,
+                version,
+                ciphertext: zone_precompiles::ff1::encrypt(&key.0, version, zone_id, plaintext)
+                    .into(),
+            }
+            .encode()
+        })
+        .collect();
+    Ok((version, addresses))
 }
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
-    let zone_height = provider.last_block_number().map_err(internal)?;
-    let zone_header = provider
-        .sealed_header(zone_height)
-        .map_err(internal)?
-        .ok_or_else(|| JsonRpcError::internal("local canonical zone header is missing"))?;
+    // Both come from the database, so the tip is the block this node keeps after a restart.
+    let durable = provider.last_durable_block_num_hash().map_err(internal)?;
     let tempo_tip = provider
-        .state_by_block_hash(zone_header.hash())
+        .state_by_block_hash(durable.hash)
         .map_err(internal)?
         .tempo_num_hash()
         .map_err(internal)?;
     Ok(PeerTip {
-        zone_height,
-        zone_hash: zone_header.hash(),
+        zone_height: durable.number,
+        zone_hash: durable.hash,
         tempo_block_number: tempo_tip.number,
         tempo_block_hash: tempo_tip.hash,
     })
@@ -1642,12 +2033,31 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
+    use jsonrpsee::{
+        Methods,
+        types::{Response, response::Success},
+    };
     use reth_provider::test_utils::MockEthProvider;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempo_alloy::rpc::ForkSchedule;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
     use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
     use zone_primitives::constants::zone_chain_id;
+
+    async fn rpc_call<T: serde::de::DeserializeOwned + Clone>(
+        module: &Methods,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, ErrorObjectOwned> {
+        let request =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+        let (response, _) = module
+            .raw_json_request(&request.to_string(), 1)
+            .await
+            .unwrap();
+        let response = serde_json::from_str::<Response<'_, T>>(&response).unwrap();
+        Success::try_from(response).map(|response| response.result)
+    }
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
@@ -1684,8 +2094,8 @@ mod tests {
         })?;
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
-        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |params, ctx, _| {
+        module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |params, ctx| {
             let params: serde_json::Value = params.parse()?;
             ctx.0.lock().unwrap().push(params.clone());
             if ctx.1.load(Ordering::Relaxed) {
@@ -1717,7 +2127,10 @@ mod tests {
             .erased();
         let account = Address::repeat_byte(0xaa);
         let slot = B256::repeat_byte(0xbb);
-        let reads = HashSet::from([zone_evm::TempoStorageRead { account, slot }]);
+        let reads = HashSet::from([zone_evm::TempoStorageRead {
+            account,
+            slot: Some(slot),
+        }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
         let first_tx_input = IZoneInbox::advanceTempoCall {
@@ -1768,8 +2181,92 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("checkpoint hash mismatch"));
+
+        // Large reads fan out into parallel requests.
+        fail.store(false, Ordering::Relaxed);
+        requests.lock().unwrap().clear();
+        let many_reads = (0..300u16)
+            .map(|i| zone_evm::TempoStorageRead {
+                account: Address::left_padding_from(&i.to_be_bytes()),
+                slot: None,
+            })
+            .collect::<HashSet<_>>();
+        let (_, nodes) =
+            collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many_reads).await?;
+        assert_eq!(nodes, vec![Bytes::from(vec![1])]);
+        {
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            let requested = requests
+                .iter()
+                .flat_map(|request| request[0].as_array().unwrap().clone())
+                .map(|target| target[0].as_str().unwrap().to_owned())
+                .collect::<HashSet<_>>();
+            assert_eq!(requested.len(), many_reads.len());
+        }
         handle.stop()?;
         Ok(())
+    }
+
+    #[test]
+    fn multi_proof_chunks_split_work_within_reth_limits() {
+        let accounts = |n: u32| {
+            (0..n)
+                .map(|i| {
+                    (
+                        Address::left_padding_from(&i.to_be_bytes()),
+                        BTreeSet::new(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let sizes =
+            |chunks: &[Vec<(Address, Vec<B256>)>]| chunks.iter().map(Vec::len).collect::<Vec<_>>();
+
+        // Small reads stay in one request.
+        assert_eq!(sizes(&multi_proof_chunks(accounts(100))), vec![100]);
+        // Larger reads spread evenly over the parallel requests.
+        assert_eq!(sizes(&multi_proof_chunks(accounts(300))), vec![100; 3]);
+        assert_eq!(
+            sizes(&multi_proof_chunks(accounts(1024))),
+            vec![128; MULTI_PROOF_MAX_PARALLEL]
+        );
+        // Past the parallel budget, requests are capped at reth's limit and queue.
+        let chunks = multi_proof_chunks(accounts(20_000));
+        assert_eq!(chunks.len(), 20_000usize.div_ceil(DEFAULT_MAX_PROOF_SLOTS));
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.len() <= DEFAULT_MAX_PROOF_SLOTS)
+        );
+        assert_eq!(chunks.iter().map(Vec::len).sum::<usize>(), 20_000);
+
+        // An account with too many slots is split across requests.
+        let account = Address::repeat_byte(0xaa);
+        let slots = (0..3000u32)
+            .map(|i| B256::left_padding_from(&i.to_be_bytes()))
+            .collect::<BTreeSet<_>>();
+        let mut targets = accounts(10);
+        targets.insert(account, slots.clone());
+        let chunks = multi_proof_chunks(targets);
+        assert!(chunks.iter().all(|chunk| {
+            chunk.iter().map(|(_, slots)| slots.len()).sum::<usize>() <= DEFAULT_MAX_PROOF_SLOTS
+        }));
+        let requested = chunks
+            .iter()
+            .flatten()
+            .filter(|(target, _)| *target == account)
+            .flat_map(|(_, slots)| slots.iter().copied())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(requested, slots);
+        assert_eq!(
+            chunks
+                .iter()
+                .flatten()
+                .filter(|(_, slots)| slots.is_empty())
+                .count(),
+            10
+        );
     }
 
     #[tokio::test]
@@ -1789,8 +2286,8 @@ mod tests {
         })?;
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
-        module.register_method("eth_getBlockByNumber", move |_, _, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |_, ctx, _| {
+        module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
+        module.register_method("eth_getMultiProof", |_, ctx| {
             ctx.1.fetch_add(1, Ordering::Relaxed);
             let remaining = ctx.0.load(Ordering::Relaxed);
             if remaining > 0 {
@@ -1813,7 +2310,7 @@ mod tests {
             .erased();
         let reads = HashSet::from([zone_evm::TempoStorageRead {
             account: Address::repeat_byte(0xaa),
-            slot: B256::repeat_byte(0xbb),
+            slot: Some(B256::repeat_byte(0xbb)),
         }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
@@ -1897,13 +2394,10 @@ mod tests {
                 ..Default::default()
             };
             provider.add_header(header.hash_slow(), header);
-            let schedule = module
-                .call::<_, ForkSchedule>(
-                    "tempo_forkSchedule",
-                    jsonrpsee::core::EmptyServerParams::new(),
-                )
-                .await
-                .expect("fork schedule should be available without authentication");
+            let schedule =
+                rpc_call::<ForkSchedule>(&module, "tempo_forkSchedule", serde_json::json!([]))
+                    .await
+                    .expect("fork schedule should be available without authentication");
             assert_eq!(schedule.active, active);
             assert_eq!(
                 schedule
@@ -1913,40 +2407,43 @@ mod tests {
             );
         }
 
-        let info = module
-            .call::<_, SequencerInfoResponse>(
-                "zone_getSequencerInfo",
-                jsonrpsee::core::EmptyServerParams::new(),
-            )
-            .await
-            .expect("single-sequencer info should be available without authentication");
+        let info = rpc_call::<SequencerInfoResponse>(
+            &module,
+            "zone_getSequencerInfo",
+            serde_json::json!([]),
+        )
+        .await
+        .expect("single-sequencer info should be available without authentication");
         assert_eq!(info.mode, "single");
         assert_eq!(info.portal, Address::repeat_byte(0x11));
 
-        let error = module
-            .call::<_, SetLeaderResponse>("zone_setLeader", [Address::repeat_byte(0x22)])
-            .await
-            .expect_err("an uninitialized sequencer context should reject the call");
+        let error = rpc_call::<SetLeaderResponse>(
+            &module,
+            "zone_setLeader",
+            serde_json::json!([Address::repeat_byte(0x22)]),
+        )
+        .await
+        .expect_err("an uninitialized sequencer context should reject the call");
         assert!(
             error
                 .to_string()
                 .contains("zone_setLeader requires multi-sequencer mode")
         );
 
-        let error = module
-            .call::<_, SetLeaderResponse>(
-                "zone_setLeader",
-                (
-                    Address::repeat_byte(0x22),
-                    serde_json::json!({
-                        "force": true,
-                        "expectedEpoch": "0x7",
-                        "recoveryBlockHash": B256::repeat_byte(0x33),
-                    }),
-                ),
-            )
-            .await
-            .expect_err("zone_setLeader no longer accepts runtime recovery options");
+        let error = rpc_call::<SetLeaderResponse>(
+            &module,
+            "zone_setLeader",
+            serde_json::json!([
+                Address::repeat_byte(0x22),
+                serde_json::json!({
+                    "force": true,
+                    "expectedEpoch": "0x7",
+                    "recoveryBlockHash": B256::repeat_byte(0x33),
+                }),
+            ]),
+        )
+        .await
+        .expect_err("zone_setLeader no longer accepts runtime recovery options");
         assert!(error.to_string().contains("Invalid params"));
     }
 

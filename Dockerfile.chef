@@ -12,6 +12,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
+# Images ship, so build dependencies with real vergen data too. This must match the final
+# stage, since smolgen reruns build scripts when VERGEN_IDEMPOTENT changes.
+ENV VERGEN_IDEMPOTENT=0
+
 ARG TARGETARCH
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"

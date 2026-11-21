@@ -115,6 +115,7 @@ where
             self.env.chain.clone(),
             static_file_provider,
             rocksdb_provider,
+            reth_storage_overlay::OverlayManager::default(),
             runtime,
         )?;
         let provider_rw = provider_factory.database_provider_rw()?;

@@ -85,6 +85,10 @@ These are the comments reviewers leave most often. Follow them so they don't hav
 - Don't repeat unit coverage in e2e, and don't add tests for trivial behavior.
 - Before deleting a test as redundant, show that another test fails when the guarded line breaks.
 - Add fuzz or property tests for decoders and state machines.
+- Table-drive independent cases with `test-case`: one `#[test_case(..)]` row per case, `#[test_matrix(..)]` for cross products such as hardfork × signature type. Both stack on `#[tokio::test]`. No tuple-array loops, `Case` structs, or test-generating macros for them.
+- Rows name their inputs through the test's parameters, so bare `true`/`false` and numbers are fine. Reuse an existing enum or constant from the module when one fits; don't add one just to label a row. When the test can return its outcome, put the expected result after `=>`; keep every assertion exact. Keep each row on one line, even a little past 100 columns.
+- Let `test_case` derive names from the arguments. Drop hand-written name strings and `"{name}"` assert labels once the generated name identifies the case.
+- Keep a loop when cases are steps on shared state or deliberately share one expensive setup (one node or cluster). A row with more than about 4 inputs is a scenario: give it its own named test. Leave one-line loops like `for spec in [T13, T14]` alone.
 
 ## Async and observability
 

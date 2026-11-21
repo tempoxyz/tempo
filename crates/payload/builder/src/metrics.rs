@@ -98,6 +98,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Build time multiplier in use after the last paced build.
+    pub(crate) build_time_multiplier_last: Gauge,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
@@ -106,6 +108,7 @@ pub(crate) enum BlockBuildStopReason {
     RlpBlockSizeLimit,
     TxPoolEmpty,
     BuildBudget,
+    TransactionCountLimit,
 }
 
 impl BlockBuildStopReason {
@@ -115,6 +118,7 @@ impl BlockBuildStopReason {
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
             Self::BuildBudget => "build_budget",
+            Self::TransactionCountLimit => "transaction_count_limit",
         }
     }
 }

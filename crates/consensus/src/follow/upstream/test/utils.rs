@@ -12,9 +12,8 @@ use futures::{FutureExt as _, StreamExt as _, future::BoxFuture, stream};
 use parking_lot::Mutex;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::sync::oneshot;
-use url::Url;
 
-use super::super::{Connector, EventStream, UpstreamClient};
+use super::super::{Connector, EventStream, UpstreamClient, UpstreamUrl};
 use crate::consensus::{Block, Digest};
 
 struct SubscriptionPlan {
@@ -28,7 +27,7 @@ pub(super) struct StubConnector {
 }
 
 struct StubConnectorInner {
-    endpoint: Url,
+    endpoint: UpstreamUrl,
     client: StubClient,
     replacement_client: Mutex<Option<StubClient>>,
     failures_remaining: Mutex<usize>,
@@ -39,7 +38,7 @@ impl StubConnector {
     pub(super) fn new(client: StubClient) -> Self {
         Self {
             inner: Arc::new(StubConnectorInner {
-                endpoint: Url::parse("ws://upstream.test").expect("valid test URL"),
+                endpoint: UpstreamUrl::new("ws://upstream.test"),
                 client,
                 replacement_client: Mutex::new(None),
                 failures_remaining: Mutex::new(0),
@@ -95,7 +94,7 @@ impl Connector for StubConnector {
         .boxed()
     }
 
-    fn endpoint(&self) -> &Url {
+    fn endpoint(&self) -> &UpstreamUrl {
         &self.inner.endpoint
     }
 }
