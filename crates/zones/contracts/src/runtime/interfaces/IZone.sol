@@ -306,6 +306,8 @@ address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 //   slot 30: depositWeight (uint64) + settledDepositWeight (uint64) + depositPriceBlock (uint64)
 //            + depositPriceTier (uint64) [packed]
 //   slot 31: depositBucketBase (uint64) + nextDepositBucketToPrune (uint64) [packed]
+//   slot 32: _withdrawalLimits (mapping(address => WithdrawalLimit))
+//   slot 33: _queuedWithdrawals (mapping(address => QueuedWithdrawals))
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneInbox and ZoneOutbox use them to read portal state via
@@ -446,6 +448,34 @@ interface IZoneFactory {
 struct TokenConfig {
     bool enabled; // true once admin enables this token (permanent, irreversible)
     bool depositsActive; // admin can pause/unpause deposits; does not affect withdrawals
+}
+
+/// @notice Per-token withdrawal limit enforced by the portal on its payout paths.
+/// @dev Capacity refills at maxAmount / period units per second, up to maxAmount. Two slots: the
+///      limit, and the capacity that each refill rewrites.
+struct WithdrawalLimit {
+    uint128 maxAmount; // 0 means no limit; a multiple of period
+    uint64 period;
+    uint128 available; // capacity as of updatedAt
+    uint64 updatedAt; // last refill, Tempo seconds
+}
+
+/// @notice A plain withdrawal or deposit bounce-back waiting in its token queue: what its payout
+///         reads. Three slots.
+struct QueuedWithdrawal {
+    address to; // Tempo recipient
+    uint64 fallbackNonce; // 0 for a deposit bounce-back
+    bool partlyPaid; // a deposit bounce-back's first payment was made and its fee attempted
+    bytes32 senderTag; // 0 for a deposit bounce-back
+    uint128 remaining; // amount not yet paid
+}
+
+/// @notice Per-token queue of withdrawals waiting for withdrawal-limit capacity.
+/// @dev Records between head (inclusive) and tail (exclusive) are unpaid.
+struct QueuedWithdrawals {
+    uint64 head; // index of the next record to pay
+    uint64 tail; // index the next queued record takes
+    mapping(uint256 => QueuedWithdrawal) entries;
 }
 
 /// @title IZonePortal
@@ -589,6 +619,29 @@ interface IZonePortal {
     /// @notice Emitted when zone-internal TIP-20 transfers are enabled or disabled.
     event TransfersEnabledUpdated(bool enabled);
 
+    /// @notice Emitted when the limit authority sets, changes or removes a token's limit.
+    event WithdrawalLimitSet(address indexed token, uint128 maxAmount, uint64 period);
+
+    /// @notice Emitted when a main-queue entry is appended to its token queue as a record.
+    /// @dev (token, queueIndex) identifies the record. senderTag is the record's: the entry's for a
+    ///      plain withdrawal, 0 for a deposit bounce-back.
+    event WithdrawalQueued(
+        address indexed token,
+        uint256 indexed queueIndex,
+        address to,
+        uint128 amount,
+        bytes32 senderTag,
+        uint64 fallbackNonce
+    );
+
+    /// @notice Emitted each time processQueuedWithdrawals advances a queued record.
+    /// @dev paid is the amount that left escrow in this step: 0 when the record bounced back to
+    ///      the zone, and only the bounce-back fee when a deposit bounce-back's refund was parked.
+    ///      remaining is what the record still waits for, 0 once it is complete.
+    event QueuedWithdrawalPaid(
+        address indexed token, uint256 indexed queueIndex, uint128 paid, uint128 remaining
+    );
+
     error NotSequencer();
     error NotAdmin();
     error NotPauseAuthority();
@@ -638,6 +691,8 @@ interface IZonePortal {
     error InvalidCallbackTarget();
     error CallbackDidNotReturnToZone();
     error AccountNotAllowed(address account);
+    error NotWithdrawalLimitAuthority();
+    error InvalidWithdrawalLimit();
     /// @notice Emitted when an account's portal role is initialized or updated.
     event RoleUpdated(address indexed account, Role prev, Role next);
 
@@ -1045,10 +1100,55 @@ interface IZonePortal {
     )
         external;
 
+    /// @notice Set, change or remove the outflow limit for `token`.
+    /// @dev Only the ZoneFactory owner. (0, 0) removes the limit; otherwise period is nonzero and
+    ///      divides maxAmount.
+    /// @param token Token to limit, enabled or not.
+    /// @param maxAmount Capacity in raw token units, refilled over `period`.
+    /// @param period Seconds to refill from empty to `maxAmount`.
+    function setWithdrawalLimit(address token, uint128 maxAmount, uint64 period) external;
+
+    /// @notice Current limit and capacity for `token`, refilled to the current block.
+    /// @return maxAmount Capacity cap, or 0 if the token has no limit.
+    /// @return period Refill period in seconds.
+    /// @return available Amount that may leave escrow now.
+    function withdrawalLimit(address token)
+        external
+        view
+        returns (uint128 maxAmount, uint64 period, uint128 available);
+
+    /// @notice Bounds of `token`'s token queue: records from head up to tail are unpaid.
+    function queuedWithdrawals(address token) external view returns (uint64 head, uint64 tail);
+
+    /// @notice The queued record of `token` at `index`, or all zero if none.
+    function queuedWithdrawalAt(
+        address token,
+        uint256 index
+    )
+        external
+        view
+        returns (QueuedWithdrawal memory);
+
+    /// @notice Pay `token`'s queued records in order, as capacity allows.
+    /// @dev Permissionless. Each payment is the record's remainder, or maxAmount if smaller, and
+    ///      is made only when capacity covers it. Stops without reverting at the first record that
+    ///      is not completed.
+    /// @param maxEntries Most records to complete.
+    /// @return completed Number of records fully paid, bounced back or parked in refunds.
+    function processQueuedWithdrawals(
+        address token,
+        uint256 maxEntries
+    )
+        external
+        returns (uint256 completed);
+
     function refunds(address token, address owner) external view returns (uint128);
 
     /// @notice Claim the caller's parked refund for a token while the portal is unpaused.
-    /// @dev Reverts with PortalIsPaused while the portal is paused.
+    /// @dev Reverts with PortalIsPaused while the portal is paused. Pays 0 while the token's
+    ///      token queue holds a record. Otherwise, for a token with a withdrawal limit, pays at
+    ///      most its available capacity and leaves the rest owed.
+    /// @return amount Amount paid now.
     function claimRefund(address token) external returns (uint128 amount);
 
     /// @notice Submit a batch with an n-of-m certificate for its zone tip.
