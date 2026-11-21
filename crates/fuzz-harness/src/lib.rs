@@ -36,6 +36,8 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_ptr: *const u8,
     in_len: usize,
 ) -> c_int {
+    // Before the early returns, so a rejected input never reports the previous input's reads.
+    state::clear_read_trace();
     if in_ptr.is_null() {
         execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
         return FUZZ_REJECT;
@@ -109,6 +111,38 @@ pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
             return FUZZ_ACCEPT;
         }
         unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
+    })
+}
+
+/// Writes the database lookups the last input this thread executed made while its blocks ran, in
+/// order, with the same return values and safety contract as [`tempo_fuzz_last_rejection_v1`].
+/// Each record is 53 bytes: a tag (0 for an account, 1 for a storage slot), the 20-byte address,
+/// and the 32-byte big-endian slot, zero for an account. View calls, such as invariant checks, are
+/// left out. An empty trace needs no buffer. The trace stops at 65,536 records, so a longer one is
+/// its prefix.
+///
+/// This is a raw trace of what reached the database, not a list of logical reads. The EVM caches
+/// what it loads, so most keys appear once per block, but a lookup that bypasses that cache (such
+/// as the T15 boundary DKG check) can repeat a key, and a read the EVM answers without the database
+/// (such as an unwritten slot of an account created in the same transaction) is absent. Pairing two
+/// runs' traces by position to see where relocated data moved is therefore a heuristic: a consumer
+/// must verify the result, for example by re-running with the inferred relocation.
+///
+/// # Safety
+///
+/// `out_ptr` must be writable for `out_len` bytes, and `out_written` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tempo_fuzz_last_read_trace_v1(
+    out_ptr: *mut u8,
+    out_len: usize,
+    out_written: *mut usize,
+) -> c_int {
+    state::with_read_trace(|trace| {
+        if trace.is_empty() && !out_written.is_null() {
+            unsafe { *out_written = 0 };
+            return FUZZ_ACCEPT;
+        }
+        unsafe { write_output(out_ptr, out_len, out_written, trace) }
     })
 }
 
