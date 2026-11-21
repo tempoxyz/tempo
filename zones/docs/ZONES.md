@@ -252,8 +252,9 @@ cargo zone-xtask create-zone \
 `--creation-tx` works for any already-mined `createZone` transaction, including a direct-key
 run that was interrupted before genesis was written. It requires exactly one `ZoneCreated`
 event from `--zone-factory` and fails unless its initial token, modes, admin, sequencers, and
-threshold match the arguments. Allowed accounts, gateways, and the RPC URL are not in that
-event, so pass the same values as the proposal for an accurate `zone.json`.
+threshold match the arguments, the allowed accounts and zone gateways installed by the
+transaction's `RoleUpdated` logs are exactly the `--allowed-account` and `--zone-gateway` sets,
+and the portal's RPC URL at the creation block equals `--rpc-url`.
 
 ### Updating closed-loop access
 
