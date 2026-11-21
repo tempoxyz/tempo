@@ -79,6 +79,50 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
+/// Gas every transaction uses at least: the intrinsic gas of a plain transfer.
+const MIN_TRANSACTION_GAS: u64 = 21_000;
+
+/// General-lane transactions a payload may execute and then leave out because their gas used
+/// passed the lane's remaining gas. Past it, the builder admits by gas limit again, which bounds
+/// the execution spent on transactions the block does not keep.
+const MAX_GAS_USED_MISSES: u32 = 16;
+
+/// How the payload builder admits a transaction against the general (non-payment) lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneAdmission {
+    /// A payment, or a general-lane transaction whose gas limit fits the lane's remaining gas.
+    Fits,
+    /// A general-lane transaction whose gas limit passes the lane's remaining gas: kept only if
+    /// its gas used fits.
+    ByGasUsed,
+    /// A general-lane transaction left out of this block.
+    Full,
+}
+
+/// Decides how a transaction enters the general lane, given the most regular gas it can use and
+/// the lane's remaining gas.
+///
+/// Block validation bounds the general lane by the gas each transaction used, so from T16 the
+/// builder admits by gas used too. Earlier forks keep admitting by gas limit.
+fn lane_admission(
+    hardfork: tempo_chainspec::hardfork::TempoHardfork,
+    is_payment: bool,
+    max_regular_gas_used: u64,
+    general_gas_left: u64,
+    gas_used_misses: u32,
+) -> LaneAdmission {
+    if is_payment || max_regular_gas_used <= general_gas_left {
+        LaneAdmission::Fits
+    } else if hardfork.is_t16()
+        && general_gas_left >= MIN_TRANSACTION_GAS
+        && gas_used_misses < MAX_GAS_USED_MISSES
+    {
+        LaneAdmission::ByGasUsed
+    } else {
+        LaneAdmission::Full
+    }
+}
+
 /// Source of transactions for payload building.
 enum PayloadTransactions {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
@@ -345,6 +389,8 @@ where
         let general_gas_limit =
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        // T16+: the chain's payment lane calls join TIP-1045 payments in the payment lane.
+        let has_payment_lane_calls = chain_spec.has_payment_lane_calls_at(hardfork);
 
         // When consensus passes only the DKG ceremony output for a boundary block, as it does from
         // T15, the builder fills in the rest of the outcome from the parent state. Other
@@ -381,6 +427,7 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
+        let mut gas_used_misses = 0;
         let mut estimated_rlp_block_size = attributes
             .withdrawals
             .as_ref()
@@ -583,16 +630,30 @@ where
             }
 
             let is_payment = if hardfork.is_t15() {
+                // The pool caches the TIP-1045 classification; the payment lane calls only add
+                // to it.
                 tx.transaction.is_payment_v3()
+                    || (has_payment_lane_calls
+                        && chain_spec.is_payment_at(hardfork, tx.transaction.inner().inner()))
             } else if hardfork.is_t5() {
                 tx.transaction.is_payment_v2()
             } else {
                 tx.transaction.inner().is_payment_v1()
             };
 
+            let general_gas_left = general_gas_limit.saturating_sub(non_payment_gas_used);
+            let admission = lane_admission(
+                hardfork,
+                is_payment,
+                max_regular_gas_used,
+                general_gas_left,
+                gas_used_misses,
+            );
+            let general_by_gas_used = admission == LaneAdmission::ByGasUsed;
+
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+            if admission == LaneAdmission::Full {
                 #[cfg(feature = "fuzz")]
                 antithesis_sdk::assert_reachable!(
                     "Payload builder defers a non-payment transaction at the general gas limit",
@@ -650,20 +711,28 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
+            // A replay commits as it executes, so a transaction admitted by gas used runs afresh.
+            let replay = pool_tx.replay.take().filter(|_| !general_by_gas_used);
+            let execution_result = if let Some(replay) = replay {
                 parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
-                    tx.transaction.executable(),
-                    *replay,
-                    result_closure,
-                )
+                executor
+                    .execute_transaction_with_actions(
+                        tx.transaction.executable(),
+                        *replay,
+                        result_closure,
+                    )
+                    .map(|_| true)
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
                     .execute_transaction_without_commit(tx.transaction.executable())
                     .and_then(|result| {
+                        if general_by_gas_used && result.block_gas_used() > general_gas_left {
+                            // Dropping the uncommitted result leaves the block as it was.
+                            return Ok(false);
+                        }
                         result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
+                        executor.commit_transaction(result).map(|_| true)
                     })
             };
 
@@ -736,6 +805,18 @@ where
                     }
                     _ => return Err(PayloadBuilderError::evm(err)),
                 }
+            }
+
+            if matches!(execution_result, Ok(false)) {
+                gas_used_misses += 1;
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
+                self.metrics.inc_pool_tx_skipped("exceeds_general_gas_used");
+                continue;
             }
 
             trace!("Transaction executed");
@@ -1254,5 +1335,71 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    #[test]
+    fn test_lane_admission_by_gas_limit_before_t16() {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        for hardfork in [TempoHardfork::T5, TempoHardfork::T15] {
+            assert_eq!(
+                lane_admission(hardfork, false, 1_000_000, 1_000_000, 0),
+                LaneAdmission::Fits
+            );
+            assert_eq!(
+                lane_admission(hardfork, false, 1_000_001, 1_000_000, 0),
+                LaneAdmission::Full
+            );
+            assert_eq!(
+                lane_admission(hardfork, true, 30_000_000, 0, 0),
+                LaneAdmission::Fits
+            );
+        }
+    }
+
+    #[test]
+    fn test_lane_admission_by_gas_used_from_t16() {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let t16 = TempoHardfork::T16;
+        assert_eq!(
+            lane_admission(t16, false, 1_000_000, 1_000_000, 0),
+            LaneAdmission::Fits
+        );
+        // A gas limit past the lane's remaining gas is tried and kept only if its gas used fits.
+        assert_eq!(
+            lane_admission(t16, false, 1_193_565, 1_000_000, 0),
+            LaneAdmission::ByGasUsed
+        );
+        assert_eq!(
+            lane_admission(t16, false, 1_193_565, MIN_TRANSACTION_GAS, 0),
+            LaneAdmission::ByGasUsed
+        );
+        // Below the least gas any transaction uses, the lane is full.
+        assert_eq!(
+            lane_admission(t16, false, 1_193_565, MIN_TRANSACTION_GAS - 1, 0),
+            LaneAdmission::Full
+        );
+        assert_eq!(
+            lane_admission(t16, false, 21_000, 0, 0),
+            LaneAdmission::Full
+        );
+        assert_eq!(
+            lane_admission(t16, true, 30_000_000, 0, 0),
+            LaneAdmission::Fits
+        );
+        // After enough misses the builder admits by gas limit again.
+        assert_eq!(
+            lane_admission(t16, false, 1_193_565, 1_000_000, MAX_GAS_USED_MISSES - 1),
+            LaneAdmission::ByGasUsed
+        );
+        assert_eq!(
+            lane_admission(t16, false, 1_193_565, 1_000_000, MAX_GAS_USED_MISSES),
+            LaneAdmission::Full
+        );
+        assert_eq!(
+            lane_admission(t16, false, 1_000_000, 1_000_000, MAX_GAS_USED_MISSES),
+            LaneAdmission::Fits
+        );
     }
 }
