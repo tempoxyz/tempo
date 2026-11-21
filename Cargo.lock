@@ -14320,6 +14320,7 @@ dependencies = [
  "const-hex",
  "rand 0.10.3",
  "rand_core 0.10.1",
+ "rust-embed",
  "secrecy",
  "tempfile",
  "thiserror 2.0.21",

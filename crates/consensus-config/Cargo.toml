@@ -17,6 +17,9 @@ workspace = true
 
 [dependencies]
 age.workspace = true
+# Embeds age's translations in debug builds too, so that age compiles the same
+# wherever cargo's home is.
+rust-embed = { workspace = true, features = ["debug-embed"] }
 commonware-codec.workspace = true
 commonware-cryptography = { workspace = true, features = ["bls12381"] }
 commonware-math.workspace = true
