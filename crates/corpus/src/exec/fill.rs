@@ -2,12 +2,13 @@
 
 use crate::{
     code,
-    exec::{capture, replay},
+    exec::{capture, chain::Source, replay},
     store::{self, CONTEXT_KEY, CaseRecord, Catalog, Context, MAX_RECORD_BYTES, Record, Store},
 };
 use alloy_consensus::BlockHeader;
 use eyre::OptionExt;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
+use reth_consensus::FullConsensus;
 use reth_evm::database::StateProviderDatabase;
 use reth_provider::{
     BlockHashReader, BlockNumReader, BlockReader, DatabaseProviderFactory, ProviderFactory,
@@ -25,7 +26,6 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
-use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_primitives::TempoPrimitives;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
@@ -49,17 +49,19 @@ pub struct FillArgs {
 /// grows to the archive's head.
 ///
 /// Blocking: run it on a blocking thread. `handle` drives the object-store I/O.
-pub fn fill<N>(
+pub fn fill<N, S, C>(
     provider_factory: ProviderFactory<N>,
     store: Store,
-    config: &TempoEvmConfig,
-    consensus: &TempoConsensus,
+    source: &S,
+    consensus: &C,
     args: FillArgs,
     cancellation: &reth_cli_util::cancellation::CancellationToken,
     handle: Handle,
 ) -> eyre::Result<()>
 where
     N: ProviderNodeTypes<Primitives = TempoPrimitives>,
+    S: Source,
+    C: FullConsensus<TempoPrimitives>,
 {
     eyre::ensure!(args.from > 0, "from must be positive");
     let chain = provider_factory.chain_spec();
@@ -104,6 +106,7 @@ where
         start: args.from,
         parent: canonical_hash(args.from - 1)?.to_string(),
         first_tx: first_tx(args.from)?,
+        portal: source.portal(),
     };
     let tip = canonical_hash(end - 1)?;
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
@@ -163,7 +166,7 @@ where
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
                         let input = store::decode(&bytes, record)?;
-                        replay::verify(config, consensus, &input, &cases, record)
+                        replay::verify(source, consensus, &input, &cases, record)
                     },
                 ))
             })
@@ -245,7 +248,7 @@ where
                 .recovered_block(start.into(), TransactionVariant::NoHash)?
                 .ok_or_else(|| eyre::eyre!("missing canonical block {start}"))?;
             let captured = capture::capture(
-                config,
+                source,
                 consensus,
                 &expected,
                 |at| {
@@ -271,9 +274,9 @@ where
             let case_bytes = captured
                 .cases()?
                 .iter()
-                .map(|case| wincode::config::serialize(case, store::WINCODE))
-                .collect::<Result<Vec<_>, _>>()?;
-            let bytes = wincode::config::serialize(input.as_ref(), store::WINCODE)?;
+                .map(store::encode_case)
+                .collect::<eyre::Result<Vec<_>>>()?;
+            let bytes = store::encode(input)?;
             let total_bytes = case_bytes.iter().try_fold(bytes.len(), |sum, b| {
                 sum.checked_add(b.len())
                     .ok_or_eyre("serialized size overflow")

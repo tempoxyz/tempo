@@ -9,6 +9,8 @@ use eyre as _;
 #[cfg(feature = "cli")]
 pub mod cli;
 mod consensus;
+#[cfg(feature = "corpus")]
+pub mod corpus;
 mod deposit_allowlist;
 pub mod dev;
 pub mod engine;

@@ -15,7 +15,7 @@ pub mod precompiles;
 mod zone_evm;
 
 pub use database::{L1OverlayDB, ZoneDbError};
-pub use executor::{ZoneBlockExecutor, ZoneTxResult};
+pub use executor::{ZoneBlockExecutor, ZoneExecutorState, ZoneTxResult};
 pub use zone_evm::validate_transaction;
 
 use crate::{

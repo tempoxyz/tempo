@@ -4,6 +4,7 @@ use crate::{
     code,
     exec::{
         block::{Executed, execute_block, run_standalone, verify_changesets},
+        chain::Source,
         db::{Keys, Recording, View},
     },
     types::{Block as BlockInput, Case, ChangeSet, Info, Input},
@@ -15,7 +16,6 @@ use reth_consensus::FullConsensus;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_storage_api::{ChangeSetReader, StorageChangeSetReader};
 use std::{collections::BTreeMap, sync::Arc};
-use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{Block, TempoPrimitives};
 
 /// A captured block: its stored input and verified per-transaction records.
@@ -39,12 +39,13 @@ impl Captured {
 /// Captures `block` from the archive.
 ///
 /// Executes it through a recording database over the parent state to learn exactly what it
-/// reads, then stores that pre-state, the block and its historical changesets. The capture is
-/// verified before it is returned: the block's reverts match the changesets, its post-state
-/// matches the canonical state after the block, it replays from the stored record alone with
-/// identical outputs, and every transaction replays standalone with identical outputs.
-pub fn capture<C, P, D>(
-    config: &TempoEvmConfig,
+/// reads, then stores that pre-state, the L1 state it reads, the block and its historical
+/// changesets. The capture is verified before it is returned: the block's reverts match the
+/// changesets, its post-state matches the canonical state after the block, it replays from the
+/// stored record alone with identical outputs, and every transaction replays standalone with
+/// identical outputs.
+pub fn capture<S, C, P, D>(
+    source: &S,
     consensus: &C,
     provider: &P,
     mut db_at: impl FnMut(u64) -> eyre::Result<D>,
@@ -52,6 +53,7 @@ pub fn capture<C, P, D>(
     first_tx: u64,
 ) -> eyre::Result<Captured>
 where
+    S: Source,
     C: FullConsensus<TempoPrimitives> + ?Sized,
     P: ChangeSetReader + StorageChangeSetReader,
     D: Database,
@@ -60,8 +62,9 @@ where
     let number = block.number();
     eyre::ensure!(number > 0, "genesis is context, not a captured block");
     let mut keys = Keys::default();
+    let capturing = source.capturing();
     let mut executed = execute_block(
-        config,
+        &capturing,
         consensus,
         Recording {
             inner: db_at(number - 1)?,
@@ -140,6 +143,7 @@ where
         code: Default::default(),
         hashes: BTreeMap::new(),
         phases: Some(std::mem::take(&mut executed.phases)),
+        l1: S::recorded(&capturing),
     };
     let mut code_hashes = keys.code;
     for address in &keys.accounts {
@@ -184,8 +188,9 @@ where
     let cases = captured.cases()?;
     let transactions = &captured.executed.transactions;
     let phases = captured.input.phases.as_ref().expect("set above");
+    let replaying = source.replaying(&captured.input.l1)?;
     let replayed = execute_block(
-        config,
+        &replaying,
         consensus,
         View::new(captured.input.clone()),
         block,
@@ -201,7 +206,7 @@ where
     view.apply(&phases.pre)?;
     for (index, expected) in transactions.iter().enumerate() {
         let actual = run_standalone(
-            config,
+            &replaying,
             block,
             &view,
             expected.ordinal,

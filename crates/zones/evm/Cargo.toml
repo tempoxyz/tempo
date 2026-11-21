@@ -43,6 +43,7 @@ alloy-sol-types.workspace = true
 evm2.workspace = true
 
 # misc
+serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
