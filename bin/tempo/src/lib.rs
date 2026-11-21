@@ -658,7 +658,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         .follow
                         .as_ref()
                         .and_then(|follow| follow.resolve_url(&builder.config().chain));
-                    builder.config_mut().debug.rpc_consensus_url = follow_url;
+                    builder.config_mut().debug.rpc_consensus_url =
+                        follow_url.map(|url| url.expose().to_owned());
                 }
 
                 let has_consensus_engine =
@@ -897,6 +898,7 @@ mod tests {
     use super::*;
     use crate::follow::FollowMode;
     use reth_ethereum::cli::Commands;
+    use tempo_consensus::follow::upstream::UpstreamUrl;
     use tempo_contracts::precompiles::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
@@ -1174,7 +1176,7 @@ mod tests {
         );
         assert_eq!(
             parse_follow(&["tempo", "node", "--dev", "--follow", "ws://upstream:8546"]),
-            Some(FollowMode::Url("ws://upstream:8546".to_string()))
+            Some(FollowMode::Url(UpstreamUrl::new("ws://upstream:8546")))
         );
     }
 

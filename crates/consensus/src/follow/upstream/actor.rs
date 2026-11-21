@@ -36,7 +36,7 @@ use crate::{
     utils::OptionFuture,
 };
 
-use super::{Connector, EventStream, UpstreamClient};
+use super::{Connector, EventStream, UpstreamClient, UpstreamUrl};
 
 const RECONNECT_BACKOFF_FACTOR: u64 = 2;
 const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
@@ -342,12 +342,14 @@ pub(super) fn random_jitter() -> Duration {
 
 #[derive(Clone)]
 pub(crate) struct WebSocketConnector {
-    url: Arc<Url>,
+    url: Arc<UpstreamUrl>,
 }
 
 impl WebSocketConnector {
     pub(super) fn new(url: Url) -> Self {
-        Self { url: Arc::new(url) }
+        Self {
+            url: Arc::new(UpstreamUrl::new(url)),
+        }
     }
 }
 
@@ -358,7 +360,7 @@ impl Connector for WebSocketConnector {
         let url = self.url.clone();
         async move {
             let connect = NoReconnect(
-                WsConnect::new(url.as_str())
+                WsConnect::new(url.expose())
                     .with_keepalive_interval(PING_INTERVAL)
                     // alloy already stops at the first non-retryable reconnect error; this keeps
                     // it from waiting between attempts if that ever changes.
@@ -377,7 +379,7 @@ impl Connector for WebSocketConnector {
         .boxed()
     }
 
-    fn endpoint(&self) -> &Url {
+    fn endpoint(&self) -> &UpstreamUrl {
         &self.url
     }
 }
