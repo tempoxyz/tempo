@@ -1079,7 +1079,7 @@ fn build_engine<P, Pool>(
     last_header: SealedHeader<TempoHeader>,
 ) -> ZoneEngine
 where
-    P: Clone,
+    P: reth_storage_api::StateProviderFactory + Clone + Send + Sync + 'static,
 {
     ZoneEngine::new(
         context.chain_spec.clone(),
@@ -1099,6 +1099,7 @@ where
         context.local_ed25519_public_key.clone(),
     ))
     .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
+    .with_zone_state(crate::engine::zone_state_reader(context.provider.clone()))
 }
 
 #[cfg(test)]

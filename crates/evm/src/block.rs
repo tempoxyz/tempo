@@ -266,6 +266,50 @@ impl AsRef<TxResult<TempoEvmTypes>> for TempoTxResult {
     }
 }
 
+/// Deploys `0xEF` marker bytecode and initializes storage at a precompile address, unless the
+/// account already has code.
+///
+/// This also dispatches the state change to the system caller's state hook so that the sparse
+/// trie task is aware of the change.
+pub fn deploy_precompile_at_boundary(
+    executor: &mut EthBlockExecutor<'_, TempoEvmTypes, TempoReceiptBuilder>,
+    address: Address,
+    storage: &[(U256, U256)],
+) -> Result<(), BlockExecutionError> {
+    let original = match executor
+        .evm_mut()
+        .state_mut()
+        .account_info_untracked(&address)
+    {
+        Ok(info) => info,
+        Err(error) => return Err(map_database_error(error)),
+    };
+    if original
+        .as_ref()
+        .is_some_and(|info| !info.is_empty_code_hash())
+    {
+        return Ok(());
+    }
+
+    let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
+    let current = original.clone().unwrap_or_default().with_code(code);
+    let mut state = PendingState::default();
+    state.insert_account(address, original, Some(current));
+    for &(slot, value) in storage {
+        let original = match executor
+            .evm_mut()
+            .state_mut()
+            .storage_slot_untracked(&address, &slot)
+        {
+            Ok(value) => value,
+            Err(error) => return Err(map_database_error(error)),
+        };
+        state.insert_storage(address, slot, original, value);
+    }
+    executor.commit_pending_state(&state);
+    Ok(())
+}
+
 /// Block executor for Tempo.
 ///
 /// Wraps an inner [`EthBlockExecutor`] and layers Tempo-specific block execution
@@ -356,41 +400,13 @@ impl<'a> TempoBlockExecutor<'a> {
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
-    /// This also dispatches the state change to the system caller's state hook so that the
-    /// sparse trie task is aware of the change.
+    /// See [`deploy_precompile_at_boundary`].
     fn deploy_precompile_at_boundary(
         &mut self,
         address: Address,
         storage: &[(U256, U256)],
     ) -> Result<(), BlockExecutionError> {
-        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
-            Ok(info) => info,
-            Err(error) => return Err(map_database_error(error)),
-        };
-        if original
-            .as_ref()
-            .is_some_and(|info| !info.is_empty_code_hash())
-        {
-            return Ok(());
-        }
-
-        let code = Bytecode::new_raw(Bytes::from_static(&[0xef]));
-        let current = original.clone().unwrap_or_default().with_code(code);
-        let mut state = PendingState::default();
-        state.insert_account(address, original, Some(current));
-        for &(slot, value) in storage {
-            let original = match self
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&address, &slot)
-            {
-                Ok(value) => value,
-                Err(error) => return Err(map_database_error(error)),
-            };
-            state.insert_storage(address, slot, original, value);
-        }
-        self.inner.commit_pending_state(&state);
-        Ok(())
+        deploy_precompile_at_boundary(&mut self.inner, address, storage)
     }
 
     /// Installs and initializes the complete TIP-1091 state when T10 first becomes active.

@@ -19,10 +19,12 @@ import {
     Role,
     TokenConfig,
     TokenEnablementTransition,
+    VirtualDeposit,
     Withdrawal,
     WithdrawalBounceBackDeposit,
     ZONE_FACTORY_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS
+    ZONE_PORTAL_IMPL_ADDRESS,
+    ZONE_PORTAL_PREFIX
 } from "../interfaces/IZone.sol";
 import { getBlockHash } from "../libraries/BlockHashHistory.sol";
 import { DepositQueueLib } from "../libraries/DepositQueueLib.sol";
@@ -282,6 +284,10 @@ contract ZonePortal is IZonePortal {
 
     /// @notice First checkpoint index not yet pruned (slot 31).
     uint64 public nextDepositBucketToPrune;
+
+    /// @dev TIP-1094 minimum accepted key version; zero means the initial minimum of 1. Kept out of
+    ///      slot 28, which TIP-1180 fills with the identity registrar and enforcement flag.
+    uint8 internal _minimumAddressVersion;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -551,6 +557,21 @@ contract ZonePortal is IZonePortal {
         admin = pendingAdmin;
         pendingAdmin = address(0);
         emit AdminTransferred(previousAdmin, admin);
+    }
+
+    /// @notice TIP-1094: lowest address key version still accepted.
+    function minimumAddressVersion() public view returns (uint8) {
+        return _minimumAddressVersion == 0 ? 1 : _minimumAddressVersion;
+    }
+
+    /// @notice TIP-1094: raise the minimum accepted address key version. Raise-only.
+    function retireAddressVersionsBelow(uint8 minimumVersion) external onlyAdmin {
+        // One version per call, so a single mistyped value can't retire every issued address.
+        if (minimumVersion != minimumAddressVersion() + 1) {
+            revert InvalidVersionRetirement(minimumVersion);
+        }
+        _minimumAddressVersion = minimumVersion;
+        emit AddressVersionsRetired(minimumVersion);
     }
 
     /// @notice Enable or disable account allowlist enforcement without discarding membership.
@@ -989,6 +1010,24 @@ contract ZonePortal is IZonePortal {
         internal
         returns (uint128 fee, uint128 netAmount)
     {
+        (fee, netAmount) = _chargeDepositFee(amount, maxFee);
+
+        // TIP-20 transfers revert on failure, so no boolean check is needed here.
+        ITIP20(_token).transferFrom(msg.sender, address(this), amount);
+        if (fee > 0) {
+            ITIP20(_token).transfer(admin, fee);
+        }
+    }
+
+    /// @dev The fee for one deposit of `amount`, reverting above `maxFee` or when too little is
+    ///      left for a bounce-back.
+    function _chargeDepositFee(
+        uint128 amount,
+        uint128 maxFee
+    )
+        internal
+        returns (uint128 fee, uint128 netAmount)
+    {
         fee = _operationalDepositFee();
         // A withdrawal callback may return one deposit, which already paid Zone fees.
         if (_withdrawalReentrancyStatus == CALLBACK_DEPOSIT_AVAILABLE) {
@@ -1000,12 +1039,6 @@ contract ZonePortal is IZonePortal {
         if (fee > maxFee) revert FeeTooHigh(fee, maxFee);
         if (amount < fee + calculateBouncebackFee()) revert DepositTooSmall();
         netAmount = amount - fee;
-
-        // TIP-20 transfers revert on failure, so no boolean check is needed here.
-        ITIP20(_token).transferFrom(msg.sender, address(this), amount);
-        if (fee > 0) {
-            ITIP20(_token).transfer(admin, fee);
-        }
     }
 
     /// @dev Returns this block's tier, fixed from the state before the block's first change.
@@ -1141,6 +1174,81 @@ contract ZonePortal is IZonePortal {
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient, maxFee);
     }
 
+    /// @notice TIP-1094: queue a TIP-20 transfer to a zone deposit address.
+    /// @dev Called by native TIP-20 routing after it debited `originator` and credited this
+    ///      portal with `grossAmount`; `msg.sender` is the token. The tokens are already here,
+    ///      so nothing is pulled. Any revert reverts the whole transfer.
+    function depositVirtual(
+        address originator,
+        uint128 grossAmount,
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        address token = msg.sender;
+        // Only an enabled canonical TIP-20 can call this; ordinary accounts and contracts are
+        // never enabled tokens.
+        if (bytes12(bytes20(token)) != bytes12(0x20c000000000000000000000)) {
+            revert TokenNotEnabled();
+        }
+        if (!hasMemo && memo != bytes32(0)) revert InvalidVirtualDeposit();
+        if (!_isZoneDepositAddress(destination) || uint32(bytes4(bytes20(destination))) != zoneId) {
+            revert InvalidVirtualDeposit();
+        }
+        uint8 version = uint8(bytes20(destination)[13]);
+        if (version < minimumAddressVersion()) revert AddressVersionRetired(version);
+
+        // Existing deposit checks, applied to the debited account.
+        // A portal is the originator when a zone withdrawal pays out to a deposit address. A refund
+        // to a portal would credit no one, so revert and let the withdrawal bounce back instead.
+        if (originator == address(0) || bytes12(bytes20(originator)) == ZONE_PORTAL_PREFIX) {
+            revert InvalidBouncebackRecipient();
+        }
+        _requireAllowedDepositor(originator);
+        _requireAllowed(originator);
+        _validateDepositsActive(token);
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (!TIP403_REGISTRY.isAuthorizedRecipient(policyId, originator)) {
+            revert ITIP20.PolicyForbids();
+        }
+
+        // A plain transfer cannot pass `maxFee`, so it accepts only the operational fee, like the
+        // legacy deposit signatures: during congestion the transfer reverts with `FeeTooHigh`.
+        (uint128 fee, uint128 netAmount) = _chargeDepositFee(grossAmount, _operationalDepositFee());
+        if (fee > 0) {
+            ITIP20(token).transfer(admin, fee);
+        }
+
+        VirtualDeposit memory depositData = VirtualDeposit({
+            token: token,
+            originator: originator,
+            amount: netAmount,
+            destination: destination,
+            hasMemo: hasMemo,
+            memo: memo
+        });
+        newCurrentDepositQueueHash =
+            DepositQueueLib.enqueueVirtual(currentDepositQueueHash, depositData);
+
+        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash);
+
+        emit VirtualDepositMade(
+            newCurrentDepositQueueHash,
+            originator,
+            token,
+            destination,
+            netAmount,
+            fee,
+            thisDeposit,
+            hasMemo,
+            memo
+        );
+    }
+
     function _deposit(
         address _token,
         uint128 amount,
@@ -1153,8 +1261,12 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
-        // Refunds are claimed by msg.sender, which can never be a virtual address.
-        if (StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)) {
+        // Refunds are claimed by msg.sender, which can never be a TIP-1022 virtual address or a
+        // TIP-1094 zone deposit address.
+        if (
+            StdPrecompiles.ADDRESS_REGISTRY.isVirtualAddress(tempoRefundRecipient)
+                || _isZoneDepositAddress(tempoRefundRecipient)
+        ) {
             revert InvalidBouncebackRecipient();
         }
         // Enforced gateways may deposit callback returns without also being allowed accounts.
@@ -1683,6 +1795,12 @@ contract ZonePortal is IZonePortal {
                 EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)
             )
         );
+    }
+
+    /// @dev TIP-1094: whether `account` has the zone deposit address format (magic bytes 4..13),
+    ///      for any zone.
+    function _isZoneDepositAddress(address account) internal pure returns (bool) {
+        return bytes9(bytes20(account) << 32) == bytes9(0xfcfcfcfcfcfcfcfcfc);
     }
 
 }

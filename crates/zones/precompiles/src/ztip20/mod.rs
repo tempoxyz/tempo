@@ -13,7 +13,7 @@
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
 pub use tempo_contracts::zones::InsufficientBalance;
-use tempo_contracts::zones::Unauthorized;
+use tempo_contracts::zones::{Unauthorized, ZoneDepositAddress};
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     error::Result,
@@ -54,13 +54,22 @@ impl<P: L1StorageReader> TIP20Rules<P> {
     ///
     /// Transfers require T15 and the portal admin's opt-in. Upstream TIP-20 then reverts, rather
     /// than diverts, a transfer that the recipient's receive policy blocks on a zone.
-    fn admit_transfer(&self) -> Result<CallCheck> {
+    ///
+    /// A TIP-1094 zone deposit address is an invalid recipient on a zone: upstream TIP-20 routes
+    /// it to a Tempo portal, which does not exist here, and the address has no owner who could
+    /// spend a literal balance.
+    fn admit_transfer(&self, to: Address) -> Result<CallCheck> {
         // Before T15, private asset movement is limited to the protocol-managed inbox and outbox
         // paths.
         if !StorageCtx::default().spec().is_t15()
             || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
         {
             return Ok(CallCheck::Revert(Unauthorized {}.abi_encode().into()));
+        }
+        if ZoneDepositAddress::is_reserved(&to) {
+            return Ok(CallCheck::Revert(
+                ITIP20::InvalidRecipient {}.abi_encode().into(),
+            ));
         }
         Ok(CallCheck::Continue)
     }
@@ -87,12 +96,15 @@ impl<P: L1StorageReader> CallRules for TIP20Rules<P> {
                 ITIP20::ITIP20Calls::nonces(call) => {
                     check_caller(caller, &[call.owner])
                 }
-                ITIP20::ITIP20Calls::transferFrom(_)
-                | ITIP20::ITIP20Calls::transfer(_)
-                | ITIP20::ITIP20Calls::transferWithMemo(_)
-                | ITIP20::ITIP20Calls::transferFromWithMemo(_) => {
-                    self.admit_transfer().unwrap_or_else(CallCheck::Error)
-                }
+                ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, .. })
+                | ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                    to, ..
+                })
+                | ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall { to, .. })
+                | ITIP20::ITIP20Calls::transferFromWithMemo(ITIP20::transferFromWithMemoCall {
+                    to,
+                    ..
+                }) => self.admit_transfer(to).unwrap_or_else(CallCheck::Error),
                 // Inbox/outbox call TIP20 internally; public mint/burn entry points stay disabled.
                 ITIP20::ITIP20Calls::mint(_)
                 | ITIP20::ITIP20Calls::mintWithMemo(_)
@@ -581,6 +593,31 @@ mod tests {
             assert_eq!(result.gas_used, gas);
         }
         harness.assert_no_funds_moved(virtual_recipient)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transfers_to_zone_deposit_addresses_revert() -> eyre::Result<()> {
+        let mut harness = PrecompileHarness::new_at(TempoHardfork::T15)?;
+        harness.set_transfers_enabled(true)?;
+        let deposit_address = ZoneDepositAddress {
+            zone_id: 1,
+            version: 1,
+            ciphertext: fixed_bytes!("010203040506"),
+        }
+        .encode();
+
+        for (caller, calldata) in harness.transfer_calls(deposit_address) {
+            let gas = harness.fixed_gas(&calldata)?;
+            let result = harness.call(caller, calldata, gas, false)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                result.bytes,
+                Bytes::from(ITIP20::InvalidRecipient {}.abi_encode())
+            );
+            assert_eq!(result.gas_used, gas);
+        }
+        harness.assert_no_funds_moved(deposit_address)?;
         Ok(())
     }
 
