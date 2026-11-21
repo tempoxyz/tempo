@@ -116,20 +116,38 @@ impl ProtocolFeeManager for ZoneProtocolFeeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, U256, address};
+    use alloy_primitives::{B256, Bytes, TxKind, U256, address};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall;
     use evm2::{
+        SpecId,
         bytecode::Bytecode,
         evm::{AccountInfo, InMemoryDB},
         registry::HandlerError,
     };
     use reth_evm::BlockExecutorFactory;
     use reth_primitives_traits::Recovered;
+    use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
     use tempo_evm::TempoEvmEnv;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        storage::{Handler, StorageCtx, StorageKey},
+        storage_credits::StorageCredits,
+        test_util::TIP20Setup,
+        zone_factory::portal,
+    };
     use tempo_primitives::{
         TempoTxEnvelope,
-        transaction::{TempoSignature, TempoTransaction},
+        transaction::{
+            Call, PrimitiveSignature, TempoSignature, TempoTransaction, calc_gas_balance_spending,
+        },
     };
-    use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, test_utils::MockL1Reader, zone_fee_manager};
+    use zone_precompiles::{
+        ZONE_FEE_MANAGER_ADDRESS, ZoneOutbox, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
+        test_utils::MockL1Reader, zone_fee_manager,
+    };
+    use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
     use crate::zone_evm::tests::config;
 
@@ -205,5 +223,133 @@ mod tests {
                 if error.downcast_ref::<TempoInvalidTransaction>()
                     == Some(&TempoInvalidTransaction::InvalidFeeToken(missing_token))
         ));
+    }
+
+    /// A sponsored transaction by the block beneficiary that withdraws its whole fee-token balance
+    /// clears the slot fee settlement then recreates without TIP-1060 accounting, so from T15 the
+    /// clear must not mint a storage credit. Earlier forks keep minting it.
+    #[test]
+    fn fee_recipient_balance_clear_mints_no_storage_credit_from_t15() -> eyre::Result<()> {
+        const ANCHOR: u64 = 42;
+        const BENEFICIARY_FUNDS: u128 = 10_000_000;
+        let gas_limit = 5_000_000;
+        let gas_price = 1_000_000_000_000;
+        let max_fee = calc_gas_balance_spending(gas_limit, gas_price);
+        let token = PATH_USD_ADDRESS;
+
+        for (spec, sponsored) in [
+            TempoHardfork::T7,
+            TempoHardfork::T13,
+            TempoHardfork::T14,
+            TempoHardfork::T15,
+        ]
+        .into_iter()
+        .flat_map(|spec| [(spec, true), (spec, false)])
+        {
+            let beneficiary = PrivateKeySigner::random();
+            let sponsor = PrivateKeySigner::random();
+            let fee_payer = if sponsored { &sponsor } else { &beneficiary };
+
+            let mut db = InMemoryDB::default();
+            db.insert_account_storage(
+                &TEMPO_STATE_ADDRESS,
+                &TEMPO_BLOCK_NUMBER_SLOT,
+                &U256::from(ANCHOR),
+            );
+            let l1 = MockL1Reader::default();
+            l1.insert(
+                Address::ZERO,
+                token.mapping_slot(portal::slots::TOKEN_CONFIGS),
+                ANCHOR,
+                U256::ONE,
+            );
+            let mut env = TempoEvmEnv {
+                spec,
+                ..Default::default()
+            };
+            env.version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
+            env.block.gas_limit = U256::from(30_000_000);
+            env.block.beneficiary = beneficiary.address();
+            let mut evm = config(l1).evm_with_env(db, env);
+            StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || -> eyre::Result<()> {
+                ZoneOutbox::new().initialize()?;
+                TIP20Setup::path_usd(sponsor.address())
+                    .with_issuer(sponsor.address())
+                    .with_issuer(ZONE_OUTBOX_ADDRESS)
+                    .with_mint(beneficiary.address(), U256::from(BENEFICIARY_FUNDS))
+                    .with_mint(sponsor.address(), max_fee)
+                    .with_approval(beneficiary.address(), ZONE_OUTBOX_ADDRESS, U256::MAX)
+                    .apply()?;
+                Ok(())
+            })?;
+            // Accept the setup so the mirrored-storage check sees only the transaction's writes.
+            evm.state_mut().commit_transaction();
+            evm.state_mut().clear_transaction_state();
+
+            let amount = if sponsored {
+                BENEFICIARY_FUNDS
+            } else {
+                BENEFICIARY_FUNDS - max_fee.to::<u128>()
+            };
+            let mut tx = TempoTransaction {
+                chain_id: 1,
+                fee_token: Some(token),
+                gas_limit,
+                max_fee_per_gas: gas_price,
+                max_priority_fee_per_gas: gas_price,
+                calls: vec![Call {
+                    to: TxKind::Call(ZONE_OUTBOX_ADDRESS),
+                    value: U256::ZERO,
+                    input: IZoneOutbox::requestWithdrawalCall {
+                        token,
+                        to: beneficiary.address(),
+                        amount,
+                        memo: B256::ZERO,
+                        gasLimit: 0,
+                        zoneFallbackRecipient: beneficiary.address(),
+                        data: Bytes::new(),
+                        revealTo: Bytes::new(),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                ..Default::default()
+            };
+            if sponsored {
+                tx.fee_payer_signature = Some(
+                    fee_payer
+                        .sign_hash_sync(&tx.fee_payer_signature_hash(beneficiary.address()))?,
+                );
+            }
+            let signature = beneficiary.sign_hash_sync(&tx.signature_hash())?;
+            let envelope = TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Primitive(
+                PrimitiveSignature::Secp256k1(signature),
+            )));
+            let tx_env: TempoTxEnv =
+                Recovered::new_unchecked(envelope, beneficiary.address()).into();
+            assert_eq!(tx_env.fee_payer()?, fee_payer.address());
+            let result = evm
+                .transact(&Recovered::new_unchecked(tx_env, beneficiary.address()))?
+                .commit();
+            assert!(result.status, "withdrawal should succeed: {result:?}");
+
+            let (fee_recipient_balance, credits) =
+                StorageCtx::enter_evm_without_tip1060_accounting(
+                    &mut evm,
+                    || -> eyre::Result<(U256, u64)> {
+                        let balance = TIP20Token::from_address(token)?.balances
+                            [beneficiary.address()]
+                        .read()?;
+                        Ok((balance, StorageCredits::new().balance_of(token)?))
+                    },
+                )?;
+            assert!(
+                !fee_recipient_balance.is_zero(),
+                "fee settlement should recreate the beneficiary's cleared balance"
+            );
+            let expected = u64::from(sponsored && !spec.is_t15());
+            assert_eq!(credits, expected, "{spec}, sponsored: {sponsored}");
+        }
+        Ok(())
     }
 }
