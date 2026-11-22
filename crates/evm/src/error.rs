@@ -13,3 +13,9 @@ pub enum TempoEvmError {
     #[error("invalid EVM configuration: {0}")]
     InvalidEvmConfig(String),
 }
+
+/// A transaction used more gas than its block lane had left: the general lane, the registered
+/// payment budget or the non-shared gas. The block executor rejects it when it executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("transaction exceeds its gas lane")]
+pub struct LaneGasExceeded;

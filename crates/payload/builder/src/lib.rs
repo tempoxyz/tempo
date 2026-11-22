@@ -59,6 +59,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::SYSTEM_TX_
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
     TempoStateAccess, TempoTxResult, TxLane, consensus::MAX_BLOCK_TRANSACTIONS,
+    error::LaneGasExceeded,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -794,16 +795,23 @@ where
                     .map(|_| true)
             } else {
                 executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
+                match executor.execute_transaction_without_commit(tx.transaction.executable()) {
+                    // Admitted by gas used, it used more than its lane has left: the executor
+                    // rejects it before committing, so the block is as it was.
+                    Err(BlockExecutionError::Validation(BlockValidationError::Other(error)))
+                        if by_gas_used && error.downcast_ref::<LaneGasExceeded>().is_some() =>
+                    {
+                        Ok(false)
+                    }
+                    result => result.and_then(|result| {
                         if by_gas_used && result.block_gas_used() > lane_gas_left {
                             // Dropping the uncommitted result leaves the block as it was.
                             return Ok(false);
                         }
                         result_closure(&result);
                         executor.commit_transaction(result).map(|_| true)
-                    })
+                    }),
+                }
             };
 
             if let Err(err) = execution_result {

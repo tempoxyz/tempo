@@ -841,9 +841,7 @@ impl<'a> TempoBlockExecutor<'a> {
                         gas_used,
                         "Rejecting: transaction exceeds its gas lane"
                     );
-                    return Err(BlockValidationError::msg(
-                        "transaction exceeds its gas lane",
-                    ));
+                    return Err(BlockValidationError::other(crate::error::LaneGasExceeded));
                 }
                 Ok(BlockSection::NonShared)
             }
