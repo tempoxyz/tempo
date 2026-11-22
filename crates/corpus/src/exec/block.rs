@@ -423,9 +423,10 @@ mod tests {
 
     #[test]
     fn boundary_encoding_roundtrip() {
-        for section in 0..5u8 {
+        for section in [0u8, 1, 3, 4] {
             let mut bytes = vec![section];
-            for value in [1, u64::MAX, 3, 4, 5, 6] {
+            // The third counter, the registered payment budget, is zero before T17.
+            for value in [1, u64::MAX, 0, 4, 5, 6] {
                 bytes.extend(value.to_be_bytes());
             }
             let state: ExecutorState = boundary().deserialize(&bytes).unwrap();
@@ -439,15 +440,18 @@ mod tests {
             trailing.push(0);
             assert!(boundary().deserialize::<ExecutorState>(&trailing).is_err());
         }
-        let mut unknown = vec![5];
-        unknown.extend([0; 48]);
-        let err = boundary()
-            .deserialize::<ExecutorState>(&unknown)
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("expected a block section id from 0 to 4"),
-            "{err}"
-        );
+        // 2 was the removed gas incentive section.
+        for section in [2u8, 5] {
+            let mut unknown = vec![section];
+            unknown.extend([0; 48]);
+            let err = boundary()
+                .deserialize::<ExecutorState>(&unknown)
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("expected a block section id of 0, 1, 3 or 4"),
+                "{err}"
+            );
+        }
     }
 }

@@ -280,7 +280,7 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
-        self.is_payment_with(|to, input| is_tip1045_call(to, input, 0, false))
+        self.is_payment_with(|to, input| is_tip1045_call(to, input, PaymentRules::V2))
     }
 
     /// T15+ [TIP-20 payment] (TIP-1045) classification.
@@ -292,9 +292,7 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v3(&self) -> bool {
-        self.is_payment_with(|to, input| {
-            is_tip1045_call(to, input, MAX_PAYMENT_TRAILING_BYTES, true)
-        })
+        self.is_payment_with(|to, input| is_tip1045_call(to, input, PaymentRules::V3))
     }
 
     /// TIP-1045 transaction-level classification with a caller-supplied call predicate: every
@@ -599,17 +597,39 @@ fn is_tip20_call(to: Option<&Address>) -> bool {
     to.is_some_and(|to| to.is_tip20())
 }
 
-/// Returns `true` if the call is in the TIP-1045 payment lane allow-list.
-///
-/// Voucher signatures must be primitive, or also configurable account signatures when
-/// `configurable_vouchers` is set. Only their encoding is checked.
+/// TIP-1045 payment lane rules, which differ by hardfork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaymentRules {
+    /// T5+: exact ABI-encoded calldata and primitive voucher signatures.
+    V2,
+    /// T15+: static-only payment calls may carry up to [`MAX_PAYMENT_TRAILING_BYTES`] trailing
+    /// bytes, and voucher signatures may also be configurable account signatures (TIP-1166).
+    V3,
+}
+
+impl PaymentRules {
+    /// Bytes allowed after the ABI-encoded arguments of static-only payment calls.
+    const fn max_trailing_bytes(self) -> usize {
+        match self {
+            Self::V2 => 0,
+            Self::V3 => MAX_PAYMENT_TRAILING_BYTES,
+        }
+    }
+
+    /// Returns `true` if `signature` is an allowed voucher signature encoding. Only the encoding
+    /// is checked.
+    fn is_valid_voucher_signature(self, signature: &[u8]) -> bool {
+        super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
+            || (self == Self::V3
+                && super::tt_signature::TempoSignature::from_bytes(signature)
+                    .is_ok_and(|signature| signature.as_configurable_account().is_some()))
+    }
+}
+
+/// Returns `true` if the call is in the TIP-1045 payment lane allow-list under `rules`.
 #[inline]
-fn is_tip1045_call(
-    to: Option<&Address>,
-    input: &[u8],
-    max_trailing_bytes: usize,
-    configurable_vouchers: bool,
-) -> bool {
+fn is_tip1045_call(to: Option<&Address>, input: &[u8], rules: PaymentRules) -> bool {
+    let max_trailing_bytes = rules.max_trailing_bytes();
     match to {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input, max_trailing_bytes),
@@ -618,14 +638,7 @@ fn is_tip1045_call(
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
                 max_trailing_bytes,
-                |signature| {
-                    super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
-                        || (configurable_vouchers
-                            && super::tt_signature::TempoSignature::from_bytes(signature)
-                                .is_ok_and(|signature| {
-                                    signature.as_configurable_account().is_some()
-                                }))
-                },
+                |signature| rules.is_valid_voucher_signature(signature),
             )
         }
         _ => false,
@@ -1185,7 +1198,7 @@ mod tests {
     fn test_payment_with_admits_listed_calls() {
         let program = Address::repeat_byte(0x52);
         let listed = |to: Option<&Address>, input: &[u8]| {
-            is_tip1045_call(to, input, MAX_PAYMENT_TRAILING_BYTES, true)
+            is_tip1045_call(to, input, PaymentRules::V3)
                 || (to == Some(&program) && input.starts_with(&[1, 2, 3, 4]))
         };
         let program_call: Bytes = vec![1, 2, 3, 4, 0xff].into();

@@ -331,7 +331,11 @@ jobs:
   bump-main-cargo-version:
     name: Open Cargo Version Bump PR
     needs: [get-version, create-release, upload-cloudflare]
-    if: ${{ startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
+    # Only tempoxyz/tempo opens the bump PR. Copies such as tempo-private-fork
+    # reset their main to upstream every hour (sync-from-upstream.yml), so a
+    # bump PR there is pointless, and the release-pr STS policy admits only
+    # this repository.
+    if: ${{ github.repository == 'tempoxyz/tempo' && startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
     runs-on: depot-ubuntu-latest
     environment: release-pr
     permissions:
@@ -439,6 +443,9 @@ jobs:
       id-token: write
       contents: read
       actions: read
+    env:
+      # The tempo-binaries bucket in tempo-prd, which download.tempo.xyz serves.
+      R2_BUCKET: tempo-binaries
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -475,11 +482,127 @@ jobs:
             echo "dir=binaries/${VERSION}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      # Requested after the checkout and artifact download, so a slow download
+      # can't use up the token's lifetime; the readiness check below waits for
+      # R2 to honor it. The upload-binaries policies live in
+      # tempoxyz/cloudflare-sts under policies/tempo-994992847/ and
+      # policies/tempo-private-fork-1160043351/. Each admits only its own
+      # repository's release.yml on tempo/v* tags in that repository's
+      # upload-binaries environment, so other copies of the repository skip the
+      # upload. The action revokes the token after the job.
+      - name: Fetch Cloudflare token for the binaries bucket
+        id: cloudflare-sts
+        if: github.repository == 'tempoxyz/tempo' || github.repository == 'tempoxyz/tempo-private-fork'
+        uses: tempoxyz/gh-actions/actions/cloudflare-sts@1a535d662a51f211d750307541069cb849535414 # 2026-11-19T07-33-38Z-1a535d66
         with:
-          aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
-          aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
-          aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
-          endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
+          account: prd
+          policy: upload-binaries
+          ttl: 10m
+
+      # R2's S3 access key ID is the API token's ID, and its secret is the
+      # SHA-256 of the token value.
+      - name: Derive R2 credentials
+        id: r2-credentials
+        if: github.repository == 'tempoxyz/tempo' || github.repository == 'tempoxyz/tempo-private-fork'
+        env:
+          TOKEN: ${{ steps.cloudflare-sts.outputs.token }}
+          ACCOUNT_ID: ${{ steps.cloudflare-sts.outputs.account-id }}
+        run: |
+          set -euo pipefail
+          # The bucket is in the account STS issued the token for.
+          if [[ ! "$ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "::error::Cloudflare STS returned an invalid account ID"
+            exit 1
+          fi
+          endpoint="https://$ACCOUNT_ID.r2.cloudflarestorage.com"
+          # The header goes in on stdin so the token stays out of curl's argv.
+          id="$(printf 'Authorization: Bearer %s\n' "$TOKEN" \
+            | curl --fail --silent --show-error --retry 3 --max-time 15 -H @- \
+              "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/tokens/verify" \
+            | jq -er '.result | select(.status == "active") | .id')" \
+            || { echo "::error::Cloudflare did not verify the R2 token as active"; exit 1; }
+          [[ "$id" =~ ^[0-9a-f]{32}$ ]] \
+            || { echo "::error::Cloudflare returned a malformed R2 token ID"; exit 1; }
+          secret="$(printf '%s' "$TOKEN" | sha256sum | cut -d' ' -f1)"
+          echo "::add-mask::$id"
+          echo "::add-mask::$secret"
+          # R2 can take up to a minute to honor a new token even after it
+          # verifies as active: https://developers.cloudflare.com/r2/reference/consistency/
+          # Not every R2 server honors it at once, so wait for three listings
+          # in a row, which write nothing. The token is only seconds old here,
+          # so allow two minutes: the full minute plus the confirming listings.
+          accepted=0
+          attempt=0
+          deadline=$((SECONDS + 120))
+          while true; do
+            attempt=$((attempt + 1))
+            # The key pair goes in as curl config on stdin, out of its argv.
+            status="$(printf 'user = "%s:%s"\n' "$id" "$secret" \
+              | curl --config - --silent --show-error --retry 2 --max-time 15 \
+                --aws-sigv4 'aws:amz:auto:s3' \
+                --output /dev/null --write-out '%{http_code}' \
+                "$endpoint/$R2_BUCKET?list-type=2&max-keys=1")"
+            case "$status" in
+              200) accepted=$((accepted + 1)) ;;
+              401|403) accepted=0 ;;
+              *) echo "::error::R2 readiness check failed (HTTP $status)"; exit 1 ;;
+            esac
+            if (( accepted == 3 )); then
+              echo "R2 accepted the credentials"
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::R2 did not consistently accept the credentials within two minutes (last HTTP $status)"
+              exit 1
+            fi
+            if [ "$status" != 200 ]; then
+              echo "Waiting for R2 to accept the credentials (attempt $attempt)"
+            fi
+            sleep 2
+          done
+          {
+            echo "endpoint-url=$endpoint"
+            echo "access-key-id=$id"
+            echo "secret-access-key=$secret"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload to R2
+        id: upload
+        if: github.repository == 'tempoxyz/tempo' || github.repository == 'tempoxyz/tempo-private-fork'
+        # Retried once below, so a failure here doesn't fail the job by itself.
+        continue-on-error: true
+        uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          aws_key_id: ${{ steps.r2-credentials.outputs.access-key-id }}
+          aws_secret_access_key: ${{ steps.r2-credentials.outputs.secret-access-key }}
+          aws_bucket: ${{ env.R2_BUCKET }}
+          endpoint: ${{ steps.r2-credentials.outputs.endpoint-url }}
           source_dir: "${{ needs.get-version.outputs.version }}"
           destination_dir: "${{ steps.dest.outputs.dir }}"
+
+      # An R2 server can still reject the new credentials briefly after others
+      # accept them (see "Derive R2 credentials"). The retry rewrites the same
+      # keys with the same files, so it is safe after a partial upload.
+      - name: Wait before retrying the upload
+        if: steps.upload.outcome == 'failure'
+        run: |
+          echo "::warning::The R2 upload failed; retrying it in 10 seconds"
+          sleep 10
+
+      - name: Retry the upload to R2
+        if: steps.upload.outcome == 'failure'
+        uses: tempoxyz/gh-actions/vendor/shallwefootball/upload-s3-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          aws_key_id: ${{ steps.r2-credentials.outputs.access-key-id }}
+          aws_secret_access_key: ${{ steps.r2-credentials.outputs.secret-access-key }}
+          aws_bucket: ${{ env.R2_BUCKET }}
+          endpoint: ${{ steps.r2-credentials.outputs.endpoint-url }}
+          source_dir: "${{ needs.get-version.outputs.version }}"
+          destination_dir: "${{ steps.dest.outputs.dir }}"
+
+      # Other copies of the repository, such as tempo-firedrill, never relied
+      # on the upload and have no upload-binaries policy.
+      - name: Report the skipped upload outside tempoxyz/tempo and tempo-private-fork
+        if: github.repository != 'tempoxyz/tempo' && github.repository != 'tempoxyz/tempo-private-fork'
+        run: |
+          echo "::notice::Skipped the R2 upload. The Cloudflare STS upload-binaries policies authorize only tempoxyz/tempo and tempoxyz/tempo-private-fork."

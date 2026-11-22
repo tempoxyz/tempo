@@ -470,6 +470,28 @@ mod tests {
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
 
+    /// `dev.json` and the node test genesis activate T15 at genesis, which skips the T15 runtime
+    /// upgrade, so their portal implementation must already be the current T15 runtime.
+    #[test]
+    fn genesis_portal_runtime_matches_t15_runtime() {
+        let impl_address = tempo_contracts::precompiles::ZONE_PORTAL_IMPL_ADDRESS;
+        for (name, json) in [
+            ("dev.json", include_str!("./genesis/dev.json")),
+            (
+                "test-genesis.json",
+                include_str!("../../node/tests/assets/test-genesis.json"),
+            ),
+        ] {
+            let genesis: Genesis = serde_json::from_str(json).unwrap();
+            let code = genesis.alloc[&impl_address].code.clone().unwrap();
+            assert_eq!(
+                code,
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+                "{name} holds a stale T15 portal runtime"
+            );
+        }
+    }
+
     #[test]
     #[cfg(feature = "cli")]
     fn can_load_testnet() {

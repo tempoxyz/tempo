@@ -282,6 +282,11 @@ impl StorageCtx {
         Self::with_storage(|s| s.is_static())
     }
 
+    /// The precompile this call frame runs, see [`PrecompileStorageProvider::call_frame_address`].
+    pub fn call_frame_address(&self) -> Option<Address> {
+        Self::with_storage(|s| s.call_frame_address())
+    }
+
     /// Calls `target` from the running precompile, see [`PrecompileStorageProvider::call`].
     ///
     /// A callee that is a Tempo precompile, the caller included, runs in its own storage context

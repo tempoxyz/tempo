@@ -119,6 +119,12 @@ pub enum TempoPrecompileError {
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
 
+    /// Revert with raw data: a bare Solidity `require` (empty) or revert data bubbled up
+    /// from a nested call.
+    #[error("Revert({0})")]
+    #[from(skip)]
+    RawRevert(alloy::primitives::Bytes),
+
     #[error("configurable account error: {0:?}")]
     ConfigurableAccountError(ConfigurableAccountError),
 
@@ -200,6 +206,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::StorageCreditsError(_)
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
+            | TempoPrecompileError::RawRevert(_)
             | TempoPrecompileError::ConfigurableAccountError(_)
             | TempoPrecompileError::ReservationsError(_)
             | TempoPrecompileError::PaymentCallRegistryError(_)
@@ -271,6 +278,10 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
+            Self::RawRevert(data) => data
+                .get(..4)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or([0; 4]),
             Self::ConfigurableAccountError(e) => e.selector(),
             Self::ReservationsError(e) => e.selector(),
             Self::PaymentCallRegistryError(e) => e.selector(),
@@ -317,6 +328,7 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
+            | Self::RawRevert(_)
             | Self::ConfigurableAccountError(_)
             | Self::ReservationsError(_)
             | Self::PaymentCallRegistryError(_)
@@ -370,6 +382,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
+            Self::RawRevert(data) => data,
             Self::ConfigurableAccountError(e) => e.abi_encode().into(),
             Self::ReservationsError(e) => e.abi_encode().into(),
             Self::PaymentCallRegistryError(e) => e.abi_encode().into(),

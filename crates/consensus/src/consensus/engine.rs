@@ -219,7 +219,7 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                finalized_tip: (finalized_tip.1, finalized_tip.2),
+                finalized_floor,
                 max_peers: self.max_peers,
             },
         )
@@ -234,6 +234,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                blocker: self.blocker.clone(),
                 strategy: Sequential,
             },
         );
@@ -378,8 +379,8 @@ where
     context: ContextCell<TContext>,
 
     /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
+    broadcast:
+        buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, TBlocker, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext, TBlocker>,

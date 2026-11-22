@@ -20,7 +20,10 @@
 //! - the Validator Config V2 contract at the highest finalized height.
 //!
 //! The highest finalized height is the execution layer's finalized block,
-//! capped by the latest finalized tip consensus has observed.
+//! capped by the finalized floor marshal starts from, or by the highest
+//! finalized block marshal has since delivered. Finalized tips are ignored:
+//! marshal reports them before their blocks are delivered, so execution state
+//! up to a tip may not be the state consensus finalized.
 //!
 //! The peer set is split into two tiers:
 //!
@@ -36,8 +39,8 @@
 //!
 //! [`init`] registers the first peer set from execution state, before marshal
 //! or the executor start, because DKG may need these peers to recover the tip.
-//! After that, peers are re-read on every finalized block or tip reported by
-//! marshal and every 30 seconds otherwise. A new peer set is tracked under the
+//! After that, peers are re-read on every finalized block delivered by marshal
+//! and every 30 seconds otherwise. A new peer set is tracked under the
 //! finalized height it was read at when its membership changes; when only
 //! addresses change, the existing set's addresses are overwritten.
 
@@ -52,7 +55,7 @@ use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_node::TempoFullNode;
 use tempo_primitives::TempoHeader;
 
-use crate::{consensus::Digest, validators::ExecutionNode};
+use crate::validators::ExecutionNode;
 
 mod actor;
 mod ingress;
@@ -69,10 +72,9 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     pub(crate) execution_node: Arc<TExecutionNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// Highest finalized tip observed from consensus at startup.
-    /// Execution-layer-derived reads must not advance beyond this tip until
-    /// marshal reports a newer finalized tip.
-    pub(crate) finalized_tip: (Height, Digest),
+    /// The finalized floor marshal starts from. Execution-layer reads must
+    /// not advance beyond it until marshal delivers a higher finalized block.
+    pub(crate) finalized_floor: Height,
     /// The P2P network's maximum peer set size. The network panics on larger
     /// peer sets; a warning is logged past 2/3 of it.
     pub(crate) max_peers: NonZeroU32,

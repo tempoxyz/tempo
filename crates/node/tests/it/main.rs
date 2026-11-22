@@ -4,6 +4,7 @@ mod backfill;
 mod base_fee;
 mod block_building;
 mod createx;
+mod engine;
 mod eth_call;
 mod eth_transactions;
 mod executed_state;

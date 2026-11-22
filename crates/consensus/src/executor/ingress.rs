@@ -59,7 +59,7 @@ impl Mailbox {
             .wrap_err("failed sending validate-block request to agent, this means it exited")?;
         rx.await.wrap_err(
             "executor dropped the validation response channel: the request was \
-            superseded or stale, validation failed, or the executor shut down",
+            stale, validation failed, or the executor shut down",
         )
     }
 

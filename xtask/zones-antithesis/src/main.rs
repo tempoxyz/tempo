@@ -690,7 +690,7 @@ impl Context {
             tag: encrypted.tag.into(),
         };
         let receipt = portal
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 amount,
                 key_index,

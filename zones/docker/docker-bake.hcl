@@ -18,6 +18,14 @@ variable "VERSION" {
   default = "dev"
 }
 
+# Suffix for the Cargo registry, git and sccache cache-mount IDs. Pull requests
+# and the merge queue leave it empty and share warm cache mounts. Every other
+# run sets a fresh random value, so it starts from empty mounts that no earlier
+# build wrote to (no-cache does not reset cache mounts).
+variable "CACHE_SCOPE" {
+  default = ""
+}
+
 variable "PROVER_EIF_CONTEXT" {
   default = "./target/tempo-zone-prover-eif"
 }
@@ -40,7 +48,7 @@ target "chef" {
   args = {
     RUST_PROFILE = "profiling"
     RUST_FEATURES = "jemalloc"
-    CACHE_FAMILY = "node"
+    CACHE_FAMILY = "node${CACHE_SCOPE}"
     RUST_BINARIES = "tempo-zone tempo-zone-xtask"
   }
 }
@@ -52,7 +60,7 @@ target "prover-chef" {
   args = {
     RUST_PROFILE = "release"
     RUST_FEATURES = ""
-    CACHE_FAMILY = "prover"
+    CACHE_FAMILY = "prover${CACHE_SCOPE}"
     RUST_BINARIES = "tempo-zone-prover-utils tempo-zone-prover-enclave"
   }
 }
@@ -68,7 +76,7 @@ target "_common" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "profiling"
-    CACHE_FAMILY = "node"
+    CACHE_FAMILY = "node${CACHE_SCOPE}"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
@@ -85,8 +93,13 @@ target "tempo-zone" {
     GIT_SHA = "${GIT_SHA}"
     VERSION = "${VERSION}"
   }
+  # Static so the Depot candidate and the clean rebuild keep the same image ID.
   labels = {
     "org.opencontainers.image.description" = "Production tempo-zone image verified against an independent clean image build."
+    "org.opencontainers.image.source" = "https://github.com/tempoxyz/tempo"
+    "org.opencontainers.image.url" = "https://github.com/tempoxyz/tempo"
+    "org.opencontainers.image.revision" = "${GIT_SHA}"
+    "org.opencontainers.image.licenses" = "Apache-2.0"
     "org.tempoxyz.reproducible.verification-scope" = "tempo-zone-image-id"
   }
   platforms = ["linux/amd64"]
@@ -132,7 +145,7 @@ target "tempo-zone-prover-utils" {
   args = {
     CHEF_IMAGE = "chef"
     RUST_PROFILE = "release"
-    CACHE_FAMILY = "prover"
+    CACHE_FAMILY = "prover${CACHE_SCOPE}"
   }
   platforms = ["linux/amd64"]
 }

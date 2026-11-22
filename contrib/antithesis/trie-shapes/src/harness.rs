@@ -188,10 +188,10 @@ impl Client {
         }
     }
 
-    /// The server's state summary. None when the server went away.
+    /// The server's state summary. None when the server went away or has no active round.
     pub fn summary(&mut self) -> Result<Option<Summary>> {
         match self.call(&Request::StateSummary)? {
-            None => Ok(None),
+            None | Some(Response::Rejected { .. }) => Ok(None),
             Some(Response::Summary(summary)) => Ok(Some(summary)),
             Some(other) => bail!("unexpected answer to state_summary: {other:?}"),
         }
@@ -272,14 +272,14 @@ pub fn parallel_driver_blocks() -> Result<()> {
 }
 
 /// Flushes both frontiers to the head, which makes the server check the persisted state. Returns
-/// the client for further checks, or None when the server is down or went away.
+/// the client for further checks, or None when the server is down or rejects the flush.
 pub fn persisted() -> Result<Option<Client>> {
     let Some(mut client) = Client::connect()? else {
         unavailable()?;
         return Ok(None);
     };
     match client.call(&Request::Flush)? {
-        None => {
+        None | Some(Response::Rejected { .. }) => {
             unavailable()?;
             Ok(None)
         }
@@ -320,7 +320,7 @@ pub fn unavailable() -> Result<()> {
 fn build(client: &mut Client, blocks: usize) -> Result<()> {
     for _ in 0..blocks {
         match client.call(&Request::BuildBlock)? {
-            None => return unavailable(),
+            None | Some(Response::Rejected { .. }) => return unavailable(),
             Some(Response::Block { round, number, root }) => {
                 println!("{}", json!({"block": {"round": round, "number": number, "root": root}}));
             }

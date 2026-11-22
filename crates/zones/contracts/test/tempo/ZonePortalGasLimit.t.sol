@@ -159,7 +159,7 @@ contract ZonePortalGasLimitTest is PortalRuntimeTest {
         });
         _storeSingleWithdrawal(w);
 
-        (bool success,) = address(portal).call{ gas: 1_500_000 }(
+        (bool success,) = address(portal).call{ gas: 2_250_000 }(
             abi.encodeCall(IZonePortal.processWithdrawals, (_singleWithdrawal(w), bytes32(0)))
         );
 

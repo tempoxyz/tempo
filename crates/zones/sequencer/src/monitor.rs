@@ -421,10 +421,12 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
         &mut self,
         ready_tx: &mpsc::Sender<ReadyBatch>,
     ) -> Result<()> {
-        let latest_zone_block = self
-            .provider
-            .last_block_number()
-            .map_err(|error| eyre::eyre!(error))?;
+        // Batches may only cover blocks that survive a crash: a settled block this node later
+        // rebuilds with another hash would leave L1 on a chain no replica holds.
+        let latest_zone_block =
+            crate::DurableBlockReader::last_durable_block_num_hash(&self.provider)
+                .map_err(|error| eyre::eyre!(error))?
+                .number;
         let scan_from = self.latest_scanned_zone_block.saturating_add(1);
         if latest_zone_block < scan_from {
             return Ok(());
