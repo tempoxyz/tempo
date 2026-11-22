@@ -32,9 +32,10 @@ use std::{
 };
 
 use alloy_eips::eip1559::Eip1559Estimation;
-use alloy_network::ReceiptResponse;
+use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider};
+use alloy_sol_types::SolCall as _;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
@@ -44,13 +45,14 @@ use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-    abi::{self, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
+    abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
     prover_config::active_l1_hardfork,
     settlement::{WithdrawalPage, find_processed_offset},
 };
 use tempo_alloy::rpc::TempoCallBuilderExt;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks as _};
 use zone_chainspec::ZoneChainSpec;
 
 const PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
@@ -702,6 +704,16 @@ impl WithdrawalProcessor {
         }
     }
 
+    /// Whether the L1 portal still runs a runtime from before T15, which takes withdrawals without
+    /// `senderOrg`. Skips the L1 header read when T15 is active from genesis.
+    async fn l1_portal_is_pre_t15(&self) -> eyre::Result<bool> {
+        let chain_spec = self.config.chain_spec.as_ref();
+        if chain_spec.is_t15_active_at_timestamp(0) {
+            return Ok(false);
+        }
+        Ok(active_l1_hardfork(&self.provider, chain_spec).await? < TempoHardfork::T15)
+    }
+
     /// Run all batches through a bounded queue of consecutive-nonce transactions.
     ///
     /// A failure stops new submissions. Already submitted transactions are still drained because
@@ -733,6 +745,7 @@ impl WithdrawalProcessor {
         let mut submitted = 0usize;
         let mut retry = false;
         let fees = bound_l1_fees(self.provider.estimate_eip1559_fees().await?);
+        let legacy_portal = self.l1_portal_is_pre_t15().await?;
 
         loop {
             while !retry
@@ -771,9 +784,20 @@ impl WithdrawalProcessor {
                     "📤 Broadcasting withdrawal batch to L1"
                 );
 
+                let legacy_input = legacy_portal.then(|| {
+                    LegacyZonePortal::processWithdrawalsCall {
+                        withdrawals: batch_withdrawals.iter().map(|w| w.to_legacy()).collect(),
+                        remainingQueue: remaining_queue,
+                    }
+                    .abi_encode()
+                });
                 let call = self
                     .portal
                     .processWithdrawals(batch_withdrawals, remaining_queue)
+                    .map(|request| match legacy_input {
+                        Some(input) => request.with_input(input),
+                        None => request,
+                    })
                     .from(self.config.sequencer_address)
                     .nonce_key(PROCESS_WITHDRAWAL_NONCE_KEY)
                     .nonce(nonce)
@@ -1101,6 +1125,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         }
     }
 
@@ -1128,8 +1153,23 @@ mod tests {
         let w = test_withdrawal(Address::with_last_byte(0x42), 1000);
         let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
 
-        let expected = keccak256((w, B256::ZERO).abi_encode_params());
+        let expected = keccak256((w.to_legacy(), B256::ZERO).abi_encode_params());
         assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn org_withdrawal_hash_commits_sender_org() {
+        let mut w = test_withdrawal(Address::with_last_byte(0x42), 1000);
+        w.senderOrg = 7;
+        let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
+
+        assert_eq!(hash, keccak256((w.clone(), B256::ZERO).abi_encode_params()));
+        assert_ne!(
+            hash,
+            keccak256((w.to_legacy(), B256::ZERO).abi_encode_params())
+        );
+        w.senderOrg = 8;
+        assert_ne!(hash, abi::Withdrawal::queue_hash(std::slice::from_ref(&w)));
     }
 
     #[test]
@@ -1139,8 +1179,8 @@ mod tests {
 
         let hash = abi::Withdrawal::queue_hash(&[w0.clone(), w1.clone()]);
 
-        let inner = keccak256((w1, B256::ZERO).abi_encode_params());
-        let expected = keccak256((w0, inner).abi_encode_params());
+        let inner = keccak256((w1.to_legacy(), B256::ZERO).abi_encode_params());
+        let expected = keccak256((w0.to_legacy(), inner).abi_encode_params());
         assert_eq!(hash, expected);
     }
 
@@ -1156,6 +1196,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         };
 
         let tuple_value_hash = keccak256((w.clone(), B256::ZERO).abi_encode());
@@ -1517,6 +1558,8 @@ mod tests {
             SharedWithdrawalStore::new(),
             Arc::new(Notify::new()),
         );
+        // T15 from genesis, so encoding withdrawals reads no L1 header.
+        processor.config.chain_spec = chain_spec_with_t15(0);
         processor.config.batch_limits = WithdrawalBatchLimits {
             max_batch_gas: PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS
                 + PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS,

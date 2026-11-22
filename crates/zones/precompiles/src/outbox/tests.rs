@@ -363,6 +363,7 @@ fn withdrawals_queue_in_fifo_order_and_finalize_to_their_queue_hash() -> eyre::R
             fallbackNonce: pending.fallbackNonce,
             callbackData: pending.callbackData.clone(),
             encryptedSender: Bytes::new(),
+            senderOrg: 0,
         })
         .collect();
     let output = env.finalize_batch(2)?;
@@ -692,6 +693,113 @@ fn fallback_recipient_nonce_is_private_and_consumed_once_by_inbox() -> eyre::Res
     assert_revert(
         env.call(ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, calldata),
         ZoneOutboxError::invalid_fallback_recipient(),
+    );
+    Ok(())
+}
+
+/// With org enforcement on, a withdrawal needs its org to list the destination as a Tempo target
+/// and, when the fallback recipient is someone else, a Zone edge to that recipient too.
+#[test]
+fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> {
+    use crate::zone_identity::{L1Target, ZoneIdentity};
+    use tempo_contracts::zones::ZoneIdentityError;
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let registrar = Address::with_last_byte(0xee);
+    env.with_storage(|| -> crate::ZoneResult<()> {
+        let mut identity = ZoneIdentity::new();
+        let org = identity.create_org(registrar, registrar, registrar)?;
+        identity.add_members(registrar, org, &[ALICE])?;
+        identity.set_l1_target(
+            registrar,
+            org,
+            BOB,
+            &[PATH_USD_ADDRESS],
+            L1Target {
+                deposit_from: false,
+                withdraw_to: true,
+            },
+        )
+    })?;
+    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(true));
+
+    let stranger = Address::with_last_byte(0xf6);
+    assert_revert(
+        env.request_withdrawal(
+            ALICE,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                zoneFallbackRecipient: stranger,
+                ..withdrawal(1, BOB, 0)
+            },
+        ),
+        ZoneIdentityError::org_policy_forbids(PATH_USD_ADDRESS, ALICE, stranger),
+    );
+    assert!(
+        env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?
+            .is_success()
+    );
+    Ok(())
+}
+
+/// A withdrawal records its sender's org while ZoneIdentity is enforced and commits it to the
+/// queue hash; with enforcement off every withdrawal stays in org 0 with the legacy hash.
+#[test_case(true ; "enforced")]
+#[test_case(false ; "not enforced")]
+fn withdrawal_commits_the_sender_org_when_enforced(enforced: bool) -> eyre::Result<()> {
+    use crate::zone_identity::{L1Target, ZoneIdentity};
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    let registrar = Address::with_last_byte(0xee);
+    let org = env.with_storage(|| -> crate::ZoneResult<u64> {
+        let mut identity = ZoneIdentity::new();
+        let org = identity.create_org(registrar, registrar, registrar)?;
+        identity.add_members(registrar, org, &[ALICE])?;
+        identity.set_l1_target(
+            registrar,
+            org,
+            BOB,
+            &[PATH_USD_ADDRESS],
+            L1Target {
+                deposit_from: false,
+                withdraw_to: true,
+            },
+        )?;
+        Ok(org)
+    })?;
+    env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(enforced));
+
+    let result = env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    assert!(result.is_success());
+    let expected_org = if enforced { org } else { 0 };
+    let pending = env.pending_withdrawals();
+    let expected = Withdrawal {
+        token: pending[0].token,
+        senderTag: Withdrawal::sender_tag(
+            pending[0].sender,
+            pending[0].txHash,
+            pending[0].fallbackNonce,
+        ),
+        to: pending[0].to,
+        amount: pending[0].amount,
+        memo: pending[0].memo,
+        gasLimit: pending[0].gasLimit,
+        fallbackNonce: pending[0].fallbackNonce,
+        callbackData: pending[0].callbackData.clone(),
+        encryptedSender: Bytes::new(),
+        senderOrg: expected_org,
+    };
+    let output = env.finalize_batch(1)?;
+    assert_eq!(
+        ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(&output.bytes)?,
+        Withdrawal::queue_hash(&[expected])
     );
     Ok(())
 }

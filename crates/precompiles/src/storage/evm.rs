@@ -44,6 +44,8 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Recorded storage actions.
     actions: StorageActions,
+    /// Charge every SLOAD as cold, so gas does not reveal which slots were already warm.
+    cold_pricing: bool,
     /// The precompile call frame that nested calls start from, if the provider serves one.
     frame: Option<Frame>,
     /// Checkpoints taken and not yet committed or reverted, during which nested calls are refused.
@@ -96,6 +98,7 @@ where
             tip1060_storage_credit_minting_enabled: true,
             non_creditable_slots: None,
             actions: StorageActions::disabled(),
+            cold_pricing: false,
             frame: None,
             open_checkpoints: 0,
         }
@@ -239,7 +242,7 @@ where
         }
 
         // dynamic gas
-        if result.is_cold {
+        if result.is_cold || self.cold_pricing {
             self.deduct_gas(additional_cost)?;
         }
 
@@ -661,6 +664,10 @@ where
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        core::mem::replace(&mut self.cold_pricing, enabled)
     }
 
     fn call_frame_address(&self) -> Option<Address> {
