@@ -37,10 +37,10 @@ env:
   # Foundry's evm2 migration (foundry-rs/foundry#17541) with commonware 2026.10.0
   # (foundry-rs/foundry#18098) and private `SignedKeyAuthorization` fields
   # (foundry-rs/foundry#18264), plus evm2's initial call depth on `Evm`
-  # (foundry-rs/foundry#18325), plus the trace record accessors of evm2 35aa328
-  # (alloy-rs/evm2#1083, branch alexey/evm2-35aa328-trace-records). Pin to a
-  # commit and move the pin to Foundry master once those changes merge.
-  FOUNDRY_REF: fcee0988b56b1739cd5513ac74b64eaa4591e955
+  # (foundry-rs/foundry#18325). Pin to a commit and move the pin to Foundry
+  # master once those PRs merge. scripts/foundry-patch.sh adapts it to the
+  # trace records of evm2 35aa328 (alloy-rs/evm2#1083).
+  FOUNDRY_REF: 2f55bf2310a7dc6eaf646ba35b10781f10d3f7ac
 
 jobs:
   check-specs-changes:

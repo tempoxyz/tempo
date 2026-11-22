@@ -290,6 +290,14 @@ if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs" ]] &&
     "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"
 fi
 
+# evm2's step records keep rarely set data such as `decoded` and `returndata`
+# in a boxed `extra` behind accessors, and narrow `pc` and `depth` to u32 and
+# u16. Skip the patch once Foundry already carries it.
+TRACE_RECORDS_PATCH="$TEMPO_ROOT/scripts/foundry-evm2-trace-records.patch"
+if ! git -C "$FOUNDRY_ROOT" apply --reverse --check "$TRACE_RECORDS_PATCH" 2>/dev/null; then
+  git -C "$FOUNDRY_ROOT" apply "$TRACE_RECORDS_PATCH"
+fi
+
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 

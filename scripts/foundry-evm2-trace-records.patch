@@ -1,0 +1,204 @@
+diff --git a/crates/debugger/src/soldb.rs b/crates/debugger/src/soldb.rs
+index 1ff185a9b..2245c2941 100644
+--- a/crates/debugger/src/soldb.rs
++++ b/crates/debugger/src/soldb.rs
+@@ -213,7 +213,7 @@ fn transaction_trace(
+                         .frames
+                         .iter()
+                         .zip(&*nodes)
+-                        .all(|(frame, node)| frame.depth == node.trace.depth),
++                        .all(|(frame, node)| frame.depth == usize::from(node.trace.depth)),
+                 "the recorded steps do not match the call trace"
+             );
+             builder.visit_recorded(nodes, 0, None, &recording.frames, offset);
+@@ -293,10 +293,9 @@ fn visit(&mut self, nodes: &mut [CallTraceNode], idx: usize, parent: Option<usiz
+                     if next_step < steps.len() {
+                         let (done, rest) = steps.split_at_mut(next_step + 1);
+                         let step = &mut done[next_step];
+-                        if self.breakpoints.contains_key(&(address, step.pc))
+-                            && !hits.contains(&step.pc)
+-                        {
+-                            hits.push(step.pc);
++                        let pc = step.pc as usize;
++                        if self.breakpoints.contains_key(&(address, pc)) && !hits.contains(&pc) {
++                            hits.push(pc);
+                         }
+                         self.push_step(step, rest.first(), depth);
+                         // Free the converted snapshots now, not when the frame ends.
+@@ -487,7 +486,7 @@ fn push_step(&mut self, step: &CallTraceStep, next: Option<&CallTraceStep>, dept
+             .and_then(|change| change.had_value);
+         let storage = self.converter.storage(step.op.get(), stack, loaded, had_value);
+         // `None` would keep the previous step's buffer, so an empty one is spelled out too.
+-        let return_data = self.converter.return_data(&step.returndata);
++        let return_data = self.converter.return_data(step.returndata());
+         self.steps.append(
+             StepRecord {
+                 pc: step.pc as u64,
+diff --git a/crates/evm/traces/src/backtrace/mod.rs b/crates/evm/traces/src/backtrace/mod.rs
+index 168c12672..510187de8 100644
+--- a/crates/evm/traces/src/backtrace/mod.rs
++++ b/crates/evm/traces/src/backtrace/mod.rs
+@@ -269,7 +269,7 @@ fn create_frame(&self, trace: &CallTrace) -> Option<BacktraceFrame> {
+         // Try to get source location from PC mapper
+         if !self.disable_source_locs
+             && let Some(source_location) = trace.steps.last().and_then(|last_step| {
+-                self.pc_mappers.get(&contract_address).and_then(|m| m.map_pc(last_step.pc))
++                self.pc_mappers.get(&contract_address).and_then(|m| m.map_pc(last_step.pc as usize))
+             })
+         {
+             frame = frame
+diff --git a/crates/evm/traces/src/debug/mod.rs b/crates/evm/traces/src/debug/mod.rs
+index e800630cf..ddfc3853a 100644
+--- a/crates/evm/traces/src/debug/mod.rs
++++ b/crates/evm/traces/src/debug/mod.rs
+@@ -172,10 +172,10 @@ fn jump_out(&mut self) {
+             })
+             .unwrap_or_default();
+ 
+-        self.node.trace.steps[start_idx].decoded = Some(Box::new(DecodedTraceStep::InternalCall(
++        *self.node.trace.steps[start_idx].decoded_mut() = DecodedTraceStep::InternalCall(
+             DecodedInternalCall { func_name, args: inputs, return_data: outputs },
+             self.current_step,
+-        )));
++        );
+     }
+ 
+     fn process(&mut self) {
+diff --git a/crates/evm/traces/src/decoder/mod.rs b/crates/evm/traces/src/decoder/mod.rs
+index 404b76fce..2c8217338 100644
+--- a/crates/evm/traces/src/decoder/mod.rs
++++ b/crates/evm/traces/src/decoder/mod.rs
+@@ -1020,7 +1020,7 @@ pub async fn populate_traces(&self, traces: &mut Vec<CallTraceNode>) {
+         for node in traces {
+             if !self.opcodes.is_empty() {
+                 for step in &mut node.trace.steps {
+-                    if step.decoded.is_some() {
++                    if step.decoded().is_some() {
+                         continue;
+                     }
+                     for opcode in &self.opcodes {
+@@ -1050,7 +1050,7 @@ pub async fn populate_traces(&self, traces: &mut Vec<CallTraceNode>) {
+                                 None => format!("[{}] {}", step.gas_cost, opcode),
+                             };
+ 
+-                            step.decoded = Some(Box::new(DecodedTraceStep::Line(res)));
++                            *step.decoded_mut() = DecodedTraceStep::Line(res);
+                             break;
+                         }
+                     }
+diff --git a/crates/evm/traces/src/folded_stack_trace.rs b/crates/evm/traces/src/folded_stack_trace.rs
+index b72598f9c..c4909f90a 100644
+--- a/crates/evm/traces/src/folded_stack_trace.rs
++++ b/crates/evm/traces/src/folded_stack_trace.rs
+@@ -87,8 +87,8 @@ fn process_step(
+         step_exits: &mut Vec<usize>,
+     ) {
+         let step = &steps[step_idx];
+-        if let Some(decoded_step) = &step.decoded {
+-            match decoded_step.as_ref() {
++        if let Some(decoded_step) = step.decoded() {
++            match decoded_step {
+                 DecodedTraceStep::InternalCall(decoded_internal_call, step_end_idx) => {
+                     // Gas metering resets can increase the remaining gas across an internal call.
+                     let gas_used =
+diff --git a/crates/evm/traces/src/lib.rs b/crates/evm/traces/src/lib.rs
+index c0fcf333a..f966dafa1 100644
+--- a/crates/evm/traces/src/lib.rs
++++ b/crates/evm/traces/src/lib.rs
+@@ -237,8 +237,8 @@ fn clear_node(
+                         // we only remove decoded internal calls if they did not start/pause tracing
+                         Some(TraceMemberOrder::Step(step_idx)) => {
+                             // If this is an internal call beginning, track it in `internal_calls`
+-                            if let Some(decoded) = &nodes[node_idx].trace.steps[step_idx].decoded
+-                                && let DecodedTraceStep::InternalCall(_, end_step_idx) = &**decoded
++                            if let Some(DecodedTraceStep::InternalCall(_, end_step_idx)) =
++                                nodes[node_idx].trace.steps[step_idx].decoded()
+                             {
+                                 internal_calls.push((item_idx, remove, *end_step_idx));
+                                 // we decide if we should remove it later
+@@ -318,7 +318,7 @@ pub fn render_trace_arena(arena: &SparsedTraceArena) -> String {
+ /// Prunes trace depth if depth is provided as an argument.
+ pub fn prune_trace_depth(arena: &mut CallTraceArena, depth: usize) {
+     for node in arena.nodes_mut() {
+-        if node.trace.depth >= depth {
++        if usize::from(node.trace.depth) >= depth {
+             node.ordering.clear();
+         }
+     }
+@@ -336,7 +336,7 @@ pub fn trace_arena_at_depth(arena: &SparsedTraceArena, depth: usize) -> SparsedT
+         }
+         reachable[node_idx] = true;
+         let node = &nodes[node_idx];
+-        if node.trace.depth < depth {
++        if usize::from(node.trace.depth) < depth {
+             pending.extend(node.ordering.iter().filter_map(|item| match item {
+                 TraceMemberOrder::Call(child_idx) => Some(node.children[*child_idx]),
+                 _ => None,
+@@ -347,7 +347,7 @@ pub fn trace_arena_at_depth(arena: &SparsedTraceArena, depth: usize) -> SparsedT
+     let mut remapped = vec![None; nodes.len()];
+     for (next_idx, node) in nodes.iter_mut().filter(|node| reachable[node.idx]).enumerate() {
+         remapped[node.idx] = Some(next_idx);
+-        if node.trace.depth >= depth {
++        if usize::from(node.trace.depth) >= depth {
+             node.ordering.clear();
+             node.children.clear();
+         } else {
+@@ -409,7 +409,7 @@ pub fn render_trace_arena_inner(
+         let needs_dedup = resolved.as_ref().nodes().iter().any(|node| {
+             node.trace.steps.iter().any(|step| {
+                 step.storage_change.is_some()
+-                    && matches!(step.decoded.as_deref(), Some(DecodedTraceStep::Line(_)))
++                    && matches!(step.decoded(), Some(DecodedTraceStep::Line(_)))
+             })
+         });
+         if needs_dedup {
+@@ -417,7 +417,7 @@ pub fn render_trace_arena_inner(
+             for node in resolved.to_mut().nodes_mut() {
+                 for step in &mut node.trace.steps {
+                     if step.storage_change.is_some()
+-                        && matches!(step.decoded.as_deref(), Some(DecodedTraceStep::Line(_)))
++                        && matches!(step.decoded(), Some(DecodedTraceStep::Line(_)))
+                     {
+                         step.storage_change = None;
+                     }
+diff --git a/crates/evm/traces/src/speedscope/builder.rs b/crates/evm/traces/src/speedscope/builder.rs
+index f42fe2083..59894108c 100644
+--- a/crates/evm/traces/src/speedscope/builder.rs
++++ b/crates/evm/traces/src/speedscope/builder.rs
+@@ -75,7 +75,7 @@ fn process_step(
+     ) {
+         let Some(step) = steps.get(step_idx) else { return };
+ 
+-        if let Some(DecodedTraceStep::InternalCall(decoded, step_end_idx)) = step.decoded.as_deref()
++        if let Some(DecodedTraceStep::InternalCall(decoded, step_end_idx)) = step.decoded()
+         {
+             let frame_idx = self.frame_idx(decoded.func_name.clone());
+             self.profile.open_frame(frame_idx, self.cumulative_gas);
+diff --git a/crates/forge/src/cmd/test/mod.rs b/crates/forge/src/cmd/test/mod.rs
+index 1dee39e16..9f767104c 100644
+--- a/crates/forge/src/cmd/test/mod.rs
++++ b/crates/forge/src/cmd/test/mod.rs
+@@ -2940,8 +2940,8 @@ fn prepare_results_for_json(
+                 for log in &mut node.logs {
+                     log.decoded = None;
+                 }
+-                for step in &mut node.trace.steps {
+-                    step.decoded = None;
++                for extra in node.trace.steps.iter_mut().filter_map(|step| step.extra.as_mut()) {
++                    extra.decoded = None;
+                 }
+             }
+             if let Some(trace_depth) = trace_depth {
+diff --git a/crates/forge/src/gas_report.rs b/crates/forge/src/gas_report.rs
+index f77460376..ee0ff5b50 100644
+--- a/crates/forge/src/gas_report.rs
++++ b/crates/forge/src/gas_report.rs
+@@ -132,7 +132,7 @@ async fn analyze_node(
+         // Only include top-level calls which account for calldata and base (21.000) cost.
+         // Only include Calls and Creates as only these calls are isolated in inspector.
+         // Report a `vm.deployCode` create at the depth of the cheatcode call, as a native create.
+-        let depth = trace.depth - usize::from(deploy_code);
++        let depth = trace.depth - u16::from(deploy_code);
+         if depth > 1 && (trace.kind == CallKind::Call || is_create_call) {
+             return;
+         }
