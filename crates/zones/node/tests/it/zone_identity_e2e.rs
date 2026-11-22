@@ -1,8 +1,7 @@
 //! ZoneIdentity across the T14 to T15 transition: the predeploy appears at T15, the registrar and
 //! org admins configure orgs through zone transactions, and once the portal admin's L1 config turns
 //! enforcement on, org edges gate transfers and each org's Tempo targets gate deposits and
-//! withdrawals. An org's admin and designated readers can access its members' account-scoped
-//! state, txs and logs.
+//! withdrawals. An org's admin and readers read its members' private state and its own events.
 
 use alloy::network::Ethereum;
 use alloy_consensus::BlockHeader as _;
@@ -479,8 +478,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_transfer(&zone, alice.address, dave.address, true).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;
 
-    // Reads: org A's admin and the reader it names may read A's members; other orgs' admins and
-    // addresses in no org may not, and nobody but the account reads an address in no org.
+    // Org A's admin and reader read A's members; other admins and outsiders read no one else.
     let auditor = Party::new(&zone, 170);
     fixture.seed_no_commitment(auditor.address);
     let before_reader = format!("{:#x}", zone.provider().get_block_number().await?);
@@ -622,6 +620,54 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_eq!(alice_logs(161).await?, own_logs);
     assert_eq!(alice_logs(170).await?, own_logs);
     assert_eq!(alice_logs(162).await?, []);
+    // A's admin and reader also see A's `ZoneIdentity` events; B's admin does not.
+    let org_events = async |index: u32, topics: &serde_json::Value| {
+        let filter = serde_json::json!({
+            "address": ZONE_IDENTITY_ADDRESS,
+            "fromBlock": "0x0",
+            "topics": topics,
+        });
+        let body = rpc(index, "eth_getLogs", serde_json::json!([filter])).await?;
+        eyre::Ok(
+            serde_json::from_value::<Vec<Log>>(body["result"].clone())?
+                .into_iter()
+                .map(|log| log.topics().to_vec())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let org_a_topic = B256::from(U256::from(org_a));
+    let readers_of_a =
+        serde_json::json!([IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, org_a_topic]);
+    let members_of_a = serde_json::json!([
+        IZoneIdentity::MemberAdded::SIGNATURE_HASH,
+        null,
+        org_a_topic
+    ]);
+    let auditor_updated = vec![
+        IZoneIdentity::ReaderUpdated::SIGNATURE_HASH,
+        org_a_topic,
+        auditor.address.into_word(),
+    ];
+    let member_added = |account: Address| {
+        vec![
+            IZoneIdentity::MemberAdded::SIGNATURE_HASH,
+            account.into_word(),
+            org_a_topic,
+        ]
+    };
+    for index in [161, 170] {
+        assert_eq!(
+            org_events(index, &readers_of_a).await?,
+            std::slice::from_ref(&auditor_updated)
+        );
+        assert_eq!(
+            org_events(index, &members_of_a).await?,
+            [member_added(alice.address), member_added(bob.address)]
+        );
+    }
+    for topics in [&readers_of_a, &members_of_a] {
+        assert!(org_events(162, topics).await?.is_empty());
+    }
     let filter_id =
         rpc(170, "eth_newFilter", serde_json::json!([new_filter])).await?["result"].clone();
     let filter_changes = async || {
@@ -643,11 +689,25 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         account: alice.address,
     };
     let unauthorized = Bytes::from(ZoneIdentityError::unauthorized().abi_encode()).to_string();
-    let assert_call = async |method: &str, index: u32, block: &str, allowed: bool| {
+    let balance = (PATH_USD_ADDRESS, Bytes::from(balance_of_alice.abi_encode()));
+    let can_read = (
+        ZONE_IDENTITY_ADDRESS,
+        Bytes::from(
+            IZoneIdentity::canReadCall {
+                account: alice.address,
+            }
+            .abi_encode(),
+        ),
+    );
+    let assert_call = async |method: &str,
+                             index: u32,
+                             block: &str,
+                             (to, input): &(Address, Bytes),
+                             allowed: bool| {
         let call = serde_json::json!({
             "from": signer_at(index).address(),
-            "to": PATH_USD_ADDRESS,
-            "input": Bytes::from(balance_of_alice.abi_encode()),
+            "to": to,
+            "input": input,
         });
         let body = rpc(index, method, serde_json::json!([call, block])).await?;
         let error = body["error"]["message"].as_str();
@@ -658,7 +718,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         );
         eyre::Ok(())
     };
-    assert_call("eth_call", 170, &before_reader, true).await?;
+    assert_call("eth_call", 170, &before_reader, &balance, true).await?;
 
     // Removing the reader revokes its reads of every block.
     let remove_reader = IZoneIdentity::setReaderCall {
@@ -672,20 +732,29 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     assert_tx(before_reader_tx, 170, false).await?;
     assert_tx(before_reader_tx, 161, true).await?;
     assert_eq!(alice_logs(170).await?, []);
+    assert!(org_events(170, &readers_of_a).await?.is_empty());
+    assert_eq!(
+        org_events(161, &readers_of_a).await?,
+        [auditor_updated.clone(), auditor_updated]
+    );
     let to_carol = alice.transfer(carol.address, 1).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![to_carol]).await?, [true]);
     assert_eq!(filter_changes().await?, Vec::<B256>::new());
-    for (method, index, block, allowed) in [
-        ("eth_call", 163, before_reader.as_str(), true),
-        ("eth_call", 161, before_reader.as_str(), true),
-        ("eth_call", 170, before_reader.as_str(), false),
-        ("eth_call", 161, "latest", true),
-        ("eth_call", 170, "latest", false),
-        ("eth_estimateGas", 163, before_reader.as_str(), true),
-        ("eth_estimateGas", 161, before_reader.as_str(), true),
-        ("eth_estimateGas", 170, before_reader.as_str(), false),
+    let before = before_reader.as_str();
+    for (method, index, block, call, allowed) in [
+        ("eth_call", 163, before, &balance, true),
+        ("eth_call", 161, before, &balance, true),
+        ("eth_call", 170, before, &balance, false),
+        ("eth_call", 161, "latest", &balance, true),
+        ("eth_call", 170, "latest", &balance, false),
+        ("eth_estimateGas", 163, before, &balance, true),
+        ("eth_estimateGas", 161, before, &balance, true),
+        ("eth_estimateGas", 170, before, &balance, false),
+        // At an earlier block, even a denied read that does not revert at `latest` fails the call.
+        ("eth_call", 170, "latest", &can_read, true),
+        ("eth_call", 170, before, &can_read, false),
     ] {
-        assert_call(method, index, block, allowed).await?;
+        assert_call(method, index, block, call, allowed).await?;
     }
 
     // Turning enforcement off on Tempo lifts every edge check.

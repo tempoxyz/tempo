@@ -152,8 +152,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// Same `from`-enforcement as [`call`](Self::call).
     fn fill_transaction(&self, request: TempoTransactionRequest, auth: AuthContext) -> BoxFut<'_>;
 
-    /// `eth_getLogs(filter)` — returns logs matching the filter, scoped to one account the caller
-    /// may read.
+    /// `eth_getLogs(filter)` — returns matching logs of one account or org the caller may read.
     fn get_logs(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_newFilter(filter)` — creates a new log filter, scoped like

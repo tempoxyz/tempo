@@ -26,7 +26,7 @@ use alloy_rpc_types_eth::{
     error::EthRpcErrorCode,
     state::{EvmOverrides, StateOverride},
 };
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolError};
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
@@ -52,11 +52,11 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     EthApiError,
-    error::{RpcInvalidTransactionError, RpcPoolError},
+    error::{RpcInvalidTransactionError, RpcPoolError, api::FromRevert},
     logs_utils,
 };
 use reth_rpc_server_types::constants::DEFAULT_MAX_PROOF_SLOTS;
-use reth_storage_api::{BlockIdReader, BlockReaderIdExt, StateProvider as _, StateProviderFactory};
+use reth_storage_api::{BlockReaderIdExt, StateProvider as _, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -93,7 +93,9 @@ use zone_l1::{
 use zone_sequencer::DurableBlockReader;
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
-use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{
+    IZoneInbox, Unauthorized, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal,
+};
 use tempo_evm::TempoEvmEnv;
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
@@ -104,6 +106,7 @@ use zone_precompiles::{
 use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
+    filter::LogScope,
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
@@ -970,6 +973,35 @@ fn filter_earlier_block(block: Option<BlockId>) -> Option<BlockId> {
     block.filter(|block| !block.is_latest() && !block.is_pending())
 }
 
+/// Fails with `E`'s `Unauthorized()` revert unless `ZoneIdentity.canRead` allows all `reads`.
+fn ensure_can_read<E, P>(
+    provider: &P,
+    reads: alloy_map::HashSet<DelegatedRead>,
+) -> Result<(), JsonRpcError>
+where
+    E: FromRevert + std::fmt::Display,
+    P: BlockReaderIdExt + StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
+{
+    if reads.is_empty() {
+        return Ok(());
+    }
+    match read_access::identity_allows(provider, |identity| {
+        for read in reads {
+            if !identity.can_read(read.reader, read.account)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+    .map_err(eyre_internal)?
+    {
+        None => Err(internal(E::from_revert(
+            Unauthorized {}.abi_encode().into(),
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
 fn stale_filter_owner_ids(
     owner_ids: impl IntoIterator<Item = FilterId>,
     active_ids: &HashSet<FilterId>,
@@ -1022,8 +1054,8 @@ async fn prune_filter_owners<Api: EthApiTypes + 'static>(
 ///
 /// - **Block redaction** — zeroing `logsBloom` and clearing transaction
 ///   lists on the redacted RPC.
-/// - **Account-scoped access** — `null`, `0x0` or no logs unless the
-///   authenticated caller may read the account as its org admin or a reader the admin named.
+/// - **Account-scoped access** — `null`, `0x0` or no logs unless the authenticated caller may read
+///   the account, or the org whose `ZoneIdentity` events it queries.
 /// - **`from`-enforcement** — `eth_call` / `eth_estimateGas` may only
 ///   simulate from the authenticated account (`-32004` on mismatch,
 ///   auto-set when omitted); state overrides are rejected (`-32602`).
@@ -1040,15 +1072,6 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     /// Maps filter IDs to their owners. The reth filter registry remains the source of truth for
     /// filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, FilterOwner>>>,
-}
-
-/// Who created a filter, and whose logs it returns.
-#[derive(Clone, Copy, Debug)]
-struct FilterOwner {
-    /// The authenticated account that created the filter.
-    caller: Address,
-    /// The account whose logs a log filter returns, or `None` for a block filter.
-    account: Option<Address>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -1113,20 +1136,20 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
     /// Verify that the filter belongs to the authenticated caller.
     ///
-    /// Returns the filter's [`FilterOwner::account`] if the caller owns the filter.
+    /// Returns the filter's [`FilterOwner::scope`] if the caller owns the filter.
     /// Returns an error indistinguishable from "filter not found" to avoid
     /// leaking filter existence to non-owners.
     async fn ensure_filter_owner(
         &self,
         id: &FilterId,
         auth: &AuthContext,
-    ) -> Result<Option<Address>, JsonRpcError> {
+    ) -> Result<Option<LogScope>, JsonRpcError> {
         let owner = self.filter_owners.lock().await.get(id).copied();
         let Some(owner) = owner.filter(|owner| owner.caller == auth.caller) else {
             return Err(filter_not_found_error());
         };
         if self.filter_is_active(id).await {
-            Ok(owner.account)
+            Ok(owner.scope)
         } else {
             self.filter_owners.lock().await.remove(id);
             Err(filter_not_found_error())
@@ -1177,8 +1200,7 @@ where
     Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
     Api::Provider: ChainSpecProvider<ChainSpec: TempoHardforks>,
 {
-    /// The block to serve `account`'s balance or nonce to `reader` at, or `None` if unreadable.
-    /// Delegated `latest` reads stay at the block their access was checked at.
+    /// Where `reader` reads `account`'s state, with delegated `latest` pinned; `None` if denied.
     fn readable_block(
         &self,
         reader: Address,
@@ -1189,10 +1211,9 @@ where
             .read_access(reader, account)?
             .map(|access| match access {
                 ReadAccess::Own => block.unwrap_or_default(),
-                ReadAccess::Delegated { latest } => match block {
-                    Some(block) if !block.is_latest() => block,
-                    _ => latest.into(),
-                },
+                ReadAccess::Delegated { latest } => block
+                    .filter(|block| !block.is_latest())
+                    .unwrap_or(latest.into()),
             }))
     }
 
@@ -1201,58 +1222,22 @@ where
         reader: Address,
         account: Address,
     ) -> Result<Option<ReadAccess>, JsonRpcError> {
-        ReadAccess::at_latest(self.eth.api.provider(), reader, account).map_err(eyre_internal)
+        ReadAccess::check(self.eth.api.provider(), reader, account).map_err(eyre_internal)
     }
 
-    /// `account`'s redacted logs from `query` if `reader` may read them, else none, unqueried.
+    /// `scope`'s redacted logs from `query` if `reader` may read them, else none, unqueried.
     async fn readable_logs(
         &self,
         reader: Address,
-        account: Address,
+        scope: LogScope,
         query: impl Future<Output = Result<Vec<Log>, JsonRpcError>>,
     ) -> Result<Vec<Log>, JsonRpcError> {
-        if self.read_access(reader, account)?.is_none() {
+        if !read_access::can_read_logs(self.eth.api.provider(), reader, scope)
+            .map_err(eyre_internal)?
+        {
             return Ok(Vec::new());
         }
-        Ok(zone_rpc::filter::filter_logs(query.await?, &account))
-    }
-
-    /// Runs `simulate` at an earlier block, which allows every delegated read it is not given an
-    /// answer for, then reruns it with the latest block's answers if those deny any of its reads.
-    async fn simulate_with_latest_reads<T, TFuture>(
-        &self,
-        mut simulate: impl FnMut(alloy_map::HashMap<DelegatedRead, bool>) -> TFuture,
-    ) -> Result<T, JsonRpcError>
-    where
-        TFuture: Future<
-            Output = Result<
-                (Result<T, JsonRpcError>, alloy_map::HashSet<DelegatedRead>),
-                JsonRpcError,
-            >,
-        >,
-    {
-        let (output, undecided) = simulate(Default::default()).await?;
-        if undecided.is_empty() {
-            return output;
-        }
-        let latest = (self.eth.api.provider().latest_header().map_err(internal)?)
-            .ok_or_else(|| JsonRpcError::internal("no latest block"))?;
-        let decisions = self
-            .eth
-            .api
-            .spawn_blocking_io(move |api| {
-                let allowed = read_access::decide_reads(api.provider(), &latest, undecided);
-                Ok(allowed)
-            })
-            .await
-            .map_err(internal)?
-            .map_err(eyre_internal)?;
-        if decisions.iter().all(|(_, allowed)| *allowed) {
-            return output;
-        }
-        let (output, undecided) = simulate(decisions.into_iter().collect()).await?;
-        debug_assert!(undecided.is_empty());
-        output
+        Ok(zone_rpc::filter::filter_logs(query.await?, scope))
     }
 }
 
@@ -1505,34 +1490,25 @@ where
                 .map_err(internal)?;
                 return to_raw(&result);
             };
-            // Both runs simulate this block, which is never newer than their reads' decision block.
-            let block = BlockId::from(
-                (self.eth.api.provider().block_hash_for_id(block))
-                    .map_err(internal)?
-                    .ok_or_else(|| internal(EthApiError::HeaderNotFound(block)))?,
-            );
+            let api = self.eth.api.clone();
+            let permit = api.acquire_owned_blocking_io().await.map_err(internal)?;
             let result = self
-                .simulate_with_latest_reads(|decided| {
-                    let (evm, request) = (self.eth.api.clone(), request.clone());
-                    async move {
-                        let api = &self.eth.api;
-                        let permit = api.acquire_owned_blocking_io().await.map_err(internal)?;
-                        api.spawn_with_call_at(
-                            request,
-                            block,
-                            EvmOverrides::default(),
-                            move |db, evm_env, tx_env| {
-                                let _permit = permit;
-                                let (result, undecided) =
-                                    audit_reads(decided, || evm.transact(db, evm_env, tx_env));
-                                Ok((result.map_err(internal), undecided))
-                            },
-                        )
-                        .await
-                        .map_err(internal)
-                    }
-                })
-                .await?;
+                .eth
+                .api
+                .spawn_with_call_at(
+                    request,
+                    block,
+                    EvmOverrides::default(),
+                    move |db, evm_env, tx_env| {
+                        let _permit = permit;
+                        // `block` is resolved by now, so reads are never checked at an older block.
+                        let (result, reads) = audit_reads(|| api.transact(db, evm_env, tx_env));
+                        Ok(ensure_can_read::<Api::Error, _>(api.provider(), reads)
+                            .and_then(|()| result.map_err(internal)))
+                    },
+                )
+                .await
+                .map_err(internal)??;
             let output = <Api::Error as FromEvmError<Api::Evm>>::ensure_success::<
                 EvmTypesFor<Api::Evm>,
             >(result.result)
@@ -1569,24 +1545,22 @@ where
             let (evm_env, block) = self.eth.api.evm_env_at(block).await.map_err(internal)?;
             let fee_payer_access = strip_fee_payer_marker(&mut request, &evm_env);
             let result = self
-                .simulate_with_latest_reads(|decided| {
-                    let (evm_env, request) = (evm_env.clone(), request.clone());
-                    self.eth
-                        .api
-                        .spawn_blocking_io_with_state(block, move |api, state| {
-                            let (result, undecided) = audit_reads(decided, || {
-                                api.estimate_gas_with(
-                                    evm_env,
-                                    request,
-                                    state.into_evm_state_provider(),
-                                    EvmOverrides::default(),
-                                )
-                            });
-                            Ok((result.map_err(internal), undecided))
-                        })
-                        .map_err(internal)
+                .eth
+                .api
+                .spawn_blocking_io_with_state(block, move |api, state| {
+                    let (result, reads) = audit_reads(|| {
+                        api.estimate_gas_with(
+                            evm_env,
+                            request,
+                            state.into_evm_state_provider(),
+                            EvmOverrides::default(),
+                        )
+                    });
+                    Ok(ensure_can_read::<Api::Error, _>(api.provider(), reads)
+                        .and_then(|()| result.map_err(internal)))
                 })
-                .await?;
+                .await
+                .map_err(internal)??;
             to_raw(&result.saturating_add(U256::from(fee_payer_access)))
         })
     }
@@ -1637,19 +1611,17 @@ where
 
     fn get_logs(&self, mut filter: Filter, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            let zone_tokens = self.zone_tokens();
-            zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &auth.caller)?;
+            let scope =
+                zone_rpc::filter::scope_log_filter(&mut filter, &auth.caller, &self.zone_tokens())?;
             let query = EthFilterApiServer::logs(&self.eth.filter, filter).map_err(internal);
-            to_raw(&self.readable_logs(auth.caller, account, query).await?)
+            to_raw(&self.readable_logs(auth.caller, scope, query).await?)
         })
     }
 
     fn new_filter(&self, mut filter: Filter, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            let zone_tokens = self.zone_tokens();
-            zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &auth.caller)?;
+            let scope =
+                zone_rpc::filter::scope_log_filter(&mut filter, &auth.caller, &self.zone_tokens())?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
@@ -1657,7 +1629,7 @@ where
                 id.clone(),
                 FilterOwner {
                     caller: auth.caller,
-                    account: Some(account),
+                    scope: Some(scope),
                 },
             );
             to_raw(&id)
@@ -1666,23 +1638,23 @@ where
 
     fn get_filter_logs(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            let Some(account) = self.ensure_filter_owner(&id, &auth).await? else {
+            let Some(scope) = self.ensure_filter_owner(&id, &auth).await? else {
                 // reth reports a block filter's logs as an unknown filter.
                 return Err(filter_not_found_error());
             };
             let query = self.filter().filter_logs(id).map_err(map_eth_filter_error);
-            to_raw(&self.readable_logs(auth.caller, account, query).await?)
+            to_raw(&self.readable_logs(auth.caller, scope, query).await?)
         })
     }
 
     fn get_filter_changes(&self, id: FilterId, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
-            let account = self.ensure_filter_owner(&id, &auth).await?;
+            let scope = self.ensure_filter_owner(&id, &auth).await?;
             let changes = self
                 .filter()
                 .filter_changes(id)
                 .map_err(map_eth_filter_error);
-            let Some(account) = account else {
+            let Some(scope) = scope else {
                 // Block filters return public block hashes.
                 return to_raw(&changes.await?);
             };
@@ -1690,7 +1662,7 @@ where
                 FilterChanges::Logs(logs) => logs,
                 _ => Vec::new(),
             });
-            to_raw(&self.readable_logs(auth.caller, account, query).await?)
+            to_raw(&self.readable_logs(auth.caller, scope, query).await?)
         })
     }
 
@@ -1703,7 +1675,7 @@ where
                 id.clone(),
                 FilterOwner {
                     caller: auth.caller,
-                    account: None,
+                    scope: None,
                 },
             );
             to_raw(&id)
@@ -1771,9 +1743,8 @@ where
             let provider = self.eth.api.provider().clone();
             let caller = auth.caller;
 
-            let zone_tokens = self.zone_tokens();
-            zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
-            let account = zone_rpc::filter::scope_filter_to_account(&mut filter, &caller)?;
+            let scope =
+                zone_rpc::filter::scope_log_filter(&mut filter, &caller, &self.zone_tokens())?;
 
             let stream = provider
                 .canonical_state_stream()
@@ -1811,16 +1782,15 @@ where
                     }
                     // Rechecked per update, so a revoked reader stops receiving logs.
                     if !all_logs.is_empty()
-                        && ReadAccess::at_latest(api.provider(), caller, account)
+                        && !read_access::can_read_logs(api.provider(), caller, scope)
                             .unwrap_or_else(|error| {
                                 tracing::error!(
                                     target: "rpc",
                                     %error,
                                     "Failed to check subscription log read access"
                                 );
-                                None
+                                false
                             })
-                            .is_none()
                     {
                         all_logs.clear();
                     }
@@ -1834,7 +1804,8 @@ where
             let mut log_redactor = zone_rpc::filter::LogOrderingRedactor::default();
             let stream = stream.filter_map(move |log| {
                 std::future::ready(
-                    zone_rpc::filter::is_log_visible(&log, &account)
+                    scope
+                        .includes(&log)
                         .then(|| to_raw(&log_redactor.redact(log))),
                 )
             });
@@ -1880,6 +1851,15 @@ where
             to_raw(&key)
         })
     }
+}
+
+/// Who created a filter, and whose logs it returns.
+#[derive(Clone, Copy, Debug)]
+struct FilterOwner {
+    /// The authenticated account that created the filter.
+    caller: Address,
+    /// Whose logs a log filter returns, or `None` for a block filter.
+    scope: Option<LogScope>,
 }
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>

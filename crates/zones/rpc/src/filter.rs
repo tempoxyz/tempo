@@ -1,17 +1,20 @@
 //! Privacy-enforced log filtering for the zone's redacted RPC.
 //!
-//! Only whitelisted TIP-20 and receipt-recovery event logs of one account are returned to callers:
-//! logs where the account appears in an eligible indexed topic or, for `TransferBlocked`, is a
-//! stakeholder encoded in the claim receipt. The account is the caller itself or one whose logs the
-//! caller may read. This prevents users from observing other users' token activity.
+//! Each query returns one scope the caller may read: an account's whitelisted TIP-20 and
+//! receipt-recovery logs, where it is in an eligible indexed topic or, for `TransferBlocked`, a
+//! stakeholder in the claim receipt, or an org's `ZoneIdentity` events. This prevents users from
+//! observing other users' activity.
 
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_eth::{Filter, FilterSet, Log};
 use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
+use tempo_contracts::{
+    precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS},
+    zones::{IZoneIdentity, ZONE_IDENTITY_ADDRESS},
+};
 
 use crate::types::JsonRpcError;
 
@@ -51,6 +54,52 @@ const TWO_PARTY_TOPICS: [B256; 4] = [
 ];
 const ACCOUNT_SCOPED_FILTER_ERROR: &str =
     "private log filter must name the caller, or one other account, in topic1 or topic2";
+
+/// `ZoneIdentity` events that name an org in topic1.
+const ORG_IN_TOPIC1: [B256; 6] = [
+    IZoneIdentity::OrgCreated::SIGNATURE_HASH,
+    IZoneIdentity::OrgAdminUpdated::SIGNATURE_HASH,
+    IZoneIdentity::EdgeUpdated::SIGNATURE_HASH,
+    IZoneIdentity::L1TargetUpdated::SIGNATURE_HASH,
+    IZoneIdentity::L1PolicyUpdated::SIGNATURE_HASH,
+    IZoneIdentity::ReaderUpdated::SIGNATURE_HASH,
+];
+
+/// `ZoneIdentity` events that name an org in topic2.
+const ORG_IN_TOPIC2: [B256; 3] = [
+    IZoneIdentity::MemberAdded::SIGNATURE_HASH,
+    IZoneIdentity::MemberRemoved::SIGNATURE_HASH,
+    IZoneIdentity::EdgeUpdated::SIGNATURE_HASH,
+];
+
+const ORG_SCOPED_FILTER_ERROR: &str =
+    "ZoneIdentity log filter must name one org in topic1 or topic2";
+
+/// Whose logs a log query returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogScope {
+    /// An account's TIP-20 and receipt-recovery logs.
+    Account(Address),
+    /// The `ZoneIdentity` events that name an org.
+    Org(u64),
+}
+
+impl LogScope {
+    /// Whether `log` is one of this scope's logs.
+    pub fn includes(&self, log: &Log) -> bool {
+        match *self {
+            Self::Account(account) => is_log_visible(log, &account),
+            Self::Org(org) => {
+                let (topics, org) = (log.topics(), B256::from(U256::from(org)));
+                log.address() == ZONE_IDENTITY_ADDRESS
+                    && topics.first().is_some_and(|topic0| {
+                        ORG_IN_TOPIC1.contains(topic0) && topics.get(1) == Some(&org)
+                            || ORG_IN_TOPIC2.contains(topic0) && topics.get(2) == Some(&org)
+                    })
+            }
+        }
+    }
+}
 
 /// Returns `true` if `caller` appears in an eligible indexed-topic position
 /// for the log's event type.
@@ -111,7 +160,7 @@ fn is_transfer_blocked_caller_eligible(log: &Log, caller: &Address) -> bool {
 /// A log is included only when **both** of the following hold:
 /// 1. Its topic0 is one of the [`WHITELISTED_TOPICS`].
 /// 2. `account` is eligible per [`is_caller_eligible`].
-pub fn is_log_visible(log: &Log, account: &Address) -> bool {
+fn is_log_visible(log: &Log, account: &Address) -> bool {
     log.topic0().is_some_and(|t| WHITELISTED_TOPICS.contains(t)) && is_caller_eligible(log, account)
 }
 
@@ -142,11 +191,11 @@ impl LogOrderingRedactor {
     }
 }
 
-/// Filters logs to `account`'s, renumbering the `log_index` via [`LogOrderingRedactor`].
-pub fn filter_logs(logs: Vec<Log>, account: &Address) -> Vec<Log> {
+/// Filters logs to `scope`'s, renumbering the `log_index` via [`LogOrderingRedactor`].
+pub fn filter_logs(logs: Vec<Log>, scope: LogScope) -> Vec<Log> {
     let mut redactor = LogOrderingRedactor::default();
     logs.into_iter()
-        .filter(|log| is_log_visible(log, account))
+        .filter(|log| scope.includes(log))
         .map(|log| redactor.redact(log))
         .collect()
 }
@@ -157,13 +206,13 @@ pub fn filter_receipt_logs(mut receipt: TempoTransactionReceipt) -> TempoTransac
     receipt.inner.transaction_index = Some(0);
     receipt.inner.inner.receipt.cumulative_gas_used = receipt.inner.gas_used;
     let logs = core::mem::take(&mut receipt.inner.inner.receipt.logs);
-    receipt.inner.inner.receipt.logs = filter_logs(logs, &caller);
+    receipt.inner.inner.receipt.logs = filter_logs(logs, LogScope::Account(caller));
     receipt.inner.inner.logs_bloom = receipt.inner.inner.receipt.bloom();
     receipt
 }
 
 /// Scopes a user-supplied filter to enabled zone tokens and the receive-policy guard.
-pub fn scope_filter_addresses(
+fn scope_filter_addresses(
     filter: &mut Filter,
     zone_tokens: &[Address],
 ) -> Result<(), JsonRpcError> {
@@ -217,13 +266,8 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a user-supplied filter to whitelisted topics and one account, which it returns: `caller`
-/// if topic1 or topic2 names it, else the only address in topic1, then topic2. Does not check that
-/// `caller` may read that account.
-pub fn scope_filter_to_account(
-    filter: &mut Filter,
-    caller: &Address,
-) -> Result<Address, JsonRpcError> {
+/// Scopes a filter to one account: `caller` if topic1 or topic2 names it, else their only address.
+fn scope_filter_to_account(filter: &mut Filter, caller: &Address) -> Result<Address, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
         return Ok(*caller);
@@ -262,6 +306,37 @@ pub fn scope_filter_to_account(
     }
 
     Err(JsonRpcError::invalid_params(ACCOUNT_SCOPED_FILTER_ERROR))
+}
+
+/// Scopes a filter to one org's `ZoneIdentity` events or one account's logs; access is unchecked.
+pub fn scope_log_filter(
+    filter: &mut Filter,
+    caller: &Address,
+    zone_tokens: &[Address],
+) -> Result<LogScope, JsonRpcError> {
+    if filter.address.len() != 1 || !filter.address.contains(&ZONE_IDENTITY_ADDRESS) {
+        scope_filter_addresses(filter, zone_tokens)?;
+        return scope_filter_to_account(filter, caller).map(LogScope::Account);
+    }
+    for (position, events) in [(1, &ORG_IN_TOPIC1[..]), (2, &ORG_IN_TOPIC2[..])] {
+        let topics = &filter.topics[position];
+        let org = (topics.iter().next())
+            .filter(|_| topics.len() == 1)
+            .and_then(|word| u64::try_from(U256::from_be_bytes(word.0)).ok());
+        let requested = &filter.topics[0];
+        let topic0 = events
+            .iter()
+            .copied()
+            .filter(|topic| requested.is_empty() || requested.contains(topic))
+            .collect::<Vec<_>>();
+        if let Some(org) = org
+            && !topic0.is_empty()
+        {
+            filter.topics[0] = FilterSet::from(topic0);
+            return Ok(LogScope::Org(org));
+        }
+    }
+    Err(JsonRpcError::invalid_params(ORG_SCOPED_FILTER_ERROR))
 }
 
 #[cfg(test)]
@@ -590,7 +665,7 @@ mod tests {
         );
 
         let logs = vec![eligible.clone(), wrong_topic, not_eligible];
-        let result = filter_logs(logs, &caller);
+        let result = filter_logs(logs, LogScope::Account(caller));
 
         assert_eq!(result.len(), 1);
         let mut expected = eligible;
@@ -602,7 +677,7 @@ mod tests {
     #[test]
     fn filter_logs_empty_input() {
         let caller = Address::with_last_byte(1);
-        let result = filter_logs(vec![], &caller);
+        let result = filter_logs(vec![], LogScope::Account(caller));
         assert!(result.is_empty());
     }
 
@@ -645,7 +720,7 @@ mod tests {
 
         let result = filter_logs(
             vec![a_visible_0, a_hidden, a_visible_1, b_visible_0],
-            &caller,
+            LogScope::Account(caller),
         );
 
         // Only the caller's three logs survive, in order.
@@ -698,7 +773,7 @@ mod tests {
             ),
         ];
 
-        let batch = filter_logs(visible.clone(), &caller);
+        let batch = filter_logs(visible.clone(), LogScope::Account(caller));
 
         // Mirror the WS stream: filter, then feed survivors one at a time.
         let mut redactor = LogOrderingRedactor::default();
@@ -940,5 +1015,75 @@ mod tests {
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, "invalid filter address");
+    }
+
+    fn org_word(org: u64) -> B256 {
+        B256::from(U256::from(org))
+    }
+
+    fn identity_filter(topics: [Vec<B256>; 3]) -> Filter {
+        let mut filter = Filter {
+            address: FilterSet::from(ZONE_IDENTITY_ADDRESS),
+            ..Default::default()
+        };
+        for (position, topic) in topics.into_iter().enumerate() {
+            filter.topics[position] = FilterSet::from(topic);
+        }
+        filter
+    }
+
+    #[test_case([vec![], vec![org_word(7)], vec![]] => FilterSet::from(ORG_IN_TOPIC1.to_vec()))]
+    #[test_case([vec![], vec![], vec![org_word(7)]] => FilterSet::from(ORG_IN_TOPIC2.to_vec()))]
+    #[test_case([vec![IZoneIdentity::MemberAdded::SIGNATURE_HASH, TRANSFER_TOPIC], vec![org_word(7)], vec![org_word(7)]] => FilterSet::from(IZoneIdentity::MemberAdded::SIGNATURE_HASH))]
+    fn scope_log_filter_scopes_one_org(topics: [Vec<B256>; 3]) -> FilterSet<B256> {
+        let mut filter = identity_filter(topics);
+
+        let scope = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[]).unwrap();
+
+        assert_eq!(scope, LogScope::Org(7));
+        filter.topics[0].clone()
+    }
+
+    #[test_case([vec![], vec![], vec![]])]
+    #[test_case([vec![], vec![org_word(7), org_word(8)], vec![]])]
+    #[test_case([vec![], vec![B256::repeat_byte(0xff)], vec![]])]
+    #[test_case([vec![IZoneIdentity::MemberAdded::SIGNATURE_HASH], vec![org_word(7)], vec![]])]
+    #[test_case([vec![TRANSFER_TOPIC], vec![org_word(7)], vec![org_word(7)]])]
+    fn scope_log_filter_rejects_unnamed_org(topics: [Vec<B256>; 3]) {
+        let mut filter = identity_filter(topics);
+
+        let err = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[]).unwrap_err();
+
+        assert_eq!(err.code, JsonRpcError::invalid_params("").code);
+        assert_eq!(err.message, ORG_SCOPED_FILTER_ERROR);
+    }
+
+    #[test]
+    fn scope_log_filter_rejects_identity_mixed_with_tokens() {
+        let token = Address::with_last_byte(0xaa);
+        let mut filter = identity_filter([vec![], vec![org_word(7)], vec![]]);
+        filter.address = FilterSet::from(vec![ZONE_IDENTITY_ADDRESS, token]);
+
+        let err = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[token]).unwrap_err();
+
+        assert_eq!(err.message, "invalid filter address");
+    }
+
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [7, 9] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [9, 7] => false)]
+    #[test_case(Address::with_last_byte(0xaa), IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [7, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::MemberRemoved::SIGNATURE_HASH, [9, 7] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::MemberRemoved::SIGNATURE_HASH, [7, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [7, 9] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [9, 7] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [8, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, TRANSFER_TOPIC, [7, 7] => false)]
+    fn org_scope_includes_events_naming_the_org(
+        emitter: Address,
+        topic0: B256,
+        orgs: [u64; 2],
+    ) -> bool {
+        let log = make_log(emitter, vec![topic0, org_word(orgs[0]), org_word(orgs[1])]);
+        LogScope::Org(7).includes(&log)
     }
 }

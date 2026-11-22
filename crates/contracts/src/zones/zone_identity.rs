@@ -51,7 +51,8 @@ crate::sol! {
 
         event OrgCreated(uint64 indexed orgId, address admin);
         event OrgAdminUpdated(uint64 indexed orgId, address admin);
-        event MemberUpdated(address indexed account, uint64 indexed orgId);
+        event MemberAdded(address indexed account, uint64 indexed orgId);
+        event MemberRemoved(address indexed account, uint64 indexed orgId);
         event EdgeUpdated(uint64 indexed fromOrg, uint64 indexed toOrg, address indexed token, bool fromOk, bool toOk);
         event L1TargetUpdated(uint64 indexed orgId, address indexed target, address indexed token, bool depositFrom, bool withdrawTo);
         event L1PolicyUpdated(uint64 indexed orgId, address indexed token, L1Policy policy);

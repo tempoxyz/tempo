@@ -7,9 +7,7 @@ use tempo_precompiles::storage::StorageCtx;
 
 use crate::{execution::CallCheck, zone_identity::ZoneIdentity};
 
-/// Allow a read only when the immediate EVM caller owns an account named by the getter, or, from
-/// T15, may read the first of them, the account whose state it is, through `ZoneIdentity` as its
-/// org's admin or a reader.
+/// Allows a read by an account the getter names or, from T15, one that may read the first.
 pub(crate) fn check_caller(caller: Address, accounts: &[Address]) -> CallCheck {
     if accounts.contains(&caller) {
         return CallCheck::Continue;
