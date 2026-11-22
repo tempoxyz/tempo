@@ -713,7 +713,7 @@ impl<'a> TempoBlockExecutor<'a> {
     /// TIP-1045 payments ([`is_stateless_payment`]) are payments. From T17 a transaction whose
     /// every call is a registered payment call (TIP-1180) within its gas caps is a registered
     /// payment. The registry is read from the backing database, which holds the parent state, as
-    /// [`Self::check_boundary_outcome`] reads ValidatorConfigV2. Registry changes take effect at
+    /// `check_boundary_outcome` reads ValidatorConfigV2. Registry changes take effect at
     /// later blocks only, so the answer would be the same at any point of the block.
     pub fn tx_lane(&mut self, tx: &TempoTxEnvelope) -> Result<TxLane, BlockExecutionError> {
         let spec = self.evm().config_spec_id();
