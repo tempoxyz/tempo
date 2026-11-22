@@ -527,6 +527,8 @@ mod tests {
 
     #[tokio::test]
     async fn genesis_preserves_explicit_fork_timestamps() {
+        // Every fork, so the check below covers each one.
+        let latest = TempoHardfork::VARIANTS.last().unwrap();
         for (t12, t13, t14) in [
             (None, None, None),
             (Some(0), Some(0), Some(0)),
@@ -545,7 +547,7 @@ mod tests {
                 "--admin".to_owned(),
                 "0x1000000000000000000000000000000000000001".to_owned(),
                 "--hardfork".to_owned(),
-                "T15".to_owned(),
+                latest.to_string(),
             ];
             for (flag, timestamp) in [
                 ("--t12-time", t12),
@@ -602,6 +604,7 @@ mod tests {
                 continue;
             }
             let flag = format!("--{}-time", overridden.to_string().to_lowercase());
+            let latest = TempoHardfork::VARIANTS.last().unwrap().to_string();
             let command = GenerateZoneGenesis::try_parse_from([
                 "generate-zone-genesis",
                 "--output",
@@ -613,7 +616,7 @@ mod tests {
                 &flag,
                 "12345",
                 "--hardfork",
-                "T15",
+                &latest,
             ])
             .unwrap();
             let mut genesis = Genesis::default();
