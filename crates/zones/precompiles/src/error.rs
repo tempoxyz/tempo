@@ -3,7 +3,8 @@
 use alloy_sol_types::SolInterface;
 use evm2::precompiles::{PrecompileError, PrecompileResult};
 use tempo_contracts::zones::{
-    TempoStateError, ZoneIdentityError, ZoneInboxError, ZoneOutboxError, ZonePortalError,
+    TempoStateError, ZoneAddressRegistryError, ZoneIdentityError, ZoneInboxError, ZoneOutboxError,
+    ZonePortalError,
 };
 use tempo_precompiles::IntoPrecompileResult;
 
@@ -43,6 +44,9 @@ pub enum ZonePrecompileError {
     /// Error from the ZoneIdentity.
     #[error("ZoneIdentity error: {0:?}")]
     Identity(ZoneIdentityError),
+    /// Error from the TIP-1094 zone address registry.
+    #[error("ZoneAddressRegistry error: {0:?}")]
+    AddressRegistry(ZoneAddressRegistryError),
     /// Malformed nested ABI data, matching Solidity's empty revert.
     #[error("malformed ABI calldata")]
     MalformedCalldata,
@@ -58,6 +62,7 @@ impl IntoPrecompileResult for ZonePrecompileError {
             Self::TempoState(error) => error.abi_encode(),
             Self::Inbox(error) => error.abi_encode(),
             Self::Identity(error) => error.abi_encode(),
+            Self::AddressRegistry(error) => error.abi_encode(),
             Self::MalformedCalldata => Default::default(),
         };
         Err(PrecompileError::Revert(data.into()))

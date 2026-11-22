@@ -1523,6 +1523,7 @@ fn amounts<'a>(deposits: impl IntoIterator<Item = &'a L1Deposit>) -> Vec<u128> {
         .map(|deposit| match deposit {
             L1Deposit::WithdrawalBounceBack(deposit) => deposit.amount,
             L1Deposit::Deposit(deposit) => deposit.amount,
+            L1Deposit::ZoneVirtual(deposit) => deposit.amount,
         })
         .collect()
 }

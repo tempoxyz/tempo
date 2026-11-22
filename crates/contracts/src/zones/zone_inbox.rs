@@ -3,7 +3,7 @@
 pub use IZoneInbox::{
     ChaumPedersenProof, DecryptionData, DepositType, EnabledToken,
     IZoneInboxErrors as ZoneInboxError, IZoneInboxEvents as ZoneInboxEvent, QueuedDeposit,
-    TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced,
+    TempoAdvanced_0 as LegacyTempoAdvanced, TempoAdvanced_1 as TempoAdvanced, VirtualDeposit,
     WithdrawalBounceBackDeposit,
 };
 
@@ -36,6 +36,22 @@ crate::sol! {
             WithdrawalBounceBack,
             /// User deposit with an encrypted recipient and memo.
             Deposit,
+            /// TIP-1094 transfer to a zone deposit address. Active from T15.
+            ZoneVirtual,
+        }
+
+        /// TIP-1094 queue payload for a TIP-20 transfer to a zone deposit address.
+        struct VirtualDeposit {
+            address token;
+            /// The Tempo account debited by the transfer; refunds go here.
+            address originator;
+            /// Net of the portal deposit fee.
+            uint128 amount;
+            /// The 20-byte zone deposit address the transfer was sent to.
+            address destination;
+            bool hasMemo;
+            /// Zero when `hasMemo` is false.
+            bytes32 memo;
         }
 
         /// A user deposit or internal withdrawal bounce-back passed to `advanceTempo`.
@@ -103,6 +119,36 @@ crate::sol! {
             address tempoRefundRecipient
         );
 
+        /// A virtual deposit credited its registered recipient. The redacted RPC serves it only to
+        /// `to`, the first indexed topic.
+        event VirtualDepositProcessed(
+            address indexed to,
+            address indexed originator,
+            bytes32 indexed depositHash,
+            address token,
+            uint128 amount,
+            uint8 version,
+            bytes4 masterId,
+            bytes2 userTag,
+            bytes32 memo
+        );
+
+        /// A virtual deposit reached its registered recipient `to` but the mint failed, so its net
+        /// amount was queued as a refund to `originator`. Deposits that fail earlier are refunded
+        /// without an event. The redacted RPC serves it only to `to`.
+        event VirtualDepositFailed(
+            address indexed to,
+            address indexed originator,
+            bytes32 indexed depositHash,
+            address token,
+            uint128 amount,
+            bytes4 masterId,
+            bytes2 userTag
+        );
+
+        /// Emitted when a TIP-1094 address key version is initialized. Carries no key material.
+        event VirtualAddressKeyInitialized(uint8 version);
+
         event WithdrawalBounceBackProcessed(address indexed zoneFallbackRecipient, address token, uint128 amount);
 
         event WithdrawalBounceBackPending(address indexed zoneFallbackRecipient, address token, uint128 amount);
@@ -121,6 +167,7 @@ crate::sol! {
         error InvalidSharedSecretProof();
         error Unauthorized();
         error NoRefund();
+        error InvalidAddressKeyVersion(uint8 version);
 
         function processedDepositQueueHash() external view returns (bytes32);
         function processedDepositNumber() external view returns (uint64);
@@ -141,6 +188,8 @@ crate::sol! {
         /// Advance only the authenticated Tempo checkpoint. A block opened by this call may not
         /// contain any other transaction.
         function advanceTempoHeaders(bytes[] calldata headers) external;
+        /// TIP-1094: initialize the next address key version. System-only, active from T15.
+        function initializeVirtualAddressKey(uint8 version, bytes32 key) external;
     }
 }
 

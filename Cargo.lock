@@ -17563,10 +17563,12 @@ dependencies = [
  "reth-transaction-pool",
  "serde",
  "tempo-alloy",
+ "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
  "tempo-node",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
  "tokio",
@@ -17582,6 +17584,7 @@ dependencies = [
 name = "zone-precompiles"
 version = "0.6.0"
 dependencies = [
+ "aes 0.8.4",
  "aes-gcm 0.10.3",
  "alloy",
  "alloy-consensus",

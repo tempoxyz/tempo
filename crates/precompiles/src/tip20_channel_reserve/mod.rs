@@ -25,6 +25,7 @@ pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
     TIP20ChannelReserveEvent,
 };
+use tempo_contracts::zones::ZoneDepositAddress;
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::{TempoAddressExt, transaction::tt_signature::TempoSignature};
 
@@ -169,9 +170,12 @@ impl TIP20ChannelReserve {
         msg_sender: Address,
         call: ITIP20ChannelReserve::openCall,
     ) -> Result<B256> {
+        // +T15: A TIP-1094 zone deposit address cannot receive a channel payout: TIP-20 only routes
+        // plain transfers to it, and it can never submit vouchers.
         if call.payee.is_zero()
             || is_tip20_prefix(call.payee)
             || (call.payee.is_virtual() && (call.operator.is_zero() || call.operator.is_virtual()))
+            || (self.storage.spec().is_t15() && ZoneDepositAddress::is_reserved(&call.payee))
         {
             return Err(TIP20ChannelReserveError::invalid_payee().into());
         }
@@ -1331,6 +1335,52 @@ mod tests {
             )?;
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_open_rejects_zone_deposit_address_payees_from_t15() -> eyre::Result<()> {
+        let deposit_address = ZoneDepositAddress {
+            zone_id: 1,
+            version: 1,
+            ciphertext: alloy::primitives::fixed_bytes!("010203040506"),
+        }
+        .encode();
+        for (spec, rejected) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let payer = Address::random();
+            StorageCtx::enter(&mut storage, || {
+                let token = TIP20Setup::path_usd(payer)
+                    .with_issuer(payer)
+                    .with_mint(payer, U256::from(100u128))
+                    .apply()?;
+                let mut reserve = TIP20ChannelReserve::initialized()?;
+                seed_expiring_nonce_hash(&mut reserve)?;
+                let result = reserve.open(
+                    payer,
+                    open_call(
+                        deposit_address,
+                        Address::ZERO,
+                        token.address(),
+                        1,
+                        B256::random(),
+                        Address::ZERO,
+                    ),
+                );
+                if rejected {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        TIP20ChannelReserveError::invalid_payee().into()
+                    );
+                } else {
+                    assert!(
+                        !matches!(&result, Err(err) if *err == TIP20ChannelReserveError::invalid_payee().into()),
+                        "{result:?}"
+                    );
+                }
+                eyre::Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]

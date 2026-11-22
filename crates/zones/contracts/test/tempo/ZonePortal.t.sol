@@ -28,6 +28,7 @@ import {
     PORTAL_ROLE_SLOT,
     Role,
     TokenEnablementTransition,
+    VirtualDeposit,
     Withdrawal,
     WithdrawalBounceBackDeposit,
     ZONE_FACTORY_ADDRESS,
@@ -6251,6 +6252,23 @@ contract ZonePortalTest is BaseTest {
         vm.stopPrank();
     }
 
+    /// @notice A zone deposit address can't be a refund recipient, since it can never claim one.
+    function test_deposit_revertsForZoneDepositAddressRefundRecipient() public {
+        address depositAddress = address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(uint32(7)), bytes9(0xfcfcfcfcfcfcfcfcfc), uint8(1), bytes6(uint48(1))
+                )
+            )
+        );
+
+        vm.startPrank(alice);
+        pathUSD.approve(address(portal), 1000e6);
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        _deposit(portal, address(pathUSD), alice, 1000e6, bytes32(""), depositAddress);
+        vm.stopPrank();
+    }
+
     /// @notice A withdrawal backlog cannot prevent a batch from being submitted.
     function test_withdrawalQueue_acceptsBacklogBeyondFormerCapacity() public {
         vm.roll(genesisTempoBlockNumber + 1);
@@ -6428,6 +6446,187 @@ contract ZonePortalTest is BaseTest {
     function _setBouncebackGas(uint64 gasAmount) internal {
         vm.prank(admin);
         portal.setBouncebackGas(gasAmount);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                     TIP-1094 VIRTUAL DEPOSITS
+    //////////////////////////////////////////////////////////////*/
+
+    uint128 internal constant VIRTUAL_GROSS = 1000e6;
+
+    function _virtualDestination(uint32 zone, uint8 version) internal pure returns (address) {
+        return address(
+            bytes20(
+                abi.encodePacked(
+                    bytes4(zone),
+                    bytes9(0xfcfcfcfcfcfcfcfcfc),
+                    bytes1(version),
+                    bytes6(0x010203040506)
+                )
+            )
+        );
+    }
+
+    /// Simulates routing: debit alice, credit the portal, then call from the token address.
+    function _routeVirtual(
+        address destination,
+        bool hasMemo,
+        bytes32 memo
+    )
+        internal
+        returns (bytes32)
+    {
+        vm.prank(alice);
+        pathUSD.transfer(address(portal), VIRTUAL_GROSS);
+        vm.prank(address(pathUSD));
+        return portal.depositVirtual(alice, VIRTUAL_GROSS, destination, hasMemo, memo);
+    }
+
+    function test_depositVirtual_queuesNetAmountAndHashesAsZoneVirtual() public {
+        address destination = _virtualDestination(testZoneId, 1);
+        bytes32 previous = portal.currentDepositQueueHash();
+        uint64 countBefore = portal.depositCount();
+        uint128 fee = portal.calculateDepositFee();
+
+        bytes32 head = _routeVirtual(destination, true, bytes32(uint256(7)));
+
+        VirtualDeposit memory expected = VirtualDeposit({
+            token: address(pathUSD),
+            originator: alice,
+            amount: VIRTUAL_GROSS - fee,
+            destination: destination,
+            hasMemo: true,
+            memo: bytes32(uint256(7))
+        });
+        assertEq(head, DepositQueueLib.enqueueVirtual(previous, expected));
+        assertEq(portal.currentDepositQueueHash(), head);
+        assertEq(portal.depositCount(), countBefore + 1);
+    }
+
+    function test_depositVirtual_rejectsNonTokenCallers() public {
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.TokenNotEnabled.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
+    }
+
+    function test_depositVirtual_rejectsOtherZonesAndBadMemos() public {
+        vm.startPrank(address(pathUSD));
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId + 1, 1), false, bytes32(0)
+        );
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(uint256(1))
+        );
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(alice, VIRTUAL_GROSS, bob, false, bytes32(0));
+        vm.stopPrank();
+    }
+
+    /// @notice Checks run in the documented order: memo, format and zone, version, originator.
+    function test_depositVirtual_errorOrder() public {
+        address retired = _virtualDestination(testZoneId, 1);
+        vm.prank(admin);
+        portal.retireAddressVersionsBelow(2);
+
+        vm.startPrank(address(pathUSD));
+        // A nonzero memo without hasMemo wins over a retired version and a portal originator.
+        vm.expectRevert(IZonePortal.InvalidVirtualDeposit.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(uint256(1)));
+        // A retired version wins over a portal originator.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AddressVersionRetired.selector, 1));
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, retired, false, bytes32(0));
+        vm.stopPrank();
+    }
+
+    /// @notice A gateway can't originate a virtual deposit: the originator is also the refund
+    ///         recipient, which must be an allowed account, as for ECIES deposits.
+    function test_depositVirtual_rejectsGatewayOriginatorUnderAccessControl() public {
+        address gateway = address(0x6a7e);
+        vm.startPrank(admin);
+        portal.setAccessMode(true);
+        portal.setGatewayMode(true);
+        portal.setGateway(gateway, true);
+        vm.stopPrank();
+
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AccountNotAllowed.selector, gateway));
+        portal.depositVirtual(
+            gateway, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
+    }
+
+    function test_retireAddressVersionsBelow_isRaiseOnly() public {
+        assertEq(portal.minimumAddressVersion(), 1);
+
+        vm.prank(alice);
+        vm.expectRevert(IZonePortal.NotAdmin.selector);
+        portal.retireAddressVersionsBelow(2);
+
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 1));
+        portal.retireAddressVersionsBelow(1);
+        // One version per call: skipping ahead reverts.
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 255));
+        portal.retireAddressVersionsBelow(255);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 3));
+        portal.retireAddressVersionsBelow(3);
+        portal.retireAddressVersionsBelow(2);
+        portal.retireAddressVersionsBelow(3);
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.InvalidVersionRetirement.selector, 2));
+        portal.retireAddressVersionsBelow(2);
+        vm.stopPrank();
+        assertEq(portal.minimumAddressVersion(), 3);
+
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.AddressVersionRetired.selector, 2));
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 2), false, bytes32(0)
+        );
+
+        _routeVirtual(_virtualDestination(testZoneId, 3), false, bytes32(0));
+    }
+
+    function test_depositVirtual_rejectsPortalOriginators() public {
+        address destination = _virtualDestination(testZoneId, 1);
+        vm.startPrank(address(pathUSD));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(address(portal), VIRTUAL_GROSS, destination, false, bytes32(0));
+        vm.expectRevert(IZonePortal.InvalidBouncebackRecipient.selector);
+        portal.depositVirtual(
+            address(0x5Ad0000000000000000000000000000000000002),
+            VIRTUAL_GROSS,
+            destination,
+            false,
+            bytes32(0)
+        );
+        vm.stopPrank();
+    }
+
+    function test_depositVirtual_rejectsDepositsBelowFees() public {
+        vm.fee(1e12);
+        _setZoneGasRate(1);
+        _setBouncebackGas(300_000);
+        vm.prank(address(pathUSD));
+        vm.expectRevert(IZonePortal.DepositTooSmall.selector);
+        portal.depositVirtual(alice, 0, _virtualDestination(testZoneId, 1), false, bytes32(0));
+    }
+
+    function test_depositVirtual_revertsDuringCongestion() public {
+        uint128 premium = portal.CONGESTION_MAX_FEE() / portal.CONGESTION_MAX_TIER();
+        _depositMany(portal.DEPOSITS_PER_CONGESTION_TIER(), 1e6);
+        vm.roll(block.number + 1);
+        assertEq(portal.calculateDepositFee(), premium);
+
+        // A plain transfer cannot pass `maxFee`, so it accepts only the operational fee.
+        vm.prank(address(pathUSD));
+        vm.expectRevert(abi.encodeWithSelector(IZonePortal.FeeTooHigh.selector, premium, 0));
+        portal.depositVirtual(
+            alice, VIRTUAL_GROSS, _virtualDestination(testZoneId, 1), false, bytes32(0)
+        );
     }
 
 }
