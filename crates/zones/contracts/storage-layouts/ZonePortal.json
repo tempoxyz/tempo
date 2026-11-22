@@ -423,6 +423,14 @@
       "offset": 8,
       "slot": "31",
       "type": "t_uint64"
+    },
+    {
+      "astId": 6254,
+      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
+      "label": "_minimumAddressVersion",
+      "offset": 16,
+      "slot": "31",
+      "type": "t_uint8"
     }
   ],
   "types": {

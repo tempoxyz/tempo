@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use tempo_contracts::zones::{
-    IZoneOutbox, Withdrawal, ZoneOutboxError, ZoneOutboxEvent, ZonePortal::Role, ZonePortalError,
+    IZoneOutbox, Withdrawal, ZoneDepositAddress, ZoneOutboxError, ZoneOutboxEvent,
+    ZonePortal::Role, ZonePortalError,
 };
 use tempo_precompiles::{
     Result as TempoResult,
@@ -163,8 +164,18 @@ impl ZoneOutbox {
         current_tx_hash: B256,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> ZoneResult<()> {
-        if call.zoneFallbackRecipient.is_zero() {
+        // +T15: A bounced withdrawal is parked under its fallback recipient when the mint fails, and
+        // only that recipient can claim it, which a TIP-1094 zone deposit address can never do.
+        if call.zoneFallbackRecipient.is_zero()
+            || (self.storage.spec().is_t15()
+                && ZoneDepositAddress::is_reserved(&call.zoneFallbackRecipient))
+        {
             return Err(ZoneOutboxError::invalid_fallback_recipient().into());
+        }
+        // +T15: A payout to a TIP-1094 deposit address would become a virtual deposit originated
+        // by this zone's portal, whose refund no one could claim.
+        if self.storage.spec().is_t15() && ZoneDepositAddress::is_reserved(&call.to) {
+            return Err(ZoneOutboxError::invalid_withdrawal_recipient().into());
         }
         if call.amount == 0 {
             return Err(ZoneOutboxError::zero_amount_withdrawal().into());

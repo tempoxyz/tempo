@@ -248,6 +248,8 @@ pub struct ZoneNode {
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    /// TIP-1094 address keys in version order, which this node initializes when it builds blocks.
+    virtual_address_keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
@@ -304,6 +306,7 @@ impl ZoneNode {
             portal_address,
             withdrawal_batch_interval_blocks: DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS,
             withdrawal_reveal_encryptor: None,
+            virtual_address_keys: Vec::new(),
             redacted_rpc_config: ZoneRedactedRpcConfig::default(),
             sequencer_config: None,
             prover_addresses: None,
@@ -379,6 +382,25 @@ impl ZoneNode {
     /// Enable static Zone P2P networking for this node.
     pub fn with_p2p(mut self, config: P2pConfig) -> Self {
         self.p2p_config = Some(config);
+        self
+    }
+
+    /// Initialize `key` as TIP-1094 address key version 1 once T15 is active.
+    ///
+    /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
+    /// node of the zone is inside its confidentiality boundary.
+    pub fn with_virtual_address_key(self, key: zone_payload::VirtualAddressKey) -> Self {
+        self.with_virtual_address_keys(vec![(1, key)])
+    }
+
+    /// TIP-1094 address keys to initialize, each with its version. Once T15 is active, each built
+    /// block initializes the lowest listed version not yet in state. Initialized keys are read
+    /// from state, so only keys not yet rotated in need to be configured.
+    pub fn with_virtual_address_keys(
+        mut self,
+        keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
+    ) -> Self {
+        self.virtual_address_keys = keys;
         self
     }
 
@@ -1027,7 +1049,8 @@ where
                 l1_state.clone(),
                 proof_collector.clone(),
             )
-            .with_deposit_allowlist(config.deposit_allowlist.clone());
+            .with_deposit_allowlist(config.deposit_allowlist.clone())
+            .with_zone_state(crate::engine::zone_state_reader(provider.clone()));
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(
@@ -1779,6 +1802,10 @@ where
         } else if self.p2p_config.as_ref().is_some_and(P2pConfig::is_rpc_only) {
             pool_builder =
                 pool_builder.with_transfer_allowlist(Arc::new(self.allowlist_mirror.clone()));
+        }
+        if !self.virtual_address_keys.is_empty() {
+            payload_factory =
+                payload_factory.with_virtual_address_keys(self.virtual_address_keys.clone());
         }
         ComponentsBuilder::default()
             .node_types::<N>()

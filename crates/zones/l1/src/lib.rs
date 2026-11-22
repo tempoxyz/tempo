@@ -71,7 +71,7 @@ use crate::abi::{
     Deposit as AbiDeposit, DepositPayload as AbiDepositPayload,
     ZonePortal::{
         DepositMade, LeaderUpdated, PortalPaused, PortalResumed, SequencerEncryptionKeyUpdated,
-        TokenEnabled, WithdrawalBounceBack, ZonePortalEvents,
+        TokenEnabled, VirtualDepositMade, WithdrawalBounceBack, ZonePortalEvents,
     },
 };
 
@@ -88,7 +88,7 @@ mod subscriber;
 mod tests;
 
 pub use block::{FAILED_DECRYPTION, L1BlockDeposits, PreparedL1Block};
-pub use deposit::{Deposit, L1Deposit, WithdrawalBounceBackDeposit};
+pub use deposit::{Deposit, L1Deposit, VirtualDeposit, WithdrawalBounceBackDeposit};
 pub use deposit_range::{DepositQueuePosition, fetch_range_len};
 pub use encryption_keys::{
     BoundPublicKeyFingerprint, EncryptionKeyPublicStatus, EncryptionKeyRing, PublicKeyFingerprint,

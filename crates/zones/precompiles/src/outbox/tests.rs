@@ -803,3 +803,61 @@ fn withdrawal_commits_the_sender_org_when_enforced(enforced: bool) -> eyre::Resu
     );
     Ok(())
 }
+
+#[test]
+fn deposit_address_fallback_recipients_are_rejected_from_t15() -> eyre::Result<()> {
+    let deposit_address = tempo_contracts::zones::ZoneDepositAddress {
+        zone_id: 1,
+        version: 1,
+        ciphertext: alloy_primitives::fixed_bytes!("010203040506"),
+    }
+    .encode();
+    let call = ZoneOutboxAbi::requestWithdrawalCall {
+        zoneFallbackRecipient: deposit_address,
+        ..withdrawal(1, BOB, 0)
+    };
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    assert_revert(
+        env.request_withdrawal(ALICE, call.clone()),
+        ZoneOutboxError::invalid_fallback_recipient(),
+    );
+    assert!(env.pending_withdrawals().is_empty());
+
+    let mut legacy = spec().apply()?;
+    assert!(legacy.request_withdrawal(ALICE, call)?.is_success());
+    Ok(())
+}
+
+#[test]
+fn withdrawals_to_deposit_addresses_are_rejected_from_t15() -> eyre::Result<()> {
+    let deposit_address = tempo_contracts::zones::ZoneDepositAddress {
+        zone_id: 1,
+        version: 1,
+        ciphertext: alloy_primitives::fixed_bytes!("010203040506"),
+    }
+    .encode();
+    let call = ZoneOutboxAbi::requestWithdrawalCall {
+        to: deposit_address,
+        ..withdrawal(1, BOB, 0)
+    };
+
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    assert_revert(
+        env.request_withdrawal(ALICE, call.clone()),
+        ZoneOutboxError::invalid_withdrawal_recipient(),
+    );
+    assert!(env.pending_withdrawals().is_empty());
+
+    let mut legacy = spec().apply()?;
+    assert!(legacy.request_withdrawal(ALICE, call)?.is_success());
+    Ok(())
+}

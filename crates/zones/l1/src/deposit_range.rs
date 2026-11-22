@@ -55,6 +55,7 @@ impl DepositQueuePosition {
                 .event_signature(vec![
                     DepositMade::SIGNATURE_HASH,
                     WithdrawalBounceBack::SIGNATURE_HASH,
+                    VirtualDepositMade::SIGNATURE_HASH,
                 ])
                 .select(from..=to)
                 .chunked()
@@ -66,6 +67,7 @@ impl DepositQueuePosition {
                 let entry = match ZonePortalEvents::decode_log(&log.inner)?.data {
                     ZonePortalEvents::DepositMade(event) => event.depositNumber,
                     ZonePortalEvents::WithdrawalBounceBack(event) => event.depositNumber,
+                    ZonePortalEvents::VirtualDepositMade(event) => event.depositNumber,
                     // TODO: match against forced exits when added
                     _ => continue,
                 };
@@ -169,5 +171,62 @@ mod tests {
         DepositQueuePosition::find(&provider, Address::ZERO, through, last_processed)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// The first owed entry is a virtual deposit, after a bounce-back and a virtual deposit in the
+    /// same block.
+    #[tokio::test]
+    async fn find_counts_virtual_deposits() {
+        let asserter = Asserter::new();
+        asserter.push_success(&Bytes::from(
+            ZonePortal::depositCountCall::abi_encode_returns(&9),
+        ));
+        let virtual_log = |number: u64| Log {
+            inner: alloy_primitives::Log {
+                address: Address::ZERO,
+                data: VirtualDepositMade {
+                    newCurrentDepositQueueHash: B256::ZERO,
+                    originator: Address::ZERO,
+                    token: Address::ZERO,
+                    destination: Address::ZERO,
+                    netAmount: 1,
+                    fee: 0,
+                    depositNumber: number,
+                    hasMemo: false,
+                    memo: B256::ZERO,
+                }
+                .encode_log_data(),
+            },
+            block_number: Some(3),
+            ..Default::default()
+        };
+        let bounce = Log {
+            inner: alloy_primitives::Log {
+                address: Address::ZERO,
+                data: WithdrawalBounceBack {
+                    newCurrentDepositQueueHash: B256::ZERO,
+                    fallbackNonce: 0,
+                    token: Address::ZERO,
+                    amount: 1,
+                    depositNumber: 6,
+                }
+                .encode_log_data(),
+            },
+            block_number: Some(3),
+            ..Default::default()
+        };
+        asserter.push_success(&vec![bounce, virtual_log(7), virtual_log(8)]);
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+
+        assert_eq!(
+            DepositQueuePosition::find(&provider, Address::ZERO, 5, Some(7))
+                .await
+                .unwrap(),
+            DepositQueuePosition {
+                block_number: 3,
+                entries_in_block: 2
+            }
+        );
     }
 }

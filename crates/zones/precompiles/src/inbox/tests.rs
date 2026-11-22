@@ -19,8 +19,8 @@ use test_case::test_case;
 use zone_primitives::constants::ZONE_OUTBOX_ADDRESS;
 
 use crate::test_utils::{
-    EncryptedDepositFixture, MockL1Reader, ZoneEnv, ZoneSpec, build_plaintext, call_precompile,
-    compressed_x_and_parity, encrypt_plaintext,
+    EncryptedDepositFixture, MockL1Reader, PrecompileResult, ZoneEnv, ZoneSpec, build_plaintext,
+    call_precompile, compressed_x_and_parity, encrypt_plaintext,
 };
 
 const PORTAL: Address = Address::repeat_byte(0x42);
@@ -198,6 +198,43 @@ fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<(
         gas_used <= COMBINED_BUFFERED_GAS_LIMIT,
         "max portal deposit and token block used {gas_used} gas"
     );
+    Ok(())
+}
+
+/// A full block of virtual deposits that each resolve, then fail the mint and refund, fits the
+/// system transaction budget.
+#[test]
+fn max_virtual_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
+    const BUFFERED_GAS_LIMIT: u64 = 200_000_000;
+
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+    env.with_storage(|| {
+        TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+            ALICE,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: REJECT_ALL_POLICY_ID,
+            },
+        )
+    })?;
+    let deposits = (0..DEPOSITS_PER_BUCKET)
+        .map(|tag| virtual_deposit(deposit_address(1, 0, master, tag as u16), None))
+        .collect();
+
+    let output = advance_virtual(&mut env, deposits)?;
+    assert!(
+        output.is_success(),
+        "virtual deposit block failed: {output:?}"
+    );
+    eprintln!("max virtual deposit block: {} gas", output.gas_used);
+    assert!(
+        output.gas_used <= BUFFERED_GAS_LIMIT,
+        "max virtual deposit block used {} gas",
+        output.gas_used
+    );
+    assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::ZERO);
+    assert_eq!(env.pending_withdrawals().len(), DEPOSITS_PER_BUCKET);
     Ok(())
 }
 
@@ -473,19 +510,25 @@ fn non_canonical_deposits_are_rejected() {
         non_canonical.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
 
         assert!(
-            decode_deposits(vec![QueuedDeposit {
-                depositType: deposit_type,
-                rejected: false,
-                depositData: canonical.into(),
-            }])
+            decode_deposits(
+                vec![QueuedDeposit {
+                    depositType: deposit_type,
+                    rejected: false,
+                    depositData: canonical.into(),
+                }],
+                true
+            )
             .is_ok()
         );
         assert!(
-            decode_deposits(vec![QueuedDeposit {
-                depositType: deposit_type,
-                rejected: false,
-                depositData: non_canonical.into(),
-            }])
+            decode_deposits(
+                vec![QueuedDeposit {
+                    depositType: deposit_type,
+                    rejected: false,
+                    depositData: non_canonical.into(),
+                }],
+                true
+            )
             .is_err()
         );
     }
@@ -890,4 +933,278 @@ fn bridged_credits_use_recipient_policy_from_t13(
     })?;
     assert!(env.pending_withdrawals().is_empty());
     Ok(())
+}
+
+// --- TIP-1094 virtual deposits ---
+
+const ZVDA_KEY: B256 = B256::repeat_byte(0x5a);
+const VIRTUAL_AMOUNT: u128 = 100;
+
+fn deposit_address(version: u8, zone_id: u32, master_id: u32, tag: u16) -> Address {
+    let mut plaintext = [0u8; 6];
+    plaintext[..4].copy_from_slice(&master_id.to_be_bytes());
+    plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+    ZoneDepositAddress {
+        zone_id,
+        version,
+        ciphertext: crate::ff1::encrypt(&ZVDA_KEY.0, version, zone_id, plaintext).into(),
+    }
+    .encode()
+}
+
+fn virtual_deposit(destination: Address, memo: Option<B256>) -> VirtualDeposit {
+    VirtualDeposit {
+        token: PATH_USD_ADDRESS,
+        originator: ALICE,
+        amount: VIRTUAL_AMOUNT,
+        destination,
+        hasMemo: memo.is_some(),
+        memo: memo.unwrap_or_default(),
+    }
+}
+
+/// A Zone with zone ID 0 (no portal), so deposit addresses of zone 0 resolve against it.
+fn virtual_env(hardfork: TempoHardfork) -> eyre::Result<ZoneEnv> {
+    Ok(ZoneSpec {
+        sequencer: SEQUENCER,
+        hardfork,
+        tokens: vec![path_usd()],
+        ..Default::default()
+    }
+    .apply()?)
+}
+
+fn init_key(env: &mut ZoneEnv, version: u8) -> PrecompileResult {
+    env.call(
+        Address::ZERO,
+        ZONE_INBOX_ADDRESS,
+        IZoneInbox::initializeVirtualAddressKeyCall {
+            version,
+            key: ZVDA_KEY,
+        }
+        .abi_encode(),
+    )
+}
+
+/// Registers `recipient` in the zone registry under zone ID 0.
+fn register(env: &mut ZoneEnv, recipient: Address) -> eyre::Result<u32> {
+    env.with_storage(|| {
+        let id = crate::address_registry::ZoneAddressRegistry::new()
+            .register_master(0, recipient, B256::random())
+            .map_err(|err| eyre::eyre!("{err:?}"))?;
+        Ok(u32::from_be_bytes(id.0))
+    })
+}
+
+/// Advances with virtual deposits, each paired with the sequencer's `rejected` flag.
+fn advance_virtual_flagged(
+    env: &mut ZoneEnv,
+    deposits: Vec<(VirtualDeposit, bool)>,
+) -> PrecompileResult {
+    let queued = deposits
+        .into_iter()
+        .map(|(deposit, rejected)| QueuedDeposit {
+            rejected,
+            ..env.queue_deposit(DepositType::ZoneVirtual, deposit)
+        })
+        .collect();
+    env.advance_tempo(queued, Vec::new(), Vec::new())
+}
+
+fn advance_virtual(env: &mut ZoneEnv, deposits: Vec<VirtualDeposit>) -> PrecompileResult {
+    advance_virtual_flagged(env, deposits.into_iter().map(|d| (d, false)).collect())
+}
+
+#[test]
+fn virtual_deposit_credits_registered_recipient() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+
+    let output = advance_virtual(
+        &mut env,
+        vec![
+            virtual_deposit(deposit_address(1, 0, master, 7), None),
+            virtual_deposit(
+                deposit_address(1, 0, master, 8),
+                Some(B256::repeat_byte(0x33)),
+            ),
+        ],
+    )?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        env.balance(PATH_USD_ADDRESS, BOB),
+        U256::from(2 * VIRTUAL_AMOUNT)
+    );
+    assert!(env.pending_withdrawals().is_empty());
+    Ok(())
+}
+
+#[test_case(deposit_address(1, 0, 1_000, 0) ; "unregistered master")]
+#[test_case(deposit_address(2, 0, 0, 0) ; "uninitialized version")]
+#[test_case(deposit_address(1, 9, 0, 0) ; "other zone")]
+#[test_case(deposit_address(0, 0, 0, 0) ; "version zero")]
+#[test_case(BOB ; "not a deposit address")]
+fn failed_virtual_deposit_refunds_the_originator(destination: Address) -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    assert_eq!(register(&mut env, BOB)?, 0);
+
+    let output = advance_virtual(&mut env, vec![virtual_deposit(destination, None)])?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::ZERO);
+    assert_single_bounce_back(&mut env, VIRTUAL_AMOUNT, ALICE);
+    Ok(())
+}
+
+#[test]
+fn virtual_deposit_blocked_by_recipient_policy_refunds_the_originator() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+    env.with_storage(|| {
+        TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+            ALICE,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: REJECT_ALL_POLICY_ID,
+            },
+        )
+    })?;
+
+    let output = advance_virtual(
+        &mut env,
+        vec![virtual_deposit(deposit_address(1, 0, master, 0), None)],
+    )?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::ZERO);
+    assert_single_bounce_back(&mut env, VIRTUAL_AMOUNT, ALICE);
+    Ok(())
+}
+
+#[test]
+fn virtual_deposits_are_malformed_before_t15() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T14)?;
+    let output = advance_virtual(
+        &mut env,
+        vec![virtual_deposit(deposit_address(1, 0, 0, 0), None)],
+    )?;
+    assert!(output.is_revert());
+    assert!(output.bytes.is_empty(), "malformed calldata reverts empty");
+    Ok(())
+}
+
+#[test]
+fn virtual_address_keys_initialize_once_and_in_order() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    let not_system = env.call(
+        SEQUENCER,
+        ZONE_INBOX_ADDRESS,
+        IZoneInbox::initializeVirtualAddressKeyCall {
+            version: 1,
+            key: ZVDA_KEY,
+        }
+        .abi_encode(),
+    )?;
+    assert_eq!(not_system.bytes, IZoneInbox::OnlySequencer {}.abi_encode());
+
+    for version in [0, 2] {
+        assert_eq!(
+            init_key(&mut env, version)?.bytes,
+            IZoneInbox::InvalidAddressKeyVersion { version }.abi_encode()
+        );
+    }
+    assert!(init_key(&mut env, 1)?.is_success());
+    assert_eq!(
+        init_key(&mut env, 1)?.bytes,
+        IZoneInbox::InvalidAddressKeyVersion { version: 1 }.abi_encode()
+    );
+    assert!(init_key(&mut env, 2)?.is_success());
+
+    let mut legacy = virtual_env(TempoHardfork::T14)?;
+    assert!(init_key(&mut legacy, 1)?.is_revert());
+    Ok(())
+}
+
+#[test]
+fn rejected_virtual_deposit_refunds_the_originator_without_crediting() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+
+    let output = advance_virtual_flagged(
+        &mut env,
+        vec![
+            (
+                virtual_deposit(deposit_address(1, 0, master, 1), None),
+                true,
+            ),
+            (
+                virtual_deposit(deposit_address(1, 0, master, 2), None),
+                false,
+            ),
+        ],
+    )?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(
+        env.balance(PATH_USD_ADDRESS, BOB),
+        U256::from(VIRTUAL_AMOUNT)
+    );
+    assert_single_bounce_back(&mut env, VIRTUAL_AMOUNT, ALICE);
+    Ok(())
+}
+
+#[test]
+fn rejected_flag_is_ignored_on_withdrawal_bounce_backs() -> eyre::Result<()> {
+    let mut env = spec().apply()?;
+    let nonce = 7u64;
+    env.with_storage(|| ZoneOutbox::new().seed_fallback_recipient(nonce, BOB))?;
+    let deposit = WithdrawalBounceBackDeposit {
+        token: PATH_USD_ADDRESS,
+        to: Address::left_padding_from(&nonce.to_be_bytes()),
+        amount: 321,
+    };
+    let queued = QueuedDeposit {
+        rejected: true,
+        ..env.queue_deposit(DepositType::WithdrawalBounceBack, deposit)
+    };
+
+    let output = env.advance_tempo(vec![queued], Vec::new(), Vec::new())?;
+    assert!(output.is_success(), "{output:?}");
+    assert_eq!(env.balance(PATH_USD_ADDRESS, BOB), U256::from(321));
+    assert!(env.pending_withdrawals().is_empty());
+    Ok(())
+}
+
+#[test]
+fn unmetered_resolution_matches_the_metered_lookup() -> eyre::Result<()> {
+    let mut env = virtual_env(TempoHardfork::T15)?;
+    assert!(init_key(&mut env, 1)?.is_success());
+    let master = register(&mut env, BOB)?;
+
+    env.with_storage(|| -> eyre::Result<()> {
+        let inbox = ZoneInbox::new();
+        let resolve = |destination, charge_gas| -> eyre::Result<Option<Address>> {
+            Ok(inbox
+                .resolve_virtual_deposit(0, destination, charge_gas)
+                .map_err(|err| eyre::eyre!("{err:?}"))?
+                .ok()
+                .map(|resolved| resolved.recipient))
+        };
+        for charge_gas in [true, false] {
+            assert_eq!(
+                resolve(deposit_address(1, 0, master, 3), charge_gas)?,
+                Some(BOB)
+            );
+            for destination in [
+                deposit_address(1, 0, 1_000, 0),
+                deposit_address(2, 0, master, 0),
+                deposit_address(1, 9, master, 0),
+                deposit_address(0, 0, master, 0),
+                BOB,
+            ] {
+                assert_eq!(resolve(destination, charge_gas)?, None, "{destination}");
+            }
+        }
+        Ok(())
+    })
 }

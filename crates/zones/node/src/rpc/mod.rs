@@ -109,10 +109,11 @@ use zone_rpc::{
     filter::LogScope,
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
-        DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        DecryptionKeyCandidate, DecryptionKeyStatus, DeriveDepositAddressesRequest,
+        DeriveDepositAddressesResponse, JsonRpcError, LocalSequencerInfo,
+        MAX_DERIVE_DEPOSIT_ADDRESSES, PeerTipInfo, SequencerInfoResponse, SequencerPeerInfo,
+        SequencerProgress, SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness,
+        ZoneInfoResponse, internal, raw_null, raw_zero, to_raw,
     },
 };
 
@@ -1478,6 +1479,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let Some(block) = filter_earlier_block(block) else {
                 let result = EthCall::call(
@@ -1530,6 +1532,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let Some(block) = filter_earlier_block(block) else {
                 let result = EthCall::estimate_gas_at(
@@ -1597,6 +1600,10 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
+            // Filling without a gas limit estimates gas, which simulates the call.
+            if request.inner.gas.is_none() {
+                zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
+            }
 
             // Prefill the users request so the `fill_transaction` doesnt leak dynamic fee estimates via
             // missing fee fields.
@@ -1851,6 +1858,123 @@ where
             to_raw(&key)
         })
     }
+
+    fn zone_derive_deposit_addresses(
+        &self,
+        request: DeriveDepositAddressesRequest,
+        auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async move {
+            if request.user_tags.is_empty()
+                || request.user_tags.len() > MAX_DERIVE_DEPOSIT_ADDRESSES
+            {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "userTags must hold 1 to {MAX_DERIVE_DEPOSIT_ADDRESSES} tags"
+                )));
+            }
+            // Derive only from settled state as of finalized Tempo, so an address never depends
+            // on a zone block, or a Tempo settlement, that could still be replaced.
+            let l1_block = self
+                .l1_provider
+                .get_block_by_number(alloy_eips::BlockNumberOrTag::Finalized)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| JsonRpcError::internal("no finalized Tempo block"))?
+                .header
+                .number();
+            let portal = ZonePortal::new(self.config.zone_portal, &self.l1_provider);
+            let settled = portal
+                .blockHash()
+                .block(BlockId::number(l1_block))
+                .call()
+                .await
+                .map_err(internal)?;
+            // The minimum only rises, so read it at the latest Tempo head: a version retired after
+            // the finalized block must not be issued.
+            let minimum_version = portal
+                .minimumAddressVersion()
+                .block(BlockId::latest())
+                .call()
+                .await
+                .map_err(internal)?;
+            let mut state = self
+                .eth
+                .api
+                .provider()
+                .state_by_block_hash(settled)
+                .map_err(|_| JsonRpcError::internal("settled zone block is not available"))?;
+            let derived = crate::engine::read_zone_state(&mut state, || {
+                derive_deposit_addresses(
+                    self.config.zone_id,
+                    minimum_version,
+                    auth.caller,
+                    &request,
+                )
+            })?;
+            to_raw(&DeriveDepositAddressesResponse {
+                zone_block_hash: settled,
+                version: derived.0,
+                addresses: derived.1,
+            })
+        })
+    }
+}
+
+/// Derives TIP-1094 deposit addresses for `request` from zone state in the current storage context.
+///
+/// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
+/// fail alike, so the method does not reveal registrations. The version defaults to the highest
+/// initialized key version and must not be below the portal's minimum.
+fn derive_deposit_addresses(
+    zone_id: u32,
+    minimum_version: u8,
+    caller: Address,
+    request: &DeriveDepositAddressesRequest,
+) -> Result<(u8, Vec<Address>), JsonRpcError> {
+    let recipient = zone_precompiles::address_registry::ZoneAddressRegistry::new()
+        .recipient_of(request.master_id)
+        .map_err(internal)?;
+    if recipient.is_zero() || recipient != caller {
+        return Err(JsonRpcError::invalid_params(
+            "masterId is not registered to the caller",
+        ));
+    }
+
+    // Keys initialize in order, so the initialized versions are 1 through the first gap.
+    let inbox = zone_precompiles::inbox::ZoneInbox::new();
+    let mut keys = Vec::new();
+    for version in 1..=u8::MAX {
+        match inbox.virtual_address_key(version).map_err(internal)? {
+            Some(key) => keys.push(key),
+            None => break,
+        }
+    }
+    let highest = keys.len() as u8;
+    let version = request.version.unwrap_or(highest);
+    if version == 0 || version > highest || version < minimum_version {
+        return Err(JsonRpcError::invalid_params(
+            "address version is not initialized or is retired",
+        ));
+    }
+
+    let key = keys[usize::from(version - 1)];
+    let addresses = request
+        .user_tags
+        .iter()
+        .map(|tag| {
+            let mut plaintext = [0u8; 6];
+            plaintext[..4].copy_from_slice(request.master_id.as_slice());
+            plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+            tempo_contracts::zones::ZoneDepositAddress {
+                zone_id,
+                version,
+                ciphertext: zone_precompiles::ff1::encrypt(&key.0, version, zone_id, plaintext)
+                    .into(),
+            }
+            .encode()
+        })
+        .collect();
+    Ok((version, addresses))
 }
 
 /// Who created a filter, and whose logs it returns.

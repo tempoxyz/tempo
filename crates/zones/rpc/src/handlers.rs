@@ -191,6 +191,16 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `zone_getEncryptionKey()` — returns the active encryption key at the
     /// current Tempo L1 head.
     fn zone_get_encryption_key(&self, auth: AuthContext) -> BoxFut<'_>;
+
+    /// `zone_deriveDepositAddresses(request)` — derives TIP-1094 deposit addresses for a master
+    /// ID registered to the authenticated caller, from the last settled zone block.
+    fn zone_derive_deposit_addresses(
+        &self,
+        _request: crate::types::DeriveDepositAddressesRequest,
+        _auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async { Err(JsonRpcError::method_disabled()) })
+    }
 }
 
 /// Deserialize JSON-RPC params, returning an error response on failure.
@@ -333,6 +343,22 @@ pub async fn dispatch(
         }
         Method::ZoneGetEncryptionKey => {
             api_result(id, method, api.zone_get_encryption_key(auth.clone()).await)
+        }
+        Method::ZoneDeriveDepositAddresses => {
+            let (request,) = match parse_params::<(crate::types::DeriveDepositAddressesRequest,)>(
+                raw,
+                &id,
+                "expected [{masterId, userTags, version?}]",
+            ) {
+                Ok(v) => v,
+                Err(resp) => return resp,
+            };
+            api_result(
+                id,
+                method,
+                api.zone_derive_deposit_addresses(request, auth.clone())
+                    .await,
+            )
         }
     }
 }

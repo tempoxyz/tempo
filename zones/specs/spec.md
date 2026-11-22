@@ -1044,6 +1044,8 @@ The RPC uses a default-deny model. Any method not explicitly listed returns `-32
 
 **Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, and `zone_getEncryptionKey`.
 
+**Recipient-scoped.** `zone_deriveDepositAddresses` derives TIP-1094 deposit addresses only for a master ID registered to the authenticated account, from the last settled zone block.
+
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
 **Readable accounts.** A caller may read an account's balance, nonce, the transactions it sent and its logs, at any block or `pending`, when it is the account or, from T15, when `ZoneIdentity.canRead` allows it at the latest block. Removing a reader or replacing an org admin therefore also revokes their reads of earlier blocks. Replacing an org admin keeps the org's readers. Data the caller may not read gets the same response as missing data.
@@ -1091,8 +1093,10 @@ Every log query names one account in its indexed address topics: the authenticat
 | `TransferWithMemo(from, to, amount, memo)` | `from == account` OR `to == account` |
 | `Mint(to, amount)` | `to == account` |
 | `Burn(from, amount)` | `from == account` |
+| `VirtualDepositProcessed(to, originator, depositHash, ...)` (zone inbox) | `to == account` |
+| `VirtualDepositFailed(to, originator, depositHash, ...)` (zone inbox) | `to == account` |
 
-All other events (system events, configuration events) are filtered out, except `ZoneIdentity` events in org queries. The `address` filter parameter must be a zone token address or omitted, or be only `ZoneIdentity` for an org query. The RPC server injects topic filters to restrict indexed address parameters to the account, then post-filters results as a final pass. When the account is not the caller, a caller that may not read it gets no logs, without the logs being queried (see [Method Access Control](#method-access-control)).
+All other events (system events, configuration events) are filtered out, except `ZoneIdentity` events in org queries. The two TIP-1094 virtual deposit result events count only when the zone inbox emitted them. The `address` filter parameter must be a zone token address, the receive-policy guard, the zone inbox, or omitted, or be only `ZoneIdentity` for an org query. The RPC server injects topic filters to restrict indexed address parameters to the account, then post-filters results as a final pass. When the account is not the caller, a caller that may not read it gets no logs, without the logs being queried (see [Method Access Control](#method-access-control)).
 
 From T15, an org query has `ZoneIdentity` as its only address and names one org ID in its first, or else its second, indexed topic. It returns that org's `ZoneIdentity` events: `OrgCreated`, `OrgAdminUpdated`, `L1TargetUpdated`, `L1PolicyUpdated` and `ReaderUpdated` naming the org first, `MemberAdded` and `MemberRemoved` naming it second, and `EdgeUpdated` naming it either way. `MemberRemoved` names the org the account left. Only the org's admin and its readers at the latest block may read them, and others get no logs, without the logs being queried. They then read all of the org's history.
 
@@ -1122,6 +1126,7 @@ operator RPC transports and the authenticated redacted RPC.
 | `zone_getAuthorizationTokenInfo` | Authenticated redacted RPC only | Returns the authenticated account address and token expiry |
 | `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
 | `zone_getEncryptionKey` | Operator RPC and authenticated redacted RPC | Returns the active sequencer encryption key at the current Tempo L1 head |
+| `zone_deriveDepositAddresses` | Authenticated redacted RPC only | Returns TIP-1094 deposit addresses for the caller's master ID and up to 1024 user tags, using the registry and key versions at the zone block the portal last settled |
 
 `zone_getEncryptionKey` reads the active key directly from the portal at the current Tempo L1 head.
 Its response is:
@@ -2248,6 +2253,7 @@ interface IZoneOutbox {
     event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
 
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TokenNotEnabled();

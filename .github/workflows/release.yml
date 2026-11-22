@@ -331,7 +331,11 @@ jobs:
   bump-main-cargo-version:
     name: Open Cargo Version Bump PR
     needs: [get-version, create-release, upload-cloudflare]
-    if: ${{ startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
+    # Only tempoxyz/tempo opens the bump PR. Copies such as tempo-private-fork
+    # reset their main to upstream every hour (sync-from-upstream.yml), so a
+    # bump PR there is pointless, and the release-pr STS policy admits only
+    # this repository.
+    if: ${{ github.repository == 'tempoxyz/tempo' && startsWith(needs.get-version.outputs.version, 'v') && !contains(needs.get-version.outputs.version, 'alpha') && !contains(needs.get-version.outputs.version, 'beta') && !contains(needs.get-version.outputs.version, 'rc') }}
     runs-on: depot-ubuntu-latest
     environment: release-pr
     permissions:

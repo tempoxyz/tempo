@@ -204,6 +204,12 @@ pub trait PrecompileStorageProvider {
         false
     }
 
+    /// The address of the precompile this call frame runs, when known. A nested call's callee
+    /// sees it as `msg.sender`.
+    fn call_frame_address(&self) -> Option<Address> {
+        None
+    }
+
     /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
     /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
     /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
