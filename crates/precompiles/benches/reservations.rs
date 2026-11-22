@@ -2,7 +2,7 @@
 //! same hardfork as pricing baselines.
 //!
 //! Every operation runs through its precompile's `call` entry with ABI-encoded calldata, so
-//! decoding counts. Operations that consume state (a record, a debt) get their own fresh state,
+//! decoding counts. Operations that consume state (a record) get their own fresh state,
 //! prepared outside the timed section.
 
 use alloy::{
@@ -18,7 +18,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IReservationCore;
 use tempo_precompiles::{
     Precompile, RESERVATIONS_ADDRESS,
-    reservations::{LIEN_ROLE, MAX_CREDITORS, Reservations},
+    reservations::{LIEN_ROLE, Reservations},
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
     tip20::{ITIP20, TIP20Token},
@@ -27,23 +27,14 @@ use tempo_precompiles::{
 const NOW: u64 = 1_000;
 const EXPIRY: u64 = NOW + 600;
 const HOLD: u128 = 1_000;
-const DEBT: u128 = 10;
 /// Timed calls share one world before it is rebuilt, which keeps its maps small.
 const CHUNK: u64 = 256;
-const CREDITORS: usize = MAX_CREDITORS as usize;
 
 const ADMIN: Address = Address::repeat_byte(0x11);
 const OWNER: Address = Address::repeat_byte(0x12);
 const PAYEE: Address = Address::repeat_byte(0x13);
 const HOLDER: Address = Address::repeat_byte(0x14);
 const AUTHORITY: Address = Address::repeat_byte(0x15);
-const CREDITOR_ACCOUNTS: [Address; CREDITORS] = [
-    Address::repeat_byte(0x21),
-    Address::repeat_byte(0x22),
-    Address::repeat_byte(0x23),
-    Address::repeat_byte(0x24),
-];
-
 /// One call: the precompile, its sender and its calldata.
 struct Call {
     target: Address,
@@ -82,16 +73,14 @@ impl World {
         storage.set_timestamp(U256::from(NOW));
         let token = StorageCtx::enter(&mut storage, || {
             let mut setup = TIP20Setup::create("Core USD", "CUSD", ADMIN).with_issuer(ADMIN);
-            for account in [OWNER, PAYEE, HOLDER].into_iter().chain(CREDITOR_ACCOUNTS) {
+            for account in [OWNER, PAYEE, HOLDER] {
                 setup = setup.with_mint(account, U256::from(u64::MAX));
             }
             let mut token = setup.apply().unwrap();
             token.grant_role_internal(AUTHORITY, LIEN_ROLE).unwrap();
             if policies {
                 set_empty_compound_transfer_policy(ADMIN, token.address()).unwrap();
-                let mut receivers = vec![OWNER, PAYEE, HOLDER, AUTHORITY];
-                receivers.extend(CREDITOR_ACCOUNTS);
-                set_empty_receive_policies(ADMIN, &receivers).unwrap();
+                set_empty_receive_policies(ADMIN, &[OWNER, PAYEE, HOLDER, AUTHORITY]).unwrap();
             }
             Reservations::new().initialize().unwrap();
             token.address()
@@ -130,19 +119,18 @@ impl World {
         self.storage.set_timestamp(U256::from(timestamp));
     }
 
-    fn request(&self, id: B256, stand_in: bool) -> IReservationCore::HoldRequest {
+    fn request(&self, id: B256) -> IReservationCore::HoldRequest {
         IReservationCore::HoldRequest {
             token: self.token,
             id,
             amount: HOLD,
             expiresAt: EXPIRY,
             payee: PAYEE,
-            standIn: stand_in,
         }
     }
 
     fn hold(&mut self, id: B256) {
-        let request = self.request(id, false);
+        let request = self.request(id);
         self.run(&Call::reservations(
             OWNER,
             IReservationCore::holdCall { request },
@@ -150,7 +138,7 @@ impl World {
     }
 
     fn hold_from(&mut self, id: B256) {
-        let request = self.request(id, false);
+        let request = self.request(id);
         self.run(&Call::reservations(
             HOLDER,
             IReservationCore::holdFromCall {
@@ -158,28 +146,6 @@ impl World {
                 request,
             },
         ));
-    }
-
-    /// Leaves `debtor`, which holds none of the token, owing `DEBT` to each of the first `count`
-    /// creditors, in debts that lapse after `debt_term` seconds (zero for the longest term).
-    fn owe(&mut self, debtor: Address, count: usize, debt_term: u32) {
-        for creditor in &CREDITOR_ACCOUNTS[..count] {
-            self.run(&Call::reservations(
-                debtor,
-                IReservationCore::setPayeeTermsCall {
-                    payee: *creditor,
-                    token: self.token,
-                    terms: IReservationCore::PayeeTerms {
-                        debtCap: 1_000_000,
-                        offlineCap: 0,
-                        toleranceBps: 0,
-                        debtTerm: debt_term,
-                    },
-                },
-            ));
-            let charge = charge(self.token, debtor, *creditor, DEBT);
-            self.run(&Call::reservations(debtor, charge));
-        }
     }
 }
 
@@ -195,7 +161,6 @@ fn charge(
         id: B256::repeat_byte(0xc1),
         amount,
         payee,
-        standIn: false,
     }
 }
 
@@ -217,13 +182,6 @@ fn capture(
 /// A distinct record id for each iteration.
 fn id(index: u64) -> B256 {
     B256::from(U256::from(index + 1))
-}
-
-/// A distinct account for each iteration, holding none of the token.
-fn account(index: u64) -> Address {
-    let mut bytes = [0xaa; 20];
-    bytes[12..].copy_from_slice(&index.to_be_bytes());
-    Address::from(bytes)
 }
 
 /// Times the call `prepare` returns for each iteration, after `prepare` sets up its state.
@@ -275,12 +233,12 @@ fn baselines(c: &mut Criterion) {
 fn place(c: &mut Criterion) {
     for (name, policies) in [("hold", false), ("hold_with_policies", true)] {
         bench(c, name, policies, |world, index| {
-            let request = world.request(id(index), false);
+            let request = world.request(id(index));
             Call::reservations(OWNER, IReservationCore::holdCall { request })
         });
     }
     bench(c, "hold_from", false, |world, index| {
-        let request = world.request(id(index), false);
+        let request = world.request(id(index));
         Call::reservations(
             HOLDER,
             IReservationCore::holdFromCall {
@@ -313,19 +271,6 @@ fn place(c: &mut Criterion) {
             },
         )
     });
-    // A hold reads neither the owner's debts nor its other records: only a stand-in places one on
-    // an owner that owes, reserving nothing.
-    bench(
-        c,
-        "hold_stand_in_owing_4_creditors",
-        false,
-        |world, index| {
-            let debtor = account(index);
-            world.owe(debtor, CREDITORS, 0);
-            let request = world.request(id(index), true);
-            Call::reservations(debtor, IReservationCore::holdCall { request })
-        },
-    );
 }
 
 fn settle(c: &mut Criterion) {
@@ -389,79 +334,12 @@ fn settle(c: &mut Criterion) {
     }
 }
 
-/// Operations that loop over an owner's debts, at one creditor and at the most creditors.
-fn debts(c: &mut Criterion) {
-    for (name, count) in [
-        ("charge_into_debt_1_creditor", 1),
-        ("charge_into_debt_4_creditors", CREDITORS),
-    ] {
-        // Adds to the debt of the last creditor, so every entry is read and compared.
-        bench(c, name, false, move |world, index| {
-            let debtor = account(index);
-            world.owe(debtor, count, 0);
-            let creditor = CREDITOR_ACCOUNTS[count - 1];
-            Call::reservations(debtor, charge(world.token, debtor, creditor, DEBT))
-        });
-    }
-    // The last creditor forgives its debt and pays the rest, which repays the other three.
-    bench(c, "refund_owing_4_creditors", false, |world, index| {
-        let debtor = account(index);
-        world.owe(debtor, CREDITORS, 0);
-        Call::reservations(
-            CREDITOR_ACCOUNTS[CREDITORS - 1],
-            IReservationCore::refundCall {
-                owner: debtor,
-                token: world.token,
-                placer: debtor,
-                id: id(index),
-                amount: DEBT * CREDITORS as u128,
-            },
-        )
-    });
-    // A plain transfer to an owner that owes repays its creditors oldest first.
-    for (name, count) in [
-        ("tip20_transfer_repaying_1_creditor", 1),
-        ("tip20_transfer_repaying_4_creditors", CREDITORS),
-    ] {
-        bench(c, name, false, move |world, index| {
-            let debtor = account(index);
-            world.owe(debtor, count, 0);
-            Call::token(
-                world.token,
-                OWNER,
-                ITIP20::transferCall {
-                    to: debtor,
-                    amount: U256::from(DEBT * count as u128),
-                },
-            )
-        });
-    }
-    for (name, count) in [
-        ("clear_lapsed_debt_1_creditor", 1),
-        ("clear_lapsed_debt_4_creditors", CREDITORS),
-    ] {
-        bench(c, name, false, move |world, index| {
-            let debtor = account(index);
-            world.set_timestamp(NOW);
-            world.owe(debtor, count, 1);
-            world.set_timestamp(NOW + 2);
-            Call::reservations(
-                PAYEE,
-                IReservationCore::clearLapsedDebtCall {
-                    owner: debtor,
-                    token: world.token,
-                },
-            )
-        });
-    }
-}
-
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .sample_size(20)
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(3));
-    targets = baselines, place, settle, debts
+    targets = baselines, place, settle
 }
 criterion_main!(benches);

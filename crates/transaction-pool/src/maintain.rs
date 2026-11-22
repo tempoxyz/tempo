@@ -1632,7 +1632,6 @@ mod tests {
             let placed_owner = Address::random();
             let adjusted_owner = Address::random();
             let captured_owner = Address::random();
-            let debtor = Address::random();
             let id = B256::random();
             let receipt = TempoReceipt {
                 tx_type: TempoTxType::Legacy,
@@ -1647,10 +1646,8 @@ mod tests {
                         kind: 1,
                         payee: Address::random(),
                         amount: 1,
-                        held: 1,
                         captureLimit: 1,
                         expiresAt: 1,
-                        standIn: false,
                     }
                     .into_log_data(),
                     IReservationCore::HoldAdjusted {
@@ -1669,15 +1666,7 @@ mod tests {
                         id,
                         payee: Address::random(),
                         amount: 2,
-                        debt: 0,
                         isFinal: true,
-                    }
-                    .into_log_data(),
-                    IReservationCore::DebtRepaid {
-                        owner: debtor,
-                        creditor: Address::random(),
-                        token,
-                        amount: 4,
                     }
                     .into_log_data(),
                 ]

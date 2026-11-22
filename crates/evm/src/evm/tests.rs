@@ -4829,7 +4829,6 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
         amount,
         expiresAt: expires_at,
         payee,
-        standIn: false,
     };
     let ids: Vec<B256> = (1..=8).map(B256::repeat_byte).collect();
     let mut gas = Vec::new();
@@ -4936,7 +4935,6 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
                 id: ids[3],
                 amount: 100,
                 payee,
-                standIn: false,
             }
             .abi_encode(),
         )?,

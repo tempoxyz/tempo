@@ -537,7 +537,9 @@ impl TIP20Token {
 
         self._mint(&to, total_supply, call.amount)?;
         self.emit_event(TIP20Event::mint(call.to, call.amount))?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(())
     }
@@ -562,7 +564,9 @@ impl TIP20Token {
             call.memo,
         ))?;
         self.emit_event(TIP20Event::mint(call.to, call.amount))?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
         Ok(())
     }
 
@@ -582,12 +586,7 @@ impl TIP20Token {
         self.set_total_supply(new_supply)?;
         self.increment_balance(to.target, amount)?;
 
-        self.emit_event(to.build_transfer_event(Address::ZERO, amount))?;
-        // Virtual recipients repay in `Self::emit_virtual_hop`, after the forwarding event.
-        if to.virtual_addr.is_none() {
-            self.repay_debt(to.target, amount)?;
-        }
-        Ok(())
+        self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
 
     /// Burns `amount` from the caller's balance and reduces total supply.
@@ -895,7 +894,9 @@ impl TIP20Token {
         };
 
         self._transfer(msg_sender, &to, call.amount)?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(true)
     }
@@ -926,7 +927,9 @@ impl TIP20Token {
         };
 
         self._transfer(call.from, &to, call.amount)?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(true)
     }
@@ -950,7 +953,9 @@ impl TIP20Token {
             call.amount,
             call.memo,
         ))?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
         Ok(true)
     }
 
@@ -990,7 +995,9 @@ impl TIP20Token {
         };
 
         self._transfer(from, &to, amount)?;
-        self.emit_virtual_hop(&to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(true)
     }
@@ -1028,7 +1035,9 @@ impl TIP20Token {
         self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
 
         self._transfer(from, &to, amount)?;
-        self.emit_virtual_hop(&to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
 
         Ok(())
     }
@@ -1038,8 +1047,8 @@ impl TIP20Token {
     /// policy authorizes `from` as sender (unless `exemption` waives it) and `to` as recipient,
     /// and `to`'s TIP-1028 receive policy accepts `from`.
     ///
-    /// Every reservation movement (capture, charge, refund, seizure, debt repayment) goes through
-    /// this check, so all of them follow the same policy.
+    /// Every reservation movement (capture, charge, refund, seizure) goes through this check, so
+    /// all of them follow the same policy.
     pub(crate) fn reservation_payment_allowed(
         &self,
         from: Address,
@@ -1119,7 +1128,9 @@ impl TIP20Token {
             call.amount,
             call.memo,
         ))?;
-        self.emit_virtual_hop(&to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
+        }
         Ok(())
     }
 }
@@ -1437,27 +1448,11 @@ impl TIP20Token {
             self.increment_balance(to.target, amount)?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))?;
-        // Virtual recipients repay in `Self::emit_virtual_hop`, after the forwarding event.
-        if !to.target.is_zero() && to.virtual_addr.is_none() {
-            self.repay_debt(to.target, amount)?;
-        }
-        Ok(())
+        self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Emits the forwarding `Transfer(virtual, master)` for a virtual recipient, then
-    /// (+T16) repays the master's debt from the credit. Does nothing for direct recipients, which
-    /// `Self::_transfer` and `Self::_mint` already settled.
-    fn emit_virtual_hop(&mut self, to: &Recipient, amount: U256) -> Result<()> {
-        let Some(hop) = to.build_virtual_transfer_event(amount) else {
-            return Ok(());
-        };
-        self.emit_event(hop)?;
-        self.repay_debt(to.target, amount)
-    }
-
-    /// Whether debits and credits consult the [`Reservations`] precompile: from T16, on L1 and on
-    /// zones, which run the same reservation core over their private balances.
+    /// Whether `balanceOf` and burns consult the [`Reservations`] precompile: from T16, on L1 and
+    /// on zones, which run the same reservation core over their private balances.
     fn reservations_active(&self) -> bool {
         self.storage.spec().is_t16()
     }
@@ -1521,31 +1516,6 @@ impl TIP20Token {
     pub(crate) fn unreserve(&mut self, owner: Address, amount: U256) -> Result<()> {
         self.handle_rewards_on_mint(owner, amount)?;
         self.increment_balance(owner, amount)
-    }
-
-    /// (+T16) Repays `owner`'s debts in this token from up to `received`, oldest first,
-    /// emitting `DebtRepaid` and a `Transfer` to each creditor paid.
-    ///
-    /// Called after every credit. Only accounts counted as debtors, a slot the credit already read
-    /// on Tempo L1, reach the reservations precompile; a repayment does not repay the creditor's
-    /// own debt. A creditor that [`Self::reservation_payment_allowed`] refuses is skipped and keeps
-    /// its debt; the credit itself never reverts for that reason.
-    fn repay_debt(&mut self, owner: Address, received: U256) -> Result<()> {
-        if !self.reservations_active() || !Reservations::new().owes_debt(owner)? {
-            return Ok(());
-        }
-        let token = self.address;
-        let repayments =
-            Reservations::new().take_repayments(owner, token, received, |creditor| {
-                self.reservation_payment_allowed(owner, creditor, PaymentExemption::None)
-            })?;
-        for (creditor, repaid) in repayments {
-            self.handle_rewards_on_transfer(owner, creditor, repaid)?;
-            self.decrement_balance(owner, repaid)?;
-            self.increment_balance(creditor, repaid)?;
-            self.emit_event(TIP20Event::transfer(owner, creditor, repaid))?;
-        }
-        Ok(())
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1632,7 +1602,9 @@ impl TIP20Token {
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
-        self.emit_virtual_hop(&destination, amount)?;
+        if let Some(hop) = destination.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
         Ok(())
     }
 
@@ -1724,9 +1696,9 @@ impl TIP20Token {
             })
         );
         refund_debit?;
-        // Fee refunds never repay reservation debt: this runs outside storage-credit metering,
-        // and a repayment would write the creditor's balance slot there.
-        self.increment_balance(to, refund)
+        self.increment_balance(to, refund)?;
+
+        Ok(())
     }
 }
 

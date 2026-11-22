@@ -1,14 +1,14 @@
 //! Zone rules for the reservation core ([TIP-1153]).
 //!
-//! A zone runs the same core as Tempo L1 over its private TIP-20 balances, so private cards hold,
+//! A zone runs the same core as Tempo L1 over its private TIP-20 balances, so private payments hold,
 //! capture and refund as public ones do. Two zone rules sit in front of it:
 //!
 //! - Every state change moves or reserves funds inside the zone, so it needs T16 and the portal
 //!   admin's transfer opt-in, as a zone-internal TIP-20 transfer does.
 //! - Reads are private. A view about an owner answers only the owner and the counterparties that
-//!   owner chose: a hold's placer and payee, a holder the owner approved, a creditor or payee the
-//!   owner set terms for, and a lien's authority. Anyone else is refused, as `balanceOf` refuses
-//!   anyone but the account.
+//!   owner chose: a hold's placer and payee, a holder the owner approved, a payee the owner set a
+//!   tolerance for, and a lien's authority. Anyone else is refused, as `balanceOf` refuses anyone
+//!   but the account.
 //!   `releaseExpired`, which anyone may call, refuses a stranger to a live hold with the error a
 //!   missing hold gives.
 //!
@@ -110,27 +110,12 @@ impl<P: L1StorageReader> ReservationRules<P> {
         ))
     }
 
-    /// Admits a read of `owner`'s debts in `token`: the owner, one of its creditors, or an
-    /// approved holder.
-    fn admit_debt(caller: Address, owner: Address, token: Address) -> Result<CallCheck> {
-        if caller == owner {
-            return Ok(CallCheck::Continue);
-        }
-        let debts = Reservations::new().debt_of(owner, token)?;
-        if debts.iter().any(|debt| debt.creditor == caller)
-            || Self::holds_for(caller, owner, token)?
-        {
-            return Ok(CallCheck::Continue);
-        }
-        Ok(unauthorized())
-    }
-
     fn try_admit(&self, call: IReservationCoreCalls, caller: Address) -> Result<CallCheck> {
         use IReservationCoreCalls as C;
         // Intentionally exhaustive: an upstream ABI addition must be classified here.
         Ok(match call {
             C::approveHolder(_)
-            | C::setPayeeTerms(_)
+            | C::setCaptureTolerance(_)
             | C::hold(_)
             | C::holdFrom(_)
             | C::pledge(_)
@@ -140,8 +125,7 @@ impl<P: L1StorageReader> ReservationRules<P> {
             | C::capture(_)
             | C::release(_)
             | C::charge(_)
-            | C::refund(_)
-            | C::clearLapsedDebt(_) => self.admit_write()?,
+            | C::refund(_) => self.admit_write()?,
             C::releaseExpired(IReservationCore::releaseExpiredCall { owner, placer, id }) => {
                 self.admit_release_expired(caller, owner, placer, id)?
             }
@@ -152,15 +136,12 @@ impl<P: L1StorageReader> ReservationRules<P> {
             | C::available(IReservationCore::availableCall { owner, token }) => {
                 Self::admit_position(caller, owner, token)?
             }
-            C::debtOf(IReservationCore::debtOfCall { owner, token }) => {
-                Self::admit_debt(caller, owner, token)?
-            }
             C::budget(IReservationCore::budgetCall { owner, holder, .. }) => {
                 check_caller(caller, &[owner, holder])
             }
-            C::payeeTerms(IReservationCore::payeeTermsCall { owner, payee, .. }) => {
-                check_caller(caller, &[owner, payee])
-            }
+            C::captureTolerance(IReservationCore::captureToleranceCall {
+                owner, payee, ..
+            }) => check_caller(caller, &[owner, payee]),
         })
     }
 }
@@ -277,7 +258,6 @@ mod tests {
                     amount: 100,
                     expiresAt: expires_at,
                     payee: PAYEE,
-                    standIn: false,
                 },
             };
             core.call(&hold.abi_encode(), HOLDER)
@@ -307,7 +287,7 @@ mod tests {
             token,
         }
         .abi_encode();
-        let terms = IReservationCore::payeeTermsCall {
+        let tolerance = IReservationCore::captureToleranceCall {
             owner: OWNER,
             payee: PAYEE,
             token,
@@ -322,8 +302,8 @@ mod tests {
             (reserved.clone(), HOLDER),
             (reserved.clone(), PAYEE),
             (reserved, OUTSIDER),
-            (terms.clone(), PAYEE),
-            (terms, OUTSIDER),
+            (tolerance.clone(), PAYEE),
+            (tolerance, OUTSIDER),
         ];
         let checks = admit_all(&rules(true), TempoHardfork::T16, &calls);
         let admitted: Vec<bool> = checks.iter().map(allowed).collect();
@@ -364,7 +344,6 @@ mod tests {
                             amount,
                             expiresAt: expires_at,
                             payee: PAYEE,
-                            standIn: false,
                         },
                     }
                     .abi_encode();

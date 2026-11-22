@@ -7,12 +7,12 @@ use alloy_primitives::{Address, address};
 pub const RESERVATIONS_ADDRESS: Address = address!("0x5245535600000000000000000000000000000000");
 
 crate::sol! {
-    /// Reservation core (TIP-1153): holds, captures, charges, refunds, capped debt, pledges and
-    /// liens on TIP-20 balances.
+    /// Reservation core (TIP-1153): holds, captures, charges, refunds, pledges and liens inside
+    /// TIP-20 balances, with holders the owner gives a spend budget.
     ///
-    /// Every reservation is a hold keyed by `(owner, placer, id)`: each placer's ids are its own
-    /// namespace, and calls from the payee's side name the placer. A hold's record is deleted when
-    /// it settles, after which its id may be used again.
+    /// Every reservation is a record keyed by `(owner, placer, id)`: each placer's ids are its own
+    /// namespace, and calls from the payee's side name the placer. A record is deleted when it
+    /// settles, after which its id may be used again.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface IReservationCore {
@@ -20,18 +20,17 @@ crate::sol! {
         struct HoldRequest {
             address token;
             bytes32 id;
-            /// Amount to reserve; for a stand-in, the amount approved offline.
+            /// Amount to reserve; it must be available.
             uint128 amount;
             /// Must satisfy `now < expiresAt <= now + 31 days`.
             uint64 expiresAt;
             address payee;
-            bool standIn;
         }
 
-        /// A live hold. Every field is zero once the hold settles or if it never existed.
+        /// A live record. Every field is zero once it settles or if it never existed.
         struct HoldRecord {
             address token;
-            /// Who captures it: the merchant of an ordinary hold, the authority of a pledge or lien.
+            /// Who captures it: the payee of a hold, the authority of a pledge or lien.
             address payee;
             /// Amount still reserved.
             uint128 held;
@@ -41,7 +40,6 @@ crate::sol! {
             uint64 expiresAt;
             /// 0: none, 1: hold, 2: pledge, 3: lien.
             uint8 kind;
-            bool standIn;
         }
 
         /// A holder's spend budget on one owner's balance of one token.
@@ -58,32 +56,13 @@ crate::sol! {
             uint64 periodStart;
         }
 
-        /// The terms an owner sets for one payee in one token.
-        struct PayeeTerms {
-            /// Debt captures and charges for the payee may leave.
-            uint128 debtCap;
-            /// Debt stand-in holds and charges for the payee may leave, if above `debtCap`.
-            uint128 offlineCap;
-            /// How far captures may exceed a new hold's amount, in basis points.
-            uint16 toleranceBps;
-            /// Seconds a debt to the payee stands before it lapses; zero for the longest, 365 days.
-            uint32 debtTerm;
-        }
-
-        /// A debt the owner owes one creditor in one token.
-        struct Debt {
-            address creditor;
-            uint128 amount;
-            /// When the debt lapses.
-            uint64 lapsesAt;
-        }
-
         /// Sets `holder`'s spend budget on the caller's `token`: `limit` (saturated to 2^64 - 1)
         /// bounds what it spends per `period` plus what it holds. A zero limit revokes: no new
         /// holds, charges or pledges, while existing holds still settle. Root key only.
         function approveHolder(address holder, address token, uint128 limit, uint32 period) external;
-        /// Sets the caller's terms for `payee` in `token`. Root key only.
-        function setPayeeTerms(address payee, address token, PayeeTerms calldata terms) external;
+        /// Sets how far captures of the caller's new holds to `payee` in `token` may exceed the
+        /// held amount, in basis points. Root key only.
+        function setCaptureTolerance(address payee, address token, uint16 toleranceBps) external;
 
         /// Places a hold on the caller's own balance.
         function hold(HoldRequest calldata request) external;
@@ -110,32 +89,27 @@ crate::sol! {
         function release(address owner, address placer, bytes32 id) external;
         /// Ends a hold past its expiry. Anyone.
         function releaseExpired(address owner, address placer, bytes32 id) external;
-        /// Pays `payee` from `owner`'s balance without a hold. The owner or a holder within its
-        /// budget.
-        function charge(address owner, address token, bytes32 id, uint128 amount, address payee, bool standIn) external;
-        /// Pays `amount` from the caller back to `owner` for `placer`'s hold `id`, first
-        /// forgiving what `owner` owes the caller in `token`.
+        /// Pays `payee` from `owner`'s available balance without a hold. The owner or a holder
+        /// within its budget.
+        function charge(address owner, address token, bytes32 id, uint128 amount, address payee) external;
+        /// Pays `amount` of the caller's available balance back to `owner` for `placer`'s hold
+        /// `id`.
         function refund(address owner, address token, address placer, bytes32 id, uint128 amount) external;
-        /// Drops `owner`'s debts in `token` past their term. Anyone.
-        function clearLapsedDebt(address owner, address token) external;
 
         function getHold(address owner, address placer, bytes32 id) external view returns (HoldRecord memory);
         function reserved(address owner, address token) external view returns (uint128);
         function available(address owner, address token) external view returns (uint128);
         function budget(address owner, address holder, address token) external view returns (Budget memory);
-        function payeeTerms(address owner, address payee, address token) external view returns (PayeeTerms memory);
-        function debtOf(address owner, address token) external view returns (Debt[] memory);
+        function captureTolerance(address owner, address payee, address token) external view returns (uint16);
 
         event HolderApproved(address indexed owner, address indexed holder, address indexed token, uint128 limit, uint32 period);
-        event PayeeTermsSet(address indexed owner, address indexed payee, address indexed token, PayeeTerms terms);
-        event HoldPlaced(address indexed owner, address indexed placer, address indexed token, bytes32 id, uint8 kind, address payee, uint128 amount, uint128 held, uint128 captureLimit, uint64 expiresAt, bool standIn);
+        event CaptureToleranceSet(address indexed owner, address indexed payee, address indexed token, uint16 toleranceBps);
+        event HoldPlaced(address indexed owner, address indexed placer, address indexed token, bytes32 id, uint8 kind, address payee, uint128 amount, uint128 captureLimit, uint64 expiresAt);
         event HoldAdjusted(address indexed owner, address indexed placer, address indexed token, bytes32 id, uint128 held, uint128 captureLimit);
-        event HoldCaptured(address indexed owner, address indexed placer, address indexed token, bytes32 id, address payee, uint128 amount, uint128 debt, bool isFinal);
+        event HoldCaptured(address indexed owner, address indexed placer, address indexed token, bytes32 id, address payee, uint128 amount, bool isFinal);
         event HoldReleased(address indexed owner, address indexed placer, address indexed token, bytes32 id, uint128 amount, bool expired);
-        event Charged(address indexed owner, address indexed charger, address indexed token, bytes32 id, address payee, uint128 amount, uint128 debt);
-        event Refunded(address indexed owner, address indexed payee, address indexed token, address placer, bytes32 id, uint128 amount, uint128 forgiven);
-        event DebtRepaid(address indexed owner, address indexed creditor, address indexed token, uint128 amount);
-        event DebtLapsed(address indexed owner, address indexed creditor, address indexed token, uint128 amount);
+        event Charged(address indexed owner, address indexed charger, address indexed token, bytes32 id, address payee, uint128 amount);
+        event Refunded(address indexed owner, address indexed payee, address indexed token, address placer, bytes32 id, uint128 amount);
 
         error HoldExists();
         error HoldNotFound();
@@ -144,8 +118,6 @@ crate::sol! {
         error InsufficientAvailable();
         error BudgetExceeded();
         error CaptureLimitExceeded();
-        error DebtCapExceeded();
-        error TooManyCreditors();
         error PolicyForbids();
         error Unauthorized();
         error InvalidAmount();

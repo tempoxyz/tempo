@@ -17,7 +17,9 @@ impl Precompile for Reservations {
             |call| match call {
                 IReservationCore::IReservationCoreCalls {
                     approveHolder(call) => mutate(call, msg_sender, |sender, c| self.approve_holder(sender, c)),
-                    setPayeeTerms(call) => mutate(call, msg_sender, |sender, c| self.set_payee_terms(sender, c)),
+                    setCaptureTolerance(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_capture_tolerance(sender, c)
+                    }),
                     hold(call) => mutate(call, msg_sender, |sender, c| self.place(sender, sender, c.request)),
                     holdFrom(call) => mutate(call, msg_sender, |sender, c| {
                         self.place(sender, c.owner, c.request)
@@ -31,15 +33,13 @@ impl Precompile for Reservations {
                     releaseExpired(call) => mutate(call, msg_sender, |_, c| self.release_expired(c)),
                     charge(call) => mutate(call, msg_sender, |sender, c| self.charge(sender, c)),
                     refund(call) => mutate(call, msg_sender, |sender, c| self.refund(sender, c)),
-                    clearLapsedDebt(call) => mutate(call, msg_sender, |_, c| {
-                        self.clear_lapsed_debt(c.owner, c.token)
-                    }),
                     getHold(call) => view(call, |c| self.get_hold(c.owner, c.placer, c.id)),
                     reserved(call) => view(call, |c| self.reserved_of(c.owner, c.token)),
                     available(call) => view(call, |c| self.available_of(c.owner, c.token)),
                     budget(call) => view(call, |c| self.budget(c.owner, c.holder, c.token)),
-                    payeeTerms(call) => view(call, |c| self.payee_terms(c.owner, c.payee, c.token)),
-                    debtOf(call) => view(call, |c| self.debt_of(c.owner, c.token)),
+                    captureTolerance(call) => view(call, |c| {
+                        self.capture_tolerance(c.owner, c.payee, c.token)
+                    }),
                 }
             }
         )

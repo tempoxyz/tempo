@@ -75,7 +75,7 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         self.l1.begin_transaction(initial_anchor);
 
         // Besides the protocol allowlist, the zone's sequencer, which operates the zone and already
-        // sees its private state, may deploy contracts in top-level creations (such as the card
+        // sees its private state, may deploy contracts in top-level creations (such as payment
         // programs that hold funds through the reservation core). Creations inside calls stay off.
         // An anchor or L1 read that fails grants nothing, so the creation is refused as before.
         let deployer = request.envelope.caller();

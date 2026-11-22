@@ -16,7 +16,7 @@ const STRANGER: usize = 6;
 const AUTHORITY: usize = 7;
 /// Accounts that may place records: the owners, the holders and the authority.
 const PLACERS: [usize; 5] = [0, 1, H0, H1, AUTHORITY];
-/// Payees a hold or charge may name; the owner itself is refused.
+/// Payees a hold, charge or tolerance may name; the owner itself is refused.
 const PAYEES: [usize; 3] = [P0, P1, 0];
 const MINT: u128 = 1_000;
 /// Stands for the op's owner as its caller.
@@ -39,7 +39,6 @@ pub(super) enum Op {
         id: usize,
         amount: u128,
         ttl: u64,
-        stand_in: bool,
         payee: usize,
     },
     Pledge {
@@ -97,7 +96,6 @@ pub(super) enum Op {
         owner: usize,
         token: usize,
         amount: u128,
-        stand_in: bool,
         payee: usize,
     },
     Refund {
@@ -140,9 +138,12 @@ pub(super) enum Op {
         token: usize,
         blocked: bool,
     },
-    ClearLapsed {
+    /// Sets the owner's capture tolerance for a payee.
+    Tolerance {
         owner: usize,
+        payee: usize,
         token: usize,
+        bps: u16,
     },
     Warp {
         seconds: u64,
@@ -165,8 +166,8 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
     let placer = 0..PLACERS.len();
     let amount = 0..400u128;
     prop_oneof![
-        5 => (prop::sample::select(vec![SELF, SELF, H0, H1, STRANGER, P0]), owner.clone(), token.clone(), id.clone(), amount.clone(), 0..900u64, any::<bool>(), 0..PAYEES.len())
-            .prop_map(|(caller, owner, token, id, amount, ttl, stand_in, payee)| Op::Hold { caller, owner, token, id, amount, ttl, stand_in, payee }),
+        5 => (prop::sample::select(vec![SELF, SELF, H0, H1, STRANGER, P0]), owner.clone(), token.clone(), id.clone(), amount.clone(), 0..900u64, 0..PAYEES.len())
+            .prop_map(|(caller, owner, token, id, amount, ttl, payee)| Op::Hold { caller, owner, token, id, amount, ttl, payee }),
         1 => (owner.clone(), token.clone(), id.clone(), amount.clone(), 1..900u64, prop::sample::select(vec![P0, H0, AUTHORITY, 0]))
             .prop_map(|(owner, token, id, amount, ttl, authority)| Op::Pledge { owner, token, id, amount, ttl, authority }),
         2 => (prop::sample::select(vec![SELF, H0, H1, STRANGER]), owner.clone(), token.clone(), id.clone(), amount.clone(), 1..900u64)
@@ -181,8 +182,8 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(caller, owner, placer, id)| Op::Release { caller, owner, placer: PLACERS[placer], id }),
         1 => (owner.clone(), placer, id)
             .prop_map(|(owner, placer, id)| Op::ReleaseExpired { owner, placer: PLACERS[placer], id }),
-        3 => (prop::sample::select(vec![SELF, SELF, H0, H1, STRANGER]), owner.clone(), token.clone(), 0..700u128, any::<bool>(), 0..PAYEES.len())
-            .prop_map(|(caller, owner, token, amount, stand_in, payee)| Op::Charge { caller, owner, token, amount, stand_in, payee }),
+        3 => (prop::sample::select(vec![SELF, SELF, H0, H1, STRANGER]), owner.clone(), token.clone(), 0..700u128, 0..PAYEES.len())
+            .prop_map(|(caller, owner, token, amount, payee)| Op::Charge { caller, owner, token, amount, payee }),
         2 => (account.clone(), owner.clone(), token.clone(), 0..300u128)
             .prop_map(|(caller, owner, token, amount)| Op::Refund { caller, owner, token, amount }),
         2 => (account.clone(), account.clone(), token.clone(), 1..400u128)
@@ -197,7 +198,8 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(owner, holder, token, limit, period)| Op::Approve { owner, holder, token, limit, period }),
         1 => (account, token.clone(), any::<bool>())
             .prop_map(|(account, token, blocked)| Op::Block { account, token, blocked }),
-        1 => (owner, token).prop_map(|(owner, token)| Op::ClearLapsed { owner, token }),
+        1 => (owner, 0..PAYEES.len(), token, prop::sample::select(vec![0u16, 500, 2_000, 10_000]))
+            .prop_map(|(owner, payee, token, bps)| Op::Tolerance { owner, payee: PAYEES[payee], token, bps }),
         2 => prop_oneof![0..600u64, Just(DAY)].prop_map(|seconds| Op::Warp { seconds }),
         10 => (prop_oneof![Just(Action::Adjust), Just(Action::Capture), Just(Action::Capture), Just(Action::Release)], any::<usize>(), prop::sample::select(vec![0usize, 0, 1, 1, 2, 3]), 0..500u128, any::<bool>())
             .prop_map(|(action, pick, who, amount, is_final)| Op::Targeted { action, pick, who, amount, is_final }),
@@ -212,7 +214,6 @@ struct MHold {
     capture_limit: u128,
     expires_at: u64,
     kind: u8,
-    stand_in: bool,
     tolerance_bps: u16,
 }
 
@@ -242,21 +243,6 @@ impl MBudget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MDebt {
-    creditor: usize,
-    amount: u128,
-    lapses_at: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct MTerms {
-    debt_cap: u128,
-    offline_cap: u128,
-    tolerance_bps: u16,
-    debt_term: u32,
-}
-
 type HoldKey = (usize, usize, usize);
 type Outcome = std::result::Result<(), TempoPrecompileError>;
 
@@ -267,22 +253,14 @@ struct Model {
     balances: BTreeMap<(usize, usize), u128>,
     holds: BTreeMap<HoldKey, MHold>,
     budgets: BTreeMap<(usize, usize, usize), MBudget>,
-    terms: BTreeMap<(usize, usize, usize), MTerms>,
-    debts: BTreeMap<(usize, usize), Vec<MDebt>>,
+    /// Non-zero capture tolerances keyed by (owner, payee, token).
+    tolerances: BTreeMap<(usize, usize, usize), u16>,
     blocked: BTreeSet<(usize, usize)>,
     /// Reserved funds compliance burns took from holds, per (owner, token), not yet consumed by
     /// ending holds.
     shortfalls: BTreeMap<(usize, usize), u128>,
     /// What compliance burns destroyed, per token.
     burned: BTreeMap<usize, u128>,
-}
-
-fn refuse(cap: u128) -> TempoPrecompileError {
-    if cap == 0 {
-        e(ReservationsError::insufficient_available())
-    } else {
-        e(ReservationsError::debt_cap_exceeded())
-    }
 }
 
 impl Model {
@@ -315,122 +293,21 @@ impl Model {
         }
     }
 
-    fn live_debts(&self, owner: usize, token: usize) -> Vec<MDebt> {
-        self.debts
-            .get(&(owner, token))
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|d| self.now < d.lapses_at)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn set_debts(&mut self, owner: usize, token: usize, entries: Vec<MDebt>) {
-        if entries.is_empty() {
-            self.debts.remove(&(owner, token));
-        } else {
-            self.debts.insert((owner, token), entries);
-        }
-    }
-
-    /// Moves a payment and repays the recipient's debts in the token from it, as a TIP-20 credit
-    /// does.
     fn move_funds(&mut self, token: usize, from: usize, to: usize, amount: u128) {
         if amount == 0 {
             return;
         }
         self.sub(token, from, amount);
-        self.credit(token, to, amount);
+        self.add(token, to, amount);
     }
 
-    fn credit(&mut self, token: usize, account: usize, amount: u128) {
-        self.add(token, account, amount);
-        if !self.debts.contains_key(&(account, token)) {
-            return;
+    /// Pays from the owner's available balance; nothing beyond it.
+    fn pay(&mut self, token: usize, owner: usize, payee: usize, amount: u128) -> Outcome {
+        if amount > self.bal(token, owner) {
+            return Err(e(ReservationsError::insufficient_available()));
         }
-        let mut entries = self.live_debts(account, token);
-        let mut left = amount;
-        for entry in &mut entries {
-            if left == 0 {
-                break;
-            }
-            if !self.allowed(token, account, entry.creditor, false) {
-                continue;
-            }
-            let repaid = left.min(entry.amount);
-            left -= repaid;
-            entry.amount -= repaid;
-            self.sub(token, account, repaid);
-            self.add(token, entry.creditor, repaid);
-        }
-        entries.retain(|entry| entry.amount != 0);
-        self.set_debts(account, token, entries);
-    }
-
-    fn add_debt(
-        &mut self,
-        owner: usize,
-        token: usize,
-        creditor: usize,
-        amount: u128,
-        offline: bool,
-    ) -> Outcome {
-        let terms = self
-            .terms
-            .get(&(owner, creditor, token))
-            .copied()
-            .unwrap_or_default();
-        let cap = if offline {
-            terms.debt_cap.max(terms.offline_cap)
-        } else {
-            terms.debt_cap
-        };
-        let mut entries = self.live_debts(owner, token);
-        if let Some(entry) = entries.iter_mut().find(|entry| entry.creditor == creditor) {
-            if entry.amount + amount > cap {
-                return Err(refuse(cap));
-            }
-            entry.amount += amount;
-        } else {
-            if amount > cap {
-                return Err(refuse(cap));
-            }
-            if entries.len() >= usize::from(MAX_CREDITORS) {
-                return Err(e(ReservationsError::too_many_creditors()));
-            }
-            let term = match u64::from(terms.debt_term) {
-                0 => MAX_DEBT_TERM,
-                term => term.min(MAX_DEBT_TERM),
-            };
-            entries.push(MDebt {
-                creditor,
-                amount,
-                lapses_at: self.now + term,
-            });
-        }
-        self.set_debts(owner, token, entries);
+        self.move_funds(token, owner, payee, amount);
         Ok(())
-    }
-
-    /// Pays from the owner's available balance, recording what it lacks as debt; returns the debt.
-    fn pay(
-        &mut self,
-        token: usize,
-        owner: usize,
-        payee: usize,
-        amount: u128,
-        offline: bool,
-    ) -> std::result::Result<u128, TempoPrecompileError> {
-        let paid = amount.min(self.bal(token, owner));
-        let debt = amount - paid;
-        if debt != 0 {
-            self.add_debt(owner, token, payee, debt, offline)?;
-        }
-        self.move_funds(token, owner, payee, paid);
-        Ok(debt)
     }
 
     fn budget_mut(&mut self, owner: usize, holder: usize, token: usize) -> &mut MBudget {
@@ -565,7 +442,6 @@ impl Model {
         id: usize,
         amount: u128,
         expires_at: u64,
-        stand_in: bool,
         payee: usize,
     ) -> Outcome {
         if amount == 0 {
@@ -581,34 +457,28 @@ impl Model {
             self.admit(owner, placer, token, amount)?;
         }
         self.ensure_allowed(token, owner, payee, false)?;
-        let free = self.free_for_holds(token, owner);
-        let held = if stand_in {
-            free.min(amount)
-        } else if amount > free {
+        if amount > self.free_for_holds(token, owner) {
             return Err(e(ReservationsError::insufficient_available()));
-        } else {
-            amount
-        };
+        }
         let tolerance_bps = self
-            .terms
+            .tolerances
             .get(&(owner, payee, token))
-            .map(|t| t.tolerance_bps)
+            .copied()
             .unwrap_or(0);
         let capture_limit = amount * (10_000 + u128::from(tolerance_bps)) / 10_000;
         if placer != owner {
-            self.draw(owner, placer, token, amount, held, 0)?;
+            self.draw(owner, placer, token, amount, amount, 0)?;
         }
-        self.sub(token, owner, held);
+        self.sub(token, owner, amount);
         self.holds.insert(
             (owner, placer, id),
             MHold {
                 token,
                 payee,
-                held,
+                held: amount,
                 capture_limit,
                 expires_at,
                 kind: kind::HOLD,
-                stand_in,
                 tolerance_bps,
             },
         );
@@ -652,7 +522,6 @@ impl Model {
                 capture_limit: amount,
                 expires_at,
                 kind: kind::PLEDGE,
-                stand_in: false,
                 tolerance_bps: 0,
             },
         );
@@ -668,7 +537,6 @@ impl Model {
                 id,
                 amount,
                 ttl,
-                stand_in,
                 payee,
             } => self.hold(
                 caller,
@@ -677,7 +545,6 @@ impl Model {
                 id,
                 amount,
                 self.now + ttl,
-                stand_in,
                 PAYEES[payee],
             ),
             Op::Pledge {
@@ -737,7 +604,6 @@ impl Model {
                         capture_limit: amount,
                         expires_at,
                         kind: kind::LIEN,
-                        stand_in: false,
                         tolerance_bps: 0,
                     },
                 );
@@ -770,9 +636,6 @@ impl Model {
                     let increase = amount - hold.held;
                     let wanted = amount * (10_000 + u128::from(hold.tolerance_bps)) / 10_000;
                     let raise = wanted.saturating_sub(hold.capture_limit);
-                    if raise != 0 && hold.stand_in {
-                        return Err(e(ReservationsError::invalid_amount()));
-                    }
                     self.ensure_allowed(token, owner, hold.payee, false)?;
                     if increase > self.free_for_holds(token, owner) {
                         return Err(e(ReservationsError::insufficient_available()));
@@ -838,7 +701,7 @@ impl Model {
                     self.settle(owner, placer, token, from_hold, rest, excess)?;
                 }
                 if hold.kind == kind::HOLD {
-                    self.pay(token, owner, hold.payee, amount, hold.stand_in)?;
+                    self.pay(token, owner, hold.payee, amount)?;
                 } else {
                     self.unreserve(token, owner, from_hold + rest, true);
                     self.move_funds(token, owner, hold.payee, from_hold);
@@ -890,7 +753,6 @@ impl Model {
                 owner,
                 token,
                 amount,
-                stand_in,
                 payee,
             } => {
                 let payee = PAYEES[payee];
@@ -901,8 +763,7 @@ impl Model {
                     self.draw(owner, caller, token, amount, 0, amount)?;
                 }
                 self.ensure_allowed(token, owner, payee, false)?;
-                self.pay(token, owner, payee, amount, stand_in)?;
-                Ok(())
+                self.pay(token, owner, payee, amount)
             }
             Op::Refund {
                 caller,
@@ -914,21 +775,10 @@ impl Model {
                     return Err(e(ReservationsError::invalid_amount()));
                 }
                 self.ensure_allowed(token, caller, owner, false)?;
-                let mut entries = self.live_debts(owner, token);
-                let mut forgiven = 0;
-                if let Some(entry) = entries.iter_mut().find(|entry| entry.creditor == caller) {
-                    forgiven = entry.amount.min(amount);
-                    entry.amount -= forgiven;
-                }
-                entries.retain(|entry| entry.amount != 0);
-                if self.debts.contains_key(&(owner, token)) {
-                    self.set_debts(owner, token, entries);
-                }
-                let paid = amount - forgiven;
-                if paid > self.bal(token, caller) {
+                if amount > self.bal(token, caller) {
                     return Err(e(ReservationsError::insufficient_available()));
                 }
-                self.move_funds(token, caller, owner, paid);
+                self.move_funds(token, caller, owner, amount);
                 Ok(())
             }
             Op::Transfer {
@@ -1004,10 +854,19 @@ impl Model {
                 }
                 Ok(())
             }
-            Op::ClearLapsed { owner, token } => {
-                if self.debts.contains_key(&(owner, token)) {
-                    let entries = self.live_debts(owner, token);
-                    self.set_debts(owner, token, entries);
+            Op::Tolerance {
+                owner,
+                payee,
+                token,
+                bps,
+            } => {
+                if payee == owner {
+                    return Err(e(ReservationsError::unauthorized()));
+                }
+                if bps == 0 {
+                    self.tolerances.remove(&(owner, payee, token));
+                } else {
+                    self.tolerances.insert((owner, payee, token), bps);
                 }
                 Ok(())
             }
@@ -1111,41 +970,19 @@ impl World {
                         },
                     );
                 }
-                let terms = [
-                    (
-                        P0,
-                        MTerms {
-                            debt_cap: 100,
-                            offline_cap: 250,
-                            tolerance_bps: 2_000,
-                            debt_term: 0,
-                        },
-                    ),
-                    (
-                        P1,
-                        MTerms {
-                            debt_cap: 0,
-                            offline_cap: 50,
-                            tolerance_bps: 0,
-                            debt_term: DAY as u32,
-                        },
-                    ),
-                ];
-                for (payee, t) in terms {
-                    reservations.set_payee_terms(
+                // Two payees with different tolerances; P1's is zero, as an unset one is.
+                for (payee, bps) in [(P0, 2_000u16), (P1, 0)] {
+                    reservations.set_capture_tolerance(
                         accounts[owner],
-                        IReservationCore::setPayeeTermsCall {
+                        IReservationCore::setCaptureToleranceCall {
                             payee: accounts[payee],
                             token: token_address,
-                            terms: IReservationCore::PayeeTerms {
-                                debtCap: t.debt_cap,
-                                offlineCap: t.offline_cap,
-                                toleranceBps: t.tolerance_bps,
-                                debtTerm: t.debt_term,
-                            },
+                            toleranceBps: bps,
                         },
                     )?;
-                    model.terms.insert((owner, payee, token), t);
+                    if bps != 0 {
+                        model.tolerances.insert((owner, payee, token), bps);
+                    }
                 }
             }
         }
@@ -1172,7 +1009,6 @@ impl World {
                 id,
                 amount,
                 ttl,
-                stand_in,
                 payee,
             } => {
                 let request = IReservationCore::HoldRequest {
@@ -1181,7 +1017,6 @@ impl World {
                     amount,
                     expiresAt: now + ttl,
                     payee: a(PAYEES[payee]),
-                    standIn: stand_in,
                 };
                 self.reservations.place(a(caller), a(owner), request)
             }
@@ -1294,7 +1129,6 @@ impl World {
                 owner,
                 token,
                 amount,
-                stand_in,
                 payee,
             } => self.reservations.charge(
                 a(caller),
@@ -1304,7 +1138,6 @@ impl World {
                     id: B256::ZERO,
                     amount,
                     payee: a(PAYEES[payee]),
-                    standIn: stand_in,
                 },
             ),
             Op::Refund {
@@ -1395,9 +1228,19 @@ impl World {
                     },
                 )
             }
-            Op::ClearLapsed { owner, token } => self
-                .reservations
-                .clear_lapsed_debt(a(owner), token_address(token)),
+            Op::Tolerance {
+                owner,
+                payee,
+                token,
+                bps,
+            } => self.reservations.set_capture_tolerance(
+                a(owner),
+                IReservationCore::setCaptureToleranceCall {
+                    payee: a(payee),
+                    token: token_address(token),
+                    toleranceBps: bps,
+                },
+            ),
             Op::Warp { seconds } => {
                 warp(seconds);
                 Ok(())
@@ -1560,7 +1403,6 @@ impl World {
                             captureLimit: h.capture_limit,
                             expiresAt: h.expires_at,
                             kind: h.kind,
-                            standIn: h.stand_in,
                         });
                     eyre::ensure!(
                         got == want,
@@ -1568,7 +1410,6 @@ impl World {
                     );
                 }
             }
-            let mut owes = false;
             for token in 0..TOKENS {
                 let address = self.tokens[token].address();
                 for holder in [H0, H1, STRANGER] {
@@ -1612,59 +1453,37 @@ impl World {
                         "outstanding ({owner}, {holder}, {token})"
                     );
                 }
-                let got: Vec<(Address, u128)> = self
-                    .reservations
-                    .debt_of(self.accounts[owner], address)?
-                    .into_iter()
-                    .map(|d| (d.creditor, d.amount))
-                    .collect();
-                let want: Vec<(Address, u128)> = m
-                    .live_debts(owner, token)
-                    .into_iter()
-                    .map(|d| (self.accounts[d.creditor], d.amount))
-                    .collect();
-                eyre::ensure!(got == want, "debts ({owner}, {token}): {got:?} != {want:?}");
-                eyre::ensure!(
-                    want.len() <= usize::from(MAX_CREDITORS),
-                    "too many creditors"
-                );
-                for d in m.debts.get(&(owner, token)).into_iter().flatten() {
-                    let t = m
-                        .terms
-                        .get(&(owner, d.creditor, token))
+                for payee in [P0, P1, 0, STRANGER] {
+                    let got = self.reservations.capture_tolerance(
+                        self.accounts[owner],
+                        self.accounts[payee],
+                        address,
+                    )?;
+                    let want = m
+                        .tolerances
+                        .get(&(owner, payee, token))
                         .copied()
-                        .unwrap_or_default();
+                        .unwrap_or(0);
                     eyre::ensure!(
-                        d.amount <= t.debt_cap.max(t.offline_cap),
-                        "debt past its cap"
-                    );
-                    eyre::ensure!(
-                        d.lapses_at <= m.now + MAX_DEBT_TERM,
-                        "debt standing past its term"
+                        got == want,
+                        "tolerance ({owner}, {payee}, {token}): {got} != {want}"
                     );
                 }
-                owes |= m.debts.contains_key(&(owner, token));
             }
-            eyre::ensure!(
-                self.reservations.owes_debt(self.accounts[owner])? == owes,
-                "debtor count of {owner}"
-            );
         }
-        // Settled records and finished debts leave nothing behind.
+        // Settled records leave nothing behind.
         let positions = (0..ACCOUNTS)
             .flat_map(|account| (0..TOKENS).map(move |token| (account, token)))
             .filter(|&(account, token)| {
                 m.holds
                     .iter()
                     .any(|((o, _, _), h)| *o == account && h.token == token && h.held != 0)
-                    || m.debts.contains_key(&(account, token))
             })
             .count();
         let expected = 2 * m.holds.len()
             + positions
             + m.budgets.values().filter(|b| b.nonzero()).count()
-            + m.terms.len()
-            + m.debts.values().map(Vec::len).sum::<usize>()
+            + m.tolerances.len()
             + m.shortfalls.len();
         eyre::ensure!(
             slots == expected,

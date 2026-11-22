@@ -62,7 +62,6 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         amount,
         expiresAt: now + 3_600,
         payee,
-        standIn: false,
     };
 
     let id = B256::random();
@@ -124,16 +123,7 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .await?;
     assert!(receipt.status());
     let receipt = reservations
-        .setPayeeTerms(
-            payee,
-            token_address,
-            IReservationCore::PayeeTerms {
-                debtCap: 0,
-                offlineCap: 0,
-                toleranceBps: 1_000,
-                debtTerm: 0,
-            },
-        )
+        .setCaptureTolerance(payee, token_address, 1_000)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
@@ -174,7 +164,7 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .iter()
         .find_map(|log| IReservationCore::HoldCaptured::decode_log(&log.inner).ok())
         .expect("capture emits HoldCaptured");
-    assert_eq!((captured.amount, captured.debt), (650, 0));
+    assert_eq!((captured.amount, captured.isFinal), (650, true));
     assert_eq!(token.balanceOf(payee).call().await?, U256::from(650));
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(350));
     assert_eq!(reservations.reserved(owner, token_address).call().await?, 0);
@@ -251,7 +241,7 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
 
     // The holder charges without a hold, within its budget.
     let receipt = holder_reservations
-        .charge(owner, token_address, B256::random(), 80, payee, false)
+        .charge(owner, token_address, B256::random(), 80, payee)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(3_000_000)
         .send()
@@ -264,10 +254,10 @@ async fn test_hold_capture_refund() -> eyre::Result<()> {
         .iter()
         .find_map(|log| IReservationCore::Charged::decode_log(&log.inner).ok())
         .expect("charge emits Charged");
-    assert_eq!((charged.amount, charged.debt), (80, 0));
+    assert_eq!((charged.amount, charged.payee), (80, payee));
     assert_eq!(token.balanceOf(owner).call().await?, U256::from(200));
     let Err(err) = holder_reservations
-        .charge(owner, token_address, B256::random(), 51, payee, false)
+        .charge(owner, token_address, B256::random(), 51, payee)
         .call()
         .await
     else {

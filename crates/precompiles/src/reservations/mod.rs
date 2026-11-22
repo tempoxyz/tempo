@@ -1,27 +1,31 @@
-//! Reservation core ([TIP-1153]): holds, captures, charges, refunds, capped debt, pledges and
-//! liens on TIP-20 balances.
+//! Reservation core ([TIP-1153]): holds, captures, charges, refunds, pledges and liens inside
+//! TIP-20 balances, with holders the owner gives a spend budget.
 //!
-//! Every reservation is a hold record keyed by `(owner, placer, id)`, so each placer's ids are its
-//! own namespace and nobody can take another placer's id. A hold moves part of the owner's balance
-//! out of its TIP-20 balance slot and reserves it for a payee until an expiry. Transfers, fees and
-//! the pool read only the balance slot, so they never see reservations; `balanceOf` adds them back.
-//! A record is two slots and is deleted when it settles.
+//! It is a payment primitive: funds stay in the owner's balance, set aside for a payee until they
+//! are paid, returned or expire. Card authorization is one use (authorize, then capture the final
+//! amount within a tolerance); deposits, pre-authorization, capped subscriptions, escrow and
+//! collateral kept in place are others. Program logic lives in the contracts that place records.
+//!
+//! Every reservation is a record keyed by `(owner, placer, id)`, so each placer's ids are its own
+//! namespace and nobody can take another placer's id. A hold moves part of the owner's balance out
+//! of its TIP-20 balance slot and reserves it for a payee until an expiry. Transfers, fees and the
+//! pool read only the balance slot, so they never see reservations; `balanceOf` adds them back. A
+//! record is two slots and is deleted when it settles.
 //!
 //! Three kinds share the record:
 //!
 //! - A hold, placed by the owner or by a holder within the spend budget the owner approved, pays a
-//!   merchant payee. The placer adjusts it; the placer or payee captures or releases it. Captures
-//!   may exceed it up to the tolerance the owner set for the payee when it was placed; the excess
-//!   comes from the available balance, then from debt within the owner's caps.
+//!   payee. The placer adjusts it; the placer or payee captures or releases it. Captures may exceed
+//!   it up to the tolerance the owner set for the payee when it was placed; the excess comes from
+//!   the owner's available balance.
 //! - A pledge reserves funds for an authority (the payee) for up to 400 days, placed by the owner or
 //!   by a holder on its own behalf within its budget. Only the authority reduces, seizes (captures)
 //!   or releases it.
 //! - A lien reserves funds for a holder of the token's `LIEN_ROLE`, with or without expiry. Only that
 //!   authority reduces, seizes or releases it, and seizure needs the role at that time.
 //!
-//! After its expiry a record can only be released, by anyone. Debt is owed per creditor, lapses
-//! after the term the owner set for that creditor, and is repaid oldest first from the owner's
-//! incoming credits of the token.
+//! After its expiry a record can only be released, by anyone. A charge pays from the available
+//! balance without a record. Nothing is ever paid beyond what a record backs or the owner holds.
 //!
 //! [TIP-1153]: <https://docs.tempo.xyz/protocol/tips/tip-1153>
 
@@ -34,7 +38,6 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{ContractStorage, Handler, Mapping},
     tip20::{Recipient, TIP20Token},
-    tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, B256, U256};
 use keccak_const::Keccak256;
@@ -42,7 +45,6 @@ pub use tempo_contracts::precompiles::{
     IReservationCore, RESERVATIONS_ADDRESS, ReservationsError, ReservationsEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_primitives::TempoEvmKind;
 
 /// Longest a hold may last, in seconds: 31 days.
 pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
@@ -50,13 +52,6 @@ pub const MAX_HOLD_DURATION: u64 = 31 * 24 * 60 * 60;
 /// Longest a pledge may last, in seconds: 400 days, enough for a 90 to 120 day reserve with room to
 /// spare.
 pub const MAX_PLEDGE_DURATION: u64 = 400 * 24 * 60 * 60;
-
-/// Longest a debt may stand before it lapses, in seconds: 365 days. Also the term of a creditor the
-/// owner set none for.
-pub const MAX_DEBT_TERM: u64 = 365 * 24 * 60 * 60;
-
-/// Most creditors one owner may owe in one token at a time.
-pub const MAX_CREDITORS: u8 = 4;
 
 /// TIP-20 role whose holders may lien balances of that token, granted by the token's
 /// administrator with `grantRole`. Computed as `keccak256("LIEN_ROLE")`.
@@ -85,16 +80,12 @@ pub(crate) enum PaymentExemption {
     Sender,
 }
 
-/// Reserved funds of one owner in one token and how many creditors it owes, in one slot.
-///
-/// TIP-20 reads it for `balanceOf` and, for owners counted as debtors, after credits.
+/// Reserved funds of one owner in one token, in one slot. TIP-20 reads it for `balanceOf`.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct Position {
     /// Funds held outside the owner's balance slot for its live records, less what compliance
     /// burns took from its holds (`Reservations::shortfalls`).
     reserved: u128,
-    /// Number of debt entries in `Reservations::debts`.
-    creditors: u8,
     /// Whether the shortfall may be non-zero, so record changes skip that slot otherwise.
     short: bool,
     /// Part of `reserved` held by live pledges and liens, which compliance burns never take.
@@ -148,24 +139,6 @@ impl Budget {
     }
 }
 
-/// The terms an owner sets for one payee or creditor in one token, in one slot.
-#[derive(Debug, Clone, Copy, Default, Storable)]
-struct Terms {
-    debt_cap: u64,
-    offline_cap: u64,
-    tolerance_bps: u16,
-    /// Zero means [`MAX_DEBT_TERM`].
-    debt_term: u32,
-}
-
-/// One creditor's debt, in one slot.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-struct DebtEntry {
-    creditor: Address,
-    amount: u64,
-    lapses_at: u32,
-}
-
 /// First slot of a record. The record exists while `token` is non-zero.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct HoldHead {
@@ -185,7 +158,6 @@ struct HoldTerms {
     /// The payee's capture tolerance when the hold was placed.
     tolerance_bps: u16,
     kind: u8,
-    stand_in: bool,
 }
 
 /// A loaded record and its key.
@@ -225,46 +197,17 @@ pub struct Reservations {
     shortfalls: Mapping<Address, Mapping<Address, u128>>,
     /// Keyed by owner, holder, then token.
     budgets: Mapping<Address, Mapping<Address, Mapping<Address, Budget>>>,
-    /// Keyed by owner, payee, then token.
-    terms: Mapping<Address, Mapping<Address, Mapping<Address, Terms>>>,
-    /// Debt entries keyed by owner, token, then position, oldest first.
-    debts: Mapping<Address, Mapping<Address, Mapping<u8, DebtEntry>>>,
+    /// Capture tolerance in basis points, keyed by owner, payee, then token.
+    tolerances: Mapping<Address, Mapping<Address, Mapping<Address, u16>>>,
     /// Records keyed by owner, placer, then id, one mapping per slot.
     hold_heads: Mapping<Address, Mapping<Address, Mapping<B256, HoldHead>>>,
     hold_terms: Mapping<Address, Mapping<Address, Mapping<B256, HoldTerms>>>,
-    /// On a zone, the number of tokens in which each owner owes debt. Tempo L1 keeps this count in
-    /// the owner's TIP-1028 receive policy slot, which a zone mirrors from L1 and cannot write.
-    zone_debts: Mapping<Address, u32>,
 }
 
 impl Reservations {
     /// Initializes the precompile account.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
-    }
-
-    /// Returns whether `owner` owes debt in any token, which every credit of a TIP-20 token checks
-    /// before looking for a repayment.
-    pub(crate) fn owes_debt(&self, owner: Address) -> Result<bool> {
-        if matches!(self.storage.kind(), TempoEvmKind::Zone) {
-            return Ok(self.zone_debts[owner].read()? != 0);
-        }
-        TIP403Registry::new().has_reservation_debt(owner)
-    }
-
-    /// Counts a token in which `owner` starts (`owes`) or stops owing debt.
-    fn count_debt(&mut self, owner: Address, owes: bool) -> Result<()> {
-        if !matches!(self.storage.kind(), TempoEvmKind::Zone) {
-            return TIP403Registry::new().count_reservation_debt(owner, owes);
-        }
-        let count = self.zone_debts[owner].read()?;
-        let count = if owes {
-            count.checked_add(1)
-        } else {
-            count.checked_sub(1)
-        }
-        .ok_or_else(TempoPrecompileError::under_overflow)?;
-        self.zone_debts[owner].write(count)
     }
 
     /// Returns the amount of `token` that `owner` has reserved.
@@ -317,50 +260,6 @@ impl Reservations {
         Ok(U256::from(taken))
     }
 
-    /// Settles `owner`'s debts in `token` from up to `received`, oldest first, dropping lapsed
-    /// ones, and emits `DebtRepaid` for each.
-    ///
-    /// Called by TIP-20 after crediting an owner counted as a debtor. `admits` tells from a
-    /// creditor whether a repayment may move to it now; a refused creditor keeps its debt. Returns
-    /// each creditor paid and the amount TIP-20 must move from `owner` to it.
-    pub(crate) fn take_repayments(
-        &mut self,
-        owner: Address,
-        token: Address,
-        received: U256,
-        mut admits: impl FnMut(Address) -> Result<bool>,
-    ) -> Result<Vec<(Address, U256)>> {
-        let mut position = self.positions[owner][token].read()?;
-        if position.creditors == 0 {
-            return Ok(Vec::new());
-        }
-        let loaded = self.load_debts(owner, token, position.creditors)?;
-        let mut entries = self.drop_lapsed(owner, token, &loaded)?;
-        let mut left: u64 = received.saturating_to();
-        let mut paid = Vec::new();
-        for entry in &mut entries {
-            if left == 0 {
-                break;
-            }
-            if !admits(entry.creditor)? {
-                continue;
-            }
-            let repaid = left.min(entry.amount);
-            left -= repaid;
-            entry.amount -= repaid;
-            self.emit_event(ReservationsEvent::debt_repaid(
-                owner,
-                entry.creditor,
-                token,
-                repaid.into(),
-            ))?;
-            paid.push((entry.creditor, U256::from(repaid)));
-        }
-        entries.retain(|entry| entry.amount != 0);
-        self.store_debts(owner, token, &mut position, &loaded, &entries)?;
-        Ok(paid)
-    }
-
     fn approve_holder(
         &mut self,
         owner: Address,
@@ -389,27 +288,18 @@ impl Reservations {
         ))
     }
 
-    fn set_payee_terms(
+    fn set_capture_tolerance(
         &mut self,
         owner: Address,
-        call: IReservationCore::setPayeeTermsCall,
+        call: IReservationCore::setCaptureToleranceCall,
     ) -> Result<()> {
         let payee = resolve_counterparty_as_root(owner, call.payee, call.token)?;
-        if u64::from(call.terms.debtTerm) > MAX_DEBT_TERM {
-            return Err(ReservationsError::invalid_expiry().into());
-        }
-        let terms = Terms {
-            debt_cap: u64::try_from(call.terms.debtCap).unwrap_or(u64::MAX),
-            offline_cap: u64::try_from(call.terms.offlineCap).unwrap_or(u64::MAX),
-            tolerance_bps: call.terms.toleranceBps,
-            debt_term: call.terms.debtTerm,
-        };
-        self.terms[owner][payee][call.token].write(terms)?;
-        self.emit_event(ReservationsEvent::payee_terms_set(
+        self.tolerances[owner][payee][call.token].write(call.toleranceBps)?;
+        self.emit_event(ReservationsEvent::capture_tolerance_set(
             owner,
             payee,
             call.token,
-            terms_abi(terms),
+            call.toleranceBps,
         ))
     }
 
@@ -440,20 +330,13 @@ impl Reservations {
             None
         };
         ensure_allowed(&token, owner, payee, PaymentExemption::None)?;
-        let free = self.available_to_holds(&token, owner)?;
-        let held = if request.standIn {
-            u64::try_from(free).unwrap_or(u64::MAX).min(amount)
-        } else if u128::from(amount) > free {
+        if u128::from(amount) > self.available_to_holds(&token, owner)? {
             return Err(ReservationsError::insufficient_available().into());
-        } else {
-            amount
-        };
-        let tolerance_bps = self.terms[owner][payee][request.token]
-            .tolerance_bps
-            .read()?;
+        }
+        let tolerance_bps = self.tolerances[owner][payee][request.token].read()?;
         let capture_limit = with_tolerance(amount, tolerance_bps);
         if let Some(mut budget) = budget {
-            budget.outstanding += held;
+            budget.outstanding += amount;
             self.budgets[owner][placer][request.token].write(budget)?;
         } else {
             // An access key answers for everything the hold lets captures pay, not only what it
@@ -464,20 +347,19 @@ impl Reservations {
                 U256::from(capture_limit),
             )?;
         }
-        self.reserve(&mut token, owner, held.into(), false)?;
+        self.reserve(&mut token, owner, amount.into(), false)?;
         let terms = HoldTerms {
             payee,
             capture_limit,
             tolerance_bps,
             kind: kind::HOLD,
-            stand_in: request.standIn,
         };
         self.write_record(
             owner,
             placer,
             request.id,
             request.token,
-            held,
+            amount,
             request.expiresAt,
             terms,
         )?;
@@ -489,10 +371,8 @@ impl Reservations {
             kind::HOLD,
             payee,
             request.amount,
-            held.into(),
             capture_limit.into(),
             request.expiresAt,
-            request.standIn,
         ))
     }
 
@@ -534,7 +414,6 @@ impl Reservations {
             capture_limit: amount,
             tolerance_bps: 0,
             kind: kind::PLEDGE,
-            stand_in: false,
         };
         self.write_record(owner, placer, id, token, amount, expires_at, terms)?;
         self.emit_event(ReservationsEvent::hold_placed(
@@ -546,9 +425,7 @@ impl Reservations {
             authority,
             amount.into(),
             amount.into(),
-            amount.into(),
             expires_at,
-            false,
         ))
     }
 
@@ -614,7 +491,6 @@ impl Reservations {
             capture_limit: amount,
             tolerance_bps: 0,
             kind: kind::LIEN,
-            stand_in: false,
         };
         self.write_record(
             owner,
@@ -634,9 +510,7 @@ impl Reservations {
             authority,
             amount.into(),
             amount.into(),
-            amount.into(),
             call.expiresAt,
-            false,
         ))
     }
 
@@ -661,10 +535,6 @@ impl Reservations {
             let increase = amount - held;
             let wanted = with_tolerance(amount, hold.terms.tolerance_bps);
             let raise = wanted.saturating_sub(hold.terms.capture_limit);
-            // A stand-in's approval was fixed offline; raising another hold raises its approval.
-            if raise != 0 && hold.terms.stand_in {
-                return Err(ReservationsError::invalid_amount().into());
-            }
             // Reserving more is a new authorization, so it checks the policy as a new hold does.
             ensure_allowed(&token, owner, hold.terms.payee, PaymentExemption::None)?;
             if u128::from(increase) > self.available_to_holds(&token, owner)? {
@@ -753,21 +623,14 @@ impl Reservations {
         if hold.budgeted() {
             self.settle_budget(owner, hold.placer, token_address, from_hold, rest, excess)?;
         }
-        let (paid, debt) = if hold.terms.kind == kind::HOLD {
-            let debt = self.pay(
-                &mut token,
-                owner,
-                payee,
-                amount.into(),
-                hold.terms.stand_in,
-                exemption,
-            )?;
-            (u128::from(amount) - debt, debt)
+        let paid = if hold.terms.kind == kind::HOLD {
+            self.pay(&mut token, owner, payee, amount.into(), exemption)?;
+            u128::from(amount)
         } else {
-            // A seizure pays from the record alone, never creating debt.
+            // A seizure pays from the record alone.
             self.unreserve(&mut token, owner, u128::from(from_hold + rest), true)?;
             token.reservation_transfer(owner, payee, U256::from(from_hold), exemption)?;
-            (from_hold.into(), 0)
+            from_hold.into()
         };
         hold.head.held -= from_hold + rest;
         hold.terms.capture_limit = if hold.terms.kind == kind::HOLD {
@@ -789,7 +652,6 @@ impl Reservations {
             hold.id,
             payee,
             paid,
-            debt,
             settled,
         ))
     }
@@ -826,12 +688,11 @@ impl Reservations {
         if caller == owner {
             AccountKeychain::new().authorize_transfer(owner, token_address, U256::from(amount))?;
         }
-        let debt = self.pay(
+        self.pay(
             &mut token,
             owner,
             payee,
             amount.into(),
-            call.standIn,
             PaymentExemption::None,
         )?;
         self.emit_event(ReservationsEvent::charged(
@@ -841,12 +702,11 @@ impl Reservations {
             call.id,
             payee,
             amount.into(),
-            debt,
         ))
     }
 
-    /// Pays `amount` of the caller's balance back to `owner`, first forgiving what `owner` owes
-    /// the caller in the token. The placer of the hold bounds what it honors as a refund.
+    /// Pays `amount` of the caller's available balance back to `owner`. The placer of the hold
+    /// bounds what it honors as a refund.
     fn refund(&mut self, caller: Address, call: IReservationCore::refundCall) -> Result<()> {
         if call.amount == 0 {
             return Err(ReservationsError::invalid_amount().into());
@@ -854,15 +714,16 @@ impl Reservations {
         let owner = resolve_payee(call.owner)?;
         let mut token = TIP20Token::from_address(call.token)?;
         ensure_allowed(&token, caller, owner, PaymentExemption::None)?;
-        let forgiven = self.forgive(owner, call.token, caller, call.amount)?;
-        let paid = call.amount - forgiven;
-        if paid != 0 {
-            if paid > available(&token, caller)? {
-                return Err(ReservationsError::insufficient_available().into());
-            }
-            AccountKeychain::new().authorize_transfer(caller, call.token, U256::from(paid))?;
-            token.reservation_transfer(caller, owner, U256::from(paid), PaymentExemption::None)?;
+        if call.amount > available(&token, caller)? {
+            return Err(ReservationsError::insufficient_available().into());
         }
+        AccountKeychain::new().authorize_transfer(caller, call.token, U256::from(call.amount))?;
+        token.reservation_transfer(
+            caller,
+            owner,
+            U256::from(call.amount),
+            PaymentExemption::None,
+        )?;
         self.emit_event(ReservationsEvent::refunded(
             owner,
             caller,
@@ -870,18 +731,7 @@ impl Reservations {
             call.placer,
             call.id,
             call.amount,
-            forgiven,
         ))
-    }
-
-    fn clear_lapsed_debt(&mut self, owner: Address, token: Address) -> Result<()> {
-        let mut position = self.positions[owner][token].read()?;
-        if position.creditors == 0 {
-            return Ok(());
-        }
-        let loaded = self.load_debts(owner, token, position.creditors)?;
-        let entries = self.drop_lapsed(owner, token, &loaded)?;
-        self.store_debts(owner, token, &mut position, &loaded, &entries)
     }
 
     pub fn get_hold(
@@ -902,7 +752,6 @@ impl Reservations {
             captureLimit: terms.capture_limit.into(),
             expiresAt: head.expires_at.into(),
             kind: terms.kind,
-            standIn: terms.stand_in,
         })
     }
 
@@ -927,30 +776,10 @@ impl Reservations {
         })
     }
 
-    pub fn payee_terms(
-        &self,
-        owner: Address,
-        payee: Address,
-        token: Address,
-    ) -> Result<IReservationCore::PayeeTerms> {
+    /// Returns the capture tolerance `owner` set for `payee` in `token`, in basis points.
+    pub fn capture_tolerance(&self, owner: Address, payee: Address, token: Address) -> Result<u16> {
         let payee = Recipient::resolve(payee)?.target;
-        Ok(terms_abi(self.terms[owner][payee][token].read()?))
-    }
-
-    /// Returns the debts `owner` owes in `token` that have not lapsed, oldest first.
-    pub fn debt_of(&self, owner: Address, token: Address) -> Result<Vec<IReservationCore::Debt>> {
-        let count = self.positions[owner][token].creditors.read()?;
-        let now = self.now();
-        Ok(self
-            .load_debts(owner, token, count)?
-            .into_iter()
-            .filter(|entry| !lapsed(entry, now))
-            .map(|entry| IReservationCore::Debt {
-                creditor: entry.creditor,
-                amount: entry.amount.into(),
-                lapsesAt: entry.lapses_at.into(),
-            })
-            .collect())
+        self.tolerances[owner][payee][token].read()
     }
 
     fn ensure_vacant(&self, owner: Address, placer: Address, id: B256) -> Result<()> {
@@ -1167,161 +996,19 @@ impl Reservations {
         Ok(backed)
     }
 
-    /// Pays `amount` from `owner`'s available balance to `payee`, recording what it lacks as debt,
-    /// and returns that debt. `offline` lets the debt reach the owner's offline cap.
+    /// Pays `amount` from `owner`'s available balance to `payee`; nothing is paid beyond it.
     fn pay(
         &mut self,
         token: &mut TIP20Token,
         owner: Address,
         payee: Address,
         amount: u128,
-        offline: bool,
         exemption: PaymentExemption,
-    ) -> Result<u128> {
-        let paid = amount.min(available(token, owner)?);
-        let debt = amount - paid;
-        if debt != 0 {
-            self.add_debt(owner, token.address(), payee, debt, offline)?;
-        }
-        token.reservation_transfer(owner, payee, U256::from(paid), exemption)?;
-        Ok(debt)
-    }
-
-    fn add_debt(
-        &mut self,
-        owner: Address,
-        token: Address,
-        creditor: Address,
-        amount: u128,
-        offline: bool,
     ) -> Result<()> {
-        let terms = self.terms[owner][creditor][token].read()?;
-        let cap = if offline {
-            terms.debt_cap.max(terms.offline_cap)
-        } else {
-            terms.debt_cap
-        };
-        let refuse = || -> TempoPrecompileError {
-            if cap == 0 {
-                ReservationsError::insufficient_available().into()
-            } else {
-                ReservationsError::debt_cap_exceeded().into()
-            }
-        };
-        let mut position = self.positions[owner][token].read()?;
-        let loaded = self.load_debts(owner, token, position.creditors)?;
-        let mut entries = self.drop_lapsed(owner, token, &loaded)?;
-        if let Some(entry) = entries.iter_mut().find(|entry| entry.creditor == creditor) {
-            // More debt to a standing creditor keeps its lapse time, so no debt stands longer than
-            // one term.
-            let owed = u128::from(entry.amount) + amount;
-            if owed > u128::from(cap) {
-                return Err(refuse());
-            }
-            entry.amount = owed as u64;
-        } else {
-            if amount > u128::from(cap) {
-                return Err(refuse());
-            }
-            if entries.len() >= usize::from(MAX_CREDITORS) {
-                return Err(ReservationsError::too_many_creditors().into());
-            }
-            let term = match u64::from(terms.debt_term) {
-                0 => MAX_DEBT_TERM,
-                term => term.min(MAX_DEBT_TERM),
-            };
-            entries.push(DebtEntry {
-                creditor,
-                amount: amount as u64,
-                lapses_at: timestamp_u32(self.now().saturating_add(term)),
-            });
+        if amount > available(token, owner)? {
+            return Err(ReservationsError::insufficient_available().into());
         }
-        self.store_debts(owner, token, &mut position, &loaded, &entries)
-    }
-
-    /// Forgives up to `amount` of what `owner` owes `creditor` in `token`, and returns it.
-    fn forgive(
-        &mut self,
-        owner: Address,
-        token: Address,
-        creditor: Address,
-        amount: u128,
-    ) -> Result<u128> {
-        let mut position = self.positions[owner][token].read()?;
-        if position.creditors == 0 {
-            return Ok(0);
-        }
-        let loaded = self.load_debts(owner, token, position.creditors)?;
-        let mut entries = self.drop_lapsed(owner, token, &loaded)?;
-        let mut forgiven = 0;
-        if let Some(entry) = entries.iter_mut().find(|entry| entry.creditor == creditor) {
-            forgiven = entry.amount.min(amount.try_into().unwrap_or(u64::MAX));
-            entry.amount -= forgiven;
-        }
-        entries.retain(|entry| entry.amount != 0);
-        self.store_debts(owner, token, &mut position, &loaded, &entries)?;
-        Ok(forgiven.into())
-    }
-
-    fn load_debts(&self, owner: Address, token: Address, count: u8) -> Result<Vec<DebtEntry>> {
-        (0..count)
-            .map(|index| self.debts[owner][token][index].read())
-            .collect()
-    }
-
-    /// Returns `entries` without the lapsed ones, emitting `DebtLapsed` for each dropped.
-    fn drop_lapsed(
-        &mut self,
-        owner: Address,
-        token: Address,
-        entries: &[DebtEntry],
-    ) -> Result<Vec<DebtEntry>> {
-        let now = self.now();
-        let mut kept = Vec::new();
-        for entry in entries {
-            if lapsed(entry, now) {
-                self.emit_event(ReservationsEvent::debt_lapsed(
-                    owner,
-                    entry.creditor,
-                    token,
-                    entry.amount.into(),
-                ))?;
-            } else {
-                kept.push(*entry);
-            }
-        }
-        Ok(kept)
-    }
-
-    /// Writes `entries` over `loaded`, touching only slots that change, and counts `owner` as a
-    /// debtor in any token while it has entries.
-    fn store_debts(
-        &mut self,
-        owner: Address,
-        token: Address,
-        position: &mut Position,
-        loaded: &[DebtEntry],
-        entries: &[DebtEntry],
-    ) -> Result<()> {
-        for (index, entry) in entries.iter().enumerate() {
-            if loaded.get(index) != Some(entry) {
-                self.debts[owner][token][index as u8].write(*entry)?;
-            }
-        }
-        for index in entries.len()..loaded.len() {
-            self.debts[owner][token][index as u8].delete()?;
-        }
-        let count = entries.len() as u8;
-        if count == position.creditors {
-            return Ok(());
-        }
-        let was = position.creditors != 0;
-        position.creditors = count;
-        self.positions[owner][token].write(*position)?;
-        if was != (count != 0) {
-            self.count_debt(owner, count != 0)?;
-        }
-        Ok(())
+        token.reservation_transfer(owner, payee, U256::from(amount), exemption)
     }
 
     fn now(&self) -> u64 {
@@ -1338,21 +1025,7 @@ pub fn empty_hold() -> IReservationCore::HoldRecord {
         captureLimit: 0,
         expiresAt: 0,
         kind: 0,
-        standIn: false,
     }
-}
-
-fn terms_abi(terms: Terms) -> IReservationCore::PayeeTerms {
-    IReservationCore::PayeeTerms {
-        debtCap: terms.debt_cap.into(),
-        offlineCap: terms.offline_cap.into(),
-        toleranceBps: terms.tolerance_bps,
-        debtTerm: terms.debt_term,
-    }
-}
-
-fn lapsed(entry: &DebtEntry, now: u64) -> bool {
-    now >= u64::from(entry.lapses_at)
 }
 
 /// Refuses calls `account` authorized with an access key rather than its root key.
@@ -1366,7 +1039,7 @@ fn root_only(account: Address) -> Result<()> {
     Ok(())
 }
 
-/// Resolves `account`, a counterparty the owner sets terms for or pledges to, through the address
+/// Resolves `account`, a counterparty the owner sets a tolerance for or pledges to, through the address
 /// registry as a payee is, for an owner signing with its root key and a TIP-20 `token`.
 fn resolve_counterparty_as_root(
     owner: Address,
@@ -1374,7 +1047,7 @@ fn resolve_counterparty_as_root(
     token: Address,
 ) -> Result<Address> {
     root_only(owner)?;
-    // Debt is owed to resolved payees, so terms for a virtual address apply to its master.
+    // Holds pay resolved payees, so a tolerance for a virtual address applies to its master.
     let resolved = Recipient::resolve(account)?.target;
     if resolved.is_zero() || resolved == owner {
         return Err(ReservationsError::unauthorized().into());

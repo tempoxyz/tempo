@@ -12,6 +12,7 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::IReservationCore::IReservationCoreCalls;
+use tempo_primitives::TempoEvmKind;
 
 mod model;
 
@@ -49,29 +50,23 @@ impl Fixture {
         })
     }
 
-    fn request(&self, id: B256, amount: u128, stand_in: bool) -> IReservationCore::HoldRequest {
+    fn request(&self, id: B256, amount: u128) -> IReservationCore::HoldRequest {
         IReservationCore::HoldRequest {
             token: self.token.address(),
             id,
             amount,
             expiresAt: EXPIRY,
             payee: self.payee,
-            standIn: stand_in,
         }
     }
 
     fn hold(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, false);
-        self.reservations.place(self.owner, self.owner, request)
-    }
-
-    fn hold_stand_in(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, true);
+        let request = self.request(id, amount);
         self.reservations.place(self.owner, self.owner, request)
     }
 
     fn hold_from(&mut self, id: B256, amount: u128) -> Result<()> {
-        let request = self.request(id, amount, false);
+        let request = self.request(id, amount);
         self.reservations.place(self.holder, self.owner, request)
     }
 
@@ -157,17 +152,7 @@ impl Fixture {
         )
     }
 
-    fn charge(&mut self, caller: Address, amount: u128, stand_in: bool) -> Result<()> {
-        self.charge_to(caller, self.payee, amount, stand_in)
-    }
-
-    fn charge_to(
-        &mut self,
-        caller: Address,
-        payee: Address,
-        amount: u128,
-        stand_in: bool,
-    ) -> Result<()> {
+    fn charge(&mut self, caller: Address, amount: u128) -> Result<()> {
         self.reservations.charge(
             caller,
             IReservationCore::chargeCall {
@@ -175,37 +160,20 @@ impl Fixture {
                 token: self.token.address(),
                 id: B256::random(),
                 amount,
-                payee,
-                standIn: stand_in,
+                payee: self.payee,
             },
         )
     }
 
-    fn set_terms_for(
-        &mut self,
-        payee: Address,
-        debt_cap: u128,
-        offline_cap: u128,
-        tolerance_bps: u16,
-        debt_term: u32,
-    ) -> Result<()> {
-        self.reservations.set_payee_terms(
+    fn set_tolerance(&mut self, tolerance_bps: u16) -> Result<()> {
+        self.reservations.set_capture_tolerance(
             self.owner,
-            IReservationCore::setPayeeTermsCall {
-                payee,
+            IReservationCore::setCaptureToleranceCall {
+                payee: self.payee,
                 token: self.token.address(),
-                terms: IReservationCore::PayeeTerms {
-                    debtCap: debt_cap,
-                    offlineCap: offline_cap,
-                    toleranceBps: tolerance_bps,
-                    debtTerm: debt_term,
-                },
+                toleranceBps: tolerance_bps,
             },
         )
-    }
-
-    fn set_terms(&mut self, debt_cap: u128, offline_cap: u128, tolerance_bps: u16) -> Result<()> {
-        self.set_terms_for(self.payee, debt_cap, offline_cap, tolerance_bps, 0)
     }
 
     fn lien_authority(&mut self) -> Result<Address> {
@@ -291,15 +259,6 @@ impl Fixture {
     fn available(&self) -> Result<u128> {
         self.reservations
             .available_of(self.owner, self.token.address())
-    }
-
-    fn debts(&self) -> Result<Vec<(Address, u128)>> {
-        Ok(self
-            .reservations
-            .debt_of(self.owner, self.token.address())?
-            .into_iter()
-            .map(|debt| (debt.creditor, debt.amount))
-            .collect())
     }
 
     fn record(&self, placer: Address, id: B256) -> Result<IReservationCore::HoldRecord> {
@@ -457,19 +416,19 @@ fn test_hold_rejects_invalid_requests() -> eyre::Result<()> {
             err!(f.hold(id, 101)),
             e(ReservationsError::insufficient_available())
         );
-        let mut late = f.request(id, 10, false);
+        let mut late = f.request(id, 10);
         late.expiresAt = NOW + MAX_HOLD_DURATION + 1;
         assert_eq!(
             err!(f.reservations.place(f.owner, f.owner, late)),
             e(ReservationsError::invalid_expiry())
         );
-        let mut past = f.request(id, 10, false);
+        let mut past = f.request(id, 10);
         past.expiresAt = NOW;
         assert_eq!(
             err!(f.reservations.place(f.owner, f.owner, past)),
             e(ReservationsError::invalid_expiry())
         );
-        let mut to_self = f.request(id, 10, false);
+        let mut to_self = f.request(id, 10);
         to_self.payee = f.owner;
         assert_eq!(
             err!(f.reservations.place(f.owner, f.owner, to_self)),
@@ -497,7 +456,7 @@ fn test_hold_ids_are_namespaced_by_placer() -> eyre::Result<()> {
         // A stranger's charge with the id touches neither record.
         let stranger = Address::random();
         assert_eq!(
-            err!(f.charge(stranger, 1, false)),
+            err!(f.charge(stranger, 1)),
             e(ReservationsError::unauthorized())
         );
         // The payee names the placer to capture.
@@ -568,11 +527,20 @@ fn test_capture_tolerance_is_fixed_at_placement() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
-        f.set_terms(0, 0, 2_000)?;
+        f.set_tolerance(2_000)?;
+        assert_last_event(
+            &f.reservations,
+            ReservationsEvent::capture_tolerance_set(f.owner, f.payee, f.token.address(), 2_000),
+        );
+        assert_eq!(
+            f.reservations
+                .capture_tolerance(f.owner, f.payee, f.token.address())?,
+            2_000
+        );
         f.hold(id, 100)?;
         assert_eq!(f.record(f.owner, id)?.captureLimit, 120);
         // Raising the payee's tolerance later does not widen the hold.
-        f.set_terms(0, 0, 5_000)?;
+        f.set_tolerance(5_000)?;
         assert_eq!(
             err!(f.capture(f.payee, id, 121, true)),
             e(ReservationsError::capture_limit_exceeded())
@@ -584,7 +552,7 @@ fn test_capture_tolerance_is_fixed_at_placement() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_adjust_by_placer_and_stand_in_limits() -> eyre::Result<()> {
+fn test_adjust_by_placer() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         let id = B256::random();
@@ -605,15 +573,10 @@ fn test_adjust_by_placer_and_stand_in_limits() -> eyre::Result<()> {
         );
         f.adjust(f.owner, f.owner, id, 200)?;
         assert_eq!(f.record(f.owner, id)?.captureLimit, 300);
-
-        // A stand-in's approval was fixed offline.
-        let stand_in = B256::random();
-        f.hold_stand_in(stand_in, 100)?;
-        f.adjust(f.owner, f.owner, stand_in, 60)?;
-        f.adjust(f.owner, f.owner, stand_in, 100)?;
+        // Raising needs the increase available.
         assert_eq!(
-            err!(f.adjust(f.owner, f.owner, stand_in, 101)),
-            e(ReservationsError::invalid_amount())
+            err!(f.adjust(f.owner, f.owner, id, 1_001)),
+            e(ReservationsError::insufficient_available())
         );
         Ok(())
     })
@@ -648,7 +611,7 @@ fn test_hard_expiry() -> eyre::Result<()> {
 fn test_budget_spends_are_never_returned_and_reset_each_period() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(10_000)?;
-        f.set_terms(0, 0, 5_000)?;
+        f.set_tolerance(5_000)?;
         f.approve(1_000, 3_600)?;
         let (a, b) = (B256::random(), B256::random());
         f.hold_from(a, 600)?;
@@ -666,7 +629,7 @@ fn test_budget_spends_are_never_returned_and_reset_each_period() -> eyre::Result
         f.release(f.payee, f.holder, c)?;
         assert_eq!((f.budget()?.spent, f.budget()?.outstanding), (200, 0));
         // A charge spends, and a capture beyond the hold spends its excess.
-        f.charge(f.holder, 400, false)?;
+        f.charge(f.holder, 400)?;
         f.hold_from(b, 300)?;
         assert_eq!(
             err!(f.capture_of(f.payee, f.holder, b, 450, true)),
@@ -676,7 +639,7 @@ fn test_budget_spends_are_never_returned_and_reset_each_period() -> eyre::Result
         let budget = f.budget()?;
         assert_eq!((budget.spent, budget.outstanding), (1_000, 0));
         assert_eq!(
-            err!(f.charge(f.holder, 1, false)),
+            err!(f.charge(f.holder, 1)),
             e(ReservationsError::budget_exceeded())
         );
         // The next period starts afresh.
@@ -686,7 +649,7 @@ fn test_budget_spends_are_never_returned_and_reset_each_period() -> eyre::Result
             (budget.spent, budget.periodStart),
             (0, u64::from(NOW as u32) + 3_600)
         );
-        f.charge(f.holder, 1_000, false)?;
+        f.charge(f.holder, 1_000)?;
         Ok(())
     })
 }
@@ -696,10 +659,10 @@ fn test_lifetime_budget_never_resets() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(10_000)?;
         f.approve(100, 0)?;
-        f.charge(f.holder, 100, false)?;
+        f.charge(f.holder, 100)?;
         warp(400 * DAY);
         assert_eq!(
-            err!(f.charge(f.holder, 1, false)),
+            err!(f.charge(f.holder, 1)),
             e(ReservationsError::budget_exceeded())
         );
         Ok(())
@@ -721,7 +684,7 @@ fn test_revoked_holder_places_nothing_but_settles() -> eyre::Result<()> {
             e(ReservationsError::unauthorized())
         );
         assert_eq!(
-            err!(f.charge(f.holder, 1, false)),
+            err!(f.charge(f.holder, 1)),
             e(ReservationsError::unauthorized())
         );
         assert_eq!(
@@ -750,7 +713,7 @@ fn test_revoked_holder_places_nothing_but_settles() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_approve_and_terms_require_root_key() -> eyre::Result<()> {
+fn test_approve_and_tolerance_require_root_key() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
         assert_eq!(
@@ -770,14 +733,19 @@ fn test_approve_and_terms_require_root_key() -> eyre::Result<()> {
             &f.reservations,
             ReservationsEvent::holder_approved(f.owner, f.holder, f.token.address(), 10, 60),
         );
+        let to_self = IReservationCore::setCaptureToleranceCall {
+            payee: f.owner,
+            token: f.token.address(),
+            toleranceBps: 1,
+        };
         assert_eq!(
-            err!(f.set_terms_for(f.payee, 0, 0, 0, (MAX_DEBT_TERM + 1) as u32)),
-            e(ReservationsError::invalid_expiry())
+            err!(f.reservations.set_capture_tolerance(f.owner, to_self)),
+            e(ReservationsError::unauthorized())
         );
         sign_with_access_key(f.owner)?;
         assert_eq!(err!(f.approve(20, 0)), e(ReservationsError::unauthorized()));
         assert_eq!(
-            err!(f.set_terms(1, 1, 1)),
+            err!(f.set_tolerance(1)),
             e(ReservationsError::unauthorized())
         );
         assert_eq!(
@@ -794,159 +762,104 @@ fn test_approve_and_terms_require_root_key() -> eyre::Result<()> {
 fn test_access_key_holds_charge_the_full_capture_limit() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(10_000)?;
-        f.set_terms(0, 0, 5_000)?;
+        f.set_tolerance(5_000)?;
         sign_with_limited_key(f.owner, f.token.address(), 300)?;
         // 250 with 50% tolerance lets captures pay 375, more than the key may spend.
         assert!(
-            err!(f.hold_stand_in(B256::random(), 250))
+            err!(f.hold(B256::random(), 250))
                 .to_string()
                 .contains("pending")
         );
         let id = B256::random();
-        f.hold_stand_in(id, 200)?;
+        f.hold(id, 200)?;
         // The key spent 300 on the hold, so even a capture of its full limit needs nothing more.
         f.capture(f.owner, id, 300, true)?;
-        assert!(
-            err!(f.charge(f.owner, 1, false))
-                .to_string()
-                .contains("pending")
-        );
+        assert!(err!(f.charge(f.owner, 1)).to_string().contains("pending"));
         Ok(())
     })
 }
 
+/// A capture beyond its hold, within the tolerance, takes the excess from the owner's available
+/// balance and reverts when that is short; nothing is ever owed.
 #[test]
-fn test_stand_in_capture_is_capped_and_debt_reaches_the_offline_cap() -> eyre::Result<()> {
+fn test_capture_beyond_the_hold_pays_only_from_the_available_balance() -> eyre::Result<()> {
     at_fork(|| {
-        let mut f = Fixture::new(100)?;
-        f.set_terms(20, 80, 0)?;
+        let mut f = Fixture::new(130)?;
+        f.set_tolerance(5_000)?;
         let id = B256::random();
-        // A stand-in reserves what is available and records the full approval.
-        f.hold_stand_in(id, 150)?;
+        f.hold(id, 100)?;
         assert_eq!(
             (f.reserved()?, f.record(f.owner, id)?.captureLimit),
             (100, 150)
         );
         assert_eq!(
-            err!(f.capture(f.payee, id, 190, true)),
-            e(ReservationsError::capture_limit_exceeded())
+            err!(f.capture(f.payee, id, 150, true)),
+            e(ReservationsError::insufficient_available())
         );
-        f.capture(f.payee, id, 150, true)?;
-        assert_eq!(f.debts()?, vec![(f.payee, 50)]);
-        // A plain charge may not take the debt past the ordinary cap.
-        assert_eq!(
-            err!(f.charge(f.owner, 1, false)),
-            e(ReservationsError::debt_cap_exceeded())
-        );
-        f.charge(f.owner, 30, true)?;
-        assert_eq!(f.debts()?, vec![(f.payee, 80)]);
-        Ok(())
-    })
-}
-
-#[test]
-fn test_debt_has_several_creditors_repaid_oldest_first() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(0)?;
-        let creditors: Vec<Address> = (0..5).map(|_| Address::random()).collect();
-        for creditor in &creditors {
-            f.set_terms_for(*creditor, 100, 0, 0, 0)?;
-        }
-        for (index, creditor) in creditors.iter().take(4).enumerate() {
-            f.charge_to(f.owner, *creditor, 10 * (index as u128 + 1), false)?;
-        }
-        assert_eq!(
-            err!(f.charge_to(f.owner, creditors[4], 1, false)),
-            e(ReservationsError::too_many_creditors())
-        );
-        // More debt to a standing creditor keeps its place.
-        f.charge_to(f.owner, creditors[0], 5, false)?;
-        assert_eq!(
-            f.debts()?,
-            vec![
-                (creditors[0], 15),
-                (creditors[1], 20),
-                (creditors[2], 30),
-                (creditors[3], 40)
-            ]
-        );
-        // A credit repays oldest first; a blocked creditor is skipped and keeps its debt.
-        f.blacklist(vec![creditors[1]])?;
-        f.mint(f.owner, 50)?;
-        assert_eq!(f.debts()?, vec![(creditors[1], 20), (creditors[3], 35)]);
-        assert_eq!(f.balance(creditors[0])?, U256::from(15));
-        assert_eq!(f.balance(creditors[2])?, U256::from(30));
-        assert_eq!(f.balance(f.owner)?, U256::ZERO);
-        f.blacklist(vec![])?;
-        f.mint(f.owner, 100)?;
-        assert_eq!(f.debts()?, vec![]);
-        assert_eq!(f.balance(f.owner)?, U256::from(45));
-        assert!(!f.reservations.owes_debt(f.owner)?);
-        Ok(())
-    })
-}
-
-#[test]
-fn test_debt_lapses_after_its_term() -> eyre::Result<()> {
-    at_fork(|| {
-        let mut f = Fixture::new(0)?;
-        let (short, long) = (Address::random(), Address::random());
-        f.set_terms_for(short, 100, 0, 0, DAY as u32)?;
-        f.set_terms_for(long, 100, 0, 0, 0)?;
-        f.charge_to(f.owner, short, 40, false)?;
-        f.charge_to(f.owner, long, 60, false)?;
-        // More debt does not extend the term.
-        warp(DAY - 1);
-        f.charge_to(f.owner, short, 10, false)?;
-        warp(1);
-        assert_eq!(f.debts()?, vec![(long, 60)]);
-        // The lapsed debt is not repaid; anyone may clear it.
-        f.reservations
-            .clear_lapsed_debt(f.owner, f.token.address())?;
+        assert_eq!((f.reserved()?, f.available()?), (100, 30));
+        f.capture(f.payee, id, 130, true)?;
         assert_last_event(
             &f.reservations,
-            ReservationsEvent::debt_lapsed(f.owner, short, f.token.address(), 50),
+            ReservationsEvent::hold_captured(
+                f.owner,
+                f.owner,
+                f.token.address(),
+                id,
+                f.payee,
+                130,
+                true,
+            ),
         );
-        f.mint(f.owner, 100)?;
         assert_eq!(
-            (f.balance(short)?, f.balance(long)?),
-            (U256::ZERO, U256::from(60))
+            (f.balance(f.owner)?, f.balance(f.payee)?),
+            (U256::ZERO, U256::from(130))
         );
-        warp(MAX_DEBT_TERM);
-        f.charge_to(f.owner, long, 100, false)?;
-        warp(MAX_DEBT_TERM);
-        assert_eq!(f.debts()?, vec![]);
+        Ok(())
+    })
+}
+
+/// A charge pays only from the owner's available balance, and later credits to the owner move
+/// nothing onward.
+#[test]
+fn test_charge_pays_only_from_the_available_balance() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(100)?;
+        f.hold(B256::random(), 60)?;
+        assert_eq!(
+            err!(f.charge(f.owner, 41)),
+            e(ReservationsError::insufficient_available())
+        );
+        f.charge(f.owner, 40)?;
+        assert_eq!((f.available()?, f.balance(f.payee)?), (0, U256::from(40)));
+        f.mint(f.owner, 50)?;
+        assert_eq!((f.available()?, f.balance(f.payee)?), (50, U256::from(40)));
         Ok(())
     })
 }
 
 #[test]
-fn test_refund_forgives_debt_then_pays() -> eyre::Result<()> {
+fn test_refund_pays_from_the_caller() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(100)?;
-        f.set_terms(200, 0, 0)?;
         let id = B256::random();
         f.hold(id, 100)?;
         f.capture(f.payee, id, 100, true)?;
-        f.charge(f.owner, 80, false)?;
-        assert_eq!(f.debts()?, vec![(f.payee, 80)]);
         assert_eq!(
             err!(f.refund(f.payee, id, 0)),
             e(ReservationsError::invalid_amount())
         );
         assert_eq!(
-            err!(f.refund(f.payee, id, 181)),
+            err!(f.refund(f.payee, id, 101)),
             e(ReservationsError::insufficient_available())
         );
-        f.refund(f.payee, id, 120)?;
-        assert_eq!(f.debts()?, vec![]);
+        f.refund(f.payee, id, 60)?;
         assert_eq!(
             (f.balance(f.owner)?, f.balance(f.payee)?),
-            (U256::from(40), U256::from(60))
+            (U256::from(60), U256::from(40))
         );
         assert_last_event(
             &f.reservations,
-            ReservationsEvent::refunded(f.owner, f.payee, f.token.address(), f.owner, id, 120, 80),
+            ReservationsEvent::refunded(f.owner, f.payee, f.token.address(), f.owner, id, 60),
         );
         // A refund is a payment, so the policy applies.
         f.blacklist(vec![f.payee])?;
@@ -963,7 +876,7 @@ fn test_refund_forgives_debt_then_pays() -> eyre::Result<()> {
 fn test_policy_applies_to_every_movement() -> eyre::Result<()> {
     at_fork(|| {
         let mut f = Fixture::new(1_000)?;
-        f.set_terms(500, 0, 5_000)?;
+        f.set_tolerance(5_000)?;
         f.approve(1_000, 0)?;
         let (part, whole, excess, pledged) = (
             B256::random(),
@@ -987,7 +900,7 @@ fn test_policy_applies_to_every_movement() -> eyre::Result<()> {
             e(ReservationsError::policy_forbids())
         );
         assert_eq!(
-            err!(f.charge(f.owner, 1, false)),
+            err!(f.charge(f.owner, 1)),
             e(ReservationsError::policy_forbids())
         );
         assert_eq!(
@@ -1041,7 +954,7 @@ fn test_paused_token_moves_nothing() -> eyre::Result<()> {
             e(ReservationsError::policy_forbids())
         );
         assert_eq!(
-            err!(f.charge(f.owner, 1, false)),
+            err!(f.charge(f.owner, 1)),
             e(ReservationsError::policy_forbids())
         );
         f.release(f.owner, f.owner, id)?;
@@ -1162,11 +1075,11 @@ fn test_holder_pledges_draw_on_the_budget() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
+fn test_zone_holds() -> eyre::Result<()> {
     let mut storage = new_storage().with_kind(TempoEvmKind::Zone);
     StorageCtx::enter(&mut storage, || {
         let mut f = Fixture::new(100)?;
-        f.set_terms(0, 0, 5_000)?;
+        f.set_tolerance(5_000)?;
         let id = B256::random();
         f.hold(id, 60)?;
         assert_eq!((f.reserved()?, f.available()?), (60, 40));
@@ -1179,19 +1092,12 @@ fn test_zone_holds_and_debt_repayment() -> eyre::Result<()> {
         f.capture(f.payee, id, 60, true)?;
         assert_eq!((f.reserved()?, f.balance(f.payee)?), (0, U256::from(60)));
         f.blacklist(vec![])?;
-
-        f.set_terms(500, 0, 0)?;
-        f.charge(f.owner, 140, false)?;
-        assert_eq!(f.debts()?, vec![(f.payee, 100)]);
-        assert!(f.reservations.owes_debt(f.owner)?);
-        assert!(!TIP403Registry::new().has_reservation_debt(f.owner)?);
-
-        let sender = Address::random();
-        f.mint(sender, 1_000)?;
-        f.transfer(sender, f.owner, 130)?;
-        assert_eq!(f.debts()?, vec![]);
-        assert_eq!(f.balance(f.owner)?, U256::from(30));
-        assert!(!f.reservations.owes_debt(f.owner)?);
+        assert_eq!(
+            err!(f.charge(f.owner, 41)),
+            e(ReservationsError::insufficient_available())
+        );
+        f.charge(f.owner, 40)?;
+        assert_eq!(f.balance(f.payee)?, U256::from(100));
         Ok(())
     })
 }
@@ -1219,11 +1125,10 @@ fn test_compliance_burns_take_reserved_funds() -> eyre::Result<()> {
             err!(f.capture(f.owner, captured, 600, true)),
             e(ReservationsError::insufficient_available())
         );
-        f.set_terms(400, 0, 0)?;
-        f.capture(f.owner, captured, 600, true)?;
+        // What the hold still backs pays out.
+        f.capture(f.owner, captured, 200, true)?;
         assert_eq!(f.balance(f.payee)?, U256::from(200));
-        assert_eq!(f.debts()?, vec![(f.payee, 400)]);
-        assert_eq!(f.reserved()?, 0);
+        assert_eq!((f.reserved()?, f.available()?), (0, 0));
         Ok(())
     })
 }
@@ -1264,7 +1169,6 @@ fn test_capture_after_compliance_burn_pays_only_what_the_hold_still_backs() -> e
         assert_eq!(f.balance(f.payee)?, U256::from(500));
         assert_eq!(f.balance(f.owner)?, U256::from(300));
         assert_eq!((f.reserved()?, f.available()?), (0, 300));
-        assert_eq!(f.debts()?, vec![]);
         Ok(())
     })
 }
@@ -1497,7 +1401,7 @@ fn test_unbudgeted_hold_from_and_pledge_from_reveal_nothing_about_the_owner() ->
         let mut f = Fixture::new(1_000)?;
         let stranger = Address::random();
         for amount in [1, 1_000, 1_001] {
-            let request = f.request(B256::random(), amount, false);
+            let request = f.request(B256::random(), amount);
             assert_eq!(
                 err!(f.reservations.place(stranger, f.owner, request)),
                 e(ReservationsError::unauthorized())
@@ -1516,14 +1420,14 @@ fn test_unbudgeted_hold_from_and_pledge_from_reveal_nothing_about_the_owner() ->
         }
         // The same holds when the owner is blocked.
         f.blacklist(vec![f.owner])?;
-        let request = f.request(B256::random(), 1, false);
+        let request = f.request(B256::random(), 1);
         assert_eq!(
             err!(f.reservations.place(stranger, f.owner, request)),
             e(ReservationsError::unauthorized())
         );
         // A budgeted holder past its limit learns nothing either.
         f.approve(100, 0)?;
-        let request = f.request(B256::random(), 1_001, false);
+        let request = f.request(B256::random(), 1_001);
         assert_eq!(
             err!(f.reservations.place(f.holder, f.owner, request)),
             e(ReservationsError::budget_exceeded())
@@ -1653,8 +1557,8 @@ fn test_slots_per_operation() -> eyre::Result<()> {
     // Releasing the last live hold clears the owner's position slot.
     assert_eq!(step(&|f| f.release(f.owner, f.owner, b))?, -3);
     assert_eq!(step(&|f| f.refund(f.payee, a, 30))?, 0);
-    assert_eq!(step(&|f| f.charge(f.owner, 10, false))?, 0);
-    assert_eq!(step(&|f| f.charge(f.holder, 10, false))?, 0);
+    assert_eq!(step(&|f| f.charge(f.owner, 10))?, 0);
+    assert_eq!(step(&|f| f.charge(f.holder, 10))?, 0);
     assert_eq!(step(&|f| f.hold(d, 10))?, 3);
     assert_eq!(step(&|f| f.pledge_from(ids[5], 100, NOW + 90 * DAY))?, 2);
     assert_eq!(step(&|f| f.pledge_from(ids[6], 100, NOW + 90 * DAY))?, 2);
@@ -1662,13 +1566,13 @@ fn test_slots_per_operation() -> eyre::Result<()> {
         step(&|f| f.capture_of(f.holder, f.holder, ids[6], 100, false))?,
         -2
     );
-    // A debt is one slot per creditor.
-    assert_eq!(step(&|f| f.set_terms(1_000_000, 0, 0))?, 1);
-    assert_eq!(step(&|f| f.charge(f.owner, 20_000, false))?, 1);
+    // A tolerance is one slot per (owner, payee, token), and clearing it deletes the slot.
+    assert_eq!(step(&|f| f.set_tolerance(500))?, 1);
+    assert_eq!(step(&|f| f.set_tolerance(0))?, -1);
     Ok(())
 }
 
-/// An owner with one hold at a time, as most cardholders are, pays three slots per hold: the
+/// An owner with one hold at a time, as most owners are, pays three slots per hold: the
 /// two record slots and the position slot, which empties and is deleted with the last record.
 #[test]
 fn test_slots_single_hold_cycle() -> eyre::Result<()> {
