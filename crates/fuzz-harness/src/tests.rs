@@ -800,14 +800,6 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     );
 }
 
-/// A block of `txs` whose senders the harness recovers from their signatures.
-fn recovered_block(txs: Vec<Bytes>) -> TempoBlock {
-    TempoBlock {
-        senders: Vec::new(),
-        ..t4_block(txs)
-    }
-}
-
 /// A legacy transaction signed with `signer`'s secp256k1 mock signature.
 fn mock_legacy(signer: Address, nonce: u64, to: Address, input: Bytes) -> Bytes {
     let tx = TxLegacy {
@@ -874,7 +866,12 @@ fn mock_signatures_verify_end_to_end() {
         mock_legacy(SENDER, 2, p256verify_address, wrong.into()),
         aa.encoded_2718().into(),
     ];
-    let outcome = run(genesis(), vec![recovered_block(txs)]);
+    // No senders, so the harness recovers them from the mock signatures.
+    let block = TempoBlock {
+        senders: Vec::new(),
+        ..t4_block(txs)
+    };
+    let outcome = run(genesis(), vec![block]);
     assert_eq!(outcome.error, ErrorClass::None, "{outcome:?}");
     let receipts = &outcome.receipts;
     assert!(
