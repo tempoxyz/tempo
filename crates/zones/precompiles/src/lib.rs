@@ -253,7 +253,7 @@ where
                 message,
                 gas,
                 &self.env,
-                execution::NoCallRules,
+                address_registry::ZoneAddressRegistryRules,
                 |data, caller| {
                     address_registry::ZoneAddressRegistry::new().call(&self.l1, data, caller)
                 },

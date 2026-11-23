@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, FixedBytes};
-use alloy_sol_types::SolEvent;
+use alloy_sol_types::{SolCall, SolEvent};
 use evm2::precompiles::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
@@ -22,11 +22,31 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ZoneResult,
+    execution::CallRules,
     storage::{L1State, L1StorageReader},
 };
 
 /// Exclusive upper bound of the 4-byte master ID space; also the exhausted counter value.
 pub const MASTER_ID_SPACE: u64 = 1 << 32;
+
+/// Fixed gas charged for `registerMaster` on the zone.
+///
+/// A new registration writes two new storage slots while a repeated one only reads, so variable
+/// pricing would let any caller learn whether a `(recipient, salt)` pair is registered. The
+/// charge covers a new registration at T15 pricing (two new slots at 250,000 gas each, plus the
+/// reads and the event).
+pub const REGISTER_MASTER_FIXED_GAS: u64 = 510_000;
+
+/// Zone-specific rules applied before dispatching to [`ZoneAddressRegistry`].
+pub(crate) struct ZoneAddressRegistryRules;
+
+impl CallRules for ZoneAddressRegistryRules {
+    // Fixed gas hides whether the call registered a new master or returned an existing one.
+    fn fixed_gas(&self, selector: Option<[u8; 4]>) -> Option<u64> {
+        (selector == Some(IZoneAddressRegistry::registerMasterCall::SELECTOR))
+            .then_some(REGISTER_MASTER_FIXED_GAS)
+    }
+}
 
 /// Zone-side TIP-1094 registry. Deployed at the T15 boundary.
 #[contract(addr = ZONE_ADDRESS_REGISTRY_ADDRESS)]
@@ -222,5 +242,84 @@ pub(crate) mod tests {
             assert_ne!(base, request_hash(7, Address::repeat_byte(2), salt)?);
             Ok(())
         })
+    }
+
+    #[test]
+    fn fixed_gas_applies_only_to_register_master() {
+        let rules = ZoneAddressRegistryRules;
+        assert_eq!(
+            rules.fixed_gas(Some(IZoneAddressRegistry::registerMasterCall::SELECTOR)),
+            Some(REGISTER_MASTER_FIXED_GAS)
+        );
+        assert_eq!(rules.fixed_gas(Some([0xde, 0xad, 0xbe, 0xef])), None);
+        assert_eq!(rules.fixed_gas(None), None);
+    }
+
+    /// A caller cannot tell from gas whether a `(recipient, salt)` pair was already registered.
+    #[test]
+    fn register_master_gas_does_not_reveal_existing_registrations() -> eyre::Result<()> {
+        use crate::test_utils::{
+            MockL1Reader, call_precompile, test_context_with_hardfork, test_precompiles,
+        };
+
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
+        let mut precompiles =
+            test_precompiles(&ctx, L1State::new(MockL1Reader::default(), Address::ZERO));
+        let caller = Address::repeat_byte(0xca);
+        let (acme, bob) = (Address::repeat_byte(0xac), Address::repeat_byte(0xb0));
+
+        // New, repeated, new and invalid registrations, with the master ID each one returns.
+        let cases = [
+            (acme, Some([0, 0, 0, 0])),
+            (acme, Some([0, 0, 0, 0])),
+            (bob, Some([0, 0, 0, 1])),
+            (bob, Some([0, 0, 0, 1])),
+            (Address::ZERO, None),
+        ];
+        for (recipient, expected) in cases {
+            let calldata = IZoneAddressRegistry::registerMasterCall {
+                recipient,
+                salt: B256::ZERO,
+            }
+            .abi_encode();
+            let fixed_gas = REGISTER_MASTER_FIXED_GAS
+                + tempo_precompiles::input_cost(TempoHardfork::T15, calldata.len())?;
+            let output = call_precompile(
+                &mut ctx,
+                &mut precompiles,
+                caller,
+                &calldata,
+                fixed_gas,
+                false,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+            )?;
+            assert_eq!(output.gas_used, fixed_gas, "recipient {recipient}");
+            assert_eq!(output.state_gas_used, 0);
+            match expected {
+                Some(id) => assert_eq!(
+                    IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
+                    FixedBytes::from(id)
+                ),
+                None => assert!(output.is_revert()),
+            }
+
+            // One gas short fails whether or not the pair is registered.
+            let short = call_precompile(
+                &mut ctx,
+                &mut precompiles,
+                caller,
+                &calldata,
+                fixed_gas - 1,
+                false,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+                ZONE_ADDRESS_REGISTRY_ADDRESS,
+            );
+            assert!(
+                short.as_ref().is_err() || short.as_ref().is_ok_and(|o| !o.is_success()),
+                "recipient {recipient}"
+            );
+        }
+        Ok(())
     }
 }
