@@ -719,16 +719,21 @@ impl TIP20Token {
 
     /// Rejects pooled custody balances whose destruction would leave outstanding claims unbacked.
     fn check_burn_address(&self, from: Address) -> Result<()> {
-        let hardfork = self.storage.spec();
-        if PROTECTED
-            .iter()
-            .any(|(hf, addresses)| hardfork >= *hf && addresses.contains(&from))
-            || (hardfork.is_t5() && from == self.address)
-            || (hardfork.is_t12() && from.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX))
-        {
+        if self.is_protected_custody(from) {
             return Err(TIP20Error::protected_address().into());
         }
         Ok(())
+    }
+
+    /// Whether `account` is pooled custody whose balance backs other users' claims: privileged
+    /// burns never take it, and the reservation core never liens or seizes it.
+    pub(crate) fn is_protected_custody(&self, account: Address) -> bool {
+        let hardfork = self.storage.spec();
+        PROTECTED
+            .iter()
+            .any(|(hf, addresses)| hardfork >= *hf && addresses.contains(&account))
+            || (hardfork.is_t5() && account == self.address)
+            || (hardfork.is_t12() && account.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX))
     }
 
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {

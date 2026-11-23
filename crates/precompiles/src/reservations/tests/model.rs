@@ -6,14 +6,17 @@ use std::collections::BTreeSet;
 const OWNERS: usize = 2;
 const TOKENS: usize = 2;
 const IDS: usize = 3;
-/// Accounts: two owners, two holders, two payees, a stranger and a lien authority.
-const ACCOUNTS: usize = 8;
+/// Accounts: two owners, two holders, two payees, a stranger, a lien authority and pooled custody.
+const ACCOUNTS: usize = 9;
 const H0: usize = 2;
 const H1: usize = 3;
 const P0: usize = 4;
 const P1: usize = 5;
 const STRANGER: usize = 6;
 const AUTHORITY: usize = 7;
+/// A pooled custody account TIP-20 protects from compliance burns, which no lien may take. Ops
+/// other than liens never name it.
+const CUSTODY: usize = 8;
 /// Accounts that may place records: the owners, the holders and the authority.
 const PLACERS: [usize; 5] = [0, 1, H0, H1, AUTHORITY];
 /// Payees a hold, charge or tolerance may name; the owner itself is refused.
@@ -159,7 +162,7 @@ pub(super) enum Op {
 }
 
 pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
-    let account = 0..ACCOUNTS;
+    let account = 0..CUSTODY;
     let owner = 0..OWNERS;
     let token = 0..TOKENS;
     let id = 0..IDS;
@@ -172,7 +175,7 @@ pub(super) fn op_strategy() -> impl Strategy<Value = Op> {
             .prop_map(|(owner, token, id, amount, ttl, authority)| Op::Pledge { owner, token, id, amount, ttl, authority }),
         2 => (prop::sample::select(vec![SELF, H0, H1, STRANGER]), owner.clone(), token.clone(), id.clone(), amount.clone(), 1..900u64)
             .prop_map(|(caller, owner, token, id, amount, ttl)| Op::PledgeFrom { caller, owner, token, id, amount, ttl }),
-        1 => (prop::sample::select(vec![AUTHORITY, STRANGER]), owner.clone(), token.clone(), id.clone(), amount.clone(), 0..900u64)
+        1 => (prop::sample::select(vec![AUTHORITY, STRANGER]), prop::sample::select(vec![0, 1, CUSTODY]), token.clone(), id.clone(), amount.clone(), 0..900u64)
             .prop_map(|(caller, owner, token, id, amount, ttl)| Op::Lien { caller, owner, token, id, amount, ttl }),
         2 => (account.clone(), owner.clone(), placer.clone(), id.clone(), amount)
             .prop_map(|(caller, owner, placer, id, amount)| Op::Adjust { caller, owner, placer: PLACERS[placer], id, amount }),
@@ -588,6 +591,9 @@ impl Model {
                 if amount == 0 {
                     return Err(e(ReservationsError::invalid_amount()));
                 }
+                if owner == CUSTODY {
+                    return Err(e(ReservationsError::unauthorized()));
+                }
                 if self.holds.contains_key(&(owner, caller, id)) {
                     return Err(e(ReservationsError::hold_exists()));
                 }
@@ -909,7 +915,14 @@ pub(super) struct World {
 impl World {
     pub(super) fn new() -> eyre::Result<Self> {
         let admin = Address::random();
-        let accounts: Vec<Address> = (0..ACCOUNTS).map(|_| Address::random()).collect();
+        let mut accounts: Vec<Address> = (0..ACCOUNTS).map(|_| Address::random()).collect();
+        let custody = [
+            STABLECOIN_DEX_ADDRESS,
+            TIP_FEE_MANAGER_ADDRESS,
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            portal_address(1),
+        ];
+        accounts[CUSTODY] = custody[usize::from(admin.0[0]) % custody.len()];
         let mut model = Model {
             now: NOW,
             ..Default::default()
@@ -920,7 +933,7 @@ impl World {
         registry.initialize()?;
         for index in 0..TOKENS {
             let mut setup = TIP20Setup::create("Core USD", "CUSD", admin).with_issuer(admin);
-            for account in [0, 1, H0, P0, STRANGER] {
+            for account in [0, 1, H0, P0, STRANGER, CUSTODY] {
                 setup = setup.with_mint(accounts[account], U256::from(MINT));
                 model.add(index, account, MINT);
             }
@@ -1381,7 +1394,7 @@ impl World {
             }
             let burned = m.burned.get(&token).copied().unwrap_or(0);
             eyre::ensure!(
-                supply + burned == 5 * MINT,
+                supply + burned == 6 * MINT,
                 "supply of {token}: {supply} + {burned} burned"
             );
         }

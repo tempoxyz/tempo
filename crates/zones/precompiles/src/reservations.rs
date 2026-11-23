@@ -1,16 +1,19 @@
 //! Zone rules for the reservation core ([TIP-1153]).
 //!
 //! A zone runs the same core as Tempo L1 over its private TIP-20 balances, so private payments hold,
-//! capture and refund as public ones do. Two zone rules sit in front of it:
+//! capture and refund as public ones do. Three zone rules sit in front of it:
 //!
-//! - Every state change moves or reserves funds inside the zone, so it needs T16 and the portal
-//!   admin's transfer opt-in, as a zone-internal TIP-20 transfer does.
+//! - A state change that moves or reserves funds inside the zone needs T16 and the portal admin's
+//!   transfer opt-in, as a zone-internal TIP-20 transfer does. Returning reserved funds to the
+//!   owner's own balance (`release`, `releaseExpired` and `adjust` down) needs only T16, so turning
+//!   transfers off never keeps them out of reach of a withdrawal.
 //! - Reads are private. A view about an owner answers only the owner and the counterparties that
 //!   owner chose: a hold's placer and payee, a holder the owner approved, a payee the owner set a
 //!   tolerance for, and a lien's authority. Anyone else is refused, as `balanceOf` refuses anyone
 //!   but the account.
-//!   `releaseExpired`, which anyone may call, refuses a stranger to a live hold with the error a
-//!   missing hold gives.
+//! - A call that names a record (`adjust`, `capture`, `release`, `releaseExpired`) answers a caller
+//!   other than its owner, placer or payee with the error a missing record gives, whether the
+//!   record is live, expired or missing, except that anyone may release an expired record.
 //!
 //! [TIP-1153]: <https://docs.tempo.xyz/protocol/tips/tip-1153>
 
@@ -43,12 +46,14 @@ pub(crate) struct ReservationRules<P> {
 impl<P: L1StorageReader> ReservationRules<P> {
     /// Admits a state change: T16 and the portal admin's transfer opt-in.
     fn admit_write(&self) -> Result<CallCheck> {
-        if !StorageCtx::default().spec().is_t16()
-            || !self.l1.read_portal(|portal| &portal.transfers_enabled)?
-        {
+        if !StorageCtx::default().spec().is_t16() || !self.transfers_enabled()? {
             return Ok(unauthorized());
         }
         Ok(CallCheck::Continue)
+    }
+
+    fn transfers_enabled(&self) -> Result<bool> {
+        self.l1.read_portal(|portal| &portal.transfers_enabled)
     }
 
     /// Admits a read of `owner`'s position in `token`: the owner, or a holder it approved for the
@@ -84,30 +89,42 @@ impl<P: L1StorageReader> ReservationRules<P> {
         ))
     }
 
-    /// Admits `releaseExpired` of the hold `id` that `placer` placed on `owner`'s balance. Anyone
-    /// may release an expired hold, but a caller other than the owner, placer or payee is refused
-    /// with `HoldNotFound` for a live hold as for a missing one, so it learns nothing about
-    /// holds it cannot release.
-    fn admit_release_expired(
+    /// Admits a call that names the record `id` that `placer` placed on `owner`'s balance. A
+    /// caller other than the owner, placer or payee is refused with `HoldNotFound` whether the
+    /// record is live, expired or missing, so it learns nothing about records it cannot act on;
+    /// only `releaseExpired` of an expired record is open to anyone. A call that may move or
+    /// reserve funds needs the transfer opt-in; returning reserved funds to the owner's own balance
+    /// needs only T16.
+    fn admit_record(
         &self,
         caller: Address,
+        call: RecordCall,
         owner: Address,
         placer: Address,
         id: B256,
     ) -> Result<CallCheck> {
-        let check = self.admit_write()?;
-        if !matches!(check, CallCheck::Continue) || caller == owner || caller == placer {
-            return Ok(check);
+        if !StorageCtx::default().spec().is_t16() {
+            return Ok(unauthorized());
         }
         let hold = Reservations::new().get_hold(owner, placer, id)?;
-        let now: u64 = StorageCtx::default().timestamp().saturating_to();
-        let expired = hold.kind != 0 && hold.expiresAt != 0 && now >= hold.expiresAt;
-        if expired || caller == hold.payee {
-            return Ok(check);
+        if caller != owner && caller != placer && caller != hold.payee {
+            let now: u64 = StorageCtx::default().timestamp().saturating_to();
+            let expired = hold.kind != 0 && hold.expiresAt != 0 && now >= hold.expiresAt;
+            if !(expired && matches!(call, RecordCall::ReleaseExpired)) {
+                return Ok(CallCheck::Revert(
+                    IReservationCore::HoldNotFound {}.abi_encode().into(),
+                ));
+            }
         }
-        Ok(CallCheck::Revert(
-            IReservationCore::HoldNotFound {}.abi_encode().into(),
-        ))
+        let moves = match call {
+            RecordCall::Capture => true,
+            RecordCall::Adjust { amount } => amount > hold.held,
+            RecordCall::Release | RecordCall::ReleaseExpired => false,
+        };
+        if moves && !self.transfers_enabled()? {
+            return Ok(unauthorized());
+        }
+        Ok(CallCheck::Continue)
     }
 
     fn try_admit(&self, call: IReservationCoreCalls, caller: Address) -> Result<CallCheck> {
@@ -121,13 +138,22 @@ impl<P: L1StorageReader> ReservationRules<P> {
             | C::pledge(_)
             | C::pledgeFrom(_)
             | C::lien(_)
-            | C::adjust(_)
-            | C::capture(_)
-            | C::release(_)
             | C::charge(_)
             | C::refund(_) => self.admit_write()?,
+            C::adjust(IReservationCore::adjustCall {
+                owner,
+                placer,
+                id,
+                amount,
+            }) => self.admit_record(caller, RecordCall::Adjust { amount }, owner, placer, id)?,
+            C::capture(IReservationCore::captureCall {
+                owner, placer, id, ..
+            }) => self.admit_record(caller, RecordCall::Capture, owner, placer, id)?,
+            C::release(IReservationCore::releaseCall { owner, placer, id }) => {
+                self.admit_record(caller, RecordCall::Release, owner, placer, id)?
+            }
             C::releaseExpired(IReservationCore::releaseExpiredCall { owner, placer, id }) => {
-                self.admit_release_expired(caller, owner, placer, id)?
+                self.admit_record(caller, RecordCall::ReleaseExpired, owner, placer, id)?
             }
             C::getHold(IReservationCore::getHoldCall { owner, placer, id }) => {
                 Self::admit_hold(caller, owner, placer, id)?
@@ -156,6 +182,15 @@ impl<P: L1StorageReader> CallRules for ReservationRules<P> {
         self.try_admit(call, caller)
             .unwrap_or_else(CallCheck::Error)
     }
+}
+
+/// A call that names one record, for `ReservationRules::admit_record`.
+#[derive(Clone, Copy)]
+enum RecordCall {
+    Adjust { amount: u128 },
+    Capture,
+    Release,
+    ReleaseExpired,
 }
 
 fn unauthorized() -> CallCheck {
@@ -382,14 +417,141 @@ mod tests {
         transfers_enabled: bool,
         expected: bool,
     ) {
-        let release = IReservationCore::releaseCall {
+        let capture = IReservationCore::captureCall {
             owner: OWNER,
             placer: HOLDER,
             id: B256::repeat_byte(1),
+            amount: 1,
+            isFinal: false,
         }
         .abi_encode();
-        let checks = admit_all(&rules(transfers_enabled), spec, &[(release, HOLDER)]);
+        let checks = admit_all(&rules(transfers_enabled), spec, &[(capture, HOLDER)]);
         assert_eq!(allowed(&checks[0]), expected);
+    }
+
+    /// Calls that name the hold `id` that HOLDER placed on OWNER's balance, at `amount` where one
+    /// is taken.
+    fn record_calls(id: B256, amount: u128) -> [Vec<u8>; 4] {
+        [
+            IReservationCore::adjustCall {
+                owner: OWNER,
+                placer: HOLDER,
+                id,
+                amount,
+            }
+            .abi_encode(),
+            IReservationCore::captureCall {
+                owner: OWNER,
+                placer: HOLDER,
+                id,
+                amount,
+                isFinal: false,
+            }
+            .abi_encode(),
+            IReservationCore::releaseCall {
+                owner: OWNER,
+                placer: HOLDER,
+                id,
+            }
+            .abi_encode(),
+            IReservationCore::releaseExpiredCall {
+                owner: OWNER,
+                placer: HOLDER,
+                id,
+            }
+            .abi_encode(),
+        ]
+    }
+
+    /// Every call that names a record gives a stranger one answer, `HoldNotFound`, whether the
+    /// hold is live, expired or missing and whether transfers are on, so it learns nothing about
+    /// holds it cannot act on. The only exception is `releaseExpired` of an expired hold, which
+    /// anyone may call.
+    #[test]
+    fn record_calls_answer_strangers_as_for_a_missing_record() {
+        let not_found = IReservationCore::HoldNotFound {}.abi_encode();
+        for transfers_enabled in [true, false] {
+            let rules = rules(transfers_enabled);
+            for seconds in [0, 3_600] {
+                let checks = in_zone_after(TempoHardfork::T16, seconds, || {
+                    [B256::repeat_byte(1), B256::repeat_byte(2)]
+                        .into_iter()
+                        .flat_map(|id| record_calls(id, 1))
+                        .map(|data| rules.admit(&data, OUTSIDER))
+                        .collect::<Vec<_>>()
+                });
+                for (index, check) in checks.iter().enumerate() {
+                    // The live hold's `releaseExpired` (index 3) is open once it has expired.
+                    if seconds != 0 && index == 3 {
+                        assert!(allowed(check), "{transfers_enabled} {seconds} {index}");
+                        continue;
+                    }
+                    assert!(
+                        matches!(check, CallCheck::Revert(output) if output.as_ref() == not_found.as_slice()),
+                        "{transfers_enabled} {seconds} {index}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// With zone transfers off, calls that only return reserved funds to OWNER's balance still
+    /// run, so the funds come back to the balance a withdrawal burns: the placer and payee release
+    /// a live hold, the placer lowers it, and anyone releases it once expired. Calls that move or
+    /// reserve funds stay refused.
+    #[test]
+    fn reserved_funds_return_while_transfers_are_off() {
+        let rules = rules(false);
+        let id = B256::repeat_byte(1);
+        let [lower, capture, release, release_expired] = record_calls(id, 40);
+        let [raise, ..] = record_calls(id, 200);
+        let refused = |check: &CallCheck| matches!(check, CallCheck::Revert(output) if output.as_ref() == Unauthorized {}.abi_encode().as_slice());
+        let free = || {
+            tempo_precompiles::tip20::TIP20Token::from_address(PATH_USD_ADDRESS)
+                .unwrap()
+                .balances[OWNER]
+                .read()
+                .unwrap()
+        };
+
+        let reserved = in_zone(TempoHardfork::T16, || {
+            let checks = [
+                rules.admit(&lower, HOLDER),
+                rules.admit(&release, HOLDER),
+                rules.admit(&release, PAYEE),
+                rules.admit(&release_expired, OWNER),
+                rules.admit(&raise, HOLDER),
+                rules.admit(&capture, HOLDER),
+                rules.admit(&capture, PAYEE),
+            ];
+            assert!(checks[..4].iter().all(allowed));
+            assert!(checks[4..].iter().all(refused));
+            // Lowering then releasing returns all 100 to the balance slot.
+            let mut core = Reservations::new();
+            core.call(&lower, HOLDER).expect("lower the hold");
+            assert_eq!(free(), U256::from(960u64));
+            core.call(&release, PAYEE).expect("release the hold");
+            assert_eq!(free(), U256::from(1_000u64));
+            core.reserved_of(OWNER, PATH_USD_ADDRESS).unwrap()
+        });
+        assert_eq!(reserved, 0);
+
+        let (checks, reserved, balance) = in_zone_after(TempoHardfork::T16, 3_600, || {
+            let checks = [OWNER, HOLDER, PAYEE, OUTSIDER]
+                .map(|caller| rules.admit(&release_expired, caller));
+            Reservations::new()
+                .call(&release_expired, OUTSIDER)
+                .expect("release the expired hold");
+            (
+                checks,
+                Reservations::new()
+                    .reserved_of(OWNER, PATH_USD_ADDRESS)
+                    .unwrap(),
+                free(),
+            )
+        });
+        assert!(checks.iter().all(allowed));
+        assert_eq!((reserved, balance), (0, U256::from(1_000u64)));
     }
 
     /// `releaseExpired` tells a stranger nothing about a live hold: it is refused as a missing
