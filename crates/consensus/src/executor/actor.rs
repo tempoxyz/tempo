@@ -88,7 +88,6 @@ use std::{
 };
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
-use commonware_actor::Feedback;
 use commonware_consensus::{
     CertifiableBlock as _, Heightable as _, Reporter,
     marshal::Update,
@@ -164,10 +163,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     /// Receives each finalized block once its state is readable from the
     /// execution layer.
     finalized_reporter: TReporter,
-    /// The highest finalized height reported to the finalized reporter.
-    /// `None` until startup backfill finished and the startup finalized
-    /// block was reported: reports during backfill are held back.
-    reported_finalized: Option<Height>,
+    /// Which finalized block was last reported to the finalized reporter.
+    finalized_report: FinalizedReport,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -442,7 +439,7 @@ where
             mailbox,
             marshal,
             finalized_reporter,
-            reported_finalized: None,
+            finalized_report: FinalizedReport::HeldBack,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -499,7 +496,8 @@ where
 
         // First thing after backfill: tell the reporter which finalized
         // block the executor starts from.
-        self.report_startup_finalized();
+        self.finalized_report = FinalizedReport::Pending;
+        self.report_finalized();
 
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
@@ -977,12 +975,7 @@ where
         // mailbox forever.
         self.deliveries_since_forkchoice = 0;
         self.local_state = target;
-        if self
-            .reported_finalized
-            .is_some_and(|reported| target.finalized.0 > reported)
-        {
-            self.report_finalized();
-        }
+        self.report_finalized();
         self.acknowledge_persisted()?;
 
         // Dropping the build's response channel signals the failure to the
@@ -1014,33 +1007,23 @@ where
         Ok(())
     }
 
-    /// Reports the finalized block the executor enters its loop with: the
-    /// execution layer's finalized block, the finalized floor below it after
-    /// a snapshot restore, or the floor startup backfill finalized. Its state
-    /// is readable either way. Later reports follow from forkchoice updates
-    /// that raise it.
-    fn report_startup_finalized(&mut self) {
-        debug_assert!(
-            self.reported_finalized.is_none(),
-            "the startup finalized block is reported once",
-        );
-        self.report_finalized();
-    }
-
-    /// Reports the tracked finalized block to the finalized reporter.
+    /// Reports the tracked finalized block to the finalized reporter, unless
+    /// startup backfill is still running or it was already reported.
+    ///
+    /// The first report is the finalized block the executor enters its loop
+    /// with: the execution layer's finalized block, the finalized floor below
+    /// it after a snapshot restore, or the floor startup backfill finalized.
+    /// Later reports follow accepted forkchoice updates that raise it. Its
+    /// state is readable either way.
     fn report_finalized(&mut self) {
         let (height, digest) = self.local_state.finalized;
-        self.reported_finalized = Some(height);
-        match self.finalized_reporter.report(Finalized { height, digest }) {
-            Feedback::Ok | Feedback::Backoff => {}
-            // Only during shutdown: the reporter outlives the executor
-            // otherwise.
-            Feedback::Closed => debug!(
-                %height,
-                %digest,
-                "finalized reporter is closed; dropping the finalized block",
-            ),
+        match self.finalized_report {
+            FinalizedReport::HeldBack => return,
+            FinalizedReport::Reported(reported) if height <= reported => return,
+            FinalizedReport::Pending | FinalizedReport::Reported(_) => {}
         }
+        self.finalized_report = FinalizedReport::Reported(height);
+        let _ = self.finalized_reporter.report(Finalized { height, digest });
     }
 
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next
@@ -2884,6 +2867,17 @@ async fn submit_forkchoice_update(
         );
     }
     Some(Ok(fcu_response))
+}
+
+/// Which finalized block the executor last reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalizedReport {
+    /// Startup backfill is running; its forkchoice updates are not reported.
+    HeldBack,
+    /// Backfill finished and nothing was reported yet.
+    Pending,
+    /// The highest finalized height reported.
+    Reported(Height),
 }
 
 /// A snapshot of the execution layer's local state - its head and
