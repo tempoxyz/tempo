@@ -26,12 +26,34 @@ use tempo_primitives::transaction::{
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
     },
 };
+use test_case::test_case;
+
+use Approval::{HighOwner, LowOwner, Outsider, Unrecoverable};
+
+type ConfigErr = ConfigurableAccountConfigError;
+type QuorumErr = ConfigurableAccountQuorumError;
+
+/// `indexed_owner(1)`, the lower of two owners whose order a test sets.
+const LOW: Address = Address::with_last_byte(1);
+/// `indexed_owner(2)`, the higher of two owners whose order a test sets.
+const HIGH: Address = Address::with_last_byte(2);
+/// `indexed_owner(0x10)`, an account whose config may name it as an owner.
+const ACCOUNT: Address = Address::with_last_byte(0x10);
 
 /// An encoding that configurable account signature decoding rejects, with the error it reports.
 struct MalformedEncoding {
     case: &'static str,
     encoded: Vec<u8>,
     error: RlpError,
+}
+
+/// An owner approval of a two-owner config, by its signer.
+#[derive(Clone, Copy, Debug)]
+enum Approval {
+    LowOwner,
+    HighOwner,
+    Outsider,
+    Unrecoverable,
 }
 
 /// A zero-salt config holding the `(owner, weight)` entries in the order given.
@@ -279,192 +301,55 @@ fn arbitrary_bounded_approvals() {
     assert!(saw_max_webauthn);
 }
 
-#[test]
-fn config_validation_reports_the_first_broken_rule() {
-    let [low, high] = [1, 2].map(indexed_owner);
-    let account = indexed_owner(0x10);
-    // Nine owners of weight 30 but one of weight 1: the eight heaviest reach 240, of 241.
-    let one_light_owner = |index: usize| {
-        let mut owners = indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 30);
-        owners[index].1 = 1;
-        owners
-    };
+/// Nine owners of weight 30 but one of weight 1: the eight heaviest reach 240, of 241.
+fn one_light_owner(index: usize) -> Vec<(Address, u8)> {
+    let mut owners = indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 30);
+    owners[index].1 = 1;
+    owners
+}
 
-    struct ConfigCase {
-        case: &'static str,
-        config: ConfigurableAccountConfig,
-        for_account: Option<Address>,
-        expected: Result<u8, ConfigurableAccountConfigError>,
-    }
+#[test_case(0, &[] => Err(ConfigErr::EmptyOwners))]
+// More owners than the cap, before the threshold.
+#[test_case(0, &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS + 1, 1) => Err(ConfigErr::TooManyOwners))]
+#[test_case(8, &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS, 1) => Ok(48))]
+#[test_case(0, &[(Address::ZERO, 0)] => Err(ConfigErr::ZeroThreshold))]
+#[test_case(1, &[(LOW, 0), (Address::ZERO, 1)] => Err(ConfigErr::ZeroOwner))]
+#[test_case(1, &[(LOW, 1), (HIGH, 0)] => Err(ConfigErr::ZeroWeight))]
+#[test_case(1, &[(HIGH, 1), (LOW, 0)] => Err(ConfigErr::ZeroWeight))]
+#[test_case(1, &[(LOW, 1), (LOW, 1)] => Err(ConfigErr::DuplicateOwner))]
+#[test_case(1, &[(LOW, 1), (HIGH, 1), (LOW, 1)] => Err(ConfigErr::DuplicateOwner))]
+#[test_case(1, &[(HIGH, 128), (LOW, 128)] => Err(ConfigErr::OwnersNotAscending))]
+#[test_case(2, &[(LOW, 1), (HIGH, 2)] => Ok(3))]
+#[test_case(u8::MAX, &[(LOW, u8::MAX)] => Ok(u8::MAX))]
+// A weight total past u8::MAX, before reachability: the eight heaviest of nine owners of weight
+// 29 cannot reach the threshold either.
+#[test_case(u8::MAX, &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 29) => Err(ConfigErr::TotalWeightExceedsMax))]
+#[test_case(240, &one_light_owner(0) => Ok(241))]
+#[test_case(240, &one_light_owner(4) => Ok(241))]
+#[test_case(240, &one_light_owner(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES) => Ok(241))]
+#[test_case(241, &one_light_owner(0) => Err(ConfigErr::ThresholdExceedsWeight))]
+fn config_validation_reports_the_first_broken_rule(
+    threshold: u8,
+    owners: &[(Address, u8)],
+) -> Result<u8, ConfigurableAccountConfigError> {
+    let config = configurable_account_config(0, threshold, owners);
+    let validated = config.validate();
+    // Deriving the account and committing to the config validate it first.
+    assert_eq!(config.derive_account().err(), validated.err());
+    assert_eq!(config.commitment().err(), validated.err());
+    validated
+}
 
-    for ConfigCase {
-        case,
-        config,
-        for_account,
-        expected,
-    } in [
-        ConfigCase {
-            case: "no owners, before the threshold",
-            config: configurable_account_config(0, 0, &[]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::EmptyOwners),
-        },
-        ConfigCase {
-            case: "more owners than the cap, before the threshold",
-            config: configurable_account_config(
-                0,
-                0,
-                &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS + 1, 1),
-            ),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::TooManyOwners),
-        },
-        ConfigCase {
-            case: "as many owners as the cap",
-            config: configurable_account_config(
-                0,
-                8,
-                &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_OWNERS, 1),
-            ),
-            for_account: None,
-            expected: Ok(48),
-        },
-        ConfigCase {
-            case: "a zero threshold, before every owner entry",
-            config: configurable_account_config(0, 0, &[(Address::ZERO, 0)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::ZeroThreshold),
-        },
-        ConfigCase {
-            case: "a zero owner anywhere, before an earlier zero weight",
-            config: configurable_account_config(0, 1, &[(low, 0), (Address::ZERO, 1)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::ZeroOwner),
-        },
-        ConfigCase {
-            case: "a zero weight",
-            config: configurable_account_config(0, 1, &[(low, 1), (high, 0)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::ZeroWeight),
-        },
-        ConfigCase {
-            case: "a zero weight, before ordering",
-            config: configurable_account_config(0, 1, &[(high, 1), (low, 0)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::ZeroWeight),
-        },
-        ConfigCase {
-            case: "an adjacent duplicate",
-            config: configurable_account_config(0, 1, &[(low, 1), (low, 1)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::DuplicateOwner),
-        },
-        ConfigCase {
-            case: "a nonadjacent duplicate",
-            config: configurable_account_config(0, 1, &[(low, 1), (high, 1), (low, 1)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::DuplicateOwner),
-        },
-        ConfigCase {
-            case: "descending owners, before the weight total",
-            config: configurable_account_config(0, 1, &[(high, 128), (low, 128)]),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::OwnersNotAscending),
-        },
-        ConfigCase {
-            case: "ascending owners",
-            config: configurable_account_config(0, 2, &[(low, 1), (high, 2)]),
-            for_account: None,
-            expected: Ok(3),
-        },
-        ConfigCase {
-            case: "the largest threshold and total weight",
-            config: configurable_account_config(0, u8::MAX, &[(low, u8::MAX)]),
-            for_account: None,
-            expected: Ok(u8::MAX),
-        },
-        // The eight heaviest of nine owners of weight 29 cannot reach the threshold either.
-        ConfigCase {
-            case: "a weight total past u8::MAX, before reachability",
-            config: configurable_account_config(
-                0,
-                u8::MAX,
-                &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES + 1, 29),
-            ),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::TotalWeightExceedsMax),
-        },
-        ConfigCase {
-            case: "the eight heaviest owners reach the threshold, light owner first",
-            config: configurable_account_config(0, 240, &one_light_owner(0)),
-            for_account: None,
-            expected: Ok(241),
-        },
-        ConfigCase {
-            case: "the eight heaviest owners reach the threshold, light owner in the middle",
-            config: configurable_account_config(0, 240, &one_light_owner(4)),
-            for_account: None,
-            expected: Ok(241),
-        },
-        ConfigCase {
-            case: "the eight heaviest owners reach the threshold, light owner last",
-            config: configurable_account_config(
-                0,
-                240,
-                &one_light_owner(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES),
-            ),
-            for_account: None,
-            expected: Ok(241),
-        },
-        ConfigCase {
-            case: "a threshold past the eight heaviest owners",
-            config: configurable_account_config(0, 241, &one_light_owner(0)),
-            for_account: None,
-            expected: Err(ConfigurableAccountConfigError::ThresholdExceedsWeight),
-        },
-        ConfigCase {
-            case: "an initial config owning its account",
-            config: configurable_account_config(0, 1, &[(account, 1)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "self-ownership, before its own zero weight",
-            config: configurable_account_config(0, 1, &[(account, 0)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "self-ownership anywhere, before an earlier zero weight",
-            config: configurable_account_config(0, 1, &[(high, 0), (account, 1)]),
-            for_account: Some(account),
-            expected: Err(ConfigurableAccountConfigError::AccountIsOwner),
-        },
-        ConfigCase {
-            case: "a later version owning its account",
-            config: current_config(account),
-            for_account: Some(account),
-            expected: Ok(1),
-        },
-        ConfigCase {
-            case: "the last version owning its account",
-            config: configurable_account_config(u64::MAX, 1, &[(account, 1)]),
-            for_account: Some(account),
-            expected: Ok(1),
-        },
-    ] {
-        match for_account {
-            Some(account) => {
-                assert_eq!(config.validate_for_account(account), expected, "{case}");
-            }
-            None => {
-                assert_eq!(config.validate(), expected, "{case}");
-                // Deriving the account and committing to the config validate it first.
-                assert_eq!(config.derive_account().err(), expected.err(), "{case}");
-                assert_eq!(config.commitment().err(), expected.err(), "{case}");
-            }
-        }
-    }
+#[test_case(0, &[(ACCOUNT, 1)] => Err(ConfigErr::AccountIsOwner))]
+#[test_case(0, &[(ACCOUNT, 0)] => Err(ConfigErr::AccountIsOwner))]
+#[test_case(0, &[(HIGH, 0), (ACCOUNT, 1)] => Err(ConfigErr::AccountIsOwner))]
+#[test_case(1, &[(ACCOUNT, 1)] => Ok(1))]
+#[test_case(u64::MAX, &[(ACCOUNT, 1)] => Ok(1))]
+fn config_validation_for_its_account_rejects_only_initial_self_ownership(
+    version: u64,
+    owners: &[(Address, u8)],
+) -> Result<u8, ConfigurableAccountConfigError> {
+    configurable_account_config(version, 1, owners).validate_for_account(ACCOUNT)
 }
 
 #[test]
@@ -799,117 +684,54 @@ fn configurable_account_hashes_follow_vectors_and_documented_layout() {
 }
 
 #[test]
-fn configurable_account_quorum_reports_the_first_broken_rule() {
+fn configurable_account_config_reads_owner_weights() {
     let [first, second, third] = [1, 2, 3].map(indexed_owner);
     let config = configurable_account_config(0, 4, &[(first, 1), (second, 3), (third, 2)]);
     assert_eq!(
         [first, second, third, indexed_owner(4)].map(|owner| config.owner_weight(owner)),
         [Some(1), Some(3), Some(2), None]
     );
-
-    // Records each recovered owner with its configured weight, in order.
-    let quorum = |threshold: u8,
-                  approvals: Vec<(Address, u8)>|
-     -> Result<(), ConfigurableAccountQuorumError> {
-        let mut accumulator = ConfigurableAccountWeightAccumulator::new(threshold)?;
-        for (owner, weight) in approvals {
-            accumulator.record_owner(owner, weight)?;
-        }
-        accumulator.finish()
-    };
-    let light = (first, 1);
-    let heavy = (second, 3);
-
-    struct QuorumCase {
-        case: &'static str,
-        threshold: u8,
-        approvals: Vec<(Address, u8)>,
-        expected: Result<(), ConfigurableAccountQuorumError>,
-    }
-
-    for QuorumCase {
-        case,
-        threshold,
-        approvals,
-        expected,
-    } in [
-        QuorumCase {
-            case: "a zero threshold",
-            threshold: 0,
-            approvals: Vec::new(),
-            expected: Err(ConfigurableAccountQuorumError::ZeroThreshold),
-        },
-        QuorumCase {
-            case: "no approvals",
-            threshold: 1,
-            approvals: Vec::new(),
-            expected: Err(ConfigurableAccountQuorumError::EmptySignatures),
-        },
-        QuorumCase {
-            case: "a signer of zero weight, read as outside the owner set",
-            threshold: 2,
-            approvals: vec![(first, 0)],
-            expected: Err(ConfigurableAccountQuorumError::SignerNotOwner),
-        },
-        QuorumCase {
-            case: "a repeated owner",
-            threshold: 2,
-            approvals: vec![light, light],
-            expected: Err(ConfigurableAccountQuorumError::SignersNotAscending),
-        },
-        QuorumCase {
-            case: "descending owners",
-            threshold: 4,
-            approvals: vec![heavy, light],
-            expected: Err(ConfigurableAccountQuorumError::SignersNotAscending),
-        },
-        QuorumCase {
-            case: "more approvals than the cap below quorum, before ordering",
-            threshold: u8::MAX,
-            approvals: [
-                indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, 1),
-                vec![light],
-            ]
-            .concat(),
-            expected: Err(ConfigurableAccountQuorumError::TooManySignatures),
-        },
-        QuorumCase {
-            case: "as many approvals as the cap",
-            threshold: u8::try_from(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES).unwrap(),
-            approvals: indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, 1),
-            expected: Ok(()),
-        },
-        QuorumCase {
-            case: "an approval after quorum",
-            threshold: 1,
-            approvals: vec![light, heavy],
-            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
-        },
-        QuorumCase {
-            case: "an approval after quorum, before its entry is checked",
-            threshold: 1,
-            approvals: vec![light, (Address::ZERO, 0)],
-            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
-        },
-        QuorumCase {
-            case: "weight below the threshold",
-            threshold: 4,
-            approvals: vec![heavy],
-            expected: Err(ConfigurableAccountQuorumError::WeightBelowThreshold),
-        },
-        QuorumCase {
-            case: "weight at the threshold",
-            threshold: 4,
-            approvals: vec![light, heavy],
-            expected: Ok(()),
-        },
-    ] {
-        assert_eq!(quorum(threshold, approvals), expected, "{case}");
-    }
 }
 
-#[test]
-fn configurable_account_approvals_report_the_first_broken_rule() {
+#[test_case(0, &[] => Err(QuorumErr::ZeroThreshold))]
+#[test_case(1, &[] => Err(QuorumErr::EmptySignatures))]
+// A signer of zero weight reads as outside the owner set.
+#[test_case(2, &[(LOW, 0)] => Err(QuorumErr::SignerNotOwner))]
+#[test_case(2, &[(LOW, 1), (LOW, 1)] => Err(QuorumErr::SignersNotAscending))]
+#[test_case(4, &[(HIGH, 3), (LOW, 1)] => Err(QuorumErr::SignersNotAscending))]
+// More approvals than the cap below quorum, before ordering.
+#[test_case(u8::MAX, &[indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, 1), vec![(LOW, 1)]].concat() => Err(QuorumErr::TooManySignatures))]
+#[test_case(u8::try_from(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES).unwrap(), &indexed_owners(MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, 1) => Ok(()))]
+#[test_case(1, &[(LOW, 1), (HIGH, 3)] => Err(QuorumErr::ExcessSignatures))]
+// An approval after quorum, before its entry is checked.
+#[test_case(1, &[(LOW, 1), (Address::ZERO, 0)] => Err(QuorumErr::ExcessSignatures))]
+#[test_case(3, &[(LOW, 1), (HIGH, 3)] => Err(QuorumErr::ExcessSignatures))]
+// A middle approval the quorum does not need.
+#[test_case(4, &[(LOW, 2), (HIGH, 1), (indexed_owner(3), 2)] => Err(QuorumErr::ExcessSignatures))]
+#[test_case(4, &[(HIGH, 3)] => Err(QuorumErr::WeightBelowThreshold))]
+#[test_case(4, &[(LOW, 1), (HIGH, 3)] => Ok(()))]
+fn configurable_account_quorum_reports_the_first_broken_rule(
+    threshold: u8,
+    approvals: &[(Address, u8)],
+) -> Result<(), ConfigurableAccountQuorumError> {
+    // Records each recovered owner with its configured weight, in order.
+    let mut accumulator = ConfigurableAccountWeightAccumulator::new(threshold)?;
+    for &(owner, weight) in approvals {
+        accumulator.record_owner(owner, weight)?;
+    }
+    accumulator.finish()
+}
+
+#[test_case(2, &[LowOwner, HighOwner] => Ok(()))]
+#[test_case(2, &[LowOwner] => Err(QuorumErr::WeightBelowThreshold))]
+#[test_case(2, &[HighOwner, LowOwner] => Err(QuorumErr::SignersNotAscending))]
+#[test_case(2, &[LowOwner, Unrecoverable] => Err(QuorumErr::OwnerSignatureRecoveryFailed { approval_index: 1 }))]
+#[test_case(2, &[Outsider, HighOwner] => Err(QuorumErr::SignerNotOwner))]
+#[test_case(1, &[LowOwner, HighOwner] => Err(QuorumErr::ExcessSignatures))]
+fn configurable_account_approvals_report_the_first_broken_rule(
+    threshold: u8,
+    approvals: &[Approval],
+) -> Result<(), ConfigurableAccountQuorumError> {
     let [first, second, outsider] = [1, 2, 3].map(|seed| {
         PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).expect("nonzero scalar is a key")
     });
@@ -929,69 +751,24 @@ fn configurable_account_approvals_report_the_first_broken_rule() {
             &second
         })
     });
-    let unrecoverable =
-        PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false));
-
-    struct ApprovalCase {
-        case: &'static str,
-        threshold: u8,
-        approvals: Vec<PrimitiveSignature>,
-        expected: Result<(), ConfigurableAccountQuorumError>,
-    }
-
-    for ApprovalCase {
-        case,
-        threshold,
+    let approvals = approvals
+        .iter()
+        .map(|approval| match approval {
+            LowOwner => low.clone(),
+            HighOwner => high.clone(),
+            Outsider => approve(&outsider),
+            Unrecoverable => {
+                PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false))
+            }
+        })
+        .collect();
+    let signature = ConfigurableAccountSignature::try_new(
+        account,
+        configurable_account_config(config.version, threshold, &owners.map(|owner| (owner, 1))),
         approvals,
-        expected,
-    } in [
-        ApprovalCase {
-            case: "owners in ascending order reaching the threshold",
-            threshold: 2,
-            approvals: vec![low.clone(), high.clone()],
-            expected: Ok(()),
-        },
-        ApprovalCase {
-            case: "weight below the threshold",
-            threshold: 2,
-            approvals: vec![low.clone()],
-            expected: Err(ConfigurableAccountQuorumError::WeightBelowThreshold),
-        },
-        ApprovalCase {
-            case: "owners in descending order",
-            threshold: 2,
-            approvals: vec![high.clone(), low.clone()],
-            expected: Err(ConfigurableAccountQuorumError::SignersNotAscending),
-        },
-        ApprovalCase {
-            case: "an approval that recovers no signer",
-            threshold: 2,
-            approvals: vec![low.clone(), unrecoverable],
-            expected: Err(
-                ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index: 1 },
-            ),
-        },
-        ApprovalCase {
-            case: "a signer outside the owner set",
-            threshold: 2,
-            approvals: vec![approve(&outsider), high.clone()],
-            expected: Err(ConfigurableAccountQuorumError::SignerNotOwner),
-        },
-        ApprovalCase {
-            case: "an approval after quorum",
-            threshold: 1,
-            approvals: vec![low, high],
-            expected: Err(ConfigurableAccountQuorumError::ExcessSignatures),
-        },
-    ] {
-        let signature = ConfigurableAccountSignature::try_new(
-            account,
-            configurable_account_config(config.version, threshold, &owners.map(|owner| (owner, 1))),
-            approvals,
-        )
-        .unwrap();
-        assert_eq!(signature.verify_approvals(inner_digest), expected, "{case}");
-    }
+    )
+    .unwrap();
+    signature.verify_approvals(inner_digest)
 }
 
 #[test]

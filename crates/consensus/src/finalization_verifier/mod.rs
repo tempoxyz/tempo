@@ -65,15 +65,35 @@ impl FinalizationVerifier {
         &self.network_identity
     }
 
+    /// Retire the current fallback in favor of an identity authenticated by a finalized boundary.
+    ///
+    /// Only an identity with a different key that starts after the current fallback replaces it,
+    /// so replaying an older boundary cannot reinstate a retired identity. Returns whether the
+    /// fallback changed.
+    ///
+    /// The caller is responsible for ensuring the identity came from a boundary block on a chain
+    /// authenticated by a previously verified finalization.
+    pub(crate) fn advance_network_identity(&mut self, identity: NetworkIdentity) -> bool {
+        if identity.from_epoch <= self.network_identity.from_epoch
+            || identity.identity == self.network_identity.identity
+        {
+            return false;
+        }
+
+        self.network_scheme = Arc::new(Scheme::certificate_verifier(NAMESPACE, identity.identity));
+        self.network_identity = identity;
+        true
+    }
+
     /// Install the identity encoded in a finalized epoch-boundary block.
     ///
     /// The caller is responsible for ensuring `extra_data` came from a boundary block on a chain
     /// authenticated by a previously verified finalization.
     pub(crate) fn decode_dkg_outcome_and_register_boundary(
         &self,
-        mut extra_data: &[u8],
+        extra_data: &[u8],
     ) -> Result<OnchainDkgOutcome, commonware_codec::Error> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data)?;
+        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data))?;
         self.scheme_provider.register(
             outcome.epoch(),
             Scheme::certificate_verifier(NAMESPACE, *outcome.network_identity()),
@@ -94,7 +114,7 @@ impl FinalizationVerifier {
         // bytes opaque and decoding them at each consumer.
         let bytes = alloy_primitives::hex::decode(&certified.certificate)
             .map_err(|error| Error::MalformedCertificate(error.into()))?;
-        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(&*bytes)
+        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::decode(bytes)
             .map_err(|error| Error::MalformedCertificate(error.into()))?;
 
         if finalization.proposal.payload.0 != certified.block.hash() {
@@ -106,7 +126,7 @@ impl FinalizationVerifier {
         let expected_epoch = self
             .epoch_strategy
             .containing(Height::new(height))
-            .expect("fixed epoch strategy supports every block height")
+            .ok_or(Error::HeightOutOfRange { height })?
             .epoch();
         if epoch != expected_epoch {
             return Err(Error::EpochMismatch {
@@ -200,6 +220,9 @@ pub enum Error {
         expected: u64,
         actual: u64,
     },
+    /// The block's height lies outside every epoch the epoch strategy can represent.
+    #[error("block height `{height}` is outside every representable epoch")]
+    HeightOutOfRange { height: u64 },
     /// The certificate could not be verified against an available identity.
     #[error(transparent)]
     CertificateVerification(#[from] CertificateVerificationError),

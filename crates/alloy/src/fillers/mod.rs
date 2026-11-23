@@ -9,5 +9,5 @@ pub use fee_token::FeeTokenFiller;
 #[doc(hidden)]
 pub use gas::TempoGasFillable;
 pub use gas::TempoGasFiller;
-pub use nonce::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller};
+pub use nonce::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, TempoNonceFiller};
 pub use sponsor::SponsorFiller;

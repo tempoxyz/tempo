@@ -27,8 +27,6 @@ fn write_tempfile(contents: &str) -> tempfile::NamedTempFile {
     file
 }
 fn encrypt_with_passphrase(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
-    use std::io::Write as _;
-
     let mut ciphertext = Vec::new();
     let mut writer = age::Encryptor::with_user_passphrase(secrecy::SecretString::from(passphrase))
         .wrap_output(&mut ciphertext)

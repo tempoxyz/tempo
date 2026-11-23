@@ -230,11 +230,8 @@ compromise. Startup rejects that key-file flag on an `rpc_only` node rather than
 This key is independent from the shared `--sequencer-key-file`; reusing that shared key
 would collapse several nodes into one recoverable quorum identity.
 
-Add `--sequencer.enable-prover` to run the detached shadow prover on this follower, and optionally
-`--sequencer.prover-address HARDFORK=HOST:PORT` (repeat per L1 hardfork) to use remote provers. The follower scans finalized
-`submitBatch` transactions, decodes the accepted quorum certificate inputs, and proves the exact
-anchor committed by the transaction after the matching Zone range is canonical locally. This is
-observational: proof success or failure never changes settlement or the follower's RPC service.
+Startup also rejects `--sequencer.enable-prover` on an rpc-follower: settlement proving requires a
+sequencer.
 
 The `--sequencer` flag conflicts with `--sequencer.manifest` because the
 manifest determines whether the node starts the sequencer tasks.
@@ -257,11 +254,15 @@ internet-facing one. Within the quorum, a node asks only the leader while it ans
 the other quorum members once the leader misses the response timeout. That fallback is what lets an
 rpc-follower catch up through a leader outage.
 
-Preferring the leader is a trust boundary, not load balancing. A live block is checked against the
-scheduled leader of the anchor it embeds, but a backfilled block has no sender to check — only
-parent linkage, L1 anchor, execution and hash. Those pass for a valid *alternative* chain too, so a
-compromised quorum member could serve pages that build a fork the quorum will never settle. Asking
-the leader first limits that to a leader outage, counted by
+Preferring the leader is a trust boundary, not load balancing. A live block is dropped at the
+transport unless its sender is a retained leader (the current, previous, or a scheduled leader, or
+the forced-recovery leader), so a non-leader member cannot make followers wait on an unobserved
+anchor. A follower that observes a transition after the incoming leader's first blocks arrive drops
+them and backfills them once the transition is published. After its anchor is observed, a live
+block is checked against the scheduled leader of the anchor it embeds, but a backfilled block has
+no sender to check — only parent linkage, L1 anchor, execution and hash. Those pass for a valid
+*alternative* chain too, so a compromised quorum member could serve pages that build a fork the
+quorum will never settle. Asking the leader first limits that to a leader outage, counted by
 `zone_p2p_backfill_requests_without_leader_total`.
 
 Removing it altogether needs the block to carry a leader signature over its own hash, which is a
@@ -282,10 +283,15 @@ both the outgoing and incoming leaders retain transactions before the activation
 rpc-follower may originate forwarding, but it does not receive forwarded transactions because it
 is outside the on-chain quorum.
 
-This permits operator RPC to be exposed on followers while keeping the leader's RPC private. Every
-quorum receiver decodes and validates each forwarded transaction through its pool again; follower
-validation is not trusted. Only the active leader selects and orders transactions into blocks.
-Followers periodically retry live pool transactions, recovering from listener overflow and
+This lets rpc-only followers serve operator RPC in front of the quorum, so quorum nodes never have
+to. Operator RPC is never for untrusted callers on any node, because it serves unredacted zone
+state; they use the authenticated redacted RPC (`--redacted-rpc.port`). Every quorum node's
+operator RPC, leader and follower alike, must also stay private and operator-only, because
+`zone_setLeader` relays leader rotation with the node's individual sequencer key.
+
+Every quorum receiver decodes and validates each forwarded transaction through its pool again;
+follower validation is not trusted. Only the active leader selects and orders transactions into
+blocks. Followers periodically retry live pool transactions, recovering from listener overflow and
 temporary leader disconnections.
 
 ## Deposit allowlist relay

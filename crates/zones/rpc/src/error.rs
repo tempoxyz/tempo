@@ -34,6 +34,8 @@ pub enum AuthError {
     ExpiredKeychainKey,
     #[error("keychain signature type mismatch")]
     KeychainSignatureTypeMismatch,
+    #[error("signing key is a retired root")]
+    RetiredRootKey,
 }
 
 /// Authentication failures split into invalid caller credentials vs server-side failures.

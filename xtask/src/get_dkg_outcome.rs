@@ -129,7 +129,7 @@ impl GetDkgOutcome {
             block_number
         );
 
-        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+        let outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
             .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();

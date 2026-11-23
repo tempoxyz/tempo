@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use tempo_contracts::zones::{
-    IZoneOutbox, Withdrawal, ZoneOutboxError, ZoneOutboxEvent, ZonePortal::Role, ZonePortalError,
+    IZoneOutbox, Withdrawal, ZoneDepositAddress, ZoneOutboxError, ZoneOutboxEvent,
+    ZonePortal::Role, ZonePortalError,
 };
 use tempo_precompiles::{
     Result as TempoResult,
@@ -25,6 +26,7 @@ use crate::{
     ZoneResult,
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, decode_compressed_public_key},
     storage::{L1State, L1StorageReader},
+    zone_identity::{TransferKind, ZoneIdentity},
 };
 
 /// Maximum callback payload accepted by the Zone Outbox.
@@ -138,6 +140,12 @@ impl ZoneOutbox {
     fn enqueue(&mut self, pending: PendingWithdrawal, fee: u128) -> ZoneResult<()> {
         let index = self.next_withdrawal_index.read()?;
         self.emit_event(pending.requested_event(index, fee))?;
+        if pending.sender_org != 0 {
+            self.emit_event(ZoneOutboxEvent::withdrawal_sender_org(
+                index,
+                pending.sender_org,
+            ))?;
+        }
 
         self.pending_withdrawals.push(pending)?;
         self.next_withdrawal_index.write(
@@ -156,8 +164,18 @@ impl ZoneOutbox {
         current_tx_hash: B256,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> ZoneResult<()> {
-        if call.zoneFallbackRecipient.is_zero() {
+        // +T15: A bounced withdrawal is parked under its fallback recipient when the mint fails, and
+        // only that recipient can claim it, which a TIP-1094 zone deposit address can never do.
+        if call.zoneFallbackRecipient.is_zero()
+            || (self.storage.spec().is_t15()
+                && ZoneDepositAddress::is_reserved(&call.zoneFallbackRecipient))
+        {
             return Err(ZoneOutboxError::invalid_fallback_recipient().into());
+        }
+        // +T15: A payout to a TIP-1094 deposit address would become a virtual deposit originated
+        // by this zone's portal, whose refund no one could claim.
+        if self.storage.spec().is_t15() && ZoneDepositAddress::is_reserved(&call.to) {
+            return Err(ZoneOutboxError::invalid_withdrawal_recipient().into());
         }
         if call.amount == 0 {
             return Err(ZoneOutboxError::zero_amount_withdrawal().into());
@@ -176,6 +194,33 @@ impl ZoneOutbox {
             return Err(TempoPrecompileError::from(TIP20Error::uninitialized()).into());
         }
         self.validate_withdrawal_policy(l1, call.token, call.to, call.gasLimit)?;
+        // The sender's org must allow the Tempo destination, and the bounce-back to the fallback
+        // recipient must follow an org edge.
+        let identity = ZoneIdentity::new();
+        let enforced = ZoneIdentity::enforced(l1)?;
+        identity.ensure_transfer(
+            enforced,
+            call.token,
+            caller,
+            call.to,
+            TransferKind::Withdrawal,
+        )?;
+        if call.zoneFallbackRecipient != caller {
+            identity.ensure_transfer(
+                enforced,
+                call.token,
+                caller,
+                call.zoneFallbackRecipient,
+                TransferKind::InZone,
+            )?;
+        }
+        // The sender's org is public on Tempo, where receivers read it during callbacks. It is
+        // recorded only while ZoneIdentity is enforced; otherwise every withdrawal is in org 0.
+        let sender_org = if enforced {
+            identity.member_org(caller)?
+        } else {
+            0
+        };
         self.enforce_withdrawal_block_cap()?;
 
         // If necessary, validate reveal
@@ -205,7 +250,13 @@ impl ZoneOutbox {
         self.last_fallback_nonce.write(fallback_nonce)?;
         self.fallback_recipients[fallback_nonce].write(call.zoneFallbackRecipient)?;
         self.enqueue(
-            PendingWithdrawal::from_request(caller, current_tx_hash, fallback_nonce, call),
+            PendingWithdrawal::from_request(
+                caller,
+                current_tx_hash,
+                fallback_nonce,
+                sender_org,
+                call,
+            ),
             fee,
         )
     }
@@ -402,6 +453,7 @@ struct PendingWithdrawal {
     memo: B256,
     gas_limit: u64,
     fallback_nonce: u64,
+    sender_org: u64,
     callback_data: Bytes,
     reveal_to: Bytes,
 }
@@ -411,6 +463,7 @@ impl PendingWithdrawal {
         sender: Address,
         tx_hash: B256,
         fallback_nonce: u64,
+        sender_org: u64,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> Self {
         Self {
@@ -424,6 +477,7 @@ impl PendingWithdrawal {
             fallback_nonce,
             callback_data: call.data,
             reveal_to: call.revealTo,
+            sender_org,
         }
     }
 
@@ -477,6 +531,7 @@ impl PendingWithdrawal {
             fallbackNonce: self.fallback_nonce,
             callbackData: self.callback_data,
             encryptedSender: encrypted_sender,
+            senderOrg: self.sender_org,
         })
     }
 }

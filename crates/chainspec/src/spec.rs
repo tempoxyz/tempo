@@ -143,7 +143,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
     TempoChainSpec::from_genesis(genesis)
         .with_network_identity(NetworkIdentity::mainnet())
-        .with_default_follow_url("wss://rpc.presto.tempo.xyz")
+        .with_default_follow_url("wss://rpc.mainnet.tempo.xyz")
         .into()
 });
 
@@ -460,6 +460,7 @@ mod tests {
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
+    use alloy_genesis::Genesis;
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
     use reth_chainspec::EthChainSpec;
@@ -468,6 +469,28 @@ mod tests {
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
+
+    /// `dev.json` and the node test genesis activate T15 at genesis, which skips the T15 runtime
+    /// upgrade, so their portal implementation must already be the current T15 runtime.
+    #[test]
+    fn genesis_portal_runtime_matches_t15_runtime() {
+        let impl_address = tempo_contracts::precompiles::ZONE_PORTAL_IMPL_ADDRESS;
+        for (name, json) in [
+            ("dev.json", include_str!("./genesis/dev.json")),
+            (
+                "test-genesis.json",
+                include_str!("../../node/tests/assets/test-genesis.json"),
+            ),
+        ] {
+            let genesis: Genesis = serde_json::from_str(json).unwrap();
+            let code = genesis.alloc[&impl_address].code.clone().unwrap();
+            assert_eq!(
+                code,
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+                "{name} holds a stale T15 portal runtime"
+            );
+        }
+    }
 
     #[test]
     #[cfg(feature = "cli")]
@@ -498,6 +521,30 @@ mod tests {
 
         assert_eq!(history.nonce, Some(1));
         assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    /// `tempo node --dev` must ship the same T15 ZonePortal runtime that T15 activation installs,
+    /// so zone sequencers against it encode withdrawals for the portal it actually runs.
+    #[test]
+    #[cfg(feature = "cli")]
+    fn dev_genesis_installs_current_t15_zone_portal() {
+        use tempo_contracts::{
+            precompiles::ZONE_PORTAL_IMPL_ADDRESS, zones::T15_ZONE_PORTAL_RUNTIME,
+        };
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let portal = chainspec
+            .genesis()
+            .alloc
+            .get(&ZONE_PORTAL_IMPL_ADDRESS)
+            .expect("dev genesis must install the shared ZonePortal implementation");
+
+        assert_eq!(
+            portal.code.as_ref(),
+            Some(&T15_ZONE_PORTAL_RUNTIME),
+            "regenerate dev.json after changing the T15 ZonePortal runtime"
+        );
     }
 
     #[test]
@@ -602,8 +649,6 @@ mod tests {
 
     #[test]
     fn test_from_genesis_with_hardforks_at_zero() {
-        use alloy_genesis::Genesis;
-
         // Build genesis config with every post-Genesis fork at timestamp 0
         let mut config = serde_json::Map::new();
         config.insert("chainId".into(), 1234.into());
@@ -903,9 +948,17 @@ mod tests {
             assert!(cs.is_t13_active_at_timestamp(1793718000));
             assert_eq!(cs.tempo_hardfork_at(1793718000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793718001), TempoHardfork::T13);
-            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+
+            // Before T14 activation (1796742000 = Dec 8th 2026 16:00 CET)
+            assert!(!cs.is_t14_active_at_timestamp(1796741999));
+            assert_eq!(cs.tempo_hardfork_at(1796741999), TempoHardfork::T13);
+
+            // At and after T14 activation
+            assert!(cs.is_t14_active_at_timestamp(1796742000));
+            assert_eq!(cs.tempo_hardfork_at(1796742000), TempoHardfork::T14);
+            assert_eq!(cs.tempo_hardfork_at(1796742001), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 
         #[test]
@@ -1032,9 +1085,17 @@ mod tests {
             assert!(cs.is_t13_active_at_timestamp(1793286000));
             assert_eq!(cs.tempo_hardfork_at(1793286000), TempoHardfork::T13);
             assert_eq!(cs.tempo_hardfork_at(1793286001), TempoHardfork::T13);
-            assert!(!cs.is_t14_active_at_timestamp(u64::MAX));
+
+            // Before T14 activation (1795532400 = Nov 24th 2026 16:00 CET)
+            assert!(!cs.is_t14_active_at_timestamp(1795532399));
+            assert_eq!(cs.tempo_hardfork_at(1795532399), TempoHardfork::T13);
+
+            // At and after T14 activation
+            assert!(cs.is_t14_active_at_timestamp(1795532400));
+            assert_eq!(cs.tempo_hardfork_at(1795532400), TempoHardfork::T14);
+            assert_eq!(cs.tempo_hardfork_at(1795532401), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
-            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
+            assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 
         #[test]

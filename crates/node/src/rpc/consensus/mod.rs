@@ -11,11 +11,23 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
+
+use alloy_provider::{GetSubscription, Provider, ProviderCall};
+use alloy_rpc_client::NoParams;
 use jsonrpsee::{
+    ConnectionId,
     core::RpcResult,
     proc_macros::rpc,
-    types::{ErrorObject, error::INTERNAL_ERROR_CODE},
+    types::{
+        ErrorObject,
+        error::{INTERNAL_ERROR_CODE, SERVER_IS_BUSY_CODE, TOO_MANY_SUBSCRIPTIONS_CODE},
+    },
 };
+use parking_lot::Mutex;
+use reth_metrics::{Metrics, metrics::Counter};
+use tempo_alloy::TempoNetwork;
+use tokio::sync::Semaphore;
 
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
@@ -57,11 +69,13 @@ impl<T> From<types::Response<T>> for RpcResult<T> {
 }
 
 /// Consensus namespace RPC trait.
-#[rpc(server, client, namespace = "consensus")]
+#[rpc(server, namespace = "consensus")]
 pub trait TempoConsensusApi {
     /// Get finalization by height query.
     ///
     /// Use `"latest"` to get the most recent finalization, or `{"height": N}` for a specific height.
+    /// The node answers a limited number of height queries at a time. Further ones fail with the
+    /// server-busy error and can be retried.
     #[method(name = "getFinalization")]
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock>;
 
@@ -76,22 +90,212 @@ pub trait TempoConsensusApi {
     async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
 
+/// Client interface for the consensus namespace.
+pub trait TempoConsensusApiClient: Provider<TempoNetwork> {
+    /// Get finalization by height query.
+    fn get_finalization(&self, query: Query) -> ProviderCall<(Query,), CertifiedBlock> {
+        self.client()
+            .request("consensus_getFinalization", (query,))
+            .into()
+    }
+
+    /// Get the current consensus state snapshot.
+    fn get_latest(&self) -> ProviderCall<NoParams, ConsensusState> {
+        self.client().request_noparams("consensus_getLatest").into()
+    }
+
+    /// Subscribe to finalized block events. Needs a pubsub transport.
+    ///
+    /// Dropping the subscription does not send `consensus_unsubscribe`: the server releases it
+    /// when the connection closes.
+    fn subscribe_events(&self) -> GetSubscription<NoParams, Event>
+    where
+        Self: Sized,
+    {
+        self.subscribe_to("consensus_subscribe")
+    }
+}
+
+impl<T: Provider<TempoNetwork>> TempoConsensusApiClient for T {}
+
+/// Default cap on concurrent `consensus_subscribe` subscriptions across all connections.
+///
+/// The feed is meant for followers and indexers, and every subscription receives a copy of each
+/// finalized block, so it gets a far lower cap than jsonrpsee's generic per-connection limit.
+pub const DEFAULT_MAX_SUBSCRIPTIONS: NonZeroUsize = NonZeroUsize::new(256).unwrap();
+
+/// Default cap on concurrent `consensus_subscribe` subscriptions on one connection, so a single
+/// client cannot take every slot of the node-wide cap.
+pub const DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+/// Default cap on `consensus_getFinalization` height lookups in flight at once, across all
+/// connections and transports.
+///
+/// Each one is a request to the marshal, so this bounds how many of them the marshal has queued.
+/// A follower filling a gap keeps 20 outstanding.
+pub const DEFAULT_MAX_CONCURRENT_LOOKUPS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+
+/// Caps on concurrent `consensus_subscribe` subscriptions and `consensus_getFinalization` height
+/// lookups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// Subscriptions across all connections and transports.
+    pub max_subscriptions: NonZeroUsize,
+    /// Subscriptions on one HTTP or WS connection.
+    pub max_subscriptions_per_connection: NonZeroUsize,
+    /// Height lookups in flight across all connections and transports.
+    pub max_concurrent_lookups: NonZeroUsize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
+            max_subscriptions_per_connection: DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            max_concurrent_lookups: DEFAULT_MAX_CONCURRENT_LOOKUPS,
+        }
+    }
+}
+
+/// Messages that may be queued on a subscription's connection before the subscription is dropped.
+///
+/// Slow readers are handled at the source: every subscriber reads the feed's shared broadcast ring
+/// and skips ahead when it lags. That cannot see a client that stops reading, though: its
+/// subscription keeps copying blocks out of the ring into jsonrpsee's send buffer for the
+/// connection (1024 messages) until it is full. jsonrpsee exposes only that buffer, shared by every
+/// subscription and method response on the connection, and not this subscription's own share, so
+/// this check counts the whole connection's backlog. It is set high enough that bursts from other
+/// subscriptions on the connection (such as `eth_subscribe` logs) do not trip it, while bounding a
+/// client that stops reading to this many block copies instead of 1024.
+///
+/// Known limitation: reth's IPC server moves messages out of that buffer into an unbounded queue
+/// per connection as soon as they arrive, so on IPC neither this check nor [`SEND_TIMEOUT`] fires
+/// and a local IPC client that stops reading is never dropped.
+const MAX_PENDING_NOTIFICATIONS: usize = 128;
+
+/// How long a notification may wait for room on the connection before the subscription is
+/// dropped.
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Tempo consensus RPC implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensusRpc<I> {
     consensus_feed: I,
+    /// One permit per height lookup in flight, shared by every connection. A lookup whose caller
+    /// went away gives its permit back: the marshal skips requests nobody waits for.
+    lookups: Arc<Semaphore>,
+    metrics: ConsensusRpcMetrics,
+    /// One permit per live subscription, shared by every connection.
+    subscriptions: Arc<Semaphore>,
+    /// Live subscriptions per connection and their cap; `None` for transports without the cap
+    /// (see [`Self::without_connection_cap`]).
+    per_connection: Option<ConnectionCap>,
 }
 
-impl<I: ConsensusFeed> TempoConsensusRpc<I> {
-    /// Create a new consensus RPC handler.
-    pub fn new(consensus_feed: I) -> Self {
-        Self { consensus_feed }
+/// Metrics of the consensus RPC.
+#[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_consensus_rpc")]
+struct ConsensusRpcMetrics {
+    /// `consensus_getFinalization` height lookups rejected because the lookup limit was reached.
+    lookups_rejected: Counter,
+}
+
+/// Live subscriptions per connection, and how many one connection may hold.
+#[derive(Debug, Clone)]
+struct ConnectionCap {
+    counts: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+    max: usize,
+}
+
+/// One subscription's claim on its connection's share; released on drop.
+struct SubscriptionGuard {
+    counts: Arc<Mutex<HashMap<ConnectionId, usize>>>,
+    connection: ConnectionId,
+}
+
+impl SubscriptionGuard {
+    fn try_claim(cap: &ConnectionCap, connection: ConnectionId) -> Option<Self> {
+        let mut guard = cap.counts.lock();
+        let count = guard.entry(connection).or_default();
+        if *count >= cap.max {
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            counts: cap.counts.clone(),
+            connection,
+        })
     }
 }
 
-#[async_trait::async_trait]
+impl Drop for SubscriptionGuard {
+    fn drop(&mut self) {
+        let mut guard = self.counts.lock();
+        if let Some(count) = guard.get_mut(&self.connection) {
+            *count -= 1;
+            if *count == 0 {
+                guard.remove(&self.connection);
+            }
+        }
+    }
+}
+
+impl<I: ConsensusFeed> TempoConsensusRpc<I> {
+    /// Create a new consensus RPC handler enforcing `limits`.
+    pub fn new(consensus_feed: I, limits: Limits) -> Self {
+        Self {
+            consensus_feed,
+            // A semaphore panics when created with more permits than it can hold.
+            lookups: Arc::new(Semaphore::new(
+                limits
+                    .max_concurrent_lookups
+                    .get()
+                    .min(Semaphore::MAX_PERMITS),
+            )),
+            metrics: ConsensusRpcMetrics::default(),
+            subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
+            per_connection: Some(ConnectionCap {
+                counts: Default::default(),
+                max: limits.max_subscriptions_per_connection.get(),
+            }),
+        }
+    }
+}
+
+impl<I: Clone> TempoConsensusRpc<I> {
+    /// Returns a handler sharing this one's global subscription and lookup caps but without the
+    /// per-connection cap.
+    ///
+    /// Connection IDs are only unique within one server, so the per-connection cap must only be
+    /// used by handlers on one server. Register this handler on the others, such as local IPC.
+    pub fn without_connection_cap(&self) -> Self {
+        Self {
+            consensus_feed: self.consensus_feed.clone(),
+            lookups: self.lookups.clone(),
+            metrics: self.metrics.clone(),
+            subscriptions: self.subscriptions.clone(),
+            per_connection: None,
+        }
+    }
+}
+
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
+        // `Latest` is answered from memory, only height lookups go to the marshal.
+        let _permit = match query {
+            Query::Latest => None,
+            Query::Height(_) => {
+                let Ok(permit) = self.lookups.try_acquire() else {
+                    self.metrics.lookups_rejected.increment(1);
+                    return Err(ErrorObject::owned(
+                        SERVER_IS_BUSY_CODE,
+                        "consensus lookup limit reached, try again later",
+                        None::<()>,
+                    ));
+                };
+                Some(permit)
+            }
+        };
         self.consensus_feed.get_finalization(query).await.into()
     }
 
@@ -103,38 +307,81 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
     ) -> jsonrpsee::core::SubscriptionResult {
-        let sink = pending.accept().await?;
+        // Reject before accepting, so the client gets an error for its subscribe call instead of
+        // a subscription that ends at once.
+        let guard = match &self.per_connection {
+            Some(cap) => {
+                let Some(guard) = SubscriptionGuard::try_claim(cap, pending.connection_id()) else {
+                    pending
+                        .reject(ErrorObject::owned(
+                            TOO_MANY_SUBSCRIPTIONS_CODE,
+                            "too many consensus subscriptions on this connection",
+                            Some(cap.max),
+                        ))
+                        .await;
+                    return Ok(());
+                };
+                Some(guard)
+            }
+            None => None,
+        };
+        let Ok(permit) = self.subscriptions.clone().try_acquire_owned() else {
+            pending
+                .reject(ErrorObject::owned(
+                    SERVER_IS_BUSY_CODE,
+                    "consensus subscription limit reached, try again later",
+                    None::<()>,
+                ))
+                .await;
+            return Ok(());
+        };
+
+        // Accepting writes the subscription ID to the connection, which blocks while a client that
+        // stops reading has filled its buffer. Bound it, so a stalled client cannot hold permits
+        // in accept().
+        let Ok(accepted) = tokio::time::timeout(SEND_TIMEOUT, pending.accept()).await else {
+            return Ok(());
+        };
+        let sink = accepted?;
         let mut rx = self.consensus_feed.subscribe().await.ok_or_else(|| {
             ErrorObject::owned(INTERNAL_ERROR_CODE, "Failed to subscribe", None::<()>)
         })?;
 
-        tokio::spawn(async move {
-            loop {
-                // Events only arrive on finalization, so a failed `send` alone would not detect
-                // a disconnect or unsubscribe while finalization is stalled. Race against
-                // `closed()` so the task (and its subscription permit) is released promptly.
-                let recv = tokio::select! {
-                    _ = sink.closed() => break,
-                    recv = rx.recv() => recv,
-                };
-                match recv {
-                    Ok(event) => {
-                        let msg = jsonrpsee::SubscriptionMessage::new(
-                            sink.method_name(),
-                            sink.subscription_id().clone(),
-                            &event.json().await,
-                        )
-                        .expect("Event should be serializable");
-                        if sink.send(msg).await.is_err() {
-                            break;
-                        }
+        // Runs for the life of the subscription. jsonrpsee drives this future in its own task and,
+        // when it returns an error, sends the client a close notification so it can resubscribe
+        // and backfill with `consensus_getFinalization`. Holding `permit` here releases it when the
+        // subscription ends.
+        let _permit = (permit, guard);
+        loop {
+            // Events only arrive on finalization, so a failed `send` alone would not detect a
+            // disconnect or unsubscribe while finalization is stalled. Race against `closed()` so
+            // the subscription (and its permit) is released promptly.
+            let recv = tokio::select! {
+                _ = sink.closed() => return Ok(()),
+                recv = rx.recv() => recv,
+            };
+            match recv {
+                Ok(event) => {
+                    // A client that is not reading would queue a full block per event: drop it
+                    // before copying another one.
+                    if sink.max_capacity() - sink.capacity() > MAX_PENDING_NOTIFICATIONS {
+                        return Err("subscriber is too slow, resubscribe and backfill".into());
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    let msg = jsonrpsee::SubscriptionMessage::new(
+                        sink.method_name(),
+                        sink.subscription_id().clone(),
+                        &event.json().await,
+                    )
+                    .expect("Event should be serializable");
+                    if sink.send_timeout(msg, SEND_TIMEOUT).await.is_err() {
+                        return Err("subscriber is too slow, resubscribe and backfill".into());
+                    }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err("consensus feed closed".into());
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             }
-        });
-
-        Ok(())
+        }
     }
 }

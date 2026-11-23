@@ -49,7 +49,7 @@ jobs:
       bench-matrix: ${{ steps.refs.outputs.bench-matrix }}
       save-matrix: ${{ steps.refs.outputs.save-matrix }}
       has-benchmarks: ${{ steps.refs.outputs.has-benchmarks }}
-      has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
+      has-nightly-state: ${{ steps.refs.outputs.has-nightly-state }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -107,7 +107,7 @@ jobs:
               stale_scenarios+=("$preset")
             fi
 
-            if [ "$should_skip" != "true" ] && [ "$is_stale" != "true" ]; then
+            if [ "$is_stale" != "true" ]; then
               entry="$(jq -cn \
                 --arg preset "$preset" \
                 --arg actor "$actor" \
@@ -119,8 +119,13 @@ jobs:
                 --arg token_count "$token_count" \
                 --arg state_key "$state_key" \
                 --arg general_gas_limit "$general_gas_limit" \
-                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count, general_gas_limit:$general_gas_limit}')"
-              bench_entries+=("$entry")
+                --arg refresh "$should_skip" \
+                '{preset:$preset, state_key:$state_key, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, token_count:$token_count, general_gas_limit:$general_gas_limit, refresh:$refresh}')"
+              if [ "$should_skip" != "true" ]; then
+                bench_entries+=("$entry")
+              fi
+              # Skipped scenarios re-save their unchanged state, so a quiet main
+              # doesn't age out a baseline that bench-state.sh would still accept.
               if [ "$run_type" = "nightly" ]; then
                 save_entries+=("$entry")
               fi
@@ -144,17 +149,17 @@ jobs:
 
           if [ "${#save_entries[@]}" -gt 0 ]; then
             save_matrix="$(printf '%s\n' "${save_entries[@]}" | jq -cs '{include:.}')"
-            has_nightly_benchmarks="true"
+            has_nightly_state="true"
           else
             save_matrix='{"include":[]}'
-            has_nightly_benchmarks="false"
+            has_nightly_state="false"
           fi
 
           {
             echo "bench-matrix=$bench_matrix"
             echo "save-matrix=$save_matrix"
             echo "has-benchmarks=$has_benchmarks"
-            echo "has-nightly-benchmarks=$has_nightly_benchmarks"
+            echo "has-nightly-state=$has_nightly_state"
           } >> "$GITHUB_OUTPUT"
 
   bench-e2e:
@@ -198,11 +203,13 @@ jobs:
   save-state:
     needs: [resolve-refs, bench-e2e]
     # Each scenario saves its baseline when its own leg passed, so one failing leg
-    # doesn't hold back the others (the matrix result is the aggregate).
+    # doesn't hold back the others (the matrix result is the aggregate). When every
+    # scenario was skipped, bench-e2e is skipped and only refreshes run.
     if: |
       !cancelled() &&
-      needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
-      needs.bench-e2e.result != 'skipped'
+      needs.resolve-refs.result == 'success' &&
+      needs.resolve-refs.outputs.has-nightly-state == 'true' &&
+      (needs.bench-e2e.result != 'skipped' || needs.resolve-refs.outputs.has-benchmarks != 'true')
     name: save-state (${{ matrix.state_key }})
     runs-on: ubuntu-latest
     permissions:
@@ -220,7 +227,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           JOB_NAME: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }}) / bench-e2e
+          REFRESH: ${{ matrix.refresh }}
         run: |
+          if [ "$REFRESH" = true ]; then
+            echo "No new commit since the saved state; refreshing it"
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           conclusion="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=latest" \
             --paginate --jq '.jobs[] | select(.name == env.JOB_NAME) | .conclusion' | head -n 1)"
           echo "$JOB_NAME: ${conclusion:-missing}"

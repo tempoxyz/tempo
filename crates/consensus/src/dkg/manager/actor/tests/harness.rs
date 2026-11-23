@@ -26,7 +26,7 @@ use commonware_consensus::{
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round as ConsensusRound},
 };
 use commonware_cryptography::{
-    Signer as _,
+    Digested, Digestible as _, Signer as _,
     bls12381::{
         dkg::feldman_desmedt::{self as dkg, Logs, Output, SignedDealerLog},
         primitives::{
@@ -35,7 +35,7 @@ use commonware_cryptography::{
             variant::MinSig,
         },
     },
-    ed25519::{Batch, PrivateKey, PublicKey},
+    ed25519::{PrivateKey, PublicKey},
     transcript::Summary,
 };
 use commonware_math::algebra::Random as _;
@@ -284,7 +284,6 @@ impl Harness {
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
                 blocker: self.blocker.clone(),
-                mailbox_size: NonZeroUsize::new(1).unwrap(),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
                 finalized_tip: self.finalized_tip.clone(),
@@ -325,7 +324,7 @@ impl Harness {
             self.mailbox
                 .as_mut()
                 .expect("DKG actor is not running")
-                .report(Update::Block(Arc::new(block(header)), acknowledgement))
+                .report(Update::Block(block(header).into(), acknowledgement))
                 .accepted()
         );
         waiter
@@ -417,6 +416,9 @@ impl Blocker for RecordingBlocker {
     }
 }
 
+/// Messages a test receiver holds; the muxer sizes each subchannel from it.
+const TEST_RECEIVER_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
+
 #[derive(Debug)]
 pub(super) struct InertReceiver;
 
@@ -426,6 +428,10 @@ impl Receiver for InertReceiver {
 
     async fn recv(&mut self) -> Result<commonware_p2p::Message<Self::PublicKey>, Self::Error> {
         std::future::pending().await
+    }
+
+    fn capacity(&self) -> NonZeroUsize {
+        TEST_RECEIVER_CAPACITY
     }
 }
 
@@ -549,6 +555,10 @@ impl Receiver for NetworkReceiver {
             .await
             .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))
     }
+
+    fn capacity(&self) -> NonZeroUsize {
+        TEST_RECEIVER_CAPACITY
+    }
 }
 
 #[derive(Clone, Default)]
@@ -659,7 +669,7 @@ impl ExecutionLayer for StubExecutionProvider {
     }
 }
 
-type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Arc<Block>>>>;
+type BlockSubscribers = BTreeMap<Digest, Vec<oneshot::Sender<Digested<Block>>>>;
 
 #[derive(Clone, Default)]
 pub(super) struct StubMarshal {
@@ -676,7 +686,7 @@ impl StubMarshal {
             .lock()
             .unwrap()
             .insert(block.height(), block.clone());
-        let block = Arc::new(block);
+        let block = Digested::from(block);
         if let Some(subscribers) = self.pending.lock().unwrap().remove(&block.digest()) {
             for subscriber in subscribers {
                 self.reads.lock().unwrap().push(block.height());
@@ -700,16 +710,21 @@ impl StubMarshal {
 }
 
 impl Marshal for StubMarshal {
-    async fn get_block(&self, height: Height) -> Option<Block> {
+    async fn get_block(&self, height: Height) -> Option<Digested<Block>> {
         self.reads.lock().unwrap().push(height);
-        self.blocks.lock().unwrap().get(&height).cloned()
+        self.blocks
+            .lock()
+            .unwrap()
+            .get(&height)
+            .cloned()
+            .map(Digested::from)
     }
 
     fn subscribe_by_digest(
         &self,
         digest: Digest,
         fallback: DigestFallback,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (sender, receiver) = oneshot::channel();
         self.subscriptions.lock().unwrap().push((digest, fallback));
         if self.closed.load(Ordering::SeqCst) {
@@ -719,7 +734,7 @@ impl Marshal for StubMarshal {
         let blocks = self.blocks.lock().unwrap();
         if let Some(block) = blocks.values().find(|block| block.digest() == digest) {
             self.reads.lock().unwrap().push(block.height());
-            let _ = sender.send(Arc::new(block.clone()));
+            let _ = sender.send(block.clone().into());
         } else {
             self.pending
                 .lock()
@@ -790,7 +805,7 @@ pub(super) fn header(height: Height) -> TempoHeader {
 /// Returns a block at `height`, proposed in `round`, whose digest differs for
 /// each `tag`. Use it for requests whose parent is not a block that the test
 /// reports.
-pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Arc<Block> {
+pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Digested<Block> {
     let mut header = header(height);
     header.inner.mix_hash = B256::repeat_byte(tag);
     header.consensus_context = Some(TempoConsensusContext {
@@ -801,7 +816,7 @@ pub(super) fn parent_block(round: ConsensusRound, height: Height, tag: u8) -> Ar
             &PrivateKey::from_seed(0).public_key(),
         ),
     });
-    Arc::new(block(header))
+    Digested::from(block(header))
 }
 
 pub(super) fn block(header: TempoHeader) -> Block {
@@ -864,7 +879,7 @@ pub(super) struct RevealedRecoveryFixture {
     pub(super) expected_output: Output<MinSig, PublicKey>,
     pub(super) identity: PrivateKey,
     pub(super) recovered_share: Share,
-    signed_logs: Vec<SignedDealerLog<MinSig, PrivateKey>>,
+    signed_logs: Vec<SignedDealerLog<MinSig, PublicKey>>,
     pub(super) recovered_state: State,
 }
 
@@ -880,7 +895,7 @@ pub(super) fn signed_dealer_logs<R: CryptoRng>(
     players: &[PrivateKey],
     mut dealer_rng: impl FnMut(usize) -> R,
     withhold: impl Fn(&PublicKey, &PublicKey) -> bool,
-) -> Vec<SignedDealerLog<MinSig, PrivateKey>> {
+) -> Vec<SignedDealerLog<MinSig, PublicKey>> {
     dealers
         .iter()
         .enumerate()
@@ -947,7 +962,7 @@ pub(super) fn revealed_recovery_fixture(
 
     let player = dkg::Player::new(round.info().clone(), identity.clone()).unwrap();
     let (output, recovered_share) = player
-        .finalize::<N3f1, Batch>(&mut *rng, logs, &Sequential)
+        .finalize::<N3f1>(&mut *rng, logs, &Sequential)
         .unwrap();
 
     let recovered_state = State {

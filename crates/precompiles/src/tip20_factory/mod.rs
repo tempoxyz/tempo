@@ -49,6 +49,14 @@ impl TIP20Factory {
         self.__initialize()
     }
 
+    /// Creates and initializes the precompile, for tests that don't exercise initialization.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn initialized() -> Result<Self> {
+        let mut this = Self::new();
+        this.initialize()?;
+        Ok(this)
+    }
+
     /// Computes the deterministic address for a token given `sender` and `salt`. Reverts if the
     /// derived address falls within the reserved range (lower 8 bytes < `RESERVED_SIZE`).
     ///
@@ -257,7 +265,11 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::{Address, address};
+    use alloy::{
+        primitives::{Address, address},
+        sol_types::{SolCall, SolEvent},
+    };
+    use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_is_initialized() -> eyre::Result<()> {
@@ -435,8 +447,6 @@ mod tests {
 
     #[test]
     fn test_create_token_selector_and_event_unchanged() {
-        use alloy::sol_types::{SolCall, SolEvent};
-
         assert_eq!(
             createTokenCall::SELECTOR,
             [0x68, 0x13, 0x04, 0x45],
@@ -454,9 +464,6 @@ mod tests {
 
     #[test]
     fn test_create_token_with_logo() -> eyre::Result<()> {
-        use alloy::sol_types::SolEvent;
-        use tempo_contracts::precompiles::ITIP20;
-
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         // Use a distinct `admin` to lock in the spec-mandated
@@ -524,9 +531,6 @@ mod tests {
 
     #[test]
     fn test_create_token_with_logo_empty_uri_skips_event() -> eyre::Result<()> {
-        use alloy::sol_types::SolEvent;
-        use tempo_contracts::precompiles::ITIP20;
-
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
 
@@ -591,17 +595,17 @@ mod tests {
             let prefix = "https://example.com/";
             let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
             assert_eq!(too_long.len(), 257);
-            assert!(matches!(
+            assert_eq!(
                 factory.create_token_with_logo(sender, call(&too_long)),
-                Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
-            ));
+                Err(TIP20Error::logo_uri_too_long().into())
+            );
 
             // (a2) Disallowed scheme — `javascript:` is the canonical example
             // from the spec's security considerations.
-            assert!(matches!(
+            assert_eq!(
                 factory.create_token_with_logo(sender, call("javascript:alert(1)")),
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_)))
-            ));
+                Err(TIP20Error::invalid_logo_uri().into())
+            );
 
             // (b) Atomicity: the same salt is reusable with a valid URI,
             // proving no partial token was left behind by either rejection.
@@ -733,8 +737,7 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            let mut factory = TIP20Factory::initialized()?;
 
             let result = factory.create_token_reserved_address(
                 Address::random(), // No TIP20 prefix
@@ -760,8 +763,7 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            let mut factory = TIP20Factory::initialized()?;
 
             factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
@@ -859,8 +861,7 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            let mut factory = TIP20Factory::initialized()?;
 
             // Try to create PATH_USD with a non-deployed TIP20 as quote_token
             let result = factory.create_token_reserved_address(
@@ -898,8 +899,7 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            let mut factory = TIP20Factory::initialized()?;
 
             let other_usd = factory.create_token_reserved_address(
                 address!("20C0000000000000000000000000000000000001"),

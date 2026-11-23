@@ -12,12 +12,18 @@ use alloy_primitives::{Address, Signature, U64, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
-use tempo_alloy::rpc::{TempoTransactionReceipt, TempoTransactionRequest};
+use tempo_alloy::{
+    rpc::{TempoTransactionReceipt, TempoTransactionRequest},
+    test_utils::CallBuilderExt,
+};
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
+    OUSD_ADDRESS,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::slots,
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -25,16 +31,13 @@ use tempo_primitives::{
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::OUSD_ADDRESS;
-    use tempo_precompiles::tip20::slots;
-
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
             tempo_chainspec::hardfork::TempoHardfork::T13,
         ))?;
         // Give OUSD the existing test token's funded accounts and roles.
         let mut ousd = genesis["alloc"][format!("{PATH_USD_ADDRESS:#x}")].clone();
-        ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] =
+        ousd["storage"][format!("{:#066x}", slots::QUOTE_TOKEN)] =
             format!("{:#066x}", U256::from_be_slice(PATH_USD_ADDRESS.as_slice())).into();
         genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
         let setup = TestNodeBuilder::new()
@@ -51,18 +54,14 @@ async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> 
                 U256::from(1_000_000),
                 provider.default_signer_address(),
             )
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         let signer = PrivateKeySigner::random();
         let payer = signer.address();
         let balance = U256::from(20_000);
         ITIP20::new(OUSD_ADDRESS, &provider)
             .transfer(payer, balance)
-            .send()
-            .await?
-            .get_receipt()
+            .mined()
             .await?;
         assert!(
             IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
@@ -138,9 +137,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     user_token
         .mint(user_address, U256::from(1e10))
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Verify default user token matches the genesis-created AlphaUSD (reserved address)
@@ -194,9 +191,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Distribute fees to validator (this distributes ALL accumulated fees for this token)
     fee_manager
         .distributeFees(validator, *validator_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
@@ -216,9 +211,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Fees from setUserToken tx also accumulated
     fee_manager
         .distributeFees(validator, *validator_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     assert!(validator_token.balanceOf(validator).call().await? > validator_balance_after);
 
@@ -256,9 +249,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
     fee_manager
         .distributeFees(validator, *validator_token.address())
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
 
@@ -342,11 +333,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: Address::ZERO.into(),
-                value: U256::ZERO,
-                input: alloy_primitives::Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
             ..Default::default()
         };
 
@@ -413,11 +400,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
         gas_limit: 1_000_000,
-        calls: vec![Call {
-            to: Address::ZERO.into(),
-            value: U256::ZERO,
-            input: alloy_primitives::Bytes::new(),
-        }],
+        calls: vec![Call::new(Address::ZERO, alloy_primitives::Bytes::new())],
         // Placeholder so `skip_fee_token = true` when computing signature_hash
         fee_payer_signature: Some(Signature::new(
             Default::default(),
@@ -510,16 +493,12 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
     admin_token
         .mint(admin_addr, U256::from(1e18 as u64))
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
     admin_token
         .mint(fee_payer_addr, U256::from(1e18 as u64))
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Provide AMM liquidity so admin_token can be swapped to PATH_USD for fee settlement
@@ -531,9 +510,7 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
             U256::from(1e17 as u64),
             admin_addr,
         )
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Set fee_payer's fee preference to admin_token BEFORE applying restrictive policy
@@ -541,21 +518,14 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
         .wallet(fee_payer_signer.clone())
         .connect_http(setup.http_url.clone());
     let fee_manager_fp = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, fee_payer_provider.clone());
-    fee_manager_fp
-        .setUserToken(token_addr)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    fee_manager_fp.setUserToken(token_addr).mined().await?;
 
     // Create whitelist policy on admin_token: whitelist fee_payer but NOT FeeManager
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
     let policy_receipt = registry
         .createPolicy(admin_addr, ITIP403Registry::PolicyType::WHITELIST)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let policy_id = policy_receipt
@@ -569,9 +539,7 @@ async fn test_fee_payer_transfer_whitelist_post_t1c() -> eyre::Result<()> {
     registry
         .modifyPolicyWhitelist(policy_id, fee_payer_addr, true)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     let admin_token_contract = ITIP20::new(token_addr, &provider);

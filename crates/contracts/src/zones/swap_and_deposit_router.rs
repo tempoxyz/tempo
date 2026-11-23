@@ -40,19 +40,36 @@ pub struct SwapAndDepositRouterCallback {
     ///
     /// Ignored when `tokenIn == token_out` and the router can deposit directly.
     pub min_amount_out: u128,
+    /// Most the downstream deposit may pay in fees, including the congestion premium.
+    ///
+    /// `Some` makes the router call the `maxFee` deposit overload, which needs a T15 portal.
+    /// `None` encodes the legacy callback, whose deposit caps at the operational fee.
+    pub max_fee: Option<u128>,
 }
 
 impl SwapAndDepositRouterCallback {
     /// ABI-encode the router callback data expected by the Solidity router.
     pub fn abi_encode(&self) -> Vec<u8> {
-        (
-            self.token_out,
-            self.target_portal,
-            self.key_index,
-            self.encrypted.clone(),
-            self.tempo_refund_recipient,
-            self.min_amount_out,
-        )
-            .abi_encode_params()
+        match self.max_fee {
+            Some(max_fee) => (
+                self.token_out,
+                self.target_portal,
+                self.key_index,
+                self.encrypted.clone(),
+                self.tempo_refund_recipient,
+                self.min_amount_out,
+                max_fee,
+            )
+                .abi_encode_params(),
+            None => (
+                self.token_out,
+                self.target_portal,
+                self.key_index,
+                self.encrypted.clone(),
+                self.tempo_refund_recipient,
+                self.min_amount_out,
+            )
+                .abi_encode_params(),
+        }
     }
 }

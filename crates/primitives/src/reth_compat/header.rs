@@ -148,6 +148,7 @@ mod codec {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use alloy_consensus::Sealable;
         use alloy_primitives::{Address, B256, Bloom, U256, address, b256, bytes, hex};
         use alloy_rlp::Decodable;
         use reth_codecs::Compact;
@@ -274,8 +275,6 @@ mod codec {
 
         #[test]
         fn presto_block_1_hash_backwards_compat() {
-            use alloy_consensus::Sealable;
-
             let header = presto_block_1();
             let hash = header.hash_slow();
 

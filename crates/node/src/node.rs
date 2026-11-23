@@ -11,8 +11,11 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
+use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
+use reth_ethereum::{
+    network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
+    tasks::Runtime,
+};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -36,20 +39,22 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{
+    AccountInfoReader, BlockReaderIdExt, EmptyBodyStorage, StateProviderFactory,
+};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
-    Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
+    Pool, PoolConfig, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
     TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
+    validate::EthTransactionValidatorBuilder,
 };
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
-    Estimator, TempoPayloadAttributes,
-    estimator::{self, BuildTimeMultiplier},
+    ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -108,7 +113,15 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    ///
+    /// Pass `--builder.disable-prewarming=false` to enable prewarming.
+    #[arg(
+        long = "builder.disable-prewarming",
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
     pub builder_disable_prewarming: bool,
 
     /// No-op legacy flag for payload builder prewarming.
@@ -772,6 +785,84 @@ pub struct TempoPoolBuilder {
 }
 
 impl TempoPoolBuilder {
+    /// Builds the Tempo transaction pool over `client` from an ETH validator builder that already
+    /// carries the caller's node-level settings (input size, fee cap, gas limits).
+    ///
+    /// Spawns the validation tasks on `executor`. Pool maintenance is not spawned: callers that
+    /// follow the canonical chain must spawn it themselves.
+    pub fn build_with_validator<Client>(
+        self,
+        client: Client,
+        validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
+        executor: Runtime,
+        pool_config: PoolConfig,
+        lazy_kzg_settings: bool,
+    ) -> eyre::Result<TempoTransactionPool<Client>>
+    where
+        Client: StateProviderFactory
+            + BlockReaderIdExt<Header = TempoHeader>
+            + ChainSpecProvider<ChainSpec = TempoChainSpec>
+            + Clone
+            + 'static,
+    {
+        // this store is effectively a noop
+        let blob_store = InMemoryBlobStore::default();
+        let validator = validator
+            .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build_with_tasks(executor.clone(), blob_store.clone());
+
+        if !lazy_kzg_settings {
+            let kzg_settings = validator.validator().kzg_settings().clone();
+            executor.spawn_blocking_task(async move {
+                let _ = kzg_settings.get();
+                debug!(target: "reth::cli", "Initialized KZG settings");
+            });
+        }
+
+        let aa_2d_config = AA2dPoolConfig {
+            price_bump_config: pool_config.price_bumps,
+            pending_limit: pool_config.pending_limit,
+            queued_limit: pool_config.queued_limit,
+            max_txs_per_authority: pool_config.max_account_slots,
+            max_txs_per_lane: self.max_txs_per_lane,
+        };
+        let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let amm_liquidity_cache = AmmLiquidityCache::new(&client)?;
+
+        let Self {
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            max_txs_per_lane: _,
+            disable_fee_amm_check,
+            address_filter,
+            additional_stateless_validation,
+            additional_stateful_validation,
+        } = self;
+        let validator = validator.map(move |mut v| {
+            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
+            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
+            TempoTransactionValidator::new(
+                v,
+                aa_valid_after_max_secs,
+                max_tempo_authorizations,
+                amm_liquidity_cache.clone(),
+            )
+            .with_disable_fee_amm_check(disable_fee_amm_check)
+            .with_address_filter(address_filter.clone())
+        });
+        let reth_pool = Pool::new(
+            validator,
+            TempoTipOrdering::default(),
+            blob_store,
+            pool_config,
+        );
+
+        // The Reth pool only validates and notifies: the 2D nonce pool holds the transactions
+        Ok(TempoTransactionPool::new(reth_pool, aa_2d_pool))
+    }
+
     /// Sets the maximum number of transactions per regular 2D nonce lane.
     pub const fn with_max_txs_per_lane(mut self, max: usize) -> Self {
         self.max_txs_per_lane = max;
@@ -916,11 +1007,8 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        let mut pool_config = ctx.pool_config();
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+        let pool_config = ctx.pool_config();
 
-        // this store is effectively a noop
-        let blob_store = InMemoryBlobStore::default();
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -928,53 +1016,16 @@ where
                 .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
                 .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
                 .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-                .disable_balance_check()
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        let aa_2d_config = AA2dPoolConfig {
-            price_bump_config: pool_config.price_bumps,
-            pending_limit: pool_config.pending_limit,
-            queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
-            max_txs_per_lane: self.max_txs_per_lane,
-        };
-        let aa_2d_pool = AA2dPool::new(aa_2d_config);
-        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
-
-        let Self {
-            aa_valid_after_max_secs,
-            max_tempo_authorizations,
-            max_txs_per_lane: _,
-            disable_fee_amm_check,
-            address_filter,
-            additional_stateless_validation,
-            additional_stateful_validation,
-        } = self;
-        let validator = validator.map(move |mut v| {
-            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
-            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
-            TempoTransactionValidator::new(
-                v,
-                aa_valid_after_max_secs,
-                max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-            .with_disable_fee_amm_check(disable_fee_amm_check)
-            .with_address_filter(address_filter.clone())
-        });
-        let protocol_pool = Pool::new(
+                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks);
+        let lazy_kzg_settings = ctx.config().debug.lazy_kzg_settings;
+        let transaction_pool = self.build_with_validator(
+            ctx.provider().clone(),
             validator,
-            TempoTipOrdering::default(),
-            blob_store,
+            ctx.task_executor().clone(),
             pool_config.clone(),
-        );
-
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+            lazy_kzg_settings,
+        )?;
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
@@ -1008,7 +1059,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Only used when no `estimator` is provided.
     pub build_time_multiplier: BuildTimeMultiplier,
     /// Proposal budget estimator the payload builder paces builds with, or
-    /// `None` for a private one seeded from `build_time_multiplier`.
+    /// `None` for a private one using default timing and `build_time_multiplier`.
+    /// Inject a shared estimator to use consensus timing and feedback.
     pub estimator: Option<Estimator>,
 }
 
@@ -1025,14 +1077,21 @@ impl Default for TempoPayloadBuilderBuilder {
 }
 
 impl TempoPayloadBuilderBuilder {
-    /// Returns [`Self::estimator`], or a new estimator seeded from
-    /// [`Self::build_time_multiplier`] when none is set.
-    pub fn resolve_estimator(&self) -> Estimator {
-        self.estimator.clone().unwrap_or_else(|| {
-            Estimator::new(estimator::Config {
-                build_time_multiplier: self.build_time_multiplier,
-            })
-        })
+    /// Returns [`Self::estimator`] unchanged, or constructs one from `config`
+    /// replacing its multiplier with [`Self::build_time_multiplier`]. Returns an error if that
+    /// configuration is invalid and no estimator override is set.
+    pub fn resolve_estimator(&self, config: EstimatorConfig) -> Result<Estimator, ConfigError> {
+        match &self.estimator {
+            Some(estimator) => Ok(estimator.clone()),
+            None => {
+                let config = EstimatorConfig {
+                    build_time_multiplier: self.build_time_multiplier,
+                    ..config
+                };
+                config.validate()?;
+                Ok(Estimator::new(config))
+            }
+        }
     }
 }
 
@@ -1058,7 +1117,11 @@ where
             _ => None,
         });
 
-        let estimator = self.resolve_estimator();
+        // Standalone payload builds use default timing; consensus launchers inject
+        // a shared estimator before reaching this fallback.
+        let estimator = self
+            .resolve_estimator(EstimatorConfig::default())
+            .expect("default timing and a typed build multiplier form valid estimator inputs");
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),

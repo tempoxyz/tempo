@@ -15,6 +15,19 @@ pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
 }
 
+/// Returns \`base\` with its general (non-payment) gas limit overridden to \`limit\`.
+pub(crate) fn chainspec_with_general_gas_limit(
+    base: &TempoChainSpec,
+    limit: u64,
+) -> Arc<TempoChainSpec> {
+    let mut genesis = base.genesis().clone();
+    genesis
+        .config
+        .extra_fields
+        .insert("generalGasLimit".to_string(), serde_json::json!(limit));
+    Arc::new(TempoChainSpec::from_genesis(genesis))
+}
+
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
     pub(crate) epoch_length: NonZeroU64,
@@ -67,11 +80,6 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
-        self
-    }
-
-    pub(crate) fn with_general_gas_limit(mut self, limit: u64) -> Self {
-        self.general_gas_limit = limit;
         self
     }
 

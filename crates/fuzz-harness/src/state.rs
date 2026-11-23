@@ -360,6 +360,17 @@ impl AccountNet {
         }
     }
 
+    /// Whether the span changed the account other than its slots: its balance, nonce, code or
+    /// extension, whether it exists, or by clearing its storage.
+    pub(crate) fn changed(&self) -> bool {
+        let info = |a: &AccountInfo| (a.balance, a.nonce, a.code_hash);
+        self.storage_cleared
+            || match (&self.original, &self.current) {
+                (Some(a), Some(b)) => info(a) != info(b) || a.extension != b.extension,
+                (a, b) => a.is_some() != b.is_some(),
+            }
+    }
+
     /// The slots the span changed, with their values before and after it.
     pub(crate) fn changed_slots(&self) -> impl Iterator<Item = (&U256, &StorageSlot)> {
         self.storage.iter().filter(|(_, value)| value.is_changed())

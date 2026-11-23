@@ -4,12 +4,13 @@ use std::fmt::Display;
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{Observe, ObserveError, Report, Violation};
+use reth_evm::Database;
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_invariants::all;
 
 use super::{
     StepEffects,
-    views::{EvmViews, PreView, ViewFailed},
+    views::{EvmViews, PreView, ViewCache, ViewFailed},
 };
 use crate::state::Db;
 
@@ -19,9 +20,16 @@ pub(super) struct Reader<'a> {
     pub(super) evm_config: &'a TempoEvmConfig,
     pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
+    pub(super) view_cache: &'a ViewCache,
 }
 
 impl Reader<'_> {
+    /// Views of the state `db` reads, the one before the step with `before`.
+    pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b> {
+        let (config, env) = (self.evm_config, self.env.clone());
+        EvmViews::new(db, config, env, &self.db.pre, self.view_cache, before)
+    }
+
     /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
     /// the step's effects, also reads it before the step and checks the step. A read that fails
     /// is counted under `view` as [`observed`] does.
@@ -32,8 +40,7 @@ impl Reader<'_> {
         contract: Address,
         view: &'static str,
     ) {
-        let pre_state = &self.db.pre;
-        let after = EvmViews::new(self.db.view(), self.evm_config, self.env.clone(), pre_state);
+        let after = self.views(self.db.view(), false);
         let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
             return;
         };
@@ -56,7 +63,7 @@ impl Reader<'_> {
             reader: self.db.view(),
             net: effects.net,
         };
-        let before = EvmViews::new(before, self.evm_config, self.env.clone(), pre_state);
+        let before = self.views(before, true);
         let subject = format!("{contract} before the step");
         let read = M::observe(&mut { before }, at);
         // Nor does one it reads, such as a token the step created.

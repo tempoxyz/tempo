@@ -110,3 +110,75 @@ fn rejects_block_body_that_does_not_match_header() {
         ));
     });
 }
+
+#[test_traced]
+fn rejects_unrepresentable_height_before_verifying() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let trusted = dkg_fixture(&mut context, Epoch::zero());
+        let untrusted = dkg_fixture(&mut context, Epoch::new(7));
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *trusted.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        // A block in the final partial epoch, certified with keys the verifier does not trust.
+        let block = make_block(u64::MAX, None);
+        let finalization = make_finalization(&block, Epoch::new(7), &untrusted.schemes);
+        let certified = make_certified_block(block, &finalization);
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &certified),
+            Err(Error::HeightOutOfRange { height }) if height == u64::MAX
+        ));
+    });
+}
+
+#[test_traced]
+fn advanced_identity_retires_the_previous_fallback() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let retired = dkg_fixture(&mut context, Epoch::zero());
+        let rotated = dkg_fixture(&mut context, Epoch::new(1));
+        let mut verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *retired.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+
+        assert!(verifier.advance_network_identity(NetworkIdentity {
+            from_epoch: 1,
+            identity: *rotated.outcome.network_identity(),
+        }));
+        // An older boundary must not reinstate the retired identity.
+        assert!(!verifier.advance_network_identity(NetworkIdentity {
+            from_epoch: 0,
+            identity: *retired.outcome.network_identity(),
+        }));
+        // A later boundary that keeps the key (a reshare) must not move the fallback forward.
+        assert!(!verifier.advance_network_identity(NetworkIdentity {
+            from_epoch: 2,
+            identity: *rotated.outcome.network_identity(),
+        }));
+        assert_eq!(verifier.network_identity().from_epoch, 1);
+
+        // Epoch 2 has no registered scheme, so it falls back to the advanced identity.
+        let height = 2 * EPOCH_LENGTH.get();
+        let block = make_block(height, None);
+        let forged = make_finalization(&block, Epoch::new(2), &retired.schemes);
+        let forged = make_certified_block(block.clone(), &forged);
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &forged),
+            Err(Error::CertificateVerification(
+                super::CertificateVerificationError::FallbackVerificationFailed
+            ))
+        ));
+
+        let finalization = make_finalization(&block, Epoch::new(2), &rotated.schemes);
+        verifier
+            .decode_and_verify(&mut context, &make_certified_block(block, &finalization))
+            .expect("the rotated identity should verify a later epoch");
+    });
+}

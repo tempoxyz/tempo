@@ -588,7 +588,7 @@ provision_up() {
     local run_key="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
     local neobank_preset="${ZONES_BENCH_NEOBANK_PRESET:-full-journey}"
     case "$neobank_preset" in
-        encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
+        cold-accounts|encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
         *) die "unsupported neobank preset for provisioning: $neobank_preset" ;;
     esac
 
@@ -708,7 +708,7 @@ provision_up() {
         || die "ZONES_BENCH_WITHDRAWAL_MAX_BATCH_GAS cannot exceed ZONES_BENCH_L1_GENERAL_GAS_LIMIT"
     local planned_singleton_withdrawal_gas=0
     case "$neobank_preset" in
-        encrypted-deposit) ;;
+        encrypted-deposit|cold-accounts) ;;
         # The untimed Earn warmup always uses the 10M protocol maximum.
         *) planned_singleton_withdrawal_gas=$((500000 + 1750000 + 10000000)) ;;
     esac
@@ -820,7 +820,6 @@ provision_up() {
         --tempo.bootnodes-endpoint none
         --consensus.no-legacy-archive
         --engine.share-execution-cache-with-payload-builder
-        --builder.enable-prewarming
         --builder.gaslimit "$l1_gas_limit"
         --rpc.eth-proof-window 1024
         --rpc.max-connections 10000
@@ -830,7 +829,12 @@ provision_up() {
         --txpool.max-pending-txns 200000
         --txpool.max-new-txns 200000
         --txpool.max-batch-size 200000
+        --txpool.max-account-slots 150000
     )
+    # Keep payload builder prewarming on; older binaries reject a value for this flag.
+    if "$TEMPO_BIN" node --help 2>&1 | grep -qF -- '--builder.disable-prewarming[='; then
+        common_l1_args+=(--builder.disable-prewarming=false)
+    fi
 
     start_process tempo-a "$TEMPO_BIN" "${ZONES_BENCH_L1_A_CPUS:-0-3,16-19}" "$log_dir/tempo-a.log" \
         "$TEMPO_BIN" node \
@@ -986,6 +990,8 @@ provision_up() {
     # The pinned Reth revision predates the retained-branch pruning fix. Its
     # default sparse-trie pruning can make a multi-transaction Zone payload
     # disagree with the root obtained during final validation.
+    # Bench presets send many transactions per sender; keep them clear of the
+    # Zone's 64-transaction per-sender default.
     start_process zone "$ZONE_BIN" "${ZONES_BENCH_ZONE_CPUS:-8-13,24-29}" "$log_dir/zone.log" \
         "$ZONE_BIN" node \
         --chain "$zone_genesis" --datadir "$zone_db" \
@@ -1004,6 +1010,7 @@ provision_up() {
         --log.file.directory "$log_dir/zone" \
         --ipcdisable \
         --engine.disable-sparse-trie-cache-pruning \
+        --txpool.max-account-slots 150000 \
         --sequencer \
         "${prover_args[@]}" \
         --sequencer-key-file <(printf '%s\n' "$sequencer_key")

@@ -65,7 +65,7 @@ templates:
       pool: fee_payers
       select:
         index: 0
-    gas_limit: 8000000
+    gas_limit: 3000000 # ~450-760K used, ~2.3M peak before refunds
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
     - to: "0x20c0000000000000000000000000000000000000"
@@ -94,7 +94,7 @@ templates:
       pool: fee_payers
       select:
         index: 0
-    gas_limit: 8000000
+    gas_limit: 3000000 # ~450-760K used, ~2.3M peak before refunds
     fee_token: "0x20c0000000000000000000000000000000000000"
     calls:
     - to: "0x20c000000000000000000000b40ebef7b60e73cf"

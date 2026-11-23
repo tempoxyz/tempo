@@ -249,8 +249,7 @@ async fn discover_creation(
             .event_signature(ZoneFactory::ZoneCreated::SIGNATURE_HASH)
             .topic1(U256::from(config.zone_id))
             .topic2(config.portal_address)
-            .from_block(start)
-            .to_block(start.saturating_add(LOG_QUERY_BLOCKS - 1).min(head))
+            .select(start..=start.saturating_add(LOG_QUERY_BLOCKS - 1).min(head))
     });
     let mut pages = stream::iter(filters)
         .map(|filter| async move { provider.get_logs(&filter).await.map_err(classify_rpc_error) })

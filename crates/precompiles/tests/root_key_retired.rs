@@ -13,15 +13,18 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{
-        ConfigCommitmentWriteGas, ContractStorage, StorageCtx, hashmap::HashMapStorageProvider,
-    },
+    storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
     tip20::PERMIT_TYPEHASH,
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 
+use Outcome::{Accepted, Rejected};
 use Party::{Delegate, Payer};
+use common::seed_commitment;
+use test_case::test_case;
+
+mod common;
 
 const COMMITMENT: B256 = B256::repeat_byte(0x11);
 
@@ -36,10 +39,17 @@ sol! {
 }
 
 /// The payer of a channel, or the separate signer it authorizes to sign vouchers.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Party {
     Payer,
     Delegate,
+}
+
+/// Whether the call was rejected for a retired root key.
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Accepted,
+    Rejected,
 }
 
 /// What submitting a permit did.
@@ -55,9 +65,7 @@ fn storage_at(spec: TempoHardfork, committed: &[Address]) -> HashMapStorageProvi
     let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
     StorageCtx::enter(&mut storage, || {
         for account in committed {
-            StorageCtx
-                .set_config_commitment(*account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-                .unwrap();
+            seed_commitment(*account, COMMITMENT);
         }
     });
     storage.set_spec(spec);
@@ -111,55 +119,28 @@ fn permit(spec: TempoHardfork, committed: bool) -> PermitOutcome {
     })
 }
 
-#[test]
-fn permit_by_a_root_with_a_commitment_is_rejected_from_t14() {
-    struct Case {
-        name: &'static str,
-        spec: TempoHardfork,
-        committed: bool,
-        rejected: bool,
-    }
-    for Case {
-        name,
-        spec,
-        committed,
-        rejected,
-    } in [
-        Case {
-            name: "committed root",
-            spec: T14,
-            committed: true,
-            rejected: true,
-        },
-        Case {
-            name: "uncommitted root",
-            spec: T14,
-            committed: false,
-            rejected: false,
-        },
-        Case {
-            name: "committed root before T14",
-            spec: T13,
-            committed: true,
-            rejected: false,
-        },
-    ] {
-        let PermitOutcome {
-            owner,
-            result,
-            nonce,
-        } = permit(spec, committed);
-        if rejected {
-            assert_eq!(
-                result.expect_err(name),
-                TIP20Error::root_key_retired(owner).into(),
-                "{name}"
-            );
+#[test_case(T14, true => Rejected)]
+#[test_case(T14, false => Accepted)]
+#[test_case(T13, true => Accepted)]
+fn permit_by_a_root_with_a_commitment_is_rejected_from_t14(
+    spec: TempoHardfork,
+    committed: bool,
+) -> Outcome {
+    let PermitOutcome {
+        owner,
+        result,
+        nonce,
+    } = permit(spec, committed);
+    match result {
+        Err(err) => {
+            assert_eq!(err, TIP20Error::root_key_retired(owner).into());
             // The rejected permit consumes no nonce.
-            assert_eq!(nonce, U256::ZERO, "{name}");
-        } else {
-            result.expect(name);
-            assert_eq!(nonce, U256::ONE, "{name}");
+            assert_eq!(nonce, U256::ZERO);
+            Rejected
+        }
+        Ok(()) => {
+            assert_eq!(nonce, U256::ONE);
+            Accepted
         }
     }
 }
@@ -298,131 +279,91 @@ impl Channel {
 fn migrate(storage: &mut HashMapStorageProvider, account: Address, spec: TempoHardfork) {
     storage.set_spec(T14);
     StorageCtx::enter(storage, || {
-        StorageCtx
-            .set_config_commitment(account, COMMITMENT, ConfigCommitmentWriteGas::Intrinsic)
-            .unwrap();
+        seed_commitment(account, COMMITMENT);
     });
     storage.set_spec(spec);
 }
 
 /// Migrating must not let the payer void a voucher the payee holds and reclaim the deposit.
-#[test]
-fn voucher_signed_before_its_signer_migrates_stays_redeemable() {
-    for (name, signer) in [("payer", Payer), ("separate signer", Delegate)] {
-        let parties = Parties::new();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
-        let cumulative_amount = U96::from(40);
-        let (channel, voucher) = StorageCtx::enter(&mut storage, || {
-            let channel = Channel::open(&parties, signer).unwrap();
-            let voucher = channel.voucher(parties.key(signer), cumulative_amount);
-            (channel, voucher)
-        });
-        migrate(&mut storage, parties.address(signer), T14);
-        StorageCtx::enter(&mut storage, || {
-            channel.request_close();
-            channel.settle(cumulative_amount, voucher).expect(name);
-            assert_eq!(channel.state().settled, cumulative_amount, "{name}");
-        });
-    }
+#[test_case(Payer)]
+#[test_case(Delegate)]
+fn voucher_signed_before_its_signer_migrates_stays_redeemable(signer: Party) {
+    let parties = Parties::new();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    let cumulative_amount = U96::from(40);
+    let (channel, voucher) = StorageCtx::enter(&mut storage, || {
+        let channel = Channel::open(&parties, signer).unwrap();
+        let voucher = channel.voucher(parties.key(signer), cumulative_amount);
+        (channel, voucher)
+    });
+    migrate(&mut storage, parties.address(signer), T14);
+    StorageCtx::enter(&mut storage, || {
+        channel.request_close();
+        channel.settle(cumulative_amount, voucher).unwrap();
+        assert_eq!(channel.state().settled, cumulative_amount);
+    });
 }
 
-#[test]
-fn open_with_a_retired_voucher_signer_is_rejected_from_t14() {
-    struct Case {
-        name: &'static str,
-        spec: TempoHardfork,
-        signer: Party,
-        committed: Party,
-        rejected: bool,
-    }
-    for Case {
-        name,
-        spec,
-        signer,
-        committed,
-        rejected,
-    } in [
-        Case {
-            name: "committed payer",
-            spec: T14,
-            signer: Payer,
-            committed: Payer,
-            rejected: true,
-        },
-        Case {
-            name: "committed separate signer",
-            spec: T14,
-            signer: Delegate,
-            committed: Delegate,
-            rejected: true,
-        },
-        // A configurable payer opens channels through an active separate signer.
-        Case {
-            name: "committed payer, separate signer",
-            spec: T14,
-            signer: Delegate,
-            committed: Payer,
-            rejected: false,
-        },
-        Case {
-            name: "committed payer before T14",
-            spec: T13,
-            signer: Payer,
-            committed: Payer,
-            rejected: false,
-        },
-    ] {
-        let parties = Parties::new();
-        let mut storage = storage_at(spec, &[parties.address(committed)]);
-        let result =
-            StorageCtx::enter(&mut storage, || Channel::open(&parties, signer).map(|_| ()));
-        if rejected {
+#[test_case(T14, Payer, Payer => Rejected)]
+#[test_case(T14, Delegate, Delegate => Rejected)]
+// A configurable payer opens channels through an active separate signer.
+#[test_case(T14, Delegate, Payer => Accepted)]
+#[test_case(T13, Payer, Payer => Accepted)]
+fn open_with_a_retired_voucher_signer_is_rejected_from_t14(
+    spec: TempoHardfork,
+    signer: Party,
+    committed: Party,
+) -> Outcome {
+    let parties = Parties::new();
+    let mut storage = storage_at(spec, &[parties.address(committed)]);
+    match StorageCtx::enter(&mut storage, || Channel::open(&parties, signer).map(|_| ())) {
+        Err(err) => {
             assert_eq!(
-                result.expect_err(name),
-                TIP20ChannelReserveError::root_key_retired(parties.address(signer)).into(),
-                "{name}"
+                err,
+                TIP20ChannelReserveError::root_key_retired(parties.address(signer)).into()
             );
-        } else {
-            result.expect(name);
+            Rejected
         }
+        Ok(()) => Accepted,
     }
 }
 
 /// A retired signer keeps authority over its channel's deposit, so the deposit cannot grow.
-#[test]
-fn top_up_with_a_retired_voucher_signer_is_rejected_from_t14() {
-    for (name, signer, committed, rejected) in [
-        ("committed payer", Payer, Payer, true),
-        ("committed separate signer", Delegate, Delegate, true),
-        ("committed payer, separate signer", Delegate, Payer, false),
-    ] {
-        let parties = Parties::new();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
-        let channel = StorageCtx::enter(&mut storage, || {
-            let channel = Channel::open(&parties, signer).unwrap();
-            channel.request_close();
-            channel
-        });
-        migrate(&mut storage, parties.address(committed), T14);
-        StorageCtx::enter(&mut storage, || {
-            if rejected {
+#[test_case(Payer, Payer => Rejected)]
+#[test_case(Delegate, Delegate => Rejected)]
+#[test_case(Delegate, Payer => Accepted)]
+fn top_up_with_a_retired_voucher_signer_is_rejected_from_t14(
+    signer: Party,
+    committed: Party,
+) -> Outcome {
+    let parties = Parties::new();
+    let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
+    let channel = StorageCtx::enter(&mut storage, || {
+        let channel = Channel::open(&parties, signer).unwrap();
+        channel.request_close();
+        channel
+    });
+    migrate(&mut storage, parties.address(committed), T14);
+    StorageCtx::enter(&mut storage, || {
+        let outcome = match channel.top_up(50) {
+            Err(err) => {
                 assert_eq!(
-                    channel.top_up(50).expect_err(name),
-                    TIP20ChannelReserveError::root_key_retired(parties.address(signer)).into(),
-                    "{name}"
+                    err,
+                    TIP20ChannelReserveError::root_key_retired(parties.address(signer)).into()
                 );
                 // A zero top-up adds no deposit, so it still cancels the close request.
-                channel.top_up(0).expect(name);
-            } else {
-                channel.top_up(50).expect(name);
+                channel.top_up(0).unwrap();
+                Rejected
             }
-            let state = channel.state();
-            assert_eq!(state.closeRequestedAt, 0, "{name}");
-            assert_eq!(
-                state.deposit,
-                U96::from(if rejected { 100 } else { 150 }),
-                "{name}"
-            );
-        });
-    }
+            Ok(()) => Accepted,
+        };
+        let state = channel.state();
+        assert_eq!(state.closeRequestedAt, 0);
+        let deposit = match outcome {
+            Rejected => 100,
+            Accepted => 150,
+        };
+        assert_eq!(state.deposit, U96::from(deposit));
+        outcome
+    })
 }

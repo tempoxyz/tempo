@@ -6,7 +6,7 @@ use crate::storage::{
 };
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;
-use tempo_precompiles::error;
+use tempo_precompiles::{error, test_util::with_storage};
 use tempo_precompiles_macros::{Storable, contract};
 
 mod arrays;
@@ -67,8 +67,7 @@ pub(crate) struct PackedThreeSlot {
 
 /// Helper to generate test addresses
 pub(crate) fn test_address(byte: u8) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[19] = byte;
+    let bytes: [u8; 20] = Address::with_last_byte(byte).into();
     Address::from(bytes)
 }
 
