@@ -899,6 +899,11 @@ fn apply_key_authorization(
                         authorization.witness(),
                     )?;
                 } else {
+                    keychain.ensure_no_stale_call_scopes(
+                        aa.signer(),
+                        authorization.key_id,
+                        &restrictions.allowedCalls,
+                    )?;
                     keychain.authorize_key(
                         aa.signer(),
                         authorization.key_id,
