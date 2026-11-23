@@ -1,5 +1,6 @@
 //! Zone org registry (TIP-1180): orgs, their members, per-token edges between orgs, and each org's
-//! Tempo deposit and withdrawal rules. Org 0 holds every address in no org and has no admin.
+//! Tempo deposit and withdrawal rules. Org 0 holds every address in no org and has no admin; it
+//! can't send, receive or be deposited to within the zone, only withdraw to Tempo.
 
 mod dispatch;
 
@@ -175,7 +176,8 @@ impl ZoneIdentity {
         })?)
     }
 
-    /// Sets the halves of the edge from `from` to `to` the caller administers, per token.
+    /// Sets the halves of the edge from `from` to `to` the caller administers, per token. Org 0
+    /// has no edges.
     pub fn set_edge(
         &mut self,
         caller: Address,
@@ -186,6 +188,9 @@ impl ZoneIdentity {
     ) -> ZoneResult<()> {
         self.ensure_org(from)?;
         self.ensure_org(to)?;
+        if from == 0 || to == 0 {
+            return Err(ZoneIdentityError::unauthorized().into());
+        }
         let sending = self.is_edge_admin(caller, from)?;
         let receiving = self.is_edge_admin(caller, to)?;
         if !sending && !receiving {
@@ -434,7 +439,7 @@ pub struct L1Rules {
     pub targets: Mapping<Address, L1Target>,
 }
 
-/// Both halves of an edge for one token; org 0's half is implied.
+/// Both halves of an edge for one token.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub struct Edge {
     /// Set by the sending org's admin.
@@ -444,9 +449,9 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Whether both halves allow it, counting org 0's as set.
+    /// Whether both halves allow it; never to, from or within org 0.
     fn allows_between(self, from: u64, to: u64) -> bool {
-        (from == 0 || self.from_ok) && (to == 0 || self.to_ok)
+        from != 0 && to != 0 && self.from_ok && self.to_ok
     }
 }
 
@@ -592,35 +597,26 @@ mod tests {
     }
 
     #[test]
-    fn org_zero_needs_only_the_other_orgs_half() {
+    fn org_zero_cannot_transfer_in_the_zone() {
         with_identity(|identity, registrar| {
             let usd = token(1);
             let (admin, org) = org_with_members(identity, registrar, usd);
             let (carol, dave) = (Address::repeat_byte(0x55), Address::repeat_byte(0x66));
-            // Moves between addresses in org 0 need nothing.
-            assert!(allows(usd, carol, dave, TransferKind::InZone));
-            // Nobody sets org 0's half, not even the registrar.
-            for caller in [registrar, admin] {
-                assert_eq!(
-                    identity.set_edge(caller, 0, 0, &[usd], true),
-                    Err(identity_error(ZoneIdentityError::unauthorized()))
-                );
-            }
-            assert_eq!(
-                identity.set_edge(registrar, 0, org, &[usd], true),
-                Err(identity_error(ZoneIdentityError::unauthorized()))
-            );
-            // Each direction opens with the org's own half alone.
+            // Not between addresses in org 0, nor to or from an org.
+            assert!(!allows(usd, carol, dave, TransferKind::InZone));
             assert!(!allows(usd, ALICE, carol, TransferKind::InZone));
             assert!(!allows(usd, carol, ALICE, TransferKind::InZone));
-            identity.set_edge(admin, org, 0, &[usd], true).unwrap();
-            assert!(allows(usd, ALICE, carol, TransferKind::InZone));
-            assert!(identity.edge(admin, registrar, org, 0, usd).unwrap());
-            assert!(!allows(usd, carol, ALICE, TransferKind::InZone));
-            identity.set_edge(admin, 0, org, &[usd], true).unwrap();
-            assert!(allows(usd, carol, ALICE, TransferKind::InZone));
-            // Per token, like any edge.
-            assert!(!allows(token(2), ALICE, carol, TransferKind::InZone));
+            // Nobody opens an edge touching org 0, not even the org's admin or the registrar.
+            for caller in [registrar, admin] {
+                for (from, to) in [(0, 0), (org, 0), (0, org)] {
+                    assert_eq!(
+                        identity.set_edge(caller, from, to, &[usd], true),
+                        Err(identity_error(ZoneIdentityError::unauthorized()))
+                    );
+                }
+            }
+            assert!(!identity.edge(admin, registrar, org, 0, usd).unwrap());
+            assert!(!identity.edge(admin, registrar, 0, org, usd).unwrap());
         });
     }
 
@@ -674,7 +670,7 @@ mod tests {
                 orgId: org,
             }]);
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
-            // The org's edges and targets no longer apply, but org 0 may withdraw anywhere.
+            // The org's edges and targets no longer apply; org 0 can't transfer, only withdraw.
             assert!(!allows(usd, BOB, ALICE, TransferKind::InZone));
             assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
             assert!(allows(usd, BOB, STRANGER, TransferKind::Withdrawal));
@@ -1050,7 +1046,7 @@ mod tests {
         };
 
         let scenarios = [
-            // Allowed in an org and within org 0, denied across orgs and from org 0.
+            // Allowed in an org, denied within org 0, across orgs and from org 0.
             (
                 TransferKind::InZone,
                 vec![
