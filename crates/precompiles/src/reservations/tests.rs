@@ -1,10 +1,12 @@
 use super::*;
 use crate::{
+    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     account_keychain::{AccountKeychain, KeyRestrictions, SignatureType, TokenLimit},
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     tip20::{BURN_AT_ROLE, BURN_BLOCKED_ROLE, IRolesAuth, ITIP20, TIP20Error},
     tip403_registry::{ITIP403Registry, TIP403Registry},
+    zone_factory::portal_address,
 };
 
 use alloy::primitives::IntoLogData;
@@ -1009,6 +1011,44 @@ fn test_liens_reserve_until_their_authority_acts() -> eyre::Result<()> {
         f.capture_of(authority, authority, id, 300, false)?;
         assert_eq!(f.record(authority, id)?, empty_hold());
         assert_eq!((f.reserved()?, f.balance(authority)?), (0, U256::from(500)));
+        Ok(())
+    })
+}
+
+/// Pooled custody that compliance burns never take (the DEX, the fee manager, the channel
+/// reserve, a zone portal) backs other users' claims, so no lien freezes or seizes it.
+#[test]
+fn test_liens_never_take_protected_custody() -> eyre::Result<()> {
+    at_fork(|| {
+        let mut f = Fixture::new(1_000)?;
+        let authority = f.lien_authority()?;
+        let token = f.token.address();
+        for account in [
+            STABLECOIN_DEX_ADDRESS,
+            TIP_FEE_MANAGER_ADDRESS,
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            portal_address(1),
+        ] {
+            f.mint(account, 1_000)?;
+            for expires_at in [0, EXPIRY] {
+                let lien = IReservationCore::lienCall {
+                    owner: account,
+                    token,
+                    id: B256::random(),
+                    amount: 1_000,
+                    expiresAt: expires_at,
+                };
+                assert_eq!(
+                    err!(f.reservations.lien(authority, lien)),
+                    e(ReservationsError::unauthorized())
+                );
+            }
+            assert_eq!(f.reservations.available_of(account, token)?, 1_000);
+            assert_eq!(f.balance(account)?, U256::from(1_000));
+        }
+        // Any other owner is liened as before.
+        f.lien(authority, B256::random(), 1_000, 0)?;
+        assert_eq!((f.reserved()?, f.available()?), (1_000, 0));
         Ok(())
     })
 }

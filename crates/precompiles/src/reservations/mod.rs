@@ -22,7 +22,8 @@
 //!   by a holder on its own behalf within its budget. Only the authority reduces, seizes (captures)
 //!   or releases it.
 //! - A lien reserves funds for a holder of the token's `LIEN_ROLE`, with or without expiry. Only that
-//!   authority reduces, seizes or releases it, and seizure needs the role at that time.
+//!   authority reduces, seizes or releases it, and seizure needs the role at that time. Pooled
+//!   custody that compliance burns never take (TIP-20's protected accounts) is never liened.
 //!
 //! After its expiry a record can only be released, by anyone. A charge pays from the available
 //! balance without a record. Nothing is ever paid beyond what a record backs or the owner holds.
@@ -478,7 +479,9 @@ impl Reservations {
         let amount = amount_u64(call.amount)?;
         // A lien on a virtual address applies to its master, whose balance holds the funds.
         let owner = resolve_payee(call.owner)?;
-        if owner == authority {
+        // Pooled custody (the DEX, the fee manager, the channel reserve, zone portals) backs other
+        // users' claims, so it is never liened, as compliance burns never take it.
+        if owner == authority || token.is_protected_custody(owner) {
             return Err(ReservationsError::unauthorized().into());
         }
         self.ensure_vacant(owner, authority, call.id)?;
@@ -586,7 +589,9 @@ impl Reservations {
             kind::PLEDGE if caller == payee => {}
             kind::LIEN if caller == payee => {
                 root_only(caller)?;
-                if !token.has_role_internal(caller, LIEN_ROLE)? {
+                // Rechecked at seizure, for an account a later fork protects.
+                if !token.has_role_internal(caller, LIEN_ROLE)? || token.is_protected_custody(owner)
+                {
                     return Err(ReservationsError::unauthorized().into());
                 }
             }
