@@ -822,6 +822,19 @@ mod tests {
     use zone_chainspec::test_utils::set_tempo_fork;
     use zone_p2p::LeadershipState;
 
+    /// An L1 state provider backed by a mock with no answers: any L1 read fails.
+    fn mock_l1_state() -> L1StateProvider {
+        use alloy_provider::{Provider as _, ProviderBuilder, mock::Asserter};
+        L1StateProvider::new_raw(
+            zone_l1::state::L1StateProviderConfig::default(),
+            zone_l1::L1StateCache::default(),
+            ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
+                .connect_mocked_client(Asserter::new())
+                .erased(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
     mod virtual_allowlist {
         use super::*;
         use alloy_sol_types::SolValue as _;
@@ -1060,6 +1073,7 @@ mod tests {
             Address::ZERO,
             EncryptionKeyRing::default(),
             Address::ZERO,
+            mock_l1_state(),
             None,
         )
         .with_production_permit(ProductionPermit::new(schedule.clone(), incoming.clone()));
