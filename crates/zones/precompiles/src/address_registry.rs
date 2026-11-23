@@ -158,6 +158,11 @@ fn request_hash(zone_id: u32, recipient: Address, salt: B256) -> tempo_precompil
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::test_utils::{
+        MockL1Reader, call_precompile, test_context_with_hardfork, test_precompiles,
+    };
+    use alloy_primitives::Bytes;
+    use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 
@@ -251,12 +256,6 @@ pub(crate) mod tests {
 
     #[test]
     fn register_master_only_registers_the_caller() -> eyre::Result<()> {
-        use crate::test_utils::{
-            MockL1Reader, call_precompile, test_context_with_hardfork, test_precompiles,
-        };
-        use alloy_primitives::Bytes;
-        use alloy_sol_types::SolCall;
-
         let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
         let mut precompiles =
             test_precompiles(&ctx, L1State::new(MockL1Reader::default(), Address::ZERO));
