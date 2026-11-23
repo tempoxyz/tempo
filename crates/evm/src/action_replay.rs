@@ -66,6 +66,12 @@ impl TempoBlockExecutor<'_> {
         let lane = self
             .tx_lane(original)
             .inspect_err(|_| self.replay_state.reset_tx_changes())?;
+        // A registered payment runs contract code, which neither the recorded storage actions nor
+        // the TIP-1180 execution check can be replayed from.
+        if lane.is_registered_payment() {
+            self.replay_state.reset_tx_changes();
+            return Err(StorageActionReplayError::ActionConflict.into());
+        }
         self.validate_tx(*original.tx_hash(), is_system_tx, lane, block_gas_used)
             .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 

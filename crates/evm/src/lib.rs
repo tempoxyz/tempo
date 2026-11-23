@@ -13,6 +13,7 @@ mod context;
 mod engine;
 pub mod error;
 pub mod evm;
+mod execution_check;
 mod fee_manager;
 mod handler;
 mod instructions;

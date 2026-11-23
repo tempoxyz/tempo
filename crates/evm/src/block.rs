@@ -1,6 +1,8 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmTypes, TxLane, is_stateless_payment,
+    TempoEvmTypes, TxLane,
+    execution_check::{DisplacedInspector, ExecutionCheck, FrameCheck},
+    is_stateless_payment,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -22,7 +24,7 @@ use reth_evm::{
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::StateUpdate;
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -326,6 +328,8 @@ pub struct TempoBlockExecutor<'a> {
     registered_payment_gas_left: u64,
     /// The payment call registry's version in the parent state, read on first use.
     registry_version: Option<u64>,
+    /// The TIP-1180 execution check of registered payments, with this block's lookups.
+    execution_check: Rc<RefCell<ExecutionCheck>>,
     block_gas_used: u64,
 }
 
@@ -384,6 +388,7 @@ impl<'a> TempoBlockExecutor<'a> {
             non_payment_gas_left: general_gas_limit,
             registered_payment_gas_left,
             registry_version: None,
+            execution_check: Default::default(),
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data,
             inner,
@@ -767,6 +772,47 @@ impl<'a> TempoBlockExecutor<'a> {
         .map_err(BlockExecutionError::other)
     }
 
+    /// Installs the TIP-1180 execution check before a transaction classified into `lane` runs,
+    /// if it is a registered payment. Returns the inspector slot it displaced, which
+    /// [`Self::end_execution_check`] restores.
+    fn begin_execution_check(&mut self, lane: TxLane) -> Option<DisplacedInspector<'a>> {
+        if !lane.is_registered_payment() {
+            return None;
+        }
+        self.execution_check.borrow_mut().begin();
+        let displaced = Rc::new(RefCell::new(self.evm_mut().clear_inspector()));
+        let check = FrameCheck {
+            check: self.execution_check.clone(),
+            inner: displaced.clone(),
+        };
+        self.evm_mut().set_inspector(check);
+        Some(displaced)
+    }
+
+    /// Removes the execution check [`Self::begin_execution_check`] installed and restores the
+    /// inspector it displaced. Returns the lane the transaction counts toward: a registered
+    /// payment that entered code other than registered code and precompiles counts toward the
+    /// general lane.
+    fn end_execution_check(
+        &mut self,
+        lane: TxLane,
+        displaced: Option<DisplacedInspector<'a>>,
+    ) -> Result<TxLane, BlockExecutionError> {
+        let Some(displaced) = displaced else {
+            return Ok(lane);
+        };
+        drop(self.evm_mut().clear_inspector());
+        if let Some(inner) = Rc::try_unwrap(displaced).ok().and_then(RefCell::into_inner) {
+            self.evm_mut().set_boxed_inspector(inner);
+        }
+        let passed = self
+            .execution_check
+            .borrow_mut()
+            .finish()
+            .map_err(BlockExecutionError::other)?;
+        Ok(if passed { lane } else { TxLane::General })
+    }
+
     /// Returns the section an executed transaction enters at the current position in the block.
     pub(crate) fn validate_tx(
         &self,
@@ -841,7 +887,10 @@ impl<'a> TempoBlockExecutor<'a> {
                         gas_used,
                         "Rejecting: transaction exceeds its gas lane"
                     );
-                    return Err(BlockValidationError::other(crate::error::LaneGasExceeded));
+                    return Err(BlockValidationError::other(crate::error::LaneGasExceeded {
+                        lane,
+                        gas_used,
+                    }));
                 }
                 Ok(BlockSection::NonShared)
             }
@@ -1021,9 +1070,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let lane = self.tx_lane(original)?;
+        let check = self.begin_execution_check(lane);
         let inner = self
             .inner
-            .execute_transaction_without_commit((tx_env, recovered))?;
+            .execute_transaction_without_commit((tx_env, recovered));
+        let lane = self.end_execution_check(lane, check);
+        let inner = inner?;
+        let lane = lane?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -1083,6 +1136,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let lane = self.tx_lane(original)?;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (section, budgets) = (self.section, self.lane_budgets());
+        let execution_check = self.execution_check.clone();
+        let check = self.begin_execution_check(lane);
 
         // Validate the section inside the commit condition so the transaction commits in place
         // instead of detaching its state and reattaching it in `commit_transaction`.
@@ -1090,6 +1145,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let gas_output = self.inner.execute_transaction_with_commit_condition(
             (tx_env, recovered),
             |result, state_changes| {
+                // The execution check has seen every frame by now. A failed registry read
+                // commits nothing; [`Self::end_execution_check`] returns its error.
+                let Some(lane) = execution_check.borrow().lane(lane) else {
+                    return CommitChanges::No;
+                };
                 let block_gas_used = if use_regular_gas {
                     result.execution_gas_spent()
                 } else {
@@ -1108,10 +1168,13 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 } else {
                     CommitChanges::No
                 };
-                validated = Some(next_section.map(|section| (section, block_gas_used)));
+                validated = Some(next_section.map(|section| (section, block_gas_used, lane)));
                 commit
             },
-        )?;
+        );
+        let checked = self.end_execution_check(lane, check);
+        let gas_output = gas_output?;
+        checked?;
 
         let Some(gas_output) = gas_output else {
             return match validated {
@@ -1119,7 +1182,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                 _ => Ok(None),
             };
         };
-        if let Some(Ok((next_section, block_gas_used))) = validated {
+        if let Some(Ok((next_section, block_gas_used, lane))) = validated {
             self.record_committed_tx(next_section, block_gas_used, lane);
         }
         Ok(Some(gas_output))

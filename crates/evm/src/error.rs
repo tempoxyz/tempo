@@ -18,4 +18,10 @@ pub enum TempoEvmError {
 /// payment budget or the non-shared gas. The block executor rejects it when it executes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("transaction exceeds its gas lane")]
-pub struct LaneGasExceeded;
+pub struct LaneGasExceeded {
+    /// The lane the transaction counted toward after execution: a registered payment that failed
+    /// the TIP-1180 execution check counts toward the general lane.
+    pub lane: crate::TxLane,
+    /// The block gas the transaction used.
+    pub gas_used: u64,
+}
