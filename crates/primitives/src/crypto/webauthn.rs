@@ -20,11 +20,11 @@ pub fn verify_webauthn(signature: &WebAuthnSignature, hash: &B256) -> bool {
 }
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
-const MIN_AUTH_DATA_LEN: usize = 37;
+pub(super) const MIN_AUTH_DATA_LEN: usize = 37;
 
 /// WebAuthn authenticator data flags (byte 32)
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
-const UP: u8 = 0x01; // User Presence (bit 0)
+pub(super) const UP: u8 = 0x01; // User Presence (bit 0)
 const UV: u8 = 0x04; // User Verified (bit 2)
 const AT: u8 = 0x40; // Attested credential data (bit 6)
 const ED: u8 = 0x80; // Extension data present (bit 7)
@@ -42,7 +42,7 @@ struct ClientDataJson<'a> {
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 ///
 /// 1. Parses authenticatorData and clientDataJSON
-/// 2. Validates authenticatorData (min 37 bytes, UP flag set)
+/// 2. Validates authenticatorData (min 37 bytes, UP or UV set, no AT or ED)
 /// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
 /// 4. Computes message hash = sha256(authenticatorData || sha256(clientDataJSON))
 pub(crate) fn webauthn_digest(webauthn_data: &[u8], tx_hash: &B256) -> Result<B256, &'static str> {

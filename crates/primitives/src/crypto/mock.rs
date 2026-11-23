@@ -11,7 +11,10 @@
 //!
 //! tag = `keccak256("tempo-mock-crypto" || scheme || (u64_be(len) || part)...)`.
 
-use super::webauthn::webauthn_digest;
+use super::{
+    p384::FIXED_SIGNATURE_SIZE,
+    webauthn::{MIN_AUTH_DATA_LEN, UP, webauthn_digest},
+};
 use crate::transaction::tt_signature::WebAuthnSignature;
 use alloc::{sync::Arc, vec::Vec};
 use alloy_consensus::crypto::{
@@ -128,27 +131,27 @@ pub fn webauthn(x: B256, y: B256, webauthn_data: Bytes, hash: &B256) -> Option<W
 /// The smallest `webauthn_data` the check accepts for `hash`.
 pub fn webauthn_data(hash: &B256) -> Bytes {
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash);
-    let mut data = alloc::vec![0; 32];
-    data.extend_from_slice(&[0x01, 0, 0, 0, 0]);
+    let mut data = alloc::vec![0; MIN_AUTH_DATA_LEN];
+    data[32] = UP;
     data.extend_from_slice(br#"{"type":"webauthn.get","challenge":""#);
     data.extend_from_slice(challenge.as_bytes());
     data.extend_from_slice(br#"","origin":"https://tempo.xyz"}"#);
     data.into()
 }
 
-/// The Ed25519 mock by `public_key` over `message` in `namespace`.
-pub fn ed25519(public_key: &[u8], namespace: &[u8], message: &[u8]) -> [u8; 64] {
-    padded(tag(Scheme::Ed25519, &[public_key, namespace, message]))
+/// The Ed25519 mock by `key` over `message` in `namespace`.
+pub fn ed25519(key: &[u8], namespace: &[u8], message: &[u8]) -> [u8; 64] {
+    padded(tag(Scheme::Ed25519, &[key, namespace, message]))
 }
 
-/// The P-384 mock by `public_key` over `digest` in COSE's `r || s` form.
-pub fn p384_fixed(public_key: &[u8], digest: &[u8]) -> [u8; 96] {
-    padded(tag(Scheme::P384, &[public_key, digest]))
+/// The P-384 mock by `key` over `digest` in COSE's `r || s` form.
+pub fn p384_fixed(key: &[u8], digest: &[u8]) -> [u8; FIXED_SIGNATURE_SIZE] {
+    padded(tag(Scheme::P384, &[key, digest]))
 }
 
-/// The P-384 mock by `public_key` over `digest` in X.509's DER form.
-pub fn p384_der(public_key: &[u8], digest: &[u8]) -> Vec<u8> {
-    der(tag(Scheme::P384, &[public_key, digest]))
+/// The P-384 mock by `key` over `digest` in X.509's DER form.
+pub fn p384_der(key: &[u8], digest: &[u8]) -> Vec<u8> {
+    der(tag(Scheme::P384, &[key, digest]))
 }
 
 fn enabled() -> bool {
@@ -177,6 +180,7 @@ pub fn verify_p256(r: &B256, s: &B256, x: &B256, y: &B256, digest: &B256) -> boo
     p256::PublicKey::from_sec1_bytes(&point).is_ok()
 }
 
+/// Whether `signature` is the Ed25519 mock by `key` over `message` in `namespace`.
 pub(super) fn verify_ed25519(
     key: &[u8],
     namespace: &[u8],

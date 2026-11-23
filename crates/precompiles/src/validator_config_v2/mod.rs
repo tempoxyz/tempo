@@ -489,7 +489,7 @@ impl ValidatorConfigV2 {
 
         let public_key = PublicKey::decode(commonware_codec::Copying(pubkey.as_slice()))
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
-        if !crypto::verify_ed25519(&public_key, namespace, &message[..], &sig) {
+        if !crypto::verify_ed25519(&public_key, namespace, message.as_slice(), &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -3052,7 +3052,7 @@ mod tests {
     /// An Ed25519 mock passes only for the message it signs.
     #[test]
     fn test_add_validator_accepts_an_ed25519_mock() -> eyre::Result<()> {
-        tempo_primitives::crypto::mock::install();
+        crypto::mock::install();
         let mut storage = HashMapStorageProvider::new(1);
         let (owner, validator, fee_recipient) =
             (Address::random(), Address::random(), Address::random());
@@ -3065,12 +3065,7 @@ mod tests {
                 egress,
                 SignatureKind::Add { fee_recipient },
             );
-            tempo_primitives::crypto::mock::ed25519(
-                pubkey.as_slice(),
-                namespace,
-                message.as_slice(),
-            )
-            .to_vec()
+            crypto::mock::ed25519(pubkey.as_slice(), namespace, message.as_slice()).to_vec()
         };
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();

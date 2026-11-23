@@ -83,7 +83,6 @@ rand = "0.9"
 default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
 # Mock signatures for fuzzing harnesses.
 mock-crypto = ["std", "alloy-consensus/crypto-backend", "dep:secp256k1"]
-# `Crypto` as the Nitro attestation verifier.
 test-utils = [
 	"std",
 	"dep:rand",
@@ -131,7 +130,7 @@ serde = [
 	"rand?/serde",
 	"tracing-subscriber/serde",
 	"tempo-contracts/serde",
-	"secp256k1?/serde"
+	"secp256k1?/serde",
 ]
 evm = ["dep:evm2"]
 reth-codec = [
