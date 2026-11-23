@@ -51,6 +51,7 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: SnapshotManifestCommand,
 
+    // TODO: remove after snapshot callers stop passing `--skip-consensus`.
     /// DEPRECATED. Consensus state is always packaged. Accepted so existing callers keep
     /// parsing; this argument is a no-op.
     #[arg(
@@ -96,6 +97,7 @@ impl Args {
             chain,
         } = self;
 
+        // TODO: remove after snapshot callers stop passing `--skip-consensus`.
         if skip_consensus.is_some() {
             eprintln!(
                 "warning: deprecated flag `--skip-consensus` ignored; consensus state is always packaged"

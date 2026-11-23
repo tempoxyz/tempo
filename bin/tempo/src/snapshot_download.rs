@@ -18,7 +18,7 @@ use tempo_consensus::storage::snapshot::is_snapshot_storage_partition;
 use tempo_telemetry_util::display_duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::io::StreamReader;
-use tracing::{info, warn};
+use tracing::info;
 use url::Url;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
@@ -35,6 +35,7 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: DownloadCommand<TempoChainSpecParser>,
 
+    // TODO: remove after snapshot callers stop passing `--skip-consensus`.
     /// DEPRECATED. Consensus state is always downloaded. Accepted so existing callers keep
     /// parsing; this argument is a no-op.
     #[arg(
@@ -56,10 +57,11 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
 
-    if let Some(value) = args.skip_consensus {
-        warn!(
-            flag = "--skip-consensus",
-            value, "deprecated flag ignored; consensus state is always downloaded"
+    // TODO: remove after snapshot callers stop passing `--skip-consensus`.
+    // Stderr, so `--print-plan-json` keeps stdout to the plan JSON alone.
+    if args.skip_consensus.is_some() {
+        eprintln!(
+            "warning: deprecated flag `--skip-consensus` ignored; consensus state is always downloaded"
         );
     }
 
