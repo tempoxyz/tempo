@@ -131,59 +131,53 @@ pub(crate) struct VerifiedFloor {
     pub(crate) identity: NetworkIdentity,
 }
 
-/// Verifies the finalized floor certificate against the configured or persisted identity in force
-/// at its epoch, the one with the latest `from_epoch` at or before it.
+/// Verifies the finalized floor certificate against the configured or persisted identity.
 ///
-/// Returns `None` only without a floor certificate, which marshal has only at genesis. Fails when
-/// neither identity covers the certificate's epoch, such as a snapshot taken before the last full
-/// DKG the binary knows about.
+/// Either identity is trusted, so the certificate passes if it verifies against one of them. The
+/// persisted identity's `from_epoch` is the node's latest epoch rather than when the identity
+/// took effect, so it does not bound which certificates it may verify. Fails when neither
+/// verifies, such as for a snapshot taken before the last full DKG the binary knows about.
 #[instrument(skip_all, err)]
 pub(crate) fn verify_floor_certificate(
     rng: &mut impl CryptoRng,
     configured_identity: &NetworkIdentity,
     persisted: Option<&NetworkIdentity>,
-    floor: Option<(Height, &Certificate)>,
-) -> eyre::Result<Option<VerifiedFloor>> {
-    let Some((height, certificate)) = floor else {
-        return Ok(None);
-    };
+    height: Height,
+    certificate: &Certificate,
+) -> eyre::Result<VerifiedFloor> {
     let epoch = certificate.proposal.round.epoch();
-    let known = || std::iter::once(configured_identity).chain(persisted);
-    let Some(identity) = known()
-        .filter(|identity| identity.from_epoch <= epoch.get())
-        .max_by_key(|identity| identity.from_epoch)
-    else {
-        let earliest = known()
-            .map(|identity| identity.from_epoch)
-            .min()
-            .expect("the configured identity is always known");
-        bail!(
+    let identity = std::iter::once(configured_identity)
+        .chain(persisted)
+        .find(|identity| {
+            let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, identity.identity);
+            certificate.verify(&mut *rng, &scheme, &Sequential)
+        });
+    let Some(identity) = identity else {
+        ensure!(
+            persisted.is_some() || epoch.get() >= configured_identity.from_epoch,
             "finalized floor certificate at height `{height}` in epoch `{epoch}` predates the \
-             trusted network identity from epoch `{earliest}`; restore a snapshot taken at or \
-             after that epoch"
+             trusted network identity from epoch `{}`; restore a snapshot taken at or after that \
+             epoch",
+            configured_identity.from_epoch,
+        );
+        bail!(
+            "finalized floor certificate at height `{height}` in epoch `{epoch}` failed \
+             verification against every trusted network identity"
         );
     };
-    let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, identity.identity);
-    ensure!(
-        certificate.verify(rng, &scheme, &Sequential),
-        "finalized floor certificate at height `{height}` in epoch `{epoch}` failed verification \
-         against the network identity from epoch `{}`",
-        identity.from_epoch,
-    );
-    Ok(Some(VerifiedFloor {
+    Ok(VerifiedFloor {
         height,
         digest: certificate.proposal.payload,
         epoch,
         identity: identity.clone(),
-    }))
+    })
 }
 
 /// Ensures the boundary header startup reads its DKG outcome from agrees with the verified floor.
 ///
 /// A boundary at genesis must be the chain spec's genesis. A boundary at the floor is the
-/// certified block itself. Below it, the outcome is for the floor's
-/// epoch and must carry the identity its certificate verified against. A boundary above the floor
-/// only arises from a processed height this node wrote, and is not checked.
+/// certified block itself. Below it, the outcome is for the floor's epoch and must carry the
+/// identity its certificate verified against. The floor must not be below the boundary.
 pub(crate) fn ensure_boundary_matches_floor(
     boundary: Height,
     header: &TempoHeader,
@@ -222,10 +216,10 @@ pub(crate) fn ensure_boundary_matches_floor(
                 floor.epoch,
             );
         }
-        Ordering::Greater => warn!(
-            %boundary,
-            floor_height = %floor.height,
-            "boundary is above the finalized floor certificate; trusting locally processed blocks"
+        Ordering::Greater => bail!(
+            "boundary at height `{boundary}` is above the finalized floor certificate at height \
+             `{}`",
+            floor.height,
         ),
     }
     Ok(())

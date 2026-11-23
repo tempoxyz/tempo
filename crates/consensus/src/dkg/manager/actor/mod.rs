@@ -148,8 +148,8 @@ pub(crate) struct Actor<
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    /// The finalized floor certificate, verified during initialization.
-    verified_floor: Option<crate::startup::VerifiedFloor>,
+    /// The persisted identity read at initialization, before healing can replace the state.
+    persisted_identity: Option<NetworkIdentity>,
 
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
@@ -199,22 +199,13 @@ where
             config.last_finalized_height,
             &config.scheme_provider,
         )?;
-        let verified_floor = crate::startup::verify_floor_certificate(
-            &mut *context,
-            &config.network_identity,
-            persisted_identity.as_ref(),
-            config
-                .finalized_floor_certificate
-                .as_ref()
-                .map(|(height, certificate)| (*height, certificate)),
-        )?;
 
         Ok(Self {
             config,
             context,
             storage: Some(storage),
             mailbox,
-            verified_floor,
+            persisted_identity,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
         })
@@ -1480,11 +1471,34 @@ where
         })?;
         let onchain_outcome =
             outcome_from_boundary_header(&boundary_header, latest_boundary, outcome_epoch)?;
+        // Only a boundary at or below the floor certificate is covered by it. One above it comes
+        // from a processed height this node wrote, such as on a node synced from genesis whose
+        // archive starts long before its current epoch.
+        let verified_floor = match &self.config.finalized_floor_certificate {
+            Some((height, certificate)) if latest_boundary <= *height => {
+                Some(crate::startup::verify_floor_certificate(
+                    self.context.as_present_mut(),
+                    &self.config.network_identity,
+                    self.persisted_identity.as_ref(),
+                    *height,
+                    certificate,
+                )?)
+            }
+            Some((height, _)) => {
+                warn!(
+                    floor_height = %height,
+                    "boundary is above the finalized floor certificate; trusting locally \
+                    processed blocks"
+                );
+                None
+            }
+            None => None,
+        };
         crate::startup::ensure_boundary_matches_floor(
             latest_boundary,
             &boundary_header,
             &onchain_outcome,
-            self.verified_floor.as_ref(),
+            verified_floor.as_ref(),
             self.config.execution_node.chain_spec().genesis_hash(),
         )?;
 
