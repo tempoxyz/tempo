@@ -23,7 +23,6 @@ use alloy_consensus::crypto::{
 };
 use alloy_primitives::{Address, B256, Bytes, Keccak256, Signature, U256};
 use base64::Engine;
-use core::sync::atomic::{AtomicBool, Ordering};
 use secp256k1::{
     Message, PublicKey, SECP256K1,
     ecdsa::{RecoverableSignature, RecoveryId, Signature as SecpSignature},
@@ -32,7 +31,8 @@ use secp256k1::{
 /// Mock format version, reported to fuzzers.
 pub const VERSION: u32 = 1;
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Whether [`install`] ran and installed the provider.
+static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 #[repr(u8)]
 enum Scheme {
@@ -45,12 +45,7 @@ enum Scheme {
 /// Installs the mock-aware secp256k1 provider into alloy and turns mocks on, process-wide.
 /// Fuzzers and tests only. Returns whether mocks are on.
 pub fn install() -> bool {
-    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *INSTALLED.get_or_init(|| {
-        let installed = install_default_provider(Arc::new(Provider)).is_ok();
-        ENABLED.store(installed, Ordering::Relaxed);
-        installed
-    })
+    *INSTALLED.get_or_init(|| install_default_provider(Arc::new(Provider)).is_ok())
 }
 
 /// alloy's secp256k1 provider: mocks, else the same real checks as alloy's own backend.
@@ -155,7 +150,7 @@ pub fn p384_der(key: &[u8], digest: &[u8]) -> Vec<u8> {
 }
 
 fn enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
+    INSTALLED.get() == Some(&true)
 }
 
 /// The signer whose secp256k1 mock `rs` is over `digest`.
