@@ -31,7 +31,14 @@ use tempo_fuzz_types::{
     TxOutcome,
 };
 use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
-use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoHeader, TempoTxEnvelope,
+    crypto::mock,
+    transaction::{
+        Call, TempoTransaction,
+        tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
+    },
+};
 
 use crate::{
     bincode_options, chain, execute,
@@ -790,5 +797,110 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS
+    );
+}
+
+/// A block of `txs` whose senders the harness recovers from their signatures.
+fn recovered_block(txs: Vec<Bytes>) -> TempoBlock {
+    TempoBlock {
+        senders: Vec::new(),
+        ..t4_block(txs)
+    }
+}
+
+/// A legacy transaction signed with `signer`'s secp256k1 mock signature.
+fn mock_legacy(signer: Address, nonce: u64, to: Address, input: Bytes) -> Bytes {
+    let tx = TxLegacy {
+        chain_id: Some(CHAIN_ID),
+        nonce,
+        gas_price: 0,
+        gas_limit: 1_000_000,
+        to: TxKind::Call(to),
+        value: U256::ZERO,
+        input,
+    };
+    let signature = mock::secp256k1(signer, &tx.signature_hash());
+    TempoTxEnvelope::Legacy(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
+}
+
+/// Mocks pass end to end: legacy sender, ECRECOVER, P256VERIFY, WebAuthn sender and fee payer.
+#[test]
+fn mock_signatures_verify_end_to_end() {
+    assert_eq!(crate::tempo_fuzz_enable_mock_crypto_v1(), mock::VERSION);
+    let digest = B256::repeat_byte(0x5a);
+    let signer = address!("00000000000000000000000000000000000000c0");
+    let signature = mock::secp256k1(signer, &digest);
+    let ecrecover = [
+        digest,
+        B256::with_last_byte(27),
+        signature.r().into(),
+        signature.s().into(),
+    ];
+    let (_, x, y, p256_sender) = p256_keypair();
+    let (r, s) = mock::p256(&x, &y, &digest);
+    let p256verify = [digest, r, s, x, y].concat();
+    let mut wrong = p256verify.clone();
+    wrong[0] ^= 1;
+
+    let mut aa = TempoTransaction {
+        chain_id: CHAIN_ID,
+        fee_token: Some(PATH_USD_ADDRESS),
+        calls: vec![Call::new(RECIPIENT, Bytes::new())],
+        gas_limit: 1_000_000,
+        ..Default::default()
+    };
+    // SENDER, funded with pathUSD, sponsors the fees without its key.
+    aa.fee_payer_signature = Some(mock::secp256k1(
+        SENDER,
+        &aa.fee_payer_signature_hash(p256_sender),
+    ));
+    let hash = aa.signature_hash();
+    let webauthn = mock::webauthn(x, y, mock::webauthn_data(&hash), &hash).unwrap();
+    let aa = TempoTxEnvelope::AA(aa.into_signed(TempoSignature::Primitive(
+        PrimitiveSignature::WebAuthn(webauthn),
+    )));
+
+    let p256verify_address = address!("0000000000000000000000000000000000000100");
+    let txs = vec![
+        mock_legacy(
+            SENDER,
+            0,
+            address!("0000000000000000000000000000000000000001"),
+            ecrecover.concat().into(),
+        ),
+        mock_legacy(SENDER, 1, p256verify_address, p256verify.into()),
+        mock_legacy(SENDER, 2, p256verify_address, wrong.into()),
+        aa.encoded_2718().into(),
+    ];
+    let outcome = run(genesis(), vec![recovered_block(txs)]);
+    assert_eq!(outcome.error, ErrorClass::None, "{outcome:?}");
+    let receipts = &outcome.receipts;
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.outcome == TxOutcome::Success)
+    );
+    assert_eq!(receipts[0].output, Bytes::from(signer.into_word().0));
+    assert_eq!(
+        receipts[1].output,
+        Bytes::from(U256::from(1).to_be_bytes::<32>())
+    );
+    assert_eq!(
+        receipts[2].output,
+        Bytes::new(),
+        "a mock signature for another digest fails"
+    );
+    let sent = |tx: usize, sender: Address, nonce: u64| {
+        outcome.state_diff.blocks[0].txs[tx]
+            .accounts
+            .iter()
+            .any(|account| account.address == sender && account.nonce == Some(nonce))
+    };
+    assert!(sent(0, SENDER, 1), "the mock signature's signer sent it");
+    assert!(
+        sent(3, p256_sender, 1),
+        "the WebAuthn key's account sent it"
     );
 }

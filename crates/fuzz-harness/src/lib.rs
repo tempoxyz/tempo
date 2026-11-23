@@ -6,6 +6,7 @@
 //! process: the node would crash on the same block.
 
 mod chain;
+mod crypto;
 mod execute;
 mod invariants;
 mod state;
@@ -86,6 +87,17 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &capabilities) }
+}
+
+/// Makes every check also accept [`tempo_primitives::crypto::mock`] signatures, if no input ran yet.
+/// Returns the mock format's version, or 0 when mocks stay off.
+#[unsafe(no_mangle)]
+pub extern "C" fn tempo_fuzz_enable_mock_crypto_v1() -> u32 {
+    if crypto::enable() {
+        tempo_primitives::crypto::mock::VERSION
+    } else {
+        0
+    }
 }
 
 /// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block
