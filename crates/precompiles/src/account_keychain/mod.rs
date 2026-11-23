@@ -920,6 +920,41 @@ impl AccountKeychain {
         }
     }
 
+    /// Returns `KeyAlreadyExists` if any call-scope set `authorize_key` would replace is non-empty.
+    ///
+    /// A key that was never authorized has no call-scope rows.
+    pub fn ensure_no_stale_call_scopes(
+        &self,
+        account: Address,
+        key_id: Address,
+        allowed_calls: &[CallScope],
+    ) -> Result<()> {
+        let spec = self.storage.spec();
+        if !spec.is_t3() {
+            return Ok(());
+        }
+
+        let key_scope = &self.key_scopes[Self::spending_limit_key(account, key_id)];
+        let mut stale = !key_scope.targets.is_empty()?;
+        for scope in allowed_calls {
+            let target_scope = &key_scope.target_scopes[scope.target];
+            stale |= !target_scope.selectors.is_empty()?;
+            for rule in &scope.selectorRules {
+                // T4+ doesn't touch an unrestricted selector's recipients.
+                if !spec.is_t4() || !rule.recipients.is_empty() {
+                    stale |= !target_scope.selector_scopes[rule.selector]
+                        .recipients
+                        .is_empty()?;
+                }
+            }
+        }
+
+        if stale {
+            return Err(AccountKeychainError::key_already_exists().into());
+        }
+        Ok(())
+    }
+
     /// Replaces the full call-scope tree for an account key.
     ///
     /// `None` switches the key back to unrestricted mode, while `Some([])` preserves scoped mode
@@ -1676,7 +1711,7 @@ mod tests {
     use crate::{
         Precompile,
         error::TempoPrecompileError,
-        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ConfigCommitmentWriteGas, Slot, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, with_storage},
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
@@ -3274,6 +3309,65 @@ mod tests {
             }
 
             Ok(())
+        })
+    }
+
+    #[test_case(1, 0, 0, true => Some(true))]
+    #[test_case(0, 1, 0, true => Some(true))]
+    #[test_case(0, 0, 1, true => Some(true))]
+    #[test_case(0, 0, 1, false => None)]
+    #[test_case(0, 0, 0, true => None)]
+    fn test_ensure_no_stale_call_scopes(
+        targets_len: u64,
+        selectors_len: u64,
+        recipients_len: u64,
+        rule_has_recipients: bool,
+    ) -> Option<bool> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let (account, key_id, target) = (Address::random(), Address::random(), Address::random());
+        let selector = FixedBytes::<4>::from([1, 2, 3, 4]);
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::initialized().unwrap();
+            let key_scope =
+                &keychain.key_scopes[AccountKeychain::spending_limit_key(account, key_id)];
+            let target_scope = &key_scope.target_scopes[target];
+            // Set the lengths directly, without writing any rows.
+            for (slot, len) in [
+                (key_scope.targets.base_slot(), targets_len),
+                (target_scope.selectors.base_slot(), selectors_len),
+                (
+                    target_scope.selector_scopes[selector]
+                        .recipients
+                        .base_slot(),
+                    recipients_len,
+                ),
+            ] {
+                Slot::<U256>::new(slot, ACCOUNT_KEYCHAIN_ADDRESS)
+                    .write(U256::from(len))
+                    .unwrap();
+            }
+            let scope = CallScope {
+                target,
+                selectorRules: vec![SelectorRule {
+                    selector,
+                    recipients: if rule_has_recipients {
+                        vec![Address::random()]
+                    } else {
+                        vec![]
+                    },
+                }],
+            };
+            keychain
+                .ensure_no_stale_call_scopes(account, key_id, &[scope])
+                .err()
+                .map(|e| {
+                    matches!(
+                        e,
+                        TempoPrecompileError::AccountKeychainError(
+                            AccountKeychainError::KeyAlreadyExists(_)
+                        )
+                    )
+                })
         })
     }
 
