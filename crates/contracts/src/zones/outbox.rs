@@ -124,7 +124,6 @@ crate::sol! {
 }
 
 impl From<IZoneOutbox::requestWithdrawal_1Call> for IZoneOutbox::requestWithdrawal_0Call {
-    /// Drops `revealOrg`.
     fn from(call: IZoneOutbox::requestWithdrawal_1Call) -> Self {
         Self {
             token: call.token,
