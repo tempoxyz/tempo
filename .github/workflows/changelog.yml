@@ -4,7 +4,6 @@ on:
   pull_request:
     types: [opened, synchronize]
     paths:
-      - crates/nitro-attestation/**
       - crates/hardfork/**
       - crates/contracts/**
       - crates/primitives/**

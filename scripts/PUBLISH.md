@@ -1,6 +1,6 @@
 # Publishing Crates
 
-Publishes `tempo-hardfork`, `tempo-contracts`, `tempo-primitives`, `tempo-chainspec`, `tempo-alloy`, and `tempo-nitro-attestation` to crates.io with all reth-specific code and dependencies removed.
+Publishes `tempo-hardfork`, `tempo-contracts`, `tempo-primitives`, `tempo-chainspec`, and `tempo-alloy` to crates.io with all reth-specific code and dependencies removed.
 
 ## Usage
 

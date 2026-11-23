@@ -33,7 +33,6 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 evm2 = { workspace = true, optional = true }
 # Real secp256k1 checks behind `crypto::mock`, the version alloy's backend uses.
 secp256k1 = { version = "0.30", features = ["global-context"], optional = true }
-tempo-nitro-attestation = { workspace = true, features = ["aws-lc"], optional = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -85,7 +84,6 @@ default = ["std", "evm", "reth", "serde", "reth-codec", "serde-bincode-compat", 
 # Mock signatures for fuzzing harnesses.
 mock-crypto = ["std", "alloy-consensus/crypto-backend", "dep:secp256k1"]
 # `Crypto` as the Nitro attestation verifier.
-nitro = ["std", "dep:tempo-nitro-attestation"]
 test-utils = [
 	"std",
 	"dep:rand",

@@ -186,11 +186,14 @@ pub(super) fn verify_ed25519(
     enabled() && signature == ed25519(key, namespace, message)
 }
 
-/// Whether `signature` is the P-384 mock by `key` over `digest`, in either form.
-#[cfg_attr(not(feature = "nitro"), allow(dead_code))]
-pub(super) fn verify_p384(key: &[u8], digest: &[u8], signature: &[u8]) -> bool {
-    let tag = tag(Scheme::P384, &[key, digest]);
-    enabled() && (signature == padded::<96>(tag) || signature == der(tag))
+/// Whether `signature` is the DER P-384 mock by `key` over `digest`.
+pub(super) fn verify_p384_der(key: &[u8], digest: &[u8], signature: &[u8]) -> bool {
+    enabled() && signature == p384_der(key, digest)
+}
+
+/// Whether `signature` is the `r || s` P-384 mock by `key` over `digest`.
+pub(super) fn verify_p384_fixed(key: &[u8], digest: &[u8], signature: &[u8]) -> bool {
+    enabled() && signature == p384_fixed(key, digest)
 }
 
 fn tag(scheme: Scheme, parts: &[&[u8]]) -> B256 {
@@ -256,14 +259,19 @@ mod tests {
         let signature = ed25519(b"key", b"ns", b"msg");
         assert!(!verify_ed25519(b"key", b"nsm", b"sg", &signature));
         assert!(!verify_ed25519(b"ke", b"yns", b"msg", &signature));
-        for signature in [
-            p384_fixed(b"key", b"digest").to_vec(),
-            p384_der(b"key", b"digest"),
-        ] {
-            assert!(verify_p384(b"key", b"digest", &signature));
-            assert!(!verify_p384(b"other", b"digest", &signature));
-            assert!(!verify_p384(b"key", b"other", &signature));
-        }
+        let (fixed, der) = (p384_fixed(b"key", b"digest"), p384_der(b"key", b"digest"));
+        assert!(verify_p384_fixed(b"key", b"digest", &fixed));
+        assert!(verify_p384_der(b"key", b"digest", &der));
+        assert!(
+            !verify_p384_der(b"key", b"digest", &fixed),
+            "wrong encoding"
+        );
+        assert!(
+            !verify_p384_fixed(b"key", b"digest", &der),
+            "wrong encoding"
+        );
+        assert!(!verify_p384_der(b"other", b"digest", &der));
+        assert!(!verify_p384_der(b"key", b"other", &der));
     }
 
     /// Real and mock secp256k1 signatures pass both alloy entry points only for their digest and a

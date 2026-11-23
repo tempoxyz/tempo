@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Publish tempo-nitro-attestation, tempo-hardfork, tempo-contracts, tempo-primitives, tempo-chainspec, and tempo-alloy to crates.io
+# Publish tempo-hardfork, tempo-contracts, tempo-primitives, tempo-chainspec, and tempo-alloy to crates.io
 # by stripping node-specific code and dependencies.
 #
 # Usage:
@@ -111,7 +111,6 @@ TMP_WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_WORK_DIR"' EXIT
 
 log "Copying crates to temporary directory …"
-cp -R "$REPO_ROOT/crates/nitro-attestation" "$TMP_WORK_DIR/nitro-attestation"
 cp -R "$REPO_ROOT/crates/hardfork"   "$TMP_WORK_DIR/hardfork"
 cp -R "$REPO_ROOT/crates/contracts"  "$TMP_WORK_DIR/contracts"
 cp -R "$REPO_ROOT/crates/primitives" "$TMP_WORK_DIR/primitives"
@@ -131,7 +130,6 @@ python3 "$SANITIZE_RS" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/alloy" "$TMP_WO
 
 # All crate Cargo.toml files (used by multiple pipeline stages)
 CRATE_TOMLS=(
-    "$TMP_WORK_DIR/nitro-attestation/Cargo.toml"
     "$TMP_WORK_DIR/hardfork/Cargo.toml"
     "$TMP_WORK_DIR/contracts/Cargo.toml"
     "$TMP_WORK_DIR/primitives/Cargo.toml"
@@ -161,14 +159,14 @@ log "Verifying compilation …"
 
 cat > "$TMP_WORK_DIR/Cargo.toml" <<EOF
 [workspace]
-members = ["nitro-attestation", "hardfork", "contracts", "primitives", "chainspec", "alloy"]
+members = ["hardfork", "contracts", "primitives", "chainspec", "alloy"]
 resolver = "3"
 EOF
 
 # Generate workspace deps, dynamically filtering out reth-* and all internal
 # path-only crates, then overriding the publish targets with local paths.
 python3 "$SANITIZE_PY" gen_workspace "$REPO_ROOT/Cargo.toml" "$TMP_WORK_DIR/Cargo.toml" \
-    "tempo-nitro-attestation,tempo-hardfork,tempo-contracts,tempo-primitives,tempo-chainspec,tempo-alloy"
+    "tempo-hardfork,tempo-contracts,tempo-primitives,tempo-chainspec,tempo-alloy"
 
 # Seed the lockfile so transitive deps use the same versions as the main workspace
 cp "$REPO_ROOT/Cargo.lock" "$TMP_WORK_DIR/Cargo.lock"
@@ -199,7 +197,7 @@ INTERNAL_PATH_DEPS=$(python3 -c "
 import sys; sys.path.insert(0, '$SANITIZE_DIR')
 from sanitize_toml import parse_workspace_deps
 _, _, ws_path_deps, _, _ = parse_workspace_deps('$REPO_ROOT/Cargo.toml')
-keep = {'tempo-nitro-attestation', 'tempo-hardfork', 'tempo-contracts', 'tempo-primitives', 'tempo-chainspec', 'tempo-alloy'}
+keep = {'tempo-hardfork', 'tempo-contracts', 'tempo-primitives', 'tempo-chainspec', 'tempo-alloy'}
 for d in sorted(ws_path_deps - keep):
     print(d)
 ")
@@ -277,11 +275,10 @@ log "Final build check on resolved manifests …"
 
 cat > "$TMP_WORK_DIR/Cargo.toml" <<EOF
 [workspace]
-members = ["nitro-attestation", "hardfork", "contracts", "primitives", "chainspec", "alloy"]
+members = ["hardfork", "contracts", "primitives", "chainspec", "alloy"]
 resolver = "3"
 
 [patch.crates-io]
-tempo-nitro-attestation = { path = "nitro-attestation" }
 tempo-hardfork = { path = "hardfork" }
 tempo-contracts = { path = "contracts" }
 tempo-primitives = { path = "primitives" }
@@ -311,8 +308,8 @@ if $SEMVER_CHECK; then
     append_contracts_semver_overrides "$TMP_WORK_DIR/contracts/Cargo.toml"
     SEMVER_FAILED=false
     SEMVER_SKIPPED_ALL=true
-    PUBLISH_CRATES=("tempo-nitro-attestation" "tempo-hardfork" "tempo-contracts" "tempo-primitives" "tempo-chainspec" "tempo-alloy")
-    for crate_dir in "$TMP_WORK_DIR/nitro-attestation" "$TMP_WORK_DIR/hardfork" "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/chainspec" "$TMP_WORK_DIR/alloy"; do
+    PUBLISH_CRATES=("tempo-hardfork" "tempo-contracts" "tempo-primitives" "tempo-chainspec" "tempo-alloy")
+    for crate_dir in "$TMP_WORK_DIR/hardfork" "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/chainspec" "$TMP_WORK_DIR/alloy"; do
         crate_name=$(grep -m1 'name = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         crate_ver=$(grep -m1 'version = ' "$crate_dir/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
         log "Checking $crate_name@$crate_ver …"
@@ -403,8 +400,8 @@ retry_publish() {
     err "Failed to publish $name after $max_attempts attempts"
 }
 
-# Publish order: nitro-attestation → hardfork → contracts → primitives → chainspec → alloy
-CRATES=("$TMP_WORK_DIR/nitro-attestation" "$TMP_WORK_DIR/hardfork" "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/chainspec" "$TMP_WORK_DIR/alloy")
+# Publish order: hardfork → contracts → primitives → chainspec → alloy
+CRATES=("$TMP_WORK_DIR/hardfork" "$TMP_WORK_DIR/contracts" "$TMP_WORK_DIR/primitives" "$TMP_WORK_DIR/chainspec" "$TMP_WORK_DIR/alloy")
 
 if $DRY_RUN; then
     log "Dry-run complete. Use --publish to actually publish."

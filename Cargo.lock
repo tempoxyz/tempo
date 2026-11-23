@@ -14628,7 +14628,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.16.0"
+version = "1.19.0"
 dependencies = [
  "arrayvec",
  "aws-lc-rs",
@@ -14904,7 +14904,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempo-contracts",
- "tempo-nitro-attestation",
  "test-case",
  "tracing-subscriber",
 ]

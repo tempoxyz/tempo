@@ -1,7 +1,7 @@
 [package]
 name = "tempo-nitro-attestation"
 description = "Consensus-critical AWS Nitro attestation parsing and verification"
-version = "1.16.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -10,7 +10,7 @@ homepage.workspace = true
 repository.workspace = true
 categories.workspace = true
 keywords.workspace = true
-publish = true
+publish.workspace = true
 
 [lints]
 workspace = true
@@ -28,7 +28,7 @@ serde_with = { version = "=3.21.0", default-features = false, features = ["alloc
 x509-cert = { version = "=0.2.5", default-features = false }
 
 # aws-lc
-aws-lc-rs = { workspace = true, optional = true, features = ["alloc", "non-fips", "ring-sig-verify"] }
+aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 base64.workspace = true
