@@ -899,22 +899,7 @@ fn program_runtime(immutable: u8) -> Vec<u8> {
 
 /// Creation code returning [`program_runtime`].
 fn program_initcode(immutable: u8) -> Vec<u8> {
-    let runtime = program_runtime(immutable);
-    let mut code = vec![
-        0x60,
-        runtime.len() as u8,
-        0x80,
-        0x60,
-        0x0b,
-        0x60,
-        0x00,
-        0x39,
-        0x60,
-        0x00,
-        0xf3,
-    ];
-    code.extend(runtime);
-    code
+    initcode_for(&program_runtime(immutable))
 }
 
 /// From T17 a template and instance registered with the payment call registry (TIP-1180) put the
@@ -1131,6 +1116,245 @@ async fn test_registered_payment_calls_from_t17() -> eyre::Result<()> {
         registry.getInstance(program).call().await?.removedAtBlock,
         removed_block + 1
     );
+
+    Ok(())
+}
+
+/// Creation code returning `runtime`.
+fn initcode_for(runtime: &[u8]) -> Vec<u8> {
+    let mut code = vec![
+        0x60,
+        runtime.len() as u8,
+        0x80,
+        0x60,
+        0x0b,
+        0x60,
+        0x00,
+        0x39,
+        0x60,
+        0x00,
+        0xf3,
+    ];
+    code.extend(runtime);
+    code
+}
+
+/// Runtime code of a payment program that calls another contract with all its gas:
+/// `PUSH0 x5 PUSH20 <target> GAS CALL POP STOP`. The target is an immutable at (6, 20).
+fn caller_runtime(target: Address) -> Vec<u8> {
+    let mut code = vec![0x5f; 5];
+    code.push(0x73);
+    code.extend(target.as_slice());
+    code.extend([0x5a, 0xf1, 0x50, 0x00]);
+    code
+}
+
+/// From T17 a registered payment counts toward the registered budget only while every frame it
+/// enters runs registered code or a precompile (TIP-1180 execution check). Two instances of one
+/// template differ only in the contract they call: the one calling registered callable code is a
+/// registered payment, while the one calling a contract nobody registered counts toward the
+/// general lane, where its gas used does not fit, so it is never included and the chain keeps
+/// building blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_registered_payments_calling_unregistered_code_use_the_general_lane()
+-> eyre::Result<()> {
+    use alloy::network::TransactionBuilder;
+    use tempo_contracts::precompiles::{IPaymentCallRegistry, PAYMENT_CALL_REGISTRY_ADDRESS};
+
+    reth_tracing::init_test_tracing();
+
+    const BLOCK_GAS_LIMIT: u64 = 20_000_000;
+    const GENERAL_GAS_LIMIT: u64 = 5_000_000;
+    // The callee burns about all of it: more than the general lane, within the registered budget.
+    const PROGRAM_GAS: u64 = 6_000_000;
+    const SELECTOR: [u8; 4] = [1, 2, 3, 4];
+    const ACTIVATION_DELAY: u64 = 3;
+
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(&make_genesis_at(TempoHardfork::T17))?;
+    genesis["gasLimit"] = serde_json::json!(format!("{BLOCK_GAS_LIMIT:#x}"));
+    genesis["config"]["generalGasLimit"] = serde_json::json!(GENERAL_GAS_LIMIT);
+    let overrides = U256::from(1u64) | (U256::from(ACTIVATION_DELAY) << 64);
+    genesis["alloc"][PAYMENT_CALL_REGISTRY_ADDRESS.to_string()] = serde_json::json!({
+        "balance": "0x0",
+        "code": "0xef",
+        "storage": { format!("{:#066x}", U256::from(1)): format!("{overrides:#066x}") },
+    });
+    let first_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_block_time(std::time::Duration::from_millis(500))
+        .with_block_timestamps_from(first_timestamp)
+        .build_http_only()
+        .await?;
+
+    let governance = ProviderBuilder::new()
+        .wallet(test_signer(0))
+        .connect_http(setup.http_url.clone());
+    let registry = IPaymentCallRegistry::new(PAYMENT_CALL_REGISTRY_ADDRESS, governance.clone());
+    let path_usd = ITIP20::new(PATH_USD_ADDRESS, governance.clone());
+
+    let mut senders = Vec::new();
+    for _ in 0..3 {
+        let signer = PrivateKeySigner::random();
+        path_usd
+            .transfer(signer.address(), U256::from(100_000_000u64))
+            .gas(1_000_000)
+            .send()
+            .await?
+            .successful_receipt()
+            .await?;
+        senders.push(
+            ProviderBuilder::new()
+                .wallet(signer)
+                .connect_http(setup.http_url.clone()),
+        );
+    }
+
+    let deploy = |runtime: Vec<u8>| {
+        let governance = governance.clone();
+        async move {
+            let address = governance
+                .send_transaction(
+                    TransactionRequest::default()
+                        .with_deploy_code(initcode_for(&runtime))
+                        .gas_limit(1_000_000),
+                )
+                .await?
+                .successful_receipt()
+                .await?
+                .contract_address
+                .expect("deployment has an address");
+            assert_eq!(governance.get_code_at(address).await?.to_vec(), runtime);
+            eyre::Ok(address)
+        }
+    };
+    // Callable code (registered) and a contract with the same code that nobody registers.
+    let registered_callee = deploy(program_runtime(0x11)).await?;
+    let unregistered_callee = deploy(program_runtime(0x22)).await?;
+    let calls_registered = deploy(caller_runtime(registered_callee)).await?;
+    let calls_unregistered = deploy(caller_runtime(unregistered_callee)).await?;
+
+    // The payment program template, and the callee as callable code without selectors.
+    registry
+        .proposeTemplate(
+            caller_runtime(Address::ZERO).into(),
+            vec![IPaymentCallRegistry::CodeRange {
+                offset: 6,
+                length: 20,
+            }],
+            vec![IPaymentCallRegistry::PaymentSelector {
+                selector: SELECTOR.into(),
+                calldataLength: 36,
+                gasCap: PROGRAM_GAS,
+            }],
+        )
+        .gas(GENERAL_GAS_LIMIT)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("program template proposal")?;
+    registry
+        .proposeTemplate(
+            program_runtime(0).into(),
+            vec![IPaymentCallRegistry::CodeRange {
+                offset: 1,
+                length: 20,
+            }],
+            vec![],
+        )
+        .gas(GENERAL_GAS_LIMIT)
+        .send()
+        .await?
+        .successful_receipt()
+        .await
+        .wrap_err("callable code template proposal")?;
+    let templates = registry.templateCount().call().await?;
+    for template_id in [templates - 1, templates] {
+        registry
+            .activateTemplate(template_id)
+            .gas(1_000_000)
+            .send()
+            .await?
+            .successful_receipt()
+            .await
+            .wrap_err("template activation")?;
+    }
+
+    let mut activation_block = 0;
+    for instance in [calls_registered, calls_unregistered, registered_callee] {
+        registry
+            .registerInstance(instance)
+            .gas(GENERAL_GAS_LIMIT)
+            .send()
+            .await?
+            .successful_receipt()
+            .await
+            .wrap_err("instance registration")?;
+        activation_block = registry.getInstance(instance).call().await?.activationBlock;
+    }
+    while governance.get_block_number().await? < activation_block {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let call = |sender: usize, program: Address| {
+        let mut input = SELECTOR.to_vec();
+        input.extend([0u8; 32]);
+        senders[sender].send_transaction(
+            TransactionRequest::default()
+                .to(program)
+                .gas_limit(PROGRAM_GAS)
+                .input(input.into()),
+        )
+    };
+
+    // Both are classified as registered payments before execution.
+    let mut input = SELECTOR.to_vec();
+    input.extend([0u8; 32]);
+    for program in [calls_registered, calls_unregistered] {
+        assert_eq!(
+            registry
+                .paymentCallGasCap(program, input.clone().into())
+                .call()
+                .await?,
+            PROGRAM_GAS
+        );
+    }
+
+    // The call that reaches unregistered code is sent first; it counts toward the general lane
+    // and its gas used does not fit there.
+    let unregistered = call(0, calls_unregistered).await?;
+    let registered = call(1, calls_registered).await?;
+    let receipt = registered.successful_receipt().await?;
+    let included = receipt.block_number.expect("mined receipt has a block");
+    assert!(
+        receipt.gas_used > GENERAL_GAS_LIMIT,
+        "the registered call uses more than the general lane: {}",
+        receipt.gas_used
+    );
+    while governance.get_block_number().await? < included + 4 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        governance
+            .get_transaction_receipt(*unregistered.tx_hash())
+            .await?
+            .is_none(),
+        "a registered payment that runs unregistered code is general"
+    );
+
+    // Blocks keep coming, and the general lane still takes general work.
+    let transfer = ITIP20::new(PATH_USD_ADDRESS, senders[2].clone())
+        .transfer(Address::random(), U256::ONE)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .successful_receipt()
+        .await?;
+    assert!(transfer.block_number.expect("mined receipt has a block") > included);
 
     Ok(())
 }
