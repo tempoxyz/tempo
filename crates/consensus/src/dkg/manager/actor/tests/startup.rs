@@ -415,7 +415,7 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
         let current = dkg_fixture(&mut context, Epoch::new(2));
         let old_state = persisted(&old, &mut context);
         let current_state = persisted(&current, &mut context);
-        let execution = chain_to_tip(&current_state, Height::new(22), true);
+        let execution = chain_to_tip(&current_state, Height::new(19), Height::new(22), true);
         let mut harness = Harness::builder(context.child("test"), "authenticate_before_healing")
             .initial_state(old_state)
             .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
@@ -487,16 +487,21 @@ fn missing_tip_is_authenticated_and_registered_before_actors_start() {
     });
 }
 
-/// Returns an execution layer holding the boundary at 19 with `state`'s outcome
-/// and headers up to `tip`, chained to their parents when `linked`.
-fn chain_to_tip(state: &State, tip: Height, linked: bool) -> StubExecutionProvider {
+/// Returns an execution layer holding `boundary` with `state`'s outcome and
+/// headers up to `tip`, chained to their parents when `linked`.
+fn chain_to_tip(
+    state: &State,
+    boundary: Height,
+    tip: Height,
+    linked: bool,
+) -> StubExecutionProvider {
     let execution = StubExecutionProvider::default();
-    execution.add_header(outcome_header(Height::new(19), state));
-    for height in 20..=tip.get() {
+    execution.add_header(outcome_header(boundary, state));
+    for height in boundary.get() + 1..=tip.get() {
         execution.add_header(header(Height::new(height)));
     }
     if linked {
-        execution.link(Height::new(19), tip);
+        execution.link(boundary, tip);
     }
     execution
 }
@@ -510,7 +515,7 @@ fn startup_rejects_a_boundary_that_does_not_descend_from_the_tip() {
         let current_state = persisted(&current, &mut context);
         // The boundary at 19 carries an outcome, but the tip at 22 does not
         // descend from it.
-        let execution = chain_to_tip(&current_state, Height::new(22), false);
+        let execution = chain_to_tip(&current_state, Height::new(19), Height::new(22), false);
         let mut harness = Harness::builder(context.child("test"), "reject_unlinked_boundary")
             .initial_state(old_state.clone())
             .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
@@ -572,11 +577,12 @@ fn historical_tip_bounds_the_startup_epoch() {
         let snapshot_state = persisted(&snapshot, &mut context);
         // The snapshot's floor is the boundary into epoch 5, past the trusted
         // identity's epoch 3, while its tip claims epoch 1 to skip verification.
-        let tip_header = header(Height::new(52));
+        // The boundary descends from the tip, so only the epoch bound rejects it.
+        let execution = chain_to_tip(&snapshot_state, Height::new(49), Height::new(52), true);
         let historical_tip = (
             Height::new(52),
             make_certificate(
-                Digest(tip_header.hash_slow()),
+                Digest(execution.header(Height::new(52)).hash_slow()),
                 Epoch::new(1),
                 1,
                 &snapshot.schemes,
@@ -585,13 +591,12 @@ fn historical_tip_bounds_the_startup_epoch() {
         let mut harness = Harness::builder(context.child("test"), "historical_tip_bound")
             .finalized_floor(Height::new(49))
             .startup(identity(&trusted), Some(historical_tip))
+            .execution(execution)
             .build()
             .await;
-        harness
-            .execution
-            .add_header(outcome_header(Height::new(49), &snapshot_state));
         harness.start().await;
         harness.wait_for_exit().await;
+        assert_eq!(harness.execution.reads(), [52, 51, 50, 49].map(Height::new),);
         assert!(harness.epoch_manager.events().is_empty());
         assert!(harness.scheme_provider.scheme(Epoch::new(5)).is_none());
     });
