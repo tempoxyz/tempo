@@ -4321,7 +4321,7 @@ impl RedactedRpcTestCtx {
     }
 }
 
-async fn start_redacted_rpc_url(
+pub(crate) async fn start_redacted_rpc_url(
     zone: &ZoneTestNode,
     config: zone_node::rpc::RedactedRpcConfig,
 ) -> eyre::Result<url::Url> {

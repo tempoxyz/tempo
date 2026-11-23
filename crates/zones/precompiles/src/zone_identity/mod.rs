@@ -3,6 +3,11 @@
 
 mod dispatch;
 
+#[cfg(feature = "std")]
+mod reads;
+#[cfg(feature = "std")]
+pub use reads::{DelegatedRead, audit_reads};
+
 use alloy_primitives::Address;
 use tempo_contracts::zones::{IZoneIdentity, ZoneIdentityError};
 use tempo_precompiles::{
@@ -151,15 +156,23 @@ impl ZoneIdentity {
             }
         }
         for &account in accounts {
-            self.write_member(account, org)?;
+            self.members[account].write(org)?;
+            self.emit_event(IZoneIdentity::MemberAdded {
+                account,
+                orgId: org,
+            })?;
         }
         Ok(())
     }
 
     /// Moves `account` back to org 0.
     pub fn remove_member(&mut self, caller: Address, account: Address) -> ZoneResult<()> {
-        self.ensure_member_admin(caller, account)?;
-        self.write_member(account, 0)
+        let org = self.ensure_member_admin(caller, account)?;
+        self.members[account].write(0)?;
+        Ok(self.emit_event(IZoneIdentity::MemberRemoved {
+            account,
+            orgId: org,
+        })?)
     }
 
     /// Sets the halves of the edge from `from` to `to` the caller administers, per token.
@@ -250,14 +263,59 @@ impl ZoneIdentity {
         Ok(self.orgs[org].admin.read()?)
     }
 
-    /// The org `account` is in, for the account, its org's admin or the registrar.
-    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
-        let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
+    /// Whether `reader` is `account` or its org's admin or reader, outside org 0, unless audited.
+    pub fn can_read(&self, reader: Address, account: Address) -> crate::Result<bool> {
+        Ok(reader == account || self.read_member(reader, account)?.1)
+    }
+
+    /// `account`'s org, and whether `reader` may read it; gas is the same whatever the answer.
+    fn read_member(&self, reader: Address, account: Address) -> crate::Result<(u64, bool)> {
+        self.storage.with_cold_pricing(|| {
             let org = self.members[account].read()?;
-            Ok((org, self.orgs[org].admin.read()?))
-        })?;
-        if caller != account && caller != admin {
-            ensure_caller(caller, registrar)?;
+            let may_read = self.can_read_org(reader, org)?;
+            #[cfg(feature = "std")]
+            let may_read = reads::admit(DelegatedRead { reader, account }, may_read);
+            Ok((org, may_read))
+        })
+    }
+
+    /// Whether `reader` is `org`'s admin or reader, never for org 0, at the same cost either way.
+    pub fn can_read_org(&self, reader: Address, org: u64) -> tempo_precompiles::Result<bool> {
+        let config = &self.orgs[org];
+        let admin = config.admin.read()?;
+        let listed = config.readers[reader].read()?;
+        Ok(org != 0 && (reader == admin || listed))
+    }
+
+    /// Allows or stops `reader` reading the members of `org`. `org`'s admin only.
+    pub fn set_reader(
+        &mut self,
+        caller: Address,
+        org: u64,
+        reader: Address,
+        allowed: bool,
+    ) -> ZoneResult<()> {
+        self.ensure_org_admin(caller, org)?;
+        if reader.is_zero() {
+            return Err(ZoneIdentityError::invalid_address().into());
+        }
+        self.orgs[org].readers[reader].write(allowed)?;
+        Ok(self.emit_event(IZoneIdentity::ReaderUpdated {
+            orgId: org,
+            reader,
+            allowed,
+        })?)
+    }
+
+    /// The org `account` is in, for a caller that may read it, or the registrar.
+    pub fn org_of(&self, caller: Address, registrar: Address, account: Address) -> ZoneResult<u64> {
+        // Checked first so an audit never records these reads as delegated.
+        if caller == account || !registrar.is_zero() && caller == registrar {
+            return Ok(self.member_org(account)?);
+        }
+        let (org, may_read) = self.read_member(caller, account)?;
+        if !may_read {
+            return Err(ZoneIdentityError::unauthorized().into());
         }
         Ok(org)
     }
@@ -315,21 +373,13 @@ impl ZoneIdentity {
         Ok((rules.policy.read()?, rules.targets[l1].read()?))
     }
 
-    fn write_member(&mut self, account: Address, org: u64) -> ZoneResult<()> {
-        self.members[account].write(org)?;
-        Ok(self.emit_event(IZoneIdentity::MemberUpdated {
-            account,
-            orgId: org,
-        })?)
-    }
-
     /// Whether `caller` administers `org`; never for org 0.
     fn is_edge_admin(&self, caller: Address, org: u64) -> ZoneResult<bool> {
         Ok(org != 0 && !caller.is_zero() && caller == self.orgs[org].admin.read()?)
     }
 
-    /// Checks the caller administers `account`'s org, at the same cost and error for any account.
-    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<()> {
+    /// `account`'s org if the caller administers it, at the same cost and error for any account.
+    fn ensure_member_admin(&self, caller: Address, account: Address) -> ZoneResult<u64> {
         let (org, admin) = self.storage.with_cold_pricing(|| -> ZoneResult<_> {
             let org = self.members[account].read()?;
             Ok((org, self.orgs[org].admin.read()?))
@@ -337,7 +387,7 @@ impl ZoneIdentity {
         if org == 0 || admin.is_zero() || caller != admin {
             return Err(ZoneIdentityError::unauthorized().into());
         }
-        Ok(())
+        Ok(org)
     }
 
     fn ensure_org(&self, org: u64) -> ZoneResult<()> {
@@ -371,6 +421,8 @@ pub struct Org {
     pub edges: Mapping<u64, Mapping<Address, Edge>>,
     /// Tempo rules, by token.
     pub l1: Mapping<Address, L1Rules>,
+    /// Others that may read members' account-scoped state; they outlive admin replacements.
+    pub readers: Mapping<Address, bool>,
 }
 
 /// One org's Tempo rules for one token.
@@ -455,7 +507,7 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, map::HashSet};
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::zones::ZoneIdentityError;
@@ -614,7 +666,13 @@ mod tests {
                 );
             }
             assert!(allows(usd, BOB, OFFRAMP, TransferKind::Withdrawal));
+            identity.clear_emitted_events();
             identity.remove_member(admin, BOB).unwrap();
+            // The event names the org BOB left.
+            identity.assert_emitted_events(vec![IZoneIdentity::MemberRemoved {
+                account: BOB,
+                orgId: org,
+            }]);
             assert!(!allows(usd, ALICE, BOB, TransferKind::InZone));
             // The org's edges and targets no longer apply, but org 0 may withdraw anywhere.
             assert!(!allows(usd, BOB, ALICE, TransferKind::InZone));
@@ -852,6 +910,99 @@ mod tests {
         });
     }
 
+    #[test]
+    fn readers_stay_until_removed() {
+        with_identity(|identity, registrar| {
+            let usd = token(1);
+            let (admin, org) = org_with_members(identity, registrar, usd);
+            let auditor = Address::repeat_byte(0x77);
+            let stray = Address::repeat_byte(0x55);
+            let other_admin = Address::repeat_byte(2);
+            identity
+                .create_org(registrar, registrar, other_admin)
+                .unwrap();
+            identity.set_reader(admin, org, auditor, true).unwrap();
+            for (reader, account, readable) in [
+                (ALICE, ALICE, true),
+                (stray, stray, true),
+                (admin, ALICE, true),
+                (auditor, ALICE, true),
+                (BOB, ALICE, false),
+                (other_admin, ALICE, false),
+                (admin, stray, false),
+                (registrar, stray, false),
+            ] {
+                assert_eq!(
+                    identity.can_read(reader, account).unwrap(),
+                    readable,
+                    "{reader} reads {account}"
+                );
+            }
+            // Audits allow and record delegated reads, even via `orgOf`, but not self or registrar.
+            let read = |reader| DelegatedRead {
+                reader,
+                account: ALICE,
+            };
+            let ((), reads) = audit_reads(|| {
+                assert!(identity.can_read(ALICE, ALICE).unwrap());
+                assert!(identity.can_read(admin, ALICE).unwrap());
+                assert!(identity.can_read(stray, ALICE).unwrap());
+                assert_eq!(identity.org_of(ALICE, registrar, ALICE), Ok(org));
+                assert_eq!(identity.org_of(registrar, registrar, ALICE), Ok(org));
+                assert_eq!(identity.org_of(BOB, registrar, ALICE), Ok(org));
+            });
+            assert_eq!(
+                reads,
+                HashSet::from_iter([read(admin), read(stray), read(BOB)])
+            );
+            assert!(!identity.can_read(stray, ALICE).unwrap());
+
+            identity.set_reader(admin, org, auditor, false).unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+
+            // A new admin keeps the readers until it removes them; the old admin loses access.
+            identity.set_reader(admin, org, auditor, true).unwrap();
+            let new_admin = Address::repeat_byte(3);
+            identity
+                .set_org_admin(registrar, registrar, org, new_admin)
+                .unwrap();
+            assert!(identity.can_read(auditor, ALICE).unwrap());
+            assert!(!identity.can_read(admin, ALICE).unwrap());
+            assert!(identity.can_read(new_admin, ALICE).unwrap());
+            for (reader, org_id, readable) in [
+                (new_admin, org, true),
+                (auditor, org, true),
+                (admin, org, false),
+                (auditor, org + 1, false),
+                (Address::ZERO, 0, false),
+            ] {
+                assert_eq!(
+                    identity.can_read_org(reader, org_id).unwrap(),
+                    readable,
+                    "{reader} reads org {org_id}"
+                );
+            }
+            identity.set_reader(new_admin, org, auditor, false).unwrap();
+            assert!(!identity.can_read(auditor, ALICE).unwrap());
+
+            for (caller, org_id, reader, error) in [
+                (admin, org, auditor, ZoneIdentityError::unauthorized()),
+                (registrar, 0, auditor, ZoneIdentityError::unauthorized()),
+                (
+                    new_admin,
+                    org,
+                    Address::ZERO,
+                    ZoneIdentityError::invalid_address(),
+                ),
+            ] {
+                assert_eq!(
+                    identity.set_reader(caller, org_id, reader, true),
+                    Err(identity_error(error))
+                );
+            }
+        });
+    }
+
     /// Every org check charges the same gas whatever the orgs, edges, targets and
     #[test]
     fn org_checks_cost_the_same_whatever_the_state() {
@@ -963,6 +1114,29 @@ mod tests {
             costs.iter().all(|cost| *cost == costs[0]),
             "orgOf: {costs:?}"
         );
+
+        // canRead costs the same whatever the org and answer; the registrar is carol's org admin.
+        for reader in [Address::repeat_byte(0x99), registrar] {
+            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+            let costs = StorageCtx::enter(&mut storage, || {
+                let identity = ZoneIdentity::new();
+                let accounts = [ALICE, BOB, carol, dave, STRANGER];
+                let mut costs = Vec::new();
+                for &account in accounts.iter().chain(accounts.iter()) {
+                    let before = identity.storage.gas_used();
+                    assert_eq!(
+                        identity.can_read(reader, account).unwrap(),
+                        reader == registrar && account == carol
+                    );
+                    costs.push(identity.storage.gas_used() - before);
+                }
+                costs
+            });
+            assert!(
+                costs.iter().all(|cost| *cost == costs[0]),
+                "canRead by {reader}: {costs:?}"
+            );
+        }
 
         // After an outsider's orgOf(Alice) warms her org's admin slot, orgAdmin costs the same for
         ctx.evm().state_mut().commit_transaction();
