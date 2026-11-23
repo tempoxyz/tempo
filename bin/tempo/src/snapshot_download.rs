@@ -218,6 +218,15 @@ async fn install_consensus_archive(
         );
     }
 
+    // Merging into existing state would pair the snapshot's certificates with
+    // local partitions it does not cover, such as marshal's processed height.
+    if !force && consensus_dir.try_exists()? {
+        ensure!(
+            fs::read_dir(consensus_dir)?.next().is_none(),
+            "consensus directory {} is not empty; pass --force to replace it",
+            consensus_dir.display(),
+        );
+    }
     fs::create_dir_all(consensus_dir).wrap_err("failed to create consensus directory")?;
 
     // Keep cleanup paths consistent with tempfile's absolute staging path.
@@ -851,10 +860,15 @@ mod tests {
                     .await
                     .unwrap_err();
 
-                assert_eq!(
-                    error.to_string(),
+                let expected = if force {
                     format!("unsupported consensus snapshot partition: {partition}")
-                );
+                } else {
+                    format!(
+                        "consensus directory {} is not empty; pass --force to replace it",
+                        target.path().display()
+                    )
+                };
+                assert_eq!(error.to_string(), expected);
                 assert_eq!(
                     fs::read(driver.join("identity")).unwrap(),
                     b"local identity"
@@ -1086,37 +1100,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_consensus_archive_preserves_existing_files_without_force() {
+    async fn install_consensus_archive_rejects_non_empty_destination_without_force() {
         let target = tempfile::tempdir().unwrap();
+        let metadata = target.path().join("engine-application-metadata");
+        fs::create_dir_all(&metadata).unwrap();
+        fs::write(metadata.join("processed"), b"local").unwrap();
         let output_path = "engine-finalizations-by-height-metadata/00";
         let entries: &[(&str, &[u8])] = &[(output_path, b"abc")];
         let archive = write_test_consensus_archive(entries);
         let loaded = loaded_test_archive(&archive, entries);
-        fs::create_dir_all(
-            target
-                .path()
-                .join("engine-finalizations-by-height-metadata"),
-        )
-        .unwrap();
-        fs::write(target.path().join("existing"), b"existing").unwrap();
-
-        install_consensus_archive(target.path(), &loaded, false)
-            .await
-            .unwrap();
-        assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
-        assert_eq!(
-            fs::read(target.path().join("existing")).unwrap(),
-            b"existing"
-        );
 
         let error = install_consensus_archive(target.path(), &loaded, false)
             .await
             .unwrap_err();
+
         assert_eq!(
-            error.downcast_ref::<io::Error>().unwrap().kind(),
-            io::ErrorKind::AlreadyExists
+            error.to_string(),
+            format!(
+                "consensus directory {} is not empty; pass --force to replace it",
+                target.path().display()
+            )
         );
-        assert_eq!(fs::read(target.path().join(output_path)).unwrap(), b"abc");
+        assert_eq!(fs::read(metadata.join("processed")).unwrap(), b"local");
+        assert!(!target.path().join(output_path).exists());
     }
 
     #[cfg(unix)]
@@ -1139,8 +1145,8 @@ mod tests {
         assert_eq!(
             error.to_string(),
             format!(
-                "consensus destination is not a directory: {}",
-                partition.display()
+                "consensus directory {} is not empty; pass --force to replace it",
+                target.path().display()
             )
         );
         assert!(!outside.path().join("00").exists());
