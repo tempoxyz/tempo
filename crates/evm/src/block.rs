@@ -170,6 +170,9 @@ pub struct TempoTxResult {
     is_system_tx: bool,
     /// The block budget the transaction counts toward.
     lane: TxLane,
+    /// For a registered payment that failed the TIP-1180 execution check, the instance whose code
+    /// started the first frame the check did not allow.
+    failed_instance: Option<Address>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
 }
@@ -182,6 +185,7 @@ impl Clone for TempoTxResult {
             tx_hash: self.tx_hash,
             is_system_tx: self.is_system_tx,
             lane: self.lane,
+            failed_instance: self.failed_instance,
             block_gas_used: self.block_gas_used,
         }
     }
@@ -211,6 +215,7 @@ impl TempoTxResult {
             tx_hash: *tx.tx_hash(),
             is_system_tx,
             lane,
+            failed_instance: None,
             block_gas_used,
         }
     }
@@ -228,6 +233,12 @@ impl TempoTxResult {
     /// Returns the block budget the transaction counts toward.
     pub fn lane(&self) -> TxLane {
         self.lane
+    }
+
+    /// Returns, for a registered payment that failed the TIP-1180 execution check, the instance
+    /// whose code started the first frame the check did not allow.
+    pub fn failed_instance(&self) -> Option<Address> {
+        self.failed_instance
     }
 
     /// Returns the state gas consumed by this transaction.
@@ -328,7 +339,7 @@ pub struct TempoBlockExecutor<'a> {
     registered_payment_gas_left: u64,
     /// The payment call registry's version in the parent state, read on first use.
     registry_version: Option<u64>,
-    /// The TIP-1180 execution check of registered payments, with this block's lookups.
+    /// The TIP-1180 execution check of registered payments.
     execution_check: Rc<RefCell<ExecutionCheck>>,
     block_gas_used: u64,
 }
@@ -792,33 +803,38 @@ impl<'a> TempoBlockExecutor<'a> {
     /// Removes the execution check [`Self::begin_execution_check`] installed and restores the
     /// inspector it displaced. Returns the lane the transaction counts toward: a registered
     /// payment that entered code other than registered code and precompiles counts toward the
-    /// general lane.
+    /// general lane. With it, for such a payment, the instance whose code started the first frame
+    /// the check did not allow.
     fn end_execution_check(
         &mut self,
         lane: TxLane,
         displaced: Option<DisplacedInspector<'a>>,
-    ) -> Result<TxLane, BlockExecutionError> {
+    ) -> Result<(TxLane, Option<Address>), BlockExecutionError> {
         let Some(displaced) = displaced else {
-            return Ok(lane);
+            return Ok((lane, None));
         };
         drop(self.evm_mut().clear_inspector());
         if let Some(inner) = Rc::try_unwrap(displaced).ok().and_then(RefCell::into_inner) {
             self.evm_mut().set_boxed_inspector(inner);
         }
-        let passed = self
-            .execution_check
-            .borrow_mut()
-            .finish()
-            .map_err(BlockExecutionError::other)?;
-        Ok(if passed { lane } else { TxLane::General })
+        let mut check = self.execution_check.borrow_mut();
+        let passed = check.finish().map_err(BlockExecutionError::other)?;
+        Ok(if passed {
+            (lane, None)
+        } else {
+            (TxLane::General, check.failed_instance())
+        })
     }
 
     /// Returns the section an executed transaction enters at the current position in the block.
+    /// `failed_instance` is the instance a registered payment that failed the execution check
+    /// names in a lane rejection.
     pub(crate) fn validate_tx(
         &self,
         tx_hash: B256,
         is_system_tx: bool,
         lane: TxLane,
+        failed_instance: Option<Address>,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
         Self::next_section(
@@ -827,6 +843,7 @@ impl<'a> TempoBlockExecutor<'a> {
             tx_hash,
             is_system_tx,
             lane,
+            failed_instance,
             gas_used,
         )
     }
@@ -848,6 +865,7 @@ impl<'a> TempoBlockExecutor<'a> {
         tx_hash: B256,
         is_system_tx: bool,
         lane: TxLane,
+        failed_instance: Option<Address>,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
         let LaneBudgets {
@@ -890,6 +908,7 @@ impl<'a> TempoBlockExecutor<'a> {
                     return Err(BlockValidationError::other(crate::error::LaneGasExceeded {
                         lane,
                         gas_used,
+                        failed_instance,
                     }));
                 }
                 Ok(BlockSection::NonShared)
@@ -1074,9 +1093,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered));
-        let lane = self.end_execution_check(lane, check);
+        let checked = self.end_execution_check(lane, check);
         let inner = inner?;
-        let lane = lane?;
+        let (lane, failed_instance) = checked?;
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -1088,13 +1107,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // Reject before the result is observed; `commit_transaction` derives the section again
         // from the committing executor's state.
-        self.validate_tx(tx_hash, is_system_tx, lane, block_gas_used)?;
+        self.validate_tx(tx_hash, is_system_tx, lane, failed_instance, block_gas_used)?;
         Ok(TempoTxResult {
             inner,
             tx_type,
             tx_hash,
             is_system_tx,
             lane,
+            failed_instance,
             block_gas_used,
         })
     }
@@ -1109,12 +1129,14 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             tx_hash,
             is_system_tx,
             lane,
+            failed_instance,
             block_gas_used,
         } = output;
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section = self.validate_tx(tx_hash, is_system_tx, lane, block_gas_used)?;
+        let next_section =
+            self.validate_tx(tx_hash, is_system_tx, lane, failed_instance, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
         self.record_committed_tx(next_section, block_gas_used, lane);
@@ -1147,7 +1169,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             |result, state_changes| {
                 // The execution check has seen every frame by now. A failed registry read
                 // commits nothing; [`Self::end_execution_check`] returns its error.
-                let Some(lane) = execution_check.borrow().lane(lane) else {
+                let Some((lane, failed_instance)) = execution_check.borrow().lane(lane) else {
                     return CommitChanges::No;
                 };
                 let block_gas_used = if use_regular_gas {
@@ -1161,6 +1183,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
                     tx_hash,
                     is_system_tx,
                     lane,
+                    failed_instance,
                     block_gas_used,
                 );
                 let commit = if next_section.is_ok() {
@@ -2116,6 +2139,7 @@ mod tests {
             ),
             is_system_tx,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used,
         }
     }
@@ -2251,7 +2275,7 @@ mod tests {
         let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         executor.validate_system_tx(&system_tx).unwrap();
-        let result = executor.validate_tx(*system_tx.tx_hash(), true, TxLane::General, 0);
+        let result = executor.validate_tx(*system_tx.tx_hash(), true, TxLane::General, None, 0);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2620,7 +2644,7 @@ mod tests {
         // Past the general lane's remaining gas, a registered payment still fits its budget.
         let section = |executor: &TempoBlockExecutor<'_>, tx: &TempoTxEnvelope, lane, gas_used| {
             executor
-                .validate_tx(*tx.tx_hash(), false, lane, gas_used)
+                .validate_tx(*tx.tx_hash(), false, lane, None, gas_used)
                 .map_err(|err| err.to_string())
         };
         assert_eq!(
@@ -2664,7 +2688,7 @@ mod tests {
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
         let lane = executor.tx_lane(&tx).unwrap();
-        let result = executor.validate_tx(*tx.tx_hash(), false, lane, 21_000);
+        let result = executor.validate_tx(*tx.tx_hash(), false, lane, None, 21_000);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -2730,7 +2754,7 @@ mod tests {
         // Try to validate a regular tx
         let tx = create_legacy_tx();
         let lane = executor.tx_lane(&tx).unwrap();
-        let result = executor.validate_tx(*tx.tx_hash(), false, lane, 21_000);
+        let result = executor.validate_tx(*tx.tx_hash(), false, lane, None, 21_000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -2767,6 +2791,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 21000,
         };
 
@@ -2909,6 +2934,7 @@ mod tests {
                 tx_hash: B256::ZERO,
                 is_system_tx: false,
                 lane: TxLane::General,
+                failed_instance: None,
                 block_gas_used: 21_000,
             })
             .unwrap();
@@ -3010,7 +3036,7 @@ mod tests {
             .build(&mut db, &chainspec);
         assert_eq!(
             executor
-                .validate_tx(hash, false, TxLane::General, 30_001)
+                .validate_tx(hash, false, TxLane::General, None, 30_001)
                 .unwrap_err()
                 .to_string(),
             "transaction exceeds its gas lane"
@@ -3018,7 +3044,7 @@ mod tests {
         // Payments use the non-shared budget, not the general lane.
         assert_eq!(
             executor
-                .validate_tx(hash, false, TxLane::Payment, 30_001)
+                .validate_tx(hash, false, TxLane::Payment, None, 30_001)
                 .unwrap(),
             BlockSection::NonShared
         );
@@ -3081,6 +3107,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 21000,
         };
 
@@ -3119,6 +3146,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 21000,
         };
         executor.commit_transaction(output1).unwrap();
@@ -3142,6 +3170,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 50000,
         };
         executor.commit_transaction(output2).unwrap();
@@ -3182,6 +3211,7 @@ mod tests {
                 ),
                 is_system_tx: false,
                 lane: TxLane::General,
+                failed_instance: None,
                 block_gas_used: 21000,
             })
             .unwrap();
@@ -3221,6 +3251,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 50_000,
         };
         executor.commit_transaction(output).unwrap();
@@ -3266,6 +3297,7 @@ mod tests {
             ),
             is_system_tx: false,
             lane: TxLane::General,
+            failed_instance: None,
             block_gas_used: 200_000,
         };
         executor.commit_transaction(output).unwrap();
@@ -3814,6 +3846,7 @@ mod tests {
                 ),
                 is_system_tx: false,
                 lane: TxLane::General,
+                failed_instance: None,
                 block_gas_used: regular_gas,
             })
             .unwrap();
@@ -3861,6 +3894,7 @@ mod tests {
                 ),
                 is_system_tx: false,
                 lane: TxLane::General,
+                failed_instance: None,
                 block_gas_used: 100_000,
             })
             .unwrap();
@@ -3909,6 +3943,7 @@ mod tests {
                 ),
                 is_system_tx: false,
                 lane: TxLane::General,
+                failed_instance: None,
                 block_gas_used: cumulative,
             })
             .unwrap();

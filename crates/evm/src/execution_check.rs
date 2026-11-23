@@ -12,7 +12,7 @@ use alloy_primitives::{Address, Log, U256, map::AddressMap};
 use evm2::{
     Evm, Inspector, InspectorConfig,
     evm::DynDatabase,
-    interpreter::{Interpreter, Message, MessageResult},
+    interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -21,16 +21,19 @@ use tempo_precompiles::{
     payment_call_registry::PaymentCallRegistry, storage::StorageActions,
 };
 
-/// Outcome of the execution check for the transaction being executed, with the registered code
-/// lookups of the block.
+/// Outcome of the execution check for the transaction being executed.
 #[derive(Debug, Default)]
 pub(crate) struct ExecutionCheck {
     /// Whether every frame the transaction entered so far was allowed.
     allowed: bool,
     /// The first registry read that failed.
     error: Option<TempoPrecompileError>,
-    /// [`PaymentCallRegistry::is_registered_code`] answers for this block, by address. The
-    /// registry's effective state does not change within a block, nor does an instance's code.
+    /// The instance whose code started the first frame that was not allowed.
+    failed_instance: Option<Address>,
+    /// The open frames that ran registered code, outermost first, by depth: each with the
+    /// instance its code runs for.
+    instances: Vec<(u16, Address)>,
+    /// [`PaymentCallRegistry::is_registered_code`] answers for this transaction, by address.
     registered: AddressMap<bool>,
 }
 
@@ -39,6 +42,18 @@ impl ExecutionCheck {
     pub(crate) fn begin(&mut self) {
         self.allowed = true;
         self.error = None;
+        self.failed_instance = None;
+        self.instances.clear();
+        // Answers are kept for one transaction only, so they never depend on when in the block
+        // an executor first looked an address up.
+        self.registered.clear();
+    }
+
+    /// Returns the instance whose code started the first frame of the checked transaction that
+    /// was not allowed: the nearest registered code above that frame, or the frame's own callee
+    /// for a top-level call. `None` when every frame was allowed.
+    pub(crate) fn failed_instance(&self) -> Option<Address> {
+        self.failed_instance
     }
 
     /// Returns whether every frame of the checked transaction was allowed.
@@ -59,16 +74,61 @@ impl ExecutionCheck {
 
     /// Returns the lane a transaction classified into `lane` counts toward after the frames
     /// checked so far: a registered payment that entered other code counts toward the general
-    /// lane. `None` when a registry read failed.
-    pub(crate) fn lane(&self, lane: TxLane) -> Option<TxLane> {
+    /// lane, with the instance [`Self::failed_instance`] names. `None` when a registry read
+    /// failed.
+    pub(crate) fn lane(&self, lane: TxLane) -> Option<(TxLane, Option<Address>)> {
         if self.error.is_some() {
             return None;
         }
         Some(if lane.is_registered_payment() && !self.allowed {
-            TxLane::General
+            (TxLane::General, self.failed_instance)
         } else {
-            lane
+            (lane, None)
         })
+    }
+
+    /// Returns the instance whose code starts a frame at `depth`: the one of the nearest open
+    /// frame above it that ran registered code. Frames at `depth` or deeper have ended.
+    fn starting_instance(&mut self, depth: u16) -> Option<Address> {
+        while self
+            .instances
+            .last()
+            .is_some_and(|&(open, _)| open >= depth)
+        {
+            self.instances.pop();
+        }
+        self.instances.last().map(|&(_, instance)| instance)
+    }
+
+    /// Records a frame `message` starts: `registered` says whether its code is registered code,
+    /// `None` for a frame that runs no code the check covers (a precompile, no code, or the
+    /// configurable account marker).
+    fn enter(&mut self, message: &Message<TempoEvmTypes>, registered: Option<bool>) {
+        if !self.passed() {
+            return;
+        }
+        let starting_instance = self.starting_instance(message.depth);
+        match registered {
+            None => {}
+            Some(true) => {
+                // Code a frame delegates to runs for the instance that delegated.
+                let instance = match message.kind {
+                    MessageKind::DelegateCall | MessageKind::CallCode => starting_instance,
+                    _ => None,
+                };
+                self.instances
+                    .push((message.depth, instance.unwrap_or(message.code_address)));
+            }
+            Some(false) => {
+                self.allowed = false;
+                self.failed_instance = Some(starting_instance.unwrap_or(message.call_target));
+            }
+        }
+    }
+
+    /// Checks a creation that is about to run: initcode no template covers.
+    fn check_create(&mut self, message: &Message<TempoEvmTypes>) {
+        self.enter(message, Some(false));
     }
 
     /// Checks a frame that is about to run under `evm`.
@@ -82,6 +142,7 @@ impl ExecutionCheck {
             || message.code.is_empty()
             || message.code.original_bytes() == CONFIGURABLE_ACCOUNT_CODE
         {
+            self.enter(message, None);
             return;
         }
         let address = message.code_address;
@@ -102,7 +163,7 @@ impl ExecutionCheck {
                 }
             }
         };
-        self.allowed = allowed;
+        self.enter(message, Some(allowed));
     }
 }
 
@@ -192,7 +253,7 @@ impl Inspector<TempoEvmTypes> for FrameCheck<'_> {
         message: &mut Message<TempoEvmTypes>,
     ) -> Option<MessageResult<TempoEvmTypes>> {
         // A creation runs initcode no template covers.
-        self.check.borrow_mut().allowed = false;
+        self.check.borrow_mut().check_create(message);
         self.forward(|inner| inner.create(interp, message))
             .flatten()
     }
@@ -214,5 +275,99 @@ impl Inspector<TempoEvmTypes> for FrameCheck<'_> {
         host: &mut Evm<'_, TempoEvmTypes>,
     ) {
         self.forward(|inner| inner.selfdestruct(contract, target, value, host));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(kind: MessageKind, depth: u16, target: Address) -> Message<TempoEvmTypes> {
+        Message::<TempoEvmTypes> {
+            kind,
+            depth,
+            destination: target,
+            call_target: target,
+            code_address: target,
+            ..Default::default()
+        }
+    }
+
+    fn call(depth: u16, target: Address) -> Message<TempoEvmTypes> {
+        frame(MessageKind::Call, depth, target)
+    }
+
+    #[test]
+    fn failed_instance_is_the_registered_code_that_started_the_frame() {
+        let first = Address::repeat_byte(0x11);
+        let second = Address::repeat_byte(0x12);
+        let library = Address::repeat_byte(0x13);
+        let precompile = Address::repeat_byte(0x20);
+        let other = Address::repeat_byte(0x77);
+        let mut check = ExecutionCheck::default();
+        let failed = |check: &mut ExecutionCheck| {
+            let lane = check.lane(TxLane::RegisteredPayment);
+            assert!(!check.finish().unwrap());
+            lane
+        };
+
+        // Two calls: the first passes, the second instance's code calls other code. Only the
+        // second instance is named.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&call(1, precompile), None);
+        check.enter(&call(0, second), Some(true));
+        check.enter(&call(1, other), Some(false));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(second))));
+
+        // A call a precompile makes is started by the code that called the precompile.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&call(1, precompile), None);
+        check.enter(&call(2, other), Some(false));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(first))));
+
+        // Delegated code runs for the instance that delegated to it.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&frame(MessageKind::DelegateCall, 1, library), Some(true));
+        check.enter(&call(2, other), Some(false));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(first))));
+
+        // Once a called instance returns, its caller's code starts the next frame.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&call(1, second), Some(true));
+        check.enter(&call(1, other), Some(false));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(first))));
+
+        // A creation is started by the code that creates.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&call(1, second), Some(true));
+        check.check_create(&frame(MessageKind::Create, 2, other));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(second))));
+
+        // A top-level call to code that is not registered names its callee.
+        check.begin();
+        check.enter(&call(0, other), Some(false));
+        assert_eq!(failed(&mut check), Some((TxLane::General, Some(other))));
+        // Later frames do not change the answer.
+        check.enter(&call(0, first), Some(true));
+        check.enter(&call(1, second), Some(false));
+        assert_eq!(check.failed_instance(), Some(other));
+        // Transactions in other lanes never name one.
+        assert_eq!(check.lane(TxLane::General), Some((TxLane::General, None)));
+
+        // A transaction whose frames are all allowed names none.
+        check.begin();
+        check.enter(&call(0, first), Some(true));
+        check.enter(&frame(MessageKind::DelegateCall, 1, library), Some(true));
+        assert_eq!(
+            check.lane(TxLane::RegisteredPayment),
+            Some((TxLane::RegisteredPayment, None))
+        );
+        assert!(check.finish().unwrap());
+        assert_eq!(check.failed_instance(), None);
     }
 }

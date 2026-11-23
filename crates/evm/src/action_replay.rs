@@ -72,8 +72,14 @@ impl TempoBlockExecutor<'_> {
             self.replay_state.reset_tx_changes();
             return Err(StorageActionReplayError::ActionConflict.into());
         }
-        self.validate_tx(*original.tx_hash(), is_system_tx, lane, block_gas_used)
-            .inspect_err(|_| self.replay_state.reset_tx_changes())?;
+        self.validate_tx(
+            *original.tx_hash(),
+            is_system_tx,
+            lane,
+            None,
+            block_gas_used,
+        )
+        .inspect_err(|_| self.replay_state.reset_tx_changes())?;
 
         let result = TempoTxResult::new_precomputed(
             original,

@@ -24,4 +24,7 @@ pub struct LaneGasExceeded {
     pub lane: crate::TxLane,
     /// The block gas the transaction used.
     pub gas_used: u64,
+    /// For a registered payment that failed the TIP-1180 execution check, the instance whose code
+    /// started the first frame the check did not allow.
+    pub failed_instance: Option<alloy_primitives::Address>,
 }
