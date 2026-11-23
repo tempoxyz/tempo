@@ -21,6 +21,7 @@ tempo-evm.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
+tempo-qmdb-state.workspace = true
 
 commonware-codec.workspace = true
 
@@ -40,6 +41,7 @@ reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-transaction-pool.workspace = true
 reth-trie-common.workspace = true
+reth-execution-types.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true

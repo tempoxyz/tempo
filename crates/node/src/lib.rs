@@ -36,9 +36,13 @@ pub mod engine;
 pub mod executed_state;
 pub mod gossip;
 pub mod node;
+mod qmdb;
 pub mod rpc;
 mod shadow_replay;
 pub mod telemetry;
+pub use qmdb::{
+    QmdbPersistenceHook, QmdbStateBackend, QmdbStateRootStrategy, QmdbSync, align_with_database,
+};
 pub use shadow_replay::{ReplayOutcome, ShadowReplayer};
 pub use tempo_evm as evm;
 pub use tempo_evm::consensus;

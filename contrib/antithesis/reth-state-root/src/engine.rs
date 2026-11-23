@@ -134,6 +134,7 @@ impl Engine {
                 ),
                 None,
                 &[],
+                None,
                 |factory| {
                     let checkpoint = factory
                         .provider()?

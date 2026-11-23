@@ -1,5 +1,5 @@
 use crate::{
-    TempoPayloadTypes,
+    QmdbStateRootStrategy, TempoPayloadTypes,
     engine::TempoEngineValidator,
     executed_state::{ExecutedState, TempoEngineTreeValidatorBuilder},
     gossip::GossipProtocol,
@@ -52,7 +52,7 @@ use reth_transaction_pool::{
 use std::{path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
-use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
+use tempo_payload_builder::{QmdbPayloadConfig, TempoPayloadBuilder, TempoPayloadBuilderConfig};
 use tempo_payload_types::{
     ConfigError, Estimator, EstimatorConfig, TempoPayloadAttributes, estimator::BuildTimeMultiplier,
 };
@@ -157,6 +157,35 @@ pub struct TempoNodeArgs {
         num_args = 0..=1
     )]
     pub shadow_replay: Option<Option<TempoHardfork>>,
+
+    /// Build a QMDB state commitment alongside the MPT, migrating the state at this block.
+    ///
+    /// Every node of a chain must use the same block: the QMDB root depends on it.
+    #[arg(long = "qmdb.snapshot-block", value_name = "BLOCK", hide = true)]
+    pub qmdb_snapshot_block: Option<u64>,
+
+    /// Timestamp of the first block whose state root is its QMDB root. Without it, QMDB roots are
+    /// only computed in the background.
+    #[arg(
+        long = "qmdb.activation-timestamp",
+        value_name = "TIMESTAMP",
+        requires = "qmdb_snapshot_block",
+        hide = true
+    )]
+    pub qmdb_activation_timestamp: Option<u64>,
+
+    /// Serve current state from QMDB instead of the hashed state tables, with QMDB roots from
+    /// genesis on.
+    ///
+    /// The QMDB state must already hold the database tip's state, imported with
+    /// `tempo qmdb-import`. From then on the node stops maintaining the hashed state tables and
+    /// tries, so the datadir cannot go back to MPT roots.
+    #[arg(
+        long = "qmdb.state-backend",
+        conflicts_with_all = ["qmdb_snapshot_block", "qmdb_activation_timestamp"],
+        hide = true
+    )]
+    pub qmdb_state_backend: bool,
 }
 
 impl Default for TempoNodeArgs {
@@ -173,6 +202,9 @@ impl Default for TempoNodeArgs {
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: BuildTimeMultiplier::default(),
             shadow_replay: None,
+            qmdb_snapshot_block: None,
+            qmdb_activation_timestamp: None,
+            qmdb_state_backend: false,
         }
     }
 }
@@ -201,6 +233,7 @@ impl TempoNodeArgs {
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
             estimator: None,
+            qmdb: None,
         }
     }
 }
@@ -274,6 +307,8 @@ pub struct TempoNode {
     network_builder: TempoNetworkBuilder,
     /// Filled with the engine's in-memory overlay when the node launches.
     executed_state: ExecutedState,
+    /// State-root strategy that computes QMDB roots, when QMDB is enabled.
+    qmdb_strategy: Option<Arc<QmdbStateRootStrategy>>,
 }
 
 impl TempoNode {
@@ -285,6 +320,7 @@ impl TempoNode {
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
+            qmdb_strategy: None,
         }
     }
 
@@ -294,6 +330,18 @@ impl TempoNode {
     /// The handle works after the node is launched.
     pub fn executed_state(&self) -> ExecutedState {
         self.executed_state.clone()
+    }
+
+    /// Validates blocks with `strategy`, which computes QMDB state roots.
+    ///
+    /// Call this before the node starts.
+    pub fn with_qmdb_state_root(mut self, strategy: Arc<QmdbStateRootStrategy>) -> Self {
+        self.payload_builder_builder.qmdb = Some(QmdbPayloadConfig {
+            store: strategy.store(),
+            activation_timestamp: strategy.activation_timestamp(),
+        });
+        self.qmdb_strategy = Some(strategy);
+        self
     }
 
     /// Announces `tempo/1` for finalization certificate gossip on every session.
@@ -422,14 +470,19 @@ where
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     ///
-    /// `executed_state` is filled when reth launches the engine.
-    pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
+    /// `executed_state` is filled when reth launches the engine. `qmdb_strategy`, when set,
+    /// replaces reth's default state-root strategy.
+    pub fn new(
+        validator_key: Option<B256>,
+        executed_state: ExecutedState,
+        qmdb_strategy: Option<Arc<QmdbStateRootStrategy>>,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                TempoEngineTreeValidatorBuilder::new(executed_state),
+                TempoEngineTreeValidatorBuilder::new(executed_state, qmdb_strategy),
                 Identity::default(),
                 Default::default(),
             ),
@@ -531,7 +584,11 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key, self.executed_state.clone())
+        TempoAddOns::new(
+            self.validator_key,
+            self.executed_state.clone(),
+            self.qmdb_strategy.clone(),
+        )
     }
 }
 
@@ -1062,6 +1119,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// `None` for a private one using default timing and `build_time_multiplier`.
     /// Inject a shared estimator to use consensus timing and feedback.
     pub estimator: Option<Estimator>,
+    /// QMDB state commitment the payload builder maintains, when the node runs one.
+    pub qmdb: Option<QmdbPayloadConfig>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -1072,6 +1131,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_parallel: false,
             build_time_multiplier: BuildTimeMultiplier::default(),
             estimator: None,
+            qmdb: None,
         }
     }
 }
@@ -1122,7 +1182,7 @@ where
         let estimator = self
             .resolve_estimator(EstimatorConfig::default())
             .expect("default timing and a typed build multiplier form valid estimator inputs");
-        Ok(TempoPayloadBuilder::new(
+        let builder = TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             ctx.task_executor().clone(),
@@ -1136,7 +1196,11 @@ where
                 enable_parallel: self.enable_parallel,
             },
             estimator,
-        ))
+        );
+        Ok(match self.qmdb {
+            Some(qmdb) => builder.with_qmdb(qmdb),
+            None => builder,
+        })
     }
 }
 

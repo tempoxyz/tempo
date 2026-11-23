@@ -25,11 +25,13 @@ tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
+tempo-qmdb-state.workspace = true
 
 thiserror.workspace = true
 
 reth-chain-state.workspace = true
 reth-chainspec.workspace = true
+crossbeam-channel.workspace = true
 reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-execution-types.workspace = true
@@ -44,6 +46,8 @@ reth-provider.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-trie-common.workspace = true
+reth-trie.workspace = true
+reth-trie-db.workspace = true
 reth-network-api.workspace = true
 reth-network-p2p.workspace = true
 reth-rpc.workspace = true
@@ -92,6 +96,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 antithesis_sdk = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile.workspace = true
 tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["test-utils"] }
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }

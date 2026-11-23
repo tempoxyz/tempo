@@ -139,11 +139,12 @@ on:
         type: string
         required: true
         default: "3"
-      bench-env:
-        description: Extra environment for the benchmark, such as TXGEN_* preset variables.
+      # Replaces clickhouse-run (workflow_dispatch allows at most 25 inputs); its default holds.
+      run-side:
+        description: "Phases to run: comparison, feature or baseline."
         type: string
         required: false
-        default: ""
+        default: comparison
   workflow_call:
     inputs:
       pr:
@@ -365,7 +366,7 @@ jobs:
       id-token: write
     name: bench-e2e
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
-    timeout-minutes: 300
+    timeout-minutes: 480
     env:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}

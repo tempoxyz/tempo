@@ -1,10 +1,13 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
 use alloy_primitives::B256;
 use reth_chain_state::ExecutedBlock;
-use reth_engine_tree::tree::{
-    CacheWaitDurations, EngineApiTreeState, ValidationOutcome, WaitForCaches,
-    error::{InsertBlockError, InsertBlockErrorKind},
-    payload_validator::TreeCtx,
+use reth_engine_tree::{
+    persistence::PersistenceHook,
+    tree::{
+        CacheWaitDurations, EngineApiTreeState, ValidationOutcome, WaitForCaches,
+        error::{InsertBlockError, InsertBlockErrorKind},
+        payload_validator::TreeCtx,
+    },
 };
 use reth_errors::ProviderResult;
 use reth_ethereum::consensus::HeaderValidator;
@@ -19,6 +22,7 @@ use reth_payload_builder::PayloadBuilderResources;
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock, SealedHeader};
 use reth_storage_api::HeaderProvider;
 use reth_storage_overlay::OverlayManager;
+use std::sync::Arc;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
 
@@ -71,6 +75,17 @@ pub struct EagerHeaderValidator<V, P, C> {
     provider: P,
     /// The consensus rules that a header must satisfy.
     consensus: C,
+}
+
+impl<V, P, C> EagerHeaderValidator<V, P, C> {
+    /// Wraps `inner`, validating headers against `provider`'s parents and `consensus`.
+    pub(crate) const fn new(inner: V, provider: P, consensus: C) -> Self {
+        Self {
+            inner,
+            provider,
+            consensus,
+        }
+    }
 }
 
 impl<V, P, C> EagerHeaderValidator<V, P, C>
@@ -159,6 +174,10 @@ where
         block: BuiltPayloadExecutedBlock<TempoPrimitives>,
     ) -> ProviderResult<ExecutedBlock<TempoPrimitives>> {
         self.inner.on_inserted_executed_block(block)
+    }
+
+    fn persistence_hook(&self) -> Option<Arc<dyn PersistenceHook<TempoPrimitives>>> {
+        self.inner.persistence_hook()
     }
 
     fn on_canonical_head_changed(&self, hash: B256, state: &EngineApiTreeState<TempoPrimitives>) {
