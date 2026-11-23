@@ -16,11 +16,11 @@ Summarize the change, its purpose, and its main limitation in 2–4 sentences.
 
 ## Motivation
 
-Explain the problem or capability, alternatives considered, and why the change is needed. Link prerequisite specifications.
+Explain the problem or capability and why the change is needed. Link prerequisite specifications. Put alternatives in [Alternatives Considered](#alternatives-considered), not here.
 
 ## Assumptions
 
-State the assumptions and consequences of violating them, including relevant upstream invariants, trust boundaries, deployment order, and backward compatibility.
+Optional: omit this section when nothing applies. List only assumptions the design actually depends on, such as "TIP-XXXX has activated" or "the Zone sequencer is trusted to order transactions honestly", and the consequence of violating each. Do not restate general Tempo or EVM properties.
 
 ---
 
@@ -41,6 +41,10 @@ Use prose for behavior and causality, ordered steps when order matters, and tabl
 ## Interfaces
 
 Put full interface definitions, selectors, events, errors, and storage layouts here. For precompiles, include complete NatSpec for parameters, return values, and errors. Keep encoding formulas and algorithm steps with the mechanics.
+
+# Alternatives Considered
+
+Optional: omit this section when no alternative was seriously evaluated. For each real alternative, state what it was and why it was rejected in a sentence or two.
 
 # Compatibility
 
