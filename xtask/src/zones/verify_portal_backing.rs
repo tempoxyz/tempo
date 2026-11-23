@@ -99,12 +99,17 @@ impl VerifyPortalBacking {
             .add(portal.zoneId())
             .add(portal.isTokenEnabled(self.token))
             .add(factory.isZonePortal(self.portal));
-        let zone_reads = zone
-            .multicall()
-            .block(zone_block)
-            .add(zone_token.totalSupply())
-            .add(inbox.processedDepositNumber())
-            .add(inbox.tempoPortal());
+        // Zones have no Multicall3 from T15, so zone-side reads are separate calls.
+        let supply_call = zone_token.totalSupply().block(zone_block);
+        let processed_deposits_call = inbox.processedDepositNumber().block(zone_block);
+        let inbox_portal_call = inbox.tempoPortal().block(zone_block);
+        let zone_reads = async {
+            eyre::Ok(tokio::try_join!(
+                supply_call.call(),
+                processed_deposits_call.call(),
+                inbox_portal_call.call(),
+            )?)
+        };
         let (
             (
                 portal_balance,
@@ -117,7 +122,7 @@ impl VerifyPortalBacking {
                 portal_registered,
             ),
             (zone_supply, zone_processed_deposits, inbox_portal),
-        ) = tokio::try_join!(l1_reads.aggregate(), zone_reads.aggregate())
+        ) = tokio::try_join!(async { eyre::Ok(l1_reads.aggregate().await?) }, zone_reads)
             .wrap_err("failed reading backing state")?;
 
         let factory_zone = factory

@@ -39,6 +39,7 @@ COPY . .
 
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     VERGEN_GIT_SHA=${GIT_SHA} \
+    VERGEN_IDEMPOTENT=0 \
     LC_ALL=C \
     TZ=UTC \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \

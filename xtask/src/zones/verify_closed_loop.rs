@@ -148,8 +148,15 @@ impl VerifyClosedLoop {
         ensure_has_code(&provider, zone.portal, "ZonePortal", snapshot_block_id).await?;
         ensure_has_code(&provider, earn_vault, "EarnVault", snapshot_block_id).await?;
 
-        let deployment_block =
-            find_zone_deployment_block(&provider, zone_id, zone.portal, 0, snapshot_block).await?;
+        let deployment_block = find_zone_deployment_block(
+            &provider,
+            ZONE_FACTORY_ADDRESS,
+            zone_id,
+            zone.portal,
+            0,
+            snapshot_block,
+        )
+        .await?;
         let portal = ZonePortal::new(zone.portal, &provider);
         let portal_admin = portal
             .admin()

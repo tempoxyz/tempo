@@ -83,6 +83,8 @@ jobs:
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
       run-type: nightly
+      # Keeps the nightly series comparable. Manual runs derive concurrency from tps.
+      max-concurrent: "4"
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
     secrets:
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
@@ -94,7 +96,12 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-zones]
-    if: success()
+    # A run skipped for an unchanged main re-saves the same state, so a quiet
+    # main doesn't age out a baseline that bench-state.sh would still accept.
+    if: |
+      !cancelled() &&
+      needs.resolve-refs.result == 'success' &&
+      (needs.bench-zones.result == 'success' || needs.resolve-refs.outputs.should-skip == 'true')
     name: save-state
     runs-on: ubuntu-latest
     permissions:

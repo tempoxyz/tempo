@@ -3,13 +3,15 @@ use commonware_consensus::{
     simplex::types::Context,
     types::{Height, View},
 };
+use commonware_cryptography::Digestible as _;
 use commonware_runtime::{Runner as _, deterministic};
 use commonware_utils::Acknowledgement as _;
 use futures::{StreamExt as _, executor::block_on};
 
-use commonware_consensus::Heightable as _;
-
-use super::{ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, Verification, WalkOwner};
+use super::{
+    ExecutionTask, ExecutionTaskOutcome, ExecutionTaskType, Verification, VerificationKey,
+    WalkOwner,
+};
 use crate::consensus::Digest;
 
 mod harness;
@@ -34,7 +36,10 @@ fn execution_task_finishes_with_an_outcome() {
     let mut task = ExecutionTask::new(
         ExecutionTaskType::Verify,
         futures::future::ready(ExecutionTaskOutcome::Delivered {
-            owner: WalkOwner::Verification(round(1)),
+            owner: WalkOwner::Verification(VerificationKey {
+                round: round(1),
+                digest: make_block(1, 1, GENESIS).digest(),
+            }),
             digest: make_block(1, 1, GENESIS).digest(),
             status: Err(eyre::eyre!("delivery failed")),
         }),
@@ -68,6 +73,7 @@ fn delivered_finalized_tip_tracks_its_own_round() {
                 finalized_tip: network_finalized_tip,
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();
@@ -111,6 +117,7 @@ fn delivery_count_resets_only_after_a_submitted_or_skipped_forkchoice_response()
                 finalized_tip: (round(1), Height::new(1), digest),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();
@@ -186,23 +193,23 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 parent: (View::new(view.saturating_sub(1)), GENESIS),
             },
             attributes: Box::new(attributes()),
-            deferred_extra_data: None,
+            deferred_ceremony_output: None,
             response,
         })
     }
 
-    fn queued_build_round<C, E, M>(actor: &Actor<C, E, M>) -> Option<u64> {
+    fn queued_build_round<C, E, M, R>(actor: &Actor<C, E, M, R>) -> Option<u64> {
         actor
             .pending_build
             .as_ref()
             .map(|(round, ..)| round.view().get())
     }
 
-    fn queued_rounds<C, E, M>(actor: &Actor<C, E, M>) -> Vec<u64> {
+    fn queued_rounds<C, E, M, R>(actor: &Actor<C, E, M, R>) -> Vec<u64> {
         actor
             .queued_verifications
             .keys()
-            .map(|round| round.view().get())
+            .map(|key| key.round.view().get())
             .collect()
     }
 
@@ -216,6 +223,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 finalized_tip: (round(0), Height::new(0), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .expect("actor should initialize");
@@ -225,17 +233,14 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         actor.queue_verification(verification(1, 1));
         assert_eq!(queued_rounds(&actor), vec![1, 2]);
 
-        // One for the same round replaces the pending one.
+        // A different candidate for the same round queues beside it: an
+        // equivocating leader must not cancel the first candidate.
         actor.queue_verification(verification(2, 20));
-        assert_eq!(queued_rounds(&actor), vec![1, 2]);
-        assert_eq!(
-            actor.queued_verifications[&round(2)]
-                .walk
-                .target
-                .height()
-                .get(),
-            20
-        );
+        assert_eq!(queued_rounds(&actor), vec![1, 2, 2]);
+
+        // The same candidate for the same round joins the pending one.
+        actor.queue_verification(verification(2, 20));
+        assert_eq!(queued_rounds(&actor), vec![1, 2, 2]);
 
         // Builds keep their own slot: the latest request replaces the queued
         // one whatever its round, and verifications never touch it.
@@ -247,7 +252,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         assert_eq!(queued_build_round(&actor), Some(2));
         actor.queue_verification(verification(4, 4));
         assert_eq!(queued_build_round(&actor), Some(2));
-        assert_eq!(queued_rounds(&actor), vec![1, 2, 4]);
+        assert_eq!(queued_rounds(&actor), vec![1, 2, 2, 4]);
     });
 }
 
@@ -264,6 +269,7 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
                 finalized_tip: (round(0), Height::zero(), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();
@@ -277,11 +283,22 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             candidate.clone().into(),
             response,
         ));
-        actor.handle_parent_lookup(super::WalkOwner::Verification(round(2)), None);
+        actor.handle_parent_lookup(
+            super::WalkOwner::Verification(VerificationKey {
+                round: round(2),
+                digest: candidate.digest(),
+            }),
+            None,
+        );
 
-        // The parent is buffered in the old receiver when a new request
-        // replaces its owner. It must not advance the replacement walk.
+        // The parent is buffered in the old receiver when its owner is
+        // removed and a new request takes its place. It must not advance the
+        // replacement walk.
         assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
+        actor.remove_verification(VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        });
         let (response, _new_verdict) = futures::channel::oneshot::channel();
         actor.queue_verification(Verification::new(
             round(2),
@@ -289,17 +306,31 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
             candidate.clone().into(),
             response,
         ));
-        actor.handle_parent_lookup(super::WalkOwner::Verification(round(2)), None);
+        actor.handle_parent_lookup(
+            super::WalkOwner::Verification(VerificationKey {
+                round: round(2),
+                digest: candidate.digest(),
+            }),
+            None,
+        );
         assert!(old_verdict.await.is_err());
         assert!(actor.parent_fetches.next_completed().await.is_err());
-        let walk = &actor.queued_verifications[&round(2)].walk;
+        let walk = &actor.queued_verifications[&VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        }]
+            .walk;
         assert_eq!(walk.cursor.digest(), candidate.digest());
         assert!(matches!(walk.step, super::WalkStep::FetchParent { .. }));
 
         assert!(marshal.fulfill_subscription(parent.digest(), parent.clone()));
         let (owner, block) = actor.parent_fetches.next_completed().await.unwrap();
         actor.handle_parent_fetched(owner, block);
-        let walk = &actor.queued_verifications[&round(2)].walk;
+        let walk = &actor.queued_verifications[&VerificationKey {
+            round: round(2),
+            digest: candidate.digest(),
+        }]
+            .walk;
         assert_eq!(walk.cursor.digest(), parent.digest());
         assert!(matches!(walk.step, super::WalkStep::Probe));
     });

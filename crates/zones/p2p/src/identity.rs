@@ -27,7 +27,8 @@ impl Ed25519Identity {
     /// Parses an unencrypted, hex-encoded identity.
     pub(crate) fn from_hex(encoded: &str) -> Result<Self, Ed25519IdentityError> {
         let bytes = const_hex::decode(encoded).map_err(Ed25519IdentityError::Hex)?;
-        let key = PrivateKey::decode(&bytes[..]).map_err(Ed25519IdentityError::Decode)?;
+        let key = PrivateKey::decode(commonware_codec::Copying(&bytes[..]))
+            .map_err(Ed25519IdentityError::Decode)?;
         Ok(Self(key))
     }
 

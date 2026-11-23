@@ -20,7 +20,11 @@ use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::TempoPrimitives;
 
-use crate::{QmdbStateRootStrategy, TempoNode, node::TempoEngineValidatorBuilder};
+use crate::{
+    QmdbStateRootStrategy, TempoNode,
+    engine::{EagerHeaderValidator, EagerHeaderValidatorBuilder},
+    node::TempoEngineValidatorBuilder,
+};
 
 /// Reads the post-state of blocks that the engine has executed, including
 /// blocks on forks.
@@ -128,11 +132,28 @@ where
                 <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
             >,
         >,
+    EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>>:
+        EngineValidatorBuilder<
+                Node,
+                EngineValidator = EagerHeaderValidator<
+                    BasicEngineValidator<
+                        Node::Provider,
+                        Node::Evm,
+                        <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
+                    >,
+                    Node::Provider,
+                    Node::Consensus,
+                >,
+            >,
 {
-    type EngineValidator = BasicEngineValidator<
+    type EngineValidator = EagerHeaderValidator<
+        BasicEngineValidator<
+            Node::Provider,
+            Node::Evm,
+            <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
+        >,
         Node::Provider,
-        Node::Evm,
-        <TempoEngineValidatorBuilder as PayloadValidatorBuilder<Node>>::Validator,
+        Node::Consensus,
     >;
 
     async fn build_tree_validator(
@@ -146,7 +167,9 @@ where
             .inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
             .await?;
-        Ok(match self.qmdb_strategy {
+        // The QMDB strategy and its persistence hook go on the executing validator, which the
+        // eager header check then wraps.
+        let validator = match self.qmdb_strategy {
             Some(strategy) => {
                 let hook: Arc<dyn PersistenceHook<TempoPrimitives>> =
                     Arc::new(strategy.persistence_hook());
@@ -156,6 +179,11 @@ where
                     .with_persistence_hook(hook)
             }
             None => validator,
-        })
+        };
+        Ok(EagerHeaderValidator::new(
+            validator,
+            ctx.node.provider().clone(),
+            ctx.node.consensus().clone(),
+        ))
     }
 }

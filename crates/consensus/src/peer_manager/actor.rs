@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
+    num::NonZeroU32,
     pin::Pin,
     sync::Arc,
     time::Duration,
@@ -8,18 +9,14 @@ use std::{
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
-use commonware_consensus::{
-    Heightable as _,
-    marshal::Update,
-    types::{Epocher, FixedEpocher, Height},
-};
+use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{
     Clock, ContextCell, Metrics, Spawner, spawn_cell,
     telemetry::metrics::{Gauge, MetricsExt as _},
 };
-use commonware_utils::{Acknowledgement, ordered};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -28,7 +25,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
-    consensus::Digest,
+    executor,
     utils::public_key_to_b256,
     validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
 };
@@ -50,12 +47,14 @@ where
     oracle: TPeerManager,
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
-    latest_observed_finalized_tip: (Height, Digest),
+    /// The latest finalized block reported by the executor.
+    latest_finalized: Option<executor::Finalized>,
+    max_peers: NonZeroU32,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
     peers: Gauge,
 
-    last_tracked_peer_set: Option<LastTrackedPeerSet>,
+    last_tracked_peers: Option<Peers>,
 
     peer_update_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 }
@@ -72,32 +71,29 @@ where
             oracle,
             execution_node,
             epoch_strategy,
-            finalized_tip,
+            max_peers,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
-    ) -> eyre::Result<Self> {
+    ) -> Self {
         let peers = context.gauge(
             "peers",
             "how many peers are registered overall for the latest epoch",
         );
         let context = ContextCell::new(context);
         let peer_update_timer = Box::pin(context.sleep(HEARTBEAT_UPDATE_INTERVAL));
-        let mut actor = Self {
+        Self {
             context,
             oracle,
             execution_node,
             epoch_strategy,
-            latest_observed_finalized_tip: finalized_tip,
+            latest_finalized: None,
+            max_peers,
             mailbox,
             peers,
-            last_tracked_peer_set: None,
+            last_tracked_peers: None,
 
             peer_update_timer,
-        };
-        actor
-            .refresh_peers()
-            .wrap_err("failed registering initial peers from execution state")?;
-        Ok(actor)
+        }
     }
 
     async fn run(mut self) {
@@ -138,45 +134,25 @@ where
                 let receiver = Provider::subscribe(&mut self.oracle).await;
                 let _ = response.send(receiver);
             }
-            Message::Finalized(update) => match *update {
-                Update::Block(block, ack) => {
-                    self.observe_finalized_tip((block.height(), block.digest()));
-                    let _ = self.refresh_peers();
-                    ack.acknowledge();
-                    self.reset_peer_update_timer();
-                }
-                Update::Tip(_, height, digest) => {
-                    self.observe_finalized_tip((height, digest));
-                    let _ = self.refresh_peers();
-                    self.reset_peer_update_timer();
-                }
-            },
+            Message::Finalized(finalized) => {
+                self.latest_finalized = Some(finalized);
+                let _ = self.refresh_peers();
+                self.reset_peer_update_timer();
+            }
         }
         Ok(())
     }
 
-    /// Reads peers from the latest finalized state allowed by consensus.
+    /// Reads peers at the latest finalized block the executor reported,
+    /// whose state the execution layer serves. Errors before the first
+    /// report. Called on every report and every peer update, which re-reads
+    /// the latest report, so a failed read is retried there.
     #[instrument(skip_all, err)]
     fn refresh_peers(&mut self) -> eyre::Result<()> {
-        // Peer discovery must work before the executor can backfill to marshal's
-        // floor: DKG may need these peers to recover and authenticate the tip
-        // before it releases the executor. Use only state already finalized by EL,
-        // capped by the latest consensus-observed tip. Genesis needs no marker.
-        let highest_finalized = self
-            .execution_node
-            .finalized_block_number()
-            .wrap_err("unable to read highest finalized block from execution layer")?
-            .unwrap_or_default()
-            .min(self.latest_observed_finalized_tip.0.get());
-
-        // Short circuit - no need to read the same state if there is no new data.
-        if self
-            .last_tracked_peer_set
-            .as_ref()
-            .is_some_and(|tracked| tracked.height >= highest_finalized)
-        {
-            return Ok(());
-        }
+        let finalized = self
+            .latest_finalized
+            .ok_or_eyre("executor has not reported a finalized block yet")?;
+        let highest_finalized = finalized.height.get();
 
         let epoch_info = self
             .epoch_strategy
@@ -204,30 +180,23 @@ where
         let latest_boundary_header =
             read_header_at_height(self.execution_node.as_ref(), latest_boundary)
                 .wrap_err("failed reading latest boundary header")?;
-        let highest_finalized_header =
-            read_header_at_height(self.execution_node.as_ref(), highest_finalized)
-                .wrap_err("failed reading highest finalized header")?;
 
-        let onchain_outcome =
-            OnchainDkgOutcome::read(&mut latest_boundary_header.extra_data().as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "boundary block at `{latest_boundary}` did not contain a valid DKG outcome"
-                    )
-                })?;
+        let onchain_outcome = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+            latest_boundary_header.extra_data().as_ref(),
+        ))
+        .wrap_err_with(|| {
+            format!("boundary block at `{latest_boundary}` did not contain a valid DKG outcome")
+        })?;
 
         let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
-            .resolve_at_hash(
-                self.execution_node.as_ref(),
-                highest_finalized_header.hash_slow(),
-            )
+            .resolve_at_hash(self.execution_node.as_ref(), finalized.digest.0)
             .wrap_err("failed reading peer set from execution layer")?;
 
         debug!(
             boundary.height = latest_boundary_header.number(),
             boundary.hash = %latest_boundary_header.hash_slow(),
-            highest_finalized.height = highest_finalized_header.number(),
-            highest_finalized.hash = %highest_finalized_header.hash_slow(),
+            highest_finalized.height = highest_finalized,
+            highest_finalized.hash = %finalized.digest,
             ?peers.primary,
             ?peers.secondary,
             "read active peers from DKG outcome in latest available \
@@ -235,20 +204,25 @@ where
             config contract"
         );
 
-        self.track_or_overwrite(highest_finalized_header.number(), peers);
+        self.track_or_overwrite(highest_finalized, peers);
 
         Ok(())
     }
 
-    fn observe_finalized_tip(&mut self, tip: (Height, Digest)) {
-        if tip.0 >= self.latest_observed_finalized_tip.0 {
-            self.latest_observed_finalized_tip = tip;
-        }
-    }
-
     fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
-        if let Some(tracked) = &self.last_tracked_peer_set {
-            match peers.what_has_changed_compared_to(&tracked.peers) {
+        // The P2P network panics on a set larger than `max_peers`. Warn with
+        // a third of the budget left.
+        let size = peers.len();
+        if size > self.max_peers.get() as usize * 2 / 3 {
+            warn!(
+                peers = size,
+                max_peers = self.max_peers,
+                "peer set is above 2/3 of the max peers per set; the node will halt at the limit",
+            );
+        }
+
+        if let Some(tracked) = &self.last_tracked_peers {
+            match peers.what_has_changed_compared_to(tracked) {
                 WhatHasChanged::Nothing => {}
                 WhatHasChanged::Addresses => {
                     self.oracle.overwrite(peers.to_flat_map());
@@ -261,20 +235,9 @@ where
             self.oracle.track(height, peers.clone());
         }
 
-        // Always bump the last-tracked peer set. If the peers are unchanged
-        // this only updates the height, but we use the height to determine if
-        // state should be read or not.
-        self.last_tracked_peer_set
-            .replace(LastTrackedPeerSet { height, peers });
-
-        if let Some(tracked) = &self.last_tracked_peer_set {
-            self.peers.metric().set(tracked.peers.len() as i64);
-        }
-
-        debug!(
-            last_tracked_peer_set = ?self.last_tracked_peer_set.as_ref().expect("just set it"),
-            "latest tracked peerset",
-        );
+        self.peers.metric().set(peers.len() as i64);
+        debug!(%height, ?peers, "latest tracked peerset");
+        self.last_tracked_peers = Some(peers);
     }
 
     fn reset_peer_update_timer(&mut self) {
@@ -439,12 +402,6 @@ impl PeersBuilder {
     }
 }
 
-#[derive(Debug)]
-struct LastTrackedPeerSet {
-    height: u64,
-    peers: Peers,
-}
-
 #[instrument(skip_all, fields(height), err)]
 fn read_header_at_height(
     execution_node: &impl ExecutionLayer,
@@ -500,7 +457,6 @@ mod tests {
         hash: B256,
         height: u64,
         provider: MockEthProvider,
-        finalized: Option<u64>,
         headers: HashMap<u64, TempoHeader>,
         header_reads: Mutex<Vec<u64>>,
     }
@@ -528,10 +484,6 @@ mod tests {
     }
 
     impl ExecutionLayer for TestExecutionNode {
-        fn finalized_block_number(&self) -> eyre::Result<Option<u64>> {
-            Ok(self.finalized)
-        }
-
         fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>> {
             self.header_reads.lock().unwrap().push(height);
             Ok(self.headers.get(&height).cloned())
@@ -683,7 +635,6 @@ mod tests {
             hash: header.hash_slow(),
             height: header.number(),
             provider,
-            finalized: Some(header.number()),
             headers: HashMap::from([(header.number(), header)]),
             header_reads: Mutex::default(),
         })
@@ -738,113 +689,117 @@ mod tests {
         };
         execution.height = height;
         execution.hash = tip_header.hash_slow();
-        execution.finalized = Some(height);
         execution.headers = HashMap::from([(boundary, boundary_header), (height, tip_header)]);
         execution
     }
 
-    #[test]
-    fn constructor_registers_available_execution_peers_before_actor_start() {
-        // EL behind consensus, unset finalized marker at genesis, an exact
-        // boundary, and EL ahead of the consensus tip (which still caps reads).
-        for (finalized, available, consensus_tip) in [
-            (Some(7), 7, 100),
-            (None, 0, 100),
-            (Some(19), 19, 100),
-            (Some(27), 12, 12),
-        ] {
-            Runner::default().start(|context| async move {
-                let mut execution = bootstrap_execution(available, 1);
-                execution.finalized = finalized;
-                let execution = Arc::new(execution);
-                let oracle = RecordingOracle::default();
-                let (_actor, _mailbox) = crate::peer_manager::init(
-                    context,
-                    crate::peer_manager::Config {
-                        execution_node: execution.clone(),
-                        oracle: oracle.clone(),
-                        epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                        finalized_tip: (
-                            Height::new(consensus_tip),
-                            Digest(B256::repeat_byte(0xFF)),
-                        ),
-                    },
-                )
-                .unwrap();
-                // No actor has started and no marshal update has been delivered.
-                let tracked = oracle.tracked.lock().unwrap();
-                assert_eq!(tracked.len(), 1);
-                assert_eq!(tracked[0].0, available);
-                assert_peer(&tracked[0].1.primary, &peer(1));
-                assert_peer(&tracked[0].1.secondary, &peer(2));
-                assert!(
-                    execution
-                        .header_reads
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .all(|height| *height <= available)
-                );
-            });
-        }
+    fn init_at(
+        context: commonware_runtime::deterministic::Context,
+        execution: Arc<TestExecutionNode>,
+        oracle: RecordingOracle,
+    ) -> Actor<commonware_runtime::deterministic::Context, RecordingOracle, TestExecutionNode> {
+        crate::peer_manager::init(
+            context,
+            crate::peer_manager::Config {
+                execution_node: execution,
+                oracle,
+                epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
+                max_peers: commonware_utils::NZU32!(128),
+            },
+        )
+        .0
+    }
+
+    fn finalized(execution: &TestExecutionNode) -> Message {
+        Message::Finalized(executor::Finalized {
+            height: Height::new(execution.height),
+            digest: crate::consensus::Digest(execution.hash),
+        })
+    }
+
+    fn tracked_heights(oracle: &RecordingOracle) -> Vec<u64> {
+        oracle
+            .tracked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(height, _)| *height)
+            .collect()
     }
 
     #[test]
-    fn constructor_propagates_unavailable_execution_state() {
+    fn nothing_is_read_before_the_first_executor_report() {
         Runner::default().start(|context| async move {
-            let mut execution = bootstrap_execution(7, 1);
-            execution.headers.remove(&7);
             let oracle = RecordingOracle::default();
-            let result = crate::peer_manager::init(
-                context,
-                crate::peer_manager::Config {
-                    execution_node: Arc::new(execution),
-                    oracle: oracle.clone(),
-                    epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                    finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                },
-            );
-            let error = result
-                .err()
-                .expect("unreadable EL state must fail initialization");
-            assert!(format!("{error:#}").contains("failed reading highest finalized header"));
-            assert!(oracle.tracked.lock().unwrap().is_empty());
+            let execution = Arc::new(bootstrap_execution(7, 1));
+            let mut actor = init_at(context, execution.clone(), oracle.clone());
+
+            // What the peer update timer does before any report.
+            let error = actor
+                .refresh_peers()
+                .expect_err("refreshing before the first report must fail");
+            assert!(format!("{error:#}").contains("has not reported a finalized block"));
+
+            assert!(execution.header_reads.lock().unwrap().is_empty());
+            assert!(tracked_heights(&oracle).is_empty());
         });
     }
 
     #[test]
-    fn runtime_peer_refresh_waits_for_execution_progress() {
+    fn executor_report_refreshes_peers_at_reported_block() {
         Runner::default().start(|context| async move {
-            let execution = Arc::new(bootstrap_execution(7, 1));
             let oracle = RecordingOracle::default();
-            let (mut actor, _mailbox) = crate::peer_manager::init(
-                context,
-                crate::peer_manager::Config {
-                    execution_node: execution.clone(),
-                    oracle: oracle.clone(),
-                    epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
-                    finalized_tip: (Height::new(100), Digest(B256::ZERO)),
-                },
-            )
-            .unwrap();
-            let initial_reads = execution.header_reads.lock().unwrap().clone();
-            actor.observe_finalized_tip((Height::new(110), Digest(B256::repeat_byte(1))));
-            actor.refresh_peers().unwrap();
-            assert_eq!(*execution.header_reads.lock().unwrap(), initial_reads);
-            assert_eq!(oracle.tracked.lock().unwrap().len(), 1);
+            let execution = Arc::new(bootstrap_execution(19, 2));
+            let mut actor = init_at(context, execution.clone(), oracle.clone());
 
-            actor.execution_node = Arc::new(bootstrap_execution(19, 2));
-            actor.refresh_peers().unwrap();
+            actor
+                .handle_message(Span::none(), finalized(&execution))
+                .await
+                .unwrap();
+
+            assert_eq!(tracked_heights(&oracle), vec![19]);
             let tracked = oracle.tracked.lock().unwrap();
-            assert_eq!(
-                tracked
-                    .iter()
-                    .map(|(height, _)| *height)
-                    .collect::<Vec<_>>(),
-                vec![7, 19]
-            );
-            assert_peer(&tracked[1].1.primary, &peer(2));
-            assert_peer(&tracked[1].1.secondary, &peer(1));
+            assert_peer(&tracked[0].1.primary, &peer(2));
+            assert_peer(&tracked[0].1.secondary, &peer(1));
+        });
+    }
+
+    #[test]
+    fn rereading_an_unchanged_peer_set_tracks_nothing_new() {
+        Runner::default().start(|context| async move {
+            let oracle = RecordingOracle::default();
+            let execution = Arc::new(bootstrap_execution(7, 1));
+            let mut actor = init_at(context, execution.clone(), oracle.clone());
+            actor
+                .handle_message(Span::none(), finalized(&execution))
+                .await
+                .unwrap();
+
+            // What the peer update timer does.
+            actor.refresh_peers().unwrap();
+
+            assert_eq!(tracked_heights(&oracle), vec![7]);
+        });
+    }
+
+    #[test]
+    fn failed_read_is_retried_at_the_latest_report() {
+        Runner::default().start(|context| async move {
+            let oracle = RecordingOracle::default();
+            let mut unavailable = bootstrap_execution(17, 2);
+            unavailable.headers.remove(&9);
+            let mut actor = init_at(context, Arc::new(unavailable), oracle.clone());
+            let execution = bootstrap_execution(17, 2);
+            actor
+                .handle_message(Span::none(), finalized(&execution))
+                .await
+                .unwrap();
+            assert!(tracked_heights(&oracle).is_empty());
+
+            // What the peer update timer does.
+            actor.execution_node = Arc::new(execution);
+            actor.refresh_peers().unwrap();
+            assert_eq!(tracked_heights(&oracle), vec![17]);
         });
     }
 

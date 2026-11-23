@@ -1,12 +1,11 @@
-//! Configurable account transaction authority (TIP-1112, TIP-1113).
+//! Configurable account transaction authority (TIP-1107, TIP-1113).
 
 use super::{TempoEvmTypes, access_key_id};
 use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx as _, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
 };
-use alloy_consensus::Transaction as _;
-use alloy_primitives::{Address, B256, IntoLogData as _, TxKind};
+use alloy_primitives::{Address, B256, IntoLogData as _};
 use evm2::{
     Evm,
     evm::AccountInfo,
@@ -14,9 +13,8 @@ use evm2::{
     registry::{HandlerError, HandlerResult},
     version::{GasId, GasParams},
 };
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{constants::gas::L1_COMMITMENT_READ_GAS, hardfork::TempoHardfork};
 use tempo_precompiles::{
-    CONFIGURABLE_ACCOUNT_ADDRESS,
     configurable_account::{
         ConfigurableAccount, UpgradeEligibility, registration_event, valid_account,
         valid_account_code,
@@ -24,9 +22,12 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{StorageCtx, account_config_commitment},
 };
-use tempo_primitives::transaction::{
-    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
-    SignedKeyAuthorization, TempoSignature,
+use tempo_primitives::{
+    TempoEvmKind,
+    transaction::{
+        ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature,
+        SignatureType, SignedKeyAuthorization, TempoSignature,
+    },
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
@@ -94,7 +95,7 @@ impl TempoAaTx {
             },
             self.tx().key_authorization.as_ref().and_then(|auth| {
                 Some(ConfigurableRole {
-                    signature: auth.signature.as_configurable_account()?,
+                    signature: auth.signature().as_configurable_account()?,
                     signed: ConfigurableRoleSigned::Grant(auth),
                 })
             }),
@@ -114,28 +115,17 @@ impl TempoAaTx {
 impl TempoTxEnv {
     /// Seeds the transaction authority read by the configurable-account precompile.
     ///
-    /// `upgradeAccount` must be the whole transaction: no other call and no authorization or key
-    /// authorization that could change the account beside it.
+    /// `upgradeAccount` may sit anywhere in a batch, but no authorization list may delegate the
+    /// account beside it. A key authorization is allowed: it applies before execution either way.
     pub(crate) fn seed_upgrade_authority(&self) -> Result<(), TempoPrecompileError> {
         let aa = self.as_aa();
-        let sole_call = match aa {
-            None => {
-                self.kind() == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                    && self
-                        .as_eip7702()
-                        .is_none_or(|tx| tx.authorization_list.is_empty())
-            }
-            Some(aa) => {
-                let tx = aa.tx();
-                matches!(
-                    tx.calls.as_slice(),
-                    [call] if call.to == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                ) && tx.tempo_authorization_list.is_empty()
-                    && tx.key_authorization.is_none()
-            }
-        };
-        let eligibility = if !sole_call {
-            UpgradeEligibility::NotSoleCall
+        let eligibility = if match aa {
+            None => self
+                .as_eip7702()
+                .is_some_and(|tx| tx.authorizations().len() != 0),
+            Some(aa) => !aa.tx().tempo_authorization_list.is_empty(),
+        } {
+            UpgradeEligibility::HasAuthorizationList
         } else if !self.signed_by_primitive_root() {
             UpgradeEligibility::NotPrimitiveRoot
         } else {
@@ -176,7 +166,7 @@ impl TempoTxEnv {
 /// simulation skips only the sender check.
 /// Loads and warms accounts, but does not register commitments.
 /// Caller must charge both components.
-/// Transaction access-list and beneficiary warmth must be initialized before loading non-caller
+/// Transaction warmth, but not the beneficiary's, must be initialized before loading non-caller
 /// accounts.
 pub(crate) fn validate_state(
     host: &mut Evm<'_, TempoEvmTypes>,
@@ -199,8 +189,9 @@ pub(crate) fn validate_state(
     if spec.is_t14() {
         extra_gas += validate_root_keys(host, envelope, spec, &mut accounts)?;
         if let Some(aa) = envelope.as_aa() {
-            extra_gas += granted_configurable_account_access_gas(host, aa, spec, &accounts)?;
+            extra_gas += granted_key_access_gas(host, aa, spec, &accounts)?;
         }
+        extra_gas += zone_commitment_reads_gas(host, envelope, spec)?;
     }
     Ok((extra_gas, state_gas))
 }
@@ -237,7 +228,8 @@ pub(crate) fn register_commitments(
     aa: &TempoAaTx,
 ) -> HandlerResult<()> {
     let roles = aa.configurable_roles();
-    if matches!(roles, [None, None]) {
+    // Zones never register: Tempo L1 owns commitments (TIP-1154).
+    if matches!(roles, [None, None]) || host.ext().kind == TempoEvmKind::Zone {
         return Ok(());
     }
     StorageCtx::enter_evm_without_tip1060_accounting(host, || {
@@ -267,7 +259,37 @@ pub fn account_access_gas(gas: &GasParams, is_cold: bool) -> u64 {
         }
 }
 
-/// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
+/// Intrinsic gas for the Tempo commitment reads (TIP-1154) of the accounts a zone transaction
+/// warms without paying a cold access: a full cold access for the sender, and
+/// [`L1_COMMITMENT_READ_GAS`] for the first call target unless it is the sender, a precompile or an
+/// address that can't be an account. Like every cold load, a target with zone code pays too, so
+/// the target isn't loaded here. A zone's gas schedule charges every other read through the cold
+/// access (see [`tempo_chainspec::gas_params::apply_zone`]). Zero on Tempo L1.
+fn zone_commitment_reads_gas(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    envelope: &TempoTxEnv,
+    spec: TempoHardfork,
+) -> HandlerResult<u64> {
+    if host.ext().kind == TempoEvmKind::L1 {
+        return Ok(0);
+    }
+    let mut gas = account_access_gas(&host.version().gas_params, true);
+    let Some(to) = envelope
+        .evm_tx()
+        .calls()
+        .next()
+        .and_then(|(kind, _)| kind.to().copied())
+    else {
+        return Ok(gas);
+    };
+    if to != envelope.caller() && valid_account(to, spec) && !host.precompiles().contains(&to) {
+        gas += L1_COMMITMENT_READ_GAS;
+    }
+    Ok(gas)
+}
+
+/// Loads and warms `address` once, reading its code, emptiness, nonce and commitment, and adds it
+/// to the pre-warmed set.
 fn load_account(
     host: &mut Evm<'_, TempoEvmTypes>,
     address: Address,
@@ -277,13 +299,18 @@ fn load_account(
     let was_cold = account.warm();
     let info = account.get();
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-    Ok(LoadedAccount {
+    let loaded = LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),
         is_empty: info.is_none_or(AccountInfo::is_empty),
         nonce: account.nonce(),
         commitment,
-    })
+    };
+    drop(account);
+    // Validation charges this access, so the per-call batch pricing, which only consults the
+    // pre-warmed set, must see the account as warm when a later call targets it.
+    host.state_mut().prewarm(&address);
+    Ok(loaded)
 }
 
 /// Configurable roles only: returns extra gas, state gas, and the role accounts already loaded.
@@ -352,7 +379,8 @@ fn validate_configurable_roles(
                 .config()
                 .derivation_gas()
                 .ok_or(TempoPrecompileError::OutOfGas)?;
-            if first {
+            // Zones never register, so they charge no write.
+            if first && host.ext().kind == TempoEvmKind::L1 {
                 let gas = &host.version().gas_params;
                 // TIP-1108 prices the commitment write like account creation.
                 extra_gas += gas.get(GasId::NewAccountCost);
@@ -384,7 +412,7 @@ fn validate_configurable_roles(
     })
 }
 
-/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1112).
+/// Rejects bare primitive authority of accounts with a nonzero commitment (TIP-1113).
 ///
 /// Each distinct non-caller account is charged one account access, deduplicated against
 /// `accounts` (which collects every charged account). Configurable signers and delegates always
@@ -421,7 +449,7 @@ fn validate_root_keys(
         return Ok(extra_gas);
     };
     if let Some(auth) = &aa.tx().key_authorization
-        && !auth.signature.is_configurable_account()
+        && !auth.signature().is_configurable_account()
     {
         let signer = auth
             .recover_signer()
@@ -443,16 +471,17 @@ fn validate_root_keys(
     Ok(extra_gas)
 }
 
-/// The inline grant's code check runs with intrinsic-only metering. Charge its account load
-/// here, unless caller loading or a configurable signing role already accounts for that address.
-/// Merely naming a recipient neither validates an owner witness nor registers a commitment.
-fn granted_configurable_account_access_gas(
+/// The inline grant's key ID check (code for a configurable grant, commitment for a primitive one)
+/// runs with intrinsic-only metering. Charge its account load here, unless caller loading or a
+/// configurable signing role already accounts for that address. Merely naming a recipient neither
+/// validates an owner witness nor registers a commitment.
+fn granted_key_access_gas(
     host: &mut Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
     spec: TempoHardfork,
     accounts: &[Address],
 ) -> HandlerResult<u64> {
-    if let Some(granted) = aa.granted_configurable_account()
+    if let Some(granted) = aa.tx().key_authorization.as_ref().map(|auth| auth.key_id)
         && granted != aa.signer()
         && !accounts.contains(&granted)
     {

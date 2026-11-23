@@ -508,4 +508,95 @@ contract TIP20ChannelReserveTest is Test {
         assertEq(channel.domainSeparator(), other.domainSeparator());
     }
 
+    /// Mocks the configurable account precompile's commitment view, which is native under the
+    /// Tempo hardfork profiles, so `vm.etch` can't replace it.
+    function _commit(address account, bytes32 commitment) internal {
+        vm.mockCall(
+            channel.CONFIGURABLE_ACCOUNT_PRECOMPILE(),
+            abi.encodeWithSignature("getConfigCommitment(address)", account),
+            abi.encode(commitment)
+        );
+    }
+
+    function test_open_committedSigner_requiresCommitmentAsSalt() public {
+        bytes32 commitment = keccak256("config v0");
+        _commit(payer, commitment);
+
+        _prepareNextExpiringNonceHash();
+        vm.prank(payer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ITIP20ChannelReserve.SaltNotSignerCommitment.selector, payer, commitment
+            )
+        );
+        channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
+
+        bytes32 expectedId = channel.computeChannelId(
+            payer, payee, address(0), address(token), commitment, address(0), lastExpiringNonceHash
+        );
+        vm.expectEmit(true, true, false, true, address(channel));
+        emit ITIP20ChannelReserve.OpeningCommitmentRecorded(expectedId, payer, commitment);
+        vm.prank(payer);
+        bytes32 channelId =
+            channel.open(payee, address(0), address(token), DEPOSIT, commitment, address(0));
+        assertEq(channelId, expectedId);
+    }
+
+    function test_topUp_revertsAfterSignerRotation() public {
+        bytes32 commitment = keccak256("config v0");
+        _commit(payer, commitment);
+        _prepareNextExpiringNonceHash();
+        vm.prank(payer);
+        channel.open(payee, address(0), address(token), DEPOSIT, commitment, address(0));
+        ITIP20ChannelReserve.ChannelDescriptor memory descriptor =
+            _descriptor(commitment, address(0));
+
+        // An unchanged configuration can add funds.
+        vm.prank(payer);
+        channel.topUp(descriptor, 100);
+
+        _commit(payer, keccak256("config v1"));
+        vm.prank(payer);
+        vm.expectRevert(
+            abi.encodeWithSelector(ITIP20ChannelReserve.SignerConfigChanged.selector, payer)
+        );
+        channel.topUp(descriptor, 100);
+
+        // A zero top-up still works.
+        vm.prank(payer);
+        channel.topUp(descriptor, 0);
+    }
+
+    function test_topUp_revertsWhenSignerRegistersAfterOpen() public {
+        address signer = makeAddr("signer");
+        _prepareNextExpiringNonceHash();
+        vm.prank(payer);
+        channel.open(payee, address(0), address(token), DEPOSIT, SALT, signer);
+        ITIP20ChannelReserve.ChannelDescriptor memory descriptor = _descriptor(SALT, signer);
+
+        _commit(signer, keccak256("config v0"));
+        vm.prank(payer);
+        vm.expectRevert(
+            abi.encodeWithSelector(ITIP20ChannelReserve.RootKeyRetired.selector, signer)
+        );
+        channel.topUp(descriptor, 100);
+    }
+
+    function test_withdraw_committedChannel() public {
+        bytes32 commitment = keccak256("config v0");
+        _commit(payer, commitment);
+        _prepareNextExpiringNonceHash();
+        vm.prank(payer);
+        channel.open(payee, address(0), address(token), DEPOSIT, commitment, address(0));
+        ITIP20ChannelReserve.ChannelDescriptor memory descriptor =
+            _descriptor(commitment, address(0));
+
+        vm.prank(payer);
+        channel.requestClose(descriptor);
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD());
+        vm.prank(payer);
+        channel.withdraw(descriptor);
+        assertEq(token.balanceOf(payer), 20_000_000);
+    }
+
 }

@@ -5,7 +5,9 @@ use evm2::{
     EvmConfig, ExecutionConfig, OpcodeConfig, SpecId, Version,
     interpreter::{
         InstrStop, InterpreterState, Pc, Result, StackMut,
-        instructions::create as CreateInstruction, op, private::Instruction,
+        instructions::create as CreateInstruction,
+        op,
+        private::{Instruction, InstructionFlags},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -44,7 +46,7 @@ const fn zone_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<TempoEvmT
 struct ZoneCreate<const IS_CREATE2: bool>;
 
 impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for ZoneCreate<IS_CREATE2> {
-    const DYNAMIC_GAS: bool = true;
+    const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
 
     fn execute(
         pc: &mut Pc,
@@ -85,6 +87,7 @@ mod tests {
         TempoTxEnvelope,
         transaction::{Call, TempoSignature, TempoTransaction},
     };
+    use test_case::test_case;
     use zone_precompiles::{
         ZONE_FEE_MANAGER_ADDRESS, ZonePrecompiles, test_utils::MockL1Reader as TestL1,
         zone_fee_manager,
@@ -94,7 +97,7 @@ mod tests {
 
     struct TestCreate<const IS_CREATE2: bool>;
     impl<const IS_CREATE2: bool> Instruction<TempoEvmTypes> for TestCreate<IS_CREATE2> {
-        const DYNAMIC_GAS: bool = true;
+        const FLAGS: InstructionFlags = CreateInstruction::<TempoEvmTypes, IS_CREATE2>::FLAGS;
         fn execute(
             pc: &mut Pc,
             stack: StackMut<'_>,
@@ -228,51 +231,43 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
-        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
+        assert!(validate_transaction(tx.inner(), &[]).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
     }
 
-    #[test]
-    fn runtime_create_opcodes_are_disabled_for_unlisted_deployers() {
+    // PUSH0 PUSH0 PUSH0 CREATE STOP
+    #[test_case(bytes!("0x5f5f5ff000"); "create")]
+    // PUSH0 PUSH0 PUSH0 PUSH0 CREATE2 STOP
+    #[test_case(bytes!("0x5f5f5f5ff500"); "create2")]
+    fn runtime_create_opcodes_are_disabled_for_unlisted_deployers(bytecode: Bytes) {
         let (contract, caller) = (Address::repeat_byte(0x10), Address::repeat_byte(0x20));
-        for bytecode in [
-            // PUSH0 PUSH0 PUSH0 CREATE STOP
-            bytes!("0x5f5f5ff000"),
-            // PUSH0 PUSH0 PUSH0 PUSH0 CREATE2 STOP
-            bytes!("0x5f5f5f5ff500"),
-        ] {
-            let mut evm = evm_with_contract(contract, &bytecode);
-            let result = evm
-                .transact(&call_tx(caller, contract))
-                .expect("transaction should execute")
-                .discard();
-            assert_eq!(result.stop, InstrStop::NotActivated);
-        }
+        let mut evm = evm_with_contract(contract, &bytecode);
+        let result = evm
+            .transact(&call_tx(caller, contract))
+            .expect("transaction should execute")
+            .discard();
+        assert_eq!(result.stop, InstrStop::NotActivated);
     }
 
-    #[test]
-    fn allowlisted_deployer_can_execute_create_and_create2() {
+    // CREATE, then return the created address.
+    #[test_case(bytes!("0x5f5f5ff05f5260205ff3"); "create")]
+    // CREATE2, then return the created address.
+    #[test_case(bytes!("0x5f5f5f5ff55f5260205ff3"); "create2")]
+    fn allowlisted_deployer_can_execute_create_and_create2(bytecode: Bytes) {
         let caller = Address::repeat_byte(0x20);
-        for bytecode in [
-            // CREATE, then return the created address.
-            bytes!("0x5f5f5ff05f5260205ff3"),
-            // CREATE2, then return the created address.
-            bytes!("0x5f5f5f5ff55f5260205ff3"),
-        ] {
-            let mut evm = evm_with_contract(TEST_DEPLOYER, &bytecode);
-            enable_test_deployer(&mut evm);
-            let result = evm
-                .transact(&call_tx(caller, TEST_DEPLOYER))
-                .expect("allowlisted deployment should execute")
-                .detach();
-            assert!(
-                result.result.status,
-                "allowlisted deployment should succeed"
-            );
-            let created = Address::from_slice(&result.result.output[12..]);
-            assert_ne!(created, Address::ZERO);
-            assert!(result.pending_state.account_info(&created).is_some());
-        }
+        let mut evm = evm_with_contract(TEST_DEPLOYER, &bytecode);
+        enable_test_deployer(&mut evm);
+        let result = evm
+            .transact(&call_tx(caller, TEST_DEPLOYER))
+            .expect("allowlisted deployment should execute")
+            .detach();
+        assert!(
+            result.result.status,
+            "allowlisted deployment should succeed"
+        );
+        let created = Address::from_slice(&result.result.output[12..]);
+        assert_ne!(created, Address::ZERO);
+        assert!(result.pending_state.account_info(&created).is_some());
     }
 
     #[test]
@@ -304,18 +299,15 @@ mod tests {
             Address::repeat_byte(0x11),
             TxKind::Call(Address::repeat_byte(0x22)),
         );
-        assert!(
-            validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST, TempoHardfork::T7)
-                .is_ok()
-        );
+        assert!(validate_transaction(tx.inner(), CONTRACT_DEPLOYER_ALLOWLIST).is_ok());
     }
 
     #[test]
     fn aa_create_respects_allowlist() {
         let caller = Address::repeat_byte(0x11);
         let tx = aa_tx(caller, TxKind::Create);
-        assert!(validate_transaction(tx.inner(), &[], TempoHardfork::T7).is_err());
-        assert!(validate_transaction(tx.inner(), &[caller], TempoHardfork::T7).is_ok());
+        assert!(validate_transaction(tx.inner(), &[]).is_err());
+        assert!(validate_transaction(tx.inner(), &[caller]).is_ok());
     }
 
     fn aa_tx(caller: Address, to: TxKind) -> Recovered<TempoTxEnv> {

@@ -55,7 +55,7 @@ use alloy_rpc_types_eth::Filter;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
-use futures::{StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use parking_lot::RwLock;
 use reth_storage_api::BlockNumReader;
 use schnellru::{ByLength, LruMap};
@@ -955,8 +955,6 @@ impl BatchSubmitter {
     /// `parent_hash` is validated against the hash of block `from`, ensuring the
     /// chain is rooted at the expected block.
     async fn fetch_ancestry_headers(&self, from: u64, to: u64) -> Result<Vec<Bytes>> {
-        use futures::stream;
-
         if to <= from {
             return Ok(Vec::new());
         }
@@ -1815,11 +1813,25 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
 ) -> Result<FinalizedBatch> {
     let (block, receipts) = block_with_receipts(zone_provider, target.block_number)?;
     let mut requests = Vec::new();
+    let mut sender_orgs = std::collections::HashMap::new();
     for (tx, receipt) in block.body.transactions.iter().zip(&receipts) {
         for log in receipt.logs() {
-            if log.address != outbox_address
-                || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
-            {
+            if log.address != outbox_address {
+                continue;
+            }
+            if log.topics().first() == Some(&IZoneOutbox::WithdrawalSenderOrg::SIGNATURE_HASH) {
+                let event = IZoneOutbox::WithdrawalSenderOrg::decode_log(log)
+                    .map_err(|err| {
+                        eyre::eyre!(
+                            "invalid WithdrawalSenderOrg log in zone block {}: {err}",
+                            target.block_number
+                        )
+                    })?
+                    .data;
+                sender_orgs.insert(event.withdrawalIndex, event.senderOrg);
+                continue;
+            }
+            if log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH) {
                 continue;
             }
             let event = IZoneOutbox::WithdrawalRequested::decode_log(log)
@@ -1869,9 +1881,19 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
         .into_iter()
         .zip(encrypted_senders)
         .map(|((tx_hash, event), encrypted_sender)| {
-            abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender)
+            let sender_org = sender_orgs
+                .remove(&event.withdrawalIndex)
+                .unwrap_or_default();
+            abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender, sender_org)
         })
         .collect::<Vec<_>>();
+
+    if !sender_orgs.is_empty() {
+        return Err(eyre::eyre!(
+            "WithdrawalSenderOrg without a matching WithdrawalRequested in zone block {}",
+            target.block_number
+        ));
+    }
 
     let recomputed_hash = abi::Withdrawal::queue_hash(&withdrawals);
     if recomputed_hash != target.withdrawal_queue_hash {
@@ -2460,6 +2482,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         }
     }
 
@@ -2962,9 +2985,6 @@ mod tests {
 
     #[test]
     fn decode_batch_submitted_from_receipt_logs() {
-        use alloy_provider::ProviderBuilder;
-        use alloy_transport::mock::Asserter;
-
         let portal_address = address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23");
         let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()
             .connect_mocked_client(Asserter::new())
@@ -3027,9 +3047,6 @@ mod tests {
 
     #[tokio::test]
     async fn finds_batch_events_by_logical_index_beyond_legacy_capacity() {
-        use alloy_provider::ProviderBuilder;
-        use alloy_transport::mock::Asserter;
-
         let portal_address = address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23");
         let asserter = Asserter::new();
         let provider = ProviderBuilder::new_with_network::<tempo_alloy::TempoNetwork>()

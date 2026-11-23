@@ -4,7 +4,7 @@
 
 use commonware_codec::{EncodeSize, Read, ReadExt as _, Write};
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
-use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
+use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata;
 use commonware_utils::futures::rebind;
 use eyre::WrapErr as _;
@@ -12,12 +12,12 @@ use tempo_chainspec::NetworkIdentity;
 use tracing::instrument;
 
 /// Identity transitions observed by the driver.
-pub(in crate::follow::driver) struct State<C: Clock + Metrics + Storage + BufferPooler> {
+pub(in crate::follow::driver) struct State<C: Clock + Metrics + Storage> {
     storage: Option<metadata::Metadata<C, u64, StoredIdentity>>,
     identity: Option<NetworkIdentity>,
 }
 
-impl<C: Clock + Metrics + Storage + BufferPooler> State<C> {
+impl<C: Clock + Metrics + Storage> State<C> {
     #[instrument(skip_all, err)]
     pub(in crate::follow::driver) async fn init(
         context: C,
@@ -90,7 +90,10 @@ impl Write for StoredIdentity {
 impl Read for StoredIdentity {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, commonware_codec::Error> {
+    fn read_cfg(
+        buf: &mut impl commonware_codec::Buf,
+        _: &(),
+    ) -> Result<Self, commonware_codec::Error> {
         let version = u8::read(buf)?;
         if version != 1 {
             return Err(commonware_codec::Error::InvalidEnum(version));
@@ -167,15 +170,20 @@ mod tests {
                 let encoded = value.encode();
                 assert_eq!(StoredIdentity::decode(encoded.clone()).unwrap().0, value.0);
                 for length in 0..encoded.len() {
-                    assert!(StoredIdentity::decode(&encoded[..length]).is_err());
+                    assert!(
+                        StoredIdentity::decode(commonware_codec::Copying(&encoded[..length]))
+                            .is_err()
+                    );
                 }
                 let mut trailing = encoded.to_vec();
                 trailing.push(0);
-                assert!(StoredIdentity::decode(trailing.as_slice()).is_err());
+                assert!(
+                    StoredIdentity::decode(commonware_codec::Copying(trailing.as_slice())).is_err()
+                );
                 let mut wrong_version = encoded.to_vec();
                 wrong_version[0] = 2;
                 assert!(matches!(
-                    StoredIdentity::decode(wrong_version.as_slice()),
+                    StoredIdentity::decode(commonware_codec::Copying(wrong_version.as_slice())),
                     Err(commonware_codec::Error::InvalidEnum(2))
                 ));
             }

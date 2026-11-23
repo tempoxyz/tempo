@@ -43,7 +43,11 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
-    storage::{StorageCtx, actions::StorageActions, evm::EvmPrecompileStorageProvider},
+    storage::{
+        StorageCtx,
+        actions::StorageActions,
+        evm::{EvmPrecompileStorageProvider, EvmStorageExt, Frame},
+    },
     storage_credits::{NonCreditableSlots, StorageCredits},
     tip_fee_manager::TipFeeManager,
     tip20::TIP20Token,
@@ -55,20 +59,24 @@ use crate::{
     zone_factory::ZoneFactory,
     zone_verifier::ZoneVerifier,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    marker::PhantomData,
+    rc::Rc,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{primitives::Address, sol, sol_types::SolError};
-#[cfg(test)]
-use evm2::precompiles::PrecompileHalt;
 use evm2::{
     Evm, EvmTypes, EvmTypesHost, Precompiles as BasePrecompiles, SpecId,
     evm::{PrewarmSet, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message, MessageKind},
-    precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
+    precompiles::{
+        MovePrecompileError, PrecompileError, PrecompileHalt, PrecompileId, PrecompileResult,
+    },
 };
 
 pub use tempo_contracts::precompiles::{
@@ -117,6 +125,12 @@ pub fn input_cost(spec: TempoHardfork, calldata_len: usize) -> Result<u64> {
         .ok_or(error::TempoPrecompileError::OutOfGas)
 }
 
+/// Returns whether `remaining` gas covers [`input_cost`] for `calldata_len` bytes at `spec`.
+#[inline]
+pub fn has_input_gas(spec: TempoHardfork, calldata_len: usize, remaining: u64) -> bool {
+    input_cost(spec, calldata_len).is_ok_and(|cost| remaining >= cost)
+}
+
 /// Returns the additional gas cost for duplicate validation at `spec`.
 #[inline]
 pub fn dedup_cost(spec: TempoHardfork, item_count: usize) -> Result<u64> {
@@ -163,12 +177,18 @@ sol! {
 }
 
 /// Tempo's built-in and protocol precompiles for EVM2.
+///
+/// The Ethereum precompiles run through `B`, the plain table by default.
 #[derive(Debug)]
-pub struct TempoPrecompiles<T: EvmTypesHost> {
-    base: BasePrecompiles<T>,
+pub struct TempoPrecompiles<T: EvmTypesHost, B = BasePrecompiles<T>> {
+    base: B,
     spec: TempoHardfork,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    types: PhantomData<fn() -> T>,
+    /// Count of the running nested calls ([`StorageCtx::call`]), limited to
+    /// [`MAX_NESTED_CALLS`](storage::evm::MAX_NESTED_CALLS).
+    nested_calls: Rc<Cell<u16>>,
 }
 
 impl<T: EvmTypesHost> TempoPrecompiles<T> {
@@ -178,17 +198,45 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     ) -> Self {
+        Self::with_base(
+            Self::base_precompiles(spec),
+            spec,
+            actions,
+            non_creditable_slots,
+        )
+    }
+
+    /// Returns the Ethereum precompiles of a Tempo hardfork.
+    pub fn base_precompiles(spec: TempoHardfork) -> BasePrecompiles<T> {
         // Tempo used Prague's built-ins before T1C and follows its configured EVM fork after it.
         let base_spec = if spec.is_t1c() {
             spec.into()
         } else {
             SpecId::PRAGUE
         };
+        BasePrecompiles::base(base_spec)
+    }
+}
+
+impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
+    /// Creates the precompile provider for a Tempo hardfork whose Ethereum precompiles run through
+    /// `base`.
+    ///
+    /// `base` must run [`TempoPrecompiles::base_precompiles`] of `spec`, for example behind a
+    /// cache.
+    pub fn with_base(
+        base: B,
+        spec: TempoHardfork,
+        actions: StorageActions,
+        non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    ) -> Self {
         Self {
-            base: BasePrecompiles::base(base_spec),
+            base,
             spec,
             actions,
             non_creditable_slots,
+            types: PhantomData,
+            nested_calls: Rc::default(),
         }
     }
 
@@ -235,11 +283,40 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             unreachable!("Tempo precompile address checked before dispatch")
         }
     }
+
+    /// Runs `precompile` in a storage context over the call frame of `message`. Takes `&self`
+    /// because a nested call ([`StorageCtx::call`]) re-enters the provider while this runs.
+    fn execute_in_frame(
+        &self,
+        evm: &mut Evm<'_, T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+        precompile: impl FnOnce(&[u8]) -> PrecompileResult,
+    ) -> PrecompileResult
+    where
+        T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+        T::EvmExt: EvmStorageExt,
+    {
+        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
+        // Input may borrow the caller's memory, so resolve it before storage borrows the EVM.
+        let input = evm.message_input(message).to_vec();
+        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
+            .with_actions(self.actions.clone())
+            .with_non_creditable_slots(self.non_creditable_slots.clone())
+            .with_frame(Frame {
+                address: message.call_target,
+                depth: message.depth,
+                nested_calls: self.nested_calls.clone(),
+            });
+        StorageCtx::enter(&mut storage, || precompile(&input))
+    }
 }
 
-impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
+impl<T, B> PrecompileProvider<T> for TempoPrecompiles<T, B>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: EvmStorageExt,
+    B: PrecompileProvider<T>,
 {
     fn move_precompiles(
         &mut self,
@@ -286,12 +363,11 @@ where
             )));
         }
 
-        let is_static = message.caller_is_static || message.kind == MessageKind::StaticCall;
-        let mut storage = EvmPrecompileStorageProvider::new(evm, gas, self.spec, is_static)
-            .with_actions(self.actions.clone())
-            .with_non_creditable_slots(self.non_creditable_slots.clone());
-        Some(StorageCtx::enter(&mut storage, || {
-            self.call_tempo(message.call_target, &message.input, message.caller)
+        if !has_input_gas(self.spec, evm.message_input(message).len(), gas.remaining()) {
+            return Some(Err(PrecompileHalt::OutOfGas.into()));
+        }
+        Some(self.execute_in_frame(evm, message, gas, |input| {
+            self.call_tempo(message.call_target, input, message.caller)
         }))
     }
 }
@@ -316,22 +392,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::{
+        storage::{CallOutcome, StorageCtx, evm::MAX_NESTED_CALLS},
+        test_util::with_storage,
+    };
     use alloy::{
         primitives::{Bytes, U256, bytes},
         sol_types::SolCall,
     };
     use evm2::{
-        BaseEvmConfigSelector, ExecutionConfig,
+        BaseEvmConfigSelector, ExecutionConfig, Inspector,
         bytecode::Bytecode,
         evm::{
             AccountInfo, InMemoryDB,
             precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
         },
+        interpreter::{Interpreter, MessageResult},
+        precompiles::Precompile,
         registry::TxRegistry,
     };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
+    use test_case::test_case;
 
     struct TestTypes;
 
@@ -420,7 +503,7 @@ mod tests {
             destination,
             call_target: code_address,
             code_address,
-            input: calldata,
+            input: calldata.into(),
             caller,
             ..Default::default()
         };
@@ -444,7 +527,7 @@ mod tests {
             call_target: PATH_USD_ADDRESS,
             code_address: delegate,
             code: Bytecode::new_eip7702(delegate),
-            input: Bytes::new(),
+            input: Bytes::new().into(),
             ..Default::default()
         };
         assert!(precompiles.contains(&message.call_target));
@@ -545,6 +628,120 @@ mod tests {
                 "view function should succeed in static context"
             );
         }
+    }
+
+    /// Checks that each callee runs one deeper than the factory's frame with the factory as its
+    /// caller, and records the nested calls running during it.
+    struct CallRecorder(Rc<RefCell<Vec<u16>>>, Rc<Cell<u16>>);
+
+    impl Inspector<TestTypes> for CallRecorder {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, '_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
+            assert_eq!((message.depth, message.caller), (6, TIP20_FACTORY_ADDRESS));
+            self.0.borrow_mut().push(self.1.get());
+            None
+        }
+    }
+
+    /// Runs `precompile` as a call to the TIP-20 factory at depth 5, in the frame the dispatcher
+    /// sets up.
+    fn execute_in_frame(
+        evm: &mut Evm<'_, TestTypes>,
+        precompiles: &TempoPrecompiles<TestTypes>,
+        gas_limit: u64,
+        precompile: impl FnOnce(StorageCtx) -> Result<()>,
+    ) -> (PrecompileResult, GasTracker) {
+        let message = Message::<TestTypes> {
+            call_target: TIP20_FACTORY_ADDRESS,
+            depth: 5,
+            ..Default::default()
+        };
+        let mut gas = GasTracker::new(gas_limit);
+        let result = precompiles.execute_in_frame(evm, &message, &mut gas, |_| {
+            precompile(StorageCtx).encode_precompile_result(|()| Bytes::new())
+        });
+        (result, gas)
+    }
+
+    /// A nested call re-enters the Tempo precompiles, unless [`MAX_NESTED_CALLS`] are running.
+    #[test]
+    fn test_nested_call_reenters_tempo_precompile_up_to_limit() {
+        let spec = TempoHardfork::T2;
+        let mut evm = test_evm(spec, true);
+        evm.set_precompiles(test_tempo_precompiles(spec));
+        let precompiles = test_tempo_precompiles(spec);
+        let calls = Rc::default();
+        let recorder = CallRecorder(Rc::clone(&calls), precompiles.nested_calls.clone());
+        evm.set_inspector(recorder);
+        let calldata = ITIP20::balanceOfCall {
+            account: Address::ZERO,
+        }
+        .abi_encode();
+
+        for running in [MAX_NESTED_CALLS - 1, MAX_NESTED_CALLS] {
+            precompiles.nested_calls.set(running);
+            // The callee enters its own storage context while the factory's stays borrowed.
+            let result = execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
+                let balance =
+                    storage.call(PATH_USD_ADDRESS, calldata.clone().into(), 500_000, true)?;
+                assert_eq!(
+                    balance,
+                    CallOutcome::Success(U256::ZERO.to_be_bytes_vec().into())
+                );
+                Ok(())
+            })
+            .0;
+            if running < MAX_NESTED_CALLS {
+                assert!(result.is_ok());
+            } else {
+                // A refused call reverts the precompile call.
+                assert!(matches!(result, Err(PrecompileError::Revert(data)) if data.is_empty()));
+            }
+            assert_eq!(precompiles.nested_calls.get(), running);
+        }
+        // Only the first callee ran, and counted as running.
+        assert_eq!(calls.take(), [MAX_NESTED_CALLS]);
+    }
+
+    /// A callee's fatal error fails the precompile call fatally, and a callee that fails fatally
+    /// or panics no longer counts as running.
+    #[test]
+    fn test_nested_call_propagates_fatal_callee_error() {
+        let spec = TempoHardfork::T2;
+        let (callee, panicking) = (Address::repeat_byte(0xfa), Address::repeat_byte(0xfb));
+        let mut fatal = BasePrecompiles::<TestTypes>::base(SpecId::OSAKA);
+        fatal.as_map_mut().insert(Precompile::new(
+            callee,
+            PrecompileId::custom("fatal"),
+            |_, _, _| Err("fatal".into()),
+        ));
+        fatal.as_map_mut().insert(Precompile::new(
+            panicking,
+            PrecompileId::custom("panic"),
+            |_, _, _| panic!("callee panics"),
+        ));
+        let mut evm = test_evm(spec, false);
+        evm.set_precompiles(fatal);
+
+        let precompiles = test_tempo_precompiles(spec);
+        let mut call = |callee| {
+            catch_unwind(AssertUnwindSafe(|| {
+                execute_in_frame(&mut evm, &precompiles, 1_000_000, |mut storage| {
+                    storage
+                        .call(callee, Bytes::new(), 500_000, false)
+                        .map(|_| ())
+                })
+                .0
+            }))
+        };
+        assert!(matches!(call(callee), Ok(Err(PrecompileError::Fatal(_)))));
+        assert_eq!(precompiles.nested_calls.get(), 0);
+        let panic = call(panicking).unwrap_err();
+        assert_eq!(panic.downcast_ref(), Some(&"callee panics"));
+        assert_eq!(precompiles.nested_calls.get(), 0);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
@@ -811,8 +1008,7 @@ mod tests {
         }
 
         let call_with_spec = |spec: TempoHardfork, calldata: &[u8]| {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
+            with_storage(spec, || {
                 dispatch!(
                     calldata,
                     |call| match call {
@@ -1030,26 +1226,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_zone_verifier_registered_at_t13_only() {
+    #[test_case(TempoHardfork::T10 => false)]
+    #[test_case(TempoHardfork::T11 => false)]
+    #[test_case(TempoHardfork::T12 => false)]
+    #[test_case(TempoHardfork::T13 => true)]
+    fn test_zone_verifier_registered_at_t13_only(spec: TempoHardfork) -> bool {
         let activation = SYSTEM_PRECOMPILES
             .iter()
             .find_map(|(address, fork)| (*address == ZONE_VERIFIER_ADDRESS).then_some(*fork))
             .expect("ZoneVerifier must be listed in SYSTEM_PRECOMPILES");
         assert_eq!(activation, TempoHardfork::T13);
 
-        for (spec, active) in [
-            (TempoHardfork::T10, false),
-            (TempoHardfork::T11, false),
-            (TempoHardfork::T12, false),
-            (TempoHardfork::T13, true),
-        ] {
-            assert_eq!(
-                test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS),
-                active,
-                "unexpected native ZoneVerifier activation at {spec:?}"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&ZONE_VERIFIER_ADDRESS)
     }
 
     #[test]
@@ -1065,35 +1253,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_p256verify_availability_across_t1c_boundary() {
-        let has_p256 = |spec: TempoHardfork| -> bool {
-            // P256VERIFY lives at address 0x100 (256), added in Osaka
-            let p256_addr = Address::from_word(U256::from(256).into());
+    // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
+    #[test_case(TempoHardfork::Genesis => false)]
+    #[test_case(TempoHardfork::T0 => false)]
+    #[test_case(TempoHardfork::T1 => false)]
+    #[test_case(TempoHardfork::T1A => false)]
+    #[test_case(TempoHardfork::T1B => false)]
+    // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
+    #[test_case(TempoHardfork::T1C => true)]
+    #[test_case(TempoHardfork::T2 => true)]
+    fn test_p256verify_availability_across_t1c_boundary(spec: TempoHardfork) -> bool {
+        // P256VERIFY lives at address 0x100 (256), added in Osaka
+        let p256_addr = Address::from_word(U256::from(256).into());
 
-            test_tempo_precompiles(spec).contains(&p256_addr)
-        };
-
-        // Pre-T1C hardforks should use Prague precompiles (no P256VERIFY)
-        for spec in [
-            TempoHardfork::Genesis,
-            TempoHardfork::T0,
-            TempoHardfork::T1,
-            TempoHardfork::T1A,
-            TempoHardfork::T1B,
-        ] {
-            assert!(
-                !has_p256(spec),
-                "P256VERIFY should NOT be available at {spec:?} (pre-T1C)"
-            );
-        }
-
-        // T1C+ hardforks should use Osaka precompiles (P256VERIFY available)
-        for spec in [TempoHardfork::T1C, TempoHardfork::T2] {
-            assert!(
-                has_p256(spec),
-                "P256VERIFY should be available at {spec:?} (T1C+)"
-            );
-        }
+        test_tempo_precompiles(spec).contains(&p256_addr)
     }
 }

@@ -221,7 +221,8 @@ impl GenerateStateBloat {
                             .expect("child derivation should not fail");
                         let key: &coins_bip32::prelude::SigningKey = child.as_ref();
                         let credential =
-                            k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+                            alloy::signers::k256::ecdsa::SigningKey::from_slice(&key.to_bytes())
+                                .unwrap();
                         secret_key_to_address(&credential)
                     } else {
                         derive_address_fast(&seed, i as u64)
@@ -341,7 +342,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::B256;
+    use alloy::{primitives::B256, signers::local::MnemonicBuilder};
     use clap::Parser;
     use std::io::{BufReader, Seek};
     use tempo_precompiles::storage::{
@@ -426,8 +427,6 @@ mod tests {
 
     #[test]
     fn test_derive_parent_key_matches_mnemonic_builder() {
-        use alloy::signers::local::MnemonicBuilder;
-
         let mnemonic = "test test test test test test test test test test test junk";
         let parent_key = derive_parent_key(mnemonic).unwrap();
 
@@ -437,7 +436,8 @@ mod tests {
 
             let child = parent_key.derive_child(i).unwrap();
             let key: &coins_bip32::prelude::SigningKey = child.as_ref();
-            let credential = k256::ecdsa::SigningKey::from_bytes(&key.to_bytes()).unwrap();
+            let credential =
+                alloy::signers::k256::ecdsa::SigningKey::from_slice(&key.to_bytes()).unwrap();
             let actual = secret_key_to_address(&credential);
 
             assert_eq!(actual, expected.address(), "address mismatch at index {i}");

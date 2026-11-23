@@ -1,8 +1,6 @@
 //! Hardfork transitions through the running node, payload builder, and native precompiles.
 //! L1 headers and portal events are supplied by the same fixture as the other local E2E tests.
 
-use std::time::Duration;
-
 use alloy_consensus::{BlockHeader, Transaction};
 use alloy_primitives::{Address, B256, Bytes, U256, address};
 use alloy_provider::Provider;
@@ -32,9 +30,9 @@ use crate::utils::{
 async fn test_t12_to_t13_tip1096_activation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Leave time for startup and the T12 assertions. The engine uses wall time as a timestamp
-    // lower bound, and consensus rejects future blocks, so wait for activation before T13.
-    let activation = now_secs() + 15;
+    // A zone block takes the later of its L1 header's timestamp and the wall clock, so L1 headers
+    // stamped at activation reach T13 without waiting for the wall clock to get there.
+    let activation = now_secs() + 3600;
     let mut genesis = zone_node::genesis::genesis_template()?;
     set_tempo_fork(&mut genesis, TempoHardfork::T13, activation);
     genesis.config.chain_id = zone_primitives::constants::zone_chain_id(1_337, 1096)?;
@@ -103,7 +101,6 @@ async fn test_t12_to_t13_tip1096_activation() -> eyre::Result<()> {
         symbol: "aUSD".into(),
         currency: "USD".into(),
     };
-    tokio::time::sleep(Duration::from_secs(activation.saturating_sub(now_secs()))).await;
     let t13 = fixture.next_block_at(activation);
     fixture.enqueue_events(
         &t13,
@@ -136,10 +133,6 @@ async fn test_t12_to_t13_tip1096_activation() -> eyre::Result<()> {
 
     // Announce a later finalized target before enqueueing its prefix, as the L1 subscriber
     // does during backfill. This forces checkpoint mode without racing the engine's queue read.
-    tokio::time::sleep(Duration::from_secs(
-        (activation + 2).saturating_sub(now_secs()),
-    ))
-    .await;
     zone.l1_block_tracker().record_finalized_target(4);
     let beta = EnabledToken {
         token: address!("20c0000000000000000000000000000000109602"),
@@ -238,8 +231,8 @@ async fn assert_full_import(
         .expect("full-import block");
     assert!(block.header.timestamp() >= l1_header.timestamp());
     assert!(
-        block.header.timestamp() <= now_secs(),
-        "Zone block must not be in the future"
+        block.header.timestamp() <= l1_header.timestamp().max(now_secs()),
+        "Zone block must not run ahead of both its L1 header and the wall clock"
     );
     let txs = block
         .transactions

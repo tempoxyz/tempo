@@ -6,18 +6,19 @@
 
 use crate::{
     execution::{CallCheck, CallRules},
+    privacy::check_caller,
     storage::StorageCtx,
     ztip20::TIP20_FIXED_TRANSFER_GAS,
 };
 use alloy_primitives::Address;
-use alloy_sol_types::{SolCall, SolError};
-use tempo_contracts::{precompiles::IReceivePolicyGuard, zones::Unauthorized};
+use alloy_sol_types::SolCall;
+use tempo_contracts::precompiles::IReceivePolicyGuard;
 use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
 };
 
-/// Stakeholder-only admission for receipt balance lookups.
+/// Admission for receipt balance lookups: stakeholders and, from T15, readers of their orgs.
 pub(crate) struct ReceivePolicyGuardRules;
 
 impl CallRules for ReceivePolicyGuardRules {
@@ -53,8 +54,12 @@ impl CallRules for ReceivePolicyGuardRules {
         }
 
         match AddressRegistry::new().resolve_recipient(receipt.recipient) {
-            Ok(receiver) if caller == receiver => CallCheck::Continue,
-            Ok(_) => CallCheck::Revert(Unauthorized {}.abi_encode().into()),
+            Ok(receiver) => {
+                // A zero recovery authority means none, so it must not admit a zero caller.
+                let parties = [receipt.originator, receiver, receipt.recoveryAuthority];
+                let len = parties.len() - usize::from(receipt.recoveryAuthority.is_zero());
+                check_caller(caller, &parties[..len])
+            }
             Err(error) => CallCheck::Error(error),
         }
     }
@@ -66,9 +71,12 @@ mod tests {
     use super::*;
 
     use alloy_primitives::{B256, Bytes, U256};
-    use alloy_sol_types::SolValue;
+    use alloy_sol_types::{SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{IReceivePolicyGuard::InboundKind, ITIP20, ITIP403Registry};
+    use tempo_contracts::{
+        precompiles::{IReceivePolicyGuard::InboundKind, ITIP20, ITIP403Registry},
+        zones::Unauthorized,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
         address_registry::AddressRegistry,
@@ -77,10 +85,14 @@ mod tests {
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
+    use tempo_primitives::TempoEvmKind;
 
-    use crate::test_utils::{
-        PrecompileOutput, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
-        test_context, test_precompiles, test_storage_provider,
+    use crate::{
+        test_utils::{
+            PrecompileOutput, PrecompileResult, TestContext, TestPrecompiles, call_precompile,
+            test_context, test_context_with_hardfork, test_precompiles, test_storage_provider,
+        },
+        zone_identity::ZoneIdentity,
     };
 
     const ADMIN: Address = Address::with_last_byte(0xa1);
@@ -151,6 +163,28 @@ mod tests {
             }
             assert_unauthorized(&rules, &receipt, OUTSIDER);
         });
+    }
+
+    #[test]
+    fn balance_admission_allows_stakeholders_org_admins() -> eyre::Result<()> {
+        let rules = ReceivePolicyGuardRules;
+        let unrecoverable = receipt(RECEIVER, Address::ZERO);
+        let receipt = receipt(RECEIVER, RECOVERY);
+        let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut identity = ZoneIdentity::new();
+            for (byte, stakeholder) in [(1, ORIGINATOR), (2, RECEIVER), (3, RECOVERY)] {
+                let admin = Address::repeat_byte(byte);
+                let org = identity.create_org(ADMIN, ADMIN, admin)?;
+                identity.add_members(admin, org, &[stakeholder])?;
+                assert_allowed(&rules, &receipt, admin);
+            }
+            assert_unauthorized(&rules, &receipt, OUTSIDER);
+            assert_unauthorized(&rules, &unrecoverable, Address::ZERO);
+            Ok(())
+        })
     }
 
     #[test]
@@ -265,6 +299,8 @@ mod tests {
             ctx.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T8;
             ctx.block.timestamp = U256::from(BLOCKED_AT);
 
+            // Zones revert blocked inbounds, so seed the receipt as Tempo L1 would divert it.
+            ctx.evm().ext_mut().kind = TempoEvmKind::L1;
             {
                 let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
                 StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -290,6 +326,7 @@ mod tests {
                     Ok(())
                 })?;
             }
+            ctx.evm().ext_mut().kind = TempoEvmKind::Zone;
 
             let receipt = receipt(RECEIVER, RECEIVER);
             assert_eq!(receipt.version, BLOCKED_RECEIPT_VERSION);

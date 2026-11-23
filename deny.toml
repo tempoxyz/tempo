@@ -33,6 +33,15 @@ ignore = [
   "RUSTSEC-2026-0398",
   # https://rustsec.org/advisories/RUSTSEC-2026-0403
   "RUSTSEC-2026-0403",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0441 pin-utils is unmaintained and is pulled
+  # in transitively (aws-smithy, nix, hyper-util and others) with no safe upgrade available.
+  "RUSTSEC-2026-0441",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0543 chrono is unmaintained and is pulled in
+  # transitively (reth, object_store, slatedb, procfs and others) with no safe upgrade available.
+  "RUSTSEC-2026-0543",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0542 humantime is unmaintained and is pulled in
+  # transitively (reth, object_store, humantime-serde) with no safe upgrade available.
+  "RUSTSEC-2026-0542",
 ]
 
 # This section is considered when running `cargo deny check bans`.

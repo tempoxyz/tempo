@@ -11,6 +11,7 @@ use evm2::{
 use evm2_macros::instruction;
 use tempo_precompiles::{
     configurable_account::{CONFIGURABLE_ACCOUNT_CODE, shim},
+    has_input_gas,
     storage::{
         SstoreTransitionFlags, StorageCtx, account_config_commitment,
         evm::EvmPrecompileStorageProvider,
@@ -158,7 +159,10 @@ pub fn configurable_account(cx: _) -> Result {
         return Err(InstrStop::OpcodeNotFound);
     }
     let account = cx.state.message().destination;
-    let input = cx.state.message().input.clone();
+    if !has_input_gas(spec, cx.state.input().len(), cx.gas.tracker().remaining()) {
+        return Err(InstrStop::PrecompileOOG);
+    }
+    let input = cx.state.input().to_vec();
     let mut storage =
         EvmPrecompileStorageProvider::new(cx.state.host(), cx.gas.tracker_mut(), spec, true);
     let (stop, output) = match StorageCtx::enter(&mut storage, || shim::call(account, &input)) {
@@ -190,7 +194,6 @@ mod tests {
     use evm2::{
         ExecutionError,
         bytecode::Bytecode,
-        env::TxEnvExt,
         evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
@@ -313,9 +316,7 @@ mod tests {
             code: Bytecode::new_raw(Bytes::from_static(&[0x60, 0x01, 0x60, 0x00, 0x55, 0x00])),
             ..MessageExt::default()
         };
-        let error = evm
-            .execute_message(&TxEnvExt::default(), &mut message)
-            .unwrap_err();
+        let error = evm.execute_message(&mut message).unwrap_err();
         let ExecutionError::Fatal(error) = error else {
             panic!("expected fatal error")
         };

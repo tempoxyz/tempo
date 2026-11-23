@@ -7,16 +7,17 @@
 #[expect(dead_code)]
 mod common;
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_signer::SignerSync;
 use alloy_sol_types::SolCall;
 use common::{
-    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, seeded_db, txgen_signers,
+    CHAIN_ID, DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS, bench_evm,
+    execute_txs, fixture_from_seeded_db, hardfork_bench_cases, seeded_db, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use evm2::evm::InMemoryDB;
-use std::{hint::black_box, sync::Arc};
+use std::{hint::black_box, num::NonZeroU64, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
 use tempo_evm::TempoEvmConfig;
@@ -31,7 +32,7 @@ use tempo_precompiles::{
     tip20_factory::{TIP20Factory, compute_tip20_address},
     tip403_registry::TIP403Registry,
 };
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -123,19 +124,9 @@ fn sign_dex_calls(
 ) -> Recovered<TempoTxEnvelope> {
     let calls = inputs
         .into_iter()
-        .map(|input| tempo_primitives::transaction::Call {
-            to: alloy_primitives::TxKind::Call(STABLECOIN_DEX_ADDRESS),
-            value: U256::ZERO,
-            input,
-        })
+        .map(|input| tempo_primitives::transaction::Call::new(STABLECOIN_DEX_ADDRESS, input))
         .collect();
     // Reuse the common single-call signer shape by constructing the multi-call tx locally.
-    use alloy_consensus::transaction::SignerRecoverable;
-    use alloy_signer::SignerSync;
-    use common::{CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS};
-    use std::num::NonZeroU64;
-    use tempo_primitives::{TempoTransaction, transaction::TEMPO_EXPIRING_NONCE_KEY};
-
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
         fee_token: Some(PATH_USD_ADDRESS),

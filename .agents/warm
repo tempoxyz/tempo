@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Builds main the way agents build it, for Pyramid's golden repository disks: Pyramid's warmer
+# runs .agents/setup and then this on reviewed main, snapshots the result, and new Pyramid Hands
+# clone it copy-on-write, so their first build recompiles only what their commit changed
+# (Pyramid's docs/kubernetes.md, "Golden repository disks"). Amp orbs never run it.
+#
+# Each shape below is a different set of cargo units, so it warms only the commands that build
+# the same ones: the debug node binary (cargo build --bin tempo), every test target
+# (cargo test / cargo nextest run over the workspace) and cargo check --workspace --all-targets.
+# Selecting packages (-p) resolves dependency features differently, so a Hand's first -p build
+# still rebuilds reth and alloy (about 300 units); release builds aren't warmed.
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+export PATH="$PATH:$HOME/.cargo/bin"
+status=0
+# Every unit these commands build or find fresh, as cargo's JSON messages, for prune_artifacts.
+units=$(mktemp)
+started=$(mktemp)
+trap 'rm -f "$started" "$units"' EXIT
+build() {
+  echo "warm: $*"
+  "$@" --message-format=json-render-diagnostics >>"$units" || { echo "warm: failed: $*" >&2; status=1; }
+}
+
+# Incremental builds only add to target/: past this many GiB it starts over, so the 128 GiB
+# golden disk keeps room for the Hands' own builds. One warm takes about 50 GiB.
+max_gib=${PYRAMID_WARM_MAX_TARGET_GIB:-80}
+if [ -d target ] && [ $(( $(du -sk target | cut -f1) / 1048576 )) -ge "$max_gib" ]; then
+  echo "warm: target/ holds at least ${max_gib} GiB: starting it over"
+  rm -rf target
+fi
+
+build cargo build --locked --bin tempo
+build cargo test --locked --workspace --no-run
+build cargo check --locked --workspace --all-targets
+
+# Cargo never deletes an artifact: a unit whose hash changed (a new Cargo.lock, an edited crate's
+# test binary) leaves its old files in deps/, build/ and .fingerprint/, each named
+# <name>-<16 hex hash>. Every unit this warm needs appeared in its JSON messages, fresh or rebuilt,
+# so any other hash is stale.
+prune_artifacts() {
+  local dir=target/debug sub keep
+  [ -s "$units" ] && [ -d "$dir" ] || return 0
+  keep=$(mktemp)
+  {
+    grep -oE '/debug/(deps|build|examples)/[^"/]*-[0-9a-f]{16}' "$units" | grep -oE '[0-9a-f]{16}$'
+    # Bins and examples are reported by their unhashed uplifted copy (target/debug/tempo), a hard
+    # link to the hashed output whose hash names the unit.
+    grep -oE '"[^"]*/debug/(examples/)?[^"/]+"' "$units" | tr -d '"' | sort -u | while read -r f; do
+      [ -f "$f" ] && find "$dir/deps" "$dir/examples" -maxdepth 1 -samefile "$f" -printf '%f
+' 2>/dev/null
+    done | grep -oE -- '-[0-9a-f]{16}$' | cut -c2-
+  } | sort -u >"$keep"
+  # Too few to be a whole build's: keep everything rather than guess.
+  if [ "$(wc -l <"$keep")" -lt 50 ]; then rm -f "$keep"; return 0; fi
+  for sub in deps build .fingerprint examples; do
+    [ -d "$dir/$sub" ] || continue
+    find "$dir/$sub" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+      awk -v keep="$keep" 'BEGIN { while ((getline h < keep) > 0) k[h] = 1 }
+        { s = $0; h = ""; while (match(s, /-[0-9a-f]+/)) { m = substr(s, RSTART + 1, RLENGTH - 1); if (length(m) == 16) h = m; s = substr(s, RSTART + RLENGTH) }
+          if (h != "" && !(h in k)) print }' |
+      while read -r entry; do rm -rf "${dir:?}/$sub/$entry"; done
+  done
+  rm -f "$keep"
+}
+# Each unit's incremental cache is incremental/<crate>-<hash>; a unit whose hash changed gets a
+# new one beside the old, which nothing reads again. A crate this warm rebuilt rebuilt every unit
+# the warm builds of it, so its directories this warm didn't write are stale; an untouched crate
+# keeps all of its. rustc also keeps a unit's previous session until its next compile; only the
+# newest stays. Only after a warm that succeeded, so a failed build drops no live cache.
+prune_incremental() {
+  local dir=target/debug/incremental rebuilt unit
+  [ -d "$dir" ] || return 0
+  rebuilt=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -newer "$started" -printf '%f\n' | sed 's/-[^-]*$//' | sort -u)
+  find "$dir" -mindepth 1 -maxdepth 1 -type d ! -newer "$started" -printf '%f\n' | while read -r unit; do
+    if grep -qxF "${unit%-*}" <<<"$rebuilt"; then rm -rf "${dir:?}/$unit"; fi
+  done
+  for unit in "$dir"/*/; do
+    find "$unit" -mindepth 1 -maxdepth 1 -type d -name 's-*' -printf '%T@ %p\n' | sort -rn | tail -n +2 | cut -d' ' -f2- | while read -r session; do
+      rm -rf "$session" "${session%-*}.lock"
+    done
+  done
+}
+if [ "$status" -eq 0 ]; then
+  prune_artifacts
+  prune_incremental
+  echo "warm: target/ holds $(du -sh target | cut -f1) after pruning"
+fi
+exit "$status"

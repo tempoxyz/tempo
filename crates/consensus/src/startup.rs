@@ -9,7 +9,7 @@ use commonware_parallel::Sequential;
 use eyre::ensure;
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::{config::NAMESPACE, epoch::SchemeProvider, gossip::Certificate};
 
@@ -34,6 +34,15 @@ pub(crate) fn verify_finalized_tip(
             );
         }
         if persisted.from_epoch > configured_identity.from_epoch {
+            if persisted.identity != configured_identity.identity {
+                warn!(
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
+                    persisted_from_epoch = persisted.from_epoch,
+                    persisted_network_identity = %persisted.identity,
+                    "Persisted network identity differs from the configured network identity!!! Using the persisted identity; update the binary with the latest network identity"
+                );
+            }
             trusted = persisted.clone();
         }
     }
@@ -83,4 +92,24 @@ pub(crate) fn verify_finalized_tip(
     // Pin the trusted identity even when the tip predates it or startup is at genesis.
     scheme_provider.register(Epoch::new(trusted.from_epoch), scheme);
     Ok(trusted)
+}
+
+/// Ensures a startup DKG outcome is at most one epoch past the finalized tip's epoch.
+///
+/// [`verify_finalized_tip`] accepts a tip older than the trusted identity without
+/// verifying it. Bounding the startup outcome by that tip forces the node to cross every
+/// boundary up to the identity's epoch, where the pinned identity is checked.
+pub(crate) fn ensure_outcome_within_tip_epoch(
+    outcome_epoch: Epoch,
+    tip: Option<&Certificate>,
+) -> eyre::Result<()> {
+    if let Some(tip) = tip {
+        let tip_epoch = tip.proposal.round.epoch();
+        ensure!(
+            outcome_epoch <= tip_epoch.next(),
+            "startup DKG outcome is for epoch `{outcome_epoch}`, past the epoch after the \
+             finalized tip's epoch `{tip_epoch}`",
+        );
+    }
+    Ok(())
 }

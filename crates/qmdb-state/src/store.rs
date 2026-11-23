@@ -24,17 +24,17 @@ use commonware_runtime::{
 use commonware_storage::{
     journal::{
         self,
+        authenticated::{Config as MerkleConfig, ResidentHeight},
         contiguous::{
             Contiguous as _,
             fixed::{self, Config as JournalConfig},
         },
     },
-    merkle::{Location, full::Config as MerkleConfig, mmb},
+    merkle::{Location, mmb},
     qmdb::{
         self,
-        any::ordered::fixed::Update,
+        any::{batch::Slot, ordered::fixed::Update},
         current::{
-            FixedConfig,
             batch::{MerkleizedBatch, Staged},
             ordered::fixed::partitioned,
         },
@@ -67,7 +67,8 @@ const PAGE_SIZE: NonZeroU16 = paged::page_size(4096);
 /// The on-disk format the store writes into [FORMAT_FILE], bumped with every change to it.
 ///
 /// 2: 4 KiB pages.
-const FORMAT: u32 = 2;
+/// 3: commonware 2026.11.0, whose Merkle nodes live in memory rather than on disk.
+const FORMAT: u32 = 3;
 /// File in [`Config::directory`] holding the store's [FORMAT].
 const FORMAT_FILE: &str = "FORMAT";
 const ITEMS_PER_BLOB: NonZeroU64 = NonZeroU64::new(1 << 23).expect("non-zero");
@@ -79,6 +80,8 @@ const COMMITS_WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(4096).expect("non-z
 
 type Db<const N: usize, const P: usize> =
     partitioned::Db<Family, Context, Key, FixedBytes<N>, Sha256, EightCap, P, CHUNK, Rayon>;
+/// Configuration of either database.
+type DbConfig = commonware_storage::qmdb::current::ordered::fixed::Config<EightCap, Rayon>;
 type AccountsDb = Db<ACCOUNT_LEN, ACCOUNT_PARTITION_BYTES>;
 type SlotsDb = Db<SLOT_LEN, SLOT_PARTITION_BYTES>;
 type Batch<const N: usize> = Arc<
@@ -365,9 +368,10 @@ impl Store {
         // Its own thread, like `Self::open`'s, since a runtime cannot start inside the caller's.
         let rebind = move || {
             Runner::new(runtime).start(|context| async move {
-                let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, page_cache_pages);
+                let page_cache = CacheRef::new(PAGE_SIZE, page_cache_pages);
                 let commits =
-                    Commits::init(context.child("commits"), commits_config(page_cache)).await?;
+                    Commits::init(context.child("commits"), commits_config(page_cache.clone()))
+                        .await?;
                 let size = commits.size();
                 let latest = if size > commits.bounds().start {
                     Some(Commit::decode(&commits.read(size - 1).await?))
@@ -383,11 +387,14 @@ impl Store {
                 if latest.hash == hash {
                     return Ok(false);
                 }
-                let (commits, _) = commits
-                    .rewind(size - 1)
-                    .await?
-                    .append(&Commit { hash, ..latest }.encode())
-                    .await?;
+                drop(commits);
+                let commits = Commits::init_at_most(
+                    context.child("commits"),
+                    commits_config(page_cache),
+                    size - 1,
+                )
+                .await?;
+                let (commits, _) = commits.append(&Commit { hash, ..latest }.encode()).await?;
                 commits.commit().await?;
                 Ok(true)
             })
@@ -873,6 +880,10 @@ type SharedStage = Arc<tokio::sync::Mutex<Stage>>;
 
 struct Actor {
     context: Context,
+    /// Shared by both databases and the commit journal.
+    page_cache: CacheRef,
+    /// Threads that merkleize and rebuild the indexes.
+    threads: NonZeroUsize,
     /// Always `Some` between commands: applying and committing consume the databases. Reads
     /// share it; the actor locks it exclusively only to apply, import or rewind.
     accounts: Shared<AccountsDb>,
@@ -889,33 +900,11 @@ struct Actor {
 
 impl Actor {
     async fn init(context: Context, config: &Config) -> Result<Self, Error> {
-        let page_cache = CacheRef::from_pooler(&context, PAGE_SIZE, config.page_cache_pages);
-        let db_config = |name: &str| FixedConfig {
-            merkle_config: MerkleConfig {
-                journal_partition: format!("{name}-merkle-journal"),
-                metadata_partition: format!("{name}-merkle-metadata"),
-                items_per_blob: ITEMS_PER_BLOB,
-                write_buffer: IO_BUFFER,
-                replay_buffer: IO_BUFFER,
-                strategy: context.strategy(config.threads),
-                page_cache: page_cache.clone(),
-            },
-            journal_config: JournalConfig {
-                partition: format!("{name}-log"),
-                items_per_blob: ITEMS_PER_BLOB,
-                page_cache: page_cache.clone(),
-                write_buffer: IO_BUFFER,
-                replay_buffer: IO_BUFFER,
-            },
-            grafted_metadata_partition: format!("{name}-grafted-metadata"),
-            translator: EightCap,
-            init_cache_size: None,
-            init_buffer: IO_BUFFER,
-            init_concurrency: config.threads,
-        };
+        let page_cache = CacheRef::new(PAGE_SIZE, config.page_cache_pages);
+        let db_config = |name: &str| db_config(&context, config.threads, &page_cache, name);
         let (mut accounts, mut slots) = try_join!(
-            AccountsDb::init(context.child("accounts"), db_config("accounts")),
-            SlotsDb::init(context.child("slots"), db_config("slots")),
+            AccountsDb::init(context.child("accounts"), db_config("accounts"), None),
+            SlotsDb::init(context.child("slots"), db_config("slots"), None),
         )?;
         let mut commits =
             Commits::init(context.child("commits"), commits_config(page_cache.clone())).await?;
@@ -940,7 +929,13 @@ impl Actor {
             kept -= 1;
         }
         if kept < commits.size() {
-            commits = commits.rewind(kept).await?.commit().await?;
+            drop(commits);
+            commits = Commits::init_at_most(
+                context.child("commits"),
+                commits_config(page_cache.clone()),
+                kept,
+            )
+            .await?;
         }
 
         // A crash between committing the two databases leaves one a block ahead.
@@ -959,8 +954,18 @@ impl Actor {
                 "QMDB databases are out of step, rewinding both to the latest recorded block"
             );
             (accounts, slots) = try_join!(
-                rewind_db(accounts, commit.accounts_size),
-                rewind_db(slots, commit.slots_size),
+                rewind_db(
+                    accounts,
+                    commit.accounts_size,
+                    context.child("accounts"),
+                    db_config("accounts")
+                ),
+                rewind_db(
+                    slots,
+                    commit.slots_size,
+                    context.child("slots"),
+                    db_config("slots")
+                ),
             )?;
             applied = Some(commit.number);
         }
@@ -974,6 +979,8 @@ impl Actor {
 
         Ok(Self {
             context,
+            page_cache,
+            threads: config.threads,
             accounts: Arc::new(RwLock::new(Some(accounts))),
             slots: Arc::new(RwLock::new(Some(slots))),
             commits: Some(commits),
@@ -1102,8 +1109,8 @@ impl Actor {
             let slots_db = slots_db.read().await;
             reply(match (accounts_db.as_ref(), slots_db.as_ref()) {
                 (Some(accounts_db), Some(slots_db)) => try_join!(
-                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
-                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                    async { Ok::<_, Error>(accounts_db.get_many(&accounts).await.map(drop)?) },
+                    async { Ok::<_, Error>(slots_db.get_many(&slots).await.map(drop)?) },
                 )
                 .map(|_| ()),
                 _ => Err(Error::Stopped),
@@ -1131,9 +1138,9 @@ impl Actor {
             Some(parent) => parent.slots.new_batch::<Sha256>(),
             None => slots_db.new_batch(),
         };
-        let ((_, accounts), (_, slots)) = try_join!(
-            async { Ok::<_, Error>(accounts.stage(&[], &*accounts_db).await?) },
-            async { Ok::<_, Error>(slots.stage(&[], &*slots_db).await?) },
+        let ((accounts, _), (slots, _)) = try_join!(
+            async { Ok::<_, Error>(accounts.stage(&[] as &[Key], &*accounts_db).await?) },
+            async { Ok::<_, Error>(slots.stage(&[] as &[Key], &*slots_db).await?) },
         )?;
         drop((accounts_db, slots_db));
         while self.stages.len() >= MAX_STAGES {
@@ -1214,8 +1221,8 @@ impl Actor {
             drop(stage);
             reply(
                 try_join!(
-                    async { Ok::<_, Error>(accounts_db.prefetch(&accounts).await?) },
-                    async { Ok::<_, Error>(slots_db.prefetch(&slots).await?) },
+                    async { Ok::<_, Error>(accounts_db.get_many(&accounts).await.map(drop)?) },
+                    async { Ok::<_, Error>(slots_db.get_many(&slots).await.map(drop)?) },
                 )
                 .map(|_| ()),
             );
@@ -1487,8 +1494,18 @@ impl Actor {
         let slots = slots_lock.take().expect("restored after every command");
         // Like applying, a failed rewind consumes the databases until the store is reopened.
         let (accounts, slots) = try_join!(
-            rewind_db(accounts, commit.accounts_size),
-            rewind_db(slots, commit.slots_size),
+            rewind_db(
+                accounts,
+                commit.accounts_size,
+                self.context.child("accounts"),
+                db_config(&self.context, self.threads, &self.page_cache, "accounts"),
+            ),
+            rewind_db(
+                slots,
+                commit.slots_size,
+                self.context.child("slots"),
+                db_config(&self.context, self.threads, &self.page_cache, "slots"),
+            ),
         )?;
         *accounts_lock = Some(accounts);
         *slots_lock = Some(slots);
@@ -1496,7 +1513,15 @@ impl Actor {
         self.applied = Some(commit.number);
         self.base = Some(commit.hash);
         let commits = self.commits.take().expect("restored after every command");
-        self.commits = Some(commits.rewind(position + 1).await?.commit().await?);
+        drop(commits);
+        self.commits = Some(
+            Commits::init_at_most(
+                self.context.child("commits"),
+                commits_config(self.page_cache.clone()),
+                position + 1,
+            )
+            .await?,
+        );
         Ok(())
     }
 
@@ -1551,20 +1576,24 @@ async fn merkleize_db<const N: usize, const P: usize>(
     number: Option<u64>,
 ) -> Result<Batch<N>, Error> {
     if let Some(StagedDb { staged, index }) = staged {
-        let (mut updates, mut upserts) = (Vec::new(), Vec::new());
+        let mut slots: Vec<Slot<FixedBytes<N>>> = std::iter::repeat_with(|| Slot::Keep)
+            .take(staged.len())
+            .collect();
+        let mut unstaged = Vec::new();
         for write in writes {
             match index.get(&write.key) {
-                Some(&read) => updates.push((read, write.value)),
-                None => upserts.push((write.key, write.value)),
+                Some(&slot) if slot < slots.len() => {
+                    slots[slot] = match write.value {
+                        Some(value) => Slot::Put(value),
+                        None => Slot::Delete,
+                    };
+                }
+                _ => unstaged.push((write.key, write.value)),
             }
         }
         return Ok(staged
-            .merkleize(
-                updates,
-                upserts,
-                number.map(layout::block_metadata::<N>),
-                db,
-            )
+            .with_metadata(number.map(layout::block_metadata::<N>))
+            .merkleize(slots, unstaged, db)
             .await?);
     }
     let mut batch = match parent {
@@ -1575,7 +1604,8 @@ async fn merkleize_db<const N: usize, const P: usize>(
         batch = batch.write(write.key, write.value);
     }
     Ok(batch
-        .merkleize(db, number.map(layout::block_metadata::<N>))
+        .with_metadata(number.map(layout::block_metadata::<N>))
+        .merkleize(db)
         .await?)
 }
 
@@ -1594,23 +1624,12 @@ async fn stage_db<const N: usize, const P: usize>(
         }
     }
     if new.is_empty() {
-        // Applying a block since the last read discards the predecessors looked up on the old
-        // state: look them up again.
-        let mut staged = staged;
-        staged.prefetch_predecessors(db).await?;
         return Ok(StagedDb { staged, index });
     }
-    let (reads, _, mut staged) = staged.expand(&new, db).await?;
-    for (key, read) in new.into_iter().zip(reads) {
-        index.insert(key.clone(), read);
+    let (staged, range, _) = staged.expand(&new, db).await?;
+    for (key, slot) in new.into_iter().zip(range) {
+        index.insert(key.clone(), slot);
     }
-    // The floor raise moves about one operation per key the block writes, and every write was
-    // staged first, so reading candidates for every staged key covers it without waiting on the
-    // block's final writes.
-    staged.prefetch_floor(index.len(), db).await?;
-    // Keys that read as absent are created if the block writes them, and creating a key rewrites
-    // its predecessor, so read those predecessors now rather than while building the block.
-    staged.prefetch_predecessors(db).await?;
     Ok(StagedDb { staged, index })
 }
 
@@ -1619,7 +1638,7 @@ async fn apply_db<const N: usize, const P: usize>(
     db: Db<N, P>,
     batch: Batch<N>,
 ) -> Result<Db<N, P>, Error> {
-    let (db, _) = db.apply_batch(batch).await?;
+    let db = db.apply_batch(batch).await?;
     Ok(db.commit().await?)
 }
 
@@ -1629,7 +1648,7 @@ async fn apply_db_start_sync<const N: usize, const P: usize>(
     db: Db<N, P>,
     batch: Batch<N>,
 ) -> Result<(Db<N, P>, commonware_runtime::Handle<()>), Error> {
-    let (db, _) = db.apply_batch(batch).await?;
+    let db = db.apply_batch(batch).await?;
     Ok(db.start_sync().await?)
 }
 
@@ -1703,11 +1722,45 @@ fn commits_config(page_cache: CacheRef) -> JournalConfig {
 }
 
 /// Rewinds `db` to `size` operations and commits the rewind.
+///
+/// Reopening the database with at most `size` operations discards the later ones durably.
 async fn rewind_db<const N: usize, const P: usize>(
     db: Db<N, P>,
     size: u64,
+    context: Context,
+    config: DbConfig,
 ) -> Result<Db<N, P>, Error> {
-    Ok(db.rewind(Location::new(size)).await?.commit().await?)
+    drop(db.commit().await?);
+    Ok(Db::<N, P>::init(context, config, Some(Location::new(size))).await?)
+}
+
+/// Returns the configuration of the database `name`.
+fn db_config(
+    context: &Context,
+    threads: NonZeroUsize,
+    page_cache: &CacheRef,
+    name: &str,
+) -> DbConfig {
+    DbConfig {
+        merkle: MerkleConfig {
+            partition: format!("{name}-merkle"),
+            resident_height: ResidentHeight::default(),
+            replay_buffer: IO_BUFFER,
+            strategy: context.strategy(threads),
+        },
+        log: JournalConfig {
+            partition: format!("{name}-log"),
+            items_per_blob: ITEMS_PER_BLOB,
+            page_cache: page_cache.clone(),
+            write_buffer: IO_BUFFER,
+            replay_buffer: IO_BUFFER,
+        },
+        grafted_metadata_partition: format!("{name}-grafted-metadata"),
+        translator: EightCap,
+        init_cache: None,
+        init_buffer: IO_BUFFER,
+        init_concurrency: threads,
+    }
 }
 
 /// The commit journal's record of an applied block.

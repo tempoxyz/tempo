@@ -16,7 +16,7 @@ use std::{
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::{
     precompiles::ITIP20 as TIP20Token,
-    zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal},
+    zones::{IZoneInbox, ZoneFactory, ZonePortal},
 };
 
 /// Write a file that may contain key material with owner-only permissions on Unix.
@@ -60,19 +60,20 @@ const DEFAULT_WAIT_ATTEMPTS: usize = 120;
 const DEFAULT_WAIT_POLL: Duration = Duration::from_millis(500);
 pub(crate) const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
 
-/// Finds the block of the single ZoneCreated event for `zone_id` and `portal` in
-/// `from_block..=snapshot_block`.
+/// Finds the block of the single ZoneCreated event that `factory` emitted for `zone_id` and
+/// `portal` in `from_block..=snapshot_block`.
 ///
 /// Pass `0` when the creation block is unknown. Scanning from genesis issues one log query
 /// per 5,000 blocks, so callers that already know the creation block should start there.
 pub(crate) async fn find_zone_deployment_block<P: Provider<TempoNetwork>>(
     provider: &P,
+    factory: Address,
     zone_id: u32,
     portal: Address,
     from_block: u64,
     snapshot_block: u64,
 ) -> eyre::Result<u64> {
-    let events = ZoneFactory::new(ZONE_FACTORY_ADDRESS, provider)
+    let events = ZoneFactory::new(factory, provider)
         .ZoneCreated_filter()
         .topic1(U256::from(zone_id))
         .topic2(portal)

@@ -10,7 +10,12 @@ use alloy_sol_types::SolCall;
 use bincode::Options as _;
 use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
+use reth_consensus::HeaderValidator as _;
 use reth_execution_types::{AccountUpdate, StateUpdate};
+use reth_trie_common::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
 use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -214,10 +219,6 @@ fn path_usd(state: &mut StateInput) -> &mut AccountInput {
 
 /// The state root of `state`, computed independently of the harness.
 fn trie_root(state: &StateInput) -> B256 {
-    use reth_trie_common::{
-        TrieAccount,
-        root::{state_root_unhashed, storage_root_unhashed},
-    };
     state_root_unhashed(state.accounts.iter().map(|(address, account)| {
         let storage = account
             .storage
@@ -700,7 +701,6 @@ fn a_context_header_lands_where_its_hardfork_is_active() {
 
 #[test]
 fn context_headers_pass_the_nodes_header_validation_at_every_hardfork() {
-    use reth_consensus::HeaderValidator as _;
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
     let consensus = TempoConsensus::new(Arc::clone(&spec));
     for &hardfork in TempoHardfork::VARIANTS {

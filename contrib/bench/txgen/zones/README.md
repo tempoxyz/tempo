@@ -29,6 +29,14 @@ generation, proof verification, and signature verification. No running zone is
 needed. These constructor-seeded fixtures are restricted to chain 1337 and must
 never hold real funds.
 
+The portal still authenticates each batch's Tempo anchor: it reads the anchor
+block's hash from EIP-2935 and reverts with `InvalidTempoBlockNumber` when the
+hash is zero. Both settlement fixtures anchor to `block.number - offset`, where
+the offset is a constructor argument. The helper sets it from
+`TXGEN_ZONE_ANCHOR_OFFSET` (default 1, the previous block). Nodes whose history
+contract only answers for older blocks, such as nodes with deferred execution,
+need a larger offset.
+
 Each operation transfers one pathUSD base unit. Setup funds withdrawal escrow
 for the requested transaction count and approves deposits. Fees and bounce-back
 reserves are zero; withdrawals have no callbacks. The fixed synthetic payload has
@@ -89,10 +97,11 @@ for contract in CallbackPortalFixture ZoneMessengerFixture ZoneToZoneGatewayFixt
     ".bench-tmp/zones-out/ZoneToZoneFixture.sol/$contract.json" \
     > "contrib/bench/txgen/zones/$contract.json"
 done
-jq '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
+jq -S '.abi | map(select(.name == "deposit" or .name == "processWithdrawals"))' \
   .bench-tmp/zones-out/PortalFixture.sol/IPortal.json \
   > contrib/bench/txgen/zones/portal.abi.json
 ```
 
 Keep fixture storage aligned with `crates/precompiles/src/zone_factory/portal.rs`.
-The submitter supports both settlement ABIs, before and after TIP-1096.
+The submitter supports both settlement ABIs, before and after TIP-1096, and both withdrawal ABIs,
+with and without T15's `senderOrg`.

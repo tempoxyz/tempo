@@ -4,7 +4,7 @@
 //! - Commonware's runtime context (`context.encode()`)
 //! - Reth's prometheus recorder (`handle.render()`)
 
-use commonware_runtime::{Metrics as _, Spawner as _, tokio::Context};
+use commonware_runtime::{Clock as _, Metrics as _, Spawner as _, tokio::Context};
 use eyre::WrapErr as _;
 use jiff::SignedDuration;
 use reth_node_metrics::recorder::install_prometheus_recorder;
@@ -135,8 +135,6 @@ pub fn install_prometheus_metrics(
 
     let reth_recorder = install_prometheus_recorder();
     context.spawn(move |context| async move {
-        use commonware_runtime::Clock as _;
-
         tracing::info_span!("metrics_exporter", %url).in_scope(|| tracing::info!("started"));
 
         loop {

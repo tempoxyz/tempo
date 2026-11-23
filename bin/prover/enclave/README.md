@@ -253,8 +253,7 @@ exercises SPF recovery across the T12/T13 transition; repeat that validation for
 The sequencer selects an endpoint using the live L1 hardfork when it sends a proving request,
 not the hardfork of the batch's imported L1 block. It rechecks the selected fork before
 settlement, during quorum waits, and before broadcast. A fork change rebuilds the attempt with
-a fresh proof; retries reconcile portal progress before deciding to submit again. Remote shadow
-proving also uses the live fork's endpoint to validate historical submissions.
+a fresh proof; retries reconcile portal progress before deciding to submit again.
 
 When colocating releases, use distinct `ENCLAVE_NAME`, `ENCLAVE_CID`, and `PROVER_TCP_PORT`
 settings and reserve enough Nitro CPU and memory for both. Use distinct `PROVER_METRICS_ADDR`

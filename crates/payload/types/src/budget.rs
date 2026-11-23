@@ -58,6 +58,11 @@ fn percentile_from_counts<T: Copy + Ord>(
             return Some(*value);
         }
     }
+    #[cfg(feature = "fuzz")]
+    antithesis_sdk::assert_unreachable!(
+        "Validation latency percentile rank exceeds its sample counts",
+        &serde_json::json!({ "len": len, "target": target, "seen": seen })
+    );
     debug_assert!(false, "validation latency sample index out of sync");
     None
 }
@@ -94,6 +99,11 @@ pub struct ValidationLatencyEstimate {
 }
 
 impl ValidationLatencyEstimate {
+    /// The recent P90 validation time this estimate is floored at.
+    pub(crate) fn elapsed(self) -> Duration {
+        self.elapsed
+    }
+
     /// Estimates validation latency for the supplied workload.
     ///
     /// Recent elapsed validation feedback is the floor so faster replay feedback

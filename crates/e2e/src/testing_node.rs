@@ -12,7 +12,7 @@ use commonware_cryptography::{
 use commonware_p2p::simulated::Oracle;
 use commonware_runtime::{Handle, Supervisor as _, deterministic::Context};
 use reth_config::config::StageConfig;
-use reth_db::{Database, DatabaseEnv, open_db_read_only};
+use reth_db::{Database, DatabaseEnv};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_ethereum::{
     consensus::noop::NoopConsensus,
@@ -346,8 +346,8 @@ where
             signer: self.private_key.clone(),
             share: self.share.clone(),
             mailbox_size: commonware_utils::NZUsize!(1024),
+            max_peers: commonware_utils::NZU32!(128),
             deque_size: 10,
-            max_message_size: crate::MAX_MESSAGE_SIZE,
             verification_mode: self.verification_mode,
             // Simulated time costs wall time under the `external` runtime, so
             // these are tighter than production: every offline leader costs a
@@ -436,6 +436,13 @@ where
 
         // Wait for the consensus handle to actually finish
         let _ = handle.await;
+
+        // The handle resolves in the executor pass that drops the engine's root
+        // future, and that drop is what aborts every actor beneath it, so the
+        // actors (and the storage they hold open) are only dropped in the next
+        // pass. Storage refuses to reopen a blob that is still open, so wait until
+        // that pass has run before anyone reopens the node's partitions.
+        drain_aborted_tasks().await;
 
         debug!(%self.uid, "stopped consensus for testing node");
     }
@@ -535,39 +542,6 @@ where
         self.execution().provider.clone()
     }
 
-    /// Get a blockchain provider for when the execution node is down.
-    ///
-    /// This provider MUST BE DROPPED before starting the node again.
-    pub fn execution_provider_offline(
-        &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>> {
-        // Open a read-only provider to the database
-        // Note: MDBX allows multiple readers, so this is safe even if another process
-        // has the database open for reading
-        let database = open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
-            .expect("failed to open execution node database")
-            .with_metrics();
-
-        let static_file_provider =
-            StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))
-                .expect("failed to open static files");
-
-        let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
-            .build()
-            .unwrap();
-
-        let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
-            database,
-            Arc::new(execution_runtime::chainspec()),
-            static_file_provider,
-            rocksdb,
-            reth_ethereum::tasks::Runtime::test(),
-        )
-        .expect("failed to create provider factory");
-
-        BlockchainProvider::new(provider_factory).expect("failed to create blockchain provider")
-    }
-
     /// Simulates a crash by unwinding the execution layer database by `n` blocks.
     /// This creates a gap between CL (untouched) and EL state, triggering
     /// `backfill_on_start` on the next restart.
@@ -604,6 +578,7 @@ where
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
             rocksdb,
+            reth_storage_overlay::OverlayManager::default(),
             reth_ethereum::tasks::Runtime::test(),
         )
         .expect("failed to create provider factory");
@@ -651,5 +626,29 @@ where
 
         debug!(%self.uid, target, "execution layer unwound successfully");
         (current, target)
+    }
+}
+
+/// Returns once the deterministic executor has polled every task that is ready
+/// now, and then every task those polls woke.
+///
+/// The deterministic executor polls the tasks that are ready at the start of a
+/// pass as one shuffled batch, and a task woken during a pass runs in the next
+/// one. Yielding requeues this task behind the current batch, so after the first
+/// yield every aborted task queued alongside this one has been polled and
+/// dropped. The second yield covers tasks those drops abort in turn, such as
+/// [`commonware_runtime::AbortOnDrop`] guards they owned.
+async fn drain_aborted_tasks() {
+    for _ in 0..2 {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                return std::task::Poll::Ready(());
+            }
+            yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        })
+        .await;
     }
 }
