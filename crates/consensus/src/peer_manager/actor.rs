@@ -144,14 +144,14 @@ where
     }
 
     /// Reads peers at the latest finalized block the executor reported,
-    /// whose state the execution layer serves. Does nothing before the first
+    /// whose state the execution layer serves. Errors before the first
     /// report. Called on every report and every peer update, which re-reads
     /// the latest report, so a failed read is retried there.
     #[instrument(skip_all, err)]
     fn refresh_peers(&mut self) -> eyre::Result<()> {
-        let Some(finalized) = self.latest_finalized else {
-            return Ok(());
-        };
+        let finalized = self
+            .latest_finalized
+            .ok_or_eyre("executor has not reported a finalized block yet")?;
         let highest_finalized = finalized.height.get();
 
         let epoch_info = self
@@ -735,7 +735,10 @@ mod tests {
             let mut actor = init_at(context, execution.clone(), oracle.clone());
 
             // What the peer update timer does before any report.
-            actor.refresh_peers().unwrap();
+            let error = actor
+                .refresh_peers()
+                .expect_err("refreshing before the first report must fail");
+            assert!(format!("{error:#}").contains("has not reported a finalized block"));
 
             assert!(execution.header_reads.lock().unwrap().is_empty());
             assert!(tracked_heights(&oracle).is_empty());
