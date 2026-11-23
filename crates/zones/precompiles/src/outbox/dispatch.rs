@@ -50,7 +50,11 @@ impl ZoneOutbox {
                 setTempoGasRate(call) => mutate(call, msg_sender, |sender, call| self.set_tempo_gas_rate(l1, sender, call)),
                 setMaxWithdrawalsPerBlock(call) => mutate(call, msg_sender, |sender, call| self.set_max_withdrawals_per_block(l1, sender, call)),
                 requestWithdrawal(call) => mutate(call, msg_sender, |sender, call| {
-                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call)
+                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call, false)
+                }),
+                #[schedule(since = T15)]
+                requestWithdrawalRevealingOrg(call) => mutate(call, msg_sender, |sender, call| {
+                    self.request_withdrawal(l1, sender, fee_payer, tx_hash, call.into(), true)
                 }),
                 enqueueDepositBounceBack(call) => mutate(call, msg_sender, |sender, call| self.enqueue_deposit_bounce_back(sender, call)),
                 consumeFallbackRecipient(call) => mutate(call, msg_sender, |sender, call| self.consume_fallback_recipient(sender, call.fallbackNonce)),

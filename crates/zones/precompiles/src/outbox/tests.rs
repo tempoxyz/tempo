@@ -745,11 +745,17 @@ fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> 
     Ok(())
 }
 
-/// A withdrawal records its sender's org while ZoneIdentity is enforced and commits it to the
-/// queue hash; with enforcement off every withdrawal stays in org 0 with the legacy hash.
-#[test_case(true ; "enforced")]
-#[test_case(false ; "not enforced")]
-fn withdrawal_commits_the_sender_org_when_enforced(enforced: bool) -> eyre::Result<()> {
+/// A callback withdrawal that reveals its sender's org commits it to the queue hash while
+/// ZoneIdentity is enforced; any other withdrawal stays in org 0 with the legacy hash.
+#[test_case(true, true, 1 ; "revealed callback")]
+#[test_case(true, false, 1 ; "unrevealed callback")]
+#[test_case(true, false, 0 ; "plain")]
+#[test_case(false, true, 1 ; "revealed callback not enforced")]
+fn withdrawal_commits_the_sender_org_only_when_revealed(
+    enforced: bool,
+    reveal: bool,
+    gas_limit: u64,
+) -> eyre::Result<()> {
     use crate::zone_identity::{L1Target, ZoneIdentity};
 
     let mut env = ZoneSpec {
@@ -776,9 +782,14 @@ fn withdrawal_commits_the_sender_org_when_enforced(enforced: bool) -> eyre::Resu
     })?;
     env.write_portal(ANCHOR, |portal| portal.identity_enforced.write(enforced));
 
-    let result = env.request_withdrawal(ALICE, withdrawal(1, BOB, 0))?;
+    let call = withdrawal(1, BOB, gas_limit);
+    let result = if reveal {
+        env.request_withdrawal_revealing_org(ALICE, call)?
+    } else {
+        env.request_withdrawal(ALICE, call)?
+    };
     assert!(result.is_success());
-    let expected_org = if enforced { org } else { 0 };
+    let expected_org = if enforced && reveal { org } else { 0 };
     let pending = env.pending_withdrawals();
     let expected = Withdrawal {
         token: pending[0].token,
@@ -801,6 +812,31 @@ fn withdrawal_commits_the_sender_org_when_enforced(enforced: bool) -> eyre::Resu
         ZoneOutboxAbi::finalizeWithdrawalBatchCall::abi_decode_returns(&output.bytes)?,
         Withdrawal::queue_hash(&[expected])
     );
+    Ok(())
+}
+
+/// Only a callback receiver reads the sender's org, so a plain withdrawal cannot reveal it, and
+/// nothing can before T15.
+#[test]
+fn revealing_the_org_needs_a_callback_and_t15() -> eyre::Result<()> {
+    let mut env = ZoneSpec {
+        hardfork: tempo_chainspec::hardfork::TempoHardfork::T15,
+        ..spec()
+    }
+    .apply()?;
+    assert_revert(
+        env.request_withdrawal_revealing_org(ALICE, withdrawal(1, BOB, 0)),
+        ZoneOutboxError::org_reveal_requires_callback(),
+    );
+    assert!(env.pending_withdrawals().is_empty());
+
+    let mut legacy = spec().apply()?;
+    assert!(
+        !legacy
+            .request_withdrawal_revealing_org(ALICE, withdrawal(1, BOB, 1))?
+            .is_success()
+    );
+    assert!(legacy.pending_withdrawals().is_empty());
     Ok(())
 }
 

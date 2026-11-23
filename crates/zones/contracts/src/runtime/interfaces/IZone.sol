@@ -236,7 +236,7 @@ struct Withdrawal {
     uint64 fallbackNonce; // resolves to the zone bounce-back recipient in ZoneOutbox
     bytes callbackData; // calldata for IWithdrawalReceiver (if gasLimit > 0)
     bytes encryptedSender; // optional encrypted (sender, txHash) reveal payload
-    uint64 senderOrg; // sender's ZoneIdentity org when requested (0 = org 0 or bounce-back)
+    uint64 senderOrg; // sender's ZoneIdentity org if revealed (0 = not revealed, org 0 or bounce-back)
 }
 
 /// @notice A withdrawal as hashed before T15, without `senderOrg`.
@@ -1353,6 +1353,7 @@ interface IZoneOutbox {
     error InvalidCurrentTxHash();
     error ZeroAmountWithdrawal();
     error StaticCallNotAllowed();
+    error OrgRevealRequiresCallback();
 
     /// @notice Maximum callback data size (1KB)
     function MAX_CALLBACK_DATA_SIZE() external view returns (uint256);
@@ -1381,7 +1382,7 @@ interface IZoneOutbox {
         bytes revealTo
     );
 
-    /// @notice Emitted after `WithdrawalRequested` when the sender is in an org other than 0.
+    /// @notice Emitted after `WithdrawalRequested` when the withdrawal reveals an org other than 0.
     event WithdrawalSenderOrg(uint64 indexed withdrawalIndex, uint64 senderOrg);
 
     event TempoGasRateUpdated(uint128 tempoGasRate);
@@ -1442,6 +1443,23 @@ interface IZoneOutbox {
     ///      for an enabled token (non-custodial guarantee).
     /// @param token The TIP-20 token to withdraw
     function requestWithdrawal(
+        address token,
+        address to,
+        uint128 amount,
+        bytes32 memo,
+        uint64 gasLimit,
+        address zoneFallbackRecipient,
+        bytes calldata data,
+        bytes calldata revealTo
+    )
+        external;
+
+    /// @notice `requestWithdrawal` that also reveals the sender's ZoneIdentity org to the callback
+    ///         receiver through `IZonePortal.callbackSenderOrg()`, from T15
+    /// @dev Reverts with `OrgRevealRequiresCallback` when `gasLimit` is zero. The org is public on
+    ///      Tempo once revealed. A receiver reads 0 for a sender in org 0, a sender that did not
+    ///      reveal its org, and any withdrawal while ZoneIdentity is not enforced.
+    function requestWithdrawalRevealingOrg(
         address token,
         address to,
         uint128 amount,

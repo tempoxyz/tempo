@@ -256,6 +256,26 @@ impl ZoneEnv {
         self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
     }
 
+    /// [`Self::request_withdrawal`] through `requestWithdrawalRevealingOrg`.
+    pub(crate) fn request_withdrawal_revealing_org(
+        &mut self,
+        sender: Address,
+        call: IZoneOutbox::requestWithdrawalCall,
+    ) -> PrecompileResult {
+        let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, sender);
+        let call = IZoneOutbox::requestWithdrawalRevealingOrgCall {
+            token: call.token,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+            gasLimit: call.gasLimit,
+            zoneFallbackRecipient: call.zoneFallbackRecipient,
+            data: call.data,
+            revealTo: call.revealTo,
+        };
+        self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
+    }
+
     /// Finalizes the oldest `count` pending withdrawals as the system, with empty encrypted senders.
     pub(crate) fn finalize_batch(&mut self, count: usize) -> PrecompileResult {
         self.call(

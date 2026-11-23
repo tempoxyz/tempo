@@ -96,10 +96,17 @@ fn push_parties(
         if from != ZONE_OUTBOX_ADDRESS && to != ZONE_OUTBOX_ADDRESS {
             parties.extend([from, to]);
         }
-    } else if target == ZONE_OUTBOX_ADDRESS
-        && selector == IZoneOutbox::requestWithdrawalCall::SELECTOR
-    {
-        let call = IZoneOutbox::requestWithdrawalCall::abi_decode(input).map_err(malformed)?;
+    } else if target == ZONE_OUTBOX_ADDRESS {
+        let call = match selector {
+            IZoneOutbox::requestWithdrawalCall::SELECTOR => {
+                IZoneOutbox::requestWithdrawalCall::abi_decode(input)
+            }
+            IZoneOutbox::requestWithdrawalRevealingOrgCall::SELECTOR => {
+                IZoneOutbox::requestWithdrawalRevealingOrgCall::abi_decode(input).map(Into::into)
+            }
+            _ => return Ok(()),
+        }
+        .map_err(malformed)?;
         // The fallback is credited if the withdrawal bounces back from L1. Naming oneself is
         // always allowed, so an unlisted account can still withdraw.
         if call.zoneFallbackRecipient != sender {
@@ -280,6 +287,26 @@ mod tests {
         assert!(admits_calls(ALICE, vec![request_withdrawal(BOB)]));
         assert!(!admits_calls(CAROL, vec![request_withdrawal(ALICE)]));
         assert!(!admits_calls(ALICE, vec![request_withdrawal(CAROL)]));
+        // Revealing the org screens the fallback recipient the same way.
+        let revealing = |fallback_recipient: Address| {
+            let mut call = request_withdrawal(fallback_recipient);
+            let request = IZoneOutbox::requestWithdrawalCall::abi_decode(&call.input).unwrap();
+            call.input = IZoneOutbox::requestWithdrawalRevealingOrgCall {
+                token: request.token,
+                to: request.to,
+                amount: request.amount,
+                memo: request.memo,
+                gasLimit: 1,
+                zoneFallbackRecipient: request.zoneFallbackRecipient,
+                data: request.data,
+                revealTo: request.revealTo,
+            }
+            .abi_encode()
+            .into();
+            call
+        };
+        assert!(admits_calls(ALICE, vec![revealing(BOB)]));
+        assert!(!admits_calls(ALICE, vec![revealing(CAROL)]));
     }
 
     #[test]
