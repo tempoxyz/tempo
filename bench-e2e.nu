@@ -1876,14 +1876,9 @@ def "main e2e" [
         }
     }
     if $e2e_exit == 0 and $tracy != "off" {
-        print "\nUploading local e2e tracy profiles to R2..."
+        print "\nLocal e2e tracy profiles:"
         for run in $runs {
-            let profile = $"($results_dir)/tracy-profile-($run.phase).tracy"
-            let tracy_urls = (upload-tracy-profile $profile $run.phase $run.ref)
-            if $tracy_urls != null {
-                $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.phase)-url.txt"
-                $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.phase)-profile-url.txt"
-            }
+            print-tracy-profile $"($results_dir)/tracy-profile-($run.phase).tracy" $run.phase
         }
     }
 

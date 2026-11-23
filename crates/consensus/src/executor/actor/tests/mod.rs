@@ -73,6 +73,7 @@ fn delivered_finalized_tip_tracks_its_own_round() {
                 finalized_tip: network_finalized_tip,
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();
@@ -116,6 +117,7 @@ fn delivery_count_resets_only_after_a_submitted_or_skipped_forkchoice_response()
                 finalized_tip: (round(1), Height::new(1), digest),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();
@@ -196,14 +198,14 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
         })
     }
 
-    fn queued_build_round<C, E, M>(actor: &Actor<C, E, M>) -> Option<u64> {
+    fn queued_build_round<C, E, M, R>(actor: &Actor<C, E, M, R>) -> Option<u64> {
         actor
             .pending_build
             .as_ref()
             .map(|(round, ..)| round.view().get())
     }
 
-    fn queued_rounds<C, E, M>(actor: &Actor<C, E, M>) -> Vec<u64> {
+    fn queued_rounds<C, E, M, R>(actor: &Actor<C, E, M, R>) -> Vec<u64> {
         actor
             .queued_verifications
             .keys()
@@ -221,6 +223,7 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
                 finalized_tip: (round(0), Height::new(0), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .expect("actor should initialize");
@@ -266,6 +269,7 @@ fn replacing_a_walk_aborts_its_already_delivered_parent() {
                 finalized_tip: (round(0), Height::zero(), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
+                finalized_reporter: harness::FinalizedRecorder::default(),
             },
         )
         .unwrap();

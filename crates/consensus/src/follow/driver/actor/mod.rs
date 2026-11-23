@@ -14,7 +14,7 @@ use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -310,7 +310,20 @@ where
                 identity: *outcome.network_identity(),
             };
 
-            self.state.observe(identity).await?
+            self.state.observe(identity.clone()).await?;
+
+            // Retire the previous fallback in memory too. Otherwise a missing later epoch would
+            // still verify against the identity this boundary rotated away from until restart.
+            let previous = self.verifier.network_identity().clone();
+            if self.verifier.advance_network_identity(identity.clone()) {
+                info!(
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
+                );
+            }
         }
 
         Ok(())
@@ -503,9 +516,9 @@ where
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured_identity.from_epoch,
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );

@@ -43,6 +43,9 @@ crate::sol! {
             bytes revealTo
         );
 
+        /// Emitted after `WithdrawalRequested` when the sender is in an org other than 0.
+        event WithdrawalSenderOrg(uint64 indexed withdrawalIndex, uint64 senderOrg);
+
         event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
         event TempoGasRateUpdated(uint128 tempoGasRate);
         event MaxWithdrawalsPerBlockUpdated(uint32 maxWithdrawalsPerBlock);
@@ -56,6 +59,7 @@ crate::sol! {
         error InvalidEncryptedSenderCount(uint256 actual, uint256 expected);
         error InvalidEncryptedSenderLength(uint256 actual, uint256 expected);
         error InvalidFallbackRecipient();
+        error InvalidWithdrawalRecipient();
         error CallbackDataTooLarge();
         error GasFeeRateTooHigh();
         error TransferFailed();

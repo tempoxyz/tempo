@@ -181,6 +181,7 @@ where
         fallback_poll_interval: config.withdrawal_poll_interval,
         sequencer_address,
         batch_limits: config.withdrawal_batch_limits,
+        chain_spec: config.chain_spec.clone(),
     };
 
     let monitor_config = ZoneMonitorConfig {
