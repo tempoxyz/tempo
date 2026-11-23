@@ -260,6 +260,21 @@ contract ZonePortal is IZonePortal {
     ///      opt in explicitly. Read from finalized Tempo state by the zone TIP-20 precompile.
     bool public transfersEnabled;
 
+    /// @notice Key that creates orgs, assigns their admins and administers org 0 on the zone's
+    ///         ZoneIdentity predeploy.
+    /// @dev Packed after the transfer flag in slot 28, so the zone reads it with the flags it
+    ///      already reads. Read from finalized Tempo state by ZoneIdentity. Internal, without a
+    ///      getter, to keep the runtime under the code size limit; read it from storage.
+    address internal _identityRegistrar;
+
+    /// @notice Whether the zone enforces ZoneIdentity org edges on transfers, deposits and
+    ///         withdrawals.
+    /// @dev Packed after the registrar in slot 28. Defaults to false.
+    bool internal _identityEnforced;
+
+    /// @notice Sender org of the withdrawal whose callback is running.
+    /// @dev Set before the callback's relay and cleared after it; 0 at any other time.
+    uint64 internal transient _callbackSenderOrg;
     /// @notice Deposit-queue checkpoints (slot 29). Pruning zeroes entries, keeping indices stable.
     DepositBucket[] public depositBuckets;
 
@@ -593,6 +608,23 @@ contract ZonePortal is IZonePortal {
         _requireCapabilityActive(Capability.AccessPolicy);
         transfersEnabled = enabled;
         emit TransfersEnabledUpdated(enabled);
+    }
+
+    /// @inheritdoc IZonePortal
+    function callbackSenderOrg() external view returns (uint64) {
+        // Only one callback can run at a time: callbacks run only inside `processWithdrawals`,
+        // which is sequencer-only and non-reentrant. The slot is set before each relay and cleared
+        // after it, so it never carries one withdrawal's org into another callback, including
+        // after the callback deposits back.
+        return _callbackSenderOrg;
+    }
+
+    /// @notice Set the zone's ZoneIdentity registrar and whether it enforces org edges.
+    function setIdentityConfig(address registrar, bool enforced) external onlyAdmin {
+        _requireCapabilityActive(Capability.AccessPolicy);
+        _identityRegistrar = registrar;
+        _identityEnforced = enforced;
+        emit IdentityConfigUpdated(registrar, enforced);
     }
 
     /// @notice Return whether account allowlist enforcement is enabled.
@@ -1365,7 +1397,7 @@ contract ZonePortal is IZonePortal {
 
         for (uint256 i = withdrawals.length; i > 0; --i) {
             remainingQueues[i - 1] = nextQueue;
-            nextQueue = keccak256(abi.encode(withdrawals[i - 1], nextQueue));
+            nextQueue = WithdrawalQueueLib.hashWithTail(withdrawals[i - 1], nextQueue);
         }
 
         // One pruning run frees credits for every checkpoint this call appends.
@@ -1408,6 +1440,7 @@ contract ZonePortal is IZonePortal {
                 withdrawal.to,
                 withdrawal.amount,
                 withdrawal.senderTag,
+                withdrawal.senderOrg,
                 withdrawal.gasLimit,
                 withdrawal.callbackData
             ) {
@@ -1432,6 +1465,7 @@ contract ZonePortal is IZonePortal {
         address target,
         uint128 amount,
         bytes32 senderTag,
+        uint64 senderOrg,
         uint64 gasLimit,
         bytes calldata data
     )
@@ -1448,14 +1482,16 @@ contract ZonePortal is IZonePortal {
         bytes32 depositQueueHashBefore = currentDepositQueueHash;
 
         _withdrawalReentrancyStatus = CALLBACK_DEPOSIT_AVAILABLE;
+        _callbackSenderOrg = senderOrg;
 
         // We copy whatever the messenger reverts with, so keep its errors small.
         IZoneMessenger(messenger)
             .relayMessage(zoneId, token, senderTag, target, amount, gasLimit, data);
 
-        // Return to the normal withdrawal-processing state. If relayMessage reverts, this write
+        // Return to the normal withdrawal-processing state. If relayMessage reverts, these writes
         // and any callback deposit are reverted together.
         _withdrawalReentrancyStatus = WITHDRAWAL_PROCESSING;
+        _callbackSenderOrg = 0;
 
         // In closed access, this proves only that some deposit was appended to this portal; it does
         // not bind that deposit to the callback's token, amount, or recipient. Callback data is

@@ -26,11 +26,13 @@ use tempo_contracts::{
     MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     zones::{IZoneInbox, IZoneOutbox, TempoAdvanced},
 };
-use tempo_evm::{TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder};
+use tempo_evm::{
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, deploy_precompile_at_boundary,
+};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use zone_chainspec::ZoneChainSpec;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR};
-use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+use zone_primitives::constants::{ZONE_IDENTITY_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
     ZoneEvm,
@@ -263,15 +265,16 @@ impl<'a> ZoneBlockExecutor<'a> {
         Ok(())
     }
 
-    /// Gives the TIP-1094 zone address registry its marker code at the T15 boundary, so its
-    /// account is never empty. Runs before every T15 block and changes nothing once the code is
-    /// set.
+    /// Gives the TIP-1094 zone address registry and ZoneIdentity their marker code at the T15
+    /// boundary, so their accounts are never empty. Runs before every T15 block and changes
+    /// nothing once the code is set.
     fn deploy_t15_precompiles(&mut self) -> Result<(), BlockExecutionError> {
-        tempo_evm::deploy_precompile_at_boundary(
+        deploy_precompile_at_boundary(
             &mut self.inner,
             tempo_contracts::zones::ZONE_ADDRESS_REGISTRY_ADDRESS,
             &[],
-        )
+        )?;
+        deploy_precompile_at_boundary(&mut self.inner, ZONE_IDENTITY_ADDRESS, &[])
     }
 }
 

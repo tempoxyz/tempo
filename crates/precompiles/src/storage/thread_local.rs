@@ -242,6 +242,21 @@ impl StorageCtx {
         Self::with_storage(|s| s.reservoir())
     }
 
+    /// Runs `f` with every SLOAD charged as cold, even for slots already warm, so the gas it uses
+    /// does not depend on which slots earlier code touched. With a fixed sequence of reads, the gas
+    /// then reveals nothing about which slots were read.
+    pub fn with_cold_pricing<R>(&self, f: impl FnOnce() -> R) -> R {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0;
+                StorageCtx::with_storage(|s| s.set_cold_pricing(previous));
+            }
+        }
+        let _restore = Restore(Self::with_storage(|s| s.set_cold_pricing(true)));
+        f()
+    }
+
     /// Returns the currently active hardfork.
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
