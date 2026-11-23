@@ -11,7 +11,7 @@
 //!
 //! tag = `keccak256("tempo-mock-crypto" || scheme || (u64_be(len) || part)...)`.
 
-use super::webauthn::verify_webauthn_data_internal;
+use super::webauthn::webauthn_digest;
 use crate::transaction::tt_signature::WebAuthnSignature;
 use alloc::{sync::Arc, vec::Vec};
 use alloy_consensus::crypto::{
@@ -114,7 +114,7 @@ pub fn webauthn(x: B256, y: B256, webauthn_data: Bytes, hash: &B256) -> Option<W
     if webauthn_data.len() > crate::MAX_WEBAUTHN_SIGNATURE_LENGTH - 128 {
         return None;
     }
-    let digest = verify_webauthn_data_internal(&webauthn_data, hash).ok()?;
+    let digest = webauthn_digest(&webauthn_data, hash).ok()?;
     let (r, s) = p256(&x, &y, &digest);
     Some(WebAuthnSignature {
         r,

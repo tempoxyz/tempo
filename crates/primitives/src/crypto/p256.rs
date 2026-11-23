@@ -140,7 +140,7 @@ fn verify_p256_signature_with_p256(
 /// - !std → p256
 /// - std && !test → aws-lc-rs (best performance)
 /// - std && test → both (ensures verification backend alignment)
-pub(crate) fn verify_p256_signature_internal(
+fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
     pub_key_x: &[u8],
@@ -177,5 +177,123 @@ pub(crate) fn verify_p256_signature_internal(
         );
 
         aws_lc
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::tt_signature::tests::{generate_p256_keypair, sign_p256_normalized};
+    use p256::ecdsa::signature::hazmat::PrehashSigner;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn test_p256_signature_verification_invalid_pubkey() {
+        // Invalid public key should fail
+        let r = [0u8; 32];
+        let s = [0u8; 32];
+        let pub_key_x = [0u8; 32]; // Invalid: point not on curve
+        let pub_key_y = [0u8; 32];
+        let message_hash = B256::ZERO;
+
+        let result = verify_p256_signature_internal(&r, &s, &pub_key_x, &pub_key_y, &message_hash);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_p256_signature_verification_invalid_signature() {
+        let (_, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::ZERO;
+
+        let assert_invalid = |r: &[u8], s: &[u8], context: &str| {
+            let result = verify_p256_signature_internal(
+                r,
+                s,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(result.is_err(), "{context} should fail verification");
+        };
+
+        // Use invalid signature (all zeros)
+        let r = [0u8; 32];
+        let s = [0u8; 32];
+        assert_invalid(&r, &s, "all-zero signature");
+
+        let one = U256::from(1u64).to_be_bytes::<32>();
+        let order = P256_ORDER.to_be_bytes::<32>();
+        assert_invalid(&order, &one, "signature with r == P256_ORDER");
+        assert_invalid(&one, &order, "signature with s == P256_ORDER");
+    }
+
+    #[test]
+    fn test_p256_signature_verification_valid() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::from_slice(&Sha256::digest(b"test message"));
+        let (r, s) = sign_p256_normalized(&signing_key, &message_hash);
+
+        let result = verify_p256_signature_internal(
+            r.as_slice(),
+            s.as_slice(),
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &message_hash,
+        );
+        assert!(
+            result.is_ok(),
+            "Valid P256 signature should verify successfully"
+        );
+    }
+
+    #[test]
+    fn test_p256_high_s_rejection() {
+        let (signing_key, pub_key_x, pub_key_y) = generate_p256_keypair();
+        let message_hash = B256::from_slice(&Sha256::digest(b"test message for high s"));
+
+        // Sign and get raw (non-normalized) signature
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(message_hash.as_slice()).unwrap();
+        let sig_bytes = signature.to_bytes();
+        let r = &sig_bytes[0..32];
+        let original_s = &sig_bytes[32..64];
+
+        // Convert s to U256 and compute n - s (the high-s equivalent)
+        let s_value = alloy_primitives::U256::from_be_slice(original_s);
+        let computed_high_s = P256_ORDER - s_value;
+        let computed_high_s_bytes: [u8; 32] = computed_high_s.to_be_bytes();
+
+        // Depending on which s was originally produced, either original or high-s
+        // should be rejected
+        let s_is_low = s_value <= P256N_HALF;
+        if s_is_low {
+            // Original s is low, so high-s version should be rejected
+            let result = verify_p256_signature_internal(
+                r,
+                &computed_high_s_bytes,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(
+                result.is_err(),
+                "High-s signature should be rejected for signature malleability prevention"
+            );
+            assert_eq!(result.unwrap_err(), "P256 signature has high s value");
+        } else {
+            // Original s was already high, so the computed "high_s" is actually low
+            // This means the original should fail
+            let original_result = verify_p256_signature_internal(
+                r,
+                original_s,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(
+                original_result.is_err(),
+                "Original high-s signature should be rejected"
+            );
+        }
     }
 }
