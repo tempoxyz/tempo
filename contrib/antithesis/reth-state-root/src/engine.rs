@@ -4,10 +4,12 @@
 
 use crate::{input::Operation, persistence::Persistence, Node};
 use alloy_consensus::Header;
+use alloy_eips::BlockNumHash;
 use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
 use reth_chain_state::{
-    CanonicalInMemoryState, ChainInfoHeaders, ExecutedBlock, InMemoryState, NewCanonicalChain,
+    CanonicalInMemoryStateWriter, ChainInfoHeaders, ExecutedBlock, InMemoryState,
+    NewCanonicalChain,
 };
 use reth_chainspec::ChainSpec;
 use reth_db::DatabaseEnv;
@@ -53,7 +55,7 @@ pub(crate) struct Engine {
     factory: ProviderFactory<Node>,
     /// Tracks the produced blocks that are not persisted yet in the factory's in-memory state,
     /// which the overlay manager builds overlays from.
-    in_memory_state: CanonicalInMemoryState,
+    in_memory_state: CanonicalInMemoryStateWriter,
     tree_config: TreeConfig,
     strategy: DefaultStateRootStrategy,
     timeout: Duration,
@@ -160,7 +162,7 @@ impl Engine {
             .provider()?
             .sealed_header(base)?
             .ok_or_else(|| eyre::eyre!("missing header {base}"))?;
-        let in_memory_state = CanonicalInMemoryState::with_head(
+        let in_memory_state = CanonicalInMemoryStateWriter::new(
             ChainInfoHeaders { canonical_head: parent.clone(), safe: None, finalized: None },
             factory.in_memory_state().clone(),
         );
@@ -236,7 +238,8 @@ impl Engine {
                 } else {
                     self.blocks[(state_tip - self.base) as usize - 1].recovered_block().hash()
                 };
-                self.in_memory_state.remove_canonical_until(anchor, state_tip);
+                let persisted = BlockNumHash::new(state_tip, anchor);
+                self.in_memory_state.on_blocks_persisted(persisted, persisted, None);
                 manager.precompute_execution_overlay(self.parent.hash(), anchor);
                 self.prune_requested = true;
                 println!(
