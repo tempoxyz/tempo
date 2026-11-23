@@ -1009,6 +1009,7 @@ where
     /// its loop with (the execution layer's finalized block, the finalized
     /// floor below it after a snapshot restore, or the floor backfill
     /// finalized). Its state is readable either way.
+    #[instrument(skip_all)]
     fn report_finalized(&mut self) {
         let (height, digest) = self.local_state.finalized;
         if self
@@ -1018,6 +1019,11 @@ where
             return;
         }
         self.last_reported_finalized = Some(height);
+        debug!(
+            finalized.height = %height,
+            finalized.digest = %digest,
+            "reporting finalized block whose state the execution layer serves",
+        );
         let _ = self.finalized_reporter.report(Finalized { height, digest });
     }
 
