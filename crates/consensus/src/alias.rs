@@ -212,20 +212,6 @@ pub(crate) mod marshal {
         )
         .await;
 
-        if let Some(marshal_stored_height) = marshal_floor
-            .processed()
-            .map(|processed| processed.height())
-        {
-            ensure!(
-                tip_height >= marshal_stored_height,
-                "finalizations archive is inconsistent with the node's consensus metadata: \
-                archive tip height `{}` is below stored marshal height `{marshal_stored_height}`; \
-                have you overwritten consensus storage from a stale snapshot? delete consensus \
-                storage and try again",
-                tip_height,
-            );
-        }
-
         let startup_floor_height = finalized_floor.0;
         let last_finalized_height = marshal_floor
             .processed()

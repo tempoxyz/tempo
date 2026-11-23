@@ -359,11 +359,6 @@ where
             fcu_heartbeat_interval,
             public_key,
         } = config;
-        ensure!(
-            finalized_tip.1 >= finalized_floor,
-            "finalized tip height `{}` is below the finalized floor `{finalized_floor}`",
-            finalized_tip.1,
-        );
         let metrics = Metrics::init(&context);
 
         let execution_finalized_num_hash = execution_node.finalized_num_hash();
@@ -483,6 +478,12 @@ where
             });
             return;
         }
+
+        // The floor can sit above the last stored certificate (see
+        // `alias::marshal::init`). Backfilled blocks are final, so network
+        // finality starts no lower than them.
+        let (round, height, digest) = self.delivered_finalized_tip;
+        self.record_finalized_tip(round, height, digest);
 
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
