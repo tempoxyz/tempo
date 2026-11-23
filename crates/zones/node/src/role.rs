@@ -21,7 +21,7 @@ use reth_chain_state::PersistedBlockSubscriptions;
 use reth_node_api::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::{CanonStateSubscriptions as _, HeaderProvider};
+use reth_provider::HeaderProvider;
 use reth_storage_api::{BlockNumReader, StateProviderFactory};
 use reth_transaction_pool::TransactionPool;
 use tempo_primitives::TempoHeader;
