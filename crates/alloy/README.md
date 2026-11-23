@@ -71,7 +71,7 @@ Use `TempoAccountsWallet::from_store(path)` for a non-default store. A request
 with an explicit `key_id` pins that key: if it expires or disappears before
 signing, the wallet returns an error instead of silently switching credentials.
 
-This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://docs.tempo.xyz/protocol/tip20/overview):
+This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://tempo.com/developers/docs/protocol/tip20/overview):
 
 ```rust,no_run
 use alloy::{
