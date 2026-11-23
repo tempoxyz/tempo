@@ -8,8 +8,7 @@ use alloy_eips::BlockNumHash;
 use alloy_primitives::{keccak256, B256};
 use eyre::{ensure, Result};
 use reth_chain_state::{
-    CanonicalInMemoryStateWriter, ChainInfoHeaders, ExecutedBlock, InMemoryState,
-    NewCanonicalChain,
+    CanonicalInMemoryStateWriter, ChainInfoHeaders, ExecutedBlock, InMemoryState, NewCanonicalChain,
 };
 use reth_chainspec::ChainSpec;
 use reth_db::DatabaseEnv;
