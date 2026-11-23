@@ -42,8 +42,12 @@ enum Scheme {
 /// Installs the mock-aware secp256k1 provider into alloy and turns mocks on, process-wide.
 /// Fuzzers and tests only. Returns whether mocks are on.
 pub fn install() -> bool {
-    let installed = install_default_provider(Arc::new(Provider)).is_ok();
-    ENABLED.fetch_or(installed, Ordering::Relaxed) || installed
+    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INSTALLED.get_or_init(|| {
+        let installed = install_default_provider(Arc::new(Provider)).is_ok();
+        ENABLED.store(installed, Ordering::Relaxed);
+        installed
+    })
 }
 
 /// alloy's secp256k1 provider: mocks, else the same real checks as alloy's own backend.
