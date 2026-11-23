@@ -24,7 +24,7 @@ const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_QMDB_SIZE_MULTIPLIER = 3
 # On-disk format of the QMDB store (tempo-qmdb-state FORMAT): a snapshot of another is reimported.
-const E2E_QMDB_FORMAT = 2
+const E2E_QMDB_FORMAT = 3
 # Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
 const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
