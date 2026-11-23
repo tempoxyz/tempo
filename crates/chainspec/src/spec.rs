@@ -959,7 +959,6 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1796742001), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t16_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t17_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 
@@ -1098,7 +1097,6 @@ mod tests {
             assert_eq!(cs.tempo_hardfork_at(1795532401), TempoHardfork::T14);
             assert!(!cs.is_t15_active_at_timestamp(u64::MAX));
             assert!(!cs.is_t16_active_at_timestamp(u64::MAX));
-            assert!(!cs.is_t17_active_at_timestamp(u64::MAX));
             assert_eq!(cs.tempo_hardfork_at(u64::MAX), TempoHardfork::T14);
         }
 

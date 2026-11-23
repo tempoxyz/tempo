@@ -17,7 +17,6 @@ pub mod address_registry;
 pub mod configurable_account;
 pub mod current_committee;
 pub mod nonce;
-pub mod payment_call_registry;
 pub mod receive_policy_guard;
 pub mod reservations;
 pub mod signature_verifier;
@@ -42,7 +41,6 @@ use crate::{
     configurable_account::ConfigurableAccount,
     current_committee::CurrentCommittee,
     nonce::NonceManager,
-    payment_call_registry::PaymentCallRegistry,
     receive_policy_guard::ReceivePolicyGuard,
     reservations::Reservations,
     signature_verifier::SignatureVerifier,
@@ -86,12 +84,11 @@ use evm2::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS,
     CURRENT_COMMITTEE_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    PAYMENT_CALL_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, RESERVATIONS_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, RESERVATIONS_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -286,8 +283,6 @@ impl<T: EvmTypesHost, B> TempoPrecompiles<T, B> {
             ZoneVerifier::new().call(calldata, caller)
         } else if address == RESERVATIONS_ADDRESS {
             Reservations::new().call(calldata, caller)
-        } else if address == PAYMENT_CALL_REGISTRY_ADDRESS {
-            PaymentCallRegistry::new().call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }

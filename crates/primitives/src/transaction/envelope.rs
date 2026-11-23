@@ -280,7 +280,7 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
-        self.is_payment_with(|to, input| is_tip1045_call(to, input, PaymentRules::V2))
+        self.is_tip1045_payment(PaymentRules::V2)
     }
 
     /// T15+ [TIP-20 payment] (TIP-1045) classification.
@@ -292,35 +292,26 @@ impl TempoTxEnvelope {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v3(&self) -> bool {
-        self.is_payment_with(|to, input| is_tip1045_call(to, input, PaymentRules::V3))
+        self.is_tip1045_payment(PaymentRules::V3)
     }
 
-    /// TIP-1045 transaction-level classification with a caller-supplied call predicate: every
-    /// call satisfies `is_payment_call`, and access lists, authorization lists and key
-    /// authorizations are bounded as TIP-1045 requires. An AA transaction needs at least one call.
-    ///
-    /// Calls are checked in order and checking stops at the first that fails, so the predicate
-    /// may accumulate state such as gas caps. TIP-1180 classifies registered payment calls
-    /// through it.
-    pub fn is_payment_with(
-        &self,
-        mut is_payment_call: impl FnMut(Option<&Address>, &[u8]) -> bool,
-    ) -> bool {
+    /// TIP-1045 classification under `rules`.
+    fn is_tip1045_payment(&self, rules: PaymentRules) -> bool {
         match self {
-            Self::Legacy(tx) => is_payment_call(tx.tx().to.to(), &tx.tx().input),
+            Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input, rules),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_payment_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_payment_call(tx.to.to(), &tx.input)
+                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
                 tx.access_list.is_empty()
                     && tx.authorization_list.is_empty()
-                    && is_payment_call(Some(&tx.to), &tx.input)
+                    && is_tip1045_call(Some(&tx.to), &tx.input, rules)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
@@ -334,7 +325,7 @@ impl TempoTxEnvelope {
                     && tx
                         .calls
                         .iter()
-                        .all(|call| is_payment_call(call.to.to(), &call.input))
+                        .all(|call| is_tip1045_call(call.to.to(), &call.input, rules))
             }
         }
     }
@@ -1192,67 +1183,6 @@ mod tests {
                 assert!(!envelope.is_payment_v2(), "V2 must reject unknown selector");
             }
         }
-    }
-
-    #[test]
-    fn test_payment_with_admits_listed_calls() {
-        let program = Address::repeat_byte(0x52);
-        let listed = |to: Option<&Address>, input: &[u8]| {
-            is_tip1045_call(to, input, PaymentRules::V3)
-                || (to == Some(&program) && input.starts_with(&[1, 2, 3, 4]))
-        };
-        let program_call: Bytes = vec![1, 2, 3, 4, 0xff].into();
-
-        for envelope in payment_envelopes_to(program, program_call.clone()) {
-            assert!(!envelope.is_payment_v3());
-            assert!(envelope.is_payment_with(listed));
-        }
-        // Another selector, or another contract, stays general.
-        for envelope in payment_envelopes_to(program, vec![1, 2, 3, 5].into()) {
-            assert!(!envelope.is_payment_with(listed));
-        }
-        for envelope in payment_envelopes_to(Address::repeat_byte(0x53), program_call.clone()) {
-            assert!(!envelope.is_payment_with(listed));
-        }
-        // TIP-1045 payments still qualify.
-        let transfer: Bytes = ITIP20::transferCall {
-            to: Address::random(),
-            amount: U256::ONE,
-        }
-        .abi_encode()
-        .into();
-        for envelope in payment_envelopes_to(PAYMENT_TKN, transfer.clone()) {
-            assert!(envelope.is_payment_with(listed));
-        }
-        // Transaction-level constraints apply to listed calls too.
-        let access_list = AccessList(vec![Default::default()]);
-        for envelope in
-            payment_envelopes_with_access_list_to(program, program_call.clone(), access_list)
-        {
-            assert!(!envelope.is_payment_with(listed));
-        }
-
-        let batch = |calls: Vec<Call>| {
-            TempoTxEnvelope::AA(
-                TempoTransaction {
-                    fee_token: Some(PAYMENT_TKN),
-                    calls,
-                    ..Default::default()
-                }
-                .into_signed(Signature::test_signature().into()),
-            )
-        };
-        let mixed = batch(vec![
-            Call::new(program, program_call.clone()),
-            Call::new(PAYMENT_TKN, transfer),
-        ]);
-        assert!(mixed.is_payment_with(listed));
-        let with_general = batch(vec![
-            Call::new(program, program_call),
-            Call::new(Address::repeat_byte(0x53), Bytes::new()),
-        ]);
-        assert!(!with_general.is_payment_with(listed));
-        assert!(!batch(vec![]).is_payment_with(listed));
     }
 
     #[test]

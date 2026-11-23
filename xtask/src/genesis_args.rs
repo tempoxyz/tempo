@@ -55,7 +55,6 @@ use tempo_precompiles::{
     address_registry::AddressRegistry,
     configurable_account::ConfigurableAccount,
     nonce::NonceManager,
-    payment_call_registry::PaymentCallRegistry,
     receive_policy_guard::ReceivePolicyGuard,
     reservations::Reservations,
     signature_verifier::SignatureVerifier,
@@ -450,11 +449,6 @@ impl GenesisArgs {
         if self.hardforks.active_at_genesis(TempoHardfork::T16) {
             println!("Initializing the reservation core (T16 active at genesis)");
             with_genesis_storage(&mut evm, || Reservations::new().initialize())?;
-        }
-
-        if self.hardforks.active_at_genesis(TempoHardfork::T17) {
-            println!("Initializing the payment call registry (T17 active at genesis)");
-            with_genesis_storage(&mut evm, || PaymentCallRegistry::new().initialize())?;
         }
 
         if !self.no_pairwise_liquidity {

@@ -23,14 +23,13 @@ use reth_transaction_pool::{
 use std::{
     convert::Infallible,
     fmt::Debug,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::PaymentSlots;
 use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
-    payment_call_registry::RegisteredClassification,
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
@@ -42,61 +41,6 @@ use tempo_primitives::{
     },
 };
 use thiserror::Error;
-
-/// A registered payment classification (TIP-1180) and the registry state it holds for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RegisteredPaymentEntry {
-    /// Payment call registry version the classification was read at.
-    version: u64,
-    /// Block the classification was read for.
-    from_block: u64,
-    /// First block at which it may change without a registry change.
-    until_block: u64,
-    is_registered_payment: bool,
-}
-
-/// Interior-mutable cache of a pooled transaction's registered payment classification, shared by
-/// pool maintenance and the payload builder.
-#[derive(Debug, Default)]
-struct RegisteredPaymentCache(Mutex<Option<RegisteredPaymentEntry>>);
-
-impl RegisteredPaymentCache {
-    fn get(&self, version: u64, block: u64) -> Option<bool> {
-        let entry = (*self.0.lock().unwrap_or_else(|err| err.into_inner()))?;
-        (entry.version == version && entry.from_block <= block && block < entry.until_block)
-            .then_some(entry.is_registered_payment)
-    }
-
-    fn set(&self, entry: RegisteredPaymentEntry) {
-        *self.0.lock().unwrap_or_else(|err| err.into_inner()) = Some(entry);
-    }
-
-    fn version(&self) -> Option<u64> {
-        self.0
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .map(|entry| entry.version)
-    }
-
-    /// Moves an entry read at version `from` that holds at `block` to version `to` and returns the
-    /// end of its range, or returns `None` and leaves the cache as it is.
-    fn rebase(&self, from: u64, to: u64, block: u64) -> Option<u64> {
-        let mut entry = self.0.lock().unwrap_or_else(|err| err.into_inner());
-        let current = entry.as_mut().filter(|entry| {
-            entry.version == from && entry.from_block <= block && block < entry.until_block
-        })?;
-        current.version = to;
-        Some(current.until_block)
-    }
-}
-
-impl Clone for RegisteredPaymentCache {
-    fn clone(&self) -> Self {
-        Self(Mutex::new(
-            *self.0.lock().unwrap_or_else(|err| err.into_inner()),
-        ))
-    }
-}
 
 /// Tempo pooled transaction representation.
 ///
@@ -111,9 +55,6 @@ pub struct TempoPooledTransaction {
     is_payment_v2: bool,
     /// Cached T15+ payment classification for efficient block building.
     is_payment_v3: bool,
-    /// Cached T17+ registered payment classification (TIP-1180), keyed by the payment call
-    /// registry version it was read at.
-    registered_payment: RegisteredPaymentCache,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -188,7 +129,6 @@ impl TempoPooledTransaction {
             fee_token_cost,
             is_payment_v2,
             is_payment_v3,
-            registered_payment: RegisteredPaymentCache::default(),
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -257,42 +197,6 @@ impl TempoPooledTransaction {
     /// Returns whether this is a payment transaction according to the T15+ builder criteria.
     pub fn is_payment_v3(&self) -> bool {
         self.is_payment_v3
-    }
-
-    /// Returns the cached registered payment classification (TIP-1180) for `block` if it was read
-    /// at payment call registry `version` and still holds at `block`.
-    pub fn cached_registered_payment(&self, version: u64, block: u64) -> Option<bool> {
-        self.registered_payment.get(version, block)
-    }
-
-    /// Caches the registered payment classification (TIP-1180) read for `block` at payment call
-    /// registry `version`.
-    pub fn cache_registered_payment(
-        &self,
-        version: u64,
-        block: u64,
-        classification: RegisteredClassification,
-    ) {
-        self.registered_payment.set(RegisteredPaymentEntry {
-            version,
-            from_block: block,
-            until_block: classification.changes_at,
-            is_registered_payment: classification.is_registered_payment,
-        });
-    }
-
-    /// Moves the cached registered payment classification (TIP-1180) read at registry version
-    /// `from` to version `to` when it still holds at `block`, for a registry change that cannot
-    /// affect it. Returns the first block at which it may change, or `None` when there is no such
-    /// entry and the transaction must be classified again.
-    pub fn rebase_registered_payment(&self, from: u64, to: u64, block: u64) -> Option<u64> {
-        self.registered_payment.rebase(from, to, block)
-    }
-
-    /// Returns the payment call registry version the cached registered payment classification
-    /// was read at, if any.
-    pub fn registered_payment_version(&self) -> Option<u64> {
-        self.registered_payment.version()
     }
 
     /// Returns true if this AA transaction's nonce is tracked by the `NonceManager` rather than
@@ -526,8 +430,6 @@ impl TempoPooledTransaction {
             fee_token_cost: self.fee_token_cost,
             is_payment_v2: self.is_payment_v2,
             is_payment_v3: self.is_payment_v3,
-            // Keyed by the registry version and block range it holds for.
-            registered_payment: self.registered_payment.clone(),
             expiring_nonce_hash: self.expiring_nonce_hash,
             nonce_key_slot: self.nonce_key_slot.clone(),
             expiring_nonce_slot: self.expiring_nonce_slot.clone(),
@@ -778,11 +680,6 @@ pub enum TempoPoolTransactionError {
     )]
     ExceedsNonPaymentLimit,
 
-    /// Thrown by the payload builder after the transaction is already in the pool, when adding
-    /// a registered payment (TIP-1180) would exceed the block's registered payment gas limit.
-    #[error("Transaction exceeds the registered payment gas limit of the block")]
-    ExceedsRegisteredPaymentLimit,
-
     /// Canonical updates kept changing the pool while the transaction validated.
     ///
     /// Thrown during pool admission when a canonical update landed during every validation
@@ -988,7 +885,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
-            | Self::ExceedsRegisteredPaymentLimit
             | Self::StateChangedDuringValidation
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
@@ -1764,7 +1660,6 @@ mod tests {
     }
 
     #[test_case(TempoPoolTransactionError::ExceedsNonPaymentLimit => false)]
-    #[test_case(TempoPoolTransactionError::ExceedsRegisteredPaymentLimit => false)]
     #[test_case(TempoPoolTransactionError::InvalidValidBefore(InvalidValidBefore { valid_before: 100, min_allowed: 200 }) => false)]
     #[test_case(TempoPoolTransactionError::InvalidValidAfter(InvalidValidAfter { valid_after: 200, max_allowed: 100 }) => false)]
     #[test_case(TempoPoolTransactionError::Keychain("test error") => false)]

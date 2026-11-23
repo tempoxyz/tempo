@@ -257,10 +257,6 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t16>.
         T16,
-        /// T17 hardfork.
-        ///
-        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t17>.
-        T17,
     }
 );
 
@@ -316,20 +312,6 @@ impl TempoHardfork {
             0
         } else {
             block_gas_limit / 10
-        }
-    }
-
-    /// Returns the gas that registered payment calls ([TIP-1180]) may use in a block, inside the
-    /// payment lane.
-    /// - Pre-T17: None (there are no registered payment calls)
-    /// - T17+: half the block gas limit
-    ///
-    /// [TIP-1180]: <https://docs.tempo.xyz/protocol/tips/tip-1180>
-    pub const fn registered_payment_gas_limit(&self, block_gas_limit: u64) -> Option<u64> {
-        if self.is_t17() {
-            Some(block_gas_limit / 2)
-        } else {
-            None
         }
     }
 
@@ -434,7 +416,6 @@ impl TempoHardfork {
             Self::T14 => None,
             Self::T15 => None,
             Self::T16 => None,
-            Self::T17 => None,
         }
     }
 
@@ -463,7 +444,6 @@ impl TempoHardfork {
             Self::T14 => Some(MAINNET_T14_TIMESTAMP),
             Self::T15 => None,
             Self::T16 => None,
-            Self::T17 => None,
         }
     }
 
@@ -492,7 +472,6 @@ impl TempoHardfork {
             Self::T14 => None,
             Self::T15 => None,
             Self::T16 => None,
-            Self::T17 => None,
         }
     }
 
@@ -521,7 +500,6 @@ impl TempoHardfork {
             Self::T14 => Some(MODERATO_T14_TIMESTAMP),
             Self::T15 => None,
             Self::T16 => None,
-            Self::T17 => None,
         }
     }
 }

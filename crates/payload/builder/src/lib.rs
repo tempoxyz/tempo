@@ -58,8 +58,7 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks, spec::SYSTEM_TX_COUNT};
 use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoInvalidTransaction, TempoNextBlockEnvAttributes,
-    TempoStateAccess, TempoTxResult, TxLane, consensus::MAX_BLOCK_TRANSACTIONS,
-    error::LaneGasExceeded,
+    TempoStateAccess, TempoTxResult, consensus::MAX_BLOCK_TRANSACTIONS,
 };
 use tempo_payload_types::{
     Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
@@ -79,207 +78,6 @@ use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 /// this margin together with known transaction, withdrawal, and extra-data lengths for Osaka size
 /// checks and pacing estimates.
 const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
-
-/// Gas every transaction uses at least: the intrinsic gas of a plain transfer.
-const MIN_TRANSACTION_GAS: u64 = 21_000;
-
-/// Blocks for which the builder admits calls to an instance as general after one of its
-/// registered payments failed the TIP-1180 execution check and was left out, and for which it
-/// remembers how often the instance failed.
-const DEMOTION_BLOCKS: u64 = 7_200;
-
-/// Most instances the builder remembers as failing the execution check.
-const MAX_DEMOTED_INSTANCES: usize = 4_096;
-
-/// How the payload builder admits a transaction against its lane's budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LaneAdmission {
-    /// A TIP-1045 payment, or a transaction whose gas limit fits its lane's remaining gas.
-    Fits,
-    /// A transaction whose gas limit passes its lane's remaining gas: kept only if its gas used
-    /// fits.
-    ByGasUsed,
-    /// A transaction left out of this block.
-    Full,
-}
-
-/// Gas left in the budgets the builder admits transactions against, and in the budget for
-/// executions it leaves out of the block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LaneState {
-    /// Gas left in the general (non-payment) lane.
-    general_gas_left: u64,
-    /// Gas left for registered payments (TIP-1180).
-    registered_gas_left: u64,
-    /// Gas this payload may still execute in transactions it then leaves out, for both lanes: one
-    /// general lane's worth per payload, or one transaction's where the general lane is smaller.
-    discard_gas_left: u64,
-    /// Gas this payload may still execute in registered payments it leaves out because they
-    /// failed the execution check and did not fit the general lane, of the same size.
-    failed_check_gas_left: u64,
-}
-
-impl LaneState {
-    /// Returns the gas left in the lane's budget. TIP-1045 payments have no budget of their own.
-    fn budget(&self, lane: TxLane) -> Option<u64> {
-        match lane {
-            TxLane::General => Some(self.general_gas_left),
-            TxLane::Payment => None,
-            TxLane::RegisteredPayment => Some(self.registered_gas_left),
-        }
-    }
-}
-
-/// Decides how a transaction enters its lane, given the most regular gas it can use.
-///
-/// Block validation bounds the general lane and the registered payment budget by the gas each
-/// transaction used, so from T16 the builder admits by gas used too: a transaction whose gas limit
-/// passes the remaining gas is executed and kept only if its gas used fits. It is tried only while
-/// the payload's discard budget covers its whole gas limit, so a payload never executes more than
-/// that budget in transactions it leaves out this way. Earlier forks admit by gas limit.
-///
-/// A registered payment that fits the registered budget is admitted only if it would also fit the
-/// general lane should it fail the execution check, or while the failed check budget covers its
-/// whole gas limit, so a payload never executes more than that budget in registered payments it
-/// leaves out for failing the check.
-fn lane_admission(
-    hardfork: tempo_chainspec::hardfork::TempoHardfork,
-    lane: TxLane,
-    max_regular_gas_used: u64,
-    lanes: &LaneState,
-) -> LaneAdmission {
-    let Some(gas_left) = lanes.budget(lane) else {
-        return LaneAdmission::Fits;
-    };
-    if max_regular_gas_used <= gas_left {
-        if lane.is_registered_payment()
-            && max_regular_gas_used > lanes.general_gas_left
-            && max_regular_gas_used > lanes.failed_check_gas_left
-        {
-            LaneAdmission::Full
-        } else {
-            LaneAdmission::Fits
-        }
-    } else if hardfork.is_t16()
-        && gas_left >= MIN_TRANSACTION_GAS
-        && max_regular_gas_used <= lanes.discard_gas_left
-    {
-        LaneAdmission::ByGasUsed
-    } else {
-        LaneAdmission::Full
-    }
-}
-
-/// Instances whose code failed the TIP-1180 execution check in a registered payment: it called
-/// code that is not registered, so those payments count toward the general lane. Shared by the
-/// payloads one builder builds.
-///
-/// A registered payment that fails the check and does not fit the general lane is left out,
-/// without paying. To keep that from repeating, the builder then admits calls to the instance
-/// whose code made the call the check did not allow (and only that one) as general, by gas limit
-/// against the general lane, for [`DEMOTION_BLOCKS`]. An included registered payment to it that
-/// passes the check restores it, but never in the block it was demoted in, and only after a
-/// back-off that doubles with each failure within [`DEMOTION_BLOCKS`] of the last one.
-#[derive(Debug, Clone, Default)]
-struct DemotedInstances(Arc<std::sync::Mutex<alloy_primitives::map::AddressMap<Demotion>>>);
-
-/// What a builder remembers about an instance that failed the execution check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Demotion {
-    /// The block of its latest failure.
-    at: u64,
-    /// Its failures, each within [`DEMOTION_BLOCKS`] of the one before.
-    failures: u32,
-    /// Whether a registered payment to it passed the check since its latest failure.
-    restored: bool,
-}
-
-impl Demotion {
-    /// Returns whether the failure is recent enough to remember at `block`.
-    fn is_recent(&self, block: u64) -> bool {
-        block.saturating_sub(self.at) < DEMOTION_BLOCKS
-    }
-
-    /// Returns the blocks after its latest failure from which a passing payment restores it:
-    /// one block after the first failure, doubling with each further one.
-    fn back_off(&self) -> u64 {
-        1u64.checked_shl(self.failures.saturating_sub(1))
-            .unwrap_or(u64::MAX)
-            .min(DEMOTION_BLOCKS)
-    }
-}
-
-impl DemotedInstances {
-    fn lock(&self) -> std::sync::MutexGuard<'_, alloy_primitives::map::AddressMap<Demotion>> {
-        self.0.lock().unwrap_or_else(|err| err.into_inner())
-    }
-
-    /// Returns whether any call of `tx` targets an instance demoted at `block`.
-    fn any_demoted(&self, tx: &TempoTxEnvelope, block: u64) -> bool {
-        let demoted = self.lock();
-        !demoted.is_empty()
-            && call_targets(tx).any(|target| {
-                demoted
-                    .get(&target)
-                    .is_some_and(|demotion| !demotion.restored && demotion.is_recent(block))
-            })
-    }
-
-    /// Demotes `instance`, whose code failed the execution check at `block`.
-    fn demote(&self, instance: Address, block: u64) {
-        let mut demoted = self.lock();
-        if demoted.len() >= MAX_DEMOTED_INSTANCES && !demoted.contains_key(&instance) {
-            demoted.retain(|_, demotion| demotion.is_recent(block));
-            if demoted.len() >= MAX_DEMOTED_INSTANCES {
-                demoted.clear();
-            }
-        }
-        let failures = demoted
-            .get(&instance)
-            .filter(|demotion| demotion.is_recent(block))
-            .map_or(1, |demotion| demotion.failures.saturating_add(1));
-        demoted.insert(
-            instance,
-            Demotion {
-                at: block,
-                failures,
-                restored: false,
-            },
-        );
-    }
-
-    /// Restores the instances `tx` calls, after it passed the check at `block`, where their
-    /// back-off has passed.
-    fn restore(&self, tx: &TempoTxEnvelope, block: u64) {
-        let mut demoted = self.lock();
-        if demoted.is_empty() {
-            return;
-        }
-        for target in call_targets(tx) {
-            if let Some(demotion) = demoted.get_mut(&target)
-                && block.saturating_sub(demotion.at) >= demotion.back_off()
-            {
-                demotion.restored = true;
-            }
-        }
-    }
-}
-
-/// Returns the addresses `tx`'s calls target.
-fn call_targets(tx: &TempoTxEnvelope) -> impl Iterator<Item = Address> + '_ {
-    tx.calls().filter_map(|(kind, _)| kind.to().copied())
-}
-
-/// Returns the lane rejection of an execution the executor left out because its gas used passed
-/// the gas its lane had left.
-fn lane_gas_exceeded(error: &BlockExecutionError) -> Option<LaneGasExceeded> {
-    match error {
-        BlockExecutionError::Validation(BlockValidationError::Other(error)) => {
-            error.downcast_ref::<LaneGasExceeded>().copied()
-        }
-        _ => None,
-    }
-}
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -335,8 +133,6 @@ pub struct TempoPayloadBuilder<Provider> {
     /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
     /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
-    /// Instances whose registered payments failed the TIP-1180 execution check.
-    demoted: DemotedInstances,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -400,7 +196,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
-            demoted: DemotedInstances::default(),
         }
     }
 }
@@ -550,10 +345,6 @@ where
         let general_gas_limit =
             chain_spec.general_gas_limit_at(attributes.timestamp, block_gas_limit, 0);
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
-        // T17+: registered payments (TIP-1180) share this part of the payment lane.
-        let registered_gas_limit = hardfork
-            .registered_payment_gas_limit(block_gas_limit)
-            .unwrap_or_default();
 
         // When consensus passes only the DKG ceremony output for a boundary block, as it does from
         // T15, the builder fills in the rest of the outcome from the parent state. Other
@@ -590,14 +381,6 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
-        let mut registered_gas_used = 0;
-        // Gas executed in transactions left out of the block: at most one general lane's worth,
-        // or one transaction's where the general lane is smaller.
-        let mut discarded_gas = 0u64;
-        // Gas executed in registered payments left out of the block for failing the execution
-        // check, within the same bound.
-        let mut failed_check_gas = 0u64;
-        let mut registered_payment_transactions = 0u64;
         let mut estimated_rlp_block_size = attributes
             .withdrawals
             .as_ref()
@@ -658,24 +441,6 @@ where
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        // The payment call registry version in the parent state keys the pool's cached
-        // registered payment classifications (TIP-1180). They hold only when the pool brought them
-        // up to date on this branch.
-        let registry_version = executor
-            .payment_call_registry_version()
-            .map_err(PayloadBuilderError::evm)?;
-        let discard_gas_limit = general_gas_limit.max(
-            executor
-                .evm()
-                .version()
-                .tx_gas_limit_cap
-                .min(block_gas_limit),
-        );
-        let registry_cache_current = self.pool.registry_cache_current(
-            registry_version,
-            parent_header.hash(),
-            parent_header.parent_hash(),
-        );
         check_cancel!();
 
         debug!("building new payload");
@@ -817,95 +582,37 @@ where
                 continue;
             }
 
-            let classified = if !hardfork.is_t17() {
-                TxLane::from_payment(if hardfork.is_t15() {
-                    tx.transaction.is_payment_v3()
-                } else if hardfork.is_t5() {
-                    tx.transaction.is_payment_v2()
-                } else {
-                    tx.transaction.inner().is_payment_v1()
-                })
-            } else if tx.transaction.is_payment_v3() {
-                TxLane::Payment
-            } else if registry_version == 0 {
-                TxLane::General
+            let is_payment = if hardfork.is_t15() {
+                tx.transaction.is_payment_v3()
+            } else if hardfork.is_t5() {
+                tx.transaction.is_payment_v2()
             } else {
-                // The pool caches registered payment classifications per registry version;
-                // classify from the parent state, as block execution does, when it has none.
-                let cached = registry_cache_current
-                    .then(|| {
-                        tx.transaction
-                            .cached_registered_payment(registry_version, block_number)
-                    })
-                    .flatten();
-                let is_registered = match cached {
-                    Some(is_registered) => is_registered,
-                    None => {
-                        let classification = executor
-                            .classify_registered_payment(tx.transaction.inner().inner())
-                            .map_err(PayloadBuilderError::evm)?;
-                        if registry_cache_current {
-                            tx.transaction.cache_registered_payment(
-                                registry_version,
-                                block_number,
-                                classification,
-                            );
-                        }
-                        classification.is_registered_payment
-                    }
-                };
-                if is_registered {
-                    TxLane::RegisteredPayment
-                } else {
-                    TxLane::General
-                }
-            };
-            // Calls to an instance that recently failed the execution check are admitted as
-            // general; block execution still decides the lane.
-            let lane = if classified.is_registered_payment()
-                && self
-                    .demoted
-                    .any_demoted(tx.transaction.inner().inner(), block_number)
-            {
-                TxLane::General
-            } else {
-                classified
+                tx.transaction.inner().is_payment_v1()
             };
 
-            let lanes = LaneState {
-                general_gas_left: general_gas_limit.saturating_sub(non_payment_gas_used),
-                registered_gas_left: registered_gas_limit.saturating_sub(registered_gas_used),
-                discard_gas_left: discard_gas_limit.saturating_sub(discarded_gas),
-                failed_check_gas_left: discard_gas_limit.saturating_sub(failed_check_gas),
-            };
-            let admission = lane_admission(hardfork, lane, max_regular_gas_used, &lanes);
-            let by_gas_used = admission == LaneAdmission::ByGasUsed;
-            let lane_limit_error = |lane: TxLane| {
-                InvalidPoolTransactionError::Other(Box::new(if lane.is_registered_payment() {
-                    TempoPoolTransactionError::ExceedsRegisteredPaymentLimit
-                } else {
-                    TempoPoolTransactionError::ExceedsNonPaymentLimit
-                }))
-            };
-
-            // If the tx will exceed its lane's limit, mark it as invalid and continue
-            if admission == LaneAdmission::Full {
+            // If the tx is not a payment and will exceed the general gas limit
+            // mark the tx as invalid and continue
+            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 #[cfg(feature = "fuzz")]
                 antithesis_sdk::assert_reachable!(
                     "Payload builder defers a non-payment transaction at the general gas limit",
                     &serde_json::json!({ "general_gas_used": non_payment_gas_used, "general_gas_limit": general_gas_limit })
                 );
-                best_txs.mark_invalid(&pool_tx, lane_limit_error(lane));
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                    )),
+                );
                 self.metrics
-                    .inc_pool_tx_skipped(if lane.is_registered_payment() {
-                        "exceeds_registered_gas_limit"
-                    } else {
-                        "exceeds_general_gas_limit"
-                    });
+                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
             }
 
             check_cancel!();
+            if is_payment {
+                payment_transactions += 1;
+            }
 
             let tx_rlp_length =
                 block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
@@ -928,16 +635,11 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            // The executor's lane, after the TIP-1180 execution check.
-            let mut included_lane = lane;
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
                 cumulative_state_gas_used += result.state_gas_used();
-                included_lane = result.lane();
-                match included_lane {
-                    TxLane::General => non_payment_gas_used += result.block_gas_used(),
-                    TxLane::Payment => {}
-                    TxLane::RegisteredPayment => registered_gas_used += result.block_gas_used(),
+                if !is_payment {
+                    non_payment_gas_used += result.block_gas_used();
                 }
 
                 // Score payload value by the validator-credited fee amount that the
@@ -948,32 +650,21 @@ where
                 best_txs.on_new_result(result);
             };
 
-            // A replay commits as it executes, so a transaction admitted by gas used runs afresh.
-            // A transaction the executor rejects for its lane (admitted by gas used, or a
-            // registered payment that failed the execution check and does not fit the general
-            // lane) leaves the block as it was.
-            let replay = pool_tx.replay.take().filter(|_| !by_gas_used);
-            let execution_result = if let Some(replay) = replay {
+            let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
-                executor
-                    .execute_transaction_with_actions(
-                        tx.transaction.executable(),
-                        *replay,
-                        result_closure,
-                    )
-                    .map(|_| None)
+                executor.execute_transaction_with_actions(
+                    tx.transaction.executable(),
+                    *replay,
+                    result_closure,
+                )
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
                     .execute_transaction_without_commit(tx.transaction.executable())
                     .and_then(|result| {
                         result_closure(&result);
-                        executor.commit_transaction(result).map(|_| None)
+                        executor.commit_transaction(result).map(|_| ())
                     })
-            };
-            let execution_result = match execution_result {
-                Err(err) => lane_gas_exceeded(&err).map(Some).ok_or(err),
-                Ok(none) => Ok(none),
             };
 
             if let Err(err) = execution_result {
@@ -1047,41 +738,8 @@ where
                 }
             }
 
-            if let Ok(Some(exceeded)) = execution_result {
-                discarded_gas = discarded_gas.saturating_add(exceeded.gas_used);
-                // A registered payment counted toward the general lane failed the execution check:
-                // demote only the instance whose code made the call the check did not allow.
-                let metric =
-                    if classified.is_registered_payment() && exceeded.lane == TxLane::General {
-                        failed_check_gas = failed_check_gas.saturating_add(exceeded.gas_used);
-                        if let Some(instance) = exceeded.failed_instance {
-                            self.demoted.demote(instance, block_number);
-                        }
-                        "failed_execution_check"
-                    } else if exceeded.lane.is_registered_payment() {
-                        "exceeds_registered_gas_used"
-                    } else {
-                        "exceeds_general_gas_used"
-                    };
-                best_txs.mark_invalid(&pool_tx, lane_limit_error(exceeded.lane));
-                self.metrics.inc_pool_tx_skipped(metric);
-                continue;
-            }
-
             trace!("Transaction executed");
             pool_transactions_included += 1;
-            if included_lane.is_payment() {
-                payment_transactions += 1;
-            }
-            // An included registered payment that failed the check paid for its general lane gas,
-            // so it demotes nothing.
-            if classified.is_registered_payment() && included_lane.is_registered_payment() {
-                self.demoted
-                    .restore(tx.transaction.inner().inner(), block_number);
-            }
-            if included_lane.is_registered_payment() {
-                registered_payment_transactions += 1;
-            }
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
             if !receipt.success {
@@ -1372,7 +1030,6 @@ where
             cumulative_state_gas_used,
             extra_data = %block.extra_data(),
             payment_transactions,
-            registered_payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
             parallel_transactions_executed,
@@ -1597,387 +1254,5 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
-    }
-
-    /// The discard budget of a payload with a 30M general lane.
-    const DISCARD: u64 = 30_000_000;
-
-    /// Lanes with the failed check budget unspent.
-    fn lanes(general_gas_left: u64, registered_gas_left: u64, discard_gas_left: u64) -> LaneState {
-        LaneState {
-            general_gas_left,
-            registered_gas_left,
-            discard_gas_left,
-            failed_check_gas_left: DISCARD,
-        }
-    }
-
-    #[test]
-    fn test_lane_admission_by_gas_limit_before_t16() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        for hardfork in [TempoHardfork::T5, TempoHardfork::T15] {
-            let state = lanes(1_000_000, 0, DISCARD);
-            assert_eq!(
-                lane_admission(hardfork, TxLane::General, 1_000_000, &state),
-                LaneAdmission::Fits
-            );
-            assert_eq!(
-                lane_admission(hardfork, TxLane::General, 1_000_001, &state),
-                LaneAdmission::Full
-            );
-            assert_eq!(
-                lane_admission(hardfork, TxLane::Payment, 30_000_000, &lanes(0, 0, 0)),
-                LaneAdmission::Fits
-            );
-        }
-    }
-
-    #[test]
-    fn test_lane_admission_by_gas_used_from_t16() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let t16 = TempoHardfork::T16;
-        let general = |limit, gas_left, discard| {
-            lane_admission(t16, TxLane::General, limit, &lanes(gas_left, 0, discard))
-        };
-        assert_eq!(general(1_000_000, 1_000_000, DISCARD), LaneAdmission::Fits);
-        // A gas limit past the lane's remaining gas is tried and kept only if its gas used fits.
-        assert_eq!(
-            general(1_193_565, 1_000_000, DISCARD),
-            LaneAdmission::ByGasUsed
-        );
-        assert_eq!(
-            general(1_193_565, MIN_TRANSACTION_GAS, DISCARD),
-            LaneAdmission::ByGasUsed
-        );
-        // Below the least gas any transaction uses, the lane is full.
-        assert_eq!(
-            general(1_193_565, MIN_TRANSACTION_GAS - 1, DISCARD),
-            LaneAdmission::Full
-        );
-        assert_eq!(general(21_000, 0, DISCARD), LaneAdmission::Full);
-        assert_eq!(
-            lane_admission(t16, TxLane::Payment, 30_000_000, &lanes(0, 0, 0)),
-            LaneAdmission::Fits
-        );
-        // It is tried only while the discard budget covers its whole gas limit.
-        assert_eq!(
-            general(1_193_565, 1_000_000, 1_193_565),
-            LaneAdmission::ByGasUsed
-        );
-        assert_eq!(
-            general(1_193_565, 1_000_000, 1_193_564),
-            LaneAdmission::Full
-        );
-        assert_eq!(general(1_000_000, 1_000_000, 0), LaneAdmission::Fits);
-    }
-
-    /// With both lanes nearly full, discarded executions are bounded by gas, not by count: a
-    /// payload executes at most one general lane's worth of transactions it then leaves out.
-    #[test]
-    fn test_discarded_execution_bounded_by_gas() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let cap = 30_000_000u64;
-        let mut discarded = 0u64;
-        let mut tries = 0;
-        for lane in [TxLane::General, TxLane::RegisteredPayment] {
-            loop {
-                let state = lanes(
-                    MIN_TRANSACTION_GAS,
-                    MIN_TRANSACTION_GAS,
-                    DISCARD - discarded,
-                );
-                match lane_admission(TempoHardfork::T17, lane, cap, &state) {
-                    LaneAdmission::ByGasUsed => {
-                        // A loop burns the whole gas limit; the builder leaves it out.
-                        discarded += cap;
-                        tries += 1;
-                    }
-                    LaneAdmission::Full => break,
-                    LaneAdmission::Fits => unreachable!(),
-                }
-            }
-        }
-        assert_eq!(tries, 1);
-        assert_eq!(discarded, DISCARD);
-        // Smaller transactions keep being tried until the budget runs out.
-        let state = lanes(MIN_TRANSACTION_GAS, MIN_TRANSACTION_GAS, 1_500_000);
-        assert_eq!(
-            lane_admission(
-                TempoHardfork::T17,
-                TxLane::RegisteredPayment,
-                1_500_000,
-                &state
-            ),
-            LaneAdmission::ByGasUsed
-        );
-    }
-
-    #[test]
-    fn test_registered_payments_admitted_against_their_own_budget() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let t17 = TempoHardfork::T17;
-        // A registered payment ignores the general lane and fills the registered budget, even
-        // with the discard budget spent.
-        let state = lanes(0, 1_200_000, 0);
-        assert_eq!(
-            lane_admission(t17, TxLane::RegisteredPayment, 1_193_565, &state),
-            LaneAdmission::Fits
-        );
-        assert_eq!(
-            lane_admission(t17, TxLane::General, 21_000, &state),
-            LaneAdmission::Full
-        );
-        // Past its remaining gas it is admitted by gas used, from the shared discard budget.
-        let state = lanes(0, 1_000_000, DISCARD);
-        assert_eq!(
-            lane_admission(t17, TxLane::RegisteredPayment, 1_193_565, &state),
-            LaneAdmission::ByGasUsed
-        );
-        let state = lanes(0, 1_000_000, 1_000_000);
-        assert_eq!(
-            lane_admission(t17, TxLane::RegisteredPayment, 1_193_565, &state),
-            LaneAdmission::Full
-        );
-        // TIP-1045 payments are never limited by either budget.
-        assert_eq!(
-            lane_admission(t17, TxLane::Payment, 30_000_000, &lanes(0, 0, 0)),
-            LaneAdmission::Fits
-        );
-    }
-
-    #[test]
-    fn test_demoted_instances_expire_and_restore() {
-        let program = Address::repeat_byte(0x52);
-        let call = aa(&[program], 1_500_000);
-        let demoted = DemotedInstances::default();
-        assert!(!demoted.any_demoted(&call, 10));
-        demoted.demote(program, 10);
-        assert!(demoted.any_demoted(&call, 10));
-        assert!(demoted.any_demoted(&call, 10 + DEMOTION_BLOCKS - 1));
-        assert!(!demoted.any_demoted(&call, 10 + DEMOTION_BLOCKS));
-        // A passing payment in the block of the failure restores nothing; one in a later block
-        // does.
-        demoted.restore(&call, 10);
-        assert!(demoted.any_demoted(&call, 10));
-        demoted.restore(&call, 11);
-        assert!(!demoted.any_demoted(&call, 11));
-    }
-
-    /// An instance that keeps failing stays demoted longer each time: a passing payment restores
-    /// it only after a back-off that doubles with each failure, until the failures are
-    /// [`DEMOTION_BLOCKS`] apart.
-    #[test]
-    fn test_demoted_instances_back_off() {
-        let program = Address::repeat_byte(0x52);
-        let call = aa(&[program], 1_500_000);
-        let demoted = DemotedInstances::default();
-        let mut block = 100;
-        for back_off in [1, 2, 4, 8, 16] {
-            demoted.demote(program, block);
-            demoted.restore(&call, block + back_off - 1);
-            assert!(
-                demoted.any_demoted(&call, block + back_off - 1),
-                "{back_off}"
-            );
-            block += back_off;
-            demoted.restore(&call, block);
-            assert!(!demoted.any_demoted(&call, block), "{back_off}");
-        }
-        // The back-off never passes the demotion window.
-        for _ in 0..40 {
-            demoted.demote(program, block);
-        }
-        demoted.restore(&call, block + DEMOTION_BLOCKS - 1);
-        assert!(demoted.any_demoted(&call, block + DEMOTION_BLOCKS - 1));
-        demoted.restore(&call, block + DEMOTION_BLOCKS);
-        assert!(!demoted.any_demoted(&call, block + DEMOTION_BLOCKS));
-        // A failure after a quiet window starts over.
-        block += 2 * DEMOTION_BLOCKS;
-        demoted.demote(program, block);
-        demoted.restore(&call, block + 1);
-        assert!(!demoted.any_demoted(&call, block + 1));
-    }
-
-    /// Once registered payments that fail the execution check have used the failed check budget,
-    /// a registered payment is admitted only if it would fit the general lane should it fail too.
-    /// The general lane and the discard budget never keep it out on their own.
-    #[test]
-    fn test_registered_payments_within_the_failed_check_budget() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let t17 = TempoHardfork::T17;
-        let admission = |general_gas_left, failed_check_gas_left, gas_limit| {
-            let lanes = LaneState {
-                general_gas_left,
-                registered_gas_left: REGISTERED,
-                discard_gas_left: 0,
-                failed_check_gas_left,
-            };
-            lane_admission(t17, TxLane::RegisteredPayment, gas_limit, &lanes)
-        };
-        assert_eq!(admission(0, DISCARD, 30_000_000), LaneAdmission::Fits);
-        assert_eq!(admission(0, 1_500_000, 1_500_000), LaneAdmission::Fits);
-        assert_eq!(admission(0, 1_499_999, 1_500_000), LaneAdmission::Full);
-        assert_eq!(admission(1_500_000, 0, 1_500_000), LaneAdmission::Fits);
-        assert_eq!(admission(1_499_999, 0, 1_500_000), LaneAdmission::Full);
-        // General transactions never draw on it.
-        let lanes = LaneState {
-            general_gas_left: 1_500_000,
-            registered_gas_left: REGISTERED,
-            discard_gas_left: 0,
-            failed_check_gas_left: 0,
-        };
-        assert_eq!(
-            lane_admission(t17, TxLane::General, 1_500_000, &lanes),
-            LaneAdmission::Fits
-        );
-    }
-
-    const GENERAL: u64 = 30_000_000;
-    const REGISTERED: u64 = 250_000_000;
-
-    fn aa(targets: &[Address], gas_limit: u64) -> TempoTxEnvelope {
-        use tempo_primitives::{TempoTransaction, transaction::Call};
-
-        TempoTxEnvelope::AA(
-            TempoTransaction {
-                calls: targets
-                    .iter()
-                    .map(|to| Call::new(*to, Bytes::from_static(&[0xca, 0x89, 0xe4, 0x14])))
-                    .collect(),
-                gas_limit,
-                ..Default::default()
-            }
-            .into_signed(alloy_primitives::Signature::test_signature().into()),
-        )
-    }
-
-    /// The payload loop's admission for a transaction the pool classified as a registered payment.
-    fn admitted_lane(demoted: &DemotedInstances, tx: &TempoTxEnvelope, block: u64) -> TxLane {
-        if demoted.any_demoted(tx, block) {
-            TxLane::General
-        } else {
-            TxLane::RegisteredPayment
-        }
-    }
-
-    /// Alternating cheap passing payments to an instance with expensive ones that fail the
-    /// execution check, in the payload loop's order: the passing payments cannot restore the
-    /// instance in the block it failed in, and the failing ones stay within the failed check
-    /// budget, so the payload executes at most one budget of gas it leaves out.
-    #[test]
-    fn test_alternating_failures_stay_within_the_failed_check_budget() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let t17 = TempoHardfork::T17;
-        let block = 1_000;
-        let program = Address::repeat_byte(0x77);
-        let demoted = DemotedInstances::default();
-        // One ordinary general transaction is already in the block.
-        let general_used = 1_000_000u64;
-        let mut discarded = 0u64;
-        let mut failed_check = 0u64;
-        let mut registered_used = 0u64;
-        let lanes = |registered_used: u64, discarded: u64, failed_check: u64| LaneState {
-            general_gas_left: GENERAL - general_used,
-            registered_gas_left: REGISTERED - registered_used,
-            discard_gas_left: DISCARD.saturating_sub(discarded),
-            failed_check_gas_left: DISCARD.saturating_sub(failed_check),
-        };
-
-        for pair in 0..20 {
-            // A cheap payment that passes the check is admitted and included.
-            let passing = aa(&[program], 50_000);
-            let lane = admitted_lane(&demoted, &passing, block);
-            assert_eq!(
-                lane_admission(
-                    t17,
-                    lane,
-                    50_000,
-                    &lanes(registered_used, discarded, failed_check)
-                ),
-                LaneAdmission::Fits,
-                "pair {pair}"
-            );
-            registered_used += 40_000;
-            demoted.restore(&passing, block);
-
-            // An expensive payment to the same instance that fails the check.
-            let failing = aa(&[program; 20], 30_000_000);
-            let lane = admitted_lane(&demoted, &failing, block);
-            match lane_admission(
-                t17,
-                lane,
-                30_000_000,
-                &lanes(registered_used, discarded, failed_check),
-            ) {
-                LaneAdmission::Full => continue,
-                LaneAdmission::ByGasUsed => panic!("pair {pair}: no discard budget is left"),
-                LaneAdmission::Fits => {}
-            }
-            // The executor: the general lane after the check, 30M used past the 29M left.
-            let exceeded = LaneGasExceeded {
-                lane: TxLane::General,
-                gas_used: 30_000_000,
-                failed_instance: Some(program),
-            };
-            discarded += exceeded.gas_used;
-            failed_check += exceeded.gas_used;
-            demoted.demote(program, block);
-        }
-        assert_eq!(failed_check, DISCARD);
-        assert_eq!(discarded, DISCARD);
-
-        // In the next block a passing payment restores the instance, and a failing one is tried
-        // again against that payload's own budget.
-        let passing = aa(&[program], 50_000);
-        demoted.restore(&passing, block + 1);
-        assert!(!demoted.any_demoted(&passing, block + 1));
-    }
-
-    /// A payment that fails the check names only the instance whose code made the call the check
-    /// did not allow: another instance it also calls keeps its registered payments in their lane.
-    #[test]
-    fn test_failed_check_demotes_only_the_failing_instance() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let t17 = TempoHardfork::T17;
-        let block = 1_000;
-        let honest = Address::repeat_byte(0x11);
-        let failing = Address::repeat_byte(0x77);
-        let demoted = DemotedInstances::default();
-
-        let bundle = aa(&[failing, honest], 3_000_000);
-        assert_eq!(
-            admitted_lane(&demoted, &bundle, block),
-            TxLane::RegisteredPayment
-        );
-        let exceeded = LaneGasExceeded {
-            lane: TxLane::General,
-            gas_used: 3_000_000,
-            failed_instance: Some(failing),
-        };
-        demoted.demote(exceeded.failed_instance.unwrap(), block);
-
-        let swipe = aa(&[honest], 1_500_000);
-        let lane = admitted_lane(&demoted, &swipe, block);
-        assert_eq!(lane, TxLane::RegisteredPayment);
-        let lanes = LaneState {
-            general_gas_left: 1_000_000,
-            registered_gas_left: REGISTERED,
-            discard_gas_left: 0,
-            failed_check_gas_left: DISCARD - exceeded.gas_used,
-        };
-        assert_eq!(
-            lane_admission(t17, lane, 1_500_000, &lanes),
-            LaneAdmission::Fits
-        );
-        // The failing instance, and any bundle calling it, is admitted as general.
-        assert!(demoted.any_demoted(&aa(&[failing], 50_000), block));
-        assert!(demoted.any_demoted(&bundle, block + DEMOTION_BLOCKS - 1));
     }
 }

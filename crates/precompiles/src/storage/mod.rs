@@ -106,22 +106,6 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
-    /// Executes a closure with the runtime code of the given address, charging account access
-    /// like [`Self::with_account_info`]. Providers that cannot read code fail.
-    fn with_account_code(&mut self, address: Address, f: &mut dyn FnMut(&[u8])) -> Result<()> {
-        let _ = (address, f);
-        Err(TempoPrecompileError::Fatal(
-            "storage provider cannot read account code".to_string(),
-        ))
-    }
-
-    /// Returns whether `address` was created in the current transaction. Providers outside a
-    /// transaction answer false.
-    fn is_created_in_tx(&mut self, address: Address) -> Result<bool> {
-        let _ = address;
-        Ok(false)
-    }
-
     /// Reads the warm transaction caller without a second account-access charge.
     /// Normal transaction setup has already loaded this caller. Production rejects a cold
     /// account; this is not a generic cache-only read, and callers must have checked that

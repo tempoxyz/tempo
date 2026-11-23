@@ -120,30 +120,6 @@ impl StorageCtx {
         result.unwrap()
     }
 
-    /// Executes a closure with the runtime code of the given address, returning its result.
-    pub fn with_account_code<T>(
-        &self,
-        address: Address,
-        mut f: impl FnMut(&[u8]) -> Result<T>,
-    ) -> Result<T> {
-        let mut result: Option<Result<T>> = None;
-        Self::try_with_storage(|s| {
-            s.with_account_code(address, &mut |code| {
-                result = Some(f(code));
-            })
-        })?;
-        result.ok_or_else(|| {
-            TempoPrecompileError::Fatal(
-                "storage provider did not invoke the code callback".to_string(),
-            )
-        })?
-    }
-
-    /// Returns whether `address` was created in the current transaction.
-    pub fn is_created_in_tx(&self, address: Address) -> Result<bool> {
-        Self::try_with_storage(|s| s.is_created_in_tx(address))
-    }
-
     /// Reads the already-warm execution caller without charging account access twice.
     pub(crate) fn with_warm_caller_info<T>(
         address: Address,
@@ -609,11 +585,6 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_block_number(&mut self, block_number: u64) {
         self.as_hashmap().set_block_number(block_number)
-    }
-
-    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
-    pub fn set_created_in_tx(&mut self, address: Address, created: bool) {
-        self.as_hashmap().set_created_in_tx(address, created)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`

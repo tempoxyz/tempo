@@ -602,20 +602,6 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(fee_token);
 
-        // T17+: cache the registered payment classification (TIP-1180) for the next block, keyed by
-        // the payment call registry version. A failed read leaves it to the payload builder.
-        if spec.is_t17() && !transaction.is_payment_v3() {
-            let block = evm.block().number.saturating_to::<u64>();
-            let state = evm.overlay_db_mut();
-            if let Ok(version) = state.payment_call_registry_version(spec)
-                && version != 0
-                && let Ok(classification) =
-                    state.classify_registered_payment(spec, transaction.inner().inner(), block)
-            {
-                transaction.cache_registered_payment(version, block, classification);
-            }
-        }
-
         // Pool-only key-expiry checks: reject keychain txs whose key expires too soon
         // (within AA_VALID_BEFORE_MIN_SECS of tip timestamp) or at or before `valid_after`,
         // since such a transaction can never execute.

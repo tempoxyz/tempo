@@ -4,7 +4,6 @@ pub mod common_errors;
 pub mod configurable_account;
 pub mod current_committee;
 pub mod nonce;
-pub mod payment_call_registry;
 pub mod receive_policy_guard;
 pub mod reservations;
 pub mod signature_verifier;
@@ -26,7 +25,6 @@ pub use common_errors::*;
 pub use configurable_account::*;
 pub use current_committee::*;
 pub use nonce::*;
-pub use payment_call_registry::*;
 pub use receive_policy_guard::*;
 pub use reservations::*;
 pub use signature_verifier::*;
@@ -91,5 +89,4 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
     (CONFIGURABLE_ACCOUNT_ADDRESS, TempoHardfork::T14),
     (RESERVATIONS_ADDRESS, TempoHardfork::T16),
-    (PAYMENT_CALL_REGISTRY_ADDRESS, TempoHardfork::T17),
 ];

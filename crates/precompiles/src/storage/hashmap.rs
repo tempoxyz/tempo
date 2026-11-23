@@ -27,8 +27,6 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
-    /// Accounts reported as created in the current transaction.
-    created_in_tx: std::collections::HashSet<Address>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
@@ -70,7 +68,6 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
-            created_in_tx: Default::default(),
             fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
@@ -107,13 +104,6 @@ impl HashMapStorageProvider {
         self
     }
 
-    /// Returns self with the block environment's epoch length overridden (builder pattern).
-    pub fn with_epoch_length(mut self, epoch_length: u64) -> Self {
-        self.block_env.ext.epoch_length =
-            core::num::NonZeroU64::new(epoch_length).expect("epoch length is non-zero");
-        self
-    }
-
     /// Returns self executing over an EVM of `kind` (builder pattern).
     pub fn with_kind(mut self, kind: TempoEvmKind) -> Self {
         self.kind = kind;
@@ -144,10 +134,6 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn is_created_in_tx(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
-        Ok(self.created_in_tx.contains(&address))
-    }
-
     fn with_account_info(
         &mut self,
         address: Address,
@@ -164,21 +150,6 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         self.with_account_info(address, f)
-    }
-
-    fn with_account_code(
-        &mut self,
-        address: Address,
-        f: &mut dyn FnMut(&[u8]),
-    ) -> Result<(), TempoPrecompileError> {
-        let code = self
-            .accounts
-            .get(&address)
-            .and_then(|account| account.code.as_ref())
-            .map(|code| code.original_bytes())
-            .unwrap_or_default();
-        f(&code);
-        Ok(())
     }
 
     fn sstore(
@@ -456,7 +427,6 @@ impl HashMapStorageProvider {
         account.nonce = nonce;
     }
 
-    /// Overrides the block timestamp.
     /// Returns how many storage slots of `address` hold a non-zero value.
     pub fn nonzero_slot_count(&self, address: Address) -> usize {
         self.internals
@@ -465,6 +435,7 @@ impl HashMapStorageProvider {
             .count()
     }
 
+    /// Overrides the block timestamp.
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.block_env.timestamp = timestamp;
     }
@@ -477,15 +448,6 @@ impl HashMapStorageProvider {
     /// Overrides the block number.
     pub fn set_block_number(&mut self, block_number: u64) {
         self.block_env.number = U256::from(block_number);
-    }
-
-    /// Reports `address` as created in the current transaction, or not.
-    pub fn set_created_in_tx(&mut self, address: Address, created: bool) {
-        if created {
-            self.created_in_tx.insert(address);
-        } else {
-            self.created_in_tx.remove(&address);
-        }
     }
 
     /// Overrides the active hardfork spec.

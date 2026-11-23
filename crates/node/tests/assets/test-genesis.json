@@ -28,7 +28,6 @@
     "t14Time": 0,
     "t15Time": 0,
     "t16Time": 0,
-    "t17Time": 0,
     "t1Time": 0,
     "t1aTime": 0,
     "t1bTime": 0,
@@ -60,11 +59,6 @@
       "nonce": "0x1",
       "balance": "0x0",
       "code": "0x3373fffffffffffffffffffffffffffffffffffffffe14604657602036036042575f35600143038111604257611fff81430311604257611fff9006545f5260205ff35b5f5ffd5b5f35611fff60014303065500"
-    },
-    "0x1180000000000000000000000000000000000000": {
-      "nonce": "0x0",
-      "balance": "0x0",
-      "code": "0xef"
     },
     "0x20c0000000000000000000000000000000000000": {
       "nonce": "0x0",

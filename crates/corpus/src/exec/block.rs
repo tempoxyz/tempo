@@ -425,7 +425,7 @@ mod tests {
     fn boundary_encoding_roundtrip() {
         for section in [0u8, 1, 3, 4] {
             let mut bytes = vec![section];
-            // The third counter, the registered payment budget, is zero before T17.
+            // The third counter is the removed gas incentive slot, always zero.
             for value in [1, u64::MAX, 0, 4, 5, 6] {
                 bytes.extend(value.to_be_bytes());
             }
@@ -453,5 +453,10 @@ mod tests {
                 "{err}"
             );
         }
+        let mut incentive = vec![1u8];
+        for value in [1u64, 2, 3, 4, 5, 6] {
+            incentive.extend(value.to_be_bytes());
+        }
+        assert!(boundary().deserialize::<ExecutorState>(&incentive).is_err());
     }
 }

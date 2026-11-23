@@ -573,12 +573,6 @@ impl TestNodeBuilder {
         self
     }
 
-    /// Mine HTTP-only test blocks at a fixed interval.
-    pub(crate) fn with_block_time(mut self, block_time: Duration) -> Self {
-        self.block_time = Some(block_time);
-        self
-    }
-
     pub(crate) fn with_block_timestamps_from(mut self, first: u64) -> Self {
         self.first_block_timestamp = Some(first);
         self
