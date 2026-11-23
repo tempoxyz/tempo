@@ -507,10 +507,10 @@ fn ensure_caller(caller: Address, expected: Address) -> ZoneResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, Bytes, map::HashSet};
-    use alloy_sol_types::{SolCall, SolError};
+    use alloy_primitives::{Address, map::HashSet};
+    use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::zones::{Unauthorized, ZoneIdentityError};
+    use tempo_contracts::zones::ZoneIdentityError;
     use tempo_precompiles::{
         address_registry::AddressRegistry,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
@@ -520,7 +520,7 @@ mod tests {
 
     use super::*;
 
-    use crate::{error::ZonePrecompileError, execution::CallCheck, privacy::check_caller};
+    use crate::error::ZonePrecompileError;
 
     const ALICE: Address = Address::repeat_byte(0x11);
     const BOB: Address = Address::repeat_byte(0x22);
@@ -908,23 +908,6 @@ mod tests {
                 Err(identity_error(ZoneIdentityError::invalid_address()))
             );
         });
-    }
-
-    #[test_case(&[STRANGER, ALICE] => true)]
-    #[test_case(&[ALICE, STRANGER] => true)]
-    #[test_case(&[STRANGER, STRANGER] => false)]
-    fn org_admin_reads_getters_naming_any_member(accounts: &[Address]) -> bool {
-        with_identity(|identity, registrar| {
-            let (admin, _) = org_with_members(identity, registrar, token(1));
-            match check_caller(admin, accounts) {
-                CallCheck::Continue => true,
-                CallCheck::Revert(output) => {
-                    assert_eq!(output, Bytes::from(Unauthorized {}.abi_encode()));
-                    false
-                }
-                CallCheck::Error(error) => panic!("{error}"),
-            }
-        })
     }
 
     #[test]

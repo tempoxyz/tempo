@@ -777,6 +777,29 @@ fn refund_is_readable_by_owner_and_sequencer_and_claimable_once() -> eyre::Resul
     Ok(())
 }
 
+#[test_case(TempoHardfork::T14 => false)]
+#[test_case(TempoHardfork::T15 => true)]
+fn refund_is_readable_by_the_owners_org_admin_from_t15(hardfork: TempoHardfork) -> bool {
+    let admin = Address::with_last_byte(0xad);
+    let mut env = ZoneSpec { hardfork, ..spec() }.apply().unwrap();
+    env.with_storage(|| {
+        let mut identity = ZoneIdentity::new();
+        let org = identity.create_org(ALICE, ALICE, admin)?;
+        identity.add_members(admin, org, &[BOB])
+    })
+    .unwrap();
+    let calldata = IZoneInbox::refundsCall {
+        token: PATH_USD_ADDRESS,
+        owner: BOB,
+    }
+    .abi_encode();
+    let output = env.call(admin, ZONE_INBOX_ADDRESS, &calldata).unwrap();
+    if output.is_revert() {
+        assert_eq!(output.bytes, IZoneInbox::Unauthorized {}.abi_encode());
+    }
+    !output.is_revert()
+}
+
 #[test_case(TempoHardfork::T12, 0u128.abi_encode())]
 #[test_case(TempoHardfork::T13, IZoneInbox::NoRefund {}.abi_encode())]
 fn claim_refund_zero_amount_is_gated_by_t13(

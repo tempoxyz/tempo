@@ -633,8 +633,7 @@ impl ZoneInbox {
         if self.storage.spec().is_t13() && amount == 0 {
             return Err(ZoneInboxError::no_refund().into());
         }
-        // +T15: Revert with the mint's own error, such as `ContractPaused` for a token paused on
-        // Tempo.
+        // +T15: Revert with mint's own error, such as `ContractPaused` for a token paused on L1.
         if self.storage.spec().is_t15() {
             self.mint(token, caller, amount, None)?;
         } else if !self.try_mint(token, caller, amount)? {
@@ -658,6 +657,7 @@ impl ZoneInbox {
                 msg_sender,
                 tempo_contracts::zones::ZonePortal::Role::Sequencer,
             )?
+            && !(self.storage.spec().is_t15() && ZoneIdentity::new().can_read(msg_sender, owner)?)
         {
             return Err(ZonePrecompileError::Inbox(ZoneInboxError::Unauthorized(
                 IZoneInbox::Unauthorized {},
