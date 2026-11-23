@@ -239,7 +239,6 @@ mod tests {
     };
     use alloy_consensus::crypto::secp256k1::{recover_signer, sign_message};
     use secp256k1::SecretKey;
-    use sha2::{Digest, Sha256};
 
     /// Mocks reject malformed, ambiguous or foreign inputs. Valid ones are tested end to end.
     #[test]
@@ -322,12 +321,7 @@ mod tests {
         let (hash, other) = (B256::repeat_byte(0xcc), B256::repeat_byte(0xdd));
         let (_, x, y, signer) = p256_keypair();
         let p256_signature = |hash: B256, pre_hash| {
-            let digest = if pre_hash {
-                B256::from_slice(&Sha256::digest(hash))
-            } else {
-                hash
-            };
-            let (r, s) = p256(&x, &y, &digest);
+            let (r, s) = p256(&x, &y, &P256SignatureWithPreHash::digest(&hash, pre_hash));
             PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r,
                 s,

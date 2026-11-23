@@ -48,6 +48,17 @@ pub struct P256SignatureWithPreHash {
     pub pre_hash: bool,
 }
 
+impl P256SignatureWithPreHash {
+    /// The digest a P256 signature signs for `hash`: its SHA-256 if `pre_hash`, else `hash`.
+    pub fn digest(hash: &B256, pre_hash: bool) -> B256 {
+        if pre_hash {
+            B256::from_slice(&Sha256::digest(hash))
+        } else {
+            *hash
+        }
+    }
+}
+
 /// WebAuthn signature with authenticator data
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -261,13 +272,8 @@ impl PrimitiveSignature {
                 alloy_consensus::crypto::secp256k1::recover_signer(sig, *sig_hash)
             }
             Self::P256(p256_sig) => {
-                // Prepare message hash for verification
-                let message_hash = if p256_sig.pre_hash {
-                    // Some P256 implementations (like Web Crypto) require pre-hashing
-                    B256::from_slice(Sha256::digest(sig_hash).as_ref())
-                } else {
-                    *sig_hash
-                };
+                // Some P256 implementations (like Web Crypto) require pre-hashing
+                let message_hash = P256SignatureWithPreHash::digest(sig_hash, p256_sig.pre_hash);
 
                 // Verify P256 signature cryptographically
                 if !crypto::verify_p256(
@@ -384,6 +390,16 @@ pub enum KeychainVersion {
     V2,
 }
 
+impl KeychainVersion {
+    /// The hash an access key signs for `user_address` over `sig_hash` under this version.
+    pub fn signing_hash(self, sig_hash: B256, user_address: Address) -> B256 {
+        match self {
+            Self::V1 => sig_hash,
+            Self::V2 => KeychainSignature::signing_hash(sig_hash, user_address),
+        }
+    }
+}
+
 /// Keychain version validation error.
 ///
 /// Returned by [`TempoSignature::validate_version`] when a keychain
@@ -468,10 +484,7 @@ impl KeychainSignature {
     /// - V1: returns `sig_hash` directly (legacy, deprecated)
     /// - V2: returns `keccak256(0x04 || sig_hash || user_address)`
     fn effective_sig_hash(&self, sig_hash: &B256) -> B256 {
-        match self.version {
-            KeychainVersion::V1 => *sig_hash,
-            KeychainVersion::V2 => Self::signing_hash(*sig_hash, self.user_address),
-        }
+        self.version.signing_hash(*sig_hash, self.user_address)
     }
 
     /// Get the access key ID for Keychain signatures.
