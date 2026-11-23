@@ -71,6 +71,10 @@ pub fn configure_version(
     if spec.is_t7() {
         version.gas_params[GasId::MaxRefundQuotient] = 1;
     }
+    // Bench only: from T15 a cold write to an existing slot costs 2,100 + 2,900 + 5,000 = 10,000 gas.
+    if spec.is_t15() {
+        version.gas_params[GasId::SstoreResetWithoutColdLoadCost] += 5000;
+    }
     version
 }
 
