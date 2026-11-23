@@ -101,5 +101,6 @@ crate::sol! {
         error InstanceRemovedAlready(address instance);
         error UnknownInstance(address instance);
         error NoMatchingTemplate(address instance);
+        error InstanceCreatedInTransaction(address instance);
     }
 }

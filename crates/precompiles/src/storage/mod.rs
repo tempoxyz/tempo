@@ -115,6 +115,13 @@ pub trait PrecompileStorageProvider {
         ))
     }
 
+    /// Returns whether `address` was created in the current transaction. Providers outside a
+    /// transaction answer false.
+    fn is_created_in_tx(&mut self, address: Address) -> Result<bool> {
+        let _ = address;
+        Ok(false)
+    }
+
     /// Reads the warm transaction caller without a second account-access charge.
     /// Normal transaction setup has already loaded this caller. Production rejects a cold
     /// account; this is not a generic cache-only read, and callers must have checked that

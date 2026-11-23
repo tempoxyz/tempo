@@ -27,6 +27,8 @@ pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
+    /// Accounts reported as created in the current transaction.
+    created_in_tx: std::collections::HashSet<Address>,
     fail_on_sload: Option<(Address, U256)>,
     chain_id: u64,
     block_env: TempoBlockEnv,
@@ -68,6 +70,7 @@ impl HashMapStorageProvider {
             internals: HashMap::new(),
             transient: HashMap::new(),
             accounts: HashMap::new(),
+            created_in_tx: Default::default(),
             fail_on_sload: None,
             events: HashMap::new(),
             snapshots: Vec::new(),
@@ -139,6 +142,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         let account = self.accounts.entry(address).or_default();
         account.set_code(Bytecode::new_raw(code));
         Ok(())
+    }
+
+    fn is_created_in_tx(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
+        Ok(self.created_in_tx.contains(&address))
     }
 
     fn with_account_info(
@@ -470,6 +477,15 @@ impl HashMapStorageProvider {
     /// Overrides the block number.
     pub fn set_block_number(&mut self, block_number: u64) {
         self.block_env.number = U256::from(block_number);
+    }
+
+    /// Reports `address` as created in the current transaction, or not.
+    pub fn set_created_in_tx(&mut self, address: Address, created: bool) {
+        if created {
+            self.created_in_tx.insert(address);
+        } else {
+            self.created_in_tx.remove(&address);
+        }
     }
 
     /// Overrides the active hardfork spec.

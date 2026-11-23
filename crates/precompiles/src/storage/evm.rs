@@ -479,6 +479,10 @@ where
         self.with_loaded_account(address, |_, code| f(code.original_byte_slice()))
     }
 
+    fn is_created_in_tx(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
+        Ok(self.evm.state_mut().account(&address)?.is_created())
+    }
+
     fn with_warm_caller_info(
         &mut self,
         address: Address,

@@ -224,7 +224,6 @@ fn propose_requires_governance_and_valid_selectors() -> eyre::Result<()> {
             err(PaymentCallRegistryError::unauthorized())
         );
         for (bad, expected) in [
-            (vec![], [0; 4]),
             (vec![selector(AUTHORIZE, 1, 0)], AUTHORIZE),
             (vec![selector(AUTHORIZE, 1, 30_000_001)], AUTHORIZE),
             (vec![selector(AUTHORIZE, 33, 1)], AUTHORIZE),
@@ -256,6 +255,10 @@ fn propose_requires_governance_and_valid_selectors() -> eyre::Result<()> {
             .propose_template(fx.governance, call(vec![selector(CAPTURE, 0, 1)]))?;
         assert_eq!(id, 1);
         assert_eq!(fx.registry.version()?, 1);
+        // No selectors make callable code.
+        let id = fx.registry.propose_template(fx.governance, call(vec![]))?;
+        assert_eq!(id, 2);
+        assert!(fx.registry.get_template(id)?.selectors.is_empty());
         Ok(())
     })
 }
@@ -614,6 +617,168 @@ fn dispatch_covers_every_selector() -> eyre::Result<()> {
             IPaymentCallRegistry::registerInstanceCall::abi_decode_returns(output.bytes())?,
             id
         );
+        Ok(())
+    })
+}
+
+#[test]
+fn instances_register_again_after_their_template_is_removed() -> eyre::Result<()> {
+    at_t17(|fx| {
+        let old = fx.active_template()?;
+        // A replacement with the same code, proposed while the old template is active.
+        let new = fx.propose(program_code(0, 0))?;
+
+        // Anyone may register an instance; here a third party binds it to the old template.
+        let instance = Address::repeat_byte(0x11);
+        deploy(instance, program_code(0x01, 0x02))?;
+        assert_eq!(fx.registry.register_instance(instance)?, old);
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_already_registered(
+                instance
+            ))
+        );
+
+        warp(TEMPLATE_TIMELOCK);
+        let replaced_at = START_BLOCK + 2 * EPOCH;
+        set_block(replaced_at);
+        fx.registry.activate_template(fx.governance, new)?;
+        fx.registry.remove_template(fx.governance, old)?;
+        let swipe = aa(vec![(instance, calldata(AUTHORIZE, 6))], 1_500_000);
+        assert!(fx.lane_at(&swipe, replaced_at));
+        assert!(!fx.lane_at(&swipe, replaced_at + 1));
+
+        // Once its template is removed (here from the next block), the instance registers
+        // again under the replacement, effective one epoch later.
+        let version = fx.registry.version()?;
+        assert_eq!(fx.registry.register_instance(instance)?, new);
+        assert_eq!(fx.registry.version()?, version + 1);
+        let record = fx.registry.get_instance(instance)?;
+        assert_eq!(record.templateId, new);
+        assert_eq!(record.activationBlock, replaced_at + EPOCH);
+        assert_eq!(record.removedAtBlock, 0);
+        assert!(!fx.lane_at(&swipe, replaced_at + EPOCH - 1));
+        assert!(fx.lane_at(&swipe, replaced_at + EPOCH));
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_already_registered(
+                instance
+            ))
+        );
+
+        // Removal by governance stays final.
+        fx.registry.remove_instance(fx.governance, instance)?;
+        fx.registry.remove_template(fx.governance, new)?;
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_removed_already(instance))
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn proposed_templates_do_not_capture_instances() -> eyre::Result<()> {
+    at_t17(|fx| {
+        // Template 1 is only proposed; template 2, with the same code, is active.
+        let proposed = fx.propose(program_code(0, 0))?;
+        let active = fx.active_template()?;
+        assert!(proposed < active);
+
+        let instance = Address::repeat_byte(0x11);
+        deploy(instance, program_code(0x01, 0x02))?;
+        assert_eq!(fx.registry.register_instance(instance)?, active);
+        let swipe = aa(vec![(instance, calldata(AUTHORIZE, 6))], 1_500_000);
+        assert!(fx.lane_at(&swipe, START_BLOCK + EPOCH));
+
+        // With no activated template, nothing matches.
+        let other = Address::repeat_byte(0x12);
+        deploy(other, program_code(0x03, 0x04))?;
+        fx.registry.remove_template(fx.governance, active)?;
+        assert_eq!(
+            fx.registry.register_instance(other).unwrap_err(),
+            err(PaymentCallRegistryError::no_matching_template(other))
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn accounts_created_in_the_transaction_cannot_register() -> eyre::Result<()> {
+    at_t17(|fx| {
+        let id = fx.active_template()?;
+        let instance = Address::repeat_byte(0x11);
+        deploy(instance, program_code(0x01, 0x02))?;
+        // Created in this transaction, its code could still be destroyed and redeployed.
+        StorageCtx.set_created_in_tx(instance, true);
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_created_in_transaction(
+                instance
+            ))
+        );
+        assert_eq!(fx.registry.get_instance(instance)?.templateId, 0);
+
+        // In a later transaction it registers.
+        StorageCtx.set_created_in_tx(instance, false);
+        assert_eq!(fx.registry.register_instance(instance)?, id);
+        Ok(())
+    })
+}
+
+#[test]
+fn callable_code_counts_as_registered_code_without_payment_calls() -> eyre::Result<()> {
+    at_t17(|fx| {
+        let program = fx.active_template()?;
+        // PUSH32 <a> POP STOP: other code than the program's.
+        let library_code = |a: u8| {
+            let mut code = vec![0x7f];
+            code.extend([a; 32]);
+            code.extend([0x50, 0x00]);
+            code
+        };
+        let library = fx.registry.propose_template(
+            fx.governance,
+            IPaymentCallRegistry::proposeTemplateCall {
+                code: library_code(0).into(),
+                ranges: vec![IPaymentCallRegistry::CodeRange {
+                    offset: 1,
+                    length: 32,
+                }],
+                selectors: vec![],
+            },
+        )?;
+        warp(TEMPLATE_TIMELOCK);
+        fx.registry.activate_template(fx.governance, library)?;
+
+        let instance = Address::repeat_byte(0x11);
+        let callee = Address::repeat_byte(0x12);
+        deploy(instance, program_code(0x01, 0x02))?;
+        deploy(callee, library_code(0x03))?;
+        assert_eq!(fx.registry.register_instance(instance)?, program);
+        assert_eq!(fx.registry.register_instance(callee)?, library);
+
+        let active = START_BLOCK + EPOCH;
+        for address in [instance, callee] {
+            assert!(!fx.registry.is_registered_code(address, active - 1)?);
+            assert!(fx.registry.is_registered_code(address, active)?);
+        }
+        assert!(
+            !fx.registry
+                .is_registered_code(Address::repeat_byte(0x13), active)?
+        );
+        // Calls to callable code never start a registered payment.
+        let call = aa(vec![(callee, calldata(AUTHORIZE, 6))], 1_500_000);
+        assert!(!fx.lane_at(&call, active));
+
+        // Removal of the template or the instance ends it from the next block.
+        set_block(active);
+        fx.registry.remove_template(fx.governance, library)?;
+        fx.registry.remove_instance(fx.governance, instance)?;
+        assert!(fx.registry.is_registered_code(callee, active)?);
+        assert!(fx.registry.is_registered_code(instance, active)?);
+        assert!(!fx.registry.is_registered_code(callee, active + 1)?);
+        assert!(!fx.registry.is_registered_code(instance, active + 1)?);
         Ok(())
     })
 }

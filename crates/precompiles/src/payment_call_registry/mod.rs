@@ -2,9 +2,13 @@
 //!
 //! Governance registers templates: a contract's runtime code hash with its immutable byte ranges
 //! zeroed, and the selectors whose calls count as payments, each with an exact calldata length
-//! and a gas cap. Anyone may register an instance of a template, a deployed contract whose masked
-//! code hashes to the template's hash. Block execution, the payload builder and the pool classify
-//! calls to active instances as registered payment calls ([`PaymentCallRegistry::classify`]).
+//! and a gas cap. A template without selectors is callable code: its instances never start a
+//! registered payment, but registered payments may run their code. Anyone may register an
+//! instance of a template, a deployed contract whose masked code hashes to the template's hash.
+//! Block execution, the payload builder and the pool classify calls to active instances as
+//! registered payment calls ([`PaymentCallRegistry::classify`]), and block execution counts a
+//! registered payment against its budget only if every frame it entered ran registered code or a
+//! precompile ([`PaymentCallRegistry::is_registered_code`]).
 //!
 //! Every change that affects classification takes effect at a later block: template activation
 //! and removal and instance removal at the next block, instance registration one epoch later.
@@ -278,9 +282,9 @@ impl PaymentCallRegistry {
     /// - `Unauthorized`: `sender` is not governance
     /// - `InvalidCode`, `ForbiddenOpcode`, `InvalidCodeRange`: see [`scan_code`] and
     ///   [`validate_ranges`]
-    /// - `InvalidPaymentSelector`: no selectors, too many, a duplicate, a calldata length other
-    ///   than 4 plus 32 per argument (up to [`MAX_STATIC_ARGUMENTS`]), or a gas cap of zero or
-    ///   above the transaction gas limit cap
+    /// - `InvalidPaymentSelector`: too many selectors, a duplicate, a calldata length other than 4
+    ///   plus 32 per argument (up to [`MAX_STATIC_ARGUMENTS`]), or a gas cap of zero or above the
+    ///   transaction gas limit cap. No selectors make the template callable code.
     pub fn propose_template(
         &mut self,
         sender: Address,
@@ -344,11 +348,6 @@ impl PaymentCallRegistry {
         &self,
         selectors: &[IPaymentCallRegistry::PaymentSelector],
     ) -> Result<()> {
-        if selectors.is_empty() {
-            return Err(
-                PaymentCallRegistryError::invalid_payment_selector(FixedBytes::ZERO).into(),
-            );
-        }
         let gas_cap_limit = self.storage.spec().tx_gas_limit_cap().unwrap_or(u64::MAX);
         for (index, selector) in selectors.iter().enumerate() {
             let arguments_length = selector.calldataLength.checked_sub(4);
@@ -415,7 +414,8 @@ impl PaymentCallRegistry {
         ))
     }
 
-    /// Removes an instance from the next block. A removed instance cannot register again.
+    /// Removes an instance from the next block. An instance governance removed cannot register
+    /// again.
     ///
     /// # Errors
     /// - `Unauthorized`, `UnknownInstance`, `InstanceRemovedAlready`
@@ -439,22 +439,32 @@ impl PaymentCallRegistry {
 
     // ────────────────── Registration ──────────────────
 
-    /// Registers `instance` under the first template, not removed, whose masked code hash its
-    /// masked runtime code matches. It classifies from [`Self::instance_activation_delay`]
-    /// blocks after the current one. Anyone may call it.
+    /// Registers `instance` under the first activated template, not removed, whose masked code
+    /// hash its masked runtime code matches. It takes effect [`Self::instance_activation_delay`]
+    /// blocks after the current one. Anyone may call it, also to register again an instance whose
+    /// template governance removed.
+    ///
+    /// An account created in the current transaction is refused: under EIP-6780 it is the only
+    /// kind whose code can still change, so every registered instance keeps its code.
     ///
     /// # Errors
-    /// - `InstanceAlreadyRegistered`, `InstanceRemovedAlready`
-    /// - `NoMatchingTemplate`: no template's masked hash matches
+    /// - `InstanceAlreadyRegistered`: registered under a template that is not removed
+    /// - `InstanceRemovedAlready`: governance removed the instance
+    /// - `InstanceCreatedInTransaction`
+    /// - `NoMatchingTemplate`: no activated template's masked hash matches
     pub fn register_instance(&mut self, instance: Address) -> Result<u64> {
         let record = self.instances[instance].read()?;
-        if record.template_id != 0 {
-            return Err(if record.removed_at_block != 0 {
-                PaymentCallRegistryError::instance_removed_already(instance)
-            } else {
-                PaymentCallRegistryError::instance_already_registered(instance)
-            }
-            .into());
+        if record.removed_at_block != 0 {
+            return Err(PaymentCallRegistryError::instance_removed_already(instance).into());
+        }
+        if record.template_id != 0
+            && self.templates[record.template_id]
+                .status
+                .read()?
+                .removed_at_block
+                == 0
+        {
+            return Err(PaymentCallRegistryError::instance_already_registered(instance).into());
         }
 
         let code = self
@@ -462,6 +472,9 @@ impl PaymentCallRegistry {
             .with_account_code(instance, |code| Ok(code.to_vec()))?;
         self.storage
             .deduct_gas(CODE_COPY_WORD_GAS * code.len().div_ceil(32) as u64)?;
+        if self.storage.is_created_in_tx(instance)? {
+            return Err(PaymentCallRegistryError::instance_created_in_transaction(instance).into());
+        }
         if code.is_empty() || code[0] == EF_PREFIX {
             return Err(PaymentCallRegistryError::no_matching_template(instance).into());
         }
@@ -470,7 +483,12 @@ impl PaymentCallRegistry {
         let mut matched = None;
         for template_id in 1..=template_count {
             let status = self.templates[template_id].status.read()?;
-            if status.removed_at_block != 0 || status.code_length as usize != code.len() {
+            // A proposal that is not activated never matches, so it cannot capture instances
+            // ahead of an active template; a removed template never matches either.
+            if status.activation_block == 0
+                || status.removed_at_block != 0
+                || status.code_length as usize != code.len()
+            {
                 continue;
             }
             let ranges = self.templates[template_id].ranges.read()?;
@@ -617,6 +635,28 @@ impl PaymentCallRegistry {
     }
 
     // ────────────────── Classification ──────────────────
+
+    /// Returns whether `address` holds registered code at `block`: it is an instance effective at
+    /// the block, of a template effective at the block, with or without payment selectors.
+    ///
+    /// Block execution allows a registered payment's frames only in such code, in precompiles,
+    /// in configurable account markers and in accounts without code. An instance's code never
+    /// changes after registration (see [`Self::register_instance`]), so the address stands for
+    /// the code.
+    pub fn is_registered_code(&self, address: Address, block: u64) -> Result<bool> {
+        let instance = self.instances[address].read()?;
+        if instance.template_id == 0
+            || !covers(instance.activation_block, instance.removed_at_block, block)
+        {
+            return Ok(false);
+        }
+        let status = self.templates[instance.template_id].status.read()?;
+        Ok(covers(
+            status.activation_block,
+            status.removed_at_block,
+            block,
+        ))
+    }
 
     /// Looks up a call to `target` with `input` at `block`.
     pub fn lookup_payment_call(

@@ -139,6 +139,11 @@ impl StorageCtx {
         })?
     }
 
+    /// Returns whether `address` was created in the current transaction.
+    pub fn is_created_in_tx(&self, address: Address) -> Result<bool> {
+        Self::try_with_storage(|s| s.is_created_in_tx(address))
+    }
+
     /// Reads the already-warm execution caller without charging account access twice.
     pub(crate) fn with_warm_caller_info<T>(
         address: Address,
@@ -589,6 +594,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn set_block_number(&mut self, block_number: u64) {
         self.as_hashmap().set_block_number(block_number)
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn set_created_in_tx(&mut self, address: Address, created: bool) {
+        self.as_hashmap().set_created_in_tx(address, created)
     }
 
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
