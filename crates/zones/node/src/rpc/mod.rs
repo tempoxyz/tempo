@@ -1479,7 +1479,6 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
-            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let Some(block) = filter_earlier_block(block) else {
                 let result = EthCall::call(
@@ -1532,7 +1531,6 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
-            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let Some(block) = filter_earlier_block(block) else {
                 let result = EthCall::estimate_gas_at(
@@ -1600,10 +1598,6 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
-            // Filling without a gas limit estimates gas, which simulates the call.
-            if request.inner.gas.is_none() {
-                zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
-            }
 
             // Prefill the users request so the `fill_transaction` doesnt leak dynamic fee estimates via
             // missing fee fields.

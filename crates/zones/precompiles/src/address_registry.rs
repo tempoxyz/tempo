@@ -6,15 +6,16 @@
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, FixedBytes};
-use alloy_sol_types::{SolCall, SolEvent};
+use alloy_sol_types::{SolError, SolEvent, SolInterface};
 use evm2::precompiles::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
-    IZoneAddressRegistry, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
+    IZoneAddressRegistry, Unauthorized, ZONE_ADDRESS_REGISTRY_ADDRESS, ZVDA_MASTER_REQUEST_DOMAIN,
     ZoneAddressRegistryError,
 };
 use tempo_precompiles::{
     charge_input_cost, dispatch,
+    dispatch::abi_decoder_config_for_spec,
     storage::{Handler, Mapping, StorageCtx},
 };
 use tempo_precompiles_macros::contract;
@@ -22,29 +23,33 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ZoneResult,
-    execution::CallRules,
+    execution::{CallCheck, CallRules},
     storage::{L1State, L1StorageReader},
 };
 
 /// Exclusive upper bound of the 4-byte master ID space; also the exhausted counter value.
 pub const MASTER_ID_SPACE: u64 = 1 << 32;
 
-/// Fixed gas charged for `registerMaster` on the zone.
-///
-/// A new registration writes two new storage slots while a repeated one only reads, so variable
-/// pricing would let any caller learn whether a `(recipient, salt)` pair is registered. The
-/// charge covers a new registration at T15 pricing (two new slots at 250,000 gas each, plus the
-/// reads and the event).
-pub const REGISTER_MASTER_FIXED_GAS: u64 = 510_000;
-
 /// Zone-specific rules applied before dispatching to [`ZoneAddressRegistry`].
 pub(crate) struct ZoneAddressRegistryRules;
 
 impl CallRules for ZoneAddressRegistryRules {
-    // Fixed gas hides whether the call registered a new master or returned an existing one.
-    fn fixed_gas(&self, selector: Option<[u8; 4]>) -> Option<u64> {
-        (selector == Some(IZoneAddressRegistry::registerMasterCall::SELECTOR))
-            .then_some(REGISTER_MASTER_FIXED_GAS)
+    /// Only the recipient registers itself. A registration for another account would show the
+    /// submitter, from its gas and from the sequential IDs around it, whether that account had
+    /// already registered the salt.
+    fn admit(&self, data: &[u8], caller: Address) -> CallCheck {
+        match IZoneAddressRegistry::IZoneAddressRegistryCalls::abi_decode_with_config(
+            data,
+            abi_decoder_config_for_spec(StorageCtx::default().spec()),
+        ) {
+            Ok(IZoneAddressRegistry::IZoneAddressRegistryCalls::registerMaster(call))
+                if call.recipient != caller =>
+            {
+                CallCheck::Revert(Unauthorized {}.abi_encode().into())
+            }
+            // Preserve the upstream ABI error for malformed calldata.
+            _ => CallCheck::Continue,
+        }
     }
 }
 
@@ -245,81 +250,54 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn fixed_gas_applies_only_to_register_master() {
-        let rules = ZoneAddressRegistryRules;
-        assert_eq!(
-            rules.fixed_gas(Some(IZoneAddressRegistry::registerMasterCall::SELECTOR)),
-            Some(REGISTER_MASTER_FIXED_GAS)
-        );
-        assert_eq!(rules.fixed_gas(Some([0xde, 0xad, 0xbe, 0xef])), None);
-        assert_eq!(rules.fixed_gas(None), None);
-    }
-
-    /// A caller cannot tell from gas whether a `(recipient, salt)` pair was already registered.
-    #[test]
-    fn register_master_gas_does_not_reveal_existing_registrations() -> eyre::Result<()> {
+    fn register_master_only_registers_the_caller() -> eyre::Result<()> {
         use crate::test_utils::{
             MockL1Reader, call_precompile, test_context_with_hardfork, test_precompiles,
         };
+        use alloy_primitives::Bytes;
+        use alloy_sol_types::SolCall;
 
         let mut ctx = test_context_with_hardfork(TempoHardfork::T15);
         let mut precompiles =
             test_precompiles(&ctx, L1State::new(MockL1Reader::default(), Address::ZERO));
-        let caller = Address::repeat_byte(0xca);
         let (acme, bob) = (Address::repeat_byte(0xac), Address::repeat_byte(0xb0));
-
-        // New, repeated, new and invalid registrations, with the master ID each one returns.
-        let cases = [
-            (acme, Some([0, 0, 0, 0])),
-            (acme, Some([0, 0, 0, 0])),
-            (bob, Some([0, 0, 0, 1])),
-            (bob, Some([0, 0, 0, 1])),
-            (Address::ZERO, None),
-        ];
-        for (recipient, expected) in cases {
+        let mut register = |caller: Address, recipient: Address| {
             let calldata = IZoneAddressRegistry::registerMasterCall {
                 recipient,
                 salt: B256::ZERO,
             }
             .abi_encode();
-            let fixed_gas = REGISTER_MASTER_FIXED_GAS
-                + tempo_precompiles::input_cost(TempoHardfork::T15, calldata.len())?;
-            let output = call_precompile(
+            call_precompile(
                 &mut ctx,
                 &mut precompiles,
                 caller,
                 &calldata,
-                fixed_gas,
+                1_000_000,
                 false,
                 ZONE_ADDRESS_REGISTRY_ADDRESS,
                 ZONE_ADDRESS_REGISTRY_ADDRESS,
-            )?;
-            assert_eq!(output.gas_used, fixed_gas, "recipient {recipient}");
-            assert_eq!(output.state_gas_used, 0);
-            match expected {
-                Some(id) => assert_eq!(
-                    IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
-                    FixedBytes::from(id)
-                ),
-                None => assert!(output.is_revert()),
-            }
+            )
+        };
 
-            // One gas short fails whether or not the pair is registered.
-            let short = call_precompile(
-                &mut ctx,
-                &mut precompiles,
-                caller,
-                &calldata,
-                fixed_gas - 1,
-                false,
-                ZONE_ADDRESS_REGISTRY_ADDRESS,
-                ZONE_ADDRESS_REGISTRY_ADDRESS,
-            );
-            assert!(
-                short.as_ref().is_err() || short.as_ref().is_ok_and(|o| !o.is_success()),
-                "recipient {recipient}"
+        // Registering another account reverts, whether or not it is registered.
+        for _ in 0..2 {
+            let output = register(acme, bob)?;
+            assert!(output.is_revert());
+            assert_eq!(output.bytes, Bytes::from(Unauthorized {}.abi_encode()));
+            let output = register(bob, bob)?;
+            assert!(output.is_success());
+            assert_eq!(
+                IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
+                FixedBytes::from([0, 0, 0, 0])
             );
         }
+
+        // The refused calls assigned nothing, so the next caller gets the next ID.
+        let output = register(acme, acme)?;
+        assert_eq!(
+            IZoneAddressRegistry::registerMasterCall::abi_decode_returns(&output.bytes)?,
+            FixedBytes::from([0, 0, 0, 1])
+        );
         Ok(())
     }
 }
