@@ -48,6 +48,7 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
+use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
@@ -147,6 +148,9 @@ pub(crate) struct Actor<
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
+    /// The finalized floor certificate, verified during initialization.
+    verified_floor: Option<crate::startup::VerifiedFloor>,
+
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
     metrics: Metrics,
@@ -195,12 +199,22 @@ where
             config.last_finalized_height,
             &config.scheme_provider,
         )?;
+        let verified_floor = crate::startup::verify_floor_certificate(
+            &mut *context,
+            &config.network_identity,
+            persisted_identity.as_ref(),
+            config
+                .finalized_floor_certificate
+                .as_ref()
+                .map(|(height, certificate)| (*height, certificate)),
+        )?;
 
         Ok(Self {
             config,
             context,
             storage: Some(storage),
             mailbox,
+            verified_floor,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
         })
@@ -1455,16 +1469,24 @@ where
             outcome from last boundary height"
         );
 
-        // The boundary header is not checked against the finalized floor's
-        // certificate, so an outcome for a later epoch could otherwise persist
-        // a future identity that startup then trusts over the configured one.
-        let onchain_outcome = read_outcome_from_boundary(
+        let boundary_header = get_header(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
-            outcome_epoch,
         )
-        .await?;
+        .await
+        .wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{latest_boundary}`")
+        })?;
+        let onchain_outcome =
+            outcome_from_boundary_header(&boundary_header, latest_boundary, outcome_epoch)?;
+        crate::startup::ensure_boundary_matches_floor(
+            latest_boundary,
+            &boundary_header,
+            &onchain_outcome,
+            self.verified_floor.as_ref(),
+            self.config.execution_node.chain_spec().genesis_hash(),
+        )?;
 
         crate::startup::ensure_outcome_within_tip_epoch(
             onchain_outcome.epoch(),
@@ -1703,7 +1725,15 @@ where
         .wrap_err_with(|| {
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
+    outcome_from_boundary_header(&header, boundary, expected_epoch)
+}
 
+/// Decodes the DKG outcome for `expected_epoch` from the header at `boundary`.
+fn outcome_from_boundary_header(
+    header: &TempoHeader,
+    boundary: Height,
+    expected_epoch: Epoch,
+) -> eyre::Result<OnchainDkgOutcome> {
     let outcome =
         OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
             .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;

@@ -1,17 +1,23 @@
 //! Authenticate the startup tip and register its trusted identity before actors start.
 
+use std::cmp::Ordering;
+
+use alloy_consensus::Sealable as _;
+use alloy_primitives::B256;
 use commonware_consensus::{
     simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_parallel::Sequential;
-use eyre::ensure;
+use eyre::{bail, ensure};
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_primitives::TempoHeader;
 use tracing::{info, instrument, warn};
 
-use crate::{config::NAMESPACE, epoch::SchemeProvider, gossip::Certificate};
+use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider, gossip::Certificate};
 
 /// Select the newest configured or persisted identity, authenticate the tip, and register its schemes.
 /// Returns the selected identity. Historical tips are accepted with the future identity pinned.
@@ -109,6 +115,118 @@ pub(crate) fn ensure_outcome_within_tip_epoch(
             "startup DKG outcome is for epoch `{outcome_epoch}`, past the epoch after the \
              finalized tip's epoch `{tip_epoch}`",
         );
+    }
+    Ok(())
+}
+
+/// A finalized floor certificate verified against an identity the node trusts.
+pub(crate) struct VerifiedFloor {
+    /// Height of the certified block.
+    pub(crate) height: Height,
+    /// Digest of the certified block.
+    pub(crate) digest: Digest,
+    /// Epoch the certificate was signed in.
+    pub(crate) epoch: Epoch,
+    /// Identity the certificate verified against.
+    pub(crate) identity: NetworkIdentity,
+}
+
+/// Verifies the finalized floor certificate against the configured or persisted identity in force
+/// at its epoch, the one with the latest `from_epoch` at or before it.
+///
+/// Returns `None` only without a floor certificate, which marshal has only at genesis. Fails when
+/// neither identity covers the certificate's epoch, such as a snapshot taken before the last full
+/// DKG the binary knows about.
+#[instrument(skip_all, err)]
+pub(crate) fn verify_floor_certificate(
+    rng: &mut impl CryptoRng,
+    configured_identity: &NetworkIdentity,
+    persisted: Option<&NetworkIdentity>,
+    floor: Option<(Height, &Certificate)>,
+) -> eyre::Result<Option<VerifiedFloor>> {
+    let Some((height, certificate)) = floor else {
+        return Ok(None);
+    };
+    let epoch = certificate.proposal.round.epoch();
+    let known = || std::iter::once(configured_identity).chain(persisted);
+    let Some(identity) = known()
+        .filter(|identity| identity.from_epoch <= epoch.get())
+        .max_by_key(|identity| identity.from_epoch)
+    else {
+        let earliest = known()
+            .map(|identity| identity.from_epoch)
+            .min()
+            .expect("the configured identity is always known");
+        bail!(
+            "finalized floor certificate at height `{height}` in epoch `{epoch}` predates the \
+             trusted network identity from epoch `{earliest}`; restore a snapshot taken at or \
+             after that epoch"
+        );
+    };
+    let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, identity.identity);
+    ensure!(
+        certificate.verify(rng, &scheme, &Sequential),
+        "finalized floor certificate at height `{height}` in epoch `{epoch}` failed verification \
+         against the network identity from epoch `{}`",
+        identity.from_epoch,
+    );
+    Ok(Some(VerifiedFloor {
+        height,
+        digest: certificate.proposal.payload,
+        epoch,
+        identity: identity.clone(),
+    }))
+}
+
+/// Ensures the boundary header startup reads its DKG outcome from agrees with the verified floor.
+///
+/// A boundary at genesis must be the chain spec's genesis. A boundary at the floor is the
+/// certified block itself. Below it, the outcome is for the floor's
+/// epoch and must carry the identity its certificate verified against. A boundary above the floor
+/// only arises from a processed height this node wrote, and is not checked.
+pub(crate) fn ensure_boundary_matches_floor(
+    boundary: Height,
+    header: &TempoHeader,
+    outcome: &OnchainDkgOutcome,
+    floor: Option<&VerifiedFloor>,
+    genesis_hash: B256,
+) -> eyre::Result<()> {
+    if boundary.is_zero() {
+        ensure!(
+            header.hash_slow() == genesis_hash,
+            "genesis header does not match the chain spec's genesis hash `{genesis_hash}`",
+        );
+    }
+    // Marshal lacks a floor certificate only at genesis (see `alias::marshal::init`), where
+    // `verify_finalized_tip` already requires a zero floor.
+    let Some(floor) = floor else {
+        return Ok(());
+    };
+    match boundary.cmp(&floor.height) {
+        Ordering::Equal => ensure!(
+            Digest(header.hash_slow()) == floor.digest,
+            "boundary header at height `{boundary}` does not match the finalized floor certificate",
+        ),
+        Ordering::Less => {
+            ensure!(
+                outcome.epoch() == floor.epoch,
+                "boundary outcome at height `{boundary}` is for epoch `{}`, but the finalized floor \
+                 certificate is in epoch `{}`",
+                outcome.epoch(),
+                floor.epoch,
+            );
+            ensure!(
+                *outcome.network_identity() == floor.identity.identity,
+                "boundary outcome at height `{boundary}` carries a network identity other than \
+                 the one the finalized floor certificate in epoch `{}` verified against",
+                floor.epoch,
+            );
+        }
+        Ordering::Greater => warn!(
+            %boundary,
+            floor_height = %floor.height,
+            "boundary is above the finalized floor certificate; trusting locally processed blocks"
+        ),
     }
     Ok(())
 }

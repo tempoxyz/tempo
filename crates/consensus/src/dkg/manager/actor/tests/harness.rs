@@ -73,6 +73,7 @@ pub(super) struct Harness {
     initial_state: Option<State>,
     network_identity: NetworkIdentity,
     finalized_tip: Option<(Height, Certificate)>,
+    finalized_floor_certificate: Option<(Height, Certificate)>,
     storage: Option<state::Storage<Context>>,
     mailbox: Option<Mailbox>,
     handle: Option<Handle<()>>,
@@ -100,6 +101,7 @@ pub(super) struct HarnessBuilder {
     initial_state: InitialState,
     network_identity: Option<NetworkIdentity>,
     finalized_tip: Option<(Height, Certificate)>,
+    finalized_floor_certificate: Option<(Height, Certificate)>,
     execution: StubExecutionProvider,
     marshal: StubMarshal,
     epoch_manager: StubEpochManager,
@@ -141,6 +143,11 @@ impl HarnessBuilder {
     ) -> Self {
         self.network_identity = Some(identity);
         self.finalized_tip = tip;
+        self
+    }
+
+    pub(super) fn floor_certificate(mut self, floor: (Height, Certificate)) -> Self {
+        self.finalized_floor_certificate = Some(floor);
         self
     }
 
@@ -224,6 +231,7 @@ impl HarnessBuilder {
             initial_state,
             network_identity,
             finalized_tip,
+            finalized_floor_certificate: self.finalized_floor_certificate,
             storage,
             mailbox: None,
             handle: None,
@@ -249,6 +257,7 @@ impl Harness {
             initial_state: InitialState::None,
             network_identity: None,
             finalized_tip: None,
+            finalized_floor_certificate: None,
             execution: StubExecutionProvider::default(),
             marshal: StubMarshal::default(),
             epoch_manager: StubEpochManager::default(),
@@ -287,6 +296,7 @@ impl Harness {
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
                 finalized_tip: self.finalized_tip.clone(),
+                finalized_floor_certificate: self.finalized_floor_certificate.clone(),
                 network_identity: self.network_identity.clone(),
                 scheme_provider: self.scheme_provider.clone(),
                 partition_prefix: self.partition_prefix.clone(),
