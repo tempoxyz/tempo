@@ -442,13 +442,14 @@ impl PaymentCallRegistry {
     /// Registers `instance` under the first activated template, not removed, whose masked code
     /// hash its masked runtime code matches. It takes effect [`Self::instance_activation_delay`]
     /// blocks after the current one. Anyone may call it, also to register again an instance whose
-    /// template governance removed.
+    /// template governance removed, once that removal is effective.
     ///
     /// An account created in the current transaction is refused: under EIP-6780 it is the only
     /// kind whose code can still change, so every registered instance keeps its code.
     ///
     /// # Errors
-    /// - `InstanceAlreadyRegistered`: registered under a template that is not removed
+    /// - `InstanceAlreadyRegistered`: registered under a template that is not removed, or whose
+    ///   removal takes effect after the current block
     /// - `InstanceRemovedAlready`: governance removed the instance
     /// - `InstanceCreatedInTransaction`
     /// - `NoMatchingTemplate`: no activated template's masked hash matches
@@ -457,14 +458,17 @@ impl PaymentCallRegistry {
         if record.removed_at_block != 0 {
             return Err(PaymentCallRegistryError::instance_removed_already(instance).into());
         }
-        if record.template_id != 0
-            && self.templates[record.template_id]
+        if record.template_id != 0 {
+            // The old binding may end only once its template's removal is effective: a removal
+            // pending in this block keeps the instance registered until the block ends, and a new
+            // record now would end it mid-block.
+            let removed_at_block = self.templates[record.template_id]
                 .status
                 .read()?
-                .removed_at_block
-                == 0
-        {
-            return Err(PaymentCallRegistryError::instance_already_registered(instance).into());
+                .removed_at_block;
+            if removed_at_block == 0 || removed_at_block > self.storage.block_number() {
+                return Err(PaymentCallRegistryError::instance_already_registered(instance).into());
+            }
         }
 
         let code = self

@@ -648,17 +648,27 @@ fn instances_register_again_after_their_template_is_removed() -> eyre::Result<()
         assert!(fx.lane_at(&swipe, replaced_at));
         assert!(!fx.lane_at(&swipe, replaced_at + 1));
 
-        // Once its template is removed (here from the next block), the instance registers
-        // again under the replacement, effective one epoch later.
+        // While the removal is pending, the old binding still holds.
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_already_registered(
+                instance
+            ))
+        );
+
+        // Once its template's removal is effective, the instance registers again under the
+        // replacement, effective one epoch later.
+        let registered_at = replaced_at + 1;
+        set_block(registered_at);
         let version = fx.registry.version()?;
         assert_eq!(fx.registry.register_instance(instance)?, new);
         assert_eq!(fx.registry.version()?, version + 1);
         let record = fx.registry.get_instance(instance)?;
         assert_eq!(record.templateId, new);
-        assert_eq!(record.activationBlock, replaced_at + EPOCH);
+        assert_eq!(record.activationBlock, registered_at + EPOCH);
         assert_eq!(record.removedAtBlock, 0);
-        assert!(!fx.lane_at(&swipe, replaced_at + EPOCH - 1));
-        assert!(fx.lane_at(&swipe, replaced_at + EPOCH));
+        assert!(!fx.lane_at(&swipe, registered_at + EPOCH - 1));
+        assert!(fx.lane_at(&swipe, registered_at + EPOCH));
         assert_eq!(
             fx.registry.register_instance(instance).unwrap_err(),
             err(PaymentCallRegistryError::instance_already_registered(
@@ -779,6 +789,53 @@ fn callable_code_counts_as_registered_code_without_payment_calls() -> eyre::Resu
         assert!(fx.registry.is_registered_code(instance, active)?);
         assert!(!fx.registry.is_registered_code(callee, active + 1)?);
         assert!(!fx.registry.is_registered_code(instance, active + 1)?);
+        Ok(())
+    })
+}
+
+#[test]
+fn registered_code_does_not_change_within_a_block() -> eyre::Result<()> {
+    at_t17(|fx| {
+        let old = fx.active_template()?;
+        let new = fx.propose(program_code(0, 0))?;
+        let instance = Address::repeat_byte(0x11);
+        let other = Address::repeat_byte(0x12);
+        deploy(instance, program_code(0x01, 0x02))?;
+        deploy(other, program_code(0x03, 0x04))?;
+        assert_eq!(fx.registry.register_instance(instance)?, old);
+
+        warp(TEMPLATE_TIMELOCK);
+        let block = START_BLOCK + 2 * EPOCH;
+        set_block(block);
+        let swipe = aa(vec![(instance, calldata(AUTHORIZE, 6))], 1_500_000);
+        let unchanged = |fx: &Fixture| -> eyre::Result<()> {
+            assert!(fx.registry.is_registered_code(instance, block)?);
+            assert!(fx.lane_at(&swipe, block));
+            Ok(())
+        };
+        unchanged(fx)?;
+
+        // Every registry change made in the block leaves the instance as it was for the rest of
+        // the block.
+        fx.registry.activate_template(fx.governance, new)?;
+        unchanged(fx)?;
+        fx.registry.remove_template(fx.governance, old)?;
+        unchanged(fx)?;
+        assert_eq!(
+            fx.registry.register_instance(instance).unwrap_err(),
+            err(PaymentCallRegistryError::instance_already_registered(
+                instance
+            ))
+        );
+        unchanged(fx)?;
+        assert_eq!(fx.registry.register_instance(other)?, new);
+        unchanged(fx)?;
+        fx.registry.remove_instance(fx.governance, instance)?;
+        unchanged(fx)?;
+
+        // The changes take effect from the next block.
+        assert!(!fx.registry.is_registered_code(instance, block + 1)?);
+        assert!(!fx.lane_at(&swipe, block + 1));
         Ok(())
     })
 }
