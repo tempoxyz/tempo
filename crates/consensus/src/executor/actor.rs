@@ -89,7 +89,7 @@ use std::{
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatusEnum};
 use commonware_consensus::{
-    CertifiableBlock as _, Heightable as _,
+    CertifiableBlock as _, Heightable as _, Reporter,
     marshal::Update,
     types::{Height, Round, View},
 };
@@ -122,7 +122,7 @@ use tracing::{
 };
 
 use super::{
-    Config, ExecutionLayer, Marshal,
+    Config, ExecutionLayer, Finalized, Marshal,
     ingress::{Build, Command, Message, VerifyBlock},
 };
 use crate::{
@@ -142,7 +142,7 @@ const EXECUTION_LAYER_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// canonical head while finalized catchup continues.
 const DELIVERIES_PER_FORKCHOICE_UPDATE: usize = 8;
 
-pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
+pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -160,6 +160,11 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// The mailbox of the marshal actor. Used to backfill finalized blocks
     /// on startup and to fetch missing notarized block bodies.
     marshal: TMarshal,
+    /// Receives each finalized block once its state is readable from the
+    /// execution layer.
+    finalized_reporter: TReporter,
+    /// The finalized height last reported to the finalized reporter.
+    last_reported_finalized: Option<Height>,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -340,15 +345,17 @@ impl Metrics {
     }
 }
 
-impl<TContext, TExecutionLayer, TMarshal> Actor<TContext, TExecutionLayer, TMarshal>
+impl<TContext, TExecutionLayer, TMarshal, TReporter>
+    Actor<TContext, TExecutionLayer, TMarshal, TReporter>
 where
     TContext: Clock + RuntimeMetrics + Spawner,
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
+    TReporter: Reporter<Activity = Finalized>,
 {
     pub(super) fn init(
         context: TContext,
-        config: super::Config<TExecutionLayer, TMarshal>,
+        config: super::Config<TExecutionLayer, TMarshal, TReporter>,
         mailbox: UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
         let Config {
@@ -358,6 +365,7 @@ where
             marshal,
             fcu_heartbeat_interval,
             public_key,
+            finalized_reporter,
         } = config;
         ensure!(
             finalized_tip.1 >= finalized_floor,
@@ -430,6 +438,8 @@ where
             finalized_floor,
             mailbox,
             marshal,
+            finalized_reporter,
+            last_reported_finalized: None,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -496,6 +506,9 @@ where
         });
 
         loop {
+            // The first iteration reports the finalized block the executor
+            // starts from; later ones report what forkchoice updates raised.
+            self.report_finalized();
             self.prune_finalized();
             self.metrics.observe(
                 self.local_state,
@@ -986,6 +999,32 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Reports the tracked finalized block to the finalized reporter if it
+    /// is above the last one reported.
+    ///
+    /// Called from the executor loop only, so startup backfill reports
+    /// nothing: the first report is the finalized block the executor enters
+    /// its loop with (the execution layer's finalized block, the finalized
+    /// floor below it after a snapshot restore, or the floor backfill
+    /// finalized). Its state is readable either way.
+    #[instrument(skip_all)]
+    fn report_finalized(&mut self) {
+        let (height, digest) = self.local_state.finalized;
+        if self
+            .last_reported_finalized
+            .is_some_and(|reported| height <= reported)
+        {
+            return;
+        }
+        self.last_reported_finalized = Some(height);
+        debug!(
+            finalized.height = %height,
+            finalized.digest = %digest,
+            "reporting finalized block whose state the execution layer serves",
+        );
+        let _ = self.finalized_reporter.report(Finalized { height, digest });
     }
 
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next

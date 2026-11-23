@@ -200,6 +200,16 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
+        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
+            context.child("peer_manager"),
+            peer_manager::Config {
+                execution_node: execution_node.clone(),
+                oracle: self.peer_manager.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                max_peers: self.max_peers,
+            },
+        );
+
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
@@ -209,21 +219,10 @@ where
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
+                finalized_reporter: peer_manager_mailbox.clone(),
             },
         )
         .wrap_err("failed initialization executor actor")?;
-
-        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.child("peer_manager"),
-            peer_manager::Config {
-                execution_node: execution_node.clone(),
-                oracle: self.peer_manager.clone(),
-                epoch_strategy: epoch_strategy.clone(),
-                finalized_floor,
-                max_peers: self.max_peers,
-            },
-        )
-        .wrap_err("failed initializing peer manager")?;
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.child("broadcast"),
@@ -359,7 +358,6 @@ where
             epoch_manager_config,
 
             peer_manager,
-            peer_manager_mailbox,
 
             feed,
             feed_mailbox,
@@ -389,7 +387,12 @@ where
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
-    executor: crate::executor::Actor<TContext, Arc<TempoFullNode>, crate::alias::marshal::Mailbox>,
+    executor: crate::executor::Actor<
+        TContext,
+        Arc<TempoFullNode>,
+        crate::alias::marshal::Mailbox,
+        peer_manager::Mailbox,
+    >,
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
@@ -402,7 +405,6 @@ where
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
-    peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
@@ -506,12 +508,9 @@ where
             self.executor_mailbox,
             Reporters::from((
                 self.dkg_manager_mailbox,
-                Reporters::from((
-                    self.peer_manager_mailbox,
-                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                        self.feed_mailbox,
-                        self.gossip_mailbox,
-                    )),
+                Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    self.feed_mailbox,
+                    self.gossip_mailbox,
                 )),
             )),
         ));
