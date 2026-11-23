@@ -1458,7 +1458,7 @@ where
             outcome from last boundary height"
         );
 
-        ensure_boundary_descends_from_tip(
+        let boundary_header = read_boundary_descending_from_tip(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
@@ -1469,13 +1469,8 @@ where
         // A boundary above the tip is not covered by its certificate, so an
         // outcome for a later epoch could otherwise persist a future identity
         // that startup then trusts over the configured one.
-        let onchain_outcome = read_outcome_from_boundary(
-            &self.config.execution_node,
-            &self.config.marshal,
-            latest_boundary,
-            outcome_epoch,
-        )
-        .await?;
+        let onchain_outcome =
+            outcome_from_boundary_header(&boundary_header, latest_boundary, outcome_epoch)?;
 
         crate::startup::ensure_outcome_within_tip_epoch(
             onchain_outcome.epoch(),
@@ -1699,33 +1694,38 @@ fn latest_boundary_at_or_before_height() {
     }
 }
 
-/// Ensures the header at `boundary` is an ancestor of the finalized tip.
+/// Reads the header at `boundary`, ensuring it is an ancestor of the finalized tip.
 ///
 /// Startup reads the DKG outcome from a boundary header in local storage,
 /// which a snapshot can supply. Walking parent hashes down from the header the
 /// tip certificate signs ties that outcome to the certificate. A boundary above
 /// the tip is only reachable from locally processed blocks and is not checked.
 #[instrument(skip_all, fields(%boundary), err)]
-async fn ensure_boundary_descends_from_tip<TExecutionLayer, TMarshal>(
+async fn read_boundary_descending_from_tip<TExecutionLayer, TMarshal>(
     node: &TExecutionLayer,
     marshal: &TMarshal,
     boundary: Height,
     tip: Option<&(Height, Certificate)>,
-) -> eyre::Result<()>
+) -> eyre::Result<TempoHeader>
 where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {
-    let Some((tip_height, certificate)) = tip else {
-        return Ok(());
+    let tip = match tip {
+        Some((tip_height, _)) if boundary > *tip_height => {
+            warn!(
+                %tip_height,
+                "boundary is above the finalized tip; trusting locally processed blocks"
+            );
+            None
+        }
+        tip => tip,
     };
-    if boundary > *tip_height {
-        warn!(
-            %tip_height,
-            "boundary is above the finalized tip; trusting locally processed blocks"
-        );
-        return Ok(());
-    }
+    let Some((tip_height, certificate)) = tip else {
+        return get_header(node, marshal, boundary).await.wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{boundary}`")
+        });
+    };
 
     let mut height = *tip_height;
     let mut expected = certificate.proposal.payload;
@@ -1737,7 +1737,7 @@ where
              at height `{tip_height}`",
         );
         if height == boundary {
-            return Ok(());
+            return Ok(header);
         }
         expected = Digest(header.parent_hash());
         height = height
@@ -1761,7 +1761,15 @@ where
         .wrap_err_with(|| {
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
+    outcome_from_boundary_header(&header, boundary, expected_epoch)
+}
 
+/// Decodes the DKG outcome for `expected_epoch` from the header at `boundary`.
+fn outcome_from_boundary_header(
+    header: &TempoHeader,
+    boundary: Height,
+    expected_epoch: Epoch,
+) -> eyre::Result<OnchainDkgOutcome> {
     let outcome =
         OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
             .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;

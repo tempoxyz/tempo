@@ -438,7 +438,7 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
         assert_eq!(harness.storage().current().output, current_state.output);
         assert_eq!(
             harness.execution.reads(),
-            [22, 21, 20, 19, 19, 19, 19].map(Height::new),
+            [22, 21, 20, 19, 19, 19].map(Height::new),
         );
     });
 }
