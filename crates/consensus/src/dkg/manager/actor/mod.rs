@@ -54,7 +54,10 @@ use tempo_primitives::TempoHeader;
 use tokio::select;
 use tracing::{Level, Span, debug, info, info_span, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::{
+    consensus::{Digest, block::Block},
+    gossip::Certificate,
+};
 
 mod state;
 #[cfg(test)]
@@ -1455,9 +1458,17 @@ where
             outcome from last boundary height"
         );
 
-        // The boundary header is not checked against the finalized floor's
-        // certificate, so an outcome for a later epoch could otherwise persist
-        // a future identity that startup then trusts over the configured one.
+        ensure_boundary_descends_from_tip(
+            &self.config.execution_node,
+            &self.config.marshal,
+            latest_boundary,
+            self.config.finalized_tip.as_ref(),
+        )
+        .await?;
+
+        // A boundary above the tip is not covered by its certificate, so an
+        // outcome for a later epoch could otherwise persist a future identity
+        // that startup then trusts over the configured one.
         let onchain_outcome = read_outcome_from_boundary(
             &self.config.execution_node,
             &self.config.marshal,
@@ -1685,6 +1696,53 @@ fn latest_boundary_at_or_before_height() {
             (Height::new(boundary), Epoch::new(epoch)),
             "unexpected boundary for height {height}"
         );
+    }
+}
+
+/// Ensures the header at `boundary` is an ancestor of the finalized tip.
+///
+/// Startup reads the DKG outcome from a boundary header in local storage,
+/// which a snapshot can supply. Walking parent hashes down from the header the
+/// tip certificate signs ties that outcome to the certificate. A boundary above
+/// the tip is only reachable from locally processed blocks and is not checked.
+#[instrument(skip_all, fields(%boundary), err)]
+async fn ensure_boundary_descends_from_tip<TExecutionLayer, TMarshal>(
+    node: &TExecutionLayer,
+    marshal: &TMarshal,
+    boundary: Height,
+    tip: Option<&(Height, Certificate)>,
+) -> eyre::Result<()>
+where
+    TExecutionLayer: ExecutionLayer,
+    TMarshal: Marshal,
+{
+    let Some((tip_height, certificate)) = tip else {
+        return Ok(());
+    };
+    if boundary > *tip_height {
+        warn!(
+            %tip_height,
+            "boundary is above the finalized tip; trusting locally processed blocks"
+        );
+        return Ok(());
+    }
+
+    let mut height = *tip_height;
+    let mut expected = certificate.proposal.payload;
+    loop {
+        let header = get_header(node, marshal, height).await?;
+        ensure!(
+            Digest(header.hash_slow()) == expected,
+            "header at height `{height}` does not descend from the finalized tip certificate \
+             at height `{tip_height}`",
+        );
+        if height == boundary {
+            return Ok(());
+        }
+        expected = Digest(header.parent_hash());
+        height = height
+            .previous()
+            .expect("heights above the boundary have a parent");
     }
 }
 

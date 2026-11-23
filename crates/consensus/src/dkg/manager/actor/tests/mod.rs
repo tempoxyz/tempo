@@ -655,7 +655,7 @@ fn startup_discards_stale_state_on_startup() {
         );
         assert_eq!(
             harness.execution.reads(),
-            vec![Height::new(19); 3],
+            vec![Height::new(19); 4],
             "healing should replace stale state from the latest boundary"
         );
     });
@@ -792,6 +792,7 @@ fn startup_skips_reading_previous_epoch_after_a_failed_ceremony() {
         assert_eq!(
             harness.execution.reads(),
             vec![
+                last_finalized_height,
                 last_finalized_height,
                 ceremony_boundary,
                 last_finalized_height,
@@ -947,6 +948,10 @@ fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
         assert_eq!(
             harness.execution.reads(),
             [
+                Height::new(22),
+                Height::new(21),
+                Height::new(20),
+                boundary,
                 boundary,
                 boundary,
                 Height::new(20),
