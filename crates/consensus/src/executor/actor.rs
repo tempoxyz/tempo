@@ -163,8 +163,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     /// Receives each finalized block once its state is readable from the
     /// execution layer.
     finalized_reporter: TReporter,
-    /// Which finalized block was last reported to the finalized reporter.
-    finalized_report: FinalizedReport,
+    /// The finalized height last reported to the finalized reporter.
+    last_reported_finalized: Option<Height>,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -439,7 +439,7 @@ where
             mailbox,
             marshal,
             finalized_reporter,
-            finalized_report: FinalizedReport::HeldBack,
+            last_reported_finalized: None,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -494,11 +494,6 @@ where
             return;
         }
 
-        // First thing after backfill: tell the reporter which finalized
-        // block the executor starts from.
-        self.finalized_report = FinalizedReport::Pending;
-        self.report_finalized();
-
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
             info!(
@@ -511,6 +506,9 @@ where
         });
 
         loop {
+            // The first iteration reports the finalized block the executor
+            // starts from; later ones report what forkchoice updates raised.
+            self.report_finalized();
             self.prune_finalized();
             self.metrics.observe(
                 self.local_state,
@@ -927,10 +925,7 @@ where
     /// rejected one is fatal: every target named is a block the execution
     /// layer accepted, so the executor's view of the execution layer has
     /// diverged from it. Finalized blocks the update covers are
-    /// acknowledged; a build it carried is driven to completion. After
-    /// startup, a higher finalized block is reported to the finalized
-    /// reporter: either the execution layer just made it canonical, or it had
-    /// already finalized past it.
+    /// acknowledged; a build it carried is driven to completion.
     fn handle_forkchoice_response(
         &mut self,
         target: LocalState,
@@ -975,7 +970,6 @@ where
         // mailbox forever.
         self.deliveries_since_forkchoice = 0;
         self.local_state = target;
-        self.report_finalized();
         self.acknowledge_persisted()?;
 
         // Dropping the build's response channel signals the failure to the
@@ -1007,22 +1001,23 @@ where
         Ok(())
     }
 
-    /// Reports the tracked finalized block to the finalized reporter, unless
-    /// startup backfill is still running or it was already reported.
+    /// Reports the tracked finalized block to the finalized reporter if it
+    /// is above the last one reported.
     ///
-    /// The first report is the finalized block the executor enters its loop
-    /// with: the execution layer's finalized block, the finalized floor below
-    /// it after a snapshot restore, or the floor startup backfill finalized.
-    /// Later reports follow accepted forkchoice updates that raise it. Its
-    /// state is readable either way.
+    /// Called from the executor loop only, so startup backfill reports
+    /// nothing: the first report is the finalized block the executor enters
+    /// its loop with (the execution layer's finalized block, the finalized
+    /// floor below it after a snapshot restore, or the floor backfill
+    /// finalized). Its state is readable either way.
     fn report_finalized(&mut self) {
         let (height, digest) = self.local_state.finalized;
-        match self.finalized_report {
-            FinalizedReport::HeldBack => return,
-            FinalizedReport::Reported(reported) if height <= reported => return,
-            FinalizedReport::Pending | FinalizedReport::Reported(_) => {}
+        if self
+            .last_reported_finalized
+            .is_some_and(|reported| height <= reported)
+        {
+            return;
         }
-        self.finalized_report = FinalizedReport::Reported(height);
+        self.last_reported_finalized = Some(height);
         let _ = self.finalized_reporter.report(Finalized { height, digest });
     }
 
@@ -2867,17 +2862,6 @@ async fn submit_forkchoice_update(
         );
     }
     Some(Ok(fcu_response))
-}
-
-/// Which finalized block the executor last reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FinalizedReport {
-    /// Startup backfill is running; its forkchoice updates are not reported.
-    HeldBack,
-    /// Backfill finished and nothing was reported yet.
-    Pending,
-    /// The highest finalized height reported.
-    Reported(Height),
 }
 
 /// A snapshot of the execution layer's local state - its head and

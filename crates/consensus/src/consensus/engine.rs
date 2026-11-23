@@ -206,11 +206,9 @@ where
                 execution_node: execution_node.clone(),
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                finalized_floor,
                 max_peers: self.max_peers,
             },
-        )
-        .wrap_err("failed initializing peer manager")?;
+        );
 
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
