@@ -213,6 +213,13 @@ pub trait PrecompileStorageProvider {
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
 
+    /// Sets whether SLOADs are charged as cold even when the slot is already warm, and returns the
+    /// previous setting. Providers without gas metering ignore it.
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        let _ = enabled;
+        false
+    }
+
     /// The address of the precompile this call frame runs, when known. A nested call's callee
     /// sees it as `msg.sender`.
     fn call_frame_address(&self) -> Option<Address> {
