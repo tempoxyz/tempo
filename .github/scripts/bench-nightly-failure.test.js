@@ -32,7 +32,7 @@ async function run(results = { 'bench-e2e-multi-region': 'failure' }, options = 
       if (options.networkError) throw new Error('connection lost');
       return {
         ok: !options.httpError, status: 503,
-        json: async () => options.response || { ok: true, channel: 'C09KA1JNJ02', ts: '1.23' },
+        json: async () => options.response || { ok: true, channel: 'C0AGD5Z83T6', ts: '1.23' },
       };
     });
   } catch (err) { error = err; }
@@ -49,7 +49,7 @@ for (const results of [
     assert.equal(error, undefined);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'https://slack.com/api/chat.postMessage');
-    assert.equal(calls[0].body.channel, 'C09KA1JNJ02');
+    assert.equal(calls[0].body.channel, 'C0AGD5Z83T6');
     assert.match(calls[0].body.text, /<!subteam\^S0C0784UDQF\|oncall-reth>/);
     assert.match(calls[0].body.text, /35810193790\/attempts\/1/);
     const failedJob = Object.keys(results).find(name => results[name] === 'failure');
