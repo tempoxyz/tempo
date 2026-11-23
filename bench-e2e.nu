@@ -36,7 +36,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
-    "--builder.disable-prewarming=false"
+    "--builder.enable-prewarming"
     "--rpc.max-connections" "10000"
     "--txpool.pending-max-count" "200000"
     "--txpool.basefee-max-count" "200000"
@@ -44,8 +44,6 @@ const E2E_LOCAL_RETH_ARGS = [
     "--txpool.max-pending-txns" "200000"
     "--txpool.max-new-txns" "200000"
     "--txpool.max-batch-size" "200000"
-    # Bench presets send many transactions per sender; keep them clear of the node's
-    # 16-transaction per-sender default.
     "--txpool.max-account-slots" "150000"
 ]
 
@@ -70,18 +68,12 @@ def tempo-node-help [tempo_bin: string] {
     [$result.stdout $result.stderr] | str join "\n"
 }
 
-# Hidden flags are missing from --help; clap still rejects unknown ones before handling --help.
-def node-arg-parses [tempo_bin: string, arg: list<string>] {
-    (run-external $tempo_bin "node" ...$arg "--help" | complete).exit_code == 0
-}
-
 def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
     let help = (tempo-node-help $tempo_bin)
     mut supported = []
     mut removed = []
     mut skip_next_value = false
-    for entry in ($args | enumerate) {
-        let arg = $entry.item
+    for arg in $args {
         if $skip_next_value {
             if not ($arg starts-with "--") {
                 $removed = ($removed | append $arg)
@@ -96,11 +88,7 @@ def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
         }
 
         let key = ($arg | split row "=" | first)
-        # Binaries before the flag took a value parse it as a bare switch and reject =false.
-        let value_unsupported = ($key == "--builder.disable-prewarming" and ($arg | str contains "=") and not ($help | str contains $"($key)[="))
-        let next = ($args | get -o ($entry.index + 1))
-        let probe = if ($arg | str contains "=") or $next == null or ($next starts-with "--") { [$arg] } else { [$arg $next] }
-        if (($help | str contains $key) or (node-arg-parses $tempo_bin $probe)) and not $value_unsupported {
+        if ($help | str contains $key) {
             $supported = ($supported | append $arg)
         } else {
             print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
@@ -1951,9 +1939,14 @@ def "main e2e" [
         }
     }
     if $e2e_exit == 0 and $tracy != "off" {
-        print "\nLocal e2e tracy profiles:"
+        print "\nUploading local e2e tracy profiles to R2..."
         for run in $runs {
-            print-tracy-profile $"($results_dir)/tracy-profile-($run.phase).tracy" $run.phase
+            let profile = $"($results_dir)/tracy-profile-($run.phase).tracy"
+            let tracy_urls = (upload-tracy-profile $profile $run.phase $run.ref)
+            if $tracy_urls != null {
+                $tracy_urls.viewer_url | save -f $"($results_dir)/tracy-($run.phase)-url.txt"
+                $tracy_urls.profile_url | save -f $"($results_dir)/tracy-($run.phase)-profile-url.txt"
+            }
         }
     }
 

@@ -67,20 +67,6 @@ interface IPortal {
         bytes callbackData;
         bytes encryptedSender;
     }
-
-    /// @dev The T15 portal's withdrawal, with the sender's ZoneIdentity org.
-    struct WithdrawalT15 {
-        address token;
-        bytes32 senderTag;
-        address to;
-        uint128 amount;
-        bytes32 memo;
-        uint64 gasLimit;
-        uint64 fallbackNonce;
-        bytes callbackData;
-        bytes encryptedSender;
-        uint64 senderOrg;
-    }
     function deposit(
         address token,
         uint128 amount,
@@ -89,33 +75,6 @@ interface IPortal {
         address tempoRefundRecipient
     ) external returns (bytes32);
     function processWithdrawals(Withdrawal[] calldata withdrawals, bytes32 remainingQueue) external;
-    function processWithdrawals(WithdrawalT15[] calldata withdrawals, bytes32 remainingQueue) external;
-}
-
-/// @notice Processes `items` with the T15 withdrawal ABI, falling back to the pre-T15 one, so one
-///         fixture drives both portals in an A/B run across the change. Fixture withdrawals are in
-///         org 0, which hashes the same under both ABIs, so the committed root is unchanged.
-function processWithdrawals(IPortal portal, IPortal.Withdrawal[] memory items) {
-    IPortal.WithdrawalT15[] memory t15 = new IPortal.WithdrawalT15[](items.length);
-    for (uint256 i; i < items.length; ++i) {
-        IPortal.Withdrawal memory w = items[i];
-        t15[i] = IPortal.WithdrawalT15(
-            w.token,
-            w.senderTag,
-            w.to,
-            w.amount,
-            w.memo,
-            w.gasLimit,
-            w.fallbackNonce,
-            w.callbackData,
-            w.encryptedSender,
-            0
-        );
-    }
-    try portal.processWithdrawals(t15, bytes32(0)) {}
-    catch {
-        portal.processWithdrawals(items, bytes32(0));
-    }
 }
 
 /// @notice Local execution benchmark only: constructor-seeded portal state with dummy settlement verification.
@@ -162,14 +121,9 @@ contract PortalFixture {
 /// @notice Local-only dummy verifier and synthetic batch submitter. No zone or prover runs.
 contract SettlementFixture {
     mapping(address => bytes32) private processedHash;
-    /// Batches anchor to Tempo block `block.number - anchorOffset`. The portal reads that hash
-    /// from EIP-2935, so the offset must be at least 1. Nodes whose history contract lags the
-    /// head (deferred execution) need a larger offset.
-    uint256 private immutable anchorOffset;
 
-    constructor(uint256 anchorOffset_) {
+    constructor() {
         require(block.chainid == 1337, "local benchmark chain only");
-        anchorOffset = anchorOffset_;
     }
 
     // Accept either verifier ABI (before or after TIP-1096). No proof is checked.
@@ -195,7 +149,7 @@ contract SettlementFixture {
             portal.depositCount()
         );
         // The real portal authenticates a recent Tempo anchor even with a dummy verifier.
-        uint64 anchor = uint64(block.number - anchorOffset);
+        uint64 anchor = uint64(block.number - 1);
         bytes[] memory signatures = new bytes[](0);
         // TIP-1096 adds the enabled-token cursor to the settlement ABI.
         try portal.lastProcessedEnabledTokenCount() returns (uint64 tokens) {
@@ -218,7 +172,7 @@ contract SettlementFixture {
         if (withdraw) {
             IPortal.Withdrawal[] memory items = new IPortal.Withdrawal[](1);
             items[0] = IPortal.Withdrawal(token, bytes32(0), recipient, 1, bytes32(0), 0, 1, "", "");
-            processWithdrawals(portal, items);
+            portal.processWithdrawals(items, bytes32(0));
         }
     }
 }
