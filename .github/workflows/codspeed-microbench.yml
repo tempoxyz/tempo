@@ -76,6 +76,9 @@ jobs:
       contents: read
       id-token: write
     name: CodSpeed microbenchmarks
+    # CodSpeed only knows tempoxyz/tempo: in copies such as tempo-private-fork
+    # the benchmarks run but the upload fails with 401 "Repository not found".
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     steps:
