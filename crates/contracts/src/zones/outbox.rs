@@ -103,8 +103,6 @@ crate::sol! {
             bytes calldata data,
             bytes calldata revealTo
         ) external;
-        /// `requestWithdrawal` that, with `revealOrg`, also commits the sender's `ZoneIdentity` org
-        /// for the callback receiver; from T15, and only with a callback.
         function requestWithdrawal(
             address token,
             address to,
