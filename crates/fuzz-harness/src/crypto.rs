@@ -20,14 +20,14 @@ pub(crate) fn settle() {
 }
 
 fn install() -> bool {
-    install_crypto(EvmCrypto) && mock::install()
+    install_crypto(FuzzCrypto) && mock::install()
 }
 
 /// Mock-aware ECRECOVER and P256VERIFY for evm2.
 #[derive(Debug)]
-struct EvmCrypto;
+struct FuzzCrypto;
 
-impl evm2::precompiles::Crypto for EvmCrypto {
+impl evm2::precompiles::Crypto for FuzzCrypto {
     fn secp256k1_ecrecover(
         &self,
         sig: &[u8; 64],
