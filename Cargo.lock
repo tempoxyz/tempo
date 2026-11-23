@@ -3261,8 +3261,7 @@ dependencies = [
 [[package]]
 name = "commonware-actor"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce0659f0451202fed9a2d341e989ebdeaa8aceaef4175f643093b232a5e8f221"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3275,8 +3274,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a449cb7f8c5a8b8fb65c55394de21fdd78682e30bda3c889c48a81b266294fa"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3292,8 +3290,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993232f361f6ab0e2c00e04b0221d0fc808cbb0516c688e25da631a7ce3fd863"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3311,8 +3308,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec-macros"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f22d7fa8c4f885376cd1c1db7ff3bb8520616d78da0c9e2325c68db145d423"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3323,8 +3319,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cdb28b8c1b5d77416a5d871348cdde2cc527e7df13a65c84e878daff6e9d9ed"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3339,8 +3334,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5395fe787b1dc1a44c35dceaae97dc576d89dba432555f52bc4966e6c1d5a134"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-conformance-macros",
  "commonware-formatting",
@@ -3354,8 +3348,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance-macros"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44be63ec56facd5bdcb46dc6021b9264e7c61d0c80ce36f61bdafa127da77f57"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3365,8 +3358,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14831a17fec0a5925d4c607c34aeb8d9963e17ae151abb858bd12b29cf745c5a"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3395,8 +3387,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae2a3ba5b6393574f49f984dd80d94a8f95025ffba0a2f8b5a79fbb2b317596"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3439,8 +3430,7 @@ dependencies = [
 [[package]]
 name = "commonware-formatting"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6a3f4b6392a6e1abd6cb078b9f28c6356e32b4c4391ffa62330bc0ce681fd25"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-macros",
  "const-hex",
@@ -3449,8 +3439,7 @@ dependencies = [
 [[package]]
 name = "commonware-invariants"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "787b57a78e94a852d30877314519f47d5445afabba1528ef36865b9b40cf1817"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "arbitrary",
  "commonware-formatting",
@@ -3463,8 +3452,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "077750065c4f78c23f9a5648a6be6ec8611a48e055d7bf03c3e2108c3133617e"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -3473,8 +3461,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb18c86bb95c0b698b37f2db39b2507b1b4d93508d2b5e498ae204e51fc2c602"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3486,8 +3473,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21a311d39fb494ff8f09c2e900b6bf943bfccdfaf8ed41cc5d9b2dd505888b85"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3502,8 +3488,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b64c9723ca2c2144496b74fd4ef91ba7701e12ddae82eff676fe94cb18bce9"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3527,8 +3512,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5609bd944f9726c0fafe28ae1b3e432e2700c86b975aa662d634bd5bd778fb87"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3543,8 +3527,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31ea23e763d53754dfcffb9cebb8cf636afdfa1ffc659af5377b193324188d8c"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "ahash",
  "bytes",
@@ -3564,8 +3547,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7a0713e58b8be1c0685ae477dc78a33d8f7bc118177889ccc3322f782198661"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "ahash",
  "axum",
@@ -3605,8 +3587,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime-macros"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec613f53d9f78baa911209b8e8539b2b7293744b460cc5f953a26ae724655e33"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3617,8 +3598,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8f7be21ea4fef888dbdf0b0bba42eb63c42f3c28a58a26307b1472cd12f6360"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "ahash",
  "bytes",
@@ -3641,8 +3621,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64f4298f014691edfee87a44649da6411ef3a1e6bc1c21afc8ca72291b54a5d9"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -3658,8 +3637,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b180204ea5e160c02ddea982d470881c686d12f849c6dcc27e151031fc98f17"
+source = "git+https://github.com/klkvr/monorepo?rev=69cc0336563908b83494996730acb92e92c9db81#69cc0336563908b83494996730acb92e92c9db81"
 dependencies = [
  "ahash",
  "arbitrary",
