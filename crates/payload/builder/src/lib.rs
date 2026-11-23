@@ -1085,7 +1085,11 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed
             .saturating_sub(normal_transaction_fill_idle_elapsed + discarded_transaction_elapsed);
-        if payload_build_budget.is_some() {
+        // A build that discarded its only pool transaction did no representative transaction
+        // work: its cutoff work is setup alone, so the ratio would overstate the multiplier.
+        let discarded_only_pool_transaction =
+            pool_transactions_included == 0 && !discarded_transaction_elapsed.is_zero();
+        if payload_build_budget.is_some() && !discarded_only_pool_transaction {
             let finished_at = Instant::now();
             self.estimator.on_build_finished(
                 finished_at,
