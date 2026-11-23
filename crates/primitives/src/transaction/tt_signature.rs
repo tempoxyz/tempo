@@ -5,53 +5,26 @@ use super::{
         SignatureType,
     },
 };
-use crate::gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS};
+use crate::{
+    crypto,
+    gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS},
+};
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
-use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
+use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header, decode_exact};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 // Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
 use p256 as _;
 
+pub use crate::crypto::{P256_ORDER, P256N_HALF, derive_p256_address, normalize_p256_s};
+
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
-
-/// The P256 (secp256r1/prime256v1) curve order n.
-pub const P256_ORDER: U256 =
-    uint!(0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551_U256);
-
-/// Half of the P256 curve order (n/2).
-///
-/// For signatures to be valid, the s value must be less than or equal to n/2
-/// (low-s requirement). This prevents signature malleability where (r, s) and
-/// (r, n-s) are both valid signatures for the same message.
-pub const P256N_HALF: U256 =
-    uint!(0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8_U256);
-
-/// Normalize P256 signature s value to low-s form.
-///
-/// For any ECDSA signature (r, s), both (r, s) and (r, n-s) are valid.
-/// To prevent signature malleability, we require s <= n/2.
-/// If s > n/2, we replace it with n - s.
-///
-/// Returns an error if `s` is zero or `s >= P256_ORDER` (out of range for a
-/// valid scalar). This function should be called by all P256 signing code
-/// before creating a signature, as the p256 crate does not guarantee low-s
-/// signatures.
-pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
-    let s = U256::from_be_slice(s_bytes);
-    if s.is_zero() || s >= P256_ORDER {
-        return Err("P256 s value out of range");
-    }
-    let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    Ok(B256::from(normalized_s))
-}
 
 /// Signature type identifiers
 /// Note: Secp256k1 has no identifier - detected by length (65 bytes)
@@ -59,16 +32,6 @@ pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
-
-// Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
-const MIN_AUTH_DATA_LEN: usize = 37;
-
-/// WebAuthn authenticator data flags (byte 32)
-/// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
-const UP: u8 = 0x01; // User Presence (bit 0)
-const UV: u8 = 0x04; // User Verified (bit 2)
-const AT: u8 = 0x40; // Attested credential data (bit 6)
-const ED: u8 = 0x80; // Extension data present (bit 7)
 
 /// P256 signature with pre-hash flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -307,14 +270,15 @@ impl PrimitiveSignature {
                 };
 
                 // Verify P256 signature cryptographically
-                verify_p256_signature_internal(
-                    p256_sig.r.as_slice(),
-                    p256_sig.s.as_slice(),
-                    p256_sig.pub_key_x.as_slice(),
-                    p256_sig.pub_key_y.as_slice(),
+                if !crypto::verify_p256(
+                    &p256_sig.r,
+                    &p256_sig.s,
+                    &p256_sig.pub_key_x,
+                    &p256_sig.pub_key_y,
                     &message_hash,
-                )
-                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                ) {
+                    return Err(RecoveryError::new());
+                }
 
                 // Derive and return address
                 Ok(derive_p256_address(
@@ -323,20 +287,9 @@ impl PrimitiveSignature {
                 ))
             }
             Self::WebAuthn(webauthn_sig) => {
-                // Parse and verify WebAuthn data, compute challenge hash
-                let message_hash =
-                    verify_webauthn_data_internal(&webauthn_sig.webauthn_data, sig_hash)
-                        .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
-
-                // Verify P256 signature over the computed message hash
-                verify_p256_signature_internal(
-                    webauthn_sig.r.as_slice(),
-                    webauthn_sig.s.as_slice(),
-                    webauthn_sig.pub_key_x.as_slice(),
-                    webauthn_sig.pub_key_y.as_slice(),
-                    &message_hash,
-                )
-                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                if !crypto::verify_webauthn(webauthn_sig, sig_hash) {
+                    return Err(RecoveryError::new());
+                }
 
                 // Derive and return address
                 Ok(derive_p256_address(
@@ -1090,14 +1043,6 @@ impl From<AccountSignature> for TempoSignature {
 // Helper Functions for Signature Verification
 // ============================================================================
 
-/// Derives a P256 address from public key coordinates
-pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let mut encoded_key = [0u8; 64];
-    encoded_key[..32].copy_from_slice(pub_key_x.as_slice());
-    encoded_key[32..].copy_from_slice(pub_key_y.as_slice());
-    Address::from_raw_public_key(&encoded_key)
-}
-
 /// Generates a random P256 signing key, returning it with its public key coordinates and the
 /// address derived from them.
 #[cfg(any(test, feature = "test-utils"))]
@@ -1108,208 +1053,6 @@ pub fn p256_keypair() -> (p256::ecdsa::SigningKey, B256, B256, Address) {
     let pub_key_y = B256::from_slice(point.y().expect("uncompressed point has y"));
     let address = derive_p256_address(&pub_key_x, &pub_key_y);
     (signing_key, pub_key_x, pub_key_y, address)
-}
-
-/// Concatenates byte slices into a fixed-size array without heap allocations.
-fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
-    let mut out = [0u8; N];
-    let mut offset = 0;
-    for s in slices {
-        out[offset..offset + s.len()].copy_from_slice(s);
-        offset += s.len();
-    }
-    debug_assert_eq!(offset, N, "slices length doesn't match array size");
-    out
-}
-
-#[cfg(feature = "std")]
-fn verify_p256_signature_with_aws_lc(
-    r: &[u8],
-    s: &[u8],
-    pub_key_x: &[u8],
-    pub_key_y: &[u8],
-    message_hash: &B256,
-) -> Result<(), &'static str> {
-    use aws_lc_rs::{
-        digest::{Digest as AwsLcDigest, SHA256 as AwsLcSha256},
-        signature::{ECDSA_P256_SHA256_FIXED, ParsedPublicKey as AwsLcParsedPublicKey},
-    };
-
-    let encoded_point = concat::<65>(&[&[0x04], pub_key_x, pub_key_y]);
-    let verifying_key = AwsLcParsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, encoded_point)
-        .map_err(|_| "Invalid P256 public key")?;
-
-    let signature = concat::<64>(&[r, s]);
-
-    // Tempo verifies already-computed 32-byte message digests.
-    // Switching to message-based aws-lc verifier would hash again and change consensus behavior.
-    let digest = AwsLcDigest::import_less_safe(message_hash.as_slice(), &AwsLcSha256)
-        .map_err(|_| "Invalid P256 message digest")?;
-
-    verifying_key
-        .verify_digest_sig(&digest, &signature)
-        .map_err(|_| "P256 signature verification failed")
-}
-
-#[cfg(any(test, not(feature = "std")))]
-fn verify_p256_signature_with_p256(
-    r: &[u8],
-    s: &[u8],
-    pub_key_x: &[u8],
-    pub_key_y: &[u8],
-    message_hash: &B256,
-) -> Result<(), &'static str> {
-    use p256::{
-        EncodedPoint,
-        ecdsa::{Signature as P256Signature, VerifyingKey, signature::hazmat::PrehashVerifier},
-    };
-
-    let encoded_point =
-        EncodedPoint::from_affine_coordinates(pub_key_x.into(), pub_key_y.into(), false);
-    let verifying_key =
-        VerifyingKey::from_encoded_point(&encoded_point).map_err(|_| "Invalid P256 public key")?;
-
-    let signature = P256Signature::from_slice(&concat::<64>(&[r, s]))
-        .map_err(|_| "Invalid P256 signature encoding")?;
-
-    // Tempo verifies already-computed 32-byte message digests.
-    verifying_key
-        .verify_prehash(message_hash.as_slice(), &signature)
-        .map_err(|_| "P256 signature verification failed")
-}
-
-/// Verifies a P256 signature using the provided components
-///
-/// This performs actual cryptographic verification of the P256 signature
-/// according to the spec. Called during `recover_signer()` to ensure only
-/// valid signatures enter the mempool.
-///
-/// Includes a high-s value check to prevent signature malleability. For any
-/// ECDSA signature (r, s), a second valid signature (r, n-s) exists. By
-/// requiring s <= n/2 (the "low-s" requirement), we ensure only one canonical
-/// form is accepted, preventing transaction hash malleability attacks.
-///
-/// NOTE: this function conditionally compiles based on the cfg
-/// - !std → p256
-/// - std && !test → aws-lc-rs (best performance)
-/// - std && test → both (ensures verification backend alignment)
-fn verify_p256_signature_internal(
-    r: &[u8],
-    s: &[u8],
-    pub_key_x: &[u8],
-    pub_key_y: &[u8],
-    message_hash: &B256,
-) -> Result<(), &'static str> {
-    // High-s value check: reject signatures where s > n/2 to prevent malleability
-    if U256::from_be_slice(s) > P256N_HALF {
-        return Err("P256 signature has high s value");
-    }
-
-    #[cfg(all(feature = "std", not(test)))]
-    {
-        // production `std` builds use the `aws-lc-rs` crate
-        verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash)
-    }
-
-    #[cfg(not(feature = "std"))]
-    {
-        // production `no-std` builds use the `p256` crate
-        verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash)
-    }
-
-    #[cfg(all(feature = "std", test))]
-    {
-        // test builds use both crates to verify alignment
-        let aws_lc = verify_p256_signature_with_aws_lc(r, s, pub_key_x, pub_key_y, message_hash);
-        let p256 = verify_p256_signature_with_p256(r, s, pub_key_x, pub_key_y, message_hash);
-
-        assert_eq!(
-            aws_lc.is_ok(),
-            p256.is_ok(),
-            "aws-lc and p256 verification backends disagreed"
-        );
-
-        aws_lc
-    }
-}
-
-/// Minimal struct to deserialize only the fields we need from clientDataJSON.
-/// serde_json will ignore unknown fields and only parse `type` and `challenge`.
-#[derive(serde::Deserialize)]
-struct ClientDataJson<'a> {
-    #[serde(rename = "type")]
-    type_field: &'a str,
-    challenge: &'a str,
-}
-
-/// Parses and validates WebAuthn data, returning the message hash for P256 verification.
-/// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
-///
-/// 1. Parses authenticatorData and clientDataJSON
-/// 2. Validates authenticatorData (min 37 bytes, UP flag set)
-/// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
-/// 4. Computes message hash = sha256(authenticatorData || sha256(clientDataJSON))
-fn verify_webauthn_data_internal(
-    webauthn_data: &[u8],
-    tx_hash: &B256,
-) -> Result<B256, &'static str> {
-    // Ensure that we have clientDataJSON after authenticatorData
-    if webauthn_data.len() < MIN_AUTH_DATA_LEN + 32 {
-        return Err("WebAuthn data too short");
-    }
-
-    // Check flags (byte 32)
-    let flags = webauthn_data[32];
-    let (up_flag, uv_flag, at_flag, ed_flag) = (flags & UP, flags & UV, flags & AT, flags & ED);
-
-    // UP or UV flag MUST be set (UV implies user presence per WebAuthn spec)
-    if up_flag == 0 && uv_flag == 0 {
-        return Err("neither UP, nor UV flag set");
-    }
-
-    // AT flag must NOT be set for assertion signatures (`webauthn.get`)
-    if at_flag != 0 {
-        return Err("AT flag must not be set for assertion signatures");
-    }
-
-    // Determine authenticatorData length
-    let auth_data_len = if ed_flag == 0 {
-        // If ED flag is not set, exactly 37 bytes (no extensions)
-        MIN_AUTH_DATA_LEN
-    } else {
-        // ED flag must NOT be set, as Tempo AA doesn't support extensions
-        // NOTE: If we ever want to support extensions, we will have to parse CBOR data
-        return Err("ED flag must not be set, as Tempo doesn't support extensions");
-    };
-
-    let authenticator_data = &webauthn_data[..auth_data_len];
-    let client_data_json = &webauthn_data[auth_data_len..];
-
-    // Parse clientDataJSON (only extracts type and challenge fields)
-    // NOTE: Size is already bounded by MAX_WEBAUTHN_SIGNATURE_LENGTH (2KB) at signature parsing
-    let client_data: ClientDataJson<'_> =
-        serde_json::from_slice(client_data_json).map_err(|_| "clientDataJSON is not valid JSON")?;
-
-    // Validate type field
-    if client_data.type_field != "webauthn.get" {
-        return Err("clientDataJSON type must be webauthn.get");
-    }
-
-    // Validate challenge matches tx_hash (Base64URL encoded)
-    if client_data.challenge != URL_SAFE_NO_PAD.encode(tx_hash.as_slice()) {
-        return Err("clientDataJSON challenge does not match transaction hash");
-    }
-
-    // Compute message hash according to spec:
-    // messageHash = sha256(authenticatorData || sha256(clientDataJSON))
-    let client_data_hash = Sha256::digest(client_data_json);
-
-    let mut final_hasher = Sha256::new();
-    final_hasher.update(authenticator_data);
-    final_hasher.update(client_data_hash);
-    let message_hash = final_hasher.finalize();
-
-    Ok(B256::from_slice(&message_hash))
 }
 
 #[cfg(feature = "serde")]
@@ -1324,10 +1067,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
-    use alloy_primitives::hex;
+    use crate::{
+        crypto::{verify_p256_signature_internal, verify_webauthn_data_internal},
+        transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+    };
+    use alloy_primitives::{U256, hex};
     use alloy_rlp::{Decodable, Encodable};
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
         ecdsa::{SigningKey as P256SigningKey, signature::hazmat::PrehashSigner},
         elliptic_curve::rand_core::OsRng,

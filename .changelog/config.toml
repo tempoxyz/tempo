@@ -22,7 +22,6 @@ ignore = [
     "tempo-fuzz-harness",
     "tempo-fuzz-types",
     "tempo-invariants",
-    "tempo-nitro-attestation",
     "tempo-nitro-attestation-fuzz",
     "tempo-node",
     "tempo-node-launcher",
@@ -58,11 +57,11 @@ ignore = [
 # Release PR runs never upload to crates.io (publish.yml does), so track the SDK
 # crates by git tag instead of registry state. Otherwise a failed crates.io
 # publish makes every later run re-create the existing release tags.
-private = ["tempo-alloy", "tempo-chainspec", "tempo-contracts", "tempo-hardfork", "tempo-primitives"]
+private = ["tempo-alloy", "tempo-chainspec", "tempo-contracts", "tempo-hardfork", "tempo-nitro-attestation", "tempo-primitives"]
 
 [changelog]
 format = "per-crate"
 
 # The published SDK crates release together and share one version.
 [[fixed]]
-members = ["tempo-contracts", "tempo-primitives", "tempo-alloy", "tempo-chainspec", "tempo-hardfork"]
+members = ["tempo-contracts", "tempo-primitives", "tempo-alloy", "tempo-chainspec", "tempo-hardfork", "tempo-nitro-attestation"]

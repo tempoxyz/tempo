@@ -17,10 +17,8 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Keccak256};
 use commonware_codec::DecodeExt;
-use commonware_cryptography::{
-    Verifier,
-    ed25519::{PublicKey, Signature},
-};
+use commonware_cryptography::ed25519::{PublicKey, Signature};
+use tempo_primitives::crypto;
 use tracing::trace;
 
 /// Signature namespace for `addValidator` operations.
@@ -491,7 +489,7 @@ impl ValidatorConfigV2 {
 
         let public_key = PublicKey::decode(commonware_codec::Copying(pubkey.as_slice()))
             .map_err(|_| ValidatorConfigV2Error::invalid_public_key())?;
-        if !public_key.verify(namespace, message.as_slice(), &sig) {
+        if !crypto::verify_ed25519(&public_key, namespace, &message[..], &sig) {
             Err(ValidatorConfigV2Error::invalid_signature())?
         }
 
@@ -1053,18 +1051,13 @@ mod tests {
     use tempo_primitives::test_utils::actors;
     use test_case::test_case;
 
-    /// Generate a test Ed25519 key pair and create a valid signature
-    fn make_test_keypair_and_signature(
+    /// The namespace and message a validator signs to be added or rotated.
+    fn signed_message(
         validator_address: Address,
         ingress: &str,
         egress: &str,
         kind: SignatureKind,
-    ) -> (FixedBytes<32>, Vec<u8>) {
-        // Generate a random private key for testing
-        let seed = rand_08::random::<u64>();
-        let private_key = PrivateKey::from_seed(seed);
-        let public_key = private_key.public_key();
-
+    ) -> (&'static [u8], B256) {
         let mut hasher = Keccak256::new();
         hasher.update(1u64.to_be_bytes());
         hasher.update(VALIDATOR_CONFIG_V2_ADDRESS.as_slice());
@@ -1084,7 +1077,21 @@ mod tests {
             }
             SignatureKind::Rotate => VALIDATOR_NS_ROTATE,
         };
-        let message = hasher.finalize();
+        (namespace, hasher.finalize())
+    }
+
+    /// Generate a test Ed25519 key pair and create a valid signature
+    fn make_test_keypair_and_signature(
+        validator_address: Address,
+        ingress: &str,
+        egress: &str,
+        kind: SignatureKind,
+    ) -> (FixedBytes<32>, Vec<u8>) {
+        // Generate a random private key for testing
+        let seed = rand_08::random::<u64>();
+        let private_key = PrivateKey::from_seed(seed);
+        let public_key = private_key.public_key();
+        let (namespace, message) = signed_message(validator_address, ingress, egress, kind);
 
         // Sign with namespace
         let signature = private_key.sign(namespace, message.as_slice());
@@ -3038,6 +3045,48 @@ mod tests {
             );
             assert!(result.is_ok());
 
+            Ok(())
+        })
+    }
+
+    /// An Ed25519 mock passes only for the message it signs.
+    #[test]
+    fn test_add_validator_accepts_an_ed25519_mock() -> eyre::Result<()> {
+        tempo_primitives::crypto::mock::install();
+        let mut storage = HashMapStorageProvider::new(1);
+        let (owner, validator, fee_recipient) =
+            (Address::random(), Address::random(), Address::random());
+        let (ingress, egress) = ("192.168.1.1:8000", "192.168.1.1");
+        let pubkey = FixedBytes::from_slice(PrivateKey::from_seed(7).public_key().as_ref());
+        let mock = |signer: Address| {
+            let (namespace, message) = signed_message(
+                signer,
+                ingress,
+                egress,
+                SignatureKind::Add { fee_recipient },
+            );
+            tempo_primitives::crypto::mock::ed25519(
+                pubkey.as_slice(),
+                namespace,
+                message.as_slice(),
+            )
+            .to_vec()
+        };
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            vc.storage.set_block_number(200);
+            let mut add = |signature| {
+                vc.add_validator(
+                    owner,
+                    make_add_call(validator, pubkey, ingress, egress, fee_recipient, signature),
+                )
+            };
+            assert_eq!(
+                add(mock(Address::random())),
+                Err(ValidatorConfigV2Error::invalid_signature().into())
+            );
+            add(mock(validator))?;
             Ok(())
         })
     }

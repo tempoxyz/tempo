@@ -1,10 +1,11 @@
 //! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
 use tempo_nitro_attestation::{
-    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
+    MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
 };
 
 use crate::storage::StorageCtx;
+use tempo_primitives::crypto::NitroVerifier;
 
 pub(super) const BASE_GAS: u64 = 40_000;
 pub(super) const SIGNATURE_GAS: u64 = 150_000;
@@ -32,7 +33,7 @@ pub(super) fn verify_attestation_with_root(
         .saturating_mul(SIGNATURE_GAS);
     StorageCtx.deduct_gas(verification_gas)?;
 
-    Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
+    Ok(verify_parsed(parsed, block_timestamp, root_der, &NitroVerifier).ok())
 }
 
 #[cfg(test)]
@@ -211,7 +212,8 @@ pub(super) mod tests {
         structure.bytes(&protected).unwrap();
         structure.bytes(&[]).unwrap();
         structure.bytes(&payload).unwrap();
-        let signature: Signature = leaf_key.sign(&structure.into_writer());
+        let structure = structure.into_writer();
+        let signature = Signature::to_vec(&leaf_key.sign(&structure));
 
         let mut cose = Encoder::new(Vec::new());
         cose.tag(minicbor::data::Tag::new(18)).unwrap();
@@ -219,7 +221,7 @@ pub(super) mod tests {
         cose.bytes(&protected).unwrap();
         cose.map(0).unwrap();
         cose.bytes(&payload).unwrap();
-        cose.bytes(signature.to_bytes().as_slice()).unwrap();
+        cose.bytes(&signature).unwrap();
         (cose.into_writer(), root, pcrs)
     }
 
