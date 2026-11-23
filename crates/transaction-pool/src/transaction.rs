@@ -77,6 +77,17 @@ impl RegisteredPaymentCache {
             .unwrap_or_else(|err| err.into_inner())
             .map(|entry| entry.version)
     }
+
+    /// Moves an entry read at version `from` that holds at `block` to version `to` and returns the
+    /// end of its range, or returns `None` and leaves the cache as it is.
+    fn rebase(&self, from: u64, to: u64, block: u64) -> Option<u64> {
+        let mut entry = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        let current = entry.as_mut().filter(|entry| {
+            entry.version == from && entry.from_block <= block && block < entry.until_block
+        })?;
+        current.version = to;
+        Some(current.until_block)
+    }
 }
 
 impl Clone for RegisteredPaymentCache {
@@ -268,6 +279,14 @@ impl TempoPooledTransaction {
             until_block: classification.changes_at,
             is_registered_payment: classification.is_registered_payment,
         });
+    }
+
+    /// Moves the cached registered payment classification (TIP-1180) read at registry version
+    /// `from` to version `to` when it still holds at `block`, for a registry change that cannot
+    /// affect it. Returns the first block at which it may change, or `None` when there is no such
+    /// entry and the transaction must be classified again.
+    pub fn rebase_registered_payment(&self, from: u64, to: u64, block: u64) -> Option<u64> {
+        self.registered_payment.rebase(from, to, block)
     }
 
     /// Returns the payment call registry version the cached registered payment classification

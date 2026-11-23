@@ -2,7 +2,8 @@
 
 use crate::{
     RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
-    transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
+    tempo_pool::RegistryCacheAnchor, transaction::TempoPooledTransaction,
+    validator::ConfigureTempoPoolEvm,
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, TxHash,
@@ -23,7 +24,8 @@ use reth_trie_common::bundle_state::BundleAccount;
 use std::{collections::VecDeque, iter, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_contracts::precompiles::{
-    IAccountKeychain, IFeeManager, IReservationCore, ITIP20, ITIP403Registry,
+    IAccountKeychain, IFeeManager, IPaymentCallRegistry, IReservationCore, ITIP20, ITIP403Registry,
+    PAYMENT_CALL_REGISTRY_ADDRESS,
 };
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{
@@ -115,6 +117,44 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
+    /// Payment call registry changes (TIP-1180). They change which budget a pooled transaction
+    /// counts toward, never whether it is valid.
+    pub registry: RegistryUpdates,
+}
+
+/// Payment call registry changes (TIP-1180) in a chain segment, from the registry's events.
+#[derive(Debug, Default)]
+pub struct RegistryUpdates {
+    /// Instances registered (first or again) or removed.
+    pub instances: AddressSet,
+    /// Whether a template was activated or removed.
+    pub templates: bool,
+    /// Registry changes the events record. Each one bumps the registry version once.
+    pub changes: u64,
+}
+
+impl RegistryUpdates {
+    /// Records a payment call registry log.
+    fn record(&mut self, log: &Log) {
+        let Some(topic0) = first_topic(log) else {
+            return;
+        };
+        if topic0 == IPaymentCallRegistry::InstanceRegistered::SIGNATURE_HASH
+            || topic0 == IPaymentCallRegistry::InstanceRemoved::SIGNATURE_HASH
+        {
+            let Some(instance) = log.topics().get(1) else {
+                return;
+            };
+            self.instances.insert(Address::from_word(*instance));
+        } else if topic0 == IPaymentCallRegistry::TemplateActivated::SIGNATURE_HASH
+            || topic0 == IPaymentCallRegistry::TemplateRemoved::SIGNATURE_HASH
+        {
+            self.templates = true;
+        } else if topic0 != IPaymentCallRegistry::TemplateProposed::SIGNATURE_HASH {
+            return;
+        }
+        self.changes += 1;
+    }
 }
 
 impl TempoPoolUpdates {
@@ -257,6 +297,8 @@ impl TempoPoolUpdates {
                         .or_default()
                         .insert(Address::from_word(*owner));
                 }
+            } else if log.address == PAYMENT_CALL_REGISTRY_ADDRESS {
+                updates.registry.record(log);
             }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
@@ -600,9 +642,12 @@ impl RevalidationQueue {
 /// Keeps pooled transactions' registered payment classifications (TIP-1180) current.
 ///
 /// The pool caches each classification keyed by the payment call registry version. On a new
-/// canonical block this re-classifies every pooled transaction that is not a TIP-1045 payment
-/// when the version changed, or when a block is reached at which a cached classification may
-/// change (an instance or template activation or removal).
+/// canonical block this re-classifies only what the block's registry changes can affect: the
+/// pooled transactions calling an instance that was registered or removed, and those whose cached
+/// answer reached a block at which it may change (an instance or template activation or
+/// removal). Every other cached answer moves to the new version as it is. A template activation
+/// or removal, a reorg, or a version change the events do not account for re-classifies every
+/// pooled transaction that is not a TIP-1045 payment.
 #[derive(Debug)]
 struct RegistryMaintenance {
     /// Registry version the cached classifications were read at.
@@ -621,36 +666,49 @@ impl Default for RegistryMaintenance {
 }
 
 impl RegistryMaintenance {
-    /// Returns the registry version if the cached classifications need refreshing for
-    /// `next_block`.
-    fn due<M>(
-        &self,
-        state: &mut impl TempoStateAccess<M>,
-        spec: TempoHardfork,
-        next_block: u64,
-    ) -> Result<Option<u64>, String> {
-        let version = state
-            .payment_call_registry_version(spec)
-            .map_err(|err| err.to_string())?;
-        Ok((self.version != Some(version) || next_block >= self.next_change).then_some(version))
-    }
-
-    /// Re-classifies every transaction that is not a TIP-1045 payment for `next_block` at
-    /// registry `version`, and returns how many it classified.
-    fn reclassify<'a, M>(
+    /// Brings the cached classifications up to date for `next_block` after a canonical chain
+    /// segment whose registry changes are `changes`; `reorg` when the segment replaced blocks.
+    /// Returns the registry version read and how many transactions it classified.
+    fn update<'a, M, I>(
         &mut self,
         state: &mut impl TempoStateAccess<M>,
         spec: TempoHardfork,
         next_block: u64,
-        version: u64,
-        transactions: impl IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    ) -> Result<usize, String> {
+        changes: &RegistryUpdates,
+        reorg: bool,
+        transactions: impl FnOnce() -> I,
+    ) -> Result<(u64, usize), String>
+    where
+        I: IntoIterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    {
+        let version = state
+            .payment_call_registry_version(spec)
+            .map_err(|err| err.to_string())?;
+        let previous = self.version;
+        // The version is a counter: after a reorg, or when the events do not account for every
+        // change, equal versions need not mean equal registries.
+        let full = reorg
+            || changes.templates
+            || previous.is_none_or(|previous| previous.saturating_add(changes.changes) != version);
+        if !full && previous == Some(version) && next_block < self.next_change {
+            return Ok((version, 0));
+        }
+
         let mut next_change = u64::MAX;
         let mut classified = 0;
         if version != 0 {
-            for tx in transactions {
+            for tx in transactions() {
                 let pooled = &tx.transaction;
                 if pooled.is_payment_v3() {
+                    continue;
+                }
+                if !full
+                    && let Some(previous) = previous
+                    && !calls_any(pooled, &changes.instances)
+                    && let Some(until) =
+                        pooled.rebase_registered_payment(previous, version, next_block)
+                {
+                    next_change = next_change.min(until);
                     continue;
                 }
                 let classification = state
@@ -663,8 +721,18 @@ impl RegistryMaintenance {
         }
         self.version = Some(version);
         self.next_change = next_change;
-        Ok(classified)
+        Ok((version, classified))
     }
+}
+
+/// Returns whether `tx` calls any of `instances`.
+fn calls_any(tx: &TempoPooledTransaction, instances: &AddressSet) -> bool {
+    !instances.is_empty()
+        && tx
+            .inner()
+            .inner()
+            .calls()
+            .any(|(kind, _)| kind.to().is_some_and(|to| instances.contains(to)))
 }
 
 /// Unified maintenance task for the Tempo transaction pool.
@@ -951,37 +1019,46 @@ where
             }
         }
 
-        // TIP-1180: re-classify registered payments when the payment call registry changed or a
-        // pending activation or removal is reached. Classification only picks the block budget a
-        // transaction counts toward, so nothing is removed from the pool.
+        // TIP-1180: re-classify registered payments the block's registry changes can affect, or
+        // whose pending activation or removal is reached. Classification only picks the block
+        // budget a transaction counts toward, so nothing is removed from the pool.
         if spec.is_t17() {
             let next_block = tip.tip().number() + 1;
+            let tip_hash = tip.tip().hash();
+            // Until the update finishes, the builder classifies for itself.
+            pool.set_registry_cache_anchor(None);
             let result = pool
                 .client()
                 .latest()
                 .map_err(|err| err.to_string())
                 .and_then(|mut state| {
-                    let Some(version) = registry_maintenance.due(&mut state, spec, next_block)?
-                    else {
-                        return Ok(0);
-                    };
-                    let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                    registry_maintenance.reclassify(
+                    registry_maintenance.update(
                         &mut state,
                         spec,
                         next_block,
-                        version,
-                        all_txs
-                            .iter()
-                            .filter(|tx| !removed_this_iteration.contains(tx.hash())),
+                        &updates.registry,
+                        orphaned.is_some(),
+                        || {
+                            all_txs
+                                .get_or_insert_with(|| pool.all_transactions())
+                                .iter()
+                                .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                        },
                     )
                 });
             match result {
-                Ok(0) => {}
-                Ok(reclassified) => {
-                    debug!(target: "txpool", reclassified, "Re-classified registered payments");
+                Ok((version, reclassified)) => {
+                    pool.set_registry_cache_anchor(Some(RegistryCacheAnchor {
+                        block_hash: tip_hash,
+                        version,
+                    }));
+                    if reclassified != 0 {
+                        debug!(target: "txpool", reclassified, "Re-classified registered payments");
+                    }
                 }
                 Err(err) => {
+                    // A later update classifies everything again.
+                    registry_maintenance = RegistryMaintenance::default();
                     error!(target: "txpool", %err, "Registered payment re-classification failed");
                 }
             }
@@ -1866,17 +1943,41 @@ mod tests {
             provider
         }
 
+        fn program_call(program: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(Address::random())
+                    .calls(vec![Call::new(program, Bytes::from_static(&[1, 2, 3, 4]))])
+                    .gas_limit(1_000_000)
+                    .build(),
+                TransactionOrigin::External,
+            ))
+        }
+
+        /// Sets the registry version in the provider's state, as a registry change would.
+        fn set_version(
+            provider: &reth_provider::test_utils::MockEthProvider<
+                tempo_primitives::TempoPrimitives,
+                tempo_chainspec::TempoChainSpec,
+            >,
+            version: u64,
+            template_count: u64,
+        ) {
+            provider.setup_storage(TempoHardfork::T17, || {
+                StorageCtx
+                    .sstore(
+                        PAYMENT_CALL_REGISTRY_ADDRESS,
+                        U256::ZERO,
+                        U256::from(version) | (U256::from(template_count) << 64),
+                    )
+                    .unwrap();
+            });
+        }
+
         #[test]
         fn reclassifies_on_activation_and_version_change() {
             let provider = registry_provider();
             let spec = TempoHardfork::T17;
-            let tx = Arc::new(wrap_valid_tx(
-                TxBuilder::aa(Address::random())
-                    .calls(vec![Call::new(PROGRAM, Bytes::from_static(&[1, 2, 3, 4]))])
-                    .gas_limit(1_000_000)
-                    .build(),
-                TransactionOrigin::External,
-            ));
+            let tx = program_call(PROGRAM);
             let transfer_input = ITIP20::transferCall {
                 to: Address::random(),
                 amount: U256::ONE,
@@ -1890,19 +1991,16 @@ mod tests {
             ));
             assert!(transfer.transaction.is_payment_v3());
             let txs = [tx.clone(), transfer];
+            let none = RegistryUpdates::default();
             let mut maintenance = RegistryMaintenance::default();
             let mut state = provider.latest().unwrap();
 
             // First block seen: classify, before the instance activates.
-            let version = maintenance
-                .due(&mut state, spec, ACTIVATION - 1)
-                .unwrap()
-                .expect("nothing cached yet");
+            let (version, classified) = maintenance
+                .update(&mut state, spec, ACTIVATION - 1, &none, false, || &txs)
+                .unwrap();
             assert_eq!(
-                maintenance
-                    .reclassify(&mut state, spec, ACTIVATION - 1, version, &txs)
-                    .unwrap(),
-                1,
+                classified, 1,
                 "only the call that is not a TIP-1045 payment is classified"
             );
             assert_eq!(
@@ -1917,18 +2015,19 @@ mod tests {
                 None
             );
             assert_eq!(
-                maintenance.due(&mut state, spec, ACTIVATION - 1).unwrap(),
-                None
+                maintenance
+                    .update(&mut state, spec, ACTIVATION - 1, &none, false, || &txs)
+                    .unwrap(),
+                (version, 0)
             );
 
             // Reaching the activation re-classifies.
             assert_eq!(
-                maintenance.due(&mut state, spec, ACTIVATION).unwrap(),
-                Some(version)
+                maintenance
+                    .update(&mut state, spec, ACTIVATION, &none, false, || &txs)
+                    .unwrap(),
+                (version, 1)
             );
-            maintenance
-                .reclassify(&mut state, spec, ACTIVATION, version, &txs)
-                .unwrap();
             assert_eq!(
                 tx.transaction
                     .cached_registered_payment(version, ACTIVATION),
@@ -1940,8 +2039,10 @@ mod tests {
                 Some(true)
             );
             assert_eq!(
-                maintenance.due(&mut state, spec, ACTIVATION + 1).unwrap(),
-                None
+                maintenance
+                    .update(&mut state, spec, ACTIVATION + 1, &none, false, || &txs)
+                    .unwrap(),
+                (version, 0)
             );
             // A cached answer never serves another registry version.
             assert_eq!(
@@ -1950,21 +2051,181 @@ mod tests {
                 None
             );
 
-            // A registry change bumps the version, which re-classifies.
-            provider.setup_storage(spec, || {
+            // A version change the events do not account for re-classifies everything.
+            set_version(&provider, version + 1, 1);
+            let mut state = provider.latest().unwrap();
+            assert_eq!(
+                maintenance
+                    .update(&mut state, spec, ACTIVATION + 1, &none, false, || &txs)
+                    .unwrap(),
+                (version + 1, 1)
+            );
+        }
+
+        #[test]
+        fn instance_changes_reclassify_only_their_callers() {
+            let provider = registry_provider();
+            let spec = TempoHardfork::T17;
+            const OTHER: Address = Address::repeat_byte(0x53);
+            let program = program_call(PROGRAM);
+            let other = program_call(OTHER);
+            let txs = [program.clone(), other.clone()];
+            let mut maintenance = RegistryMaintenance::default();
+            let mut state = provider.latest().unwrap();
+            let (version, classified) = maintenance
+                .update(
+                    &mut state,
+                    spec,
+                    ACTIVATION,
+                    &RegistryUpdates::default(),
+                    false,
+                    || &txs,
+                )
+                .unwrap();
+            assert_eq!(classified, 2);
+
+            // A block registers or removes OTHER: only its caller is classified again; the
+            // other answer moves to the new version.
+            set_version(&provider, version + 1, 1);
+            let mut state = provider.latest().unwrap();
+            let changes = RegistryUpdates {
+                instances: [OTHER].into_iter().collect(),
+                templates: false,
+                changes: 1,
+            };
+            assert_eq!(
+                maintenance
+                    .update(&mut state, spec, ACTIVATION + 1, &changes, false, || &txs)
+                    .unwrap(),
+                (version + 1, 1)
+            );
+            assert_eq!(
+                program
+                    .transaction
+                    .cached_registered_payment(version + 1, ACTIVATION + 1),
+                Some(true)
+            );
+            assert_eq!(
+                other
+                    .transaction
+                    .cached_registered_payment(version + 1, ACTIVATION + 1),
+                Some(false)
+            );
+
+            // A template change classifies every transaction again.
+            set_version(&provider, version + 2, 1);
+            let mut state = provider.latest().unwrap();
+            let changes = RegistryUpdates {
+                instances: Default::default(),
+                templates: true,
+                changes: 1,
+            };
+            assert_eq!(
+                maintenance
+                    .update(&mut state, spec, ACTIVATION + 2, &changes, false, || &txs)
+                    .unwrap(),
+                (version + 2, 2)
+            );
+        }
+
+        /// One branch's registry: the template and [`PROGRAM`] registered (versions 1 to 3),
+        /// then a fourth change that differs by branch: another instance registers, or
+        /// governance removes [`PROGRAM`].
+        fn branch(
+            remove_program: bool,
+        ) -> reth_provider::test_utils::MockEthProvider<
+            tempo_primitives::TempoPrimitives,
+            tempo_chainspec::TempoChainSpec,
+        > {
+            let provider = create_mock_provider();
+            provider.setup_storage(TempoHardfork::T17, || {
+                let governance = Address::repeat_byte(0xAA);
+                ValidatorConfigV2::new().initialize(governance).unwrap();
                 StorageCtx
                     .sstore(
                         PAYMENT_CALL_REGISTRY_ADDRESS,
-                        U256::ZERO,
-                        U256::from(version + 1) | (U256::from(1u64) << 64),
+                        U256::from(1),
+                        U256::from(1u64) | (U256::from(1u64) << 64),
                     )
                     .unwrap();
+                StorageCtx.set_block_number(0);
+                let code = |immutable: u8| {
+                    let mut code = vec![0x73];
+                    code.extend([immutable; 20]);
+                    code.extend([0x50, 0x00]);
+                    code
+                };
+                let mut registry = PaymentCallRegistry::new();
+                let id = registry
+                    .propose_template(
+                        governance,
+                        IPaymentCallRegistry::proposeTemplateCall {
+                            code: code(0).into(),
+                            ranges: vec![IPaymentCallRegistry::CodeRange {
+                                offset: 1,
+                                length: 20,
+                            }],
+                            selectors: vec![IPaymentCallRegistry::PaymentSelector {
+                                selector: [1, 2, 3, 4].into(),
+                                calldataLength: 4,
+                                gasCap: 1_000_000,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let now = StorageCtx.timestamp();
+                StorageCtx.set_timestamp(now + U256::from(1));
+                registry.activate_template(governance, id).unwrap();
+                StorageCtx.set_code(PROGRAM, code(0x77).into()).unwrap();
+                registry.register_instance(PROGRAM).unwrap();
+                if remove_program {
+                    registry.remove_instance(governance, PROGRAM).unwrap();
+                } else {
+                    let other = Address::repeat_byte(0x53);
+                    StorageCtx.set_code(other, code(0x78).into()).unwrap();
+                    registry.register_instance(other).unwrap();
+                }
+                assert_eq!(registry.version().unwrap(), 4);
             });
-            let mut state = provider.latest().unwrap();
+            provider
+        }
+
+        #[test]
+        fn reorg_at_equal_version_reclassifies() {
+            let spec = TempoHardfork::T17;
+            let tx = program_call(PROGRAM);
+            let txs = [tx.clone()];
+            let none = RegistryUpdates::default();
+            let mut maintenance = RegistryMaintenance::default();
+
+            // Branch A: the program is effective; the cache holds "registered" at version 4.
+            let branch_a = branch(false);
+            let mut state_a = branch_a.latest().unwrap();
             assert_eq!(
-                maintenance.due(&mut state, spec, ACTIVATION + 1).unwrap(),
-                Some(version + 1)
+                maintenance
+                    .update(&mut state_a, spec, 5, &none, false, || &txs)
+                    .unwrap(),
+                (4, 1)
             );
+            assert_eq!(tx.transaction.cached_registered_payment(4, 5), Some(true));
+
+            // A reorg onto branch B, where governance removed the program, also at version 4,
+            // classifies again.
+            let branch_b = branch(true);
+            let mut state_b = branch_b.latest().unwrap();
+            assert!(
+                !state_b
+                    .classify_registered_payment(spec, tx.transaction.inner().inner(), 6)
+                    .unwrap()
+                    .is_registered_payment
+            );
+            assert_eq!(
+                maintenance
+                    .update(&mut state_b, spec, 6, &none, true, || &txs)
+                    .unwrap(),
+                (4, 1)
+            );
+            assert_eq!(tx.transaction.cached_registered_payment(4, 6), Some(false));
         }
     }
 

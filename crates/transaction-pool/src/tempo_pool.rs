@@ -79,6 +79,23 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
     /// Admission metrics.
     admission_metrics: AdmissionMetrics,
+    /// The canonical block and registry version the pooled registered payment classifications
+    /// (TIP-1180) are current for, set by pool maintenance.
+    registry_cache_anchor: Arc<parking_lot::Mutex<Option<RegistryCacheAnchor>>>,
+}
+
+/// The canonical block pool maintenance last brought the cached registered payment
+/// classifications (TIP-1180) up to date for, and the payment call registry version it read.
+///
+/// The version is a counter, not a commitment to the registry's contents: two branches can reach
+/// the same version with different registries. A cached classification is therefore used only
+/// for a block built on this block, or on a child of it that left the version unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryCacheAnchor {
+    /// Hash of the canonical block.
+    pub block_hash: B256,
+    /// Registry version in that block's state.
+    pub version: u64,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -101,6 +118,7 @@ where
             reth_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
             admission_metrics: AdmissionMetrics::default(),
+            registry_cache_anchor: Default::default(),
         }
     }
 }
@@ -111,6 +129,28 @@ where
         + 'static,
     EvmConfig: ConfigureTempoPoolEvm,
 {
+    /// Records the block the cached registered payment classifications are current for, or
+    /// `None` while they may be stale.
+    pub(crate) fn set_registry_cache_anchor(&self, anchor: Option<RegistryCacheAnchor>) {
+        *self.registry_cache_anchor.lock() = anchor;
+    }
+
+    /// Returns whether the cached registered payment classifications (TIP-1180) hold for a block
+    /// built on `parent_hash`, whose state has registry `version`: pool maintenance brought them
+    /// up to date for that parent, or for the parent's own parent `grandparent_hash` at the same
+    /// version, so the parent made no registry change.
+    pub fn registry_cache_current(
+        &self,
+        version: u64,
+        parent_hash: B256,
+        grandparent_hash: B256,
+    ) -> bool {
+        self.registry_cache_anchor.lock().is_some_and(|anchor| {
+            anchor.version == version
+                && (anchor.block_hash == parent_hash || anchor.block_hash == grandparent_hash)
+        })
+    }
+
     /// Sends admissions that are validating now back to validation before they insert.
     ///
     /// Call before repairing the pool for a canonical update, and after refreshing what
@@ -670,6 +710,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
             reth_pool: self.reth_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
             admission_metrics: self.admission_metrics.clone(),
+            registry_cache_anchor: Arc::clone(&self.registry_cache_anchor),
         }
     }
 }
