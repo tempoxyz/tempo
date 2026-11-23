@@ -2028,7 +2028,8 @@ interface IZonePortal {
         address token, uint128 amount, uint256 keyIndex,
         DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
     ) external returns (bytes32 newCurrentDepositQueueHash);
-    /// @dev From T15, includes the congestion premium for the next block.
+    /// @dev From T15, includes the congestion premium for the next block, except inside a
+    ///      withdrawal callback whose premium-exempt deposit is still unused.
     function calculateDepositFee() external view returns (uint128 fee);
     function calculateBouncebackFee() external view returns (uint128 fee);
     function bouncebackGas() external view returns (uint64);
