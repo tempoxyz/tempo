@@ -452,10 +452,15 @@ where
         at: BlockId,
         overrides: EvmOverrides,
     ) -> Result<U256, Self::Error> {
+        let permit = self
+            .acquire_owned_blocking_io()
+            .await
+            .map_err(|_| EthApiError::InternalEthError)?;
         let (evm_env, at) = self.evm_env_at(at).await?;
         let fee_payer_access = strip_fee_payer_marker(&mut request, &evm_env);
         let estimate = self
             .spawn_blocking_io_with_state(at, move |this, state| {
+                let _permit = permit;
                 this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
             })
             .await?;
