@@ -48,6 +48,7 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
+use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
@@ -1711,20 +1712,35 @@ where
     TExecutionLayer: ExecutionLayer,
     TMarshal: Marshal,
 {
-    let tip = match tip {
+    let read_boundary = async || {
+        get_header(node, marshal, boundary).await.wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{boundary}`")
+        })
+    };
+    let (tip_height, certificate) = match tip {
+        None => {
+            // `startup::verify_finalized_tip` already rejects a missing tip above genesis.
+            ensure!(
+                boundary.is_zero(),
+                "only genesis may lack a finalized tip certificate, but the boundary is at \
+                 height `{boundary}`",
+            );
+            let header = read_boundary().await?;
+            let genesis_hash = node.chain_spec().genesis_hash();
+            ensure!(
+                header.hash_slow() == genesis_hash,
+                "genesis header does not match the chain spec's genesis hash `{genesis_hash}`",
+            );
+            return Ok(header);
+        }
         Some((tip_height, _)) if boundary > *tip_height => {
             warn!(
                 %tip_height,
                 "boundary is above the finalized tip; trusting locally processed blocks"
             );
-            None
+            return read_boundary().await;
         }
-        tip => tip,
-    };
-    let Some((tip_height, certificate)) = tip else {
-        return get_header(node, marshal, boundary).await.wrap_err_with(|| {
-            format!("failed to read latest boundary header at height `{boundary}`")
-        });
+        Some((tip_height, certificate)) => (tip_height, certificate),
     };
 
     let mut height = *tip_height;
