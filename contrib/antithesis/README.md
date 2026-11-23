@@ -6,6 +6,7 @@ Each directory is one Antithesis target with its own workload image, config imag
 | Target | What it tests | Workflow |
 |---|---|---|
 | [`reth-state-root`](reth-state-root) | Sparse-trie state root computation, `eth_getMultiProof`-style account and storage proofs (and the same proofs rebuilt from an execution witness) over the same blocks, persistence and restart recovery | [`antithesis-reth-state-root.yml`](../../.github/workflows/antithesis-reth-state-root.yml) |
+| [`tempo-cluster`](tempo-cluster) | Four Tempo consensus validators processing public-mix transactions under faults | [`antithesis-tempo-cluster.yml`](../../.github/workflows/antithesis-tempo-cluster.yml) |
 | [`zones`](zones) | A Tempo L1 and zones network running deposits, withdrawals and transfers | [`antithesis-zones.yml`](../../.github/workflows/antithesis-zones.yml) |
 
 [`trie-shapes`](trie-shapes) is the library the reth target uses: it generates writes in trie shape templates

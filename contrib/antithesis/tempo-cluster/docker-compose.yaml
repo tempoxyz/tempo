@@ -1,0 +1,91 @@
+x-validator: &validator
+  image: ${TEMPO_IMAGE:-tempo-cluster-antithesis:latest}
+  platform: linux/amd64
+  init: true
+  cap_add: [SYS_PTRACE]
+  environment:
+    ANTITHESIS_SDK_LOCAL_OUTPUT: /data/sdk.jsonl
+  # No restart policy: Antithesis owns fault duration and restart scheduling.
+
+services:
+  validator-0:
+    <<: *validator
+    container_name: validator-0
+    hostname: validator-0
+    command: ["10.21.0.11"]
+    volumes: [validator-0-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.11
+        mac_address: 02:42:0a:15:00:0b
+  validator-1:
+    <<: *validator
+    container_name: validator-1
+    hostname: validator-1
+    command: ["10.21.0.12"]
+    volumes: [validator-1-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.12
+        mac_address: 02:42:0a:15:00:0c
+  validator-2:
+    <<: *validator
+    container_name: validator-2
+    hostname: validator-2
+    command: ["10.21.0.13"]
+    volumes: [validator-2-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.13
+        mac_address: 02:42:0a:15:00:0d
+  validator-3:
+    <<: *validator
+    container_name: validator-3
+    hostname: validator-3
+    command: ["10.21.0.14"]
+    volumes: [validator-3-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.14
+        mac_address: 02:42:0a:15:00:0e
+  follower:
+    <<: *validator
+    container_name: follower
+    hostname: follower
+    command: ["10.21.0.15", "follower"]
+    volumes: [follower-data:/data]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.15
+        mac_address: 02:42:0a:15:00:0f
+  driver:
+    image: ${WORKLOAD_IMAGE:-tempo-cluster-antithesis-workload:latest}
+    platform: linux/amd64
+    container_name: driver
+    hostname: driver
+    init: true
+    environment:
+      RPC_URLS: http://validator-0:8545,http://validator-1:8545,http://validator-2:8545,http://validator-3:8545
+      FOLLOWER_RPC_URL: http://follower:8545
+      ANTITHESIS_SDK_LOCAL_OUTPUT: /state/sdk.jsonl
+      EVENTUALLY_AFTER_SECONDS: ${EVENTUALLY_AFTER_SECONDS:-0}
+      DISABLE_EVENTUALLY: ${DISABLE_EVENTUALLY:-0}
+    volumes: [driver-state:/state]
+    networks:
+      cluster:
+        ipv4_address: 10.21.0.20
+        mac_address: 02:42:0a:15:00:14
+
+volumes:
+  validator-0-data:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+  follower-data:
+  driver-state:
+
+networks:
+  cluster:
+    ipam:
+      config:
+        - subnet: 10.21.0.0/24

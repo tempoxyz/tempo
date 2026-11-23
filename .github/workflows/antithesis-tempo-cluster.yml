@@ -1,0 +1,281 @@
+name: Antithesis Tempo Cluster Images
+
+# Build and upload only. This workflow never starts a paid Antithesis run.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, antithesis/tempo-cluster]
+    paths:
+      - "contrib/antithesis/tempo-cluster/**"
+      # Keep the shared benchmark public-mix presets in sync with the driver.
+      - "contrib/bench/txgen/**"
+      - "contrib/antithesis/reth-state-root/**"
+      - "contrib/antithesis/trie-shapes/**"
+      - "bin/**"
+      - "crates/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".dockerignore"
+      - "mainnet-network-identity.json"
+      - "testnet-network-identity.json"
+      - ".github/workflows/antithesis-tempo-cluster.yml"
+  # After registration on main, the branch selector can build other refs without launching.
+  workflow_dispatch:
+
+# Never cancel between publishing an image and its digest-paired configuration.
+concurrency:
+  group: antithesis-tempo-cluster-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/tempo-repository
+
+jobs:
+  build-and-push:
+    name: Build and push instrumented node and public-mix workload
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.tags.outputs.tag }}
+      node_digest: ${{ steps.node.outputs.digest }}
+      workload_digest: ${{ steps.workload.outputs.digest }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Resolve immutable tag
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          branch=$(printf '%s' "$REF_NAME" | tr -c 'a-zA-Z0-9._-' '-' | cut -c1-32)
+          # The run attempt prevents a retry from overwriting an earlier build.
+          [[ "$SHA" =~ ^[a-f0-9]{40}$ ]]
+          tag="ci-${branch}-${SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "tag=$tag"
+            echo "short_sha=${SHA:0:8}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Depot
+        uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Build and push instrumented node image
+        id: node
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: contrib/antithesis/tempo-cluster/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-cluster-antithesis:${{ steps.tags.outputs.tag }}
+          build-args: |
+            VERGEN_GIT_SHA=${{ github.sha }}
+            VERGEN_GIT_SHA_SHORT=${{ steps.tags.outputs.short_sha }}
+
+      - name: Validate node digest
+        env:
+          NODE_DIGEST: ${{ steps.node.outputs.digest }}
+        run: '[[ "$NODE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]'
+
+      # Public source pinned to a revision supporting public-mix's setup-state and funding CLI.
+      - name: Checkout pinned txgen source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: tempoxyz/txgen
+          ref: ca437320c94baf64b05b1e31fde576e6e493479d
+          path: .antithesis-txgen-source
+          persist-credentials: false
+
+      - name: Isolate txgen build context
+        run: mv .antithesis-txgen-source "$RUNNER_TEMP/antithesis-txgen-source"
+
+      # The uninstrumented driver extends this exact node image, never a moving tag.
+      - name: Build and push public-mix workload image
+        id: workload
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: .
+          file: contrib/antithesis/tempo-cluster/Dockerfile.workload
+          build-contexts: |
+            txgen-src=${{ runner.temp }}/antithesis-txgen-source
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            xyz.tempo.txgen.revision=ca437320c94baf64b05b1e31fde576e6e493479d
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-cluster-antithesis-workload:${{ steps.tags.outputs.tag }}
+          build-args: |
+            NODE_IMAGE=${{ env.REGISTRY }}/tempo-cluster-antithesis@${{ steps.node.outputs.digest }}
+
+      - name: Validate workload digest
+        env:
+          WORKLOAD_DIGEST: ${{ steps.workload.outputs.digest }}
+        run: '[[ "$WORKLOAD_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]'
+
+  smoke:
+    name: Smoke four validators and public-mix transactions
+    needs: build-and-push
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Run local Compose smoke test (no Antithesis compute)
+        env:
+          SMOKE_ARTIFACT_DIR: ${{ runner.temp }}/tempo-cluster-smoke
+          NODE_DIGEST: ${{ needs.build-and-push.outputs.node_digest }}
+          WORKLOAD_DIGEST: ${{ needs.build-and-push.outputs.workload_digest }}
+        run: |
+          [[ "$NODE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$WORKLOAD_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          export TEMPO_IMAGE="$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST"
+          export WORKLOAD_IMAGE="$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST"
+          timeout 900 bash contrib/antithesis/tempo-cluster/scripts/smoke.sh
+
+      - name: Validate Antithesis setup and test-command discovery
+        env:
+          # Keep validation on the same engine/image store as the Compose smoke.
+          SNOUTY_CONTAINER_ENGINE: docker
+          NODE_DIGEST: ${{ needs.build-and-push.outputs.node_digest }}
+          WORKLOAD_DIGEST: ${{ needs.build-and-push.outputs.workload_digest }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            https://github.com/antithesishq/snouty/releases/download/v0.10.0/snouty-x86_64-unknown-linux-musl.tar.xz \
+            -o "$RUNNER_TEMP/snouty.tar.xz"
+          echo "d9a2cfe404cbbd82a5658dffaed3fddffb80773498b4eaac7bedb0d22cf1b7bc  $RUNNER_TEMP/snouty.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/snouty" "$RUNNER_TEMP/antithesis-validation"
+          tar -xJf "$RUNNER_TEMP/snouty.tar.xz" -C "$RUNNER_TEMP/snouty" --strip-components=1
+          dir="$RUNNER_TEMP/antithesis-validation"
+          cp contrib/antithesis/tempo-cluster/docker-compose.yaml "$dir/"
+          {
+            echo "TEMPO_IMAGE=$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST"
+            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST"
+          } > "$dir/.env"
+          "$RUNNER_TEMP/snouty/snouty" validate "$dir" --timeout 5m
+
+      - name: Upload smoke logs and assertion results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-cluster-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tempo-cluster-smoke/
+          if-no-files-found: warn
+          retention-days: 7
+
+  publish-config:
+    name: Publish smoke-tested digest-paired configuration
+    needs: [build-and-push, smoke]
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Depot
+        uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Log in to the Antithesis registry
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.ANTITHESIS_REGISTRY_KEY }}
+
+      - name: Prepare digest-paired configuration
+        env:
+          NODE_DIGEST: ${{ needs.build-and-push.outputs.node_digest }}
+          WORKLOAD_DIGEST: ${{ needs.build-and-push.outputs.workload_digest }}
+        run: |
+          [[ "$NODE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$WORKLOAD_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          dir="$RUNNER_TEMP/antithesis-tempo-cluster-config"
+          mkdir -p "$dir"
+          cp contrib/antithesis/tempo-cluster/docker-compose.yaml "$dir/"
+          # Unlike a standalone local config, a published config must carry its exact images.
+          printf 'FROM scratch\nCOPY docker-compose.yaml .env /\n' > "$dir/Dockerfile.config"
+          # Digest-only references avoid Antithesis's tag@digest filename-length limit.
+          {
+            echo "TEMPO_IMAGE=$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST"
+            echo "WORKLOAD_IMAGE=$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST"
+          } > "$dir/.env"
+
+      - name: Build and push config image
+        id: config
+        uses: tempoxyz/gh-actions/vendor/depot/build-push-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          project: 0c6tg19qsp
+          context: ${{ runner.temp }}/antithesis-tempo-cluster-config
+          file: ${{ runner.temp }}/antithesis-tempo-cluster-config/Dockerfile.config
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/tempo-cluster-antithesis-config:${{ needs.build-and-push.outputs.tag }}
+
+      - name: Record immutable image set
+        env:
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+          NODE_DIGEST: ${{ needs.build-and-push.outputs.node_digest }}
+          WORKLOAD_DIGEST: ${{ needs.build-and-push.outputs.workload_digest }}
+          CONFIG_DIGEST: ${{ steps.config.outputs.digest }}
+        run: |
+          [[ "$CONFIG_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          {
+            echo '### Antithesis four-validator public-mix images'
+            echo ''
+            echo "Tag: \`$TAG\`"
+            echo "Txgen revision: \`ca437320c94baf64b05b1e31fde576e6e493479d\`"
+            echo '| Image | Immutable reference |'
+            echo '|---|---|'
+            echo "| Node | \`$REGISTRY/tempo-cluster-antithesis@$NODE_DIGEST\` |"
+            echo "| Workload | \`$REGISTRY/tempo-cluster-antithesis-workload@$WORKLOAD_DIGEST\` |"
+            echo "| Config | \`$REGISTRY/tempo-cluster-antithesis-config@$CONFIG_DIGEST\` |"
+            echo ''
+            echo 'Compose smoke passed. No paid Antithesis run was launched.'
+          } >> "$GITHUB_STEP_SUMMARY"

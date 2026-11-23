@@ -14118,6 +14118,7 @@ dependencies = [
  "reth-trie",
  "reth-trie-common",
  "reth-trie-db",
+ "rust-embed",
  "rustls",
  "secp256k1 0.33.1",
  "serde",
