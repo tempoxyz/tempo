@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_node_api::ConsensusEngineHandle;
 use reth_payload_builder::PayloadBuilderHandle;
@@ -837,10 +837,19 @@ pub(crate) async fn run_role_controller<P, Pool>(
                     None => {}
                 }
             }
-            canonical = canonical_changes.next() => {
+            // The canonical stream is a broadcast with one item per block, so drain what is
+            // already queued to make a burst one decision. While a decision retry is pending, only
+            // its backoff wakes the loop.
+            canonical = canonical_changes.next(), if !retry_decision => {
                 if canonical.is_none() {
                     error!(target: "zone::role", "Canonical state stream closed");
                     return;
+                }
+                while let Some(canonical) = canonical_changes.next().now_or_never() {
+                    if canonical.is_none() {
+                        error!(target: "zone::role", "Canonical state stream closed");
+                        return;
+                    }
                 }
             }
             _ = async {
