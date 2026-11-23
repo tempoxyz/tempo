@@ -854,6 +854,13 @@ pub enum TempoPoolTransactionError {
         address: Address,
     },
 
+    /// A fallback-fee transaction would infer its fee token from a TIP-20 that isn't created yet.
+    #[error("Fee token would be inferred from TIP-20 {token}, which isn't created yet")]
+    UncreatedTip20 {
+        /// The uncreated TIP-20.
+        token: Address,
+    },
+
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
     /// Thrown when an EVM2 handler rejects the transaction with an error that is
@@ -891,6 +898,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            | Self::UncreatedTip20 { .. }
             // The limit is this node's `--txpool.max-tempo-authorizations`, which peers may set
             // differently.
             | Self::TooManyAuthorizations { .. }
