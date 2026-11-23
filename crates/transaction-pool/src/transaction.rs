@@ -891,9 +891,11 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            // The limit is this node's `--txpool.max-tempo-authorizations`, which peers may set
+            // differently.
+            | Self::TooManyAuthorizations { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
-            | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
@@ -1670,6 +1672,8 @@ mod tests {
     #[test_case(TempoPoolTransactionError::AccessKeyExpired { expiry: 100, min_allowed: 200 } => false)]
     #[test_case(TempoPoolTransactionError::KeyAuthorizationExpired { expiry: 100, min_allowed: 200 } => false)]
     #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
+    #[test_case(TempoPoolTransactionError::TooManyAuthorizations { count: 17, max_allowed: 16 } => false)]
+    #[test_case(TempoPoolTransactionError::TooManyCalls { count: 33, max_allowed: 32 } => true)]
     // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
     #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
     #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]
