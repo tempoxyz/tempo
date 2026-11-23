@@ -51,16 +51,16 @@ pub(crate) struct Args {
     #[command(flatten)]
     inner: SnapshotManifestCommand,
 
-    /// Skip encoding consensus state. This will pass-through directly to Reth.
+    /// DEPRECATED. Consensus state is always packaged. Accepted so existing callers keep
+    /// parsing; this argument is a no-op.
     #[arg(
         long,
-        default_value_t = false,
         default_missing_value = "true",
         hide = true,
         num_args = 0..=1,
         require_equals = true
     )]
-    skip_consensus: bool,
+    skip_consensus: Option<bool>,
 
     /// Chain spec override for local/unknown chains.
     #[arg(long, short, value_parser = chain_value_parser)]
@@ -96,6 +96,12 @@ impl Args {
             chain,
         } = self;
 
+        if skip_consensus.is_some() {
+            eprintln!(
+                "warning: deprecated flag `--skip-consensus` ignored; consensus state is always packaged"
+            );
+        }
+
         fs::create_dir_all(output_dir)
             .wrap_err_with(|| format!("failed to create output dir: {}", output_dir.display()))?;
 
@@ -110,10 +116,6 @@ impl Args {
             "execution layer snapshot finished in {}",
             display_duration(start.elapsed())
         );
-
-        if skip_consensus {
-            return Ok(());
-        }
 
         let manifest_path = output_dir.join("manifest.json");
         let manifest = read_manifest(&manifest_path)
@@ -494,7 +496,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(!args.skip_consensus);
+        assert_eq!(args.skip_consensus, None);
     }
 
     #[test]
@@ -509,7 +511,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(args.skip_consensus);
+        assert_eq!(args.skip_consensus, Some(true));
     }
 
     #[test]
@@ -524,7 +526,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(!args.skip_consensus);
+        assert_eq!(args.skip_consensus, Some(false));
     }
 
     #[test]
