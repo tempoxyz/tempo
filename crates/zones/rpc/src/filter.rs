@@ -1,8 +1,9 @@
 //! Privacy-enforced log filtering for the zone's redacted RPC.
 //!
-//! Only whitelisted TIP-20 and receipt-recovery event logs are returned to callers. A caller must
-//! appear in an eligible indexed topic or, for `TransferBlocked`, be a stakeholder encoded in the
-//! claim receipt. This prevents users from observing other users' token activity.
+//! Only whitelisted TIP-20, receipt-recovery and TIP-1094 virtual deposit result logs are returned
+//! to callers. A caller must appear in an eligible indexed topic or, for `TransferBlocked`, be a
+//! stakeholder encoded in the claim receipt. This prevents users from observing other users' token
+//! activity.
 
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
@@ -10,7 +11,10 @@ use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Filter, FilterSet, Log};
 use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
+use tempo_contracts::{
+    precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS},
+    zones::{IZoneAddressRegistry, IZoneInbox, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_INBOX_ADDRESS},
+};
 
 use crate::types::JsonRpcError;
 
@@ -32,14 +36,32 @@ pub const BURN_TOPIC: B256 = ITIP20::Burn::SIGNATURE_HASH;
 /// `TransferBlocked(address,address,uint64,uint256,uint8,bytes)`.
 pub const TRANSFER_BLOCKED_TOPIC: B256 = IReceivePolicyGuard::TransferBlocked::SIGNATURE_HASH;
 
+/// TIP-1094 `VirtualDepositProcessed`, served to its recipient.
+pub const VIRTUAL_DEPOSIT_PROCESSED_TOPIC: B256 =
+    IZoneInbox::VirtualDepositProcessed::SIGNATURE_HASH;
+
+/// TIP-1094 `VirtualDepositFailed`, served to its resolved recipient.
+pub const VIRTUAL_DEPOSIT_FAILED_TOPIC: B256 = IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH;
+
+/// TIP-1094 `MasterRegistered`, served to its recipient.
+pub const MASTER_REGISTERED_TOPIC: B256 = IZoneAddressRegistry::MasterRegistered::SIGNATURE_HASH;
+
 /// All event topic hashes exposed by the redacted RPC.
-pub const WHITELISTED_TOPICS: [B256; 6] = [
+pub const WHITELISTED_TOPICS: [B256; 9] = [
     TRANSFER_TOPIC,
     APPROVAL_TOPIC,
     TRANSFER_WITH_MEMO_TOPIC,
     MINT_TOPIC,
     BURN_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
+    VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+    VIRTUAL_DEPOSIT_FAILED_TOPIC,
+    MASTER_REGISTERED_TOPIC,
+];
+
+const VIRTUAL_DEPOSIT_TOPICS: [B256; 2] = [
+    VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+    VIRTUAL_DEPOSIT_FAILED_TOPIC,
 ];
 
 const TWO_PARTY_TOPICS: [B256; 4] = [
@@ -61,6 +83,9 @@ const CALLER_SCOPED_FILTER_ERROR: &str =
 /// - **Burn**: topic1 (from)
 /// - **TransferBlocked**: the indexed receiver, or the originator/recovery authority encoded in
 ///   the receipt
+/// - **VirtualDepositProcessed / VirtualDepositFailed**: topic1 (recipient), only when emitted by
+///   the zone inbox. The originator is not eligible: the event names the recipient behind the
+///   deposit address it paid.
 pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
     let topics = log.topics();
     let Some(topic0) = log.topic0() else {
@@ -71,6 +96,15 @@ pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
 
     if *topic0 == TRANSFER_BLOCKED_TOPIC {
         return is_transfer_blocked_caller_eligible(log, caller);
+    }
+
+    if VIRTUAL_DEPOSIT_TOPICS.contains(topic0) {
+        return log.address() == ZONE_INBOX_ADDRESS && topics.get(1) == Some(&caller_word);
+    }
+
+    if *topic0 == MASTER_REGISTERED_TOPIC {
+        return log.address() == ZONE_ADDRESS_REGISTRY_ADDRESS
+            && topics.get(1) == Some(&caller_word);
     }
 
     if *topic0 == TRANSFER_TOPIC || *topic0 == APPROVAL_TOPIC || *topic0 == TRANSFER_WITH_MEMO_TOPIC
@@ -162,7 +196,8 @@ pub fn filter_receipt_logs(mut receipt: TempoTransactionReceipt) -> TempoTransac
     receipt
 }
 
-/// Scopes a user-supplied filter to enabled zone tokens and the receive-policy guard.
+/// Scopes a user-supplied filter to enabled zone tokens, the receive-policy guard and the zone
+/// inbox.
 pub fn scope_filter_addresses(
     filter: &mut Filter,
     zone_tokens: &[Address],
@@ -172,14 +207,18 @@ pub fn scope_filter_addresses(
     if requested_addresses.is_empty() {
         let mut allowed_addresses = zone_tokens.to_vec();
         allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
+        allowed_addresses.push(ZONE_INBOX_ADDRESS);
+        allowed_addresses.push(ZONE_ADDRESS_REGISTRY_ADDRESS);
         filter.address = FilterSet::from(allowed_addresses);
         return Ok(());
     }
 
-    if requested_addresses
-        .iter()
-        .all(|address| zone_tokens.contains(address) || *address == RECEIVE_POLICY_GUARD_ADDRESS)
-    {
+    if requested_addresses.iter().all(|address| {
+        zone_tokens.contains(address)
+            || *address == RECEIVE_POLICY_GUARD_ADDRESS
+            || *address == ZONE_INBOX_ADDRESS
+            || *address == ZONE_ADDRESS_REGISTRY_ADDRESS
+    }) {
         Ok(())
     } else {
         Err(JsonRpcError::invalid_params("invalid filter address"))
@@ -888,13 +927,20 @@ mod tests {
         assert!(filter.address.contains(&token_a));
         assert!(filter.address.contains(&token_b));
         assert!(filter.address.contains(&RECEIVE_POLICY_GUARD_ADDRESS));
-        assert_eq!(filter.address.len(), 3);
+        assert!(filter.address.contains(&ZONE_INBOX_ADDRESS));
+        assert!(filter.address.contains(&ZONE_ADDRESS_REGISTRY_ADDRESS));
+        assert_eq!(filter.address.len(), 5);
     }
 
     #[test]
     fn scope_filter_addresses_allows_enabled_addresses() {
         let token = Address::with_last_byte(0xaa);
-        for address in [token, RECEIVE_POLICY_GUARD_ADDRESS] {
+        for address in [
+            token,
+            RECEIVE_POLICY_GUARD_ADDRESS,
+            ZONE_INBOX_ADDRESS,
+            ZONE_ADDRESS_REGISTRY_ADDRESS,
+        ] {
             let mut filter = Filter {
                 address: FilterSet::from(address),
                 ..Default::default()
@@ -919,5 +965,89 @@ mod tests {
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, "invalid filter address");
+    }
+
+    // ---------------------------------------------------------------
+    // TIP-1094 virtual deposit results
+    // ---------------------------------------------------------------
+
+    fn virtual_deposit_logs(emitter: Address, to: Address, originator: Address) -> [Log; 2] {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let processed = IZoneInbox::VirtualDepositProcessed {
+            to,
+            originator,
+            depositHash: B256::repeat_byte(0xd0),
+            token,
+            amount: 500,
+            version: 1,
+            masterId: Default::default(),
+            userTag: Default::default(),
+            memo: B256::ZERO,
+        };
+        let failed = IZoneInbox::VirtualDepositFailed {
+            to,
+            originator,
+            depositHash: B256::repeat_byte(0xd1),
+            token,
+            amount: 300,
+            masterId: Default::default(),
+            userTag: Default::default(),
+        };
+        [processed.encode_log_data(), failed.encode_log_data()].map(|data| {
+            let mut log = make_log(emitter, Vec::new());
+            log.inner.data = data;
+            log
+        })
+    }
+
+    #[test]
+    fn virtual_deposit_results_are_visible_only_to_their_recipient() {
+        let recipient = Address::with_last_byte(1);
+        let originator = Address::with_last_byte(2);
+        let other = Address::with_last_byte(3);
+        for log in virtual_deposit_logs(ZONE_INBOX_ADDRESS, recipient, originator) {
+            assert!(is_log_visible(&log, &recipient));
+            assert!(!is_log_visible(&log, &originator));
+            assert!(!is_log_visible(&log, &other));
+        }
+        for log in virtual_deposit_logs(Address::with_last_byte(0xee), recipient, originator) {
+            assert!(!is_log_visible(&log, &recipient), "only inbox logs count");
+        }
+    }
+
+    #[test]
+    fn master_registrations_are_visible_only_to_their_recipient() {
+        let recipient = Address::with_last_byte(1);
+        let other = Address::with_last_byte(3);
+        let data = IZoneAddressRegistry::MasterRegistered {
+            recipient,
+            masterId: Default::default(),
+        }
+        .encode_log_data();
+        let mut log = make_log(ZONE_ADDRESS_REGISTRY_ADDRESS, Vec::new());
+        log.inner.data = data.clone();
+        assert!(is_log_visible(&log, &recipient));
+        assert!(!is_log_visible(&log, &other));
+        let mut spoofed = make_log(Address::with_last_byte(0xee), Vec::new());
+        spoofed.inner.data = data;
+        assert!(!is_log_visible(&spoofed, &recipient));
+    }
+
+    #[test]
+    fn scope_filter_for_caller_scopes_virtual_deposit_results_to_topic1() {
+        let caller = Address::with_last_byte(1);
+        let mut filter = Filter::default()
+            .event_signature(vec![
+                VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+                VIRTUAL_DEPOSIT_FAILED_TOPIC,
+            ])
+            .topic1(caller.into_word());
+        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        assert_eq!(filter.topics[1], FilterSet::from(caller.into_word()));
+
+        let mut by_topic2 = Filter::default()
+            .event_signature(VIRTUAL_DEPOSIT_PROCESSED_TOPIC)
+            .topic2(caller.into_word());
+        assert!(scope_filter_for_caller(&mut by_topic2, &caller).is_err());
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { Withdrawal } from "../../src/runtime/interfaces/IZone.sol";
+import { LegacyWithdrawal, Withdrawal } from "../../src/runtime/interfaces/IZone.sol";
 import {
     NO_QUEUE_INDEX,
     WithdrawalQueue,
@@ -31,6 +31,17 @@ contract WithdrawalQueueHarness {
 
     function length() external view returns (uint256) {
         return queue.length();
+    }
+
+    function hashWithTail(
+        Withdrawal calldata withdrawal,
+        bytes32 tail_
+    )
+        external
+        pure
+        returns (bytes32)
+    {
+        return WithdrawalQueueLib.hashWithTail(withdrawal, tail_);
     }
 
     function head() external view returns (uint256) {
@@ -86,7 +97,7 @@ contract WithdrawalQueueLibTest is Test {
 
     function test_enqueue_singleBatch() public {
         Withdrawal memory w = _makeWithdrawal(alice, bob, 100e6);
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = harness.hashWithTail(w, bytes32(0));
 
         uint256 assignedIndex = harness.enqueue(wHash);
 
@@ -163,7 +174,7 @@ contract WithdrawalQueueLibTest is Test {
 
     function test_enqueue_afterDequeueUsesNextLogicalIndex() public {
         Withdrawal memory w1 = _makeWithdrawal(alice, bob, 100e6);
-        bytes32 h1 = keccak256(abi.encode(w1, bytes32(0)));
+        bytes32 h1 = harness.hashWithTail(w1, bytes32(0));
 
         // Build a backlog.
         harness.enqueue(h1);
@@ -192,7 +203,7 @@ contract WithdrawalQueueLibTest is Test {
 
     function test_dequeue_singleWithdrawal() public {
         Withdrawal memory w = _makeWithdrawal(alice, bob, 100e6);
-        bytes32 wHash = keccak256(abi.encode(w, bytes32(0)));
+        bytes32 wHash = harness.hashWithTail(w, bytes32(0));
 
         harness.enqueue(wHash);
 
@@ -209,8 +220,8 @@ contract WithdrawalQueueLibTest is Test {
         Withdrawal memory w2 = _makeWithdrawal(bob, charlie, 200e6);
 
         // Build queue: w1 outermost, w2 innermost (terminates at zero)
-        bytes32 innerHash = keccak256(abi.encode(w2, bytes32(0)));
-        bytes32 batchHash = keccak256(abi.encode(w1, innerHash));
+        bytes32 innerHash = harness.hashWithTail(w2, bytes32(0));
+        bytes32 batchHash = harness.hashWithTail(w1, innerHash);
 
         harness.enqueue(batchHash);
 
@@ -229,8 +240,8 @@ contract WithdrawalQueueLibTest is Test {
         Withdrawal memory w1 = _makeWithdrawal(alice, bob, 100e6);
         Withdrawal memory w2 = _makeWithdrawal(bob, charlie, 200e6);
 
-        bytes32 h1 = keccak256(abi.encode(w1, bytes32(0)));
-        bytes32 h2 = keccak256(abi.encode(w2, bytes32(0)));
+        bytes32 h1 = harness.hashWithTail(w1, bytes32(0));
+        bytes32 h2 = harness.hashWithTail(w2, bytes32(0));
 
         harness.enqueue(h1);
         harness.enqueue(h2);
@@ -257,7 +268,7 @@ contract WithdrawalQueueLibTest is Test {
         Withdrawal memory w1 = _makeWithdrawal(alice, bob, 100e6);
         Withdrawal memory w2 = _makeWithdrawal(bob, charlie, 200e6);
 
-        bytes32 h1 = keccak256(abi.encode(w1, bytes32(0)));
+        bytes32 h1 = harness.hashWithTail(w1, bytes32(0));
         harness.enqueue(h1);
 
         // Try to dequeue w2 (wrong withdrawal)
@@ -269,8 +280,8 @@ contract WithdrawalQueueLibTest is Test {
         Withdrawal memory w1 = _makeWithdrawal(alice, bob, 100e6);
         Withdrawal memory w2 = _makeWithdrawal(bob, charlie, 200e6);
 
-        bytes32 innerHash = keccak256(abi.encode(w2, bytes32(0)));
-        bytes32 batchHash = keccak256(abi.encode(w1, innerHash));
+        bytes32 innerHash = harness.hashWithTail(w2, bytes32(0));
+        bytes32 batchHash = harness.hashWithTail(w1, innerHash);
 
         harness.enqueue(batchHash);
 
@@ -318,7 +329,7 @@ contract WithdrawalQueueLibTest is Test {
 
         bytes32[] memory hs = new bytes32[](4);
         for (uint256 i = 0; i < 4; i++) {
-            hs[i] = keccak256(abi.encode(ws[i], bytes32(0)));
+            hs[i] = harness.hashWithTail(ws[i], bytes32(0));
         }
 
         // Build a backlog and then advance the head.
@@ -354,7 +365,7 @@ contract WithdrawalQueueLibTest is Test {
 
         for (uint256 i = 0; i < TEST_BATCH_COUNT; i++) {
             withdrawals[i] = _makeWithdrawal(alice, bob, uint128(i + 1));
-            harness.enqueue(keccak256(abi.encode(withdrawals[i], bytes32(0))));
+            harness.enqueue(harness.hashWithTail(withdrawals[i], bytes32(0)));
             assertEq(harness.length(), i + 1);
         }
 
@@ -374,7 +385,7 @@ contract WithdrawalQueueLibTest is Test {
     function test_dequeue_clearsSlotWhenExhausted() public {
         Withdrawal memory w = _makeWithdrawal(alice, bob, 100e6);
 
-        harness.enqueue(keccak256(abi.encode(w, bytes32(0))));
+        harness.enqueue(harness.hashWithTail(w, bytes32(0)));
         harness.dequeue(w, bytes32(0));
 
         assertEq(harness.slots(0), bytes32(0));
@@ -395,7 +406,7 @@ contract WithdrawalQueueLibTest is Test {
                 address(uint160(uint256(keccak256(abi.encode(seed, "to", i))))),
                 amount
             );
-            harness.enqueue(keccak256(abi.encode(withdrawals[i], bytes32(0))));
+            harness.enqueue(harness.hashWithTail(withdrawals[i], bytes32(0)));
             assertEq(harness.length(), i + 1);
         }
 
@@ -418,6 +429,53 @@ contract WithdrawalQueueLibTest is Test {
     /*//////////////////////////////////////////////////////////////
                         LENGTH & HAS WITHDRAWALS
     //////////////////////////////////////////////////////////////*/
+
+    function test_hashWithTail_orgZeroMatchesLegacyEncoding() public view {
+        Withdrawal memory w = _makeWithdrawal(address(0xA11CE), address(0xB0B), 100e6);
+        w.callbackData = "cb";
+        bytes32 tail = keccak256("tail");
+        LegacyWithdrawal memory legacy = LegacyWithdrawal({
+            token: w.token,
+            senderTag: w.senderTag,
+            to: w.to,
+            amount: w.amount,
+            memo: w.memo,
+            gasLimit: w.gasLimit,
+            fallbackNonce: w.fallbackNonce,
+            callbackData: w.callbackData,
+            encryptedSender: w.encryptedSender
+        });
+        assertEq(harness.hashWithTail(w, tail), keccak256(abi.encode(legacy, tail)));
+    }
+
+    function test_hashWithTail_orgCommitsSenderOrg() public view {
+        Withdrawal memory w = _makeWithdrawal(address(0xA11CE), address(0xB0B), 100e6);
+        w.senderOrg = 3;
+        bytes32 orgHash = harness.hashWithTail(w, bytes32(0));
+        assertEq(orgHash, keccak256(abi.encode(w, bytes32(0))));
+        w.senderOrg = 4;
+        assertTrue(orgHash != harness.hashWithTail(w, bytes32(0)));
+        w.senderOrg = 0;
+        assertTrue(orgHash != harness.hashWithTail(w, bytes32(0)));
+    }
+
+    function test_dequeue_legacySlotFromBeforeT15() public {
+        Withdrawal memory w = _makeWithdrawal(address(0xA11CE), address(0xB0B), 100e6);
+        LegacyWithdrawal memory legacy = LegacyWithdrawal({
+            token: w.token,
+            senderTag: w.senderTag,
+            to: w.to,
+            amount: w.amount,
+            memo: w.memo,
+            gasLimit: w.gasLimit,
+            fallbackNonce: w.fallbackNonce,
+            callbackData: w.callbackData,
+            encryptedSender: w.encryptedSender
+        });
+        harness.enqueue(keccak256(abi.encode(legacy, bytes32(0))));
+        harness.dequeue(w, bytes32(0));
+        assertEq(harness.length(), 0);
+    }
 
     function test_length_accurate() public {
         assertEq(harness.length(), 0);
@@ -458,7 +516,8 @@ contract WithdrawalQueueLibTest is Test {
             gasLimit: 0,
             fallbackNonce: uint64(uint160(sender)),
             callbackData: "",
-            encryptedSender: ""
+            encryptedSender: "",
+            senderOrg: 0
         });
     }
 

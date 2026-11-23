@@ -249,7 +249,7 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
     let mut code = portal.code.as_ref().unwrap().to_vec();
     // (2**160 - 1) & sload(16): this unique sequence loads the proof-call target.
     // Replace PUSH1 0x10; SLOAD with PUSH2 0xBEEF, preserving all jump offsets.
-    const VERIFIER_LOAD: [u8; 13] = alloy_primitives::hex!("600160a01b6001900360105416");
+    const VERIFIER_LOAD: [u8; 11] = alloy_primitives::hex!("60018060a01b0360105416");
     let mut matches = code
         .windows(VERIFIER_LOAD.len())
         .enumerate()
@@ -258,7 +258,7 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
         .next()
         .ok_or_else(|| eyre::eyre!("portal verifier load changed"))?;
     eyre::ensure!(matches.next().is_none(), "ambiguous portal verifier load");
-    code[offset + 9..offset + 12].copy_from_slice(&[0x61, 0xbe, 0xef]);
+    code[offset + 7..offset + 10].copy_from_slice(&[0x61, 0xbe, 0xef]);
     portal.code = Some(code.into());
 
     // The native factory requires the initial token's TIP-403 policy binding to exist.
@@ -1127,6 +1127,7 @@ impl ZoneTestNode {
             prover_addresses,
             deposit_allowlist,
             deposit_allowlist_relay,
+            virtual_address_keys,
         } = config;
         let tasks = Runtime::test();
         let is_local_dummy_l1 = matches!(l1, ZoneL1::Stub(_));
@@ -1193,6 +1194,15 @@ impl ZoneTestNode {
         if portal_address.is_zero() {
             zone_node = zone_node
                 .with_deposit_decryption_keys(std::iter::once(L1Fixture::encryption_key()));
+        }
+        if !virtual_address_keys.is_empty() {
+            zone_node = zone_node.with_virtual_address_keys(
+                virtual_address_keys
+                    .into_iter()
+                    .zip(1u8..)
+                    .map(|(key, version)| (version, zone_payload::VirtualAddressKey::new(key)))
+                    .collect(),
+            );
         }
         if is_local_dummy_l1 {
             zone_node = zone_node
@@ -1322,9 +1332,16 @@ impl ZoneTestNode {
                 sequencer_signer.address(),
                 deposit_decryption_keys,
                 portal_address,
+                zone_l1::state::L1StateProvider::new_raw(
+                    Default::default(),
+                    l1_state_cache.clone(),
+                    l1_provider.clone(),
+                    tokio::runtime::Handle::current(),
+                ),
                 None,
             )
-            .with_deposit_allowlist(deposit_allowlist);
+            .with_deposit_allowlist(deposit_allowlist)
+            .with_zone_state(zone_node::engine::zone_state_reader(provider.clone()));
             node_handle
                 .node
                 .task_executor
@@ -1405,6 +1422,8 @@ pub(crate) struct ZoneLaunch {
     pub(crate) deposit_allowlist: Option<zone_node::DepositAllowlist>,
     /// Relays `zoneAdmin` allowlist writes signed by this admin (P2P nodes only).
     pub(crate) deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
+    /// TIP-1094 address keys in version order, which the sequencer initializes once T15 is active.
+    pub(crate) virtual_address_keys: Vec<B256>,
 }
 
 impl ZoneLaunch {
@@ -1436,6 +1455,7 @@ impl Default for ZoneLaunch {
             prover_addresses: None,
             deposit_allowlist: None,
             deposit_allowlist_relay: None,
+            virtual_address_keys: Vec::new(),
         }
     }
 }
@@ -2203,7 +2223,12 @@ impl L1TestNode {
     pub(crate) async fn start_with(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, false).await
+        Self::launch(f, false, None).await
+    }
+
+    /// Start an L1 dev node with every hardfork through T15 active at genesis.
+    pub(crate) async fn start_at_t15() -> eyre::Result<Self> {
+        Self::launch(|_| {}, false, Some(TempoHardfork::T15)).await
     }
 
     /// Start an L1 dev node, like [`Self::start_with`], whose RPC refuses every state proof
@@ -2211,17 +2236,23 @@ impl L1TestNode {
     pub(crate) async fn start_without_state_proofs(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
     ) -> eyre::Result<Self> {
-        Self::launch(f, true).await
+        Self::launch(f, true, None).await
     }
 
+    /// Launches the L1 from `test-genesis.json`, or with every fork through `latest_fork` active
+    /// at genesis when given.
     async fn launch(
         f: impl FnOnce(&mut NodeConfig<TempoChainSpec>),
         refuse_state_proofs: bool,
+        latest_fork: Option<TempoHardfork>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
 
         let mut genesis: Genesis =
             serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+        if let Some(fork) = latest_fork {
+            set_tempo_fork(&mut genesis, fork, 0);
+        }
         install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
         let chain_spec = TempoChainSpec::from_genesis(genesis);
 
@@ -2527,6 +2558,8 @@ impl WithdrawalArgs {
             encrypted: args.encrypted,
             tempo_refund_recipient: args.tempo_refund_recipient,
             min_amount_out: args.min_amount_out,
+            // Tests accept any downstream deposit fee.
+            max_fee: Some(u128::MAX),
         }
         .abi_encode();
 
@@ -2592,6 +2625,11 @@ pub(crate) struct ZoneAccount {
 }
 
 impl ZoneAccount {
+    /// Wallet-attached provider for the zone.
+    pub(crate) fn l2_provider(&self) -> &alloy_provider::DynProvider {
+        &self.l2_provider
+    }
+
     /// Create a new `ZoneAccount` from an [`L1TestNode`] and [`ZoneTestNode`].
     ///
     /// Uses the L1's **user** signer (mnemonic index 1) as the account key,
@@ -2682,7 +2720,7 @@ impl ZoneAccount {
         let (key_index, encrypted) = self.prepare_deposit(recipient, B256::ZERO).await?;
 
         ZonePortal::new(self.portal_address, &self.l1_provider)
-            .deposit(
+            .deposit_0(
                 PATH_USD_ADDRESS,
                 amount,
                 key_index,
@@ -2751,7 +2789,7 @@ impl ZoneAccount {
 
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
         let receipt = portal
-            .deposit(token, amount, key_index, encrypted, self.address)
+            .deposit_0(token, amount, key_index, encrypted, self.address)
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
@@ -2837,7 +2875,7 @@ impl ZoneAccount {
 
         let (key_index, encrypted) = self.prepare_deposit(recipient, memo).await?;
         let receipt = ZonePortal::new(portal_address, &self.l1_provider)
-            .deposit(PATH_USD_ADDRESS, amount, key_index, encrypted, self.address)
+            .deposit_0(PATH_USD_ADDRESS, amount, key_index, encrypted, self.address)
             .mined()
             .await?;
         eyre::ensure!(receipt.status(), "L1 deposit tx failed");
@@ -3638,6 +3676,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         prover_addresses: prover_addresses.clone(),
                         deposit_allowlist: deposit_allowlists[index].clone(),
                         deposit_allowlist_relay: None,
+                        virtual_address_keys: Vec::new(),
                     })
                 },
             )),
@@ -3664,6 +3703,7 @@ pub(crate) async fn start_real_p2p_cluster(config: ClusterConfig) -> eyre::Resul
                         .as_ref()
                         .is_some_and(|setup| setup.rpc_relays_writes)
                         .then_some(allowlist_admin),
+                    virtual_address_keys: Vec::new(),
                 })
                 .await
                 .map(Some)
@@ -3869,7 +3909,7 @@ pub(crate) fn seed_fixture_for_zone(fixture: &L1Fixture, zone: &ZoneTestNode, se
 ///
 /// Signs the token with the given signer and returns the hex string (no `0x` prefix)
 /// suitable for the `X-Authorization-Token` header.
-fn build_auth_token(
+pub(crate) fn build_auth_token(
     signer: &alloy_signer_local::PrivateKeySigner,
     zone_id: u32,
     chain_id: u64,
@@ -4643,6 +4683,46 @@ impl L1Fixture {
         })
     }
 
+    /// Seed the portal's ZoneIdentity config from the current anchor on, as
+    /// `ZonePortal.setIdentityConfig(registrar, enforced)` would. Zone transfers stay enabled, like
+    /// the rest of the synthetic fixture.
+    pub(crate) fn seed_identity_config(&self, registrar: Address, enforced: bool) {
+        let portal_address = Address::ZERO;
+        let mut portal_storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut portal_storage, || -> tempo_precompiles::Result<()> {
+            let mut portal = ZonePortalStorage::new(portal_address);
+            portal.transfers_enabled.write(true)?;
+            portal.identity_registrar.write(registrar)?;
+            portal.identity_enforced.write(enforced)
+        })
+        .expect("in-memory portal write succeeds");
+        let word: B256 = portal_storage
+            .sload(portal_address, portal::slots::TRANSFERS_ENABLED)
+            .expect("in-memory portal read succeeds")
+            .into();
+        // ZoneIdentity also reads whether `AccessPolicy` is abdicated; it is not.
+        let abdication_slot = ZonePortalStorage::new(portal_address)
+            .abdication_effective_at(
+                tempo_contracts::precompiles::ZonePortalCapability::AccessPolicy,
+            )
+            .slot();
+        // Later anchors inherit the last value, but blocks the initial seed covered hold their own,
+        // so overwrite a window past them.
+        let anchor = self.next_block_number.saturating_sub(1);
+        for cache in self.caches.lock().unwrap().iter() {
+            let mut cache = cache.lock();
+            for block in anchor..=anchor + 64 {
+                cache.set(
+                    portal_address,
+                    portal::slots::TRANSFERS_ENABLED.into(),
+                    block,
+                    word,
+                );
+                cache.set(portal_address, abdication_slot.into(), block, B256::ZERO);
+            }
+        }
+    }
+
     /// Seed the Tempo state a transfer recipient needs at the current Zone anchor: no address-level
     /// TIP-403 receive policy and no TIP-1108 commitment.
     pub(crate) fn seed_transfer_recipient(&self, recipient: Address) -> eyre::Result<()> {
@@ -4809,6 +4889,8 @@ impl L1Fixture {
                     self.seed_transfer_recipient_at(block_number, deposit.to)
                         .expect("event recipient fixture seed must be admitted");
                 }
+                // The recipient is only known after zone-side decryption.
+                L1Deposit::ZoneVirtual(_) => {}
                 L1Deposit::Deposit(deposit) => {
                     if let Some(decrypted) = zone_precompiles::ecies::decrypt_deposit(
                         &Self::encryption_key(),

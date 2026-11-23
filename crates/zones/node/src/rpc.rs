@@ -83,6 +83,7 @@ use zone_l1::{
     TempoStateExt as _,
     state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
 };
+use zone_sequencer::DurableBlockReader;
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
@@ -94,10 +95,11 @@ use zone_rpc::{
     auth::AuthContext,
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
-        DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        DecryptionKeyCandidate, DecryptionKeyStatus, DeriveDepositAddressesRequest,
+        DeriveDepositAddressesResponse, JsonRpcError, LocalSequencerInfo,
+        MAX_DERIVE_DEPOSIT_ADDRESSES, PeerTipInfo, SequencerInfoResponse, SequencerPeerInfo,
+        SequencerProgress, SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness,
+        ZoneInfoResponse, internal, raw_null, raw_zero, to_raw,
     },
 };
 
@@ -250,6 +252,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
     P: HeaderProvider
+        + DurableBlockReader
         + StateProviderFactory
         + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + Clone
@@ -788,7 +791,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -1375,6 +1378,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::call(
                 &self.eth.api,
@@ -1401,6 +1405,7 @@ where
             }
 
             self.enforce_authorized(&mut request, &auth)?;
+            zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
 
             let result = EthCall::estimate_gas_at(
                 &self.eth.api,
@@ -1446,6 +1451,10 @@ where
     ) -> BoxFut<'_> {
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
+            // Filling without a gas limit estimates gas, which simulates the call.
+            if request.inner.gas.is_none() {
+                zone_rpc::policy::enforce_registration_recipient(&request, auth.caller)?;
+            }
 
             // Prefill the users request so the `fill_transaction` doesnt leak dynamic fee estimates via
             // missing fee fields.
@@ -1701,25 +1710,139 @@ where
             to_raw(&key)
         })
     }
+
+    fn zone_derive_deposit_addresses(
+        &self,
+        request: DeriveDepositAddressesRequest,
+        auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async move {
+            if request.user_tags.is_empty()
+                || request.user_tags.len() > MAX_DERIVE_DEPOSIT_ADDRESSES
+            {
+                return Err(JsonRpcError::invalid_params(format!(
+                    "userTags must hold 1 to {MAX_DERIVE_DEPOSIT_ADDRESSES} tags"
+                )));
+            }
+            // Derive only from settled state as of finalized Tempo, so an address never depends
+            // on a zone block, or a Tempo settlement, that could still be replaced.
+            let l1_block = self
+                .l1_provider
+                .get_block_by_number(alloy_eips::BlockNumberOrTag::Finalized)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| JsonRpcError::internal("no finalized Tempo block"))?
+                .header
+                .number();
+            let portal = ZonePortal::new(self.config.zone_portal, &self.l1_provider);
+            let settled = portal
+                .blockHash()
+                .block(BlockId::number(l1_block))
+                .call()
+                .await
+                .map_err(internal)?;
+            // The minimum only rises, so read it at the latest Tempo head: a version retired after
+            // the finalized block must not be issued.
+            let minimum_version = portal
+                .minimumAddressVersion()
+                .block(BlockId::latest())
+                .call()
+                .await
+                .map_err(internal)?;
+            let mut state = self
+                .eth
+                .api
+                .provider()
+                .state_by_block_hash(settled)
+                .map_err(|_| JsonRpcError::internal("settled zone block is not available"))?;
+            let derived = crate::engine::read_zone_state(&mut state, || {
+                derive_deposit_addresses(
+                    self.config.zone_id,
+                    minimum_version,
+                    auth.caller,
+                    &request,
+                )
+            })?;
+            to_raw(&DeriveDepositAddressesResponse {
+                zone_block_hash: settled,
+                version: derived.0,
+                addresses: derived.1,
+            })
+        })
+    }
+}
+
+/// Derives TIP-1094 deposit addresses for `request` from zone state in the current storage context.
+///
+/// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
+/// fail alike, so the method does not reveal registrations. The version defaults to the highest
+/// initialized key version and must not be below the portal's minimum.
+fn derive_deposit_addresses(
+    zone_id: u32,
+    minimum_version: u8,
+    caller: Address,
+    request: &DeriveDepositAddressesRequest,
+) -> Result<(u8, Vec<Address>), JsonRpcError> {
+    let recipient = zone_precompiles::address_registry::ZoneAddressRegistry::new()
+        .recipient_of(request.master_id)
+        .map_err(internal)?;
+    if recipient.is_zero() || recipient != caller {
+        return Err(JsonRpcError::invalid_params(
+            "masterId is not registered to the caller",
+        ));
+    }
+
+    // Keys initialize in order, so the initialized versions are 1 through the first gap.
+    let inbox = zone_precompiles::inbox::ZoneInbox::new();
+    let mut keys = Vec::new();
+    for version in 1..=u8::MAX {
+        match inbox.virtual_address_key(version).map_err(internal)? {
+            Some(key) => keys.push(key),
+            None => break,
+        }
+    }
+    let highest = keys.len() as u8;
+    let version = request.version.unwrap_or(highest);
+    if version == 0 || version > highest || version < minimum_version {
+        return Err(JsonRpcError::invalid_params(
+            "address version is not initialized or is retired",
+        ));
+    }
+
+    let key = keys[usize::from(version - 1)];
+    let addresses = request
+        .user_tags
+        .iter()
+        .map(|tag| {
+            let mut plaintext = [0u8; 6];
+            plaintext[..4].copy_from_slice(request.master_id.as_slice());
+            plaintext[4..].copy_from_slice(&tag.to_be_bytes());
+            tempo_contracts::zones::ZoneDepositAddress {
+                zone_id,
+                version,
+                ciphertext: zone_precompiles::ff1::encrypt(&key.0, version, zone_id, plaintext)
+                    .into(),
+            }
+            .encode()
+        })
+        .collect();
+    Ok((version, addresses))
 }
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + DurableBlockReader + StateProviderFactory,
 {
-    let zone_height = provider.last_block_number().map_err(internal)?;
-    let zone_header = provider
-        .sealed_header(zone_height)
-        .map_err(internal)?
-        .ok_or_else(|| JsonRpcError::internal("local canonical zone header is missing"))?;
+    // Both come from the database, so the tip is the block this node keeps after a restart.
+    let durable = provider.last_durable_block_num_hash().map_err(internal)?;
     let tempo_tip = provider
-        .state_by_block_hash(zone_header.hash())
+        .state_by_block_hash(durable.hash)
         .map_err(internal)?
         .tempo_num_hash()
         .map_err(internal)?;
     Ok(PeerTip {
-        zone_height,
-        zone_hash: zone_header.hash(),
+        zone_height: durable.number,
+        zone_hash: durable.hash,
         tempo_block_number: tempo_tip.number,
         tempo_block_hash: tempo_tip.hash,
     })

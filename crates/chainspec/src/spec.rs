@@ -470,6 +470,28 @@ mod tests {
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
 
+    /// `dev.json` and the node test genesis activate T15 at genesis, which skips the T15 runtime
+    /// upgrade, so their portal implementation must already be the current T15 runtime.
+    #[test]
+    fn genesis_portal_runtime_matches_t15_runtime() {
+        let impl_address = tempo_contracts::precompiles::ZONE_PORTAL_IMPL_ADDRESS;
+        for (name, json) in [
+            ("dev.json", include_str!("./genesis/dev.json")),
+            (
+                "test-genesis.json",
+                include_str!("../../node/tests/assets/test-genesis.json"),
+            ),
+        ] {
+            let genesis: Genesis = serde_json::from_str(json).unwrap();
+            let code = genesis.alloc[&impl_address].code.clone().unwrap();
+            assert_eq!(
+                code,
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+                "{name} holds a stale T15 portal runtime"
+            );
+        }
+    }
+
     #[test]
     #[cfg(feature = "cli")]
     fn can_load_testnet() {
@@ -499,6 +521,30 @@ mod tests {
 
         assert_eq!(history.nonce, Some(1));
         assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    /// `tempo node --dev` must ship the same T15 ZonePortal runtime that T15 activation installs,
+    /// so zone sequencers against it encode withdrawals for the portal it actually runs.
+    #[test]
+    #[cfg(feature = "cli")]
+    fn dev_genesis_installs_current_t15_zone_portal() {
+        use tempo_contracts::{
+            precompiles::ZONE_PORTAL_IMPL_ADDRESS, zones::T15_ZONE_PORTAL_RUNTIME,
+        };
+
+        let chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        let portal = chainspec
+            .genesis()
+            .alloc
+            .get(&ZONE_PORTAL_IMPL_ADDRESS)
+            .expect("dev genesis must install the shared ZonePortal implementation");
+
+        assert_eq!(
+            portal.code.as_ref(),
+            Some(&T15_ZONE_PORTAL_RUNTIME),
+            "regenerate dev.json after changing the T15 ZonePortal runtime"
+        );
     }
 
     #[test]

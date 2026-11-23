@@ -533,9 +533,9 @@ currentDepositQueueHash = keccak256(abi.encode(DepositType.Deposit, deposit, cur
 
 The newest deposit is always outermost, making onchain addition O(1). The zone tracks its own `processedDepositQueueHash` and `processedDepositNumber` in state. During `advanceTempo()`, the zone processes deposits oldest-first, rebuilding the hash chain and validating that the result matches `currentDepositQueueHash` read from Tempo L1 at the zone's finalized checkpoint.
 
-At most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load.
+Before T15, at most `MAX_UNPROCESSED_DEPOSITS` (230) entries may remain queued on the portal but unprocessed by an accepted zone batch. The bound covers encrypted deposits and internal withdrawal bounce-backs because both use the same queue. Public deposits normally stop at 210 outstanding entries, reserving 20 slots for one maximum-size withdrawal batch to bounce back; one guarded withdrawal callback may consume a reserved slot when returning value through a deposit. The global bound keeps the complete deferred deposit suffix within the zone's `advanceTempo()` execution and proof budget and guarantees withdrawal progress under sustained public deposit load. Before T15, `advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint and must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
 
-`advanceTempo()` reads the portal's `currentDepositQueueHash` from Tempo L1 at the zone's finalized checkpoint. The call must process deposits through the current queue head: after rebuilding the hash chain, the resulting `processedDepositQueueHash` must equal the portal's `currentDepositQueueHash`.
+From T15 (TIP-1171), the queue is unbounded. Each full zone block receives at most `DEPOSITS_PER_BUCKET` (230) entries after `processedDepositNumber`, ending at the queue head or the next portal checkpoint, and executes all of them. Deposits pay a congestion premium of up to `CONGESTION_MAX_FEE`; the `maxFee` overloads revert with `FeeTooHigh` above the caller's cap.
 
 After a batch is accepted, the portal updates `lastSyncedTempoBlockNumber` to record how far Tempo state was synced, and updates `lastProcessedDepositNumber` from the proven `DepositQueueTransition`. Users should track deposit inclusion by deposit number: `DepositMade` emits `depositNumber`, `ZoneInbox.TempoAdvanced` emits the inbox's `lastProcessedDepositNumber`, and `ZonePortal.BatchSubmitted` emits the accepted portal value. A deposit with number `N` is processed once `lastProcessedDepositNumber >= N`.
 
@@ -732,7 +732,7 @@ flowchart LR
 
 ### Withdrawal Request
 
-A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero, and from T15 not a TIP-1022 virtual address, but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
+A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
 
 Withdrawal requests are bounded before they enter the pending queue. `gasLimit` must be less than or equal to `MAX_WITHDRAWAL_GAS_LIMIT` or the request reverts with `GasLimitTooHigh`; `data.length` must be less than or equal to `MAX_CALLBACK_DATA_SIZE` (1,024 bytes) or the request reverts with `CallbackDataTooLarge`; and `revealTo`, when non-empty, must be a valid 33-byte compressed secp256k1 public key or the request reverts with `InvalidRevealTo`. The Zone EVM supplies the current transaction hash directly to the native outbox; if it is zero, the request reverts with `InvalidCurrentTxHash`, because the transaction hash is part of the authenticated-withdrawal sender tag.
 
@@ -783,7 +783,7 @@ When `submitBatch` includes a non-zero `withdrawalQueueHash`, the current `tail`
 
 The sequencer processes ordered withdrawals atomically on Tempo by calling `processWithdrawals(withdrawals, remainingQueue)` on the portal. `remainingQueue` is the queue suffix after the last supplied withdrawal, or `0x00` when the call exhausts the current slot. The portal derives each intermediate queue hash by folding the withdrawals backward from that suffix, then verifies and processes them in order.
 
-Before each call, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes.
+Before T15, the portal bounds the attempted withdrawal count by the outstanding deposit-queue capacity before each call. Specifically, with `unprocessed = depositCount - lastProcessedDepositNumber` and `remainingCapacity = MAX_UNPROCESSED_DEPOSITS - unprocessed`, the call requires `unprocessed <= MAX_UNPROCESSED_DEPOSITS` and `withdrawals.length <= remainingCapacity`. This conservative check assumes every attempted withdrawal fails and creates a bounce-back, so all possible side effects fit within the global outstanding-deposit limit. Public deposits cannot consume the reserved 20 entries, and the sequencer admits at most that reserve per withdrawal submission, preventing a public deposit landing after its headroom read from invalidating the call. A finalized withdrawal batch may be split across multiple ordered calls, each carrying the appropriate `remainingQueue`; if capacity is exhausted, an operational Zone batch must process and settle queued deposits before withdrawal delivery resumes. From T15, `processWithdrawals` has no capacity check.
 
 The portal dequeues before executing the withdrawal, then independently requires `withdrawal.token` to be enabled. Failed callbacks roll back in an external self-call and become bounce-backs, so the dequeue remains committed and cannot block the FIFO. If `remainingQueue` is zero (last item in the slot), processing deletes the slot and advances `head`; otherwise it updates the slot to `remainingQueue`.
 
@@ -967,7 +967,7 @@ The prover validates each read against the Tempo state root from the correspondi
 
 Native L1 storage reads use transaction-local cold/warm pricing keyed by Tempo account and storage slot. The first native access to a key in a transaction charges 2,100 gas and subsequent accesses charge 100 gas. This consensus access set is independent of the node's block-versioned L1 value cache, so prefetching and cache state cannot affect gas usage. Native precompile reads select the anchor by performing the ordinary local `TempoState.tempoBlockNumber` `SLOAD` before the L1 fetch.
 
-The EVM database overlay for mirrored TIP-403 storage and, from T15, TIP-20 pause flags and TIP-1022 address registry storage uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the mirrored slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
+The EVM database overlay for mirrored TIP-403 storage and, from T15, TIP-20 pause flags uses REVM's ordinary cold/warm `SLOAD` pricing and does not apply the native tariff. On the first overlay read, the database adapter obtains `TempoState.tempoBlockNumber` through a host-side lookup to select the L1 anchor; this is not a second EVM `SLOAD` and carries no separate gas charge. The slot remains part of the zone-state witness because its value is required for execution, while the mirrored slot is charged by the ordinary REVM `SLOAD`. Every L1-backed read is charged exactly once by either the native Tempo read path or the EVM overlay path.
 
 TIP-403 policy authorization on the zone executes Tempo's registry precompile at the canonical address over raw L1 registry storage pinned to the current finalized `tempoBlockNumber`.
 
@@ -1044,6 +1044,8 @@ The RPC uses a default-deny model. Any method not explicitly listed returns `-32
 
 **Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, and `zone_getEncryptionKey`.
 
+**Recipient-scoped.** `zone_deriveDepositAddresses` derives TIP-1094 deposit addresses only for a master ID registered to the authenticated account, from the last settled zone block.
+
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
 **Scoped.** Available to any authenticated caller but filtered to the caller's account:
@@ -1089,8 +1091,10 @@ All log queries are restricted to TIP-20 events where the authenticated account 
 | `TransferWithMemo(from, to, amount, memo)` | `from == caller` OR `to == caller` |
 | `Mint(to, amount)` | `to == caller` |
 | `Burn(from, amount)` | `from == caller` |
+| `VirtualDepositProcessed(to, originator, depositHash, ...)` (zone inbox) | `to == caller` |
+| `VirtualDepositFailed(to, originator, depositHash, ...)` (zone inbox) | `to == caller` |
 
-All other events (system events, configuration events) are filtered out. The `address` filter parameter must be a zone token address or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
+All other events (system events, configuration events) are filtered out. The two TIP-1094 virtual deposit result events count only when the zone inbox emitted them. The `address` filter parameter must be a zone token address, the receive-policy guard, the zone inbox, or omitted. The RPC server injects topic filters to restrict indexed address parameters to the caller, then post-filters results as a final pass.
 
 To avoid leaking how much activity occurred in a block, some fields of returned logs are redacted:
 
@@ -1118,6 +1122,7 @@ operator RPC transports and the authenticated redacted RPC.
 | `zone_getAuthorizationTokenInfo` | Authenticated redacted RPC only | Returns the authenticated account address and token expiry |
 | `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
 | `zone_getEncryptionKey` | Operator RPC and authenticated redacted RPC | Returns the active sequencer encryption key at the current Tempo L1 head |
+| `zone_deriveDepositAddresses` | Authenticated redacted RPC only | Returns TIP-1094 deposit addresses for the caller's master ID and up to 1024 user tags, using the registry and key versions at the zone block the portal last settled |
 
 `zone_getEncryptionKey` reads the active key directly from the portal at the current Tempo L1 head.
 Its response is:
@@ -1432,7 +1437,7 @@ The stateless execution function must reject the witness on any failed check, mi
 6. **Execute the opening system transaction.**
    For `CheckpointOnly`, execute `ZoneInbox.advanceTempoHeaders(headers)`. It advances only the authenticated checkpoint and is the block's sole transaction.
 
-   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most `MAX_UNPROCESSED_DEPOSITS` (230) deposits and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
+   For `Full`, execute `ZoneInbox.advanceTempo(header, deposits, decryptions, enabledTokens)`. Require at most 230 deposits (`MAX_UNPROCESSED_DEPOSITS` before T15, `DEPOSITS_PER_BUCKET` from T15) and `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) token enablements. Against the imported Tempo root, authenticate the exact ordered enabled-token suffix from `processedTokenEnablementHash` to the portal's `tokenEnablementHash`, initialize those tokens, and update the processed hash and count as specified in [Token Enablement Commitment](#token-enablement-commitment).
 
    Process deposits oldest-first under the [Deposit Queue](#deposit-queue) rules. Every encrypted user deposit consumes exactly one `DecryptionData` entry in deposit order; missing or extra entries make the system transaction revert. Verify the Chaum-Pedersen proof and AES-GCM ciphertext as described in [Onchain Decryption Verification](#onchain-decryption-verification). Invalid encryption or a failed recipient mint enqueues a bounce-back, while malformed queue inputs or inconsistent queue commitments reject the witness. Token initialization precedes deposit processing. In either import form, the opening transaction must leave `TempoState.tempoBlockHash` equal to `keccak256` of the final imported header. All system calldata, logs, receipts, and state changes contribute to the resulting block hash.
 
@@ -1625,10 +1630,9 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
 - `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T15 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with one zone difference:
-  - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. From T15, TIP-1022 virtual addresses resolve through Tempo's address registry, read from finalized Tempo state at the transaction's anchor: a transfer to a registered virtual address credits its master, subject to the master's receive policy, and a transfer to an unregistered one reverts with `VirtualAddressUnregistered`. The zone cannot register masters itself: no zone precompile is installed at the registry address. When T15 activates, the zone block executor deploys the `0xEF` marker at the registry address, as Tempo did at the registry's activation, so the account exists and its storage is read from Tempo; only the code is written. Before T15, every virtual address is unregistered on the zone. TIP-1179 specifies the full behavior.
+  - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. The zone registers no virtual masters, so transfers to TIP-1022 virtual addresses revert with `VirtualAddressUnregistered`.
 - Whether `transferFrom` succeeds depends on the owner's balance, so an approved spender can learn `min(balance, allowance)` by simulating it. Approving a spender discloses that much of the owner's balance to it.
 - `mint` is restricted to `ZoneInbox`, `burn` is restricted to `ZoneOutbox`.
-- From T15, a deposit to a TIP-1022 virtual address credits its master registered on Tempo, under the master's receive policy. A deposit to an unregistered virtual address fails to mint and bounces back. A withdrawal's `zoneFallbackRecipient` cannot be a virtual address, because a bounced withdrawal parked in the refund registry can only be claimed by its fallback recipient.
 - From T15, the token's pause flag is read from finalized Tempo state at the transaction's anchor, and `pause` and `unpause` are disabled on the zone. A token paused on Tempo therefore blocks exactly the calls it blocks there: transfers, `mint` and burns revert with `ContractPaused`, so deposits bounce back and withdrawal requests revert, and transactions paying fees in the token are invalid. `approve` and `permit` still succeed.
 
 ## Encrypted Deposit Cryptography
@@ -1933,7 +1937,8 @@ interface IZonePortal {
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
     error InvalidProofOfPossession();
     error DepositTooSmall();
-    error DepositBlockCapacityExceeded(uint64 maximum);
+    error DepositBlockCapacityExceeded(uint64 maximum); // before T15
+    error FeeTooHigh(uint128 fee, uint128 maxFee); // T15+
     error TokenEnablementBlockCapacityExceeded(uint64 maximum);
     error TokenMetadataTooLong();
     error GasFeeRateTooHigh();
@@ -1952,7 +1957,11 @@ interface IZonePortal {
     error StaleLeadershipEpoch(uint64 expected, uint64 actual);
 
     function FIXED_DEPOSIT_GAS() external view returns (uint64);
-    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64);
+    function MAX_UNPROCESSED_DEPOSITS() external view returns (uint64); // before T15
+    function DEPOSITS_PER_BUCKET() external view returns (uint64); // T15+
+    function DEPOSITS_PER_CONGESTION_TIER() external view returns (uint64); // T15+
+    function CONGESTION_MAX_TIER() external view returns (uint64); // T15+
+    function CONGESTION_MAX_FEE() external view returns (uint128); // T15+
     function MAX_UNPROCESSED_TOKEN_ENABLEMENTS() external view returns (uint64);
     function MAX_TOKEN_METADATA_BYTES() external view returns (uint256);
     function MAX_WITHDRAWAL_GAS_LIMIT() external view returns (uint64);
@@ -2005,6 +2014,17 @@ interface IZonePortal {
         address token, uint128 amount, uint256 keyIndex,
         DepositPayload calldata encrypted, address tempoRefundRecipient
     ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function deposit(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev T15+. Reverts with FeeTooHigh if the total fee exceeds maxFee.
+    function depositEncrypted(
+        address token, uint128 amount, uint256 keyIndex,
+        DepositPayload calldata encrypted, address tempoRefundRecipient, uint128 maxFee
+    ) external returns (bytes32 newCurrentDepositQueueHash);
+    /// @dev From T15, includes the congestion premium for the next block.
     function calculateDepositFee() external view returns (uint128 fee);
     function calculateBouncebackFee() external view returns (uint128 fee);
     function bouncebackGas() external view returns (uint64);
@@ -2229,6 +2249,7 @@ interface IZoneOutbox {
     event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
 
     error InvalidFallbackRecipient();
+    error InvalidWithdrawalRecipient();
     error CallbackDataTooLarge();
     error GasFeeRateTooHigh();
     error TokenNotEnabled();
