@@ -640,7 +640,7 @@ impl StorageActionReplayState {
     }
 
     /// Resets the accumulated transaction changes.
-    fn reset_tx_changes(&mut self) {
+    pub(crate) fn reset_tx_changes(&mut self) {
         self.tx_changes.clear();
         self.expiring_nonce.reset_pending_ring_ptr();
     }
@@ -949,9 +949,10 @@ mod tests {
             }
             .into_signed(Signature::test_signature()),
         );
+        let chainspec = test_chainspec();
         let mut executor = TestExecutorBuilder::default()
             .with_spec(TempoHardfork::T4)
-            .build(InMemoryDB::default(), &test_chainspec());
+            .build(InMemoryDB::default(), &chainspec);
         let valid_before = executor.evm().block().timestamp.to::<u64>() + 1;
         let replay = StorageActionReplay {
             result: TxResult::<TempoEvmTypes> {
@@ -970,7 +971,13 @@ mod tests {
         let result = executor
             .execute_transaction_with_actions_without_commit(tx.with_signer(sender), replay)
             .unwrap();
-        assert!(executor.replay_state.expiring_nonce.pending_ring_ptr.is_some());
+        assert!(
+            executor
+                .replay_state
+                .expiring_nonce
+                .pending_ring_ptr
+                .is_some()
+        );
 
         executor.discard_transaction(result);
         assert_eq!(executor.replay_state.expiring_nonce.pending_ring_ptr, None);

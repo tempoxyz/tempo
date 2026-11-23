@@ -61,7 +61,7 @@ use tempo_evm::{
     TempoStateAccess, TempoTxResult, consensus::MAX_BLOCK_TRANSACTIONS,
 };
 use tempo_payload_types::{
-    Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
+    BuildPlan, Estimator, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
     estimator::FinishedBuild,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
@@ -82,6 +82,43 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 /// Execution time at or above which a transaction discarded for exhausting the build budget is
 /// removed from the pool instead of being left there for a later block.
 const SLOW_TRANSACTION_EXECUTION_THRESHOLD: Duration = Duration::from_millis(100);
+
+/// What the builder does with a pool transaction it has executed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutedTransactionAction {
+    /// Commit it to the block.
+    Commit,
+    /// Leave it out of the block because its execution exhausted the build budget.
+    Discard {
+        /// Remove it and its descendants from the pool instead of leaving it for a later block.
+        remove_from_pool: bool,
+    },
+}
+
+impl ExecutedTransactionAction {
+    /// Decides the action for a pool transaction once it has executed.
+    ///
+    /// Any pool transaction, including the first of a block, is discarded when `plan` projects
+    /// the build, with this transaction in `workload`, to exhaust the budget. A discarded
+    /// transaction whose execution took at least [`SLOW_TRANSACTION_EXECUTION_THRESHOLD`] is
+    /// removed from the pool, so it can't be re-executed and discarded block after block.
+    fn new(
+        plan: Option<&BuildPlan>,
+        elapsed: Duration,
+        idle_elapsed: Duration,
+        workload: ValidationLatencyWorkload,
+        transaction_cost: Duration,
+    ) -> Self {
+        match plan {
+            Some(plan) if plan.exhausted(&plan.decision(elapsed, idle_elapsed, workload)) => {
+                Self::Discard {
+                    remove_from_pool: transaction_cost >= SLOW_TRANSACTION_EXECUTION_THRESHOLD,
+                }
+            }
+            _ => Self::Commit,
+        }
+    }
+}
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
@@ -649,7 +686,7 @@ where
 
             // Snapshot before `result_closure` borrows the counter mutably.
             let gas_used_before_tx = cumulative_gas_used;
-            let mut exceeded_build_budget = false;
+            let mut executed_action = ExecutedTransactionAction::Commit;
 
             let mut result_closure = |result: &TempoTxResult| {
                 cumulative_gas_used += result.block_gas_used();
@@ -684,23 +721,21 @@ where
                 .replay_execution_elapsed
                 .unwrap_or(transaction_execution_elapsed);
             let execution_result = executed.and_then(|result| {
-                // Any pool transaction, including the first, is discarded when its execution
-                // exhausts the budget. A slow one is removed from the pool below, so it cannot
-                // be re-executed and discarded block after block.
-                if let Some(plan) = build_plan.as_ref() {
-                    let workload = ValidationLatencyWorkload::new(
+                executed_action = ExecutedTransactionAction::new(
+                    build_plan.as_ref(),
+                    start.elapsed(),
+                    normal_transaction_fill_idle_elapsed,
+                    ValidationLatencyWorkload::new(
                         gas_used_before_tx + result.block_gas_used(),
                         pool_transactions_included as usize + 1,
-                    );
-                    exceeded_build_budget = plan.exhausted(&plan.decision(
-                        start.elapsed(),
-                        normal_transaction_fill_idle_elapsed,
-                        workload,
-                    ));
-                    // Leave the transaction uncommitted and unmarked so it stays in the pool.
-                    if exceeded_build_budget {
-                        return Ok(());
-                    }
+                    ),
+                    transaction_cost,
+                );
+                // Leave the transaction uncommitted and unmarked so it stays in the pool,
+                // unless it is removed below.
+                if executed_action != ExecutedTransactionAction::Commit {
+                    executor.discard_transaction(result);
+                    return Ok(());
                 }
                 result_closure(&result);
                 executor.commit_transaction(result).map(|_| ())
@@ -777,9 +812,8 @@ where
                 }
             }
 
-            if exceeded_build_budget {
+            if let ExecutedTransactionAction::Discard { remove_from_pool } = executed_action {
                 discarded_transaction_elapsed = transaction_execution_elapsed;
-                let remove_from_pool = transaction_cost >= SLOW_TRANSACTION_EXECUTION_THRESHOLD;
                 debug!(
                     target: "payload_builder",
                     tx_hash = ?tx.hash(),
@@ -1307,6 +1341,7 @@ pub(crate) struct RootsTaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempo_payload_types::EstimatorConfig;
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
@@ -1321,5 +1356,73 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    fn workload(transactions: usize) -> ValidationLatencyWorkload {
+        ValidationLatencyWorkload::new(21_000 * transactions as u64, transactions)
+    }
+
+    #[test]
+    fn executed_transaction_is_committed_without_a_budget() {
+        let action = ExecutedTransactionAction::new(
+            None,
+            Duration::from_secs(10),
+            Duration::ZERO,
+            workload(1),
+            Duration::from_secs(1),
+        );
+        assert_eq!(action, ExecutedTransactionAction::Commit);
+    }
+
+    #[test]
+    fn executed_transaction_is_committed_within_the_budget() {
+        let plan = Estimator::new(EstimatorConfig::default())
+            .build_plan(Instant::now(), Duration::from_secs(1));
+        let action = ExecutedTransactionAction::new(
+            Some(&plan),
+            Duration::from_millis(10),
+            Duration::ZERO,
+            workload(1),
+            Duration::from_millis(10),
+        );
+        assert_eq!(action, ExecutedTransactionAction::Commit);
+    }
+
+    #[test]
+    fn transaction_exhausting_the_budget_is_discarded() {
+        let plan = Estimator::new(EstimatorConfig::default())
+            .build_plan(Instant::now(), Duration::from_millis(100));
+        // The first transaction of a block is discarded like any other.
+        for transactions in [1, 5] {
+            let fast = ExecutedTransactionAction::new(
+                Some(&plan),
+                Duration::from_millis(100),
+                Duration::ZERO,
+                workload(transactions),
+                SLOW_TRANSACTION_EXECUTION_THRESHOLD - Duration::from_millis(1),
+            );
+            assert_eq!(
+                fast,
+                ExecutedTransactionAction::Discard {
+                    remove_from_pool: false
+                },
+                "a fast transaction stays in the pool for a later block"
+            );
+
+            let slow = ExecutedTransactionAction::new(
+                Some(&plan),
+                Duration::from_millis(100),
+                Duration::ZERO,
+                workload(transactions),
+                SLOW_TRANSACTION_EXECUTION_THRESHOLD,
+            );
+            assert_eq!(
+                slow,
+                ExecutedTransactionAction::Discard {
+                    remove_from_pool: true
+                },
+                "a slow transaction is removed from the pool"
+            );
+        }
     }
 }
