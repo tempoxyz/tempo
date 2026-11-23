@@ -639,9 +639,9 @@ fn finalized_blocks_are_reported_once_finalized_before_they_are_durable() {
         let b2 = make_block(2, 2, b1.digest());
         let (d1, d2) = (b1.digest(), b2.digest());
 
-        // The startup update does not move finality, so it reports nothing.
-        h.run_for(Duration::from_millis(10)).await;
-        assert!(h.finalized_reports.reports().is_empty());
+        // Startup reports the finalized block it starts from.
+        h.wait_until(|| h.finalized_reports.reports() == vec![(0, GENESIS)])
+            .await;
 
         h.deliver_tip(round(2), 2, d2);
         let mut w1 = pin!(h.deliver_finalized(b1));
@@ -656,7 +656,7 @@ fn finalized_blocks_are_reported_once_finalized_before_they_are_durable() {
         let reports = h.finalized_reports.reports();
         assert!(reports.windows(2).all(|pair| pair[0].0 < pair[1].0));
         assert!(
-            reports
+            reports[1..]
                 .iter()
                 .all(|report| [(1, d1), (2, d2)].contains(report))
         );

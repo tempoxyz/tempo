@@ -164,6 +164,10 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal, TReporter> {
     /// Receives each finalized block once its state is readable from the
     /// execution layer.
     finalized_reporter: TReporter,
+    /// The highest finalized height reported to the finalized reporter.
+    /// `None` until startup backfill finished and the startup finalized
+    /// block was reported: reports during backfill are held back.
+    reported_finalized: Option<Height>,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
@@ -438,6 +442,7 @@ where
             mailbox,
             marshal,
             finalized_reporter,
+            reported_finalized: None,
             fcu_heartbeat_interval,
             fcu_heartbeat_timer: OptionFuture::none(),
 
@@ -491,6 +496,10 @@ where
             });
             return;
         }
+
+        // First thing after backfill: tell the reporter which finalized
+        // block the executor starts from.
+        self.report_startup_finalized();
 
         info_span!("start").in_scope(|| {
             let canonicalized = self.local_state;
@@ -920,10 +929,10 @@ where
     /// rejected one is fatal: every target named is a block the execution
     /// layer accepted, so the executor's view of the execution layer has
     /// diverged from it. Finalized blocks the update covers are
-    /// acknowledged; a build it carried is driven to completion. A higher
-    /// finalized block is reported to the finalized reporter: either the
-    /// execution layer just made it canonical, or it had already finalized
-    /// past it.
+    /// acknowledged; a build it carried is driven to completion. After
+    /// startup, a higher finalized block is reported to the finalized
+    /// reporter: either the execution layer just made it canonical, or it had
+    /// already finalized past it.
     fn handle_forkchoice_response(
         &mut self,
         target: LocalState,
@@ -967,20 +976,12 @@ where
         // with the count left full it would be rescheduled ahead of the
         // mailbox forever.
         self.deliveries_since_forkchoice = 0;
-        let previous_finalized = self.local_state.finalized.0;
         self.local_state = target;
-        if target.finalized.0 > previous_finalized {
-            let (height, digest) = target.finalized;
-            match self.finalized_reporter.report(Finalized { height, digest }) {
-                Feedback::Ok | Feedback::Backoff => {}
-                // Only during shutdown: the reporter outlives the executor
-                // otherwise.
-                Feedback::Closed => debug!(
-                    %height,
-                    %digest,
-                    "finalized reporter is closed; dropping the finalized block",
-                ),
-            }
+        if self
+            .reported_finalized
+            .is_some_and(|reported| target.finalized.0 > reported)
+        {
+            self.report_finalized();
         }
         self.acknowledge_persisted()?;
 
@@ -1011,6 +1012,35 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Reports the finalized block the executor enters its loop with: the
+    /// execution layer's finalized block, the finalized floor below it after
+    /// a snapshot restore, or the floor startup backfill finalized. Its state
+    /// is readable either way. Later reports follow from forkchoice updates
+    /// that raise it.
+    fn report_startup_finalized(&mut self) {
+        debug_assert!(
+            self.reported_finalized.is_none(),
+            "the startup finalized block is reported once",
+        );
+        self.report_finalized();
+    }
+
+    /// Reports the tracked finalized block to the finalized reporter.
+    fn report_finalized(&mut self) {
+        let (height, digest) = self.local_state.finalized;
+        self.reported_finalized = Some(height);
+        match self.finalized_reporter.report(Finalized { height, digest }) {
+            Feedback::Ok | Feedback::Backoff => {}
+            // Only during shutdown: the reporter outlives the executor
+            // otherwise.
+            Feedback::Closed => debug!(
+                %height,
+                %digest,
+                "finalized reporter is closed; dropping the finalized block",
+            ),
+        }
     }
 
     /// A non-`VALID` answer is fatal. Otherwise the block becomes the next

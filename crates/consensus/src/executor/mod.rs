@@ -339,9 +339,10 @@ where
 
 /// A finalized block whose state the execution layer serves.
 ///
-/// Reported by the executor once the execution layer accepted a forkchoice
-/// update finalizing the block, or once the executor found the execution
-/// layer already finalized at or past it. Accepting the update makes the
+/// The executor first reports the finalized block it starts from, once
+/// startup backfill finished. After that it reports a block once the
+/// execution layer accepted a forkchoice update finalizing it, or once the
+/// executor found the execution layer already finalized at or past it. Accepting the update makes the
 /// block canonical, so its header and state are readable by hash and its
 /// header by number. They are not necessarily durable yet: reth persists
 /// canonical blocks in batches.

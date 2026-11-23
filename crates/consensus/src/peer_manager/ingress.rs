@@ -6,7 +6,7 @@ use tracing::{Span, error};
 
 use commonware_cryptography::ed25519::PublicKey;
 
-use crate::executor::Finalized;
+use crate::executor;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -41,11 +41,11 @@ pub(super) enum Message {
     Subscribe {
         response: oneshot::Sender<PeerSetSubscription<PublicKey>>,
     },
-    Finalized(Finalized),
+    Finalized(executor::Finalized),
 }
 
-impl From<Finalized> for Message {
-    fn from(value: Finalized) -> Self {
+impl From<executor::Finalized> for Message {
+    fn from(value: executor::Finalized) -> Self {
         Self::Finalized(value)
     }
 }
@@ -97,7 +97,7 @@ impl Provider for Mailbox {
 }
 
 impl Reporter for Mailbox {
-    type Activity = Finalized;
+    type Activity = executor::Finalized;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         if let Err(error) = self

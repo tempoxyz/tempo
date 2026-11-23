@@ -25,7 +25,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
-    executor::Finalized,
+    executor,
     utils::public_key_to_b256,
     validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
 };
@@ -48,7 +48,7 @@ where
     execution_node: Arc<TExecutionNode>,
     epoch_strategy: FixedEpocher,
     /// The latest finalized block reported by the executor.
-    latest_finalized: Option<Finalized>,
+    latest_finalized: Option<executor::Finalized>,
     max_peers: NonZeroU32,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
 
@@ -168,7 +168,7 @@ where
             .min(finalized_floor.get());
         let header = read_header_at_height(self.execution_node.as_ref(), height)
             .wrap_err("failed reading highest finalized header")?;
-        self.refresh_peers_at(Finalized {
+        self.refresh_peers_at(executor::Finalized {
             height: Height::new(height),
             digest: crate::consensus::Digest(header.hash_slow()),
         })
@@ -176,7 +176,7 @@ where
 
     /// Reads peers at `finalized`. A failed read is not fatal: the peer
     /// update timer retries the latest finalized block.
-    fn refresh_or_warn(&mut self, finalized: Finalized) {
+    fn refresh_or_warn(&mut self, finalized: executor::Finalized) {
         if let Err(error) = self.refresh_peers_at(finalized) {
             warn!(
                 error = %format!("{error:#}"),
@@ -189,7 +189,7 @@ where
 
     /// Reads peers at `finalized`, whose state the execution layer serves.
     #[instrument(skip_all, fields(height = %finalized.height, digest = %finalized.digest))]
-    fn refresh_peers_at(&mut self, finalized: Finalized) -> eyre::Result<()> {
+    fn refresh_peers_at(&mut self, finalized: executor::Finalized) -> eyre::Result<()> {
         let highest_finalized = finalized.height.get();
 
         // Short circuit - no need to read the same state if there is no new data.
@@ -854,7 +854,7 @@ mod tests {
     }
 
     fn finalized(execution: &TestExecutionNode) -> Message {
-        Message::Finalized(Finalized {
+        Message::Finalized(executor::Finalized {
             height: Height::new(execution.height),
             digest: crate::consensus::Digest(execution.hash),
         })
@@ -913,7 +913,7 @@ mod tests {
             assert_eq!(oracle.tracked.lock().unwrap().len(), 1);
             assert_eq!(
                 actor.latest_finalized,
-                Some(Finalized {
+                Some(executor::Finalized {
                     height: Height::new(7),
                     digest: crate::consensus::Digest(execution.hash),
                 })
