@@ -1454,12 +1454,12 @@ interface IZoneOutbox {
     )
         external;
 
-    /// @notice `requestWithdrawal` that also reveals the sender's ZoneIdentity org to the callback
-    ///         receiver through `IZonePortal.callbackSenderOrg()`, from T15
-    /// @dev Reverts with `OrgRevealRequiresCallback` when `gasLimit` is zero. The org is public on
-    ///      Tempo once revealed. A receiver reads 0 for a sender in org 0, a sender that did not
-    ///      reveal its org, and any withdrawal while ZoneIdentity is not enforced.
-    function requestWithdrawalRevealingOrg(
+    /// @notice `requestWithdrawal` that, with `revealOrg`, also reveals the sender's ZoneIdentity
+    ///         org to the callback receiver through `IZonePortal.callbackSenderOrg()`, from T15
+    /// @dev Reverts with `OrgRevealRequiresCallback` when `revealOrg` is set and `gasLimit` is zero.
+    ///      The org is public on Tempo once revealed. A receiver reads 0 for a sender in org 0, a
+    ///      sender that did not reveal its org, and any withdrawal while ZoneIdentity is not enforced.
+    function requestWithdrawal(
         address token,
         address to,
         uint128 amount,
@@ -1467,7 +1467,8 @@ interface IZoneOutbox {
         uint64 gasLimit,
         address zoneFallbackRecipient,
         bytes calldata data,
-        bytes calldata revealTo
+        bytes calldata revealTo,
+        bool revealOrg
     )
         external;
 

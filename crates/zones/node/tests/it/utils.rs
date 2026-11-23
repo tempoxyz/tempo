@@ -2938,7 +2938,7 @@ impl ZoneAccount {
         );
         let args = WithdrawalArgs::new(amount);
         let pending = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &self.l2_provider)
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 ZONE_TOKEN_ADDRESS,
                 self.address,
                 args.amount,
@@ -2968,7 +2968,7 @@ impl ZoneAccount {
         let to = args.to.unwrap_or(self.address);
         let zone_fallback_recipient = args.zone_fallback_recipient.unwrap_or(self.address);
         IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &self.l2_provider)
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 ZONE_TOKEN_ADDRESS,
                 to,
                 args.amount,
@@ -2995,7 +2995,7 @@ impl ZoneAccount {
         let to = args.to.unwrap_or(self.address);
         let zone_fallback_recipient = args.zone_fallback_recipient.unwrap_or(self.address);
         IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &self.l2_provider)
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 token,
                 to,
                 args.amount,
@@ -3034,7 +3034,7 @@ impl ZoneAccount {
 
         let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &self.l2_provider);
         let receipt = outbox
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 token,
                 to,
                 args.amount,

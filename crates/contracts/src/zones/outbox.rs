@@ -103,9 +103,9 @@ crate::sol! {
             bytes calldata data,
             bytes calldata revealTo
         ) external;
-        /// `requestWithdrawal` that also commits the sender's `ZoneIdentity` org for the callback
-        /// receiver; from T15, and only with a callback.
-        function requestWithdrawalRevealingOrg(
+        /// `requestWithdrawal` that, with `revealOrg`, also commits the sender's `ZoneIdentity` org
+        /// for the callback receiver; from T15, and only with a callback.
+        function requestWithdrawal(
             address token,
             address to,
             uint128 amount,
@@ -113,7 +113,8 @@ crate::sol! {
             uint64 gasLimit,
             address zoneFallbackRecipient,
             bytes calldata data,
-            bytes calldata revealTo
+            bytes calldata revealTo,
+            bool revealOrg
         ) external;
         function enqueueDepositBounceBack(
             address token,
@@ -124,8 +125,9 @@ crate::sol! {
     }
 }
 
-impl From<IZoneOutbox::requestWithdrawalRevealingOrgCall> for IZoneOutbox::requestWithdrawalCall {
-    fn from(call: IZoneOutbox::requestWithdrawalRevealingOrgCall) -> Self {
+impl From<IZoneOutbox::requestWithdrawal_1Call> for IZoneOutbox::requestWithdrawal_0Call {
+    /// Drops `revealOrg`.
+    fn from(call: IZoneOutbox::requestWithdrawal_1Call) -> Self {
         Self {
             token: call.token,
             to: call.to,

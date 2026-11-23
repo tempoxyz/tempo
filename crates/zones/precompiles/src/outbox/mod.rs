@@ -162,7 +162,7 @@ impl ZoneOutbox {
         caller: Address,
         fee_payer: Address,
         current_tx_hash: B256,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
         reveal_org: bool,
     ) -> ZoneResult<()> {
         // Only a callback receiver reads the sender's org, so a plain withdrawal never reveals it.
@@ -469,7 +469,7 @@ impl PendingWithdrawal {
         tx_hash: B256,
         fallback_nonce: u64,
         sender_org: u64,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
     ) -> Self {
         Self {
             token: call.token,

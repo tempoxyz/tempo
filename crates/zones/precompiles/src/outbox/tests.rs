@@ -45,8 +45,8 @@ fn spec() -> ZoneSpec {
 }
 
 /// A pathUSD withdrawal with a zero memo and ALICE as the zone fallback recipient.
-fn withdrawal(amount: u128, to: Address, gas_limit: u64) -> ZoneOutboxAbi::requestWithdrawalCall {
-    ZoneOutboxAbi::requestWithdrawalCall {
+fn withdrawal(amount: u128, to: Address, gas_limit: u64) -> ZoneOutboxAbi::requestWithdrawal_0Call {
+    ZoneOutboxAbi::requestWithdrawal_0Call {
         token: PATH_USD_ADDRESS,
         to,
         amount,
@@ -177,7 +177,7 @@ fn request_withdrawal_rejects_unknown_token_before_portal_read() -> eyre::Result
     let mut env = spec().apply()?;
     let result = env.request_withdrawal(
         ALICE,
-        ZoneOutboxAbi::requestWithdrawalCall {
+        ZoneOutboxAbi::requestWithdrawal_0Call {
             token: address!("0x20c000000000000000000000000000000000ffff"),
             ..withdrawal(1, BOB, 0)
         },
@@ -331,7 +331,7 @@ fn withdrawals_queue_in_fifo_order_and_finalize_to_their_queue_hash() -> eyre::R
     for (memo, amount, to) in [(1, 500, ALICE), (2, 300, BOB)] {
         env.request_withdrawal(
             ALICE,
-            ZoneOutboxAbi::requestWithdrawalCall {
+            ZoneOutboxAbi::requestWithdrawal_0Call {
                 memo: B256::repeat_byte(memo),
                 ..withdrawal(amount, to, 0)
             },
@@ -473,7 +473,7 @@ fn fee_rate_and_gas_limit_validation_match_reference() -> eyre::Result<()> {
 #[test]
 fn request_rejects_invalid_parameters_without_mutating_state() -> eyre::Result<()> {
     let mut env = spec().apply()?;
-    let base = |data: Bytes, reveal_to: Bytes| ZoneOutboxAbi::requestWithdrawalCall {
+    let base = |data: Bytes, reveal_to: Bytes| ZoneOutboxAbi::requestWithdrawal_0Call {
         data,
         revealTo: reveal_to,
         ..withdrawal(1, BOB, 0)
@@ -485,7 +485,7 @@ fn request_rejects_invalid_parameters_without_mutating_state() -> eyre::Result<(
             ZoneOutboxError::zero_amount_withdrawal(),
         ),
         (
-            ZoneOutboxAbi::requestWithdrawalCall {
+            ZoneOutboxAbi::requestWithdrawal_0Call {
                 zoneFallbackRecipient: Address::ZERO,
                 ..withdrawal(1, BOB, 0)
             },
@@ -731,7 +731,7 @@ fn zone_identity_checks_the_withdrawal_fallback_recipient() -> eyre::Result<()> 
     assert_revert(
         env.request_withdrawal(
             ALICE,
-            ZoneOutboxAbi::requestWithdrawalCall {
+            ZoneOutboxAbi::requestWithdrawal_0Call {
                 zoneFallbackRecipient: stranger,
                 ..withdrawal(1, BOB, 0)
             },
@@ -848,7 +848,7 @@ fn deposit_address_fallback_recipients_are_rejected_from_t15() -> eyre::Result<(
         ciphertext: alloy_primitives::fixed_bytes!("010203040506"),
     }
     .encode();
-    let call = ZoneOutboxAbi::requestWithdrawalCall {
+    let call = ZoneOutboxAbi::requestWithdrawal_0Call {
         zoneFallbackRecipient: deposit_address,
         ..withdrawal(1, BOB, 0)
     };
@@ -877,7 +877,7 @@ fn withdrawals_to_deposit_addresses_are_rejected_from_t15() -> eyre::Result<()> 
         ciphertext: alloy_primitives::fixed_bytes!("010203040506"),
     }
     .encode();
-    let call = ZoneOutboxAbi::requestWithdrawalCall {
+    let call = ZoneOutboxAbi::requestWithdrawal_0Call {
         to: deposit_address,
         ..withdrawal(1, BOB, 0)
     };

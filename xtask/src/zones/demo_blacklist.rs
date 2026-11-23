@@ -568,7 +568,7 @@ impl DemoBlacklist {
 
             let l1_block_before = l1.get_block_number().await?;
             let receipt = outbox
-                .requestWithdrawal(
+                .requestWithdrawal_0(
                     token_addr,
                     target,
                     withdraw_amount,

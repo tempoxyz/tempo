@@ -98,11 +98,11 @@ fn push_parties(
         }
     } else if target == ZONE_OUTBOX_ADDRESS {
         let call = match selector {
-            IZoneOutbox::requestWithdrawalCall::SELECTOR => {
-                IZoneOutbox::requestWithdrawalCall::abi_decode(input)
+            IZoneOutbox::requestWithdrawal_0Call::SELECTOR => {
+                IZoneOutbox::requestWithdrawal_0Call::abi_decode(input)
             }
-            IZoneOutbox::requestWithdrawalRevealingOrgCall::SELECTOR => {
-                IZoneOutbox::requestWithdrawalRevealingOrgCall::abi_decode(input).map(Into::into)
+            IZoneOutbox::requestWithdrawal_1Call::SELECTOR => {
+                IZoneOutbox::requestWithdrawal_1Call::abi_decode(input).map(Into::into)
             }
             _ => return Ok(()),
         }
@@ -185,7 +185,7 @@ mod tests {
     fn request_withdrawal(fallback_recipient: Address) -> Call {
         call(
             ZONE_OUTBOX_ADDRESS,
-            IZoneOutbox::requestWithdrawalCall {
+            IZoneOutbox::requestWithdrawal_0Call {
                 token: Address::new_tip20(0),
                 to: fallback_recipient,
                 amount: 1,
@@ -290,8 +290,8 @@ mod tests {
         // Revealing the org screens the fallback recipient the same way.
         let revealing = |fallback_recipient: Address| {
             let mut call = request_withdrawal(fallback_recipient);
-            let request = IZoneOutbox::requestWithdrawalCall::abi_decode(&call.input).unwrap();
-            call.input = IZoneOutbox::requestWithdrawalRevealingOrgCall {
+            let request = IZoneOutbox::requestWithdrawal_0Call::abi_decode(&call.input).unwrap();
+            call.input = IZoneOutbox::requestWithdrawal_1Call {
                 token: request.token,
                 to: request.to,
                 amount: request.amount,
@@ -300,6 +300,7 @@ mod tests {
                 zoneFallbackRecipient: request.zoneFallbackRecipient,
                 data: request.data,
                 revealTo: request.revealTo,
+                revealOrg: true,
             }
             .abi_encode()
             .into();

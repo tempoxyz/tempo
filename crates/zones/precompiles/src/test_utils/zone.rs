@@ -250,20 +250,20 @@ impl ZoneEnv {
     pub(crate) fn request_withdrawal(
         &mut self,
         sender: Address,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
     ) -> PrecompileResult {
         let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, sender);
         self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
     }
 
-    /// [`Self::request_withdrawal`] through `requestWithdrawalRevealingOrg`.
+    /// [`Self::request_withdrawal`] through the `requestWithdrawal` overload, with `revealOrg` set.
     pub(crate) fn request_withdrawal_revealing_org(
         &mut self,
         sender: Address,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
     ) -> PrecompileResult {
         let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, sender);
-        let call = IZoneOutbox::requestWithdrawalRevealingOrgCall {
+        let call = IZoneOutbox::requestWithdrawal_1Call {
             token: call.token,
             to: call.to,
             amount: call.amount,
@@ -272,6 +272,7 @@ impl ZoneEnv {
             zoneFallbackRecipient: call.zoneFallbackRecipient,
             data: call.data,
             revealTo: call.revealTo,
+            revealOrg: true,
         };
         self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
     }
