@@ -17,10 +17,10 @@ use rand_09::Rng;
 use serde_json::json;
 
 /// Checks that the root the overlay serves at the tip equals the model's. Returns false when the
-/// server went away.
+/// server went away or has no active round.
 fn check_root(client: &mut Client) -> Result<bool> {
     match client.call(&Request::CheckRoot)? {
-        None => harness::unavailable().map(|()| false),
+        None | Some(Response::Rejected { .. }) => harness::unavailable().map(|()| false),
         Some(Response::Root { number, root }) => {
             println!("{}", json!({"root": {"number": number, "root": root}}));
             Ok(true)

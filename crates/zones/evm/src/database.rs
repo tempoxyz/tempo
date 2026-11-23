@@ -16,7 +16,6 @@ use reth_execution_types::StateUpdate;
 use reth_trie_common::bundle_state::{AccountInfoRevert, AccountStatus, BundleState};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    ADDRESS_REGISTRY_ADDRESS,
     configurable_account::{
         CONFIGURABLE_ACCOUNT_CODE, CONFIGURABLE_ACCOUNT_CODE_HASH, valid_account,
     },
@@ -32,9 +31,8 @@ use zone_precompiles::{
 /// Resolves mirrored L1 reads at the active Tempo anchor and forwards all other database
 /// operations to the caller-provided Zone database.
 ///
-/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag and the whole
-/// TIP-1022 address registry are mirrored too, so upstream pause checks block on the Zone exactly
-/// what they block on Tempo, and virtual addresses resolve to the masters registered on Tempo.
+/// The whole TIP-403 registry is mirrored. From T15, each TIP-20 token's pause flag is mirrored
+/// too, so upstream pause checks block on the Zone exactly what they block on Tempo.
 ///
 /// From T14, account loads also carry Tempo's TIP-1108 commitment and the account marker code
 /// (TIP-1154). Block outputs drop them again through `strip_bundle_commitment_overlays` and
@@ -106,7 +104,7 @@ impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
 /// check available to every execution path. Like [`validate_pending_state`] it ignores slots that
 /// end at their original value, but it only sees storage writes; the block executor's check also
 /// covers account changes and wipes.
-pub(crate) fn validate_journal(state: &State<'_>, spec: TempoHardfork) -> Result<(), ZoneDbError> {
+pub(crate) fn validate_journal(state: &State<'_>) -> Result<(), ZoneDbError> {
     let mut originals = HashMap::<(Address, U256), U256>::new();
     for entry in state.journal() {
         if let JournalEntry::StorageChange {
@@ -114,7 +112,7 @@ pub(crate) fn validate_journal(state: &State<'_>, spec: TempoHardfork) -> Result
             key,
             previous,
         } = entry
-            && is_mirrored_slot(address, key, spec)
+            && is_mirrored_slot(address, key)
         {
             originals.entry((*address, *key)).or_insert(*previous);
         }
@@ -128,29 +126,24 @@ pub(crate) fn validate_journal(state: &State<'_>, spec: TempoHardfork) -> Result
 }
 
 /// Rejects persistent changes to mirrored storage in a finalized transaction state.
-pub(crate) fn validate_pending_state(
-    state: &PendingState,
-    spec: TempoHardfork,
-) -> Result<(), ZoneDbError> {
+pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {
     // Only the registry and TIP-20 accounts can fail the guard; skip visiting every other
     // account's storage.
     state
         .account_changes()
         .filter(|changes| {
-            is_mirrored_account(&changes.address, spec) || is_tip20_prefix(changes.address)
+            changes.address == TIP403_REGISTRY_ADDRESS || is_tip20_prefix(changes.address)
         })
-        .try_for_each(|changes| changes.visit(&mut L1WriteGuard { spec }))
+        .try_for_each(|changes| changes.visit(&mut L1WriteGuard))
 }
 
-struct L1WriteGuard {
-    spec: TempoHardfork,
-}
+struct L1WriteGuard;
 
 impl StateChangeSink for L1WriteGuard {
     type Error = ZoneDbError;
 
     fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        if is_mirrored_account(&change.address, self.spec) {
+        if change.address == TIP403_REGISTRY_ADDRESS {
             return Err(ZoneDbError::L1Write {
                 address: change.address,
                 slot: U256::ZERO,
@@ -160,7 +153,7 @@ impl StateChangeSink for L1WriteGuard {
     }
 
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        if is_mirrored_account(&address, self.spec) {
+        if address == TIP403_REGISTRY_ADDRESS {
             return Err(ZoneDbError::L1Write {
                 address,
                 slot: U256::ZERO,
@@ -170,7 +163,7 @@ impl StateChangeSink for L1WriteGuard {
     }
 
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
-        if is_mirrored_slot(&change.address, &change.key, self.spec) {
+        if is_mirrored_slot(&change.address, &change.key) {
             return Err(ZoneDbError::L1Write {
                 address: change.address,
                 slot: change.key,
@@ -218,7 +211,9 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
     }
 
     fn get_storage(&mut self, address: &Address, slot: &U256) -> Result<U256, DatabaseError> {
-        if !is_mirrored_slot(address, slot, self.spec) {
+        if *address != TIP403_REGISTRY_ADDRESS
+            && !(self.spec.is_t15() && is_tip20_pause_slot(address, slot))
+        {
             return self.inner.get_storage(address, slot);
         }
 
@@ -243,16 +238,13 @@ fn is_tip20_pause_slot(address: &Address, slot: &U256) -> bool {
     is_tip20_prefix(*address) && *slot == tip20::slots::PAUSED
 }
 
-/// Returns whether all of `address`'s storage is mirrored from Tempo at `spec`: the TIP-403
-/// registry at every fork, and from T15 the TIP-1022 address registry.
-fn is_mirrored_account(address: &Address, spec: TempoHardfork) -> bool {
-    *address == TIP403_REGISTRY_ADDRESS || (spec.is_t15() && *address == ADDRESS_REGISTRY_ADDRESS)
-}
-
-/// Returns whether `slot` at `address` is mirrored from Tempo at `spec`, so reads go to Tempo and
-/// the Zone must never persist a change to it. From T15 this adds each TIP-20 pause flag.
-fn is_mirrored_slot(address: &Address, slot: &U256, spec: TempoHardfork) -> bool {
-    is_mirrored_account(address, spec) || (spec.is_t15() && is_tip20_pause_slot(address, slot))
+/// Returns whether `slot` at `address` is mirrored from Tempo, so the Zone must never persist a
+/// change to it.
+///
+/// Pause flags are guarded at every fork: they are only mirrored from T15, but the Zone never
+/// writes them.
+fn is_mirrored_slot(address: &Address, slot: &U256) -> bool {
+    *address == TIP403_REGISTRY_ADDRESS || is_tip20_pause_slot(address, slot)
 }
 
 /// Removes the commitment overlays of [`L1OverlayDB`] from a block's state (see
@@ -378,14 +370,14 @@ mod tests {
             .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
             .unwrap()
             .set(U256::ZERO);
-        validate_journal(&state, TempoHardfork::T15).unwrap();
+        validate_journal(&state).unwrap();
 
         state
             .storage_slot(&TIP403_REGISTRY_ADDRESS, slot)
             .unwrap()
             .set(U256::from(2));
         assert!(matches!(
-            validate_journal(&state, TempoHardfork::T15),
+            validate_journal(&state),
             Err(ZoneDbError::L1Write {
                 address: TIP403_REGISTRY_ADDRESS,
                 slot: s,
@@ -401,13 +393,13 @@ mod tests {
             .storage_slot(&token, tip20::slots::TOTAL_SUPPLY)
             .unwrap()
             .set(U256::ONE);
-        validate_journal(&state, TempoHardfork::T15).unwrap();
+        validate_journal(&state).unwrap();
         state
             .storage_slot(&token, tip20::slots::PAUSED)
             .unwrap()
             .set(U256::ONE);
         assert!(matches!(
-            validate_journal(&state, TempoHardfork::T15),
+            validate_journal(&state),
             Err(ZoneDbError::L1Write { address, slot })
                 if address == token && slot == tip20::slots::PAUSED
         ));
@@ -419,10 +411,10 @@ mod tests {
             Some(AccountInfo::default()),
         );
         state.insert_storage(token, tip20::slots::TOTAL_SUPPLY, U256::ZERO, U256::ONE);
-        validate_pending_state(&state, TempoHardfork::T15).unwrap();
+        validate_pending_state(&state).unwrap();
         state.insert_storage(token, tip20::slots::PAUSED, U256::ZERO, U256::ONE);
         assert!(matches!(
-            validate_pending_state(&state, TempoHardfork::T15),
+            validate_pending_state(&state),
             Err(ZoneDbError::L1Write { address, slot })
                 if address == token && slot == tip20::slots::PAUSED
         ));
@@ -490,7 +482,7 @@ mod tests {
         let mut state = PendingState::default();
         state.insert_account(TIP403_REGISTRY_ADDRESS, account.clone(), account);
         state.insert_storage(TIP403_REGISTRY_ADDRESS, slot, observed, observed);
-        validate_pending_state(&state, TempoHardfork::T15).unwrap();
+        validate_pending_state(&state).unwrap();
 
         // Consume the transition through the same bundle stream used by block execution.
         let mut block = BlockState::new();
@@ -558,7 +550,7 @@ mod tests {
         state.insert_account(token, account.clone(), account);
         state.insert_storage(token, paused, observed, observed);
         state.insert_storage(token, supply, U256::ZERO, U256::from(7));
-        validate_pending_state(&state, TempoHardfork::T15).unwrap();
+        validate_pending_state(&state).unwrap();
 
         let mut block = BlockState::new();
         let mut changes = TransactionChanges::default();

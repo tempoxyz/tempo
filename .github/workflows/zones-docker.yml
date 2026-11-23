@@ -389,12 +389,14 @@ jobs:
           image_ref="$TOOLCHAIN_REPOSITORY:inputs-$recipe_sha"
           digest=$(docker buildx imagetools inspect "$image_ref" \
             --format '{{.Manifest.Digest}}' 2>/dev/null || true)
-          # On main and tags, reuse a cached digest only if a main run of this workflow
+          # On main, rc/ and pre-release/ branches and tags (every ref whose runs attest),
+          # reuse a cached digest only if a main run of this workflow
           # (protected branch, not any pushed tag) attested it for this recipe_sha;
           # otherwise rebuild it from the trusted recipe, so these runs never attest a
           # foreign digest.
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] &&
-            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/tags/* ]] &&
+            [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/rc/* ||
+              "$GITHUB_REF" == refs/heads/pre-release/* || "$GITHUB_REF" == refs/tags/* ]] &&
             ! gh attestation verify "oci://$TOOLCHAIN_REPOSITORY@$digest" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/zones-docker.yml" \
@@ -779,6 +781,39 @@ jobs:
       - name: Prepare candidate image exports
         run: mkdir -p "$RUNNER_TEMP/candidate-images"
 
+      - name: Choose build cache policy
+        id: cache_policy
+        # Pull requests, the merge queue and prover E2E dispatches (each on its
+        # own automation/prover-e2e/* commit) reuse the layer cache and share
+        # warm cache mounts. Every other run (main, rc/*, pre-release/*,
+        # release/*, tags, schedules, nightly or verify-only dispatches)
+        # rebuilds every layer and gets fresh empty mounts under a random
+        # scope, so it never reads files an earlier build left behind.
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          NIGHTLY: ${{ inputs.nightly == true }}
+          VERIFY_ONLY: ${{ inputs.production_image_verify_only == true }}
+        run: |
+          set -euo pipefail
+          cached=false
+          case "$EVENT" in
+            pull_request|merge_group) cached=true ;;
+            workflow_dispatch)
+              if [[ "$REF" == refs/heads/automation/prover-e2e/* && "$NIGHTLY" != true && "$VERIFY_ONLY" != true ]]; then
+                cached=true
+              fi
+              ;;
+          esac
+          if [[ "$cached" == true ]]; then
+            echo "CACHE_SCOPE=" >> "$GITHUB_ENV"
+          else
+            nonce=$(openssl rand -hex 16)
+            [[ ${#nonce} -eq 32 ]]
+            echo "CACHE_SCOPE=-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${nonce}" >> "$GITHUB_ENV"
+          fi
+          echo "no_cache=$( [[ "$cached" == true ]] && echo false || echo true )" >> "$GITHUB_OUTPUT"
+
       - name: Compile all binaries and publish images
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
@@ -804,11 +839,12 @@ jobs:
             tempo-zone-xtask.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-xtask.tar
             tempo-zone-prover-utils.tags=tempo-zone-prover-utils:candidate
             tempo-zone-prover-utils.output=type=docker,dest=${{ runner.temp }}/candidate-images/tempo-zone-prover-utils.tar
-          # Private registry cache layers can retain expired BuildKit client
-          # sessions across runs. Build fresh layers instead of importing them.
-          no-cache: true
+          # Cached runs (see cache_policy) reuse Depot's layer cache. Every
+          # other run rebuilds every layer and pulls fresh base images.
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
         env:
+          CACHE_SCOPE: ${{ env.CACHE_SCOPE }}
           VERGEN_GIT_SHA: ${{ github.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}
 
@@ -839,7 +875,9 @@ jobs:
           mkdir -p .tempo-genesis
           # Compilation has finished; the caller can now select the fork time.
           # Bound the rendezvous so an interrupted caller cannot strand a runner.
-          deadline=$((SECONDS + 180))
+          # T14 E2E publishes the genesis only after both old and candidate
+          # builds compile, so the faster build may wait several minutes.
+          deadline=$((SECONDS + 2400))
           until curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
             --connect-timeout 5 --max-time 10 --location \
             --output .tempo-genesis/genesis.json "$TEMPO_DEVNET_GENESIS_URL"; do
@@ -931,7 +969,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR1=${{ steps.prover_measurements.outputs.pcr1 }}
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
-          no-cache: true
+          no-cache: ${{ steps.cache_policy.outputs.no_cache == 'true' }}
           pull: true
 
       - name: Upload candidate image archives
@@ -1054,7 +1092,7 @@ jobs:
           BUILDER_REF: ${{ needs.build-and-push.outputs.builder_ref }}
           # Runs that attest push only the per-commit sha- tags here; tag-companion-images
           # moves the rest once the digests are attested.
-          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) }}
+          HOLD: ${{ (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/pre-release/') || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) }}
         run: |
           set -euo pipefail
           : > "$RUNNER_TEMP/image-refs.txt"
@@ -1108,7 +1146,7 @@ jobs:
     name: Attest published companion images
     needs: publish-companion-images
     # Companion images from other refs and events stay unattested; attest-images.yml
-    # refuses any run that isn't a trusted main or release-tag run. Gated on the publish
+    # refuses any run that isn't a trusted main, rc/, pre-release/ or release-tag run. Gated on the publish
     # job's hold flag so held tags always get an attest job.
     if: needs.publish-companion-images.outputs.hold == 'true'
     permissions:
@@ -1440,7 +1478,7 @@ jobs:
       # Selected-ref dispatches from other refs still publish, unattested.
       - name: Require a trusted run to attest
         id: trusted-run
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/rc/') || startsWith(github.ref, 'refs/heads/pre-release/') || startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v'))
         env:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
@@ -1449,11 +1487,11 @@ jobs:
         run: |
           set -euo pipefail
           # Reusable workflows sign as themselves whoever calls them, so attest only
-          # for this repository's own trusted runs on main or a release tag.
+          # for this repository's own trusted runs on main, an rc/ or pre-release/ branch or a release tag.
           fail() { echo "Refusing to attest: $1" >&2; exit 1; }
           [[ "$REPO" == tempoxyz/tempo || "$REPO" == tempoxyz/tempo-private-fork ]] || fail "repository $REPO"
           [[ "$EVENT" =~ ^(push|schedule|workflow_dispatch)$ ]] || fail "event $EVENT"
-          [[ "$REF" == refs/heads/main || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
+          [[ "$REF" == refs/heads/main || "$REF" == refs/heads/rc/* || "$REF" == refs/heads/pre-release/* || "$REF" =~ ^refs/tags/(tempo|zones|prover)/v[0-9] ]] || fail "ref $REF"
           [[ "$WORKFLOW_REF" =~ ^[^/]+/[^/]+/\.github/workflows/(docker|zones-docker|prover-release)\.yml@ && "${WORKFLOW_REF%%/.github/*}" == "$REPO" ]] || fail "workflow $WORKFLOW_REF"
           [[ "${WORKFLOW_REF#*@}" == "$REF" ]] || fail "workflow ref $WORKFLOW_REF"
           echo "trusted=true" >> "$GITHUB_OUTPUT"

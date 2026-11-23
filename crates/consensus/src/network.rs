@@ -37,7 +37,7 @@ use crate::{
 /// Panics if the limit does not fit in a `u32`. A limit above the transport maximum makes
 /// starting the p2p network panic instead.
 pub(crate) fn max_message_size(max_participants: NonZeroU32) -> u32 {
-    commonware_p2p::max_message_size(&[
+    commonware_p2p::max_message_size([
         mux::prefixed(
             simplex::max_payload_size::<Scheme<PublicKey, MinSig>, Digest>(max_participants.get()),
         ),

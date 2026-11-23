@@ -37,8 +37,8 @@ impl L1BlockDeposits {
             prepared.enabled_tokens.extend(next.enabled_tokens);
         }
         eyre::ensure!(
-            prepared.queued_deposits.len() <= zone_primitives::constants::MAX_UNPROCESSED_DEPOSITS,
-            "outstanding deposit suffix exceeds protocol capacity"
+            prepared.queued_deposits.len() <= zone_primitives::constants::DEPOSITS_PER_BUCKET,
+            "deposit range exceeds protocol capacity"
         );
         eyre::ensure!(
             prepared.enabled_tokens.len()

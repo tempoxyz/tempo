@@ -26,6 +26,7 @@
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
 //! - **Zone TIP-20** ([`ztip20`]) — upstream TIP-20 with zone call rules.
+//! - **ZoneIdentity** ([`zone_identity`]) — orgs, members, per-token edges and Tempo targets on shared zones.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::too_many_arguments)]
@@ -53,9 +54,11 @@ macro_rules! zone_precompile {
 pub mod error;
 pub use error::{Result, ZonePrecompileError, ZoneResult};
 
+pub mod address_registry;
 mod aes_gcm;
 mod chaum_pedersen;
 pub mod ecies;
+pub mod ff1;
 pub mod outbox;
 
 /// Zone dispatch helpers for generic typed operations.
@@ -78,6 +81,7 @@ pub mod tip403_proxy;
 #[cfg(feature = "std")]
 pub mod tx_context;
 pub mod zone_fee_manager;
+pub mod zone_identity;
 pub mod zone_state;
 pub mod ztip20;
 
@@ -87,6 +91,8 @@ pub use storage::{L1State, L1StateError, L1StorageReader};
 pub use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
 pub use tempo_state::TempoState;
 pub use zone_fee_manager::{ZONE_FEE_MANAGER_ADDRESS, ZoneFeeManager};
+use zone_identity::ZoneIdentity;
+use zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -100,7 +106,9 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
+use tempo_contracts::zones::{
+    TEMPO_STATE_ADDRESS, ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_INBOX_ADDRESS,
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -204,6 +212,7 @@ where
                 &self.env,
                 ztip20::TIP20Rules {
                     l1: self.l1.clone(),
+                    token: address,
                 },
                 |data, caller| {
                     TIP20Token::from_address_unchecked(address)
@@ -238,8 +247,28 @@ where
                 execution::NoCallRules,
                 |data, caller| ZoneInbox::new().call(&self.l1, data, caller),
             )
+        } else if address == ZONE_ADDRESS_REGISTRY_ADDRESS && self.env.spec().is_t15() {
+            execution::execute_precompile(
+                evm,
+                message,
+                gas,
+                &self.env,
+                execution::NoCallRules,
+                |data, caller| {
+                    address_registry::ZoneAddressRegistry::new().call(&self.l1, data, caller)
+                },
+            )
         } else if address == ZONE_FEE_MANAGER_ADDRESS {
             zone_precompile!(evm, message, gas, &self.env, ZoneFeeManager)
+        } else if address == ZONE_IDENTITY_ADDRESS && self.env.spec().is_t15() {
+            execution::execute_precompile(
+                evm,
+                message,
+                gas,
+                &self.env,
+                execution::NoCallRules,
+                |data, caller| ZoneIdentity::new().call(&self.l1, data, caller),
+            )
         } else if address == TIP403_REGISTRY_ADDRESS {
             zone_precompile!(
                 evm,
@@ -341,6 +370,7 @@ pub fn is_zone_precompile(address: Address, spec: TempoHardfork) -> bool {
         | STORAGE_CREDITS_ADDRESS => true,
         // Zones gain these with TIP-1154 at T14, whatever fork activated them on Tempo.
         CONFIGURABLE_ACCOUNT_ADDRESS | SIGNATURE_VERIFIER_ADDRESS => spec.is_t14(),
+        ZONE_IDENTITY_ADDRESS | ZONE_ADDRESS_REGISTRY_ADDRESS => spec.is_t15(),
         _ => false,
     }
 }

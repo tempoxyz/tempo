@@ -1140,7 +1140,8 @@ async fn test_withdrawal_request_finalizes_same_block() -> eyre::Result<()> {
     let withdrawal_tx_hash = requested_log
         .transaction_hash
         .ok_or_else(|| eyre::eyre!("WithdrawalRequested log missing transaction hash"))?;
-    let withdrawal = Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new());
+    let withdrawal =
+        Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new(), 0);
     let expected_hash = Withdrawal::queue_hash(&[withdrawal]);
 
     let finalized_logs = outbox
@@ -1249,6 +1250,7 @@ async fn test_multiple_withdrawals_finalize_in_one_batch() -> eyre::Result<()> {
             requested,
             tx_hash,
             Bytes::new(),
+            0,
         ));
     }
     let expected_hash = Withdrawal::queue_hash(&withdrawals);
@@ -1386,7 +1388,8 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     let withdrawal_tx_hash = requested_log
         .transaction_hash
         .ok_or_else(|| eyre::eyre!("WithdrawalRequested log missing transaction hash"))?;
-    let withdrawal = Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new());
+    let withdrawal =
+        Withdrawal::from_requested_event(requested, withdrawal_tx_hash, Bytes::new(), 0);
     assert_eq!(
         finalized_logs[0].0.withdrawalQueueHash,
         Withdrawal::queue_hash(&[withdrawal])

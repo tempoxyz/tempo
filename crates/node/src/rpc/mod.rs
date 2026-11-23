@@ -453,16 +453,7 @@ where
         overrides: EvmOverrides,
     ) -> Result<U256, Self::Error> {
         let (evm_env, at) = self.evm_env_at(at).await?;
-        let mut fee_payer_access = 0;
-        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) && evm_env.spec.is_t14()
-        {
-            fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
-            request.fee_payer_signature = None;
-            request.inner.gas = request
-                .inner
-                .gas
-                .map(|limit| limit.saturating_sub(fee_payer_access));
-        }
+        let fee_payer_access = strip_fee_payer_marker(&mut request, &evm_env);
         let estimate = self
             .spawn_blocking_io_with_state(at, move |this, state| {
                 this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
@@ -624,6 +615,21 @@ where
 
         Ok(TempoEthApi::new(eth_api))
     }
+}
+
+/// Strips a T14+ [`FEE_PAYER_SIGNATURE_MARKER`] from `request` and lowers its gas limit to match.
+/// Returns the fee payer's access gas to add to the estimate, or zero.
+pub fn strip_fee_payer_marker(request: &mut TempoTransactionRequest, evm_env: &TempoEvmEnv) -> u64 {
+    if request.fee_payer_signature != Some(FEE_PAYER_SIGNATURE_MARKER) || !evm_env.spec.is_t14() {
+        return 0;
+    }
+    let fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
+    request.fee_payer_signature = None;
+    request.inner.gas = request
+        .inner
+        .gas
+        .map(|limit| limit.saturating_sub(fee_payer_access));
+    fee_payer_access
 }
 
 /// Returns the next lane nonce, accounting for pending transactions without regressing state.

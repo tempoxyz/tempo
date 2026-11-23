@@ -137,6 +137,8 @@ fn zone_portal_t13_surface() -> eyre::Result<AbiSurface> {
             zones::LegacyBatchSubmitted::abi().into(),
             ZonePortal::MAX_DEPOSITS_PER_TEMPO_BLOCKCall::abi().into(),
             ZonePortal::MAX_TOKENS_ENABLED_PER_TEMPO_BLOCKCall::abi().into(),
+            ZonePortal::MAX_UNPROCESSED_DEPOSITSCall::abi().into(),
+            ZonePortal::DepositBlockCapacityExceeded::abi().into(),
             zones::legacySubmitBatchCall::abi().into(),
         ]),
     }
