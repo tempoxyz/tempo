@@ -54,7 +54,7 @@ where
 
     peers: Gauge,
 
-    last_tracked_peer_set: Option<LastTrackedPeerSet>,
+    last_tracked_peers: Option<Peers>,
 
     peer_update_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 }
@@ -90,7 +90,7 @@ where
             max_peers,
             mailbox,
             peers,
-            last_tracked_peer_set: None,
+            last_tracked_peers: None,
 
             peer_update_timer,
         }
@@ -145,22 +145,14 @@ where
 
     /// Reads peers at the latest finalized block the executor reported,
     /// whose state the execution layer serves. Does nothing before the first
-    /// report; a failed read is retried on the next peer update.
+    /// report. Called on every report and every peer update, which re-reads
+    /// the latest report, so a failed read is retried there.
     #[instrument(skip_all, err)]
     fn refresh_peers(&mut self) -> eyre::Result<()> {
         let Some(finalized) = self.latest_finalized else {
             return Ok(());
         };
         let highest_finalized = finalized.height.get();
-
-        // Short circuit - no need to read the same state if there is no new data.
-        if self
-            .last_tracked_peer_set
-            .as_ref()
-            .is_some_and(|tracked| tracked.height >= highest_finalized)
-        {
-            return Ok(());
-        }
 
         let epoch_info = self
             .epoch_strategy
@@ -229,8 +221,8 @@ where
             );
         }
 
-        if let Some(tracked) = &self.last_tracked_peer_set {
-            match peers.what_has_changed_compared_to(&tracked.peers) {
+        if let Some(tracked) = &self.last_tracked_peers {
+            match peers.what_has_changed_compared_to(tracked) {
                 WhatHasChanged::Nothing => {}
                 WhatHasChanged::Addresses => {
                     self.oracle.overwrite(peers.to_flat_map());
@@ -243,20 +235,9 @@ where
             self.oracle.track(height, peers.clone());
         }
 
-        // Always bump the last-tracked peer set. If the peers are unchanged
-        // this only updates the height, but we use the height to determine if
-        // state should be read or not.
-        self.last_tracked_peer_set
-            .replace(LastTrackedPeerSet { height, peers });
-
-        if let Some(tracked) = &self.last_tracked_peer_set {
-            self.peers.metric().set(tracked.peers.len() as i64);
-        }
-
-        debug!(
-            last_tracked_peer_set = ?self.last_tracked_peer_set.as_ref().expect("just set it"),
-            "latest tracked peerset",
-        );
+        self.peers.metric().set(peers.len() as i64);
+        debug!(%height, ?peers, "latest tracked peerset");
+        self.last_tracked_peers = Some(peers);
     }
 
     fn reset_peer_update_timer(&mut self) {
@@ -419,12 +400,6 @@ impl PeersBuilder {
         )?;
         Ok(Peers { primary, secondary })
     }
-}
-
-#[derive(Debug)]
-struct LastTrackedPeerSet {
-    height: u64,
-    peers: Peers,
 }
 
 #[instrument(skip_all, fields(height), err)]
@@ -787,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn executor_report_at_or_below_tracked_height_reads_nothing() {
+    fn rereading_an_unchanged_peer_set_tracks_nothing_new() {
         Runner::default().start(|context| async move {
             let oracle = RecordingOracle::default();
             let execution = Arc::new(bootstrap_execution(7, 1));
@@ -796,14 +771,10 @@ mod tests {
                 .handle_message(Span::none(), finalized(&execution))
                 .await
                 .unwrap();
-            let reads = execution.header_reads.lock().unwrap().clone();
 
-            actor
-                .handle_message(Span::none(), finalized(&execution))
-                .await
-                .unwrap();
+            // What the peer update timer does.
+            actor.refresh_peers().unwrap();
 
-            assert_eq!(*execution.header_reads.lock().unwrap(), reads);
             assert_eq!(tracked_heights(&oracle), vec![7]);
         });
     }

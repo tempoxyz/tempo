@@ -38,10 +38,9 @@
 //!
 //! No peers are read before the executor's first report. Peers are read on
 //! every finalized block reported by the executor, and the latest report is
-//! retried every 30 seconds if reading it failed. A new peer set is tracked
-//! under the
-//! finalized height it was read at when its membership changes; when only
-//! addresses change, the existing set's addresses are overwritten.
+//! read again every 30 seconds without a new one. A new peer set is tracked
+//! under the finalized height it was read at when its membership changes;
+//! when only addresses change, the existing set's addresses are overwritten.
 
 use std::{num::NonZeroU32, sync::Arc};
 
