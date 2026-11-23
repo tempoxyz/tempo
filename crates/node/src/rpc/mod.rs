@@ -17,7 +17,7 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::TryFutureExt;
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
-use reth_primitives_traits::{HeaderTy, SealedHeaderFor, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{HeaderTy, Recovered, SealedHeaderFor, TransactionMeta, WithEncoded};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -467,7 +467,21 @@ impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> LoadTransaction for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    fn recover_raw_pooled_transaction(
+        &self,
+        tx: &[u8],
+    ) -> Result<Recovered<TempoTxEnvelope>, EthApiError> {
+        let transaction = self.inner.recover_raw_pooled_transaction(tx)?;
+        if transaction.inner().is_system_tx() {
+            return Err(EthApiError::InvalidTransactionSignature);
+        }
+        Ok(transaction)
+    }
+}
 
 impl<N> EthTransactions for TempoEthApi<N>
 where
