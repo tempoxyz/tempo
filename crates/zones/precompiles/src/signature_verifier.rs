@@ -48,14 +48,17 @@ mod tests {
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ISignatureVerifier;
+    use test_case::test_case;
 
     use crate::{
         test_utils::{test_context, test_storage_provider},
         zone_identity::ZoneIdentity,
     };
 
-    #[test]
-    fn keychain_views_follow_account_read_rules_from_t15() {
+    /// Whether an outsider may call `verifyKeychain` on an org member; the member and admin always may.
+    #[test_case(TempoHardfork::T14 => true)]
+    #[test_case(TempoHardfork::T15 => false)]
+    fn keychain_views_follow_account_read_rules_from_t15(spec: TempoHardfork) -> bool {
         let [owner, admin, outsider] = [0x11, 0x22, 0x33].map(Address::repeat_byte);
         let data = ISignatureVerifier::verifyKeychainCall {
             account: owner,
@@ -64,23 +67,21 @@ mod tests {
         }
         .abi_encode();
 
-        for (spec, outsider_allowed) in [(TempoHardfork::T14, true), (TempoHardfork::T15, false)] {
-            let mut ctx = test_context();
-            ctx.cfg.spec = spec;
-            let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || {
-                let mut identity = ZoneIdentity::new();
-                let org = identity.create_org(admin, admin, admin).unwrap();
-                identity.add_members(admin, org, &[owner]).unwrap();
-                let admits = |caller| {
-                    matches!(
-                        SignatureVerifierRules.admit(&data, caller),
-                        CallCheck::Continue
-                    )
-                };
-                assert!(admits(owner) && admits(admin));
-                assert_eq!(admits(outsider), outsider_allowed);
-            });
-        }
+        let mut ctx = test_context();
+        ctx.cfg.spec = spec;
+        let mut storage = test_storage_provider(&mut ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || {
+            let mut identity = ZoneIdentity::new();
+            let org = identity.create_org(admin, admin, admin).unwrap();
+            identity.add_members(admin, org, &[owner]).unwrap();
+            let admits = |caller| {
+                matches!(
+                    SignatureVerifierRules.admit(&data, caller),
+                    CallCheck::Continue
+                )
+            };
+            assert!(admits(owner) && admits(admin));
+            admits(outsider)
+        })
     }
 }
