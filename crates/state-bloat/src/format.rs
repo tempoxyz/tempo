@@ -5,6 +5,8 @@ use std::io::Read;
 use alloy_primitives::{Address, B256, U256};
 use eyre::{Context as _, ensure};
 
+use crate::contracts::CONTRACTS_FLAG;
+
 /// Visit every storage entry without buffering an entire dump.
 ///
 /// Consumers decide which accounts and slots are allowed. Truncated headers or
@@ -14,7 +16,11 @@ pub fn read_dump(
     mut visit: impl FnMut(Address, B256, U256) -> eyre::Result<()>,
 ) -> eyre::Result<u64> {
     let mut count = 0u64;
-    while let Some((address, pairs)) = read_header(&mut reader)? {
+    while let Some((address, pairs, flags)) = read_header(&mut reader)? {
+        ensure!(
+            flags == 0,
+            "state dump contract ranges need init-from-binary-dump"
+        );
         for _ in 0..pairs {
             let (slot, value) = read_entry(&mut reader)?;
             visit(address, slot, value)?;
@@ -27,7 +33,8 @@ pub fn read_dump(
     Ok(count)
 }
 
-pub(crate) fn read_header(reader: &mut impl Read) -> eyre::Result<Option<(Address, u64)>> {
+/// Read a block header: its address, entry count and flags.
+pub(crate) fn read_header(reader: &mut impl Read) -> eyre::Result<Option<(Address, u64, u16)>> {
     let mut header = [0u8; 40];
     // Only EOF before the first byte denotes the end of a complete dump.
     loop {
@@ -46,11 +53,19 @@ pub(crate) fn read_header(reader: &mut impl Read) -> eyre::Result<Option<(Addres
         u16::from_be_bytes(header[8..10].try_into()?) == 1,
         "unsupported state dump version"
     );
-    ensure!(header[10..12] == [0, 0], "unsupported state dump flags");
+    let flags = u16::from_be_bytes(header[10..12].try_into()?);
+    ensure!(
+        flags == 0 || flags == CONTRACTS_FLAG,
+        "unsupported state dump flags"
+    );
     let address = Address::from_slice(&header[12..32]);
     let pairs = u64::from_be_bytes(header[32..40].try_into()?);
     ensure!(pairs > 0, "empty state dump block");
-    Ok(Some((address, pairs)))
+    ensure!(
+        flags == 0 || (pairs == 1 && address.is_zero()),
+        "invalid contract range block"
+    );
+    Ok(Some((address, pairs, flags)))
 }
 
 pub(crate) fn read_entry(reader: &mut impl Read) -> eyre::Result<(B256, U256)> {
