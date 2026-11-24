@@ -1014,18 +1014,13 @@ where
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
         // Subscribing under the lock orders it before a removal, whose discard is reported once
         // the lock is released.
-        {
-            let aa_2d_pool = self.aa_2d_pool.read();
-            if aa_2d_pool.contains(&tx_hash) {
-                return Some(self.reth_pool.inner().subscribe_transaction_events(tx_hash));
-            }
+        let subscribe = || self.reth_pool.inner().subscribe_transaction_events(tx_hash);
+        if let Some(events) = self.aa_2d_pool.read().contains(&tx_hash).then(subscribe) {
+            return Some(events);
         }
         // A delayed transaction keeps its listener when released, since admission reports the
         // same hash.
-        let delayed_pool = self.delayed_pool.read();
-        delayed_pool
-            .contains(&tx_hash)
-            .then(|| self.reth_pool.inner().subscribe_transaction_events(tx_hash))
+        self.delayed_pool.read().contains(&tx_hash).then(subscribe)
     }
 
     fn all_transactions_event_listener(
