@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -9,8 +9,10 @@ use std::{
 
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
-use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_engine_tree::tree::{CachedStateProvider, SavedCache, bal_prewarm_pool::BalPrewarmPool};
+use reth_evm::{
+    BlockExecutorFactory, ConfigureEvm as _, EvmEnv, EvmEnvFor, database::StateProviderDatabase,
+};
 use reth_evm_ethereum::EvmFactory as _;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerStatefulPool};
@@ -22,6 +24,9 @@ use tempo_transaction_pool::{AASequenceId, StateAwarePoolTransaction, best::Best
 use tracing::{instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
+
+/// Number of threads that load transaction warm targets into the execution cache.
+const TX_WARM_THREADS: usize = 32;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -87,6 +92,11 @@ impl BestTransactionsPrewarming {
     {
         let stateful_pool = WorkerStatefulPool::new(executor.prewarming_pool().clone());
         let pool = &stateful_pool;
+        let tx_warm_pool = ctx.prewarm.tx_warm_pool.clone();
+        let tx_warm_pool = tx_warm_pool
+            .as_ref()
+            .and_then(|tx_warm_pool| ctx.prewarm.begin_tx_warm(tx_warm_pool));
+        let tx_warm_pool = tx_warm_pool.as_deref();
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -99,6 +109,17 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                // Starts loading the transaction's warm targets before its prewarm job is queued,
+                // including for transactions that are not executed by prewarming.
+                if let Some(tx_warm_pool) = tx_warm_pool {
+                    ctx.prewarm.evm_config.tx_warm_targets(
+                        tx.transaction.inner(),
+                        tx.transaction.sender(),
+                        &mut |address, slots| {
+                            tx_warm_pool.warm_account(address, slots.iter().copied())
+                        },
+                    );
+                }
                 let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
@@ -158,6 +179,10 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+
+        if let Some(tx_warm_pool) = tx_warm_pool {
+            tx_warm_pool.end_block();
+        }
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -335,6 +360,19 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     next_expiring_nonce_offset: usize,
 }
 
+/// Pool that loads the targets of [`reth_evm::ConfigureEvm::tx_warm_targets`] into the execution
+/// cache, shared by payload builds.
+///
+/// It serves one build at a time; builds that run while it is in use skip warming.
+#[derive(Debug, Clone)]
+pub(crate) struct TxWarmPool(Arc<Mutex<Arc<BalPrewarmPool>>>);
+
+impl TxWarmPool {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Mutex::new(BalPrewarmPool::new(TX_WARM_THREADS))))
+    }
+}
+
 /// Prewarmed transaction returned from [`BestTransactionsPrewarming`] iterator.
 #[derive(Debug)]
 pub(crate) struct PrewarmedTransaction {
@@ -365,6 +403,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
+    /// Pool that loads transaction warm targets into [`Self::cache`], `None` if disabled.
+    tx_warm_pool: Option<TxWarmPool>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -379,6 +419,7 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         evm_config: TempoEvmConfig,
         parallel: bool,
+        tx_warm_pool: Option<TxWarmPool>,
     ) -> Self {
         Self {
             provider,
@@ -389,6 +430,7 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
+            tx_warm_pool,
         }
     }
 
@@ -440,6 +482,31 @@ where
 
     pub(crate) fn executor(&self) -> TaskExecutor {
         self.executor.clone()
+    }
+
+    /// Starts loading transaction warm targets of this build into the execution cache.
+    ///
+    /// Returns `None` if the execution cache is disabled or another build is using the pool.
+    fn begin_tx_warm<'a>(
+        &self,
+        tx_warm_pool: &'a TxWarmPool,
+    ) -> Option<MutexGuard<'a, Arc<BalPrewarmPool>>> {
+        let cache = self.cache.as_ref()?;
+        let pool = tx_warm_pool.0.try_lock().ok()?;
+        let provider = self.provider.clone();
+        let parent_hash = self.parent_hash;
+        pool.begin_block(
+            Arc::new(move || {
+                Ok(Box::new(
+                    provider
+                        .state_by_block_hash(parent_hash)?
+                        .into_evm_state_provider(),
+                ) as EvmStateProviderBox)
+            }),
+            cache.cache().clone(),
+            None,
+        );
+        Some(pool)
     }
 }
 
@@ -759,6 +826,7 @@ mod tests {
             evm_config,
             stop: Arc::default(),
             parallel,
+            tx_warm_pool: None,
         }
     }
 
