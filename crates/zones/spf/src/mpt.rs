@@ -11,10 +11,10 @@
 
 use alloy_primitives::{
     Address, B256, Bytes, U256, keccak256,
-    map::{B256Map, Entry},
+    map::{B256Map, B256Set, Entry},
 };
 use reth_trie_common::{
-    DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, Nibbles, TrieAccount, TrieNode,
+    DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, Nibbles, RlpNode, TrieAccount, TrieNode,
 };
 use reth_trie_sparse::{LeafUpdate, RevealableSparseTrie, SparseStateTrie, TrieNodeEpoch};
 
@@ -41,6 +41,7 @@ impl StatelessSparseTrie {
         }
 
         guarded(|| {
+            ensure_tries_reference_nodes_once(state_root, nodes)?;
             let multiproof = DecodedMultiProofV2::from_witness(state_root, nodes)
                 .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
             inner
@@ -370,6 +371,74 @@ fn decode_hashed_account(value: &[u8]) -> Result<TrieAccount, StatelessSparseTri
 }
 
 /// Index a flat witness node pool by node hash, rejecting duplicate nodes.
+/// Rejects a witness in which one trie references the same hashed node twice.
+///
+/// Reth's `from_witness` expands every reference to a hashed node separately, so a few branches
+/// whose children all point at the previous branch expand to `16^depth` nodes before the root is
+/// checked. Two paths of one trie can't reach the same hashed node, because trie keys are keccak
+/// hashes, so a repeat within a trie is never an honest witness. Separate storage tries can share
+/// nodes, starting from a common storage root, so each trie is walked with its own visited set.
+fn ensure_tries_reference_nodes_once(
+    state_root: B256,
+    nodes: &B256Map<Bytes>,
+) -> Result<(), StatelessSparseTrieError> {
+    let mut storage_roots = B256Set::default();
+    walk_trie(state_root, nodes, Some(&mut storage_roots))?;
+    for storage_root in storage_roots {
+        walk_trie(storage_root, nodes, None)?;
+    }
+    Ok(())
+}
+
+/// Walks the trie at `root` through the nodes present in `nodes`, failing on a hashed node it
+/// reaches twice. For the account trie, `storage_roots` collects the accounts' storage roots.
+fn walk_trie(
+    root: B256,
+    nodes: &B256Map<Bytes>,
+    mut storage_roots: Option<&mut B256Set>,
+) -> Result<(), StatelessSparseTrieError> {
+    let decode = |bytes: &[u8]| {
+        alloy_rlp::decode_exact::<TrieNode>(bytes)
+            .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)
+    };
+    let mut visited = B256Set::default();
+    let mut pending = Vec::new();
+    let mut resolve = |node_hash: B256, pending: &mut Vec<TrieNode>| {
+        if !visited.insert(node_hash) {
+            return Err(StatelessSparseTrieError::RepeatedTrieNode { node_hash });
+        }
+        if let Some(bytes) = nodes.get(&node_hash) {
+            pending.push(decode(bytes)?);
+        }
+        Ok(())
+    };
+    resolve(root, &mut pending)?;
+    while let Some(node) = pending.pop() {
+        let children: Vec<&RlpNode> = match &node {
+            TrieNode::Branch(branch) => branch.stack.iter().collect(),
+            TrieNode::Extension(extension) => vec![&extension.child],
+            TrieNode::Leaf(leaf) => {
+                if let Some(storage_roots) = storage_roots.as_deref_mut() {
+                    let account = alloy_rlp::decode_exact::<TrieAccount>(&leaf.value)
+                        .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
+                    if account.storage_root != EMPTY_ROOT_HASH {
+                        storage_roots.insert(account.storage_root);
+                    }
+                }
+                Vec::new()
+            }
+            TrieNode::EmptyRoot => Vec::new(),
+        };
+        for child in children {
+            match child.as_hash() {
+                Some(child_hash) => resolve(child_hash, &mut pending)?,
+                None => pending.push(decode(child.as_slice())?),
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn index_witness_nodes(
     node_pool: &[Bytes],
 ) -> Result<B256Map<Bytes>, StatelessSparseTrieError> {
@@ -442,6 +511,9 @@ pub enum StatelessSparseTrieError {
     /// A witness trie node is not valid RLP.
     #[error("invalid RLP-encoded trie node in witness")]
     InvalidNodeEncoding,
+    /// One trie in the witness references the same hashed node more than once.
+    #[error("witness trie references node {node_hash:?} more than once")]
+    RepeatedTrieNode { node_hash: B256 },
     /// The node pool does not provide the node committed by the state root.
     #[error("state root is absent from the node pool: {state_root:?}")]
     MissingStateRootNode { state_root: B256 },
@@ -522,14 +594,25 @@ mod tests {
                 (keccak256(address(index)), alloy_rlp::encode(account))
             })
             .collect::<BTreeMap<_, _>>();
-        accounts.insert(
-            keccak256(with_storage),
-            alloy_rlp::encode(TrieAccount {
-                storage_root,
-                ..Default::default()
-            }),
-        );
-        let read = [address(3), address(499), address(9_999), with_storage];
+        // Two accounts with identical storage share one storage trie, which an honest witness
+        // reaches from both account leaves.
+        let shares_storage = address(2_000_000);
+        for account in [with_storage, shares_storage] {
+            accounts.insert(
+                keccak256(account),
+                alloy_rlp::encode(TrieAccount {
+                    storage_root,
+                    ..Default::default()
+                }),
+            );
+        }
+        let read = [
+            address(3),
+            address(499),
+            address(9_999),
+            with_storage,
+            shares_storage,
+        ];
         let (state_root, account_nodes) = prove(&accounts, &read.map(keccak256));
 
         let pool = account_nodes
@@ -554,6 +637,10 @@ mod tests {
         }
         assert_eq!(
             reader.storage(with_storage, U256::from(7)),
+            Ok(U256::from(7_000))
+        );
+        assert_eq!(
+            trie.storage(shares_storage, U256::from(7)),
             Ok(U256::from(7_000))
         );
         assert_eq!(
@@ -596,6 +683,31 @@ mod tests {
             WitnessPathReader::new(EMPTY_ROOT_HASH, &WitnessNodes::decode(&[]).unwrap())
                 .account(address(3)),
             Ok(None)
+        );
+    }
+
+    #[test]
+    fn sparse_trie_rejects_repeated_node_within_a_trie() {
+        // Each branch points all 16 children at the branch below it: 6 distinct nodes that a
+        // per-reference expansion turns into 16^5 leaves, and that hash to a consistent root.
+        let leaf = alloy_rlp::encode(TrieNode::Leaf(LeafNode::new(
+            Nibbles::from_nibbles([0; 59]),
+            alloy_rlp::encode(TrieAccount::default()),
+        )));
+        let mut pool = vec![Bytes::from(leaf)];
+        for _ in 0..5 {
+            let child = RlpNode::word_rlp(&keccak256(pool.last().unwrap()));
+            let branch =
+                TrieNode::Branch(BranchNode::new(vec![child; 16], TrieMask::new(u16::MAX)));
+            pool.push(alloy_rlp::encode(branch).into());
+        }
+        let root = keccak256(pool.last().unwrap());
+
+        assert_eq!(
+            StatelessSparseTrie::new(root, &index_witness_nodes(&pool).unwrap()).unwrap_err(),
+            StatelessSparseTrieError::RepeatedTrieNode {
+                node_hash: keccak256(&pool[pool.len() - 2])
+            }
         );
     }
 
