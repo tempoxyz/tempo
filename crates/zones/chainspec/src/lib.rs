@@ -58,6 +58,30 @@ impl ZoneChainSpec {
         Ok(Self::from_explicit_genesis(genesis))
     }
 
+    /// Returns this chain specification with the given Tempo fork schedule of its L1.
+    ///
+    /// The schedule replaces every Tempo fork activation: scheduled forks activate at the
+    /// reported times and all others are disabled. Ethereum activations are kept.
+    pub fn with_l1_fork_schedule(
+        &self,
+        schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
+    ) -> Result<Self, ZoneChainSpecError> {
+        let mut genesis = self.inner.genesis().clone();
+        let schedule: std::collections::HashMap<_, _> = schedule.into_iter().collect();
+        for fork in TempoHardfork::VARIANTS {
+            if let Some(key) = fork.genesis_key() {
+                let activation = schedule
+                    .get(fork)
+                    .map_or(serde_json::Value::Null, |&time| time.into());
+                genesis
+                    .config
+                    .extra_fields
+                    .insert(key.to_owned(), activation);
+            }
+        }
+        Ok(Self::from_explicit_genesis(genesis))
+    }
+
     /// Zone identifier encoded in the genesis chain ID.
     pub fn zone_id(&self) -> u32 {
         decode_zone_chain_id(self.inner.genesis().config.chain_id)
@@ -478,5 +502,32 @@ mod tests {
             .extra_fields
             .insert("t13Time".into(), serde_json::Value::Null);
         genesis
+    }
+
+    #[test]
+    fn l1_schedule_replaces_genesis_fork_fields() {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(31_318, 4).unwrap();
+        genesis
+            .config
+            .extra_fields
+            .insert("t12Time".into(), serde_json::json!(500));
+        genesis
+            .config
+            .extra_fields
+            .insert("t13Time".into(), serde_json::json!(0));
+        let schedule = TempoHardfork::VARIANTS
+            .iter()
+            .copied()
+            .filter(|&fork| fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12)
+            .map(|fork| (fork, if fork == TempoHardfork::T12 { 300 } else { 0 }));
+        let zone = ZoneChainSpec::from_genesis(genesis)
+            .unwrap()
+            .with_l1_fork_schedule(schedule)
+            .unwrap();
+
+        assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
+        assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);
+        assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
     }
 }
