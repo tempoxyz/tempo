@@ -97,7 +97,7 @@ pub struct TempoPoolUpdates {
     pub fee_balance_changes: AddressMap<AddressSet>,
     /// Accounts whose reserved amount of a token was raised or adjusted (TIP-1153), keyed by token.
     ///
-    /// From T16 a new or larger hold moves funds out of the account's balance slot without a
+    /// From T15 a new or larger hold moves funds out of the account's balance slot without a
     /// `Transfer` log. Other reservation operations that lower the balance move tokens and are
     /// tracked in `fee_balance_changes`.
     pub reservation_changes: AddressMap<AddressSet>,
@@ -752,7 +752,7 @@ where
                                     .get(token)
                                     .and_then(|account| account.storage.get(&slot))
                                     .is_some_and(|value| {
-                                        // (+T16) The balance slot excludes reserved funds, so
+                                        // (+T15) The balance slot excludes reserved funds, so
                                         // holds change it like any debit.
                                         let had_sufficient_balance = value.original_value() >= fee;
                                         let has_sufficient_balance = value.present_value >= fee;
@@ -761,7 +761,7 @@ where
                                 {
                                     return true;
                                 }
-                                // (+T16) Holds change the payable balance without Transfer logs.
+                                // (+T15) Holds change the payable balance without Transfer logs.
                                 if updates
                                     .reservation_changes
                                     .get(token)

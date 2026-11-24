@@ -269,7 +269,7 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     ///
-    /// (+T16) Includes the amount `account` holds through [`Reservations`], which is kept outside
+    /// (+T15) Includes the amount `account` holds through [`Reservations`], which is kept outside
     /// the spendable balance.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.balances[call.account]
@@ -683,7 +683,7 @@ impl TIP20Token {
     /// Requires `BURN_AT_ROLE` and an unpaused token. When `from` is the transaction origin,
     /// the burn consumes the access key's spending limit even if a bridge is the caller.
     ///
-    /// (+T16) Burns only `from`'s free balance, never funds it reserved through
+    /// (+T15) Burns only `from`'s free balance, never funds it reserved through
     /// [`Reservations`], unless the transfer policy blocks `from` as a sender: then it is a
     /// compliance burn and may take hold reservations as `burnBlocked` does.
     pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
@@ -1514,14 +1514,14 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Whether `balanceOf` and burns consult the [`Reservations`] precompile: from T16, on L1 and
+    /// Whether `balanceOf` and burns consult the [`Reservations`] precompile: from T15, on L1 and
     /// on zones, which run the same reservation core over their private balances.
     fn reservations_active(&self) -> bool {
-        self.storage.spec().is_t16()
+        self.storage.spec().is_t15()
     }
 
     /// Returns the amount of this token `account` has reserved through [`Reservations`]: zero
-    /// before T16.
+    /// before T15.
     ///
     /// Reserved funds sit outside `balances`, so debits never read this; only `balanceOf` adds it.
     pub fn reserved_balance(&self, account: Address) -> Result<U256> {
@@ -1533,8 +1533,8 @@ impl TIP20Token {
         ))
     }
 
-    /// (+T16) What a burn of `amount` from `from` needs beyond its balance slot, which reserved
-    /// funds could cover; zero before T16, when nothing is reserved.
+    /// (+T15) What a burn of `amount` from `from` needs beyond its balance slot, which reserved
+    /// funds could cover; zero before T15, when nothing is reserved.
     fn burn_beyond_balance(&self, from: Address, amount: U256) -> Result<U256> {
         if !self.reservations_active() {
             return Ok(U256::ZERO);

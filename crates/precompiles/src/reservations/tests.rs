@@ -294,12 +294,12 @@ impl Fixture {
 }
 
 fn new_storage() -> HashMapStorageProvider {
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T16);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
     storage.set_timestamp(U256::from(NOW));
     storage
 }
 
-/// Runs the closure at T16 with the block timestamp at NOW.
+/// Runs the closure at T15 with the block timestamp at NOW.
 fn at_fork(f: impl FnOnce() -> eyre::Result<()>) -> eyre::Result<()> {
     let mut storage = new_storage();
     StorageCtx::enter(&mut storage, f)

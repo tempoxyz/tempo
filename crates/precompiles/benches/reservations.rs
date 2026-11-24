@@ -60,7 +60,7 @@ impl Call {
     }
 }
 
-/// T16 state with a funded TIP-20 token, an initialized reservations precompile, and a holder
+/// T15 state with a funded TIP-20 token, an initialized reservations precompile, and a holder
 /// the owner approved without limit.
 struct World {
     storage: HashMapStorageProvider,
@@ -69,7 +69,7 @@ struct World {
 
 impl World {
     fn new(policies: bool) -> Self {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T16);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
         storage.set_timestamp(U256::from(NOW));
         let token = StorageCtx::enter(&mut storage, || {
             let mut setup = TIP20Setup::create("Core USD", "CUSD", ADMIN).with_issuer(ADMIN);

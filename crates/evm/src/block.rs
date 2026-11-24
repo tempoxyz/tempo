@@ -332,13 +332,13 @@ pub struct TempoBlockExecutor<'a> {
     block_gas_used: u64,
 }
 
-/// Applies the state changes the T16 fork makes, on Tempo L1 and on zones alike: the reservation
+/// Applies the state changes the T15 fork makes, on Tempo L1 and on zones alike: the reservation
 /// core's account gets its native-precompile marker, so its storage is never cleared as an empty
-/// account's. Does nothing before T16, and changes nothing once applied.
-pub fn apply_t16_state_changes(
+/// account's. Does nothing before T15, and changes nothing once applied.
+pub fn apply_t15_state_changes(
     executor: &mut EthBlockExecutor<'_, TempoEvmTypes, TempoReceiptBuilder>,
 ) -> Result<(), BlockExecutionError> {
-    if !executor.evm().config_spec_id().is_t16() {
+    if !executor.evm().config_spec_id().is_t15() {
         return Ok(());
     }
     deploy_precompile_at_boundary(executor, RESERVATIONS_ADDRESS, &[])
@@ -910,7 +910,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t14() {
             self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
         }
-        apply_t16_state_changes(&mut self.inner)?;
+        apply_t15_state_changes(&mut self.inner)?;
         // Chains starting at a runtime-upgrade fork supply its runtime code in genesis. Preserve
         // those allocations (including locally compiled contracts on test chains). Chains that
         // activate the fork later follow the normal runtime upgrade path. Only the newest live
@@ -3031,9 +3031,9 @@ mod tests {
     }
 
     #[test]
-    fn test_reservation_core_marker_is_deployed_at_t16_not_t15() {
+    fn test_reservation_core_marker_is_deployed_at_t15_not_t14() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
-        for (spec, marked) in [(TempoHardfork::T15, false), (TempoHardfork::T16, true)] {
+        for (spec, marked) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
             let mut db = InMemoryDB::default();
             let mut executor = TestExecutorBuilder::default()
                 .with_parent_beacon_block_root(B256::ZERO)
@@ -3155,7 +3155,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
-            for fork in ["t14Time", "t15Time", "t16Time"] {
+            for fork in ["t14Time", "t15Time"] {
                 genesis
                     .config
                     .extra_fields
@@ -3236,10 +3236,6 @@ mod tests {
             .config
             .extra_fields
             .insert("t15Time".into(), serde_json::Value::Null);
-        genesis
-            .config
-            .extra_fields
-            .insert("t16Time".into(), serde_json::Value::Null);
         for (key, activation) in [("t13Time", t13_activation), ("t14Time", t14_activation)] {
             genesis
                 .config
@@ -3301,10 +3297,6 @@ mod tests {
                 .insert_value(fork.into(), activation)
                 .unwrap();
         }
-        genesis
-            .config
-            .extra_fields
-            .insert("t16Time".into(), serde_json::Value::Null);
         let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
         let mut db = InMemoryDB::default();
         let mut executor = TestExecutorBuilder::default()

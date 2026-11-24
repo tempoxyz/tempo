@@ -4658,8 +4658,8 @@ fn test_fee_fallback_before_t13_remains_path_usd_only() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_token_balance_excludes_reserved_funds_from_t16() -> eyre::Result<()> {
-    let spec = TempoHardfork::T16;
+fn test_token_balance_excludes_reserved_funds_from_t15() -> eyre::Result<()> {
+    let spec = TempoHardfork::T15;
     let (mut evm, payer, tokens) = create_fee_fallback_evm(spec, [2_000_000, 3_000_000], 0)?;
     // Reserving moves funds out of the balance slot, which then holds the spendable amount.
     with_fee_fallback_storage(&mut evm, || {
@@ -4673,9 +4673,9 @@ fn test_token_balance_excludes_reserved_funds_from_t16() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_fee_fallback_skips_reserved_funds_from_t16() -> eyre::Result<()> {
+fn test_fee_fallback_skips_reserved_funds_from_t15() -> eyre::Result<()> {
     let (mut evm, payer, tokens) =
-        create_fee_fallback_evm(TempoHardfork::T16, [2_000_000, 3_000_000], 1)?;
+        create_fee_fallback_evm(TempoHardfork::T15, [2_000_000, 3_000_000], 1)?;
     let reserved = U256::from(1_500_000);
     with_fee_fallback_storage(&mut evm, || {
         Reservations::new().set_reserved_unchecked(payer, tokens[0], reserved.to())
@@ -4769,7 +4769,7 @@ fn test_reservation_core_gas() -> eyre::Result<()> {
     use tempo_contracts::precompiles::IReservationCore::{self, HoldRequest};
 
     let (mut evm, owner, tokens) =
-        create_fee_fallback_evm(TempoHardfork::T16, [100_000_000, 100_000_000], 0)?;
+        create_fee_fallback_evm(TempoHardfork::T15, [100_000_000, 100_000_000], 0)?;
     // Fixed accounts and ids keep calldata, and so the snapshot, the same on every run.
     let (payee, holder) = (Address::repeat_byte(0x11), Address::repeat_byte(0x22));
     fund_account(&mut evm, payee);

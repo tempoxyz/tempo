@@ -27,7 +27,7 @@ use tempo_contracts::{
     zones::{IZoneInbox, IZoneOutbox, TempoAdvanced},
 };
 use tempo_evm::{
-    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, apply_t16_state_changes,
+    TempoBlockExecutionCtx, TempoEvmTypes, TempoReceiptBuilder, apply_t15_state_changes,
     deploy_precompile_at_boundary,
 };
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
@@ -313,7 +313,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
                 self.remove_t15_predeploys()?;
                 self.deploy_t15_precompiles()?;
             }
-            apply_t16_state_changes(&mut self.inner)?;
+            apply_t15_state_changes(&mut self.inner)?;
             Ok(())
         } else {
             self.inner.apply_pre_execution_changes()
@@ -1674,22 +1674,16 @@ mod tests {
                     "{address} at {fork:?}"
                 );
             }
-            // The reservation core's marker waits for T16.
-            let core = db.get_account(&RESERVATIONS_ADDRESS).unwrap();
-            assert!(
-                core.is_none_or(|info| info.is_empty_code_hash()),
-                "reservation core at {fork:?}"
-            );
         }
     }
 
     #[test]
-    fn t16_gives_the_reservation_core_its_marker() {
+    fn t15_gives_the_reservation_core_its_marker() {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
         let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
         let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
-        for (fork, marked) in [(TempoHardfork::T15, false), (TempoHardfork::T16, true)] {
+        for (fork, marked) in [(TempoHardfork::T14, false), (TempoHardfork::T15, true)] {
             let mut db = InMemoryDB::default();
             let evm = config.evm_with_env(
                 &mut db,

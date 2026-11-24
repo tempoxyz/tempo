@@ -3,9 +3,9 @@
 //! A zone runs the same core as Tempo L1 over its private TIP-20 balances, so private payments hold,
 //! capture and refund as public ones do. Three zone rules sit in front of it:
 //!
-//! - A state change that moves or reserves funds inside the zone needs T16 and the portal admin's
+//! - A state change that moves or reserves funds inside the zone needs T15 and the portal admin's
 //!   transfer opt-in, as a zone-internal TIP-20 transfer does. Returning reserved funds to the
-//!   owner's own balance (`release`, `releaseExpired` and `adjust` down) needs only T16, so turning
+//!   owner's own balance (`release`, `releaseExpired` and `adjust` down) needs only T15, so turning
 //!   transfers off never keeps them out of reach of a withdrawal.
 //! - Reads are private. A view about an owner answers only the owner and the counterparties that
 //!   owner chose: a hold's placer and payee, a holder the owner approved, a payee the owner set a
@@ -44,9 +44,9 @@ pub(crate) struct ReservationRules<P> {
 }
 
 impl<P: L1StorageReader> ReservationRules<P> {
-    /// Admits a state change: T16 and the portal admin's transfer opt-in.
+    /// Admits a state change: T15 and the portal admin's transfer opt-in.
     fn admit_write(&self) -> Result<CallCheck> {
-        if !StorageCtx::default().spec().is_t16() || !self.transfers_enabled()? {
+        if !StorageCtx::default().spec().is_t15() || !self.transfers_enabled()? {
             return Ok(unauthorized());
         }
         Ok(CallCheck::Continue)
@@ -94,7 +94,7 @@ impl<P: L1StorageReader> ReservationRules<P> {
     /// record is live, expired or missing, so it learns nothing about records it cannot act on;
     /// only `releaseExpired` of an expired record is open to anyone. A call that may move or
     /// reserve funds needs the transfer opt-in; returning reserved funds to the owner's own balance
-    /// needs only T16.
+    /// needs only T15.
     fn admit_record(
         &self,
         caller: Address,
@@ -103,7 +103,7 @@ impl<P: L1StorageReader> ReservationRules<P> {
         placer: Address,
         id: B256,
     ) -> Result<CallCheck> {
-        if !StorageCtx::default().spec().is_t16() {
+        if !StorageCtx::default().spec().is_t15() {
             return Ok(unauthorized());
         }
         let hold = Reservations::new().get_hold(owner, placer, id)?;
@@ -340,7 +340,7 @@ mod tests {
             (tolerance.clone(), PAYEE),
             (tolerance, OUTSIDER),
         ];
-        let checks = admit_all(&rules(true), TempoHardfork::T16, &calls);
+        let checks = admit_all(&rules(true), TempoHardfork::T15, &calls);
         let admitted: Vec<bool> = checks.iter().map(allowed).collect();
         assert_eq!(
             admitted,
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn unapproved_placers_learn_nothing_about_the_owner_balance() {
         let rules = rules(true);
-        let outcomes = in_zone(TempoHardfork::T16, || {
+        let outcomes = in_zone(TempoHardfork::T15, || {
             let expires_at = StorageCtx::default().timestamp().saturating_to::<u64>() + 3600;
             [1u128, 900, 10_000]
                 .into_iter()
@@ -410,8 +410,8 @@ mod tests {
         );
     }
 
-    #[test_case(TempoHardfork::T16, true, true)]
-    #[test_case(TempoHardfork::T16, false, false)]
+    #[test_case(TempoHardfork::T15, true, true)]
+    #[test_case(TempoHardfork::T15, false, false)]
     fn writes_require_the_portal_transfer_opt_in(
         spec: TempoHardfork,
         transfers_enabled: bool,
@@ -473,7 +473,7 @@ mod tests {
         for transfers_enabled in [true, false] {
             let rules = rules(transfers_enabled);
             for seconds in [0, 3_600] {
-                let checks = in_zone_after(TempoHardfork::T16, seconds, || {
+                let checks = in_zone_after(TempoHardfork::T15, seconds, || {
                     [B256::repeat_byte(1), B256::repeat_byte(2)]
                         .into_iter()
                         .flat_map(|id| record_calls(id, 1))
@@ -514,7 +514,7 @@ mod tests {
                 .unwrap()
         };
 
-        let reserved = in_zone(TempoHardfork::T16, || {
+        let reserved = in_zone(TempoHardfork::T15, || {
             let checks = [
                 rules.admit(&lower, HOLDER),
                 rules.admit(&release, HOLDER),
@@ -536,7 +536,7 @@ mod tests {
         });
         assert_eq!(reserved, 0);
 
-        let (checks, reserved, balance) = in_zone_after(TempoHardfork::T16, 3_600, || {
+        let (checks, reserved, balance) = in_zone_after(TempoHardfork::T15, 3_600, || {
             let checks = [OWNER, HOLDER, PAYEE, OUTSIDER]
                 .map(|caller| rules.admit(&release_expired, caller));
             Reservations::new()
@@ -574,7 +574,7 @@ mod tests {
 
         let checks = admit_all(
             &rules,
-            TempoHardfork::T16,
+            TempoHardfork::T15,
             &[
                 (live.clone(), OUTSIDER),
                 (missing.clone(), OUTSIDER),
@@ -587,14 +587,14 @@ mod tests {
         assert!(refused(&checks[1]));
         assert!(checks[2..].iter().all(allowed));
         // The core answers a missing hold the same way, so a stranger reads one outcome.
-        assert!(in_zone(TempoHardfork::T16, || {
+        assert!(in_zone(TempoHardfork::T15, || {
             matches!(
                 Reservations::new().call(&missing, OUTSIDER),
                 Err(PrecompileError::Revert(output)) if output.as_ref() == not_found.as_slice()
             )
         }));
 
-        let checks = in_zone_after(TempoHardfork::T16, 3_600, || {
+        let checks = in_zone_after(TempoHardfork::T15, 3_600, || {
             [(live.clone(), OUTSIDER), (missing.clone(), OUTSIDER)]
                 .iter()
                 .map(|(data, caller)| rules.admit(data, *caller))
