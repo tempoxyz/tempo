@@ -1,6 +1,12 @@
 //! Tempo Zone CLI.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
@@ -39,6 +45,8 @@ use zone_sequencer::{
 const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
 const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
 const L1_OFFLINE: &str = "l1.offline";
+/// How often a zone on a custom parent re-reads the L1 fork schedule while it runs.
+const L1_FORK_SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
 
@@ -167,30 +175,10 @@ impl ZoneCli {
     }
 }
 
-/// How often a zone on a custom parent re-reads the L1 fork schedule while it runs.
-const L1_FORK_SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Connects to the L1 RPC and checks that it serves the zone's parent chain.
-async fn connect_l1(
-    l1_rpc_url: &str,
-    parent_chain_id: u64,
-) -> eyre::Result<impl Provider<TempoNetwork>> {
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .connect(l1_rpc_url)
-        .await
-        .map_err(|error| eyre::eyre!("failed connecting to the L1 RPC: {error}"))?;
-    let chain_id = provider.get_chain_id().await?;
-    eyre::ensure!(
-        chain_id == parent_chain_id,
-        "L1 RPC chain ID {chain_id} does not match the zone's parent chain ID {parent_chain_id}"
-    );
-    Ok(provider)
-}
-
 /// Reads the Tempo fork activations an L1 reports through `tempo_forkSchedule`, by fork name.
 async fn read_l1_fork_schedule(
     provider: &impl Provider<TempoNetwork>,
-) -> eyre::Result<Vec<(String, u64)>> {
+) -> eyre::Result<BTreeMap<String, u64>> {
     let schedule = provider
         .get_fork_schedule()
         .await
@@ -202,44 +190,94 @@ async fn read_l1_fork_schedule(
         .collect())
 }
 
-/// Parses an L1 fork schedule, failing on forks this binary does not know.
-fn parse_l1_fork_schedule(schedule: &[(String, u64)]) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
-    schedule
-        .iter()
-        .map(|(name, time)| {
-            let fork = name.parse::<TempoHardfork>().map_err(|_| {
-                eyre::eyre!("L1 schedules unsupported Tempo fork {name}; update the zone binary")
-            })?;
-            Ok((fork, *time))
-        })
-        .collect()
+/// Returns the fork schedule a zone on a custom parent runs with: the L1's forks this binary
+/// knows.
+///
+/// A fork this binary does not know is skipped while it activates after `exit_deadline`; the
+/// watcher stops the node before it activates. One activating sooner needs a newer binary.
+fn known_l1_forks(
+    schedule: &BTreeMap<String, u64>,
+    exit_deadline: u64,
+) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
+    let mut forks = Vec::new();
+    for (name, &time) in schedule {
+        match name.parse::<TempoHardfork>() {
+            Ok(fork) => forks.push((fork, time)),
+            Err(_) if time > exit_deadline => {
+                warn!(target: "reth::cli", fork = %name, time, "L1 schedules a Tempo fork this binary does not know; update the zone binary before it activates")
+            }
+            Err(_) => {
+                eyre::bail!("L1 schedules unsupported Tempo fork {name}; update the zone binary")
+            }
+        }
+    }
+    Ok(forks)
 }
 
-/// Re-reads the L1 fork schedule and returns an error once it differs from `schedule`, the one
-/// the node started with.
+/// Returns the earliest time a fork changed between two L1 fork schedules takes effect under
+/// either of them, or `None` when they agree.
+fn earliest_changed_activation(
+    old: &BTreeMap<String, u64>,
+    new: &BTreeMap<String, u64>,
+) -> Option<u64> {
+    old.keys()
+        .chain(new.keys())
+        .filter(|name| old.get(*name) != new.get(*name))
+        .flat_map(|name| {
+            [old.get(name), new.get(name)]
+                .into_iter()
+                .flatten()
+                .copied()
+        })
+        .min()
+}
+
+/// The latest wall-clock time, in seconds, at which the watcher may still let the node run
+/// under the current fork schedule.
+fn exit_deadline() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (now + 2 * L1_FORK_SCHEDULE_POLL_INTERVAL).as_secs()
+}
+
+/// Re-reads the L1 fork schedule and returns an error once a fork changed from `schedule`, the
+/// one the node started with, takes effect before the next poll could catch it.
 ///
 /// The node reads the schedule only at startup, so without this a node running across an L1
-/// reschedule would keep building blocks under the old fork rules and reinterpret them under the
-/// new ones after its next restart. Exiting makes it adopt the new schedule before it builds
-/// further blocks. Failed reads are logged and retried.
+/// reschedule would build blocks under the old fork rules and reinterpret them under the new
+/// ones after its next restart. A change that takes effect later is only logged: no block
+/// depends on it yet, and a one-off answer from a lagging L1 backend doesn't restart the node.
+/// Failed reads are logged and retried.
 async fn watch_l1_fork_schedule(
     provider: impl Provider<TempoNetwork>,
-    schedule: Vec<(String, u64)>,
+    schedule: BTreeMap<String, u64>,
 ) -> eyre::Result<()> {
     loop {
         tokio::time::sleep(L1_FORK_SCHEDULE_POLL_INTERVAL).await;
-        match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider)).await
-        {
-            Ok(Ok(current)) if current != schedule => eyre::bail!(
-                "the L1 Tempo fork schedule changed from {schedule:?} to {current:?}; restarting \
-                 the zone node adopts it"
-            ),
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule")
-            }
-            Err(_) => warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule"),
-        }
+        let current =
+            match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider))
+                .await
+            {
+                Ok(Ok(current)) => current,
+                Ok(Err(error)) => {
+                    warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule");
+                    continue;
+                }
+                Err(_) => {
+                    warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule");
+                    continue;
+                }
+            };
+        let Some(activation) = earliest_changed_activation(&schedule, &current) else {
+            continue;
+        };
+        eyre::ensure!(
+            activation > exit_deadline(),
+            "the L1 Tempo fork schedule changed from {schedule:?} to {current:?} for a fork \
+             activating at {activation}; restarting the zone node adopts it"
+        );
+        warn!(target: "reth::cli", ?current, activation, "The L1 Tempo fork schedule changed; the zone node exits before the change takes effect");
     }
 }
 
@@ -265,6 +303,10 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         (evm_config, ZoneConsensus::new(spec))
     };
 
+    // Set when the node stops for an L1 fork schedule change. The command returns `Ok` then, so
+    // the runner still shuts the node down gracefully, and the reason is returned afterwards.
+    let restart_reason = Arc::new(OnceLock::<eyre::Report>::new());
+    let command_restart_reason = restart_reason.clone();
     cli.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
         info!(target: "reth::cli", "Launching Tempo Zone node");
 
@@ -275,18 +317,32 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         // Zones on mainnet, testnet and local dev parents keep the schedule the chain spec
         // parser built from the compiled parent schedule. Zones on other parents follow the
         // schedule their L1 reports at startup for every fork not active at genesis; a genesis
-        // field for a fork active at genesis must agree with it. They exit when the L1's
-        // schedule changes, so a restart adopts it.
+        // field for a fork active at genesis must agree with it. They exit before a change to
+        // the L1's schedule takes effect, so a restart adopts it.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
         let fork_schedule_watch = if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
             let (provider, raw_schedule) = tokio::time::timeout(Duration::from_secs(30), async {
-                let provider = connect_l1(&args.l1_rpc_url, parent_chain_id).await?;
+                let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect_with_config(
+                        &args.l1_rpc_url,
+                        crate::rpc::rpc_connection_config(Duration::from_millis(
+                            args.l1_retry_connection_interval_ms,
+                        )),
+                    )
+                    .await
+                    .map_err(|error| eyre::eyre!("failed connecting to the L1 RPC: {error}"))?;
+                let chain_id = provider.get_chain_id().await?;
+                eyre::ensure!(
+                    chain_id == parent_chain_id,
+                    "L1 RPC chain ID {chain_id} does not match the zone's parent chain ID \
+                     {parent_chain_id}"
+                );
                 let schedule = read_l1_fork_schedule(&provider).await?;
                 eyre::Ok((provider, schedule))
             })
             .await
             .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
-            let schedule = parse_l1_fork_schedule(&raw_schedule)?;
+            let schedule = known_l1_forks(&raw_schedule, exit_deadline())?;
             info!(
                 target: "reth::cli",
                 parent_chain_id,
@@ -378,9 +434,18 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         };
         tokio::select! {
             result = run => result,
-            result = fork_schedule_watch => result,
+            result = fork_schedule_watch => {
+                if let Err(error) = result {
+                    command_restart_reason.get_or_init(|| error);
+                }
+                Ok(())
+            }
         }
-    })
+    })?;
+    if let Some(reason) = restart_reason.get() {
+        eyre::bail!("{reason}");
+    }
+    Ok(())
 }
 
 /// Rejects block-executing subcommands that would otherwise run without L1 access implicitly.
@@ -980,30 +1045,54 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn fork_schedule_watch_exits_only_when_the_l1_schedule_changes() {
-        let schedule = |t12: u64| {
-            serde_json::json!({ "active": "T11", "schedule": [
-                { "name": "T11", "activationTime": 20, "active": true },
-                { "name": "T12", "activationTime": t12, "active": false }
-            ] })
+    async fn fork_schedule_watch_exits_before_a_change_takes_effect() {
+        let now = exit_deadline() - 2 * L1_FORK_SCHEDULE_POLL_INTERVAL.as_secs();
+        let day = 86_400;
+        let schedule = |t12: u64, unknown: Option<u64>| {
+            let mut forks = vec![
+                serde_json::json!({ "name": "T11", "activationTime": 20, "active": true }),
+                serde_json::json!({ "name": "T12", "activationTime": t12, "active": false }),
+            ];
+            forks.extend(unknown.map(|time| {
+                serde_json::json!({ "name": "T999", "activationTime": time, "active": false })
+            }));
+            serde_json::json!({ "active": "T11", "schedule": forks })
         };
         let asserter = alloy_provider::mock::Asserter::new();
-        asserter.push_success(&schedule(200));
+        asserter.push_success(&schedule(now + day, None));
         asserter.push_failure_msg("L1 unavailable");
-        asserter.push_success(&schedule(300));
+        asserter.push_success(&schedule(now + 2 * day, Some(now + 3 * day)));
+        asserter.push_success(&schedule(now + 60, None));
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(asserter.clone());
-        let started_with = vec![("T11".to_owned(), 20), ("T12".to_owned(), 200)];
+        let started_with = BTreeMap::from([("T11".to_owned(), 20), ("T12".to_owned(), now + day)]);
 
-        // An unchanged schedule and a failed read keep the node running; the rescheduled T12
-        // stops it.
+        // An unchanged schedule, a failed read, and changes taking effect in days keep the node
+        // running; T12 moved to activate within the next minute stops it.
         let watch = watch_l1_fork_schedule(provider, started_with);
-        let error = tokio::time::timeout(4 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
+        let error = tokio::time::timeout(5 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
             .await
-            .expect("the rescheduled fork must stop the node")
+            .expect("the imminent T12 must stop the node")
             .unwrap_err();
         assert!(asserter.read_q().is_empty());
-        assert!(error.to_string().contains("300"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("activating at {}", now + 60)),
+            "{error}"
+        );
+    }
+
+    #[test_case(501 => Ok(vec![(TempoHardfork::T11, 20)]))]
+    #[test_case(500 => Err("L1 schedules unsupported Tempo fork T999; update the zone binary".to_owned()))]
+    fn known_l1_forks_skip_unknown_forks_until_the_exit_deadline(
+        unknown_fork_time: u64,
+    ) -> Result<Vec<(TempoHardfork, u64)>, String> {
+        let schedule = BTreeMap::from([
+            ("T11".to_owned(), 20),
+            ("T999".to_owned(), unknown_fork_time),
+        ]);
+        known_l1_forks(&schedule, 500).map_err(|error| error.to_string())
     }
 
     #[test]
