@@ -229,8 +229,8 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
 
-        // Zones on mainnet and testnet keep the schedule the chain spec parser built: genesis
-        // fork fields, with missing ones inherited from the compiled parent schedule. Zones on
+        // Zones on mainnet and testnet keep the schedule the chain spec parser built: the
+        // compiled parent schedule, which genesis fork fields must match. Zones on
         // other parents follow the schedule their L1 reports, read once at startup, and ignore
         // Tempo fork fields in the Zone genesis.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;

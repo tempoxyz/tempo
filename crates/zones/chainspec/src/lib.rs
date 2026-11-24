@@ -38,8 +38,13 @@ impl ZoneChainSpec {
     ///
     /// Known public and local development chains inherit their parent schedule. Custom chains
     /// use only the supplied genesis, so dependency updates cannot activate omitted forks.
+    /// On mainnet and testnet, a Tempo fork field that disagrees with the parent's compiled
+    /// schedule is rejected.
     pub fn from_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
         let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
+        if let Some(parent) = chainspec_from_chain_id(parent_chain_id) {
+            ensure_parent_fork_schedule(&genesis, &parent)?;
+        }
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
             return Self::from_genesis_with_l1(genesis, parent.as_ref());
         }
@@ -95,6 +100,35 @@ impl ZoneChainSpec {
             inner: Arc::new(zone),
         }
     }
+}
+
+/// Rejects Tempo fork fields that disagree with a public parent's compiled schedule.
+///
+/// The prover enclave replays Zone batches under the parent's compiled schedule, so a node
+/// following different activations would build blocks the enclave cannot prove. Inheriting the
+/// parent's value instead would silently change how blocks already past that time execute.
+fn ensure_parent_fork_schedule(
+    genesis: &Genesis,
+    parent: &TempoChainSpec,
+) -> Result<(), ZoneChainSpecError> {
+    for &fork in TempoHardfork::VARIANTS {
+        let Some(value) = fork
+            .genesis_key()
+            .and_then(|key| genesis.config.extra_fields.get(key))
+        else {
+            continue;
+        };
+        let parent_activation = parent.tempo_fork_activation(fork).as_timestamp();
+        let zone_activation = value.as_u64();
+        if zone_activation != parent_activation || (zone_activation.is_none() && !value.is_null()) {
+            return Err(ZoneChainSpecError::ParentForkMismatch {
+                fork,
+                zone: value.clone(),
+                parent: parent_activation,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Fills missing fork activation fields in the Zone genesis from its parent.
@@ -254,6 +288,20 @@ pub enum ZoneChainSpecError {
     /// The inherited parent fork activations could not be applied to the Zone genesis.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
+    /// A Zone genesis fork field disagrees with its public parent's compiled schedule.
+    #[error(
+        "Zone genesis sets {fork:?} activation to {zone}, but its parent schedules it at {}; \
+         remove the field or match the parent",
+        .parent.map_or_else(|| "never".to_owned(), |time| time.to_string())
+    )]
+    ParentForkMismatch {
+        /// The disagreeing fork.
+        fork: TempoHardfork,
+        /// The Zone genesis value.
+        zone: serde_json::Value,
+        /// The parent's activation timestamp, if scheduled.
+        parent: Option<u64>,
+    },
 }
 
 /// Returns the Tempo chain specification whose hardfork schedule a parent uses.
@@ -529,5 +577,62 @@ mod tests {
         assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
         assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);
         assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
+    }
+
+    #[test]
+    fn public_parent_rejects_disagreeing_fork_fields() {
+        let t14 = MODERATO
+            .tempo_fork_activation(TempoHardfork::T14)
+            .as_timestamp()
+            .unwrap();
+        assert_eq!(
+            MODERATO.tempo_fork_activation(TempoHardfork::T15),
+            ForkCondition::Never
+        );
+        let zone_genesis = |field: &str, value: Option<serde_json::Value>| {
+            let mut genesis = MODERATO.genesis().clone();
+            genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 7).unwrap();
+            match value {
+                Some(value) => genesis.config.extra_fields.insert(field.into(), value),
+                None => genesis.config.extra_fields.remove(field),
+            };
+            ZoneChainSpec::from_genesis(genesis)
+        };
+
+        for (field, value) in [
+            ("t14Time", Some(serde_json::json!(t14))),
+            ("t14Time", None),
+            ("t15Time", Some(serde_json::Value::Null)),
+        ] {
+            let zone = zone_genesis(field, value).unwrap();
+            assert_eq!(zone.tempo_hardfork_at(t14 - 1), TempoHardfork::T13);
+            assert_eq!(zone.tempo_hardfork_at(t14), TempoHardfork::T14);
+        }
+
+        for (field, value, fork, parent) in [
+            (
+                "t14Time",
+                serde_json::Value::Null,
+                TempoHardfork::T14,
+                Some(t14),
+            ),
+            (
+                "t14Time",
+                serde_json::json!(t14 + 1),
+                TempoHardfork::T14,
+                Some(t14),
+            ),
+            ("t15Time", serde_json::json!(0), TempoHardfork::T15, None),
+        ] {
+            let error = zone_genesis(field, Some(value.clone())).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    ZoneChainSpecError::ParentForkMismatch { fork: f, zone, parent: p }
+                        if *f == fork && *zone == value && *p == parent
+                ),
+                "{field}: {error}"
+            );
+        }
     }
 }
