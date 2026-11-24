@@ -371,43 +371,58 @@ fn decode_hashed_account(value: &[u8]) -> Result<TrieAccount, StatelessSparseTri
 }
 
 /// Index a flat witness node pool by node hash, rejecting duplicate nodes.
-/// Rejects a witness in which one trie references the same hashed node twice.
+/// Extra node expansions a witness may cause by sharing storage tries between accounts.
 ///
-/// Reth's `from_witness` expands every reference to a hashed node separately, so a few branches
-/// whose children all point at the previous branch expand to `16^depth` nodes before the root is
+/// Honest sharing comes from accounts with identical storage, whose tries are small, so this
+/// leaves room for it while keeping the prover's work within a fixed margin of the pool size.
+const MAX_SHARED_STORAGE_EXPANSIONS: usize = 1 << 20;
+
+/// Rejects a witness whose tries reth's `from_witness` would expand far beyond the node pool.
+///
+/// Reth expands every reference to a hashed node separately. Within one trie, a few branches whose
+/// children all point at the previous branch expand to `16^depth` nodes before the root is
 /// checked. Two paths of one trie can't reach the same hashed node, because trie keys are keccak
 /// hashes, so a repeat within a trie is never an honest witness. Separate storage tries can share
 /// nodes, starting from a common storage root, so each trie is walked with its own visited set.
+/// Reth then expands a shared storage trie once per account that references it, so the total
+/// expansions may exceed the pool size by at most [`MAX_SHARED_STORAGE_EXPANSIONS`].
 fn ensure_tries_reference_nodes_once(
     state_root: B256,
     nodes: &B256Map<Bytes>,
 ) -> Result<(), StatelessSparseTrieError> {
-    let mut storage_roots = B256Set::default();
-    walk_trie(state_root, nodes, Some(&mut storage_roots))?;
-    for storage_root in storage_roots {
-        walk_trie(storage_root, nodes, None)?;
+    let mut storage_roots = B256Map::default();
+    let mut expansions = walk_trie(state_root, nodes, Some(&mut storage_roots))?;
+    for (storage_root, references) in storage_roots {
+        let trie_nodes = walk_trie(storage_root, nodes, None)?;
+        expansions = expansions.saturating_add(trie_nodes.saturating_mul(references));
+    }
+    if expansions > nodes.len().saturating_add(MAX_SHARED_STORAGE_EXPANSIONS) {
+        return Err(StatelessSparseTrieError::ExcessiveTrieExpansion { expansions });
     }
     Ok(())
 }
 
 /// Walks the trie at `root` through the nodes present in `nodes`, failing on a hashed node it
-/// reaches twice. For the account trie, `storage_roots` collects the accounts' storage roots.
+/// reaches twice, and returns how many pool nodes it reached. For the account trie,
+/// `storage_roots` counts how many accounts reference each storage root.
 fn walk_trie(
     root: B256,
     nodes: &B256Map<Bytes>,
-    mut storage_roots: Option<&mut B256Set>,
-) -> Result<(), StatelessSparseTrieError> {
+    mut storage_roots: Option<&mut B256Map<usize>>,
+) -> Result<usize, StatelessSparseTrieError> {
     let decode = |bytes: &[u8]| {
         alloy_rlp::decode_exact::<TrieNode>(bytes)
             .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)
     };
     let mut visited = B256Set::default();
+    let mut reached = 0;
     let mut pending = Vec::new();
     let mut resolve = |node_hash: B256, pending: &mut Vec<TrieNode>| {
         if !visited.insert(node_hash) {
             return Err(StatelessSparseTrieError::RepeatedTrieNode { node_hash });
         }
         if let Some(bytes) = nodes.get(&node_hash) {
+            reached += 1;
             pending.push(decode(bytes)?);
         }
         Ok(())
@@ -422,7 +437,7 @@ fn walk_trie(
                     let account = alloy_rlp::decode_exact::<TrieAccount>(&leaf.value)
                         .map_err(|_| StatelessSparseTrieError::InvalidNodeEncoding)?;
                     if account.storage_root != EMPTY_ROOT_HASH {
-                        storage_roots.insert(account.storage_root);
+                        *storage_roots.entry(account.storage_root).or_default() += 1;
                     }
                 }
                 Vec::new()
@@ -436,7 +451,7 @@ fn walk_trie(
             }
         }
     }
-    Ok(())
+    Ok(reached)
 }
 
 pub(crate) fn index_witness_nodes(
@@ -514,6 +529,9 @@ pub enum StatelessSparseTrieError {
     /// One trie in the witness references the same hashed node more than once.
     #[error("witness trie references node {node_hash:?} more than once")]
     RepeatedTrieNode { node_hash: B256 },
+    /// Accounts sharing storage tries would make the witness expand far beyond its node pool.
+    #[error("witness tries would expand to {expansions} nodes")]
+    ExcessiveTrieExpansion { expansions: usize },
     /// The node pool does not provide the node committed by the state root.
     #[error("state root is absent from the node pool: {state_root:?}")]
     MissingStateRootNode { state_root: B256 },
@@ -707,6 +725,41 @@ mod tests {
             StatelessSparseTrie::new(root, &index_witness_nodes(&pool).unwrap()).unwrap_err(),
             StatelessSparseTrieError::RepeatedTrieNode {
                 node_hash: keccak256(&pool[pool.len() - 2])
+            }
+        );
+    }
+
+    #[test]
+    fn sparse_trie_rejects_storage_trie_shared_by_too_many_accounts() {
+        // Reth expands a shared storage trie once per account, so 1,024 accounts sharing one
+        // fully revealed 1,500-slot trie cost far more than the nodes they send.
+        let storage = (0..1_500u64)
+            .map(|slot| {
+                let key = keccak256(U256::from(slot).to_be_bytes::<32>());
+                (key, alloy_rlp::encode(U256::from(slot + 1)))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let (storage_root, storage_nodes) =
+            prove(&storage, &storage.keys().copied().collect::<Vec<_>>());
+        let account = alloy_rlp::encode(TrieAccount {
+            storage_root,
+            ..Default::default()
+        });
+        let accounts = (0..1_024u64)
+            .map(|index| (keccak256(index.to_be_bytes()), account.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let (state_root, account_nodes) =
+            prove(&accounts, &accounts.keys().copied().collect::<Vec<_>>());
+        let pool = account_nodes
+            .iter()
+            .chain(&storage_nodes)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            StatelessSparseTrie::new(state_root, &index_witness_nodes(&pool).unwrap()).unwrap_err(),
+            StatelessSparseTrieError::ExcessiveTrieExpansion {
+                expansions: account_nodes.len() + 1_024 * storage_nodes.len()
             }
         );
     }
