@@ -255,6 +255,7 @@ impl<'a> ZoneViews<'a> {
             EvmFeatures::BALANCE_TOP_UP,
             EvmFeatures::NONCE_CHECK,
             EvmFeatures::BLOCK_GAS_LIMIT_CHECK,
+            EvmFeatures::BASE_FEE_CHECK,
         ] {
             env.version.features.remove(feature);
         }
