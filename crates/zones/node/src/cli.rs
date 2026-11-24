@@ -263,12 +263,13 @@ async fn watch_l1_fork_schedule(
     schedule: BTreeMap<String, u64>,
     mut latest: BTreeMap<String, u64>,
 ) -> eyre::Result<()> {
-    // Measure time on the monotonic clock from one wall-clock reading.
+    // Take the later of the wall clock and the monotonic clock since startup, so neither a clock
+    // correction nor a stalled wall clock delays the exit.
     let (started, deadline_at_start) = (tokio::time::Instant::now(), exit_deadline());
     let mut pending = earliest_changed_activation(&schedule, &latest);
     loop {
         if let Some(activation) = pending {
-            let deadline = deadline_at_start + started.elapsed().as_secs();
+            let deadline = exit_deadline().max(deadline_at_start + started.elapsed().as_secs());
             eyre::ensure!(
                 activation > deadline,
                 "the L1 Tempo fork schedule changed from {schedule:?} to {latest:?} for a fork \
