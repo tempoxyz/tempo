@@ -74,6 +74,7 @@ mod configurable_account;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
+mod signature_verifier;
 pub mod storage;
 mod storage_credits;
 pub mod tempo_state;
@@ -324,7 +325,14 @@ where
                 configurable_account::ConfigurableAccountRules
             )
         } else if address == SIGNATURE_VERIFIER_ADDRESS && self.env.spec().is_t14() {
-            zone_precompile!(evm, message, gas, &self.env, SignatureVerifier)
+            zone_precompile!(
+                evm,
+                message,
+                gas,
+                &self.env,
+                SignatureVerifier,
+                signature_verifier::SignatureVerifierRules
+            )
         } else {
             #[cfg(feature = "std")]
             if address == tempo_contracts::zones::ZONE_OUTBOX_ADDRESS {
