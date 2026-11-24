@@ -476,8 +476,8 @@ where
             prewarm_evm_env,
             self.evm_config.clone(),
             self.config.enable_parallel,
-            self.tx_warm_pool.clone(),
-        );
+        )
+        .with_tx_warm_pool(self.tx_warm_pool.clone());
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(

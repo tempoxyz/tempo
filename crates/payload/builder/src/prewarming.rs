@@ -419,7 +419,6 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         evm_config: TempoEvmConfig,
         parallel: bool,
-        tx_warm_pool: Option<TxWarmPool>,
     ) -> Self {
         Self {
             provider,
@@ -430,8 +429,14 @@ where
             evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
-            tx_warm_pool,
+            tx_warm_pool: None,
         }
+    }
+
+    /// Sets the pool that loads transaction warm targets into the execution cache.
+    pub(crate) fn with_tx_warm_pool(mut self, tx_warm_pool: Option<TxWarmPool>) -> Self {
+        self.tx_warm_pool = tx_warm_pool;
+        self
     }
 
     pub(crate) fn evm_for_ctx(&self) -> PrewarmEvmState {
