@@ -167,11 +167,14 @@ impl ZoneCli {
     }
 }
 
-/// Reads the Tempo fork activations an L1 reports through `tempo_forkSchedule`.
-async fn fetch_l1_fork_schedule(
+/// How often a zone on a custom parent re-reads the L1 fork schedule while it runs.
+const L1_FORK_SCHEDULE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Connects to the L1 RPC and checks that it serves the zone's parent chain.
+async fn connect_l1(
     l1_rpc_url: &str,
     parent_chain_id: u64,
-) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
+) -> eyre::Result<impl Provider<TempoNetwork>> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect(l1_rpc_url)
         .await
@@ -181,23 +184,63 @@ async fn fetch_l1_fork_schedule(
         chain_id == parent_chain_id,
         "L1 RPC chain ID {chain_id} does not match the zone's parent chain ID {parent_chain_id}"
     );
+    Ok(provider)
+}
+
+/// Reads the Tempo fork activations an L1 reports through `tempo_forkSchedule`, by fork name.
+async fn read_l1_fork_schedule(
+    provider: &impl Provider<TempoNetwork>,
+) -> eyre::Result<Vec<(String, u64)>> {
     let schedule = provider
         .get_fork_schedule()
         .await
         .map_err(|error| eyre::eyre!("failed reading tempo_forkSchedule from the L1: {error}"))?;
-    schedule
+    Ok(schedule
         .schedule
         .into_iter()
-        .map(|entry| {
-            let fork = entry.name.parse::<TempoHardfork>().map_err(|_| {
-                eyre::eyre!(
-                    "L1 schedules unsupported Tempo fork {}; update the zone binary",
-                    entry.name
-                )
+        .map(|entry| (entry.name, entry.activation_time))
+        .collect())
+}
+
+/// Parses an L1 fork schedule, failing on forks this binary does not know.
+fn parse_l1_fork_schedule(schedule: &[(String, u64)]) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
+    schedule
+        .iter()
+        .map(|(name, time)| {
+            let fork = name.parse::<TempoHardfork>().map_err(|_| {
+                eyre::eyre!("L1 schedules unsupported Tempo fork {name}; update the zone binary")
             })?;
-            Ok((fork, entry.activation_time))
+            Ok((fork, *time))
         })
         .collect()
+}
+
+/// Re-reads the L1 fork schedule and returns an error once it differs from `schedule`, the one
+/// the node started with.
+///
+/// The node reads the schedule only at startup, so without this a node running across an L1
+/// reschedule would keep building blocks under the old fork rules and reinterpret them under the
+/// new ones after its next restart. Exiting makes it adopt the new schedule before it builds
+/// further blocks. Failed reads are logged and retried.
+async fn watch_l1_fork_schedule(
+    provider: impl Provider<TempoNetwork>,
+    schedule: Vec<(String, u64)>,
+) -> eyre::Result<()> {
+    loop {
+        tokio::time::sleep(L1_FORK_SCHEDULE_POLL_INTERVAL).await;
+        match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider)).await
+        {
+            Ok(Ok(current)) if current != schedule => eyre::bail!(
+                "the L1 Tempo fork schedule changed from {schedule:?} to {current:?}; restarting \
+                 the zone node adopts it"
+            ),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule")
+            }
+            Err(_) => warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule"),
+        }
+    }
 }
 
 /// Main entry point for the `node` command.
@@ -231,16 +274,19 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
 
         // Zones on mainnet, testnet and local dev parents keep the schedule the chain spec
         // parser built from the compiled parent schedule. Zones on other parents follow the
-        // schedule their L1 reports, read once at startup, for every fork not active at
-        // genesis; a genesis field for a fork active at genesis must agree with it.
+        // schedule their L1 reports at startup for every fork not active at genesis; a genesis
+        // field for a fork active at genesis must agree with it. They exit when the L1's
+        // schedule changes, so a restart adopts it.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
-        if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
-            let schedule = tokio::time::timeout(
-                Duration::from_secs(30),
-                fetch_l1_fork_schedule(&args.l1_rpc_url, parent_chain_id),
-            )
+        let fork_schedule_watch = if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
+            let (provider, raw_schedule) = tokio::time::timeout(Duration::from_secs(30), async {
+                let provider = connect_l1(&args.l1_rpc_url, parent_chain_id).await?;
+                let schedule = read_l1_fork_schedule(&provider).await?;
+                eyre::Ok((provider, schedule))
+            })
             .await
             .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
+            let schedule = parse_l1_fork_schedule(&raw_schedule)?;
             info!(
                 target: "reth::cli",
                 parent_chain_id,
@@ -249,7 +295,10 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             );
             let chain = builder.config().chain.with_l1_fork_schedule(schedule)?;
             builder.config_mut().chain = Arc::new(chain);
-        }
+            futures::future::Either::Left(watch_l1_fork_schedule(provider, raw_schedule))
+        } else {
+            futures::future::Either::Right(std::future::pending())
+        };
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
@@ -297,33 +346,39 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         node = configure_sequencing(&args, zone_id, zone_chain_id, &data_dir, node).await?;
 
         // Install or skip the checker ExEx based on the configured mode.
-        match args.checker_mode {
-            CheckerMode::Off => {
-                let handle = builder
-                    .node(node)
-                    .launch_with_debug_capabilities()
-                    .await?;
-                handle.wait_for_node_exit().await
+        let run = async {
+            match args.checker_mode {
+                CheckerMode::Off => {
+                    let handle = builder
+                        .node(node)
+                        .launch_with_debug_capabilities()
+                        .await?;
+                    handle.wait_for_node_exit().await
+                }
+                CheckerMode::Observe => {
+                    info!(target: "reth::cli", "Checker ExEx enabled (observe mode)");
+                    let node = node.with_portal_evidence_retention();
+                    let checker = CheckerExEx::new(CheckerConfig {
+                        l1_rpc_url: args.l1_rpc_url.clone(),
+                        portal_address,
+                        zone_id,
+                        zone_chain_id: builder.config().chain.chain_id(),
+                        database_path: builder.config().datadir().data_dir().join("checker"),
+                        l1_block_tracker: node.l1_block_tracker(),
+                    });
+                    builder
+                        .node(node)
+                        .install_exex("zone-checker", async move |ctx| Ok(checker.run(ctx)))
+                        .launch_with_debug_capabilities()
+                        .await?
+                        .wait_for_node_exit()
+                        .await
+                }
             }
-            CheckerMode::Observe => {
-                info!(target: "reth::cli", "Checker ExEx enabled (observe mode)");
-                let node = node.with_portal_evidence_retention();
-                let checker = CheckerExEx::new(CheckerConfig {
-                    l1_rpc_url: args.l1_rpc_url.clone(),
-                    portal_address,
-                    zone_id,
-                    zone_chain_id: builder.config().chain.chain_id(),
-                    database_path: builder.config().datadir().data_dir().join("checker"),
-                    l1_block_tracker: node.l1_block_tracker(),
-                });
-                builder
-                    .node(node)
-                    .install_exex("zone-checker", async move |ctx| Ok(checker.run(ctx)))
-                    .launch_with_debug_capabilities()
-                    .await?
-                    .wait_for_node_exit()
-                    .await
-            }
+        };
+        tokio::select! {
+            result = run => result,
+            result = fork_schedule_watch => result,
         }
     })
 }
@@ -922,6 +977,33 @@ mod tests {
     struct ZoneArgsParser {
         #[command(flatten)]
         zone: ZoneArgs,
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fork_schedule_watch_exits_only_when_the_l1_schedule_changes() {
+        let schedule = |t12: u64| {
+            serde_json::json!({ "active": "T11", "schedule": [
+                { "name": "T11", "activationTime": 20, "active": true },
+                { "name": "T12", "activationTime": t12, "active": false }
+            ] })
+        };
+        let asserter = alloy_provider::mock::Asserter::new();
+        asserter.push_success(&schedule(200));
+        asserter.push_failure_msg("L1 unavailable");
+        asserter.push_success(&schedule(300));
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone());
+        let started_with = vec![("T11".to_owned(), 20), ("T12".to_owned(), 200)];
+
+        // An unchanged schedule and a failed read keep the node running; the rescheduled T12
+        // stops it.
+        let watch = watch_l1_fork_schedule(provider, started_with);
+        let error = tokio::time::timeout(4 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
+            .await
+            .expect("the rescheduled fork must stop the node")
+            .unwrap_err();
+        assert!(asserter.read_q().is_empty());
+        assert!(error.to_string().contains("300"), "{error}");
     }
 
     #[test]
