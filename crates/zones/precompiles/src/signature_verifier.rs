@@ -65,7 +65,6 @@ mod tests {
         zone_identity::ZoneIdentity,
     };
 
-    /// Whether an outsider may call `verifyKeychain` on an org member; the member and admin always may.
     #[test_case(TempoHardfork::T14 => true)]
     #[test_case(TempoHardfork::T15 => false)]
     fn keychain_views_follow_account_read_rules_from_t15(spec: TempoHardfork) -> bool {
