@@ -248,39 +248,49 @@ fn exit_deadline() -> u64 {
 }
 
 /// Re-reads the L1 fork schedule and returns an error once a fork that differs between
-/// `schedule`, the forks the node runs with, and the latest schedule the L1 reported takes effect
-/// before the next poll could catch it. `latest` starts as the schedule read at startup.
+/// `schedule`, the forks the node runs with, and a schedule the L1 reported takes effect before
+/// the next poll could catch it. `latest` is the schedule read at startup.
 ///
 /// The node reads the schedule only at startup, so without this a node running across an L1
 /// reschedule would build blocks under the old fork rules and reinterpret them under the new
 /// ones after its next restart. A change that takes effect later is only logged: no block
 /// depends on it yet, and a one-off answer from a lagging L1 backend doesn't restart the node.
-/// Failed reads are logged and keep the latest schedule, so a known change still stops the node
-/// in time while the L1 is unreachable.
+/// The earliest change seen keeps counting even when a later answer omits it, so neither a
+/// failed read nor a lagging backend lets the node run past it. Checks start before the first
+/// sleep, so slow node startup doesn't delay them.
 async fn watch_l1_fork_schedule(
     provider: impl Provider<TempoNetwork>,
     schedule: BTreeMap<String, u64>,
     mut latest: BTreeMap<String, u64>,
 ) -> eyre::Result<()> {
+    // Measure time on the monotonic clock from one wall-clock reading.
+    let (started, deadline_at_start) = (tokio::time::Instant::now(), exit_deadline());
+    let mut pending = earliest_changed_activation(&schedule, &latest);
     loop {
+        if let Some(activation) = pending {
+            let deadline = deadline_at_start + started.elapsed().as_secs();
+            eyre::ensure!(
+                activation > deadline,
+                "the L1 Tempo fork schedule changed from {schedule:?} to {latest:?} for a fork \
+                 activating at {activation}; restarting the zone node adopts it"
+            );
+            warn!(target: "reth::cli", ?latest, activation, "The L1 Tempo fork schedule changed; the zone node exits before the change takes effect");
+        }
         tokio::time::sleep(L1_FORK_SCHEDULE_POLL_INTERVAL).await;
         match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider)).await
         {
-            Ok(Ok(current)) => latest = current,
+            Ok(Ok(current)) => {
+                pending = pending
+                    .into_iter()
+                    .chain(earliest_changed_activation(&schedule, &current))
+                    .min();
+                latest = current;
+            }
             Ok(Err(error)) => {
                 warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule")
             }
             Err(_) => warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule"),
         }
-        let Some(activation) = earliest_changed_activation(&schedule, &latest) else {
-            continue;
-        };
-        eyre::ensure!(
-            activation > exit_deadline(),
-            "the L1 Tempo fork schedule changed from {schedule:?} to {latest:?} for a fork \
-             activating at {activation}; restarting the zone node adopts it"
-        );
-        warn!(target: "reth::cli", ?latest, activation, "The L1 Tempo fork schedule changed; the zone node exits before the change takes effect");
     }
 }
 
@@ -1087,11 +1097,41 @@ mod tests {
         );
     }
 
+    // A fork skipped at startup that activates within the exit window stops the node at the
+    // first check, before any sleep or read.
     #[tokio::test(start_paused = true)]
-    async fn fork_schedule_watch_exits_for_a_known_change_while_the_l1_is_unreachable() {
+    async fn fork_schedule_watch_checks_a_known_change_before_the_first_poll() {
         let activation = exit_deadline() - 60;
         let asserter = alloy_provider::mock::Asserter::new();
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+        let started_with = BTreeMap::from([("T11".to_owned(), 20)]);
+        let mut latest = started_with.clone();
+        latest.insert("T999".to_owned(), activation);
+
+        let watch = watch_l1_fork_schedule(provider, started_with, latest);
+        let error = tokio::time::timeout(Duration::from_secs(1), watch)
+            .await
+            .expect("the imminent T999 must stop the node at once")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("activating at {activation}")),
+            "{error}"
+        );
+    }
+
+    // A fork seen at startup keeps its deadline when a failed read and a lagging backend that
+    // omits it follow, so the node stops once the deadline comes within the exit window.
+    #[tokio::test(start_paused = true)]
+    async fn fork_schedule_watch_keeps_a_seen_change_across_failed_and_stale_reads() {
+        let activation = exit_deadline() + 90;
+        let asserter = alloy_provider::mock::Asserter::new();
         asserter.push_failure_msg("L1 unavailable");
+        asserter.push_success(&serde_json::json!({ "active": "T11", "schedule": [
+            { "name": "T11", "activationTime": 20, "active": true }
+        ] }));
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(asserter.clone());
         let started_with = BTreeMap::from([("T11".to_owned(), 20)]);
@@ -1099,9 +1139,9 @@ mod tests {
         latest.insert("T999".to_owned(), activation);
 
         let watch = watch_l1_fork_schedule(provider, started_with, latest);
-        let error = tokio::time::timeout(2 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
+        let error = tokio::time::timeout(3 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
             .await
-            .expect("the imminent T999 must stop the node")
+            .expect("T999 must stop the node before it activates")
             .unwrap_err();
         assert!(asserter.read_q().is_empty());
         assert!(
