@@ -70,6 +70,9 @@ pub struct Builder<TBlocker, TPeerManager> {
 
     pub mailbox_size: NonZeroUsize,
     pub max_peers: NonZeroU32,
+    /// Addresses that replace peers' validator config contract entries on
+    /// this node.
+    pub(crate) address_overrides: peer_manager::AddressOverrides,
     pub deque_size: usize,
     pub verification_mode: VerificationMode,
 
@@ -207,6 +210,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 max_peers: self.max_peers,
+                address_overrides: self.address_overrides,
             },
         );
 
