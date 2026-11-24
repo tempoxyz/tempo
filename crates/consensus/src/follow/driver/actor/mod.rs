@@ -223,18 +223,18 @@ where
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
     async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
-        let floor_height = self.config.last_finalized_height;
+        let last_finalized_height = self.config.last_finalized_height;
         let floor_epoch_info = self
             .config
             .epoch_strategy
-            .containing(floor_height)
+            .containing(last_finalized_height)
             .expect("strategy is valid for all heights and epochs");
 
         // A floor inside epoch `E` needs the scheme from `last(E-1)`. A floor at
         // `last(E)` has already processed that boundary and needs the scheme for
         // `E+1` it carries.
-        let floor_boundary_height = if floor_epoch_info.last() == floor_height {
-            Some(floor_height)
+        let floor_boundary_height = if floor_epoch_info.last() == last_finalized_height {
+            Some(last_finalized_height)
         } else {
             floor_epoch_info.epoch().previous().map(|previous| {
                 self.config
@@ -247,7 +247,7 @@ where
         if let Some(last_consensus_boundary) = floor_boundary_height
             && last_consensus_boundary > self.startup_execution_boundary
         {
-            let previous = self
+            let boundary_epoch = self
                 .config
                 .epoch_strategy
                 .containing(last_consensus_boundary)
@@ -278,10 +278,10 @@ where
                     })?
                     .epoch();
             ensure!(
-                claimed_epoch == previous.next(),
+                claimed_epoch == boundary_epoch.next(),
                 "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
                  epoch `{claimed_epoch}`, expected the next epoch `{}`",
-                previous.next(),
+                boundary_epoch.next(),
             );
 
             let onchain_outcome = self
