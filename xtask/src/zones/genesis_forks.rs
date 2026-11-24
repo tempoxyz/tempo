@@ -106,15 +106,17 @@ impl ResolvedForks {
         Ok(())
     }
 
-    /// Writes Tempo fork activations into a Zone genesis config.
+    /// Writes Tempo fork activations into a Zone genesis config whose anchor is at `timestamp`.
     ///
     /// Zones on mainnet and testnet get no fork fields and follow the parent schedule compiled
     /// into the node, so a fork rescheduled in a later release needs no genesis change. Zones on
-    /// other RPC-resolved parents get the forks the L1 has scheduled and omit the rest, which
-    /// nodes fill from the L1's `tempo_forkSchedule` at startup; offline tools execute with the
-    /// schedule as of generation. Zones on local dev parents, and offline caps, write `null` for
-    /// disabled forks, because an omitted field there would inherit the compiled DEV schedule.
-    pub(crate) fn write_to(&self, config: &mut ChainConfig) {
+    /// other RPC-resolved parents get only the forks already active at the anchor, which the L1
+    /// can no longer move. Nodes fill pending and later forks from the L1's `tempo_forkSchedule`
+    /// at startup, and an explicit field would pin a time the L1 may still change. Offline tools
+    /// execute with the forks active at generation. Zones on local dev parents, and offline
+    /// caps, write every scheduled fork and `null` for disabled ones, because an omitted field
+    /// there would inherit the compiled DEV schedule.
+    pub(crate) fn write_to(&self, config: &mut ChainConfig, timestamp: u64) {
         let public_parent = self
             .parent_chain_id
             .is_some_and(|id| chainspec_from_chain_id(id).is_some());
@@ -127,15 +129,15 @@ impl ResolvedForks {
                     _ if public_parent => {
                         config.extra_fields.remove(key);
                     }
-                    Some(&time) => {
+                    Some(&time) if !custom_parent || time <= timestamp => {
                         config
                             .extra_fields
                             .insert(key.to_owned(), Value::from(time));
                     }
-                    None if custom_parent => {
+                    _ if custom_parent => {
                         config.extra_fields.remove(key);
                     }
-                    None => {
+                    _ => {
                         config.extra_fields.insert(key.to_owned(), Value::Null);
                     }
                 }
@@ -189,20 +191,18 @@ mod tests {
         .unwrap()
     }
 
-    // Mainnet follows its compiled schedule, a custom parent omits unscheduled forks, and a dev
-    // parent disables them.
-    #[test_case(4217 => (None, None))]
-    #[test_case(31_318 => (Some(json!(20)), None))]
-    #[test_case(1337 => (Some(json!(20)), Some(Value::Null)))]
-    fn rpc_schedule_fork_fields(parent_chain_id: u64) -> (Option<Value>, Option<Value>) {
+    // With the anchor at 100, T11 is active, T12 is pending at 200 and T13 is unscheduled.
+    // Mainnet follows its compiled schedule, a custom parent records only active forks, and a
+    // dev parent records every scheduled fork and disables the rest.
+    #[test_case(4217 => [None, None, None])]
+    #[test_case(31_318 => [Some(json!(20)), None, None])]
+    #[test_case(1337 => [Some(json!(20)), Some(json!(200)), Some(Value::Null)])]
+    fn rpc_schedule_fork_fields(parent_chain_id: u64) -> [Option<Value>; 3] {
         let forks = ResolvedForks::from_schedule(parent_chain_id, 100, schedule()).unwrap();
         let mut config = ChainConfig::default();
         config.extra_fields.insert("t13Time".to_owned(), json!(0));
-        forks.write_to(&mut config);
-        (
-            config.extra_fields.get("t11Time").cloned(),
-            config.extra_fields.get("t13Time").cloned(),
-        )
+        forks.write_to(&mut config, 100);
+        ["t11Time", "t12Time", "t13Time"].map(|key| config.extra_fields.get(key).cloned())
     }
 
     #[tokio::test]

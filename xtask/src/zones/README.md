@@ -28,11 +28,14 @@ records depends on the parent:
 - Mainnet and testnet: no Tempo fork fields. Zone nodes take the parent schedule
   compiled into the binary and refuse to start if an explicit genesis field
   disagrees with it, because the prover replays batches under that schedule.
-- Other parents: the forks the L1 has scheduled; unscheduled forks are omitted.
-  Zone nodes read `tempo_forkSchedule` from `--l1.rpc-url` once at startup, fill
-  omitted forks from it, and refuse to start if an explicit field, `null`
-  included, disagrees with it. Offline tools (`import`, `stage`, `re-execute`)
-  execute with the schedule as of generation.
+- Other parents: only the forks active at the anchor, which the L1 can no longer
+  move; pending and unscheduled forks are omitted. Zone nodes read
+  `tempo_forkSchedule` from `--l1.rpc-url` once at startup, fill omitted forks
+  from it, and refuse to start if an explicit field, `null` included, disagrees
+  with it. A genesis generated before this rule may carry `null` or pending
+  times; remove such a field for a fork that hasn't activated yet before the L1
+  schedules or moves it. Offline tools (`import`, `stage`, `re-execute`) execute
+  with the forks active at generation.
 - Local dev parents (1337, 31337): the forks the L1 has scheduled, with `null` for
   the rest so nodes don't inherit the compiled DEV schedule.
 
