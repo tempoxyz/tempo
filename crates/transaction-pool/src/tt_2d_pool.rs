@@ -478,17 +478,24 @@ impl AA2dPool {
                 self.independent_transactions.insert(tx.inner.clone());
             }
 
-            // Notify active BestAA2dTransactions iterators about new pending transactions.
-            self.notify_new_pending(&tx.inner);
-            for promoted_tx in &promoted {
-                self.notify_new_pending(promoted_tx);
+            let discarded = self.discard();
+            // Pending eviction can also demote descendants back to the queued pool.
+            for pending in std::iter::once(&tx.inner).chain(&promoted) {
+                if discarded.is_empty()
+                    || self
+                        .by_id
+                        .get(&pending.transaction.transaction.lane_transaction_id())
+                        .is_some_and(|tx| tx.is_pending())
+                {
+                    self.notify_new_pending(pending);
+                }
             }
 
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
                 transaction,
                 replaced: replaced.map(|tx| tx.inner.transaction.clone()),
                 promoted: promoted.into_iter().map(|tx| tx.transaction).collect(),
-                discarded: evicted.into_iter().chain(self.discard()).collect(),
+                discarded: evicted.into_iter().chain(discarded).collect(),
             }));
         }
 
@@ -543,12 +550,6 @@ impl AA2dPool {
         };
         let eviction_key =
             ExpiringNonceEvictionKey::from_pending_with_base_fee(&pending_tx, self.base_fee);
-        let pending_tx_update = if self.new_transaction_notifier.receiver_count() > 0 {
-            Some(pending_tx.clone())
-        } else {
-            None
-        };
-
         // Insert into expiring nonce map and by_hash
         expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
@@ -571,9 +572,9 @@ impl AA2dPool {
 
         self.update_metrics();
 
-        // Notify active BestAA2dTransactions iterators about the new pending transaction
-        if let Some(pending_tx) = pending_tx_update {
-            let _ = self.new_transaction_notifier.send(pending_tx);
+        let discarded = self.discard();
+        if let Some(pending_tx) = self.expiring_nonce_txs.get(&expiring_nonce_hash) {
+            self.notify_new_pending(pending_tx);
         }
 
         // Expiring nonce transactions are always immediately pending
@@ -581,7 +582,7 @@ impl AA2dPool {
             transaction,
             replaced: None,
             promoted: vec![],
-            discarded: self.discard(),
+            discarded,
         }))
     }
 
@@ -5160,6 +5161,7 @@ mod tests {
         };
         let mut pool = AA2dPool::new(config);
 
+        let mut pending_updates = pool.new_transaction_notifier.subscribe();
         pool.add_transaction(Arc::new(tx0), 0, TempoHardfork::T1)
             .unwrap();
         let result = pool
@@ -5173,6 +5175,14 @@ mod tests {
         assert_eq!(added.discarded[0].hash(), &tx1_hash);
         assert!(pool.contains(&tx0_hash));
         assert!(!pool.contains(&tx1_hash));
+        assert_eq!(
+            pending_updates.try_recv().unwrap().transaction.hash(),
+            &tx0_hash
+        );
+        assert!(matches!(
+            pending_updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
         assert_eq!(pool.pending_and_queued_txn_count(), (1, 0));
         let (pending_size, queued_size) = pool.pending_and_queued_txn_size();
         assert!(pending_size <= max_size);
@@ -5552,6 +5562,7 @@ mod tests {
             .max_priority_fee(1)
             .build();
         let root_hash = *root.hash();
+        let mut pending_updates = pool.new_transaction_notifier.subscribe();
         let added = pool
             .add_transaction(
                 Arc::new(wrap_valid_tx(root, TransactionOrigin::Local)),
@@ -5561,6 +5572,10 @@ mod tests {
             .unwrap();
         let discarded = &added.as_pending().unwrap().discarded;
 
+        assert!(matches!(
+            pending_updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
         assert_eq!(
             discarded.len(),
             1,
@@ -7965,6 +7980,7 @@ mod tests {
             TempoHardfork::T1,
         )
         .unwrap();
+        let mut pending_updates = pool.new_transaction_notifier.subscribe();
         let result = pool
             .add_transaction(
                 Arc::new(wrap_valid_tx(tx_new.clone(), TransactionOrigin::Local)),
@@ -7981,6 +7997,10 @@ mod tests {
         assert!(pool.contains(tx_old_1.hash()));
         assert!(pool.contains(tx_old_2.hash()));
         assert!(!pool.contains(tx_new.hash()));
+        assert!(matches!(
+            pending_updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
         assert_expiring_eviction_index_len(&pool, 2);
         assert_expiring_eviction_index_missing(&pool, new_expiring_hash);
     }
