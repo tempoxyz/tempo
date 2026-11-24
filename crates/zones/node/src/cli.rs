@@ -247,43 +247,40 @@ fn exit_deadline() -> u64 {
     (now + 2 * L1_FORK_SCHEDULE_POLL_INTERVAL).as_secs()
 }
 
-/// Re-reads the L1 fork schedule and returns an error once a fork changed from `schedule`, the
-/// forks the node runs with, takes effect before the next poll could catch it.
+/// Re-reads the L1 fork schedule and returns an error once a fork that differs between
+/// `schedule`, the forks the node runs with, and the latest schedule the L1 reported takes effect
+/// before the next poll could catch it. `latest` starts as the schedule read at startup.
 ///
 /// The node reads the schedule only at startup, so without this a node running across an L1
 /// reschedule would build blocks under the old fork rules and reinterpret them under the new
 /// ones after its next restart. A change that takes effect later is only logged: no block
 /// depends on it yet, and a one-off answer from a lagging L1 backend doesn't restart the node.
-/// Failed reads are logged and retried.
+/// Failed reads are logged and keep the latest schedule, so a known change still stops the node
+/// in time while the L1 is unreachable.
 async fn watch_l1_fork_schedule(
     provider: impl Provider<TempoNetwork>,
     schedule: BTreeMap<String, u64>,
+    mut latest: BTreeMap<String, u64>,
 ) -> eyre::Result<()> {
     loop {
         tokio::time::sleep(L1_FORK_SCHEDULE_POLL_INTERVAL).await;
-        let current =
-            match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider))
-                .await
-            {
-                Ok(Ok(current)) => current,
-                Ok(Err(error)) => {
-                    warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule");
-                    continue;
-                }
-                Err(_) => {
-                    warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule");
-                    continue;
-                }
-            };
-        let Some(activation) = earliest_changed_activation(&schedule, &current) else {
+        match tokio::time::timeout(Duration::from_secs(30), read_l1_fork_schedule(&provider)).await
+        {
+            Ok(Ok(current)) => latest = current,
+            Ok(Err(error)) => {
+                warn!(target: "reth::cli", %error, "Failed re-reading the L1 fork schedule")
+            }
+            Err(_) => warn!(target: "reth::cli", "Timed out re-reading the L1 fork schedule"),
+        }
+        let Some(activation) = earliest_changed_activation(&schedule, &latest) else {
             continue;
         };
         eyre::ensure!(
             activation > exit_deadline(),
-            "the L1 Tempo fork schedule changed from {schedule:?} to {current:?} for a fork \
+            "the L1 Tempo fork schedule changed from {schedule:?} to {latest:?} for a fork \
              activating at {activation}; restarting the zone node adopts it"
         );
-        warn!(target: "reth::cli", ?current, activation, "The L1 Tempo fork schedule changed; the zone node exits before the change takes effect");
+        warn!(target: "reth::cli", ?latest, activation, "The L1 Tempo fork schedule changed; the zone node exits before the change takes effect");
     }
 }
 
@@ -348,6 +345,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             })
             .await
             .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
+            let latest = raw_schedule.clone();
             let schedule = retain_known_l1_forks(&mut raw_schedule, exit_deadline())?;
             info!(
                 target: "reth::cli",
@@ -357,7 +355,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             );
             let chain = builder.config().chain.with_l1_fork_schedule(schedule)?;
             builder.config_mut().chain = Arc::new(chain);
-            futures::future::Either::Left(watch_l1_fork_schedule(provider, raw_schedule))
+            futures::future::Either::Left(watch_l1_fork_schedule(provider, raw_schedule, latest))
         } else {
             futures::future::Either::Right(std::future::pending())
         };
@@ -1075,7 +1073,7 @@ mod tests {
 
         // An unchanged schedule, a failed read, and changes taking effect in days keep the node
         // running; T12 moved to activate within the next minute stops it.
-        let watch = watch_l1_fork_schedule(provider, started_with);
+        let watch = watch_l1_fork_schedule(provider, started_with.clone(), started_with);
         let error = tokio::time::timeout(5 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
             .await
             .expect("the imminent T12 must stop the node")
@@ -1085,6 +1083,31 @@ mod tests {
             error
                 .to_string()
                 .contains(&format!("activating at {}", now + 60)),
+            "{error}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fork_schedule_watch_exits_for_a_known_change_while_the_l1_is_unreachable() {
+        let activation = exit_deadline() - 60;
+        let asserter = alloy_provider::mock::Asserter::new();
+        asserter.push_failure_msg("L1 unavailable");
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone());
+        let started_with = BTreeMap::from([("T11".to_owned(), 20)]);
+        let mut latest = started_with.clone();
+        latest.insert("T999".to_owned(), activation);
+
+        let watch = watch_l1_fork_schedule(provider, started_with, latest);
+        let error = tokio::time::timeout(2 * L1_FORK_SCHEDULE_POLL_INTERVAL, watch)
+            .await
+            .expect("the imminent T999 must stop the node")
+            .unwrap_err();
+        assert!(asserter.read_q().is_empty());
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("activating at {activation}")),
             "{error}"
         );
     }
