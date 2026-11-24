@@ -190,26 +190,32 @@ async fn read_l1_fork_schedule(
         .collect())
 }
 
-/// Returns the fork schedule a zone on a custom parent runs with: the L1's forks this binary
-/// knows.
+/// Removes the forks this binary does not know from an L1 fork schedule and returns the rest,
+/// the schedule a zone on a custom parent runs with.
 ///
-/// A fork this binary does not know is skipped while it activates after `exit_deadline`; the
-/// watcher stops the node before it activates. One activating sooner needs a newer binary.
-fn known_l1_forks(
-    schedule: &BTreeMap<String, u64>,
+/// A fork this binary does not know is skipped while it activates after `exit_deadline`.
+/// Removing it from `schedule`, the watcher's baseline, makes the watcher see it as a change and
+/// stop the node before it activates. One activating sooner needs a newer binary.
+fn retain_known_l1_forks(
+    schedule: &mut BTreeMap<String, u64>,
     exit_deadline: u64,
 ) -> eyre::Result<Vec<(TempoHardfork, u64)>> {
     let mut forks = Vec::new();
-    for (name, &time) in schedule {
+    let mut unknown = Vec::new();
+    for (name, &time) in &*schedule {
         match name.parse::<TempoHardfork>() {
             Ok(fork) => forks.push((fork, time)),
             Err(_) if time > exit_deadline => {
-                warn!(target: "reth::cli", fork = %name, time, "L1 schedules a Tempo fork this binary does not know; update the zone binary before it activates")
+                warn!(target: "reth::cli", fork = %name, time, "L1 schedules a Tempo fork this binary does not know; update the zone binary before it activates");
+                unknown.push(name.clone());
             }
             Err(_) => {
                 eyre::bail!("L1 schedules unsupported Tempo fork {name}; update the zone binary")
             }
         }
+    }
+    for name in unknown {
+        schedule.remove(&name);
     }
     Ok(forks)
 }
@@ -242,7 +248,7 @@ fn exit_deadline() -> u64 {
 }
 
 /// Re-reads the L1 fork schedule and returns an error once a fork changed from `schedule`, the
-/// one the node started with, takes effect before the next poll could catch it.
+/// forks the node runs with, takes effect before the next poll could catch it.
 ///
 /// The node reads the schedule only at startup, so without this a node running across an L1
 /// reschedule would build blocks under the old fork rules and reinterpret them under the new
@@ -321,7 +327,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
         // the L1's schedule takes effect, so a restart adopts it.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
         let fork_schedule_watch = if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
-            let (provider, raw_schedule) = tokio::time::timeout(Duration::from_secs(30), async {
+            let (provider, mut raw_schedule) = tokio::time::timeout(Duration::from_secs(30), async {
                 let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                     .connect_with_config(
                         &args.l1_rpc_url,
@@ -342,7 +348,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             })
             .await
             .map_err(|_| eyre::eyre!("timed out reading the L1 fork schedule"))??;
-            let schedule = known_l1_forks(&raw_schedule, exit_deadline())?;
+            let schedule = retain_known_l1_forks(&mut raw_schedule, exit_deadline())?;
             info!(
                 target: "reth::cli",
                 parent_chain_id,
@@ -1083,16 +1089,19 @@ mod tests {
         );
     }
 
-    #[test_case(501 => Ok(vec![(TempoHardfork::T11, 20)]))]
+    // The skipped fork leaves the watcher's baseline, so the watcher sees it as a change.
+    #[test_case(501 => Ok(BTreeMap::from([("T11".to_owned(), 20)])))]
     #[test_case(500 => Err("L1 schedules unsupported Tempo fork T999; update the zone binary".to_owned()))]
-    fn known_l1_forks_skip_unknown_forks_until_the_exit_deadline(
+    fn retain_known_l1_forks_skips_unknown_forks_until_the_exit_deadline(
         unknown_fork_time: u64,
-    ) -> Result<Vec<(TempoHardfork, u64)>, String> {
-        let schedule = BTreeMap::from([
+    ) -> Result<BTreeMap<String, u64>, String> {
+        let mut schedule = BTreeMap::from([
             ("T11".to_owned(), 20),
             ("T999".to_owned(), unknown_fork_time),
         ]);
-        known_l1_forks(&schedule, 500).map_err(|error| error.to_string())
+        let forks = retain_known_l1_forks(&mut schedule, 500).map_err(|error| error.to_string())?;
+        assert_eq!(forks, [(TempoHardfork::T11, 20)]);
+        Ok(schedule)
     }
 
     #[test]
