@@ -913,7 +913,6 @@ where
             .batch_size
             .record(transactions.len() as f64);
         let validator = self.reth_pool.validator();
-        let tip_timestamp = self.tip_timestamp();
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
@@ -970,12 +969,19 @@ where
                             TempoPoolTransactionError::StateChangedDuringValidation,
                         ))
                     }
+                    // Routed by the tip at insert time: the validator moves the tip before it
+                    // advances the epoch, so a transaction due by the epoch it was validated in
+                    // enters the live pool rather than waiting a block in the delayed one.
                     TransactionValidationOutcome::Valid {
                         transaction,
                         propagate,
                         authorities,
                         ..
-                    } if delayed_pool::should_delay(transaction.transaction(), tip_timestamp) => {
+                    } if delayed_pool::should_delay(
+                        transaction.transaction(),
+                        self.tip_timestamp(),
+                    ) =>
+                    {
                         self.add_delayed_transaction(
                             origins[index],
                             transaction.into_transaction(),
