@@ -10,35 +10,32 @@ pub const VIEW: &str = "TEMPO-DEX-VIEW";
 pub const DEX_CUSTODY: &str = "TEMPO-DEX10";
 pub const CUSTODY_STEP: &str = "TEMPO-DEX10-STEP";
 
-pub const CHECKS: &[Check<Books>] = &[
-    // The DEX holds, of each token, at least its users' internal balances of it plus its live
-    // orders' escrow in it.
-    check! {
-        id: DEX_CUSTODY,
-        over: |books: &Books| books.holdings.keys(),
-        judge: |b, token| {
-            let token = **token;
-            let held = b.holdings[&token];
-            let (internal, escrowed) = b.owed(token);
-            let orders: Vec<&Escrow> = b.escrow.iter().filter(|e| e.token == token).collect();
-            let owed = internal + escrowed;
-            ensure!(
-                owed <= held,
-                "holds {held}, owes {owed} (internal balances {internal}, escrow of {} live orders {escrowed}); short {}",
-                orders.len(),
-                owed - held
-            )
-        },
+pub const CHECKS: &[Check<Books>] = &[check! {
+    id: DEX_CUSTODY,
+    doc: "The DEX holds, of each token, at least its users' internal balances of it plus its live orders' escrow in it.",
+    over: |books: &Books| books.holdings.keys(),
+    judge: |b, token| {
+        let token = **token;
+        let held = b.holdings[&token];
+        let (internal, escrowed) = b.owed(token);
+        let orders: Vec<&Escrow> = b.escrow.iter().filter(|e| e.token == token).collect();
+        let owed = internal + escrowed;
+        ensure!(
+            owed <= held,
+            "holds {held}, owes {owed} (internal balances {internal}, escrow of {} live orders {escrowed}); short {}",
+            orders.len(),
+            owed - held
+        )
     },
-];
+}];
 
 /// The step's effect on the DEX's custody, read before and after it.
 pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
-    // The DEX's holdings of each token never fall by more than what it owes in it: a token that
-    // leaves it must leave a user's internal balance or a live order's escrow. More can come in
-    // than it comes to owe, such as a plain transfer to it.
+    // A token that leaves it must leave a user's internal balance or a live order's escrow. More
+    // can come in than it comes to owe, such as a plain transfer to it.
     check! {
         id: CUSTODY_STEP,
+        doc: "The DEX's holdings of each token never fall by more than what it owes in it.",
         over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
         judge: |s, token| {
             let token = **token;

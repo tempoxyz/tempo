@@ -10,10 +10,10 @@
 
 use alloy_primitives::{Address, U256};
 pub use invariants_core::{
-    AnyCheck, Check, Checked, Complete, Observe, ObserveError, Replay, Report, Step, StepChecked,
-    Verdict, Views, Violation, view,
+    AnyCheck, Check, Checked, Observe, ObserveError, Replay, Report, Step, StepChecked, Verdict,
+    Views, Violation, view,
 };
-use invariants_core::{decode, optional, view_many};
+use invariants_core::{Batch, optional, view_many};
 
 pub mod configurable_account;
 pub mod dex;
@@ -54,4 +54,19 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
 /// `value` as text, `missing` when there is none.
 fn or_text(value: Option<U256>, missing: &str) -> String {
     value.map_or_else(|| missing.to_string(), |value| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runners count checks by ID, so two checks sharing one would merge their counts.
+    #[test]
+    fn check_ids_are_unique() {
+        let mut ids: Vec<_> = all().map(|check| check.id()).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+    }
 }

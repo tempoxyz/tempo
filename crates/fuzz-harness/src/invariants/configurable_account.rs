@@ -1,10 +1,10 @@
 //! Configurable account checks: the signatures' authority and the accounts' leaves.
 
-use super::{Reader, StepEffects, all};
+use super::{Reader, StepEffects};
 use crate::state::{Db, Net};
 use alloy_primitives::{Address, B256};
 use evm2::evm::{AccountInfo, Database as _};
-use invariants_core::Report;
+use invariants_core::{Checked, Report};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS};
 use tempo_invariants::configurable_account::{
@@ -90,23 +90,23 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
 
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
 pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, report: &mut Report) {
-    let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, effects.logs, &effects.tx);
+    let tx = effects.tx();
+    let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, &effects.logs, tx);
     let mut accounts: Vec<Address> = effects
         .net
         .addresses()
         .copied()
-        .chain([effects.tx.sender])
-        .chain(effects.tx.authority.accounts())
+        .chain([tx.sender])
+        .chain(tx.authority.accounts())
         .chain(delegates.iter().map(|g| g.delegate))
         .collect();
     accounts.sort_unstable();
     accounts.dedup();
-    let admins = effects.tx.authority.admin_queries(effects.tx.sender);
-    let keys: Vec<_> = effects
-        .tx
+    let admins = tx.authority.admin_queries(tx.sender);
+    let keys: Vec<_> = tx
         .authority
         .access_keys()
-        .map(|(key, _)| (effects.tx.sender, key))
+        .map(|(key, _)| (tx.sender, key))
         .collect();
     let at = At {
         precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
@@ -125,10 +125,10 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
                 Some((address, LeafChange { before, after }))
             })
             .collect(),
-        tx: effects.tx.clone(),
+        tx: tx.clone(),
         delegates,
     };
-    report.run_any(all(), &leaves);
+    report.run(Leaves::CHECKS, &leaves, None);
 }
 
 /// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.

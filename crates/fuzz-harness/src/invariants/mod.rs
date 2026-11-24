@@ -7,15 +7,18 @@
 //! failing.
 
 use alloy_primitives::{Address, Log};
-use invariants_core::{Report, SlotChange, Step};
-use std::sync::LazyLock;
+use invariants_core::{Effects, Report, SlotChange, Step};
+use std::{
+    ops::Deref,
+    sync::{Arc, LazyLock},
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{Tx, all, configurable_account as account, dex, fee_amm, tip20};
+use tempo_invariants::{Tx, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
@@ -37,37 +40,60 @@ pub(crate) use configurable_account::authority;
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
 
-/// What a transaction step did: its net state changes, already written to the database, and its
-/// logs.
+/// What a transaction step did: its net state changes, already written to the database, and what
+/// every model's step shares, which it derefs to.
 pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
-    pub(crate) logs: &'a [Log],
-    pub(crate) tx: Tx,
     pub(crate) spec: TempoHardfork,
+    shared: Arc<Effects<Option<Tx>>>,
 }
 
-impl StepEffects<'_> {
-    /// The step from `pre` to `post`, models of `contract`.
-    fn step<M>(&self, contract: Address, pre: M, post: M) -> Step<M, Option<Tx>> {
-        let changes = self
-            .net
-            .get(&contract)
-            .into_iter()
-            .flat_map(|account| account.changed_slots())
-            .map(|(slot, value)| SlotChange {
-                address: contract,
-                slot: *slot,
-                before: value.original_value(),
-                after: value.present_value(),
+impl<'a> StepEffects<'a> {
+    /// The effects of `tx`, which made `net`'s changes and emitted `logs`.
+    pub(crate) fn new(net: &'a Net, logs: &[Log], tx: Tx, spec: TempoHardfork) -> Self {
+        let changes = net
+            .addresses()
+            .flat_map(|&address| {
+                let account = net.get(&address).expect("the step changed it");
+                account
+                    .changed_slots()
+                    .map(move |(slot, value)| SlotChange {
+                        address,
+                        slot: *slot,
+                        before: value.original_value(),
+                        after: value.present_value(),
+                    })
             })
             .collect();
-        Step {
-            pre,
-            post,
+        let shared = Effects {
             changes,
-            logs: self.logs.to_vec(),
-            tx: Some(self.tx.clone()),
+            logs: logs.to_vec(),
+            calls: None,
+            ran: Some(tx),
+        };
+        Self {
+            net,
+            spec,
+            shared: Arc::new(shared),
         }
+    }
+
+    /// The transaction that ran.
+    pub(crate) fn tx(&self) -> &Tx {
+        self.ran.as_ref().expect("built with its transaction")
+    }
+
+    /// The step from `pre` to `post`.
+    fn step<M>(&self, pre: M, post: M) -> Step<M, Option<Tx>> {
+        Step::new(pre, post, Arc::clone(&self.shared))
+    }
+}
+
+impl Deref for StepEffects<'_> {
+    type Target = Effects<Option<Tx>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
     }
 }
 
@@ -119,7 +145,7 @@ pub(crate) fn check(
     accounts.sort_unstable();
     // A step's own logs name holders its transitions touched only through a token's storage,
     // such as a transfer's recipient.
-    let logged = logged_addresses(effects.iter().flat_map(|effects| effects.logs));
+    let logged = logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
     let mut all_holders: Vec<Address> = accounts
         .iter()
         .chain(holders)
@@ -141,18 +167,14 @@ pub(crate) fn check(
         effects: effects.as_ref(),
         view_cache,
     };
-    let mut step = Report::default();
-    step.register_any(all());
-    for id in [tip20::VIEW, fee_amm::VIEW, dex::VIEW, account::VIEW] {
-        step.counts.entry(id).or_default();
-    }
+    let start = report.violations.len();
 
     for &token in tokens.iter().filter(|token| selected(token)) {
         let at = tip20::At {
             token,
             holders: &all_holders,
         };
-        reader.check::<tip20::Ledger>(&mut step, at, token, tip20::VIEW);
+        reader.check::<tip20::Ledger>(report, at, token, tip20::VIEW);
     }
     if selected(&TIP_FEE_MANAGER_ADDRESS) {
         let pairs: Vec<(Address, Address)> = tokens
@@ -162,7 +184,7 @@ pub(crate) fn check(
             .collect();
         // Fees are collected for the block's beneficiary; a step that distributes another
         // validator's fees names it in its logs.
-        let mut validators: Vec<Address> = logged_addresses(effects.iter().flat_map(|e| e.logs))
+        let mut validators: Vec<Address> = logged_addresses(effects.iter().flat_map(|e| &e.logs))
             .chain([env.block.beneficiary])
             .collect();
         validators.sort_unstable();
@@ -174,7 +196,7 @@ pub(crate) fn check(
             validators: &validators,
             holders: &all_holders,
         };
-        reader.check::<fee_amm::Books>(&mut step, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
+        reader.check::<fee_amm::Books>(report, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
     }
     if selected(&STABLECOIN_DEX_ADDRESS) {
         // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
@@ -192,17 +214,21 @@ pub(crate) fn check(
             users: &all_holders,
             orders: &orders,
         };
-        reader.check::<dex::Books>(&mut step, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
+        reader.check::<dex::Books>(report, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
     if let Some(effects) = &effects {
-        configurable_account::check(&reader, db, effects, &mut step);
+        configurable_account::check(&reader, db, effects, report);
     }
 
-    failures.extend(step.violations.drain(..).map(|violation| InvariantFailure {
-        id: violation.id.to_string(),
-        message: format!("{} {}", violation.subject, violation.detail),
-        scope: scope.clone(),
-    }));
-    report.merge(step);
+    failures.extend(
+        report
+            .violations
+            .drain(start..)
+            .map(|violation| InvariantFailure {
+                id: violation.id.into_owned(),
+                message: format!("{} {}", violation.subject, violation.detail),
+                scope: scope.clone(),
+            }),
+    );
     db.pre.restore_missed(missed);
 }

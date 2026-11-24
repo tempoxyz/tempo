@@ -615,12 +615,8 @@ fn step(
     let is_tx = tx.is_some();
     let selected = |contract: &_| !is_tx || net.contains(contract);
     let evm = executor.evm();
-    let effects = tx.map(|(tx, logs)| invariants::StepEffects {
-        net: &net,
-        logs,
-        tx,
-        spec: evm.config_spec_id(),
-    });
+    let effects =
+        tx.map(|(tx, logs)| invariants::StepEffects::new(&net, logs, tx, evm.config_spec_id()));
     let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
     invariants::check(
         db,
