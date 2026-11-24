@@ -42,6 +42,7 @@ pub use crate::config::{
 };
 
 pub use args::{Args, PeerAddressOverride, PositiveDuration, VerificationMode};
+pub use peer_manager::AddressOverrides;
 
 // Shared by both the consensus and follow engines such that
 // snapshots for overlapping archives can be reused.

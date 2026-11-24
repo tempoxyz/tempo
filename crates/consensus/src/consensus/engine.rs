@@ -72,7 +72,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub max_peers: NonZeroU32,
     /// Addresses that replace peers' validator config contract entries on
     /// this node.
-    pub(crate) address_overrides: peer_manager::AddressOverrides,
+    pub address_overrides: peer_manager::AddressOverrides,
     pub deque_size: usize,
     pub verification_mode: VerificationMode,
 

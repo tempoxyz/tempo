@@ -93,11 +93,11 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
 /// node only, keyed by the peer's public key. A public key that is not in the
 /// peer set is ignored; overrides never add peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AddressOverrides {
+pub struct AddressOverrides {
     /// Replaces the ingress address this node dials.
-    pub(crate) ingress: HashMap<PublicKey, SocketAddr>,
+    pub ingress: HashMap<PublicKey, SocketAddr>,
     /// Replaces the egress IP this node accepts connections from.
-    pub(crate) egress: HashMap<PublicKey, IpAddr>,
+    pub egress: HashMap<PublicKey, IpAddr>,
 }
 
 /// Initializes the actor. It reads no peers until the executor reports a
