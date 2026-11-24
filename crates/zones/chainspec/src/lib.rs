@@ -66,27 +66,26 @@ impl ZoneChainSpec {
         Ok(Self::from_explicit_genesis(genesis))
     }
 
-    /// Returns this chain specification with the given Tempo fork schedule of its L1.
+    /// Returns this chain specification following the given Tempo fork schedule of its L1.
     ///
-    /// The schedule replaces every Tempo fork activation: scheduled forks activate at the
-    /// reported times and all others are disabled. Ethereum activations are kept. Fails if the
-    /// composed spec does not follow the schedule, such as when other Tempo genesis fields are
-    /// malformed.
+    /// Tempo fork fields the Zone genesis omits take the reported activations; forks the L1 has
+    /// not scheduled stay disabled. An explicit field, `null` included, must already agree with
+    /// the schedule: adopting the L1 value would retroactively change how blocks past that time
+    /// execute. Ethereum activations are kept. Also fails if other Tempo genesis fields are
+    /// malformed, since that leaves the composed spec without the schedule.
     pub fn with_l1_fork_schedule(
         &self,
         schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
     ) -> Result<Self, ZoneChainSpecError> {
         let mut genesis = self.inner.genesis().clone();
         let schedule: std::collections::HashMap<_, _> = schedule.into_iter().collect();
-        for fork in TempoHardfork::VARIANTS {
+        for (fork, &time) in &schedule {
             if let Some(key) = fork.genesis_key() {
-                let activation = schedule
-                    .get(fork)
-                    .map_or(serde_json::Value::Null, |&time| time.into());
                 genesis
                     .config
                     .extra_fields
-                    .insert(key.to_owned(), activation);
+                    .entry(key.to_owned())
+                    .or_insert_with(|| time.into());
             }
         }
         let zone = Self::from_explicit_genesis(genesis);
@@ -331,7 +330,12 @@ mod tests {
     use super::*;
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser;
-    use tempo_chainspec::spec::{DEV, MODERATO};
+    use serde_json::{Value, json};
+    use tempo_chainspec::{
+        constants::moderato::{MODERATO_T0_TIMESTAMP, MODERATO_T14_TIMESTAMP},
+        spec::{DEV, MODERATO},
+    };
+    use test_case::test_case;
     use zone_primitives::constants::zone_chain_id;
 
     fn dev_zone_spec(zone_id: u32) -> ZoneChainSpec {
@@ -563,108 +567,80 @@ mod tests {
         genesis
     }
 
-    #[test]
-    fn l1_schedule_replaces_genesis_fork_fields() {
+    type Mismatch = (TempoHardfork, Option<u64>, Option<u64>);
+
+    fn fork_mismatch(error: ZoneChainSpecError) -> Mismatch {
+        match error {
+            ZoneChainSpecError::ParentForkMismatch { fork, zone, parent } => (fork, zone, parent),
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    /// Applies a custom L1 schedule (T0 to T11 at zero, T12 at 300) to a Zone genesis without
+    /// Tempo fork fields except `field`. Returns the forks active at 299 and 300.
+    #[test_case("t12Time", None => Ok((TempoHardfork::T11, TempoHardfork::T12)))]
+    #[test_case("t12Time", Some(json!(300)) => Ok((TempoHardfork::T11, TempoHardfork::T12)))]
+    #[test_case("t13Time", Some(Value::Null) => Ok((TempoHardfork::T11, TempoHardfork::T12)))]
+    #[test_case("t12Time", Some(json!(500)) => Err((TempoHardfork::T12, Some(500), Some(300))))]
+    #[test_case("t12Time", Some(Value::Null) => Err((TempoHardfork::T12, None, Some(300))))]
+    #[test_case("t13Time", Some(json!(0)) => Err((TempoHardfork::T13, Some(0), None)))]
+    // An invalid Tempo field fails the whole Tempo record, leaving every fork unscheduled.
+    #[test_case("epochLength", Some(json!(0)) => Err((TempoHardfork::T0, None, Some(0))))]
+    fn custom_parent_follows_l1_schedule(
+        field: &str,
+        value: Option<Value>,
+    ) -> Result<(TempoHardfork, TempoHardfork), Mismatch> {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(31_318, 4).unwrap();
-        genesis
-            .config
-            .extra_fields
-            .insert("t12Time".into(), serde_json::json!(500));
-        genesis
-            .config
-            .extra_fields
-            .insert("t13Time".into(), serde_json::json!(0));
+        for key in TempoHardfork::VARIANTS
+            .iter()
+            .filter_map(|fork| fork.genesis_key())
+        {
+            genesis.config.extra_fields.remove(key);
+        }
+        if let Some(value) = value {
+            genesis.config.extra_fields.insert(field.into(), value);
+        }
         let schedule = TempoHardfork::VARIANTS
             .iter()
             .copied()
             .filter(|&fork| fork != TempoHardfork::Genesis && fork <= TempoHardfork::T12)
             .map(|fork| (fork, if fork == TempoHardfork::T12 { 300 } else { 0 }));
-        let zone = ZoneChainSpec::from_genesis(genesis)
+        ZoneChainSpec::from_genesis(genesis)
             .unwrap()
             .with_l1_fork_schedule(schedule)
-            .unwrap();
-
-        assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
-        assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);
-        assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
-
-        // An invalid Tempo field would silently drop the reported schedule.
-        let mut genesis = zone.inner.genesis().clone();
-        genesis
-            .config
-            .extra_fields
-            .insert("epochLength".into(), serde_json::json!(0));
-        let error = ZoneChainSpec::from_genesis(genesis)
-            .unwrap()
-            .with_l1_fork_schedule([(TempoHardfork::T0, 0)])
-            .unwrap_err();
-        assert!(
-            matches!(
-                error,
-                ZoneChainSpecError::ParentForkMismatch {
-                    fork: TempoHardfork::T0,
-                    zone: None,
-                    parent: Some(0)
-                }
-            ),
-            "{error}"
-        );
+            .map(|zone| (zone.tempo_hardfork_at(299), zone.tempo_hardfork_at(300)))
+            .map_err(fork_mismatch)
     }
 
-    #[test]
-    fn public_parent_rejects_disagreeing_fork_fields() {
-        let t14 = MODERATO
-            .tempo_fork_activation(TempoHardfork::T14)
-            .as_timestamp()
-            .unwrap();
-        assert_eq!(
-            MODERATO.tempo_fork_activation(TempoHardfork::T15),
-            ForkCondition::Never
-        );
-        let zone_genesis = |field: &str, value: Option<serde_json::Value>| {
-            let mut genesis = MODERATO.genesis().clone();
-            genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 7).unwrap();
-            match value {
-                Some(value) => genesis.config.extra_fields.insert(field.into(), value),
-                None => genesis.config.extra_fields.remove(field),
-            };
-            ZoneChainSpec::from_genesis(genesis)
+    /// Builds a Moderato Zone whose genesis sets `field` to `value`, or omits it. Returns the
+    /// forks active just before and at Moderato's T14.
+    #[test_case("t14Time", Some(json!(MODERATO_T14_TIMESTAMP)) => Ok((TempoHardfork::T13, TempoHardfork::T14)))]
+    #[test_case("t14Time", None => Ok((TempoHardfork::T13, TempoHardfork::T14)))]
+    #[test_case("t15Time", Some(Value::Null) => Ok((TempoHardfork::T13, TempoHardfork::T14)))]
+    #[test_case("t14Time", Some(Value::Null) => Err((TempoHardfork::T14, None, Some(MODERATO_T14_TIMESTAMP))))]
+    #[test_case("t14Time", Some(json!(MODERATO_T14_TIMESTAMP + 1)) => Err((TempoHardfork::T14, Some(MODERATO_T14_TIMESTAMP + 1), Some(MODERATO_T14_TIMESTAMP))))]
+    #[test_case("t15Time", Some(json!(0)) => Err((TempoHardfork::T15, Some(0), None)))]
+    // An invalid Tempo field fails the whole Tempo record, leaving every fork unscheduled even
+    // though the fork fields match the parent.
+    #[test_case("epochLength", Some(json!(0)) => Err((TempoHardfork::T0, None, Some(MODERATO_T0_TIMESTAMP))))]
+    fn public_parent_rejects_disagreeing_schedule(
+        field: &str,
+        value: Option<Value>,
+    ) -> Result<(TempoHardfork, TempoHardfork), Mismatch> {
+        let mut genesis = MODERATO.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 7).unwrap();
+        match value {
+            Some(value) => genesis.config.extra_fields.insert(field.into(), value),
+            None => genesis.config.extra_fields.remove(field),
         };
-
-        for (field, value) in [
-            ("t14Time", Some(serde_json::json!(t14))),
-            ("t14Time", None),
-            ("t15Time", Some(serde_json::Value::Null)),
-        ] {
-            let zone = zone_genesis(field, value).unwrap();
-            assert_eq!(zone.tempo_hardfork_at(t14 - 1), TempoHardfork::T13);
-            assert_eq!(zone.tempo_hardfork_at(t14), TempoHardfork::T14);
-        }
-
-        for (field, value, fork, zone_activation) in [
-            ("t14Time", serde_json::Value::Null, TempoHardfork::T14, None),
-            (
-                "t14Time",
-                serde_json::json!(t14 + 1),
-                TempoHardfork::T14,
-                Some(t14 + 1),
-            ),
-            ("t15Time", serde_json::json!(0), TempoHardfork::T15, Some(0)),
-            // An invalid Tempo field makes the whole Tempo record fail to parse, which leaves every
-            // Tempo fork unscheduled even though the fork fields match the parent.
-            ("epochLength", serde_json::json!(0), TempoHardfork::T0, None),
-        ] {
-            let error = zone_genesis(field, Some(value)).unwrap_err();
-            let parent = MODERATO.tempo_fork_activation(fork).as_timestamp();
-            assert!(
-                matches!(
-                    &error,
-                    ZoneChainSpecError::ParentForkMismatch { fork: f, zone, parent: p }
-                        if *f == fork && *zone == zone_activation && *p == parent
-                ),
-                "{field}: {error}"
-            );
-        }
+        ZoneChainSpec::from_genesis(genesis)
+            .map(|zone| {
+                (
+                    zone.tempo_hardfork_at(MODERATO_T14_TIMESTAMP - 1),
+                    zone.tempo_hardfork_at(MODERATO_T14_TIMESTAMP),
+                )
+            })
+            .map_err(fork_mismatch)
     }
 }

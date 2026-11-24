@@ -21,15 +21,22 @@ explicit offline `--hardfork <fork>` cap; there is no implicit all-forks-at-gene
 default.
 
 RPC mode reads `eth_chainId`, `tempo_forkSchedule`, and the latest L1 header. The
-RPC chain ID must match the parent encoded in the Zone chain ID. The schedule only
-validates the anchor and picks the fork for the initialization EVM; genesis writes
-no Tempo fork fields. On mainnet and testnet, Zone nodes inherit missing fork
-fields from the parent schedule compiled into the binary and refuse to start if an
-explicit genesis field disagrees with it, because the prover replays batches under
-that schedule. On other parents they ignore Tempo fork fields in genesis and
-read `tempo_forkSchedule` from `--l1.rpc-url` once at startup. Either way L1
-upgrades need no genesis change, only a node upgrade or restart. Offline tools
-(`import`, `stage`, `re-execute`) still execute from the genesis schedule.
+RPC chain ID must match the parent encoded in the Zone chain ID. The schedule
+validates the anchor and picks the fork for the initialization EVM. What genesis
+records depends on the parent:
+
+- Mainnet and testnet: no Tempo fork fields. Zone nodes take the parent schedule
+  compiled into the binary and refuse to start if an explicit genesis field
+  disagrees with it, because the prover replays batches under that schedule.
+- Other parents: the forks the L1 has scheduled; unscheduled forks are omitted.
+  Zone nodes read `tempo_forkSchedule` from `--l1.rpc-url` once at startup, fill
+  omitted forks from it, and refuse to start if an explicit field, `null`
+  included, disagrees with it. Offline tools (`import`, `stage`, `re-execute`)
+  execute with the schedule as of generation.
+- Local dev parents (1337, 31337): the forks the L1 has scheduled, with `null` for
+  the rest so nodes don't inherit the compiled DEV schedule.
+
+L1 upgrades need no genesis change, only a node upgrade or restart.
 The genesis timestamp comes from the anchor header. With the same anchor and
 generation parameters, regeneration produces identical genesis even as the L1 head
 advances. RPC failures, unsupported forks, inconsistent schedules, or fork overrides

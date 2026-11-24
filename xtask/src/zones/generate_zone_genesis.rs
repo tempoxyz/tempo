@@ -712,7 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_genesis_is_independent_of_l1_head() {
-        let chain_id = zone_primitives::constants::zone_chain_id(4217, 3)
+        let chain_id = zone_primitives::constants::zone_chain_id(31_318, 3)
             .unwrap()
             .to_string();
         let mut anchor = TempoHeader::default();
@@ -733,7 +733,7 @@ mod tests {
         for head_timestamp in [100, 150, 300] {
             let output = tempfile::tempdir().unwrap();
             let asserter = Asserter::new();
-            asserter.push_success(&"0x1079");
+            asserter.push_success(&"0x7a56");
             asserter.push_success(&serde_json::json!({
                 "active": if head_timestamp < 200 { "T11" } else { "T12" },
                 "schedule": [
@@ -779,12 +779,23 @@ mod tests {
             let json = std::fs::read(output.path().join("genesis.json")).unwrap();
             let genesis: Genesis = serde_json::from_slice(&json).unwrap();
             assert_eq!(genesis.timestamp, 50);
+            // A custom parent's genesis carries the forks the L1 scheduled and omits the rest,
+            // including T12 scheduled after the anchor.
             for &fork in TempoHardfork::VARIANTS {
                 if let Some(key) = fork.genesis_key() {
-                    assert!(!genesis.config.extra_fields.contains_key(key), "{key}");
+                    let expected = match fork {
+                        TempoHardfork::T0 => Some(serde_json::json!(10)),
+                        TempoHardfork::T11 => Some(serde_json::json!(20)),
+                        TempoHardfork::T12 => Some(serde_json::json!(200)),
+                        _ => None,
+                    };
+                    assert_eq!(
+                        genesis.config.extra_fields.get(key),
+                        expected.as_ref(),
+                        "{key}"
+                    );
                 }
             }
-            // Nodes on this parent take the reported schedule from the L1.
             let spec = ZoneChainSpec::from_genesis(genesis)
                 .unwrap()
                 .with_l1_fork_schedule([

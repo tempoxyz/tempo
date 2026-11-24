@@ -13,10 +13,10 @@ use reth_ethereum::cli::{Cli, ExtendedCommand};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::{TempoNetwork, provider::TempoProviderExt as _};
-use tempo_chainspec::{hardfork::TempoHardfork, spec::chainspec_from_chain_id};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
-use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
+use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser, tempo_chain_spec_for_l1};
 use zone_evm::ZoneEvmConfig;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
@@ -229,12 +229,12 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
 
-        // Zones on mainnet and testnet keep the schedule the chain spec parser built: the
-        // compiled parent schedule, which genesis fork fields must match. Zones on
-        // other parents follow the schedule their L1 reports, read once at startup, and ignore
-        // Tempo fork fields in the Zone genesis.
+        // Zones on mainnet, testnet and local dev parents keep the schedule the chain spec
+        // parser built from the compiled parent schedule. Zones on other parents follow the
+        // schedule their L1 reports, read once at startup: omitted genesis fork fields take
+        // its activations, and explicit fields must agree with it.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
-        if chainspec_from_chain_id(parent_chain_id).is_none() {
+        if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
             let schedule = tokio::time::timeout(
                 Duration::from_secs(30),
                 fetch_l1_fork_schedule(&args.l1_rpc_url, parent_chain_id),

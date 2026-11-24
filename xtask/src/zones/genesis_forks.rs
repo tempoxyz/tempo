@@ -6,8 +6,11 @@ use eyre::{WrapErr as _, ensure, eyre};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::ForkSchedule};
-use tempo_chainspec::{cli::TempoHardforkArgs, hardfork::TempoHardfork};
+use tempo_chainspec::{
+    cli::TempoHardforkArgs, hardfork::TempoHardfork, spec::chainspec_from_chain_id,
+};
 use tokio::time::timeout;
+use zone_chainspec::tempo_chain_spec_for_l1;
 use zone_primitives::constants::decode_l1_chain_id;
 
 #[derive(Debug)]
@@ -105,21 +108,36 @@ impl ResolvedForks {
 
     /// Writes Tempo fork activations into a Zone genesis config.
     ///
-    /// RPC-resolved schedules write no fork fields: Zone nodes take their parent's schedule,
-    /// compiled in for mainnet and testnet and read from the L1's `tempo_forkSchedule` at
-    /// startup otherwise, so later L1 upgrades need no genesis change. Offline caps are written explicitly, with `null` for
-    /// disabled forks, for offline tools that execute from genesis alone.
+    /// Zones on mainnet and testnet get no fork fields and follow the parent schedule compiled
+    /// into the node, so a fork rescheduled in a later release needs no genesis change. Zones on
+    /// other RPC-resolved parents get the forks the L1 has scheduled and omit the rest, which
+    /// nodes fill from the L1's `tempo_forkSchedule` at startup; offline tools execute with the
+    /// schedule as of generation. Zones on local dev parents, and offline caps, write `null` for
+    /// disabled forks, because an omitted field there would inherit the compiled DEV schedule.
     pub(crate) fn write_to(&self, config: &mut ChainConfig) {
+        let public_parent = self
+            .parent_chain_id
+            .is_some_and(|id| chainspec_from_chain_id(id).is_some());
+        let custom_parent = self
+            .parent_chain_id
+            .is_some_and(|id| tempo_chain_spec_for_l1(id).is_none());
         for &fork in TempoHardfork::VARIANTS {
             if let Some(key) = fork.genesis_key() {
-                if self.parent_chain_id.is_some() {
-                    config.extra_fields.remove(key);
-                } else {
-                    let value = self
-                        .activations
-                        .get(&fork)
-                        .map_or(Value::Null, |&time| Value::from(time));
-                    config.extra_fields.insert(key.to_owned(), value);
+                match self.activations.get(&fork) {
+                    _ if public_parent => {
+                        config.extra_fields.remove(key);
+                    }
+                    Some(&time) => {
+                        config
+                            .extra_fields
+                            .insert(key.to_owned(), Value::from(time));
+                    }
+                    None if custom_parent => {
+                        config.extra_fields.remove(key);
+                    }
+                    None => {
+                        config.extra_fields.insert(key.to_owned(), Value::Null);
+                    }
                 }
             }
         }
@@ -160,6 +178,7 @@ mod tests {
     use alloy::{providers::ProviderBuilder, transports::mock::Asserter};
     use serde_json::json;
     use tempo_alloy::rpc::ForkInfo;
+    use test_case::test_case;
 
     fn schedule() -> ForkSchedule {
         serde_json::from_value(json!({ "active": "T11", "schedule": [
@@ -168,6 +187,22 @@ mod tests {
             { "name": "T12", "activationTime": 200, "active": false }
         ] }))
         .unwrap()
+    }
+
+    // Mainnet follows its compiled schedule, a custom parent omits unscheduled forks, and a dev
+    // parent disables them.
+    #[test_case(4217 => (None, None))]
+    #[test_case(31_318 => (Some(json!(20)), None))]
+    #[test_case(1337 => (Some(json!(20)), Some(Value::Null)))]
+    fn rpc_schedule_fork_fields(parent_chain_id: u64) -> (Option<Value>, Option<Value>) {
+        let forks = ResolvedForks::from_schedule(parent_chain_id, 100, schedule()).unwrap();
+        let mut config = ChainConfig::default();
+        config.extra_fields.insert("t13Time".to_owned(), json!(0));
+        forks.write_to(&mut config);
+        (
+            config.extra_fields.get("t11Time").cloned(),
+            config.extra_fields.get("t13Time").cloned(),
+        )
     }
 
     #[tokio::test]
