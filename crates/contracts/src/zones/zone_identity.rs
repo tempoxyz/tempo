@@ -9,8 +9,8 @@ crate::sol! {
     ///
     /// An address on the Zone belongs to at most one org; an address in no org is in org 0. Token T
     /// may move on the Zone from org A to org B only when A's admin allows it outbound and B's admin
-    /// allows it inbound; org 0 has no admin and always agrees, so only the other org's half
-    /// counts, and moves between addresses in org 0 are allowed. Tempo addresses are never members:
+    /// allows it inbound. Org 0 has no admin and no edges: nothing moves on the Zone to, from or
+    /// within org 0, and `setEdge` rejects any edge that names it. Tempo addresses are never members:
     /// each org's admin alone decides, per token, which Tempo addresses its members accept deposits
     /// from and may withdraw to, through its targets and its [`L1Policy`]. Addresses in org 0 may
     /// always withdraw to any Tempo address and never accept deposits.

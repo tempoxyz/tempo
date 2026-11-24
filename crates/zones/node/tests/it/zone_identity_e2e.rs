@@ -366,8 +366,8 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
 
     fixture.seed_identity_config(registrar.address, true);
 
-    // Inside an org transfers pass; A to B waits for B's half; B to A has no edge, and A hasn't
-    // opened its half to or from org 0.
+    // Inside an org transfers pass; A to B waits for B's half; B to A has no edge, and org 0 has
+    // none.
     let to_bob = alice.transfer(bob.address, 1_000).await?;
     let to_carol = alice.transfer(carol.address, 1_000).await?;
     assert_eq!(
@@ -469,13 +469,15 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     let pending = alice.send(ZONE_OUTBOX_ADDRESS, withdraw(offramp)).await?;
     assert_eq!(mine(&mut fixture, &zone, vec![pending]).await?, [true]);
 
-    // Org 0 has no admin: A's own half toward org 0 lets Alice reach Dave, who is in no org, while
-    // Dave still can't send into A.
-    let open = admin_a
-        .send(ZONE_IDENTITY_ADDRESS, set_edge(org_a, 0))
-        .await?;
-    assert_eq!(mine(&mut fixture, &zone, vec![open]).await?, [true]);
-    assert_transfer(&zone, alice.address, dave.address, true).await?;
+    // Org 0 has no edges: A's admin can't open one toward Dave, who is in no org, in either
+    // direction.
+    for (from, to) in [(org_a, 0), (0, org_a)] {
+        let open = admin_a
+            .send(ZONE_IDENTITY_ADDRESS, set_edge(from, to))
+            .await?;
+        assert_eq!(mine(&mut fixture, &zone, vec![open]).await?, [false]);
+    }
+    assert_transfer(&zone, alice.address, dave.address, false).await?;
     assert_transfer(&zone, dave.address, alice.address, false).await?;
 
     // Org A's admin and reader read A's members; other admins and outsiders read no one else.
