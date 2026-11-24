@@ -287,7 +287,7 @@ impl GenerateZoneGenesis {
         }
 
         let mut chain_config = ethereum_chain_config(self.chain_id);
-        forks.write_to(&mut chain_config, timestamp);
+        forks.write_to(&mut chain_config);
 
         let mut genesis = Genesis::default()
             .with_timestamp(timestamp)
@@ -779,13 +779,14 @@ mod tests {
             let json = std::fs::read(output.path().join("genesis.json")).unwrap();
             let genesis: Genesis = serde_json::from_slice(&json).unwrap();
             assert_eq!(genesis.timestamp, 50);
-            // A custom parent's genesis carries the forks active at the anchor and omits the
-            // rest, including T12, which the L1 schedules after the anchor.
+            // A custom parent's genesis carries the forks the L1 scheduled and omits the rest,
+            // including T12 scheduled after the anchor.
             for &fork in TempoHardfork::VARIANTS {
                 if let Some(key) = fork.genesis_key() {
                     let expected = match fork {
                         TempoHardfork::T0 => Some(serde_json::json!(10)),
                         TempoHardfork::T11 => Some(serde_json::json!(20)),
+                        TempoHardfork::T12 => Some(serde_json::json!(200)),
                         _ => None,
                     };
                     assert_eq!(

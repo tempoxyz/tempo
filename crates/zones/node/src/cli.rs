@@ -231,8 +231,8 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
 
         // Zones on mainnet, testnet and local dev parents keep the schedule the chain spec
         // parser built from the compiled parent schedule. Zones on other parents follow the
-        // schedule their L1 reports, read once at startup: omitted genesis fork fields take
-        // its activations, and explicit fields must agree with it.
+        // schedule their L1 reports, read once at startup, for every fork not active at
+        // genesis; a genesis field for a fork active at genesis must agree with it.
         let parent_chain_id = decode_l1_chain_id(builder.config().chain.chain_id())?;
         if tempo_chain_spec_for_l1(parent_chain_id).is_none() {
             let schedule = tokio::time::timeout(
