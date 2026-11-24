@@ -1,4 +1,10 @@
-//! Zone read-privacy rules for the upstream Tempo SignatureVerifier precompile (TIP-1154).
+//! Zone pre-execution rules for the upstream Tempo SignatureVerifier precompile.
+//!
+//! `SignatureVerifier` remains the source of truth for signature verification. Before forwarding a
+//! call to Tempo, `SignatureVerifierRules` applies only zone-specific checks: from T15, keychain
+//! views are privacy-gated like the `AccountKeychain` getters they read through.
+//!
+//! Accepted calldata and callers are forwarded unchanged to Tempo.
 
 use alloy_primitives::Address;
 use alloy_sol_types::SolInterface;
@@ -11,12 +17,14 @@ use crate::{
     storage::StorageCtx,
 };
 
-/// From T15, keychain views follow the `AccountKeychain` getters' read rule.
+/// Zone-specific rules applied before forwarding to upstream `SignatureVerifier`.
 pub(crate) struct SignatureVerifierRules;
 
 impl CallRules for SignatureVerifierRules {
+    /// Apply zone privacy restrictions before upstream execution.
     fn admit(&self, data: &[u8], caller: Address) -> CallCheck {
         let spec = StorageCtx::default().spec();
+        // Before T15, every call is forwarded unchanged.
         if !spec.is_t15() {
             return CallCheck::Continue;
         }
@@ -30,10 +38,12 @@ impl CallRules for SignatureVerifierRules {
 
         // Intentionally exhaustive: an upstream ABI addition must be classified here.
         match call {
+            // Reveal whether a key is active or admin on `account`.
             ISignatureVerifierCalls::verifyKeychain(call) => check_caller(caller, &[call.account]),
             ISignatureVerifierCalls::verifyKeychainAdmin(call) => {
                 check_caller(caller, &[call.account])
             }
+            // Stateless, or read only the account's public configuration commitment.
             ISignatureVerifierCalls::recover(_)
             | ISignatureVerifierCalls::verify(_)
             | ISignatureVerifierCalls::verifyConfigurableAccount(_) => CallCheck::Continue,
