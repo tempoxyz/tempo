@@ -170,7 +170,7 @@ where
         let mut account = self
             .evm
             .state_mut()
-            .account_with_skip(&address, skip_cold_load)?;
+            .account_with_skip(&address, skip_cold_load && self.spec.is_t15())?;
         account.warm();
         let storage = account.storage();
         let (slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
@@ -198,7 +198,7 @@ where
         let mut account = self
             .evm
             .state_mut()
-            .account_with_skip(&address, skip_cold_load)?;
+            .account_with_skip(&address, skip_cold_load && self.spec.is_t15())?;
         account.warm();
         let storage = account.storage();
         let (mut slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
