@@ -21,6 +21,7 @@ pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
+pub mod zone_account;
 
 /// The transaction a step ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,9 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(configurable_account::LEAF_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
+        .chain(erased(zone_account::CHECKS))
+        .chain(erased(zone_account::STEP_CHECKS))
+        .chain(erased(zone_account::LEAF_CHECKS))
 }
 
 /// `value` as text, `missing` when there is none.
