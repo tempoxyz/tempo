@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -96,7 +96,7 @@ impl BestTransactionsPrewarming {
         let tx_warm_pool = tx_warm_pool
             .as_ref()
             .and_then(|tx_warm_pool| ctx.prewarm.begin_tx_warm(tx_warm_pool));
-        let tx_warm_pool = tx_warm_pool.as_deref();
+        let tx_warm_pool = tx_warm_pool.as_ref().map(|guard| guard.pool);
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -179,10 +179,6 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
-
-        if let Some(tx_warm_pool) = tx_warm_pool {
-            tx_warm_pool.end_block();
-        }
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -365,11 +361,34 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 ///
 /// It serves one build at a time; builds that run while it is in use skip warming.
 #[derive(Debug, Clone)]
-pub(crate) struct TxWarmPool(Arc<Mutex<Arc<BalPrewarmPool>>>);
+pub(crate) struct TxWarmPool {
+    pool: Arc<BalPrewarmPool>,
+    /// Whether a build is using [`Self::pool`].
+    busy: Arc<AtomicBool>,
+}
 
 impl TxWarmPool {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(Mutex::new(BalPrewarmPool::new(TX_WARM_THREADS))))
+        Self {
+            pool: BalPrewarmPool::new(TX_WARM_THREADS),
+            busy: Arc::default(),
+        }
+    }
+}
+
+/// A build's use of a [`TxWarmPool`].
+///
+/// Dropping it, also while unwinding, waits for the dispatched targets to load and frees the pool
+/// for the next build.
+struct TxWarmGuard<'a> {
+    pool: &'a BalPrewarmPool,
+    busy: &'a AtomicBool,
+}
+
+impl Drop for TxWarmGuard<'_> {
+    fn drop(&mut self) {
+        self.pool.end_block();
+        self.busy.store(false, Ordering::Release);
     }
 }
 
@@ -492,12 +511,12 @@ where
     /// Starts loading transaction warm targets of this build into the execution cache.
     ///
     /// Returns `None` if the execution cache is disabled or another build is using the pool.
-    fn begin_tx_warm<'a>(
-        &self,
-        tx_warm_pool: &'a TxWarmPool,
-    ) -> Option<MutexGuard<'a, Arc<BalPrewarmPool>>> {
+    fn begin_tx_warm<'a>(&self, tx_warm_pool: &'a TxWarmPool) -> Option<TxWarmGuard<'a>> {
         let cache = self.cache.as_ref()?;
-        let pool = tx_warm_pool.0.try_lock().ok()?;
+        if tx_warm_pool.busy.swap(true, Ordering::Acquire) {
+            return None;
+        }
+        let pool = &*tx_warm_pool.pool;
         let provider = self.provider.clone();
         let parent_hash = self.parent_hash;
         pool.begin_block(
@@ -511,7 +530,10 @@ where
             cache.cache().clone(),
             None,
         );
-        Some(pool)
+        Some(TxWarmGuard {
+            pool,
+            busy: &tx_warm_pool.busy,
+        })
     }
 }
 
