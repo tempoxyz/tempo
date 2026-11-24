@@ -8,10 +8,8 @@ use commonware_runtime::{
     Runner as _, Supervisor as _,
     deterministic::{self, Runner},
 };
-use rand::{SeedableRng as _, rngs::StdRng};
 use rand_core::CryptoRng;
-use reth_ethereum::chainspec::EthChainSpec as _;
-use tempo_chainspec::{NetworkIdentity, spec::DEV};
+use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::TempoHeader;
 
 use super::{
@@ -22,10 +20,7 @@ use crate::{
     consensus::Digest,
     epoch::SchemeProvider,
     gossip::Certificate,
-    startup::{
-        VerifiedFloor, ensure_boundary_matches_floor, verify_finalized_tip,
-        verify_floor_certificate,
-    },
+    startup::{verify_finalized_floor, verify_finalized_tip},
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };
 
@@ -376,7 +371,7 @@ fn rejected_tip_does_not_heal_or_persist_snapshot_identity() {
             let prefix = "reject_snapshot_rotation";
             let mut builder = Harness::builder(context.child("test"), prefix)
                 .finalized_floor(Height::new(19))
-                .startup(identity(&trusted), Some(tip(&snapshot, 2)));
+                .startup(identity(&trusted), Some(tip(&snapshot, 2)), None);
             if has_local_state {
                 builder = builder.initial_state(local_state.clone());
             }
@@ -431,7 +426,7 @@ fn authenticated_tip_allows_healing_from_an_older_floor() {
             .finalized_floor(Height::new(19))
             // The floor is still in epoch 1, but the actual tip is in epoch 2
             // and must be verified with the updated configured identity.
-            .startup(identity(&current), Some(tip(&current, 2)))
+            .startup(identity(&current), Some(tip(&current, 2)), None)
             .build()
             .await;
         harness
@@ -458,7 +453,7 @@ fn missing_tip_is_authenticated_and_registered_before_actors_start() {
                 u64::MAX,
             ))
             .finalized_floor(Height::new(29))
-            .startup(identity(&current), Some(tip(&current, 4)))
+            .startup(identity(&current), Some(tip(&current, 4)), None)
             .build()
             .await;
 
@@ -510,7 +505,7 @@ fn historical_tip_bounds_the_startup_epoch() {
         );
         let mut harness = Harness::builder(context.child("test"), "historical_tip_bound")
             .finalized_floor(Height::new(49))
-            .startup(identity(&trusted), Some(historical_tip))
+            .startup(identity(&trusted), Some(historical_tip), None)
             .build()
             .await;
         harness
@@ -529,18 +524,14 @@ fn floor_certificate_verifies_against_a_trusted_identity() {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let current = dkg_fixture(&mut context, Epoch::new(3));
         let (height, certificate) = tip(&current, 3);
-        let verified = verify_floor_certificate(
+        let verified = verify_finalized_floor(
             &mut context,
             &identity(&current),
             None,
-            height,
-            &certificate,
+            (height, &certificate),
         )
         .unwrap();
-        assert_eq!(verified.height, height);
-        assert_eq!(verified.epoch, Epoch::new(3));
-        assert_eq!(verified.digest, certificate.proposal.payload);
-        assert_eq!(verified.identity, identity(&current));
+        assert_eq!(verified, identity(&current));
 
         // The persisted identity's `from_epoch` is the node's latest epoch, so it may verify a
         // floor from long before it.
@@ -548,15 +539,14 @@ fn floor_certificate_verifies_against_a_trusted_identity() {
             from_epoch: 50,
             ..identity(&current)
         };
-        let verified = verify_floor_certificate(
+        let verified = verify_finalized_floor(
             &mut context,
             &identity(&old),
             Some(&persisted),
-            height,
-            &certificate,
+            (height, &certificate),
         )
         .unwrap();
-        assert_eq!(verified.identity, persisted);
+        assert_eq!(verified, persisted);
     });
 }
 
@@ -566,12 +556,11 @@ fn floor_certificate_before_the_trusted_identity_is_refused() {
         let old = dkg_fixture(&mut context, Epoch::new(1));
         let current = dkg_fixture(&mut context, Epoch::new(3));
         let (height, certificate) = tip(&old, 1);
-        let error = verify_floor_certificate(
+        let error = verify_finalized_floor(
             &mut context,
             &identity(&current),
             None,
-            height,
-            &certificate,
+            (height, &certificate),
         )
         .err()
         .unwrap();
@@ -589,133 +578,18 @@ fn floor_certificate_signed_by_another_identity_is_refused() {
         let trusted = dkg_fixture(&mut context, Epoch::new(1));
         let other = dkg_fixture(&mut context, Epoch::new(1));
         let (height, certificate) = tip(&other, 1);
-        let error = verify_floor_certificate(
+        let error = verify_finalized_floor(
             &mut context,
             &identity(&trusted),
             None,
-            height,
-            &certificate,
+            (height, &certificate),
         )
         .err()
         .unwrap();
         assert_eq!(
             error.to_string(),
             "finalized floor certificate at height `12` in epoch `1` failed verification against \
-             every trusted network identity"
-        );
-    });
-}
-
-fn verified_floor(fixture: &DkgFixture, header: &TempoHeader) -> VerifiedFloor {
-    VerifiedFloor {
-        height: Height::new(header.number()),
-        digest: Digest(header.hash_slow()),
-        epoch: Epoch::new(header.number() / 10),
-        identity: identity(fixture),
-    }
-}
-
-#[test]
-fn boundary_at_genesis_must_be_the_chain_spec_genesis() {
-    let genesis = DEV.genesis_header().clone();
-    let outcome = dkg_fixture(&mut StdRng::seed_from_u64(0), Epoch::zero()).outcome;
-    ensure_boundary_matches_floor(Height::zero(), &genesis, &outcome, None, DEV.genesis_hash())
-        .unwrap();
-
-    let error = ensure_boundary_matches_floor(
-        Height::zero(),
-        &header(Height::zero()),
-        &outcome,
-        None,
-        DEV.genesis_hash(),
-    )
-    .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!(
-            "genesis header does not match the chain spec's genesis hash `{}`",
-            DEV.genesis_hash()
-        )
-    );
-}
-
-#[test]
-fn boundary_at_the_floor_must_be_the_certified_block() {
-    Runner::default().start(|mut context| async move {
-        let fixture = dkg_fixture(&mut context, Epoch::new(1));
-        let boundary = outcome_header(Height::new(19), &persisted(&fixture, &mut context));
-        let floor = verified_floor(&fixture, &boundary);
-        ensure_boundary_matches_floor(
-            Height::new(19),
-            &boundary,
-            &fixture.outcome,
-            Some(&floor),
-            DEV.genesis_hash(),
-        )
-        .unwrap();
-
-        let error = ensure_boundary_matches_floor(
-            Height::new(19),
-            &header(Height::new(19)),
-            &fixture.outcome,
-            Some(&floor),
-            DEV.genesis_hash(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "boundary header at height `19` does not match the finalized floor certificate"
-        );
-    });
-}
-
-#[test]
-fn boundary_below_the_floor_must_carry_the_floor_identity() {
-    Runner::default().start(|mut context| async move {
-        let trusted = dkg_fixture(&mut context, Epoch::new(1));
-        let forged = dkg_fixture(&mut context, Epoch::new(1));
-        let later = dkg_fixture(&mut context, Epoch::new(2));
-        let floor = verified_floor(&trusted, &header(Height::new(12)));
-        let check = |outcome| {
-            ensure_boundary_matches_floor(
-                Height::new(9),
-                &header(Height::new(9)),
-                outcome,
-                Some(&floor),
-                DEV.genesis_hash(),
-            )
-        };
-
-        check(&trusted.outcome).unwrap();
-        assert_eq!(
-            check(&forged.outcome).unwrap_err().to_string(),
-            "boundary outcome at height `9` carries a network identity other than the one the \
-             finalized floor certificate in epoch `1` verified against"
-        );
-        assert_eq!(
-            check(&later.outcome).unwrap_err().to_string(),
-            "boundary outcome at height `9` is for epoch `2`, but the finalized floor certificate \
-             is in epoch `1`"
-        );
-    });
-}
-
-#[test]
-fn boundary_above_the_floor_is_refused() {
-    Runner::default().start(|mut context| async move {
-        let trusted = dkg_fixture(&mut context, Epoch::new(1));
-        let floor = verified_floor(&trusted, &header(Height::new(12)));
-        let error = ensure_boundary_matches_floor(
-            Height::new(19),
-            &header(Height::new(19)),
-            &trusted.outcome,
-            Some(&floor),
-            DEV.genesis_hash(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "boundary at height `19` is above the finalized floor certificate at height `12`"
+             the trusted network identity from epoch `1`"
         );
     });
 }
@@ -730,8 +604,7 @@ fn healing_refuses_a_floor_before_the_trusted_identity() {
                 u64::MAX,
             ))
             .finalized_floor(Height::new(12))
-            .startup(identity(&current), Some(tip(&old, 1)))
-            .floor_certificate(tip(&old, 1))
+            .startup(identity(&current), Some(tip(&old, 1)), Some(tip(&old, 1)))
             .build()
             .await;
         harness.execution.add_header(outcome_header(
@@ -756,8 +629,11 @@ fn healing_trusts_a_boundary_above_an_old_floor() {
                 u64::MAX,
             ))
             .finalized_floor(Height::new(22))
-            .startup(identity(&current), Some(tip(&current, 2)))
-            .floor_certificate(tip(&old, 0))
+            .startup(
+                identity(&current),
+                Some(tip(&current, 2)),
+                Some(tip(&old, 0)),
+            )
             .build()
             .await;
         harness
@@ -785,8 +661,11 @@ async fn healing_below_floor(
             u64::MAX,
         ))
         .finalized_floor(Height::new(22))
-        .startup(identity(current), Some(tip(current, 2)))
-        .floor_certificate(tip(current, 2))
+        .startup(
+            identity(current),
+            Some(tip(current, 2)),
+            Some(tip(current, 2)),
+        )
         .build()
         .await;
     harness
@@ -818,6 +697,113 @@ fn healing_refuses_another_identity_below_the_floor() {
         let forged = dkg_fixture(&mut context, Epoch::new(2));
         let boundary_state = persisted(&forged, &mut context);
         let mut harness = healing_below_floor(&mut context, &current, &boundary_state).await;
+        harness.wait_for_actor_exit().await;
+        assert!(harness.epoch_manager.events().is_empty());
+    });
+}
+
+#[test]
+fn healing_refuses_a_floor_from_another_epoch_than_the_boundary_outcome() {
+    Runner::default().start(|mut context| async move {
+        let current = dkg_fixture(&mut context, Epoch::new(2));
+        let boundary_state = persisted(&current, &mut context);
+        // The boundary at 19 carries the epoch 2 outcome, but the floor certificate is in epoch 3.
+        let mut harness = Harness::builder(context.child("test"), "floor_epoch_mismatch")
+            .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
+                u64::MAX,
+            ))
+            .finalized_floor(Height::new(22))
+            .startup(
+                identity(&current),
+                Some(tip(&current, 3)),
+                Some(tip(&current, 3)),
+            )
+            .build()
+            .await;
+        harness
+            .execution
+            .add_header(outcome_header(Height::new(19), &boundary_state));
+        for height in 20..=22 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        harness.start().await;
+        harness.wait_for_actor_exit().await;
+        assert!(harness.epoch_manager.events().is_empty());
+    });
+}
+
+/// Builds a harness healing from the boundary at 19 with `current`'s outcome, where the floor
+/// certificate certifies `certified` at the same height.
+async fn healing_at_floor(
+    context: &mut deterministic::Context,
+    current: &DkgFixture,
+    boundary: TempoHeader,
+    certified: &TempoHeader,
+) -> Harness {
+    let mut harness = Harness::builder(context.child("test"), "floor_at_boundary")
+        .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
+            u64::MAX,
+        ))
+        .finalized_floor(Height::new(19))
+        .startup(
+            identity(current),
+            Some(tip_for_header(current, certified)),
+            Some(tip_for_header(current, certified)),
+        )
+        .build()
+        .await;
+    harness.execution.add_header(boundary);
+    harness.start().await;
+    harness
+}
+
+#[test]
+fn healing_accepts_a_boundary_that_is_the_certified_floor() {
+    Runner::default().start(|mut context| async move {
+        let current = dkg_fixture(&mut context, Epoch::new(2));
+        let boundary_state = persisted(&current, &mut context);
+        let boundary = outcome_header(Height::new(19), &boundary_state);
+        let mut harness =
+            healing_at_floor(&mut context, &current, boundary.clone(), &boundary).await;
+        harness.stop().await;
+        assert_eq!(harness.storage().current().output, boundary_state.output);
+    });
+}
+
+#[test]
+fn healing_refuses_a_boundary_other_than_the_certified_floor() {
+    Runner::default().start(|mut context| async move {
+        let current = dkg_fixture(&mut context, Epoch::new(2));
+        let boundary_state = persisted(&current, &mut context);
+        let boundary = outcome_header(Height::new(19), &boundary_state);
+        let mut harness =
+            healing_at_floor(&mut context, &current, boundary, &header(Height::new(19))).await;
+        harness.wait_for_actor_exit().await;
+        assert!(harness.epoch_manager.events().is_empty());
+    });
+}
+
+#[test]
+fn healing_refuses_a_genesis_boundary_other_than_the_chain_spec_genesis() {
+    Runner::default().start(|mut context| async move {
+        let current = dkg_fixture(&mut context, Epoch::zero());
+        let genesis_state = persisted(&current, &mut context);
+        let mut harness = Harness::builder(context.child("test"), "forged_genesis")
+            .identity(commonware_cryptography::ed25519::PrivateKey::from_seed(
+                u64::MAX,
+            ))
+            .finalized_floor(Height::new(5))
+            .startup(identity(&current), Some(tip(&current, 0)), None)
+            .build()
+            .await;
+        // Carries a valid outcome, but is not the chain spec's genesis.
+        harness
+            .execution
+            .add_header(outcome_header(Height::zero(), &genesis_state));
+        for height in 1..=5 {
+            harness.execution.add_header(header(Height::new(height)));
+        }
+        harness.start().await;
         harness.wait_for_actor_exit().await;
         assert!(harness.epoch_manager.events().is_empty());
     });

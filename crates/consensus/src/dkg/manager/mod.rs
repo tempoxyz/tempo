@@ -85,7 +85,7 @@ pub(crate) struct Config<TExecutionLayer, TMarshal, TBlocker> {
     /// Height and certificate of the lowest archive certificate, which marshal
     /// starts from. Verified at initialization and used to check the boundary
     /// outcome that seeds the initial DKG state. `None` only at genesis.
-    pub(crate) finalized_floor_certificate: Option<(Height, Certificate)>,
+    pub(crate) finalized_floor: Option<(Height, Certificate)>,
 
     /// Trusted identity supplied by the binary or its explicit configuration.
     pub(crate) network_identity: NetworkIdentity,

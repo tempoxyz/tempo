@@ -1474,15 +1474,47 @@ where
         // Only a boundary at or below the floor certificate is covered by it. One above it comes
         // from a processed height this node wrote, such as on a node synced from genesis whose
         // archive starts long before its current epoch.
-        let verified_floor = match &self.config.finalized_floor_certificate {
+        if latest_boundary.is_zero() {
+            let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
+            ensure!(
+                boundary_header.hash_slow() == genesis_hash,
+                "genesis header does not match the chain spec's genesis hash `{genesis_hash}`",
+            );
+        }
+        // Marshal lacks a floor certificate only at genesis (see `alias::marshal::init`), where
+        // `verify_finalized_tip` already requires a zero floor.
+        match &self.config.finalized_floor {
             Some((height, certificate)) if latest_boundary <= *height => {
-                Some(crate::startup::verify_floor_certificate(
+                let identity = crate::startup::verify_finalized_floor(
                     self.context.as_present_mut(),
                     &self.config.network_identity,
                     self.persisted_identity.as_ref(),
-                    *height,
-                    certificate,
-                )?)
+                    (*height, certificate),
+                )?;
+                let floor_epoch = certificate.proposal.round.epoch();
+                if latest_boundary == *height {
+                    // The boundary is the certified block itself.
+                    ensure!(
+                        Digest(boundary_header.hash_slow()) == certificate.proposal.payload,
+                        "boundary header at height `{latest_boundary}` does not match the \
+                         finalized floor certificate",
+                    );
+                } else {
+                    // Below the floor, the outcome is for the floor's epoch and must carry the
+                    // identity its certificate verified against.
+                    ensure!(
+                        onchain_outcome.epoch() == floor_epoch,
+                        "boundary outcome at height `{latest_boundary}` is for epoch `{}`, but the \
+                         finalized floor certificate is in epoch `{floor_epoch}`",
+                        onchain_outcome.epoch(),
+                    );
+                    ensure!(
+                        *onchain_outcome.network_identity() == identity.identity,
+                        "boundary outcome at height `{latest_boundary}` carries a network identity \
+                         other than the one the finalized floor certificate in epoch \
+                         `{floor_epoch}` verified against",
+                    );
+                }
             }
             Some((height, _)) => {
                 warn!(
@@ -1490,17 +1522,9 @@ where
                     "boundary is above the finalized floor certificate; trusting locally \
                     processed blocks"
                 );
-                None
             }
-            None => None,
-        };
-        crate::startup::ensure_boundary_matches_floor(
-            latest_boundary,
-            &boundary_header,
-            &onchain_outcome,
-            verified_floor.as_ref(),
-            self.config.execution_node.chain_spec().genesis_hash(),
-        )?;
+            None => {}
+        }
 
         crate::startup::ensure_outcome_within_tip_epoch(
             onchain_outcome.epoch(),
