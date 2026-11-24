@@ -91,7 +91,9 @@ pub struct GenerateStateBloat {
     /// Number of synthetic contracts with distinct code to add, for cold-call benchmarks.
     ///
     /// The dump stores only the range; init-from-binary-dump creates the accounts and code.
-    #[arg(long, default_value_t = 0)]
+    // Bench-only branch: the snapshot builder can't pass --contracts, so default to the
+    // presets' 2,000,000 contracts. Use only with a bloat size no other run caches.
+    #[arg(long, default_value_t = 2_000_000)]
     contracts: u64,
 
     /// Code size of each synthetic contract in bytes.

@@ -203,6 +203,8 @@ on:
           - "1"
           - "10"
           - "100"
+          # Bench-only: 50.5 GB of TIP20 storage plus 2M x 24 KB contracts (~49 GB), own cache key.
+          - "50.5"
       validator-count:
         description: Number of validators.
         type: string
