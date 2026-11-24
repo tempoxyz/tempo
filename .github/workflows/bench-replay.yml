@@ -562,7 +562,7 @@ jobs:
               FEATURE_JSONS+=("$report")
             fi
           done
-          uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py \
+          uv run --with matplotlib --with packaging==26.3 python3 .github/scripts/bench-replay-charts.py \
             --output-dir "$BENCH_WORK_DIR/charts" \
             --feature "${FEATURE_JSONS[@]}" \
             --baseline "${BASELINE_JSONS[@]}" \

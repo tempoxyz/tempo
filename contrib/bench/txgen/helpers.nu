@@ -562,7 +562,7 @@ def txgen-spec-effective-text [spec_path: string] {
     # Nushell's YAML parser panics on integers above i64::MAX (e.g. nonce bounds).
     # Use the same pinned Python yq as workload metadata and only pass include
     # paths back to Nushell. Keep the original spec text and numeric values intact.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+    let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '
         if type == "object" then (.include // .includes // []) else [] end
     ' $path | complete)
     if $result.exit_code != 0 {
@@ -1083,7 +1083,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -ceS '
+    let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -ceS '
         .mix | if length > 0 then . else error("public-mix requires a mix") end
         | map({key: ((.template // .sequence)
             | capture("^((?<instance>[a-z][a-z0-9-]*)/)?(?<name>.+)$") as $m
@@ -1364,7 +1364,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
         print $"Deployment shapes peak target: ($targets | get peak_tps | math sum | math round --precision 1) TPS \(($summary)\)"
     }
     let base_path = ($presets | path join neobank-generic.yml)
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '.mix' $base_path | complete)
+    let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '.mix' $base_path | complete)
     if $result.exit_code != 0 { error make {msg: $"Failed to read neobank-generic mix: ($result.stderr)"} }
     let base_mix = ($result.stdout | from json)
     let shares = ($instances | get share)
@@ -1469,7 +1469,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
     let raw_templates = ($entries | where { |entry| ($entry | get -o raw) != null } | get raw)
     let accounts_record = ($parts | get accounts | reduce --fold {users: {range: [0 $accounts]}} { |pools, acc| $acc | merge $pools })
     let dex_setup = if ($parts | any { |part| $part.dex }) {
-        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
+        let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
@@ -1499,7 +1499,7 @@ def txgen-prepare-neobank-multi-preset [spec_path: string, count: int, accounts:
 def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int, --out-dir: string = ""] {
     # Keep u64 nonce bounds out of Nushell's YAML parser; only the mix and setup
     # presence are needed to compose the workload.
-    let result = (^uv run --no-project --with yq==3.4.3 yq -c '
+    let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '
         {has_setup: ((.setup.steps // []) | length > 0), mix: .mix}
     ' $spec_path | complete)
     if $result.exit_code != 0 {
@@ -1589,13 +1589,13 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let mix = $card.mix
     # Asset conversion swaps on the stablecoin DEX need dex/walls.yml's liquidity walls.
     let dex_setup = if ($spec.mix | any { |entry| ($entry | get -o template) == "dex_swap" }) {
-        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
+        let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '.append.setup.steps' ($presets | path join dex walls.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read dex setup: ($result.stderr)"} }
         $result.stdout | from json
     } else { [] }
     # Delegated-key payments need access-key-mix.yml's per-user keychain setup.
     let keychain_setup = if ($spec.mix | any { |entry| ($entry | get -o template | default "") | str starts-with "keychain_" }) {
-        let result = (^uv run --no-project --with yq==3.4.3 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
+        let result = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.15.2 yq -c '.setup.steps' ($presets | path join access-key-mix.yml) | complete)
         if $result.exit_code != 0 { error make {msg: $"Failed to read access-key setup: ($result.stderr)"} }
         $result.stdout | from json | each { |step| $step | upsert depends_on [(txgen-after-user-funding $users $accounts)] }
     } else { [] }
