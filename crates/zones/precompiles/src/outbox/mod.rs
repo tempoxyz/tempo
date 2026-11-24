@@ -162,8 +162,13 @@ impl ZoneOutbox {
         caller: Address,
         fee_payer: Address,
         current_tx_hash: B256,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
+        reveal_org: bool,
     ) -> ZoneResult<()> {
+        // Only a callback receiver reads the sender's org, so a plain withdrawal never reveals it.
+        if reveal_org && call.gasLimit == 0 {
+            return Err(ZoneOutboxError::org_reveal_requires_callback().into());
+        }
         // +T15: A bounced withdrawal is parked under its fallback recipient when the mint fails, and
         // only that recipient can claim it, which a TIP-1094 zone deposit address can never do.
         if call.zoneFallbackRecipient.is_zero()
@@ -214,9 +219,9 @@ impl ZoneOutbox {
                 TransferKind::InZone,
             )?;
         }
-        // The sender's org is public on Tempo, where receivers read it during callbacks. It is
-        // recorded only while ZoneIdentity is enforced; otherwise every withdrawal is in org 0.
-        let sender_org = if enforced {
+        // The sender's org is public on Tempo, where the callback receiver reads it. It is recorded
+        // only when the sender reveals it while ZoneIdentity is enforced; otherwise it is 0.
+        let sender_org = if enforced && reveal_org {
             identity.member_org(caller)?
         } else {
             0
@@ -464,7 +469,7 @@ impl PendingWithdrawal {
         tx_hash: B256,
         fallback_nonce: u64,
         sender_org: u64,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
     ) -> Self {
         Self {
             token: call.token,

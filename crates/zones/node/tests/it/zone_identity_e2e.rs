@@ -446,7 +446,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
     );
 
     // Withdrawals: A reaches the off-ramp but not an address in no org.
-    let withdraw = |to: Address| IZoneOutbox::requestWithdrawalCall {
+    let withdraw = |to: Address| IZoneOutbox::requestWithdrawal_0Call {
         token: PATH_USD_ADDRESS,
         to,
         amount: 100,
