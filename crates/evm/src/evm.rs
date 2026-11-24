@@ -1,4 +1,7 @@
-use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
+use crate::{
+    ExpiringNonceManager, ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes,
+    TempoExpiringNonceManager, TempoFeeManager,
+};
 use evm2::evm::precompile::PrecompileProvider;
 use reth_evm::precompile_cache::{
     CachedPrecompileProvider, PrecompileCacheMap, PrecompileCachePolicy,
@@ -21,6 +24,7 @@ pub type PrecompilesBuilder =
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
+    expiring_nonce_manager: Arc<dyn ExpiringNonceManager>,
     /// Builds the precompiles in place of the built-in [`TempoPrecompiles`], if set.
     precompiles_builder: Option<PrecompilesBuilder>,
     #[cfg(feature = "jit")]
@@ -33,6 +37,7 @@ impl Default for TempoEvmFactory {
     fn default() -> Self {
         Self {
             fee_manager: Arc::new(TempoFeeManager::new()),
+            expiring_nonce_manager: Arc::new(TempoExpiringNonceManager::new()),
             precompiles_builder: None,
             #[cfg(feature = "jit")]
             jit: None,
@@ -103,8 +108,18 @@ impl TempoEvmFactory {
         self
     }
 
+    /// Uses a custom expiring nonce replay-protection implementation for subsequently created EVMs.
+    pub fn with_expiring_nonce_manager(
+        mut self,
+        expiring_nonce_manager: impl ExpiringNonceManager + 'static,
+    ) -> Self {
+        self.expiring_nonce_manager = Arc::new(expiring_nonce_manager);
+        self
+    }
+
     pub(crate) fn evm_ext(&self, mut ext: TempoEvmExt) -> TempoEvmExt {
         ext.fee_manager = self.fee_manager.clone();
+        ext.expiring_nonce_manager = self.expiring_nonce_manager.clone();
         ext
     }
 }
@@ -205,6 +220,7 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let spec = evm.config_spec_id();
         let mut ext = core::mem::take(evm.ext_mut());
         ext.fee_manager = self.fee_manager.clone();
+        ext.expiring_nonce_manager = self.expiring_nonce_manager.clone();
         let env = TempoEvmEnv::new_with_version(spec, *evm.block(), *evm.version());
         let precompiles = self.precompiles(&env, &ext);
         *evm.ext_mut() = ext;

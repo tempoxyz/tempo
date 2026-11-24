@@ -4,12 +4,13 @@
 //! Unlike the Tempo L1 `TempoBlockExecutor`, this executor does **not** enforce subblock
 //! ordering, shared-gas accounting, or the end-of-block subblock metadata system transaction.
 
-use alloy_consensus::TxReceipt as _;
+use alloy_consensus::{TxReceipt as _, transaction::TxHashRef as _};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
-use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_primitives::{Address, B256, Bytes, TxKind};
 use alloy_sol_types::{SolCall as _, SolEvent as _};
 use evm2::{
     SpecId, TxResultWithState,
+    block::ethereum::execution::map_transaction_error,
     bytecode::Bytecode,
     evm::{Bal, HISTORY_STORAGE_ADDRESS, PendingState, SystemTx},
 };
@@ -194,6 +195,7 @@ impl ZoneTransactionKind {
 #[derive(Debug)]
 pub struct ZoneTxResult {
     inner: EthTransactionResultWithState<TempoEvmTypes, TempoTxType>,
+    tx_hash: B256,
     next_phase: ZoneBlockPhase,
 }
 
@@ -326,6 +328,7 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
 
+        let tx_hash = *recovered.tx().tx_hash();
         let next_phase = self.phase.validate_transaction(recovered.tx())?;
 
         let result = self
@@ -336,13 +339,25 @@ impl<'a> BlockExecutor for ZoneBlockExecutor<'a> {
         validate_pending_state(&inner.result().pending_state)
             .map_err(BlockExecutionError::other)?;
 
-        Ok(ZoneTxResult { inner, next_phase })
+        Ok(ZoneTxResult {
+            inner,
+            tx_hash,
+            next_phase,
+        })
     }
 
     fn commit_transaction(
         &mut self,
         output: Self::TransactionResultWithState,
     ) -> Result<GasOutput, BlockExecutionError> {
+        if let Some(expiring_nonce) = output.inner.result().result.ext.expiring_nonce {
+            let manager = self.evm().ext().expiring_nonce_manager.clone();
+            let timestamp = self.evm().block().timestamp.saturating_to::<u64>();
+            let spec = self.evm().config_spec_id();
+            manager
+                .commit(expiring_nonce, timestamp, spec)
+                .map_err(|err| map_transaction_error(err, output.tx_hash))?;
+        }
         self.phase.advance_to(output.next_phase);
         self.inner.commit_transaction(output.inner)
     }
@@ -1673,5 +1688,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[derive(Debug, Default, Clone)]
+    struct TestOutOfStateExpiringNonceManager {
+        seen: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<B256, u64>>>,
+    }
+
+    impl tempo_evm::ExpiringNonceManager for TestOutOfStateExpiringNonceManager {
+        fn check(
+            &self,
+            host: &mut tempo_evm::TempoEvm<'_>,
+            nonce: tempo_evm::ExpiringNonce,
+            _ring_offset: Option<usize>,
+        ) -> evm2::registry::HandlerResult<()> {
+            let now = host.block().timestamp.saturating_to::<u64>();
+            if self
+                .seen
+                .lock()
+                .unwrap()
+                .get(&nonce.hash)
+                .is_some_and(|&expiry| expiry > now)
+            {
+                return Err(tempo_evm::TempoInvalidTransaction::ExpiringNonceReplay.into());
+            }
+            Ok(())
+        }
+
+        fn commit(
+            &self,
+            nonce: tempo_evm::ExpiringNonce,
+            timestamp: u64,
+            _spec: TempoHardfork,
+        ) -> evm2::registry::HandlerResult<()> {
+            let mut seen = self.seen.lock().unwrap();
+            if seen
+                .get(&nonce.hash)
+                .is_some_and(|&expiry| expiry > timestamp)
+            {
+                return Err(tempo_evm::TempoInvalidTransaction::ExpiringNonceReplay.into());
+            }
+            seen.insert(nonce.hash, nonce.valid_before);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn zone_block_executor_commits_custom_expiring_nonce_manager() {
+        let signer = PrivateKeySigner::random();
+        let caller = signer.address();
+        let timestamp = 1_000u64;
+        let valid_before = timestamp + 30;
+
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+        let zone_config = crate::zone_evm::tests::config(MockL1Reader::default());
+        let mut env = fee_free_env(TempoHardfork::T14);
+        env.block.timestamp = U256::from(timestamp);
+        let manager = TestOutOfStateExpiringNonceManager::default();
+        let mut evm = zone_config.evm_with_env(db, env);
+        evm.ext_mut().expiring_nonce_manager = std::sync::Arc::new(manager.clone());
+
+        let block = Default::default();
+        let mut executor = ZoneBlockExecutor::new(
+            evm,
+            reth_evm::ConfigureEvm::context_for_block(&zone_config, &block).unwrap(),
+            zone_config.chain_spec(),
+        );
+        executor.phase = ZoneBlockPhase::Executing;
+
+        let tx = TempoTransaction {
+            calls: vec![Call {
+                to: Address::repeat_byte(0x33).into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            chain_id: executor.evm().version().chain_id,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            gas_limit: 1_000_000,
+            nonce_key: tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY,
+            valid_before: Some(valid_before.try_into().unwrap()),
+            ..Default::default()
+        };
+        let sig = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+        let signed = tx.into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            sig,
+        )));
+        let expected_hash = signed.expiring_nonce_hash(caller);
+        let envelope = TempoTxEnvelope::AA(signed);
+
+        // Uncommitted execution must not pollute the out-of-state set.
+        let detached = executor
+            .execute_transaction_without_commit(Recovered::new_unchecked(envelope.clone(), caller))
+            .unwrap();
+        assert_eq!(
+            detached.inner.result().result.ext.expiring_nonce,
+            Some(tempo_evm::ExpiringNonce {
+                hash: expected_hash,
+                valid_before,
+            })
+        );
+        assert!(manager.seen.lock().unwrap().is_empty());
+
+        // Committing records the nonce and rejects replay.
+        executor.commit_transaction(detached).unwrap();
+        assert_eq!(
+            manager.seen.lock().unwrap().get(&expected_hash).copied(),
+            Some(valid_before)
+        );
+        let err = executor
+            .execute_transaction(Recovered::new_unchecked(envelope, caller))
+            .unwrap_err();
+        let reth_evm::BlockExecutionError::Validation(reth_evm::BlockValidationError::InvalidTx {
+            error,
+            ..
+        }) = err
+        else {
+            panic!("expected InvalidTx replay error, got {err:?}");
+        };
+        assert_eq!(
+            tempo_evm::TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+            Some(&tempo_evm::TempoInvalidTransaction::ExpiringNonceReplay)
+        );
     }
 }

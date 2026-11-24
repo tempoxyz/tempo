@@ -51,7 +51,11 @@ use tempo_primitives::{
 };
 use test_case::test_case;
 
-use crate::{FeePaymentError, ResolvedFeeToken, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+use crate::{
+    ExpiringNonce, ExpiringNonceManager, FeePaymentError, ResolvedFeeToken, TempoEvm,
+    TempoEvmConfig, TempoEvmEnv, TempoEvmExt, TempoEvmFactory, TempoInvalidTransaction, TempoTxEnv,
+    build_tempo_evm, tempo_execution_config,
+};
 
 // ==================== Test Constants ====================
 
@@ -4694,5 +4698,548 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
         StorageAction::Sload(token, slot, _) if tokens.contains(token)
             && *slot == TIP20Token::from_address_unchecked(*token).balances[payer].slot()
     )));
+    Ok(())
+}
+
+// ==================== Custom ExpiringNonceManager Tests ====================
+
+#[derive(Debug, Default, Clone)]
+struct OutOfStateExpiringNonceManager {
+    seen: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<B256, u64>>>,
+    check_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    commit_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl OutOfStateExpiringNonceManager {
+    fn contains(&self, hash: &B256) -> bool {
+        self.seen.lock().unwrap().contains_key(hash)
+    }
+
+    fn len(&self) -> usize {
+        self.seen.lock().unwrap().len()
+    }
+
+    fn check_calls(&self) -> usize {
+        self.check_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn commit_calls(&self) -> usize {
+        self.commit_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ExpiringNonceManager for OutOfStateExpiringNonceManager {
+    fn check(
+        &self,
+        host: &mut TempoEvm<'_>,
+        nonce: ExpiringNonce,
+        _ring_offset: Option<usize>,
+    ) -> evm2::registry::HandlerResult<()> {
+        self.check_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let now = host.block().timestamp.saturating_to::<u64>();
+        if self
+            .seen
+            .lock()
+            .unwrap()
+            .get(&nonce.hash)
+            .is_some_and(|&expiry| expiry > now)
+        {
+            return Err(TempoInvalidTransaction::ExpiringNonceReplay.into());
+        }
+        Ok(())
+    }
+
+    fn commit(
+        &self,
+        nonce: ExpiringNonce,
+        timestamp: u64,
+        _spec: TempoHardfork,
+    ) -> evm2::registry::HandlerResult<()> {
+        self.commit_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut seen = self.seen.lock().unwrap();
+        if seen
+            .get(&nonce.hash)
+            .is_some_and(|&expiry| expiry > timestamp)
+        {
+            return Err(TempoInvalidTransaction::ExpiringNonceReplay.into());
+        }
+        seen.insert(nonce.hash, nonce.valid_before);
+        Ok(())
+    }
+}
+
+fn build_expiring_nonce_executor<'a>(
+    db: &'a mut InMemoryDB,
+    chainspec: &'a std::sync::Arc<tempo_chainspec::TempoChainSpec>,
+    spec: TempoHardfork,
+    timestamp: u64,
+    manager: OutOfStateExpiringNonceManager,
+) -> crate::TempoBlockExecutor<'a> {
+    let factory = TempoEvmFactory::default().with_expiring_nonce_manager(manager);
+    let evm_config = TempoEvmConfig::new(chainspec.clone()).with_evm_factory(factory);
+    let mut version = *tempo_execution_config(spec, chainspec.chain().id()).version();
+    version.tx_gas_limit_cap = spec.tx_gas_limit_cap().unwrap_or(u64::MAX);
+    let evm = evm_config.evm_with_env(
+        db,
+        TempoEvmEnv::new_with_version(
+            spec,
+            TempoBlockEnv {
+                number: U256::from(1),
+                timestamp: U256::from(timestamp),
+                gas_limit: U256::from(30_000_000),
+                basefee: U256::ZERO,
+                ..Default::default()
+            },
+            version,
+        ),
+    );
+    let ctx = crate::TempoBlockExecutionCtx {
+        inner: reth_evm_ethereum::EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: Bytes::new(),
+            tx_count_hint: None,
+            slot_number: None,
+        },
+        general_gas_limit: 10_000_000,
+        shared_gas_limit: 10_000_000,
+        consensus_context: None,
+    };
+    crate::TempoBlockExecutor::new(evm, ctx, chainspec)
+}
+
+fn assert_nonce_precompile_ring_untouched(evm: &mut TempoEvm<'_>, hash: B256) -> eyre::Result<()> {
+    let nonces = NonceManager::new();
+    let slots = [
+        nonces.expiring_nonce_seen[hash].slot(),
+        nonces.expiring_nonce_ring[0].slot(),
+        nonces.expiring_nonce_ring_ptr.slot(),
+    ];
+    for slot in slots {
+        assert_eq!(
+            evm.overlay_db_mut()
+                .get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)?,
+            U256::ZERO,
+            "custom out-of-state manager must not write Nonce precompile slot {slot}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_custom_expiring_nonce_manager_commit_replay_and_no_in_state_writes() -> eyre::Result<()> {
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let timestamp = 1_000u64;
+    let valid_before = timestamp + 30;
+    let chainspec = test_chainspec();
+
+    let mut tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    tx.chain_id = chainspec.chain().id();
+    let signed = key_pair.sign_tx(tx)?;
+    let expected_hash = signed.expiring_nonce_hash(caller);
+    let envelope = TempoTxEnvelope::AA(signed);
+
+    let mut db = InMemoryDB::default();
+    let manager = OutOfStateExpiringNonceManager::default();
+    let mut executor = build_expiring_nonce_executor(
+        &mut db,
+        &chainspec,
+        TempoHardfork::T12,
+        timestamp,
+        manager.clone(),
+    );
+
+    let mut observed = None;
+    executor.execute_transaction_with_result_closure(
+        Recovered::new_unchecked(envelope.clone(), caller),
+        |result| {
+            assert!(result.status);
+            observed = result.ext.expiring_nonce;
+        },
+    )?;
+
+    assert_eq!(
+        observed,
+        Some(ExpiringNonce {
+            hash: expected_hash,
+            valid_before,
+        })
+    );
+    assert!(manager.contains(&expected_hash));
+    assert_eq!(manager.commit_calls(), 1);
+    assert_nonce_precompile_ring_untouched(executor.evm_mut(), expected_hash)?;
+
+    let err = executor
+        .execute_transaction(Recovered::new_unchecked(envelope, caller))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected InvalidTx error, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+    assert_eq!(manager.commit_calls(), 1);
+    Ok(())
+}
+
+#[test]
+fn test_custom_expiring_nonce_manager_uncommitted_and_failed_validation_do_not_pollute()
+-> eyre::Result<()> {
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let timestamp = 1_000u64;
+    let valid_before = timestamp + 30;
+    let chainspec = test_chainspec();
+
+    let mut tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    tx.chain_id = chainspec.chain().id();
+    let signed = key_pair.sign_tx(tx)?;
+    let expected_hash = signed.expiring_nonce_hash(caller);
+    let envelope = TempoTxEnvelope::AA(signed);
+
+    let mut db = InMemoryDB::default();
+    let manager = OutOfStateExpiringNonceManager::default();
+    let mut executor = build_expiring_nonce_executor(
+        &mut db,
+        &chainspec,
+        TempoHardfork::T12,
+        timestamp,
+        manager.clone(),
+    );
+
+    // 1. execute_transaction_without_commit discarded does not commit.
+    let detached = executor
+        .execute_transaction_without_commit(Recovered::new_unchecked(envelope.clone(), caller))?;
+    assert_eq!(
+        detached.result().ext.expiring_nonce,
+        Some(ExpiringNonce {
+            hash: expected_hash,
+            valid_before,
+        })
+    );
+    assert!(!manager.contains(&expected_hash));
+    assert_eq!(manager.commit_calls(), 0);
+
+    // 2. execute_transaction_with_commit_condition returning CommitChanges::No does not commit.
+    let committed = executor.execute_transaction_with_commit_condition(
+        Recovered::new_unchecked(envelope.clone(), caller),
+        |result, _| {
+            assert_eq!(
+                result.ext.expiring_nonce,
+                Some(ExpiringNonce {
+                    hash: expected_hash,
+                    valid_before,
+                })
+            );
+            reth_evm::CommitChanges::No
+        },
+    )?;
+    assert!(committed.is_none());
+    assert!(!manager.contains(&expected_hash));
+    assert_eq!(manager.commit_calls(), 0);
+
+    // 3. A transaction failing later keychain validation does not pollute the set.
+    let unauthorized_key = P256KeyPair::random();
+    let mut keychain_tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .nonce(1)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    keychain_tx.chain_id = chainspec.chain().id();
+    let sig_hash = keychain_tx.signature_hash();
+    let effective_hash =
+        alloy_primitives::keccak256([&[0x04u8], sig_hash.as_slice(), caller.as_slice()].concat());
+    let inner_sig = unauthorized_key.sign_webauthn(effective_hash.as_slice())?;
+    let keychain_signed = keychain_tx.into_signed(TempoSignature::Keychain(
+        KeychainSignature::new(caller, PrimitiveSignature::WebAuthn(inner_sig)),
+    ));
+    let keychain_hash = keychain_signed.expiring_nonce_hash(caller);
+    let keychain_err = executor
+        .execute_transaction(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(keychain_signed),
+            caller,
+        ))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) = keychain_err
+    else {
+        panic!("expected InvalidTx for unauthorized access key, got {keychain_err:?}");
+    };
+    assert!(!manager.contains(&keychain_hash));
+    assert_eq!(manager.len(), 0);
+
+    // 4. A transaction failing later fee-balance validation does not pollute the set.
+    let mut fee_tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .nonce(2)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .with_max_fee_per_gas(1_000_000_000)
+        .build();
+    fee_tx.chain_id = chainspec.chain().id();
+    let fee_signed = key_pair.sign_tx(fee_tx)?;
+    let fee_hash = fee_signed.expiring_nonce_hash(caller);
+    let fee_err = executor
+        .execute_transaction(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(fee_signed),
+            caller,
+        ))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. }) = fee_err else {
+        panic!("expected InvalidTx for insufficient fee balance, got {fee_err:?}");
+    };
+    assert!(!manager.contains(&fee_hash));
+    assert_eq!(manager.len(), 0);
+
+    // 5. Two detached results for the same expiring nonce: first commits, second fails at commit.
+    let detached_again =
+        executor.execute_transaction_without_commit(Recovered::new_unchecked(envelope, caller))?;
+    executor.commit_transaction(detached)?;
+    assert!(manager.contains(&expected_hash));
+
+    let err = executor.commit_transaction(detached_again).unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected InvalidTx on colliding commit, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_custom_expiring_nonce_manager_reverting_call_still_commits() -> eyre::Result<()> {
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let revert_contract = Address::repeat_byte(0xab);
+    let timestamp = 1_000u64;
+    let valid_before = timestamp + 30;
+    let chainspec = test_chainspec();
+
+    let mut tx = TxBuilder::new()
+        .call(revert_contract, &[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    tx.chain_id = chainspec.chain().id();
+    let signed = key_pair.sign_tx(tx)?;
+    let expected_hash = signed.expiring_nonce_hash(caller);
+    let envelope = TempoTxEnvelope::AA(signed);
+
+    let mut db = InMemoryDB::default();
+    // PUSH1 0 PUSH1 0 REVERT
+    db.insert_account_info(
+        &revert_contract,
+        AccountInfo::default().with_code(Bytecode::new_raw(bytes!("60006000fd"))),
+    );
+    let manager = OutOfStateExpiringNonceManager::default();
+    let mut executor = build_expiring_nonce_executor(
+        &mut db,
+        &chainspec,
+        TempoHardfork::T12,
+        timestamp,
+        manager.clone(),
+    );
+
+    let mut observed = None;
+    executor.execute_transaction_with_result_closure(
+        Recovered::new_unchecked(envelope.clone(), caller),
+        |result| {
+            assert_eq!(result.stop, InstrStop::Revert);
+            assert!(!result.status);
+            observed = result.ext.expiring_nonce;
+        },
+    )?;
+
+    assert_eq!(
+        observed,
+        Some(ExpiringNonce {
+            hash: expected_hash,
+            valid_before,
+        })
+    );
+    assert!(manager.contains(&expected_hash));
+    assert_nonce_precompile_ring_untouched(executor.evm_mut(), expected_hash)?;
+
+    // Replay of the reverted expiring-nonce tx must be rejected.
+    let err = executor
+        .execute_transaction(Recovered::new_unchecked(envelope, caller))
+        .unwrap_err();
+    let BlockExecutionError::Validation(BlockValidationError::InvalidTx { error, .. }) = err else {
+        panic!("expected InvalidTx replay error, got {err:?}");
+    };
+    assert_eq!(
+        TempoInvalidTransaction::from_invalid_tx_error(error.as_ref()),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_custom_expiring_nonce_manager_direct_evm_and_shared_validation() -> eyre::Result<()> {
+    let key_pair = P256KeyPair::random();
+    let caller = key_pair.address;
+    let timestamp = 1_000u64;
+    let valid_before = timestamp + 30;
+    let manager = OutOfStateExpiringNonceManager::default();
+
+    let mut evm = build_tempo_evm(
+        TempoHardfork::T11,
+        1,
+        TempoBlockEnv {
+            timestamp: U256::from(timestamp),
+            gas_limit: U256::from(30_000_000),
+            ..Default::default()
+        },
+        InMemoryDB::default(),
+        tempo_precompiles::TempoPrecompiles::new(
+            TempoHardfork::T11,
+            tempo_precompiles::storage::StorageActions::disabled(),
+            std::rc::Rc::new(std::cell::RefCell::new(
+                tempo_precompiles::storage_credits::NonCreditableSlots::empty(),
+            )),
+        ),
+        TempoEvmExt::default().with_expiring_nonce_manager(manager.clone()),
+    );
+
+    // Shared validation rejects pre-T12 non-zero nonce, missing valid_before, and out-of-window
+    // valid_before before delegating to the manager.
+    let mut assert_rejected = |tx: TempoTransaction,
+                               check_err: fn(&TempoInvalidTransaction) -> bool|
+     -> eyre::Result<()> {
+        let signed = key_pair.sign_tx(tx)?;
+        let env: TempoTxEnv = Recovered::new_unchecked(TempoTxEnvelope::AA(signed), caller).into();
+        let err = match evm.transact(&Recovered::new_unchecked(env, caller)) {
+            Ok(_) => panic!("expected shared validation failure"),
+            Err(err) => err,
+        };
+        let tempo_err = err
+            .external_ref::<TempoInvalidTransaction>()
+            .expect("expected TempoInvalidTransaction");
+        assert!(check_err(tempo_err), "unexpected error: {tempo_err:?}");
+        Ok(())
+    };
+
+    assert_rejected(
+        TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .nonce(1)
+            .valid_before(Some(valid_before))
+            .gas_limit(500_000)
+            .build(),
+        |err| matches!(err, TempoInvalidTransaction::ExpiringNonceNonceNotZero),
+    )?;
+    assert_rejected(
+        TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(None)
+            .gas_limit(500_000)
+            .build(),
+        |err| {
+            matches!(
+                err,
+                TempoInvalidTransaction::ExpiringNonceMissingValidBefore
+            )
+        },
+    )?;
+    assert_rejected(
+        TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(
+                timestamp + TempoHardfork::T11.expiring_nonce_max_expiry_secs() + 1,
+            ))
+            .gas_limit(500_000)
+            .build(),
+        |err| {
+            matches!(
+                err,
+                TempoInvalidTransaction::NonceManagerError(msg)
+                    if msg.contains("too far in the future")
+            )
+        },
+    )?;
+    assert_eq!(
+        manager.check_calls(),
+        0,
+        "shared validation must run before ExpiringNonceManager::check"
+    );
+
+    // Direct evm.transact() workflow (no TempoBlockExecutor): result.ext.expiring_nonce carries
+    // the validated nonce so the caller can commit it after accepting transaction state.
+    let valid_tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+        .valid_before(Some(valid_before))
+        .gas_limit(500_000)
+        .build();
+    let signed = key_pair.sign_tx(valid_tx)?;
+    let expected_hash = signed.expiring_nonce_hash(caller);
+    let env: TempoTxEnv = Recovered::new_unchecked(TempoTxEnvelope::AA(signed), caller).into();
+
+    let result = evm
+        .transact(&Recovered::new_unchecked(env.clone(), caller))?
+        .commit();
+    assert!(result.status);
+    let nonce = result
+        .ext
+        .expiring_nonce
+        .expect("expiring nonce result ext must be set");
+    assert_eq!(
+        nonce,
+        ExpiringNonce {
+            hash: expected_hash,
+            valid_before,
+        }
+    );
+    assert_nonce_precompile_ring_untouched(&mut evm, expected_hash)?;
+    assert!(!manager.contains(&expected_hash));
+
+    manager.commit(nonce, timestamp, TempoHardfork::T11)?;
+    let replay_err = match evm.transact(&Recovered::new_unchecked(env, caller)) {
+        Ok(_) => panic!("expected replay error after commit"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        replay_err.external_ref::<TempoInvalidTransaction>(),
+        Some(&TempoInvalidTransaction::ExpiringNonceReplay)
+    );
+
+    // Non-expiring AA tx leaves result.ext.expiring_nonce as None.
+    let regular_tx = TxBuilder::new()
+        .call_identity(&[])
+        .nonce(0)
+        .gas_limit(500_000)
+        .build();
+    let regular_signed = key_pair.sign_tx(regular_tx)?;
+    let regular_env: TempoTxEnv =
+        Recovered::new_unchecked(TempoTxEnvelope::AA(regular_signed), caller).into();
+    let regular_result = evm
+        .transact(&Recovered::new_unchecked(regular_env, caller))?
+        .commit();
+    assert!(regular_result.status);
+    assert_eq!(regular_result.ext.expiring_nonce, None);
     Ok(())
 }

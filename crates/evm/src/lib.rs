@@ -13,6 +13,7 @@ mod context;
 mod engine;
 pub mod error;
 pub mod evm;
+mod expiring_nonce;
 mod fee_manager;
 mod handler;
 mod instructions;
@@ -37,6 +38,7 @@ pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
+pub use expiring_nonce::{ExpiringNonce, ExpiringNonceManager, TempoExpiringNonceManager};
 pub use fee_manager::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoFeeManager,
     fee_token_inference_target,
