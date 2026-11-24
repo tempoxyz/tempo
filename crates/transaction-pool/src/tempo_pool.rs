@@ -1014,8 +1014,16 @@ where
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
         // Subscribing under the lock orders it before a removal, whose discard is reported once
         // the lock is released.
-        let aa_2d_pool = self.aa_2d_pool.read();
-        aa_2d_pool
+        {
+            let aa_2d_pool = self.aa_2d_pool.read();
+            if aa_2d_pool.contains(&tx_hash) {
+                return Some(self.reth_pool.inner().subscribe_transaction_events(tx_hash));
+            }
+        }
+        // A delayed transaction keeps its listener when released, since admission reports the
+        // same hash.
+        let delayed_pool = self.delayed_pool.read();
+        delayed_pool
             .contains(&tx_hash)
             .then(|| self.reth_pool.inner().subscribe_transaction_events(tx_hash))
     }
@@ -3988,6 +3996,21 @@ mod tests {
             .nonce_key(U256::MAX)
             .valid_after(tip + 20)
             .valid_before(tip + 28)
+    }
+
+    #[tokio::test]
+    async fn delayed_transaction_can_be_subscribed() {
+        let sender = Address::random();
+        let tip = now_secs();
+        let (_provider, pool) = create_validating_pool(sender, tip, Default::default());
+        let tx = delayed_tx(sender, tip).build();
+        let hash = *tx.hash();
+
+        let _events = pool
+            .add_transaction_and_subscribe(TransactionOrigin::External, tx)
+            .await
+            .expect("delayed transaction should be subscribable");
+        assert!(pool.delayed_pool.read().contains(&hash));
     }
 
     #[tokio::test]
