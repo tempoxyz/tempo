@@ -38,12 +38,15 @@ impl ZoneChainSpec {
     ///
     /// Known public and local development chains inherit their parent schedule. Custom chains
     /// use only the supplied genesis, so dependency updates cannot activate omitted forks.
-    /// On mainnet and testnet, a Tempo fork field that disagrees with the parent's compiled
-    /// schedule is rejected.
+    /// On mainnet and testnet, a Zone whose Tempo fork activations differ from the parent's
+    /// compiled schedule is rejected, including when malformed Tempo genesis fields leave the
+    /// forks unscheduled.
     pub fn from_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
         let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
         if let Some(parent) = chainspec_from_chain_id(parent_chain_id) {
-            ensure_parent_fork_schedule(&genesis, &parent)?;
+            let zone = Self::from_genesis_with_l1(genesis, parent.as_ref())?;
+            ensure_parent_fork_schedule(&zone, |fork| parent.tempo_fork_activation(fork))?;
+            return Ok(zone);
         }
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
             return Self::from_genesis_with_l1(genesis, parent.as_ref());
@@ -66,7 +69,9 @@ impl ZoneChainSpec {
     /// Returns this chain specification with the given Tempo fork schedule of its L1.
     ///
     /// The schedule replaces every Tempo fork activation: scheduled forks activate at the
-    /// reported times and all others are disabled. Ethereum activations are kept.
+    /// reported times and all others are disabled. Ethereum activations are kept. Fails if the
+    /// composed spec does not follow the schedule, such as when other Tempo genesis fields are
+    /// malformed.
     pub fn with_l1_fork_schedule(
         &self,
         schedule: impl IntoIterator<Item = (TempoHardfork, u64)>,
@@ -84,7 +89,13 @@ impl ZoneChainSpec {
                     .insert(key.to_owned(), activation);
             }
         }
-        Ok(Self::from_explicit_genesis(genesis))
+        let zone = Self::from_explicit_genesis(genesis);
+        ensure_parent_fork_schedule(&zone, |fork| {
+            schedule
+                .get(&fork)
+                .map_or(ForkCondition::Never, |&time| ForkCondition::Timestamp(time))
+        })?;
+        Ok(zone)
     }
 
     /// Zone identifier encoded in the genesis chain ID.
@@ -102,29 +113,28 @@ impl ZoneChainSpec {
     }
 }
 
-/// Rejects Tempo fork fields that disagree with a public parent's compiled schedule.
+/// Rejects a Zone whose Tempo fork activations differ from its parent's schedule.
 ///
-/// The prover enclave replays Zone batches under the parent's compiled schedule, so a node
-/// following different activations would build blocks the enclave cannot prove. Inheriting the
-/// parent's value instead would silently change how blocks already past that time execute.
+/// The prover enclave replays Zone batches under the parent's schedule, so a node following
+/// different activations would build blocks the enclave cannot prove. Inheriting the parent's
+/// value instead would silently change how blocks already past that time execute. The check
+/// runs on the composed spec, so it also catches Tempo genesis metadata that fails to parse and
+/// leaves every Tempo fork unscheduled.
 fn ensure_parent_fork_schedule(
-    genesis: &Genesis,
-    parent: &TempoChainSpec,
+    zone: &ZoneChainSpec,
+    parent: impl Fn(TempoHardfork) -> ForkCondition,
 ) -> Result<(), ZoneChainSpecError> {
     for &fork in TempoHardfork::VARIANTS {
-        let Some(value) = fork
-            .genesis_key()
-            .and_then(|key| genesis.config.extra_fields.get(key))
-        else {
+        if fork.genesis_key().is_none() {
             continue;
-        };
-        let parent_activation = parent.tempo_fork_activation(fork).as_timestamp();
-        let zone_activation = value.as_u64();
-        if zone_activation != parent_activation || (zone_activation.is_none() && !value.is_null()) {
+        }
+        let zone_activation = zone.inner.tempo_fork_activation(fork);
+        let parent_activation = parent(fork);
+        if zone_activation != parent_activation {
             return Err(ZoneChainSpecError::ParentForkMismatch {
                 fork,
-                zone: value.clone(),
-                parent: parent_activation,
+                zone: zone_activation.as_timestamp(),
+                parent: parent_activation.as_timestamp(),
             });
         }
     }
@@ -288,17 +298,18 @@ pub enum ZoneChainSpecError {
     /// The inherited parent fork activations could not be applied to the Zone genesis.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
-    /// A Zone genesis fork field disagrees with its public parent's compiled schedule.
+    /// A Zone's Tempo fork activation disagrees with its parent's schedule.
     #[error(
-        "Zone genesis sets {fork:?} activation to {zone}, but its parent schedules it at {}; \
-         remove the field or match the parent",
+        "Zone genesis activates {fork:?} at {}, but its parent schedules it at {}; remove the \
+         fork field or match the parent, and check that the Tempo genesis fields are valid",
+        .zone.map_or_else(|| "never".to_owned(), |time| time.to_string()),
         .parent.map_or_else(|| "never".to_owned(), |time| time.to_string())
     )]
     ParentForkMismatch {
-        /// The disagreeing fork.
+        /// The fork whose activation differs.
         fork: TempoHardfork,
-        /// The Zone genesis value.
-        zone: serde_json::Value,
+        /// The Zone's activation timestamp, if scheduled.
+        zone: Option<u64>,
         /// The parent's activation timestamp, if scheduled.
         parent: Option<u64>,
     },
@@ -577,6 +588,28 @@ mod tests {
         assert_eq!(zone.tempo_hardfork_at(299), TempoHardfork::T11);
         assert_eq!(zone.tempo_hardfork_at(300), TempoHardfork::T12);
         assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T12);
+
+        // An invalid Tempo field would silently drop the reported schedule.
+        let mut genesis = zone.inner.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("epochLength".into(), serde_json::json!(0));
+        let error = ZoneChainSpec::from_genesis(genesis)
+            .unwrap()
+            .with_l1_fork_schedule([(TempoHardfork::T0, 0)])
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ZoneChainSpecError::ParentForkMismatch {
+                    fork: TempoHardfork::T0,
+                    zone: None,
+                    parent: Some(0)
+                }
+            ),
+            "{error}"
+        );
     }
 
     #[test]
@@ -609,27 +642,26 @@ mod tests {
             assert_eq!(zone.tempo_hardfork_at(t14), TempoHardfork::T14);
         }
 
-        for (field, value, fork, parent) in [
-            (
-                "t14Time",
-                serde_json::Value::Null,
-                TempoHardfork::T14,
-                Some(t14),
-            ),
+        for (field, value, fork, zone_activation) in [
+            ("t14Time", serde_json::Value::Null, TempoHardfork::T14, None),
             (
                 "t14Time",
                 serde_json::json!(t14 + 1),
                 TempoHardfork::T14,
-                Some(t14),
+                Some(t14 + 1),
             ),
-            ("t15Time", serde_json::json!(0), TempoHardfork::T15, None),
+            ("t15Time", serde_json::json!(0), TempoHardfork::T15, Some(0)),
+            // An invalid Tempo field makes the whole Tempo record fail to parse, which leaves every
+            // Tempo fork unscheduled even though the fork fields match the parent.
+            ("epochLength", serde_json::json!(0), TempoHardfork::T0, None),
         ] {
-            let error = zone_genesis(field, Some(value.clone())).unwrap_err();
+            let error = zone_genesis(field, Some(value)).unwrap_err();
+            let parent = MODERATO.tempo_fork_activation(fork).as_timestamp();
             assert!(
                 matches!(
                     &error,
                     ZoneChainSpecError::ParentForkMismatch { fork: f, zone, parent: p }
-                        if *f == fork && *zone == value && *p == parent
+                        if *f == fork && *zone == zone_activation && *p == parent
                 ),
                 "{field}: {error}"
             );
