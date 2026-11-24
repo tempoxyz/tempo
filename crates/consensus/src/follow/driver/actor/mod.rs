@@ -223,35 +223,44 @@ where
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
     async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
-        let current_consensus_epoch = self
+        let floor_height = self.config.last_finalized_height;
+        let floor_epoch_info = self
             .config
             .epoch_strategy
-            .containing(self.config.last_finalized_height)
+            .containing(floor_height)
             .expect("strategy is valid for all heights and epochs");
 
-        let current_execution_epoch = self
-            .config
-            .epoch_strategy
-            .containing(self.startup_execution_boundary)
-            .expect("strategy is valid for all heights and epochs");
+        // A floor inside epoch `E` needs the scheme from `last(E-1)`. A floor at
+        // `last(E)` has already processed that boundary and needs the scheme for
+        // `E+1` it carries.
+        let floor_boundary_height = if floor_epoch_info.last() == floor_height {
+            Some(floor_height)
+        } else {
+            floor_epoch_info.epoch().previous().map(|previous| {
+                self.config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy is valid for all heights and epochs")
+            })
+        };
 
-        if let Some(previous) = current_consensus_epoch.epoch().previous()
-            && previous > current_execution_epoch.epoch()
+        if let Some(last_consensus_boundary) = floor_boundary_height
+            && last_consensus_boundary > self.startup_execution_boundary
         {
-            let last_consensus_boundary = self
+            let previous = self
                 .config
                 .epoch_strategy
-                .last(previous)
-                .expect("strategy is valid for all heights and epochs");
+                .containing(last_consensus_boundary)
+                .expect("strategy is valid for all heights and epochs")
+                .epoch();
 
             let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
             else {
-                let consensus_epoch = current_consensus_epoch.epoch();
-                let execution_epoch = current_execution_epoch.epoch();
+                let execution_boundary = self.startup_execution_boundary;
                 warn!(
-                    "cannot install scheme; consensus layer epoch {consensus_epoch} is ahead \
-                    of execution layer epoch {execution_epoch}, but the consensus layer does not have \
-                    the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
+                    "cannot install scheme; consensus layer boundary `{last_consensus_boundary}` is ahead \
+                    of execution layer boundary `{execution_boundary}`, but the consensus layer does not have \
+                    the boundary block. The node likely previously skipped \
                     epoch boundaries via the network identity and will continue to try use it to verify finalizations"
                 );
 
