@@ -21,7 +21,7 @@ use reth_evm::{
 };
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{
     TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, TempoInvalidTransaction,
     consensus::TempoConsensus,
@@ -31,7 +31,7 @@ use tempo_fuzz_types::{
     PreState, ResultGas, StateChanges, TempoBlock, TempoExecutionOutcome, TempoHarnessInput,
     TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxOutcome, TxReceiptOutput,
 };
-use tempo_invariants::Tx;
+use tempo_invariants::{Ran, Tx};
 use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 
 use crate::{
@@ -226,7 +226,7 @@ fn execute(
         );
         if !invariant_failures.is_empty() {
             return TempoExecutionOutcome {
-                error: reject(ErrorClass::InvalidInput, Check::PreStateInvariants),
+                error: reject(ErrorClass::BrokenPreState, Check::PreStateInvariants),
                 invariant_failures,
                 ..Default::default()
             };
@@ -247,7 +247,7 @@ fn execute(
 /// after execution and every address in a log topic of `outcome`'s receipts (such as a holder whose
 /// balance only a transaction touched, or one `transferFrom` or `burnBlocked` moved without loading
 /// it). A pre-state that breaks one is not a reachable state, so nothing executed on it is a
-/// finding: the input is invalid, and these failures are reported at `Execution` scope. Only the
+/// finding: the outcome is `BrokenPreState`, with these failures at `Execution` scope. Only the
 /// accounts it lists can break one.
 fn broken_start(
     evm_config: &TempoEvmConfig,
@@ -362,16 +362,11 @@ pub(crate) fn execute_blocks(
                 }
                 outcome.receipts.extend(outputs.receipts);
                 outcome.state_diff.blocks.push(outputs.changes);
-                outcome
-                    .invariant_failures
-                    .extend(outputs.invariant_failures);
-                for (id, counts) in outputs.invariant_report.counts {
-                    outcome
-                        .invariant_counts
-                        .entry(id.into())
-                        .or_default()
-                        .add(counts);
-                }
+                absorb_invariants(
+                    outcome,
+                    outputs.invariant_failures,
+                    outputs.invariant_report,
+                );
             }
             Err(BlockFailure {
                 class: error,
@@ -381,16 +376,11 @@ pub(crate) fn execute_blocks(
                 if let Some(partial) = partial {
                     let partial = *partial;
                     failed_logs.extend(partial.receipts.into_iter().flat_map(|r| r.logs));
-                    outcome
-                        .invariant_failures
-                        .extend(partial.invariant_failures);
-                    for (id, counts) in partial.invariant_report.counts {
-                        outcome
-                            .invariant_counts
-                            .entry(id.into())
-                            .or_default()
-                            .add(counts);
-                    }
+                    absorb_invariants(
+                        outcome,
+                        partial.invariant_failures,
+                        partial.invariant_report,
+                    );
                 }
                 outcome.error = error;
                 break;
@@ -398,6 +388,25 @@ pub(crate) fn execute_blocks(
         }
     }
     (applied, failed_logs)
+}
+
+/// Adds a block's invariant `failures` and `report` to `outcome`, leaving out invariants that
+/// judged nothing, such as one gated off at the block's hardfork.
+fn absorb_invariants(
+    outcome: &mut TempoExecutionOutcome,
+    failures: Vec<InvariantFailure>,
+    report: Report,
+) {
+    outcome.invariant_failures.extend(failures);
+    for (id, counts) in report.counts {
+        if counts.evaluated > 0 {
+            outcome
+                .invariant_counts
+                .entry(id.into())
+                .or_default()
+                .add(counts);
+        }
+    }
 }
 
 /// What one block produced.
@@ -458,6 +467,7 @@ fn execute_block(
 
     let mut outputs = BlockOutputs::default();
     let mut updates = Vec::new();
+    let view_cache = invariants::ViewCache::default();
     execute_txs(
         evm_config,
         &mut executor,
@@ -465,6 +475,7 @@ fn execute_block(
         &hooked,
         block,
         block_index,
+        &view_cache,
         &mut updates,
         &mut outputs,
     )
@@ -472,6 +483,7 @@ fn execute_block(
         class: class(&err),
         partial: Some(Box::new(mem::take(&mut outputs))),
     })?;
+    let (spec, env) = env(&executor);
     let output = executor.finish().map_err(|err| BlockFailure {
         class: class(&err),
         partial: Some(Box::new(mem::take(&mut outputs))),
@@ -483,6 +495,23 @@ fn execute_block(
     outputs.changes.post_block = state::changes(&net, &contracts);
     drop(cache);
     db.commit(&net, |hash| output.state.contracts.get(hash).cloned());
+    invariants::check(
+        db,
+        evm_config,
+        env,
+        &InvariantScope::PostBlock { block_index },
+        |_| true,
+        &[],
+        Some(invariants::StepEffects::new(
+            &net,
+            &[],
+            Ran::PostBlock,
+            spec,
+        )),
+        &view_cache,
+        &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
+    );
     updates.extend(post_block);
     Ok((updates, outputs))
 }
@@ -497,19 +526,20 @@ fn execute_txs(
     hooked: &Updates,
     block: &ExecutionBlock,
     block_index: u64,
+    view_cache: &invariants::ViewCache,
     updates: &mut Vec<StateUpdate>,
     outputs: &mut BlockOutputs,
 ) -> Result<(), BlockExecutionError> {
     executor.apply_pre_execution_changes()?;
-    let view_cache = invariants::ViewCache::default();
     outputs.changes.pre_block = step(
         evm_config,
         executor,
         db,
         hooked,
         InvariantScope::Block { block_index },
-        None,
-        &view_cache,
+        Ran::PreBlock,
+        &[],
+        view_cache,
         updates,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
@@ -520,8 +550,7 @@ fn execute_txs(
         let tx_index = tx_index as u64;
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
-        let spec = executor.evm().config_spec_id();
-        let authority = invariants::authority(tx.inner(), sender, spec.is_t14());
+        let authority = invariants::authority(tx.inner(), sender);
         let result = executor.execute_transaction_without_commit(tx)?;
         let execution = result.result();
         let outcome = if execution.status {
@@ -570,8 +599,9 @@ fn execute_txs(
             db,
             hooked,
             scope,
-            Some((tx, &receipt.logs)),
-            &view_cache,
+            Ran::Tx(tx),
+            &receipt.logs,
+            view_cache,
             updates,
             &mut outputs.invariant_failures,
             &mut outputs.invariant_report,
@@ -586,10 +616,9 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *hooked.lock().expect("the hook does not panic"))
 }
 
-/// Ends an execution step: writes its changes to `db`, checks invariants at `scope`, and returns the
-/// step's changes. A transaction's step, given the transaction and its logs as `tx`, is checked only
-/// for the contracts it changed, and also on what it did, reading again only the views of
-/// `view_cache` that read what it changed.
+/// Ends an execution step that ran `ran` and emitted `logs`: writes its changes to `db`, checks
+/// invariants at `scope`, reading again only the views of `view_cache` that read what it changed,
+/// and returns the step's changes.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -597,7 +626,8 @@ fn step(
     db: &Db,
     hooked: &Updates,
     scope: InvariantScope,
-    tx: Option<(Tx, &[Log])>,
+    ran: Ran,
+    logs: &[Log],
     view_cache: &invariants::ViewCache,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
@@ -612,26 +642,31 @@ fn step(
         let cache = db.cache.borrow();
         state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
     };
-    let is_tx = tx.is_some();
-    let selected = |contract: &_| !is_tx || net.contains(contract);
-    let evm = executor.evm();
-    let effects =
-        tx.map(|(tx, logs)| invariants::StepEffects::new(&net, logs, tx, evm.config_spec_id()));
-    let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
+    let (spec, env) = env(executor);
     invariants::check(
         db,
         evm_config,
         env,
         &scope,
-        selected,
+        |_| true,
         &[],
-        effects,
+        Some(invariants::StepEffects::new(&net, logs, ran, spec)),
         view_cache,
         failures,
         report,
     );
     updates.extend(step);
     changes
+}
+
+/// The hardfork and environment the block executes in.
+fn env(executor: &TempoBlockExecutor<'_>) -> (TempoHardfork, TempoEvmEnv) {
+    let evm = executor.evm();
+    let spec = evm.config_spec_id();
+    (
+        spec,
+        TempoEvmEnv::new_with_version(spec, *evm.block(), *evm.version()),
+    )
 }
 
 /// A block the node would reject is `Rejected`; anything else went wrong in the executor.

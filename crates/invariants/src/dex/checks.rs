@@ -3,7 +3,7 @@
 use invariants_core::{check, ensure};
 
 use super::{Books, Escrow};
-use crate::{Check, Checked, Step, StepChecked, Tx};
+use crate::{Check, Checked, Ran, Step, StepChecked, TempoHardfork};
 
 /// The DEX's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-DEX-VIEW";
@@ -13,6 +13,7 @@ pub const CUSTODY_STEP: &str = "TEMPO-DEX10-STEP";
 pub const CHECKS: &[Check<Books>] = &[check! {
     id: DEX_CUSTODY,
     doc: "The DEX holds, of each token, at least its users' internal balances of it plus its live orders' escrow in it.",
+    covers: ["TEMPO-DEX10"],
     over: |books: &Books| books.holdings.keys(),
     judge: |b, token| {
         let token = **token;
@@ -30,13 +31,13 @@ pub const CHECKS: &[Check<Books>] = &[check! {
 }];
 
 /// The step's effect on the DEX's custody, read before and after it.
-pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
+pub const STEP_CHECKS: &[Check<Step<Books, Ran>>] = &[
     // A token that leaves it must leave a user's internal balance or a live order's escrow. More
     // can come in than it comes to owe, such as a plain transfer to it.
     check! {
         id: CUSTODY_STEP,
         doc: "The DEX's holdings of each token never fall by more than what it owes in it.",
-        over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
+        over: |step: &Step<Books, Ran>| step.post.holdings.keys(),
         judge: |s, token| {
             let token = **token;
             let (Some(&held_before), Some(&held_after)) =
@@ -60,10 +61,10 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     },
 ];
 
-impl Checked for Books {
+impl Checked<TempoHardfork> for Books {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked<Option<Tx>> for Books {
-    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
+impl StepChecked<Ran, TempoHardfork> for Books {
+    const STEP_CHECKS: &'static [Check<Step<Self, Ran>>] = STEP_CHECKS;
 }

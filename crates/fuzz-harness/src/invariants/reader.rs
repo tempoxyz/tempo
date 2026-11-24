@@ -6,7 +6,7 @@ use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{Checked, Observe, ObserveError, Report, StepChecked, Violation};
 use reth_evm::Database;
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_invariants::Tx;
+use tempo_invariants::{Ran, TempoHardfork};
 
 use super::{
     StepEffects,
@@ -30,24 +30,36 @@ impl Reader<'_> {
         EvmViews::new(db, config, env, &self.db.pre, self.view_cache, before)
     }
 
+    /// The hardfork the step ran at, which gates the checks.
+    pub(super) fn fork(&self) -> Option<&TempoHardfork> {
+        Some(&self.env.spec)
+    }
+
     /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
     /// the step's effects, also reads it before the step and checks the step. A read that fails
     /// is counted under `view` as [`observed`] does.
-    pub(super) fn check<M: Observe + Checked + StepChecked<Option<Tx>>>(
+    pub(super) fn check<M>(
         &self,
         report: &mut Report,
         at: M::At<'_>,
         contract: Address,
         view: &'static str,
-    ) {
+    ) where
+        M: Observe + Checked<TempoHardfork> + StepChecked<Ran, TempoHardfork>,
+    {
         let after = self.views(self.db.view(), false);
         let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
             return;
         };
-        report.run(M::CHECKS, &post, None);
+        report.run(M::CHECKS, &post, self.fork());
         let Some(effects) = self.effects else {
             return;
         };
+        // A system step is only its state changes, so one that left the contract as it was cannot
+        // break a step check. A transaction's signatures and logs can.
+        if effects.ran.tx().is_none() && !effects.net.contains(&contract) {
+            return;
+        }
         // A contract the step deployed has no state before it to read.
         let deployed = |address: &Address| {
             effects.net.get(address).is_some_and(|account| {
@@ -75,7 +87,7 @@ impl Reader<'_> {
         let Some(pre) = observed(report, view, subject, read) else {
             return;
         };
-        report.run(M::STEP_CHECKS, &effects.step(pre, post), None);
+        report.run(M::STEP_CHECKS, &effects.step(pre, post), self.fork());
     }
 }
 

@@ -10,10 +10,11 @@
 
 use alloy_primitives::{Address, U256};
 pub use invariants_core::{
-    AnyCheck, Check, Checked, Observe, ObserveError, Replay, Report, Step, StepChecked, Verdict,
-    Views, Violation, view,
+    AnyCheck, Checked, Observe, ObserveError, Replay, Report, Step, StepChecked, Verdict, Views,
+    Violation, view,
 };
 use invariants_core::{Batch, optional, view_many};
+pub use tempo_hardfork::TempoHardfork;
 
 pub mod configurable_account;
 pub mod dex;
@@ -21,6 +22,9 @@ pub mod fee_amm;
 pub mod keychain;
 pub mod receive_policy;
 pub mod tip20;
+
+/// A Tempo check, applying from and until the hardforks its metadata names.
+pub type Check<C> = invariants_core::Check<C, TempoHardfork>;
 
 /// The transaction a step ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,12 +36,45 @@ pub struct Tx {
     pub authority: configurable_account::Authority,
 }
 
+/// What a step ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ran {
+    /// The block's system changes before its transactions.
+    PreBlock,
+    Tx(Tx),
+    /// The block's system changes after its transactions.
+    PostBlock,
+}
+
+impl Ran {
+    /// The transaction, when the step ran one.
+    pub fn tx(&self) -> Option<&Tx> {
+        match self {
+            Self::Tx(tx) => Some(tx),
+            Self::PreBlock | Self::PostBlock => None,
+        }
+    }
+}
+
+/// The ID and doc of each model's counter of reads that failed.
+pub const VIEWS: [(&str, &str); 4] = [
+    (tip20::VIEW, "A TIP-20's views answer."),
+    (fee_amm::VIEW, "The fee manager's views answer."),
+    (dex::VIEW, "The stablecoin DEX's views answer."),
+    (
+        configurable_account::VIEW,
+        "The configurable account precompile's views answer.",
+    ),
+];
+
 /// Every Tempo check, whatever its context.
-pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
-    fn erased<C: 'static>(
+pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck<TempoHardfork>> {
+    fn erased<C>(
         checks: &'static [Check<C>],
-    ) -> impl Iterator<Item = &'static dyn AnyCheck> {
-        checks.iter().map(|check| check as &dyn AnyCheck)
+    ) -> impl Iterator<Item = &'static dyn AnyCheck<TempoHardfork>> {
+        checks
+            .iter()
+            .map(|check| check as &dyn AnyCheck<TempoHardfork>)
     }
     erased(tip20::CHECKS)
         .chain(erased(tip20::STEP_CHECKS))

@@ -82,6 +82,7 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
         ]
         .try_into()
         .expect("the harness supports inputs"),
+        invariants: invariants::catalog(),
     };
     let Ok(capabilities) = bincode_options().serialize(&capabilities) else {
         return FUZZ_REJECT;

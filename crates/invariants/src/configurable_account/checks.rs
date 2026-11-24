@@ -16,7 +16,7 @@ use super::{
     LeafChange, Leaves, Quorum, Role,
     spec::{self, CONFIGURABLE_KEY_TYPE, MARKER_CODE_HASH, MAX_APPROVAL_BYTES, MAX_APPROVALS},
 };
-use crate::{Check, Checked, Step, StepChecked, Tx, Verdict};
+use crate::{Check, Checked, Ran, Step, StepChecked, TempoHardfork, Verdict};
 
 /// The configurable account precompile's views answer. Counted by runners, not judged here.
 pub const VIEW: &str = "TEMPO-ACCOUNT-VIEW";
@@ -27,6 +27,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-KEPT",
         doc: "A commitment is never cleared.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
@@ -40,10 +41,11 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-BY-SELF",
         doc: "Only registration, the account's own owner update or its migration changes its commitment.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             if pre == post {
                 return None;
             }
@@ -64,6 +66,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-EVENT",
         doc: "A changed commitment is announced, registration included.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
@@ -89,6 +92,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-COMMITMENT-HASH",
         doc: "The commitment is the hash of the configuration that wrote it.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let (pre, post) = commitments(s, account)?;
@@ -110,11 +114,13 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-CONFIG-RULES",
         doc: "Every carried or announced configuration passes the configuration rules.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let quorums = s
                 .ran
-                .iter()
+                .tx()
+                .into_iter()
                 .flat_map(|tx| tx.authority.quorums_of(**account))
                 .map(|q| q.config.clone());
             let mut configs = quorums.chain(configs_written(s, **account)).peekable();
@@ -134,6 +140,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-SIGNER-REGISTERED",
         doc: "Every configurable signer has a commitment afterwards.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| quorums(step),
         judge: |s, q| {
             let post = s.post.of.get(&q.account)?;
@@ -144,6 +151,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-QUORUM-COMMITMENT",
         doc: "A quorum matches its account's commitment, or derives its address.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| quorums(step),
         judge: |s, q| {
             let pre = *s.pre.of.get(&q.account)?;
@@ -177,9 +185,10 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-SENDER-QUORUM",
         doc: "The transaction's own configurable signature names its sender.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| quorums(step).filter(|q| q.role == Role::Sender),
         judge: |s, q| {
-            let sender = s.ran.as_ref()?.sender;
+            let sender = s.ran.tx()?.sender;
             ensure!(q.account == sender, "authorizes a transaction from {sender}")
         },
     },
@@ -187,6 +196,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-QUORUM-WEIGHT",
         doc: "Approvals are ascending owners that reach the threshold and fall below it without any one.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| quorums(step),
         judge: |_, q| Some(quorum_weight(q).map_or(Verdict::Holds, Verdict::Broken)),
     },
@@ -194,6 +204,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-APPROVAL-BOUNDS",
         doc: "1 to 8 approvals, each at most 2,049 bytes.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| quorums(step),
         judge: |_, q| {
             let count = q.approvals.len();
@@ -208,13 +219,14 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-UPDATE-QUORUM",
         doc: "Owner updates are signed directly by the account's quorum.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let updates = updates_of(s, **account)?;
             if updates.is_empty() {
                 return None;
             }
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             let direct = tx
                 .authority
                 .quorums_of(**account)
@@ -231,12 +243,13 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-UPDATE-VERSION",
         doc: "Each owner update keeps the salt and bumps the version by one.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
             let updates = updates_of(s, **account)?;
             let signed = s
                 .ran
-                .as_ref()?
+                .tx()?
                 .authority
                 .quorums_of(**account)
                 .find(|q| q.role == Role::Sender)?;
@@ -260,9 +273,10 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-ROOT",
         doc: "Migration is signed by the sender's own original key, without an authorization list.",
+        tip: "TIP-1113",
         over: |step: &AccountStep| upgrades(step),
         judge: |s, e| {
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             let root = Key {
                 role: Role::Sender,
                 account: e.account,
@@ -283,6 +297,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-FRESH",
         doc: "Only an account without a commitment migrates.",
+        tip: "TIP-1113",
         over: |step: &AccountStep| upgrades(step),
         judge: |s, e| {
             let pre = s.pre.of.get(&e.account)?;
@@ -293,6 +308,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-UPGRADE-CONFIG",
         doc: "Migration stores the version-1 configuration's hash under the upgrade salt.",
+        tip: "TIP-1113",
         over: |step: &AccountStep| upgrades(step),
         judge: |s, e| {
             let post = s.post.of.get(&e.account)?;
@@ -318,10 +334,12 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-ROOT-KEY-RETIRED",
         doc: "An ordinary signature is never authority for an account with a commitment.",
+        tip: "TIP-1113",
+        since: TempoHardfork::T14,
         over: |step: &AccountStep| {
             step.ran
-                .iter()
-                .filter(|tx| tx.authority.active)
+                .tx()
+                .into_iter()
                 .flat_map(|tx| tx.authority.keys.iter())
         },
         judge: |s, key| {
@@ -333,11 +351,13 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-FORK-GATED",
         doc: "Before T14, no configurable signatures or key-type-3 grants.",
+        tip: "TIP-1111",
+        until: TempoHardfork::T14,
         over: |step: &AccountStep| {
-            step.ran.iter().filter(|tx| !tx.authority.active).map(|tx| tx.sender)
+            step.ran.tx().into_iter().map(|tx| tx.sender)
         },
         judge: |s, _| {
-            let authority = &s.ran.as_ref()?.authority;
+            let authority = &s.ran.tx()?.authority;
             let grant = authority.grant.map(|g| g.key_type);
             let granted = s
                 .events::<KeyAuthorized>(ACCOUNT_KEYCHAIN_ADDRESS)
@@ -357,9 +377,10 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-FAILED-ROLLBACK",
         doc: "A failed transaction keeps no owner update or migration, only registration.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| step.post.of.keys(),
         judge: |s, account| {
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             if tx.success {
                 return None;
             }
@@ -379,6 +400,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-DERIVED-ADDRESS",
         doc: "A registering account's address is outside the reserved address spaces.",
+        tip: "TIP-1107",
         over: |step: &AccountStep| {
             quorums(step)
                 .filter(|q| q.config.version == 0)
@@ -396,14 +418,17 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-GRANT-SIGNER",
         doc: "An inline grant is signed by its parent's own key or quorum, or by an admin key the parent already had that also signs the transaction.",
+        tip: "TIP-1111",
+        since: TempoHardfork::T14,
         over: |step: &AccountStep| {
             step.ran
-                .iter()
-                .filter(|tx| tx.authority.active && tx.authority.grant.is_some())
+                .tx()
+                .into_iter()
+                .filter(|tx| tx.authority.grant.is_some())
                 .map(|tx| tx.sender)
         },
         judge: |s, sender| {
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             let signers: Vec<Address> = tx.authority.key_authorization_signers().collect();
             if signers.is_empty() {
                 return Some(Verdict::Broken(
@@ -446,10 +471,12 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-GRANT-TYPE",
         doc: "An access key using a grant made in the same transaction signs as the grant's key type.",
+        tip: "TIP-1111",
+        since: TempoHardfork::T14,
         over: |step: &AccountStep| {
             step.ran
-                .iter()
-                .filter(|tx| tx.authority.active)
+                .tx()
+                .into_iter()
                 .filter_map(|tx| {
                     let grant = tx.authority.grant?;
                     tx.authority
@@ -459,7 +486,7 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
                 })
         },
         judge: |s, _| {
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             let grant = tx.authority.grant?;
             ensure!(
                 tx.authority.access_key_type == Some(grant.key_type),
@@ -473,11 +500,13 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-ACCESS-KEY-TYPE",
         doc: "An access key signs as the key type its grant stores, except that a configurable signature may use an ordinary grant whose key ID already has a commitment.",
+        tip: "TIP-1111",
+        since: TempoHardfork::T14,
         over: |step: &AccountStep| {
-            step.ran.iter().filter(|tx| tx.authority.active).map(|tx| tx.sender)
+            step.ran.tx().into_iter().map(|tx| tx.sender)
         },
         judge: |s, sender| {
-            let tx = s.ran.as_ref()?;
+            let tx = s.ran.tx()?;
             let inline = tx.authority.grant.map(|g| g.key_id);
             let mut judged = false;
             for (key, configurable) in tx.authority.access_keys() {
@@ -515,12 +544,11 @@ pub const STEP_CHECKS: &[Check<AccountStep>] = &[
     check! {
         id: "TEMPO-ACCOUNT-GRANT-AUTHORITY",
         doc: "Grants change only in the parent's own transactions, by its key or quorum, and never as an admin key.",
+        tip: "TIP-1111",
+        since: TempoHardfork::T14,
         over: |step: &AccountStep| grant_changes(step),
         judge: |s, change| {
-            let tx = s.ran.as_ref()?;
-            if !tx.authority.active {
-                return None;
-            }
+            let tx = s.ran.tx()?;
             if change.account != tx.sender {
                 return Some(Verdict::Broken(format!(
                     "changed in a transaction from {}",
@@ -557,6 +585,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     check! {
         id: "TEMPO-ACCOUNT-MARKER",
         doc: "An account with a commitment has the 0xef marker as code.",
+        tip: "TIP-1107",
         over: |l: &Leaves| l.of.keys(),
         judge: |l, account| {
             let post = l.of.get(*account)?.after;
@@ -575,6 +604,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     check! {
         id: "TEMPO-ACCOUNT-MARKER-INSTALL",
         doc: "Only registration and migration install the marker.",
+        tip: "TIP-1107",
         over: |l: &Leaves| l.of.keys(),
         judge: |l, account| {
             let LeafChange {
@@ -600,6 +630,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     check! {
         id: "TEMPO-ACCOUNT-GRANT-DELEGATE",
         doc: "A key-type-3 grant names a delegate other than the parent, outside the reserved spaces, without other code.",
+        tip: "TIP-1111",
         over: |l: &Leaves| l.delegates.iter(),
         judge: |l, grant| {
             let delegate = &grant.delegate;
@@ -623,6 +654,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     check! {
         id: "TEMPO-ACCOUNT-MARKER-KEPT",
         doc: "Nothing changes or clears the marker.",
+        tip: "TIP-1107",
         over: |l: &Leaves| l.of.keys(),
         judge: |l, account| {
             let LeafChange { before, after } = *l.of.get(*account)?;
@@ -638,7 +670,7 @@ pub const LEAF_CHECKS: &[Check<Leaves>] = &[
     },
 ];
 
-type AccountStep = Step<Commitments, Option<Tx>>;
+type AccountStep = Step<Commitments, Ran>;
 
 /// What a keychain event did to a grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,16 +717,16 @@ impl fmt::Display for Upgrade {
     }
 }
 
-/// The commitments alone are judged only across a step.
-impl Checked for Commitments {
+/// Commitments are judged only across a step.
+impl Checked<TempoHardfork> for Commitments {
     const CHECKS: &'static [Check<Self>] = &[];
 }
 
-impl StepChecked<Option<Tx>> for Commitments {
-    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
+impl StepChecked<Ran, TempoHardfork> for Commitments {
+    const STEP_CHECKS: &'static [Check<Step<Self, Ran>>] = STEP_CHECKS;
 }
 
-impl Checked for Leaves {
+impl Checked<TempoHardfork> for Leaves {
     const CHECKS: &'static [Check<Self>] = LEAF_CHECKS;
 }
 
@@ -756,7 +788,10 @@ fn grant_changes(step: &AccountStep) -> Vec<GrantChange> {
 
 /// The quorums of the step's transaction.
 fn quorums(step: &AccountStep) -> impl Iterator<Item = &Quorum> {
-    step.ran.iter().flat_map(|tx| tx.authority.quorums.iter())
+    step.ran
+        .tx()
+        .into_iter()
+        .flat_map(|tx| tx.authority.quorums.iter())
 }
 
 /// The step's `AccountUpgraded` events.

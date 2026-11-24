@@ -17,8 +17,8 @@ use tempo_contracts::precompiles::{
     IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_fuzz_types::{InvariantFailure, InvariantScope};
-use tempo_invariants::{Tx, dex, fee_amm, tip20};
+use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope};
+use tempo_invariants::{Ran, VIEWS, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
@@ -40,17 +40,17 @@ pub(crate) use configurable_account::authority;
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
 
-/// What a transaction step did: its net state changes, already written to the database, and what
+/// What a step did: its net state changes, already written to the database, and what
 /// every model's step shares, which it derefs to.
 pub(crate) struct StepEffects<'a> {
     pub(crate) net: &'a Net,
     pub(crate) spec: TempoHardfork,
-    shared: Arc<Effects<Option<Tx>>>,
+    shared: Arc<Effects<Ran>>,
 }
 
 impl<'a> StepEffects<'a> {
-    /// The effects of `tx`, which made `net`'s changes and emitted `logs`.
-    pub(crate) fn new(net: &'a Net, logs: &[Log], tx: Tx, spec: TempoHardfork) -> Self {
+    /// The effects of `ran`, which made `net`'s changes and emitted `logs`.
+    pub(crate) fn new(net: &'a Net, logs: &[Log], ran: Ran, spec: TempoHardfork) -> Self {
         let changes = net
             .addresses()
             .flat_map(|&address| {
@@ -69,7 +69,7 @@ impl<'a> StepEffects<'a> {
             changes,
             logs: logs.to_vec(),
             calls: None,
-            ran: Some(tx),
+            ran,
         };
         Self {
             net,
@@ -78,23 +78,42 @@ impl<'a> StepEffects<'a> {
         }
     }
 
-    /// The transaction that ran.
-    pub(crate) fn tx(&self) -> &Tx {
-        self.ran.as_ref().expect("built with its transaction")
-    }
-
     /// The step from `pre` to `post`.
-    fn step<M>(&self, pre: M, post: M) -> Step<M, Option<Tx>> {
+    fn step<M>(&self, pre: M, post: M) -> Step<M, Ran> {
         Step::new(pre, post, Arc::clone(&self.shared))
     }
 }
 
 impl Deref for StepEffects<'_> {
-    type Target = Effects<Option<Tx>>;
+    type Target = Effects<Ran>;
 
     fn deref(&self) -> &Self::Target {
         &self.shared
     }
+}
+
+/// Every invariant the harness checks, and each model's counter of reads that failed.
+pub(crate) fn catalog() -> Vec<InvariantInfo> {
+    let checks = tempo_invariants::all().map(|check| {
+        let meta = check.meta();
+        InvariantInfo {
+            id: check.id().to_string(),
+            doc: meta.doc.to_string(),
+            tip: meta.tip.map(String::from),
+            covers: meta.covers.iter().map(|&id| id.to_string()).collect(),
+            since: meta.since,
+            until: meta.until,
+        }
+    });
+    let views = VIEWS.map(|(id, doc)| InvariantInfo {
+        id: id.to_string(),
+        doc: doc.to_string(),
+        tip: None,
+        covers: Vec::new(),
+        since: None,
+        until: None,
+    });
+    checks.chain(views).collect()
 }
 
 /// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
@@ -110,10 +129,11 @@ pub(crate) fn logged_addresses<'a>(
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
-/// environment, which the views run in. Only contracts for which `selected` holds are checked, e.g. those whose state
-/// changed, as no other contract's invariants can have broken. With `effects`, a token's step
-/// checks also run on its ledger before the step against its ledger after it. Views are answered
-/// from `view_cache`, the calls the block's earlier steps made that this step left as they were.
+/// environment, which the views run in. Only contracts for which `selected` holds are checked, and
+/// of those only the ones the step changed, as no other contract's invariants can have broken,
+/// except at the block's first step. With `effects`, a changed model's step checks also run on it
+/// before the step against it after. Views are answered from `view_cache`, the calls the block's
+/// earlier steps made that this step left as they were.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(
     db: &Db,
@@ -130,6 +150,13 @@ pub(crate) fn check(
     if !*ENABLED {
         return;
     }
+    // The block's first step also checks the state it starts from.
+    let changed = effects
+        .as_ref()
+        .filter(|effects| effects.ran != Ran::PreBlock)
+        .map(|effects| effects.net);
+    let selected =
+        |contract: &Address| selected(contract) && changed.is_none_or(|net| net.contains(contract));
     let missed = db.pre.missed();
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
@@ -216,8 +243,10 @@ pub(crate) fn check(
         };
         reader.check::<dex::Books>(report, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
     }
-    if let Some(effects) = &effects {
-        configurable_account::check(&reader, db, effects, report);
+    if let Some(effects) = &effects
+        && let Some(tx) = effects.ran.tx()
+    {
+        configurable_account::check(&reader, db, effects, tx, report);
     }
 
     failures.extend(
@@ -225,8 +254,7 @@ pub(crate) fn check(
             .violations
             .drain(start..)
             .map(|violation| InvariantFailure {
-                id: violation.id.into_owned(),
-                message: format!("{} {}", violation.subject, violation.detail),
+                violation,
                 scope: scope.clone(),
             }),
     );

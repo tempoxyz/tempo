@@ -34,6 +34,7 @@ use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
     crypto::mock,
+    is_tip20_prefix,
     transaction::{
         Call, TempoTransaction,
         tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
@@ -260,6 +261,42 @@ fn a_transfer_reports_its_receipt_changes_and_state_root() {
         outcome.invariant_failures.is_empty(),
         "{:?}",
         outcome.invariant_failures
+    );
+    // Only invariants that judged something are counted: the keychain's never apply here.
+    assert!(outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-KEYCHAIN-SPEND-LIMIT")
+    );
+    assert!(
+        outcome
+            .invariant_counts
+            .values()
+            .all(|counts| counts.evaluated > 0)
+    );
+    // A T4 block runs the checks that apply before T14, not those that apply from it.
+    assert!(outcome.invariant_counts["TEMPO-ACCOUNT-FORK-GATED"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-ACCOUNT-ACCESS-KEY-TYPE")
+    );
+    // The block's first step checks every token's state, the transfer and the post-block step only
+    // what they changed: pathUSD, and nothing. Only the transfer changed a token, so only it ran a
+    // step check.
+    let tokens = genesis_state()
+        .accounts
+        .keys()
+        .filter(|address| is_tip20_prefix(**address))
+        .count() as u64;
+    assert_eq!(
+        outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated,
+        tokens + 1
+    );
+    assert_eq!(
+        outcome.invariant_counts["TEMPO-TIP20-TRANSFER-EVENTS"].evaluated,
+        1
     );
 
     // The transfer moves two pathUSD balances and creates the sender, which
@@ -526,14 +563,18 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
 
     assert_eq!(
         (outcome.error, outcome.receipts.len()),
-        (ErrorClass::InvalidInput, 0)
+        (ErrorClass::BrokenPreState, 0)
     );
+    let encoded = bincode_options().serialize(&outcome).unwrap();
+    let decoded: TempoExecutionOutcome = bincode_options().deserialize(&encoded).unwrap();
+    assert_eq!(decoded, outcome, "failures survive the wire");
     let failures: HashSet<_> = outcome
         .invariant_failures
         .iter()
         .map(|failure| {
-            let id = failure.id.strip_prefix("TEMPO-TIP20-").unwrap();
-            let token = (0..4).find(|&index| failure.message.contains(&token(index).to_string()));
+            let id = failure.violation.id.strip_prefix("TEMPO-TIP20-").unwrap();
+            let token = (0..4)
+                .find(|&index| failure.violation.subject == format!("token={}", token(index)));
             (id, &failure.scope, token)
         })
         .collect();
@@ -786,14 +827,38 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     trailing.push(0);
     assert_eq!(call(&trailing, &mut out).0, FUZZ_REJECT);
 
-    let mut out = vec![0; 1024];
+    let mut out = vec![0; 1 << 16];
     let mut written = 0;
     let status =
         unsafe { crate::tempo_fuzz_capabilities_v1(out.as_mut_ptr(), out.len(), &mut written) };
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 4);
+    assert_eq!(capabilities.schema_version, 5);
+    let info = |id: &str| {
+        capabilities
+            .invariants
+            .iter()
+            .find(|info| info.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the catalog"))
+    };
+    assert_eq!(info("TEMPO-TIP20-SUPPLY-CAP").covers, ["TEMPO-TIP22"]);
+    let retired = info("TEMPO-ACCOUNT-ROOT-KEY-RETIRED");
+    assert_eq!(
+        (retired.since, retired.until, retired.tip.as_deref()),
+        (Some(TempoHardfork::T14), None, Some("TIP-1113"))
+    );
+    assert_eq!(
+        info("TEMPO-ACCOUNT-FORK-GATED").until,
+        Some(TempoHardfork::T14)
+    );
+    assert!(!info("TEMPO-TIP20-VIEW").doc.is_empty());
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.doc.is_empty())
+    );
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS
