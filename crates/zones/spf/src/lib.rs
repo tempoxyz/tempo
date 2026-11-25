@@ -24,7 +24,7 @@ mod mpt;
 mod types;
 
 pub use execution::database::{TempoWitnessDatabase, WitnessDatabase, WitnessDatabaseError};
-pub use mpt::StatelessSparseTrieError;
+pub use mpt::{NodeKind, PathShape, StatelessSparseTrieError};
 pub use types::*;
 
 /// Execute a Zone batch witness and return its public commitments.
@@ -318,6 +318,29 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
             withdrawal_batch_index,
         },
     })
+}
+
+/// Trie shape of the path a Tempo read of `account`, and of `slot` if any, follows through
+/// `witness` from the checkpoint at `block_number`, to diagnose a rejected witness without
+/// exposing keys or values. `None` when the witness holds no decodable checkpoint at
+/// `block_number` or its Tempo nodes do not decode.
+pub fn tempo_read_shape(
+    witness: &BatchWitness,
+    account: alloy_primitives::Address,
+    slot: Option<B256>,
+    block_number: u64,
+) -> Option<PathShape> {
+    let header = core::iter::once(&witness.tempo_state_witness.initial_tempo_header_rlp)
+        .chain(
+            witness
+                .zone_blocks
+                .iter()
+                .flat_map(|block| block.tempo_import.headers_rlp()),
+        )
+        .filter_map(|rlp| alloy_rlp::decode_exact::<TempoHeader>(rlp).ok())
+        .find(|header| header.number() == block_number)?;
+    let nodes = mpt::WitnessNodes::decode(&witness.tempo_state_witness.node_pool).ok()?;
+    Some(mpt::WitnessPathReader::new(header.state_root(), &nodes).shape(account, slot))
 }
 
 /// Validates witness-controlled timestamp fields before they select fork rules or enter the EVM.

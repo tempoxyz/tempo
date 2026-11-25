@@ -929,6 +929,7 @@ where
                 zone_id: genesis_zone_id,
                 chain_spec: evm_chain_spec,
                 prover_addresses,
+                client_version: crate::version::client_version(),
             };
             // Repair a pre-existing canonical tail before admitting new blocks or starting
             // settlement.

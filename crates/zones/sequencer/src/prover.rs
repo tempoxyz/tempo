@@ -15,7 +15,7 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _, Transaction as _};
 use alloy_eips::eip2718::Encodable2718 as _;
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_provider::DynProvider;
 use alloy_sol_types::{SolCall as _, SolInterface as _};
 #[cfg(feature = "fuzz")]
@@ -45,7 +45,7 @@ use zone_prover::{
 };
 use zone_spf::{
     BatchOutput, BatchWitness, PublicInputs, TempoImport, TempoStateWitness, VirtualAddressKeyInit,
-    ZoneBlock, ZoneStateWitness,
+    ZoneBlock, ZoneStateWitness, tempo_read_shape,
 };
 
 use crate::{
@@ -69,6 +69,8 @@ pub struct SettlementProverConfig {
     pub chain_spec: Arc<ZoneChainSpec>,
     /// Authenticated remote Nitro prover endpoints, routed by the live L1 hardfork.
     pub prover_addresses: ProverAddresses,
+    /// Zone node client version, logged when a prover rejects a batch.
+    pub client_version: &'static str,
 }
 
 /// Validation worker whose attested proofs gate L1 settlement.
@@ -334,7 +336,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         "Selected remote prover"
     );
     let (output, bundle) =
-        verify_remotely(remote, context.config.zone_id, job, witness, metrics).await?;
+        verify_remotely(remote, hardfork, &context.config, job, witness, metrics).await?;
     let proof = SettlementProof { bundle, hardfork };
     metrics
         .spf_execution_duration_seconds
@@ -532,20 +534,22 @@ async fn build_witness<P: ZoneSequencerProvider>(
 
 async fn verify_remotely(
     remote: &RemoteProverConfig,
-    zone_id: u32,
+    hardfork: TempoHardfork,
+    config: &SettlementProverConfig,
     job: &ProverJob,
     witness: BatchWitness,
     metrics: &ProverMetrics,
 ) -> Result<(BatchOutput, ProofBundle)> {
     let address = remote.address();
-    let request = VerifyRequest {
+    // Shared with the encoder so a rejection can still be diagnosed from the witness.
+    let request = Arc::new(VerifyRequest {
         version: PROTOCOL_VERSION,
         request_id: format!(
-            "zone-{zone_id}-{}-{}-{}",
-            job.from, job.to, job.batch.next_block_hash
+            "zone-{}-{}-{}-{}",
+            config.zone_id, job.from, job.to, job.batch.next_block_hash
         ),
         witness,
-    };
+    });
     let started = Instant::now();
     let stream = remote.connect().await;
     let connect_duration_seconds = if stream.is_ok() {
@@ -565,7 +569,7 @@ async fn verify_remotely(
 
     let started = Instant::now();
     let expected_id = request.request_id.clone();
-    let send_result = connection.send(request).await;
+    let send_result = connection.send(Arc::clone(&request)).await;
     metrics
         .spf_remote_request_send_duration_seconds
         .record(started.elapsed().as_secs_f64());
@@ -616,11 +620,45 @@ async fn verify_remotely(
             message,
         } => {
             validate_response_header(version, request_id.as_deref(), &expected_id)?;
+            let witness = &request.witness;
+            // Never log the message itself here: it names the read's account and slot.
+            warn!(
+                target: "zone::sequencer::prover",
+                zone_from = job.from,
+                zone_to = job.to,
+                client_version = config.client_version,
+                prover_hardfork = %hardfork,
+                ?code,
+                tempo_block_number = job.batch.tempo_block_number,
+                zone_state_nodes = witness.zone_state_witness.node_pool.len(),
+                tempo_state_nodes = witness.tempo_state_witness.node_pool.len(),
+                read_shape = ?missing_tempo_read(&message).and_then(|(account, slot, block)| {
+                    tempo_read_shape(witness, account, slot, block)
+                }),
+                "Prover rejected batch witness"
+            );
             Err(eyre::eyre!(
                 "remote prover rejected request ({code:?}): {message}"
             ))
         }
     }
+}
+
+/// Parses the Tempo read named by a `zone_spf::Error::MissingTempoStorage` message, the only form
+/// in which a pinned prover reports it. Older provers always name a slot.
+fn missing_tempo_read(message: &str) -> Option<(Address, Option<B256>, u64)> {
+    let (account, rest) = message
+        .strip_prefix("Tempo witness is missing account ")?
+        .split_at_checked(42)?;
+    let (slot, rest) = match rest.strip_prefix(" slot ") {
+        Some(rest) => {
+            let (slot, rest) = rest.split_at_checked(66)?;
+            (Some(slot.parse().ok()?), rest)
+        }
+        None => (None, rest),
+    };
+    let block_number = rest.strip_prefix(" at block ")?.parse().ok()?;
+    Some((account.parse().ok()?, slot, block_number))
 }
 
 fn validate_response_header(
