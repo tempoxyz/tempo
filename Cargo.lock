@@ -14175,7 +14175,6 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "alloy-transport",
- "arbitrary",
  "async-trait",
  "base64 0.22.1",
  "dashmap",
