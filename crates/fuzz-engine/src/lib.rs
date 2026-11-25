@@ -17,12 +17,15 @@ pub mod ffi;
 mod invariants;
 mod rejection;
 mod state;
+mod step;
 
 pub use chain::chain_spec_on;
 pub use engine::{BlockConsensus, Chain, Engine, EvmConfig, Tempo};
 pub use execute::run;
+pub use invariants::{infos as invariant_infos, observed};
 pub use rejection::Rejection;
 pub use state::genesis_cache;
+pub use step::StepState;
 
 #[cfg(test)]
 mod tests;

@@ -7,15 +7,16 @@ use std::sync::{Arc, LazyLock};
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::Address;
 use evm2::evm::Cache;
+use invariants_core::Report;
 use reth_consensus::{Consensus, HeaderValidator};
 use reth_evm::{BlockExecutionError, BlockExecutorFactory, ConfigureEvm};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TempoConsensusSpec};
 use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv, consensus::TempoConsensus};
-use tempo_fuzz_types::{ChainSpecInput, HarnessInputKind};
+use tempo_fuzz_types::{ChainSpecInput, HarnessInputKind, InvariantInfo};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
-use crate::{Rejection, chain, state};
+use crate::{Rejection, StepState, chain, state};
 
 /// The dev genesis allocation, seeded once per process.
 static GENESIS: LazyLock<Cache> =
@@ -78,6 +79,9 @@ pub trait Engine {
     const FEE_AMM: Option<Address>;
     /// The stablecoin DEX, if the chain runs one.
     const DEX: Option<Address>;
+    /// Whether the chain keeps configurable accounts' commitments itself, so the TIP-1107 account
+    /// invariants judge its steps. A zone mirrors Tempo's commitments instead.
+    const ACCOUNTS: bool = true;
 
     /// The chain `input` describes, or why it is not executable.
     fn chain(&self, input: &ChainSpecInput) -> Result<Chain<Self>, Rejection>;
@@ -109,6 +113,16 @@ pub trait Engine {
         _header: &TempoHeader,
     ) -> Result<Vec<Recovered<TempoTxEnvelope>>, BlockExecutionError> {
         Ok(Vec::new())
+    }
+
+    /// Checks the chain's own invariants on the state after each step, beyond the protocol's,
+    /// recording what they find in `report`. Runs after the protocol invariants, unless the
+    /// process turns invariants off. None by default; a zone's TIP-1154 account checks.
+    fn check_step(&self, _state: &StepState<'_, Self::EvmConfig>, _report: &mut Report) {}
+
+    /// The invariants [`Self::check_step`] checks, for the harness's catalog.
+    fn own_invariants() -> Vec<InvariantInfo> {
+        Vec::new()
     }
 }
 

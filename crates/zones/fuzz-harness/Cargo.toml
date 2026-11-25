@@ -20,6 +20,7 @@ tempo-contracts = { workspace = true, features = ["std"] }
 tempo-evm.workspace = true
 tempo-fuzz-engine.workspace = true
 tempo-fuzz-types.workspace = true
+tempo-invariants.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 zone-chainspec.workspace = true
@@ -33,6 +34,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 evm2.workspace = true
+invariants-core.workspace = true
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
 reth-evm.workspace = true

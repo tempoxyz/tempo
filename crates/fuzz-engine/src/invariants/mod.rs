@@ -36,7 +36,8 @@ mod configurable_account;
 mod reader;
 mod views;
 
-pub(crate) use configurable_account::authority;
+pub(crate) use configurable_account::{account_at, authority, leaf};
+pub use reader::observed;
 
 /// How many of the newest DEX orders the books are read over.
 const MAX_ORDERS: u128 = 256;
@@ -79,6 +80,11 @@ impl<'a> StepEffects<'a> {
         }
     }
 
+    /// What the step did, which every model's step shares.
+    pub(crate) fn shared(&self) -> Arc<Effects<Ran>> {
+        Arc::clone(&self.shared)
+    }
+
     /// The step from `pre` to `post`.
     fn step<M>(&self, pre: M, post: M) -> Step<M, Ran> {
         Step::new(pre, post, Arc::clone(&self.shared))
@@ -93,19 +99,21 @@ impl Deref for StepEffects<'_> {
     }
 }
 
+/// Each of `checks` as the harness's catalog describes it.
+pub fn infos<C>(checks: &[Check<C>]) -> impl Iterator<Item = InvariantInfo> + '_ {
+    checks.iter().map(|check| InvariantInfo {
+        id: check.id.to_string(),
+        doc: check.meta.doc.to_string(),
+        tip: check.meta.tip.map(String::from),
+        covers: check.meta.covers.iter().map(|&id| id.to_string()).collect(),
+        since: check.meta.since,
+        until: check.meta.until,
+    })
+}
+
 /// Every invariant `E`'s harness checks, and each model's counter of reads that failed: the fee
-/// AMM's and DEX's only on a chain that runs them.
+/// AMM's, DEX's and configurable accounts' only on a chain that runs them, then the engine's own.
 pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
-    fn infos<C>(checks: &[Check<C>]) -> impl Iterator<Item = InvariantInfo> + '_ {
-        checks.iter().map(|check| InvariantInfo {
-            id: check.id.to_string(),
-            doc: check.meta.doc.to_string(),
-            tip: check.meta.tip.map(String::from),
-            covers: check.meta.covers.iter().map(|&id| id.to_string()).collect(),
-            since: check.meta.since,
-            until: check.meta.until,
-        })
-    }
     let views = VIEWS.map(|(id, doc)| InvariantInfo {
         id: id.to_string(),
         doc: doc.to_string(),
@@ -120,21 +128,26 @@ pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
     let dex = E::DEX
         .into_iter()
         .flat_map(|_| infos(dex::CHECKS).chain(infos(dex::STEP_CHECKS)));
+    let accounts = E::ACCOUNTS
+        .then(|| infos(account::STEP_CHECKS).chain(infos(account::LEAF_CHECKS)))
+        .into_iter()
+        .flatten();
     let skipped = [
         E::FEE_AMM.is_none().then_some(fee_amm::VIEW),
         E::DEX.is_none().then_some(dex::VIEW),
+        (!E::ACCOUNTS).then_some(account::VIEW),
     ];
     infos(tip20::CHECKS)
         .chain(infos(tip20::STEP_CHECKS))
         .chain(fee_amm)
         .chain(dex)
-        .chain(infos(account::STEP_CHECKS))
-        .chain(infos(account::LEAF_CHECKS))
+        .chain(accounts)
         .chain(
             views
                 .into_iter()
                 .filter(|info| !skipped.contains(&Some(info.id.as_str()))),
         )
+        .chain(E::own_invariants())
         .collect()
 }
 
@@ -264,7 +277,8 @@ pub(crate) fn check<E: Engine>(
         };
         reader.check::<dex::Books>(report, at, dex, dex::VIEW);
     }
-    if let Some(effects) = &effects
+    if E::ACCOUNTS
+        && let Some(effects) = &effects
         && let Some(tx) = effects.ran.tx()
     {
         configurable_account::check(&reader, db, effects, tx, report);

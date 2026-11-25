@@ -42,6 +42,7 @@ use crate::{
     invariants,
     rejection::{Check, Rejection},
     state::{self, Contracts, Db, Net},
+    step::{self, StepState},
 };
 
 /// The state updates an executor has emitted since they were last taken.
@@ -656,16 +657,32 @@ impl<E: Engine> BlockRun<'_, E> {
             state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
         };
         let (spec, env) = env(executor.evm());
+        let effects = invariants::StepEffects::new(&net, logs, ran, spec);
+        let shared = effects.shared();
         invariants::check(
             self.engine,
             self.db,
             self.evm_config,
-            env,
+            env.clone(),
             &scope,
             |_| true,
             &[],
-            Some(invariants::StepEffects::new(&net, logs, ran, spec)),
+            Some(effects),
             &self.view_cache,
+            &mut self.outputs.invariant_failures,
+            &mut self.outputs.invariant_report,
+        );
+        let state = StepState {
+            db: self.db,
+            evm_config: self.evm_config,
+            env: &env,
+            net: &net,
+            effects: shared,
+        };
+        step::check(
+            self.engine,
+            &state,
+            &scope,
             &mut self.outputs.invariant_failures,
             &mut self.outputs.invariant_report,
         );

@@ -219,6 +219,22 @@ fn t15_transfers_follow_the_portal_opt_in() {
         (id.contains("FEE-AMM") || id.contains("DEX")) && counts.evaluated > 0
     });
     assert!(judged.next().is_none(), "{counts:?}");
+    // The zone's TIP-1154 account checks judge every step, and replace the TIP-1107 ones, since a
+    // zone mirrors Tempo's commitments rather than keeping its own.
+    for id in [
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+        "TEMPO-ZONE-ACCOUNT-NO-WRITE",
+        "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+        "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
+    ] {
+        let counts = &outcome.invariant_counts[id];
+        assert!(counts.armed > 0, "{id} never armed: {counts:?}");
+    }
+    assert!(
+        !counts.keys().any(|id| id.starts_with("TEMPO-ACCOUNT-")),
+        "{counts:?}"
+    );
 
     for (fork, enabled) in [(TempoHardfork::T14, true), (TempoHardfork::T15, false)] {
         let outcome = execute(fork, l1(enabled), vec![vec![transfer(0, RECIPIENT, 100)]]);
@@ -307,6 +323,46 @@ fn inputs_the_zone_node_would_not_execute_are_stopped(
 }
 
 #[test]
+fn a_tempo_commitment_shows_on_the_zone_as_the_account_marker() {
+    let mut l1 = l1(true);
+    l1.commitments.insert(RECIPIENT, B256::repeat_byte(0x11));
+    let outcome = execute(
+        TempoHardfork::T15,
+        l1,
+        vec![vec![transfer(0, RECIPIENT, 100)]],
+    );
+    assert_eq!(
+        receipts(&outcome),
+        [ADVANCED, (TxIndex::Input(0), TxOutcome::Success)]
+    );
+    // The committed recipient is watched: the zone reads Tempo's commitment for it, answers as the
+    // account marker, and serves the marker's code for it, all without storing either.
+    for id in [
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        "TEMPO-ZONE-ACCOUNT-MARKER-CALL",
+        "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+    ] {
+        let counts = &outcome.invariant_counts[id];
+        assert!(counts.armed > 0, "{id} never armed: {counts:?}");
+    }
+}
+
+#[test]
+fn zone_account_checks_start_at_t14() {
+    let outcome = execute(
+        TempoHardfork::T13,
+        l1(true),
+        vec![vec![transfer(0, RECIPIENT, 100)]],
+    );
+    let judged: Vec<_> = outcome
+        .invariant_counts
+        .keys()
+        .filter(|id| id.starts_with("TEMPO-ZONE-ACCOUNT-"))
+        .collect();
+    assert!(judged.is_empty(), "{judged:?}");
+}
+
+#[test]
 fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
     let input = ZoneHarnessInput {
         l1: l1(true),
@@ -338,6 +394,32 @@ fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
         bincode_options().deserialize(&out[..written]).unwrap();
     assert_eq!(capabilities.schema_version, TYPED_HARNESS_SCHEMA_VERSION);
     assert_eq!(capabilities.implementation, "tempo-zone");
+    let ids: Vec<&str> = capabilities
+        .invariants
+        .iter()
+        .map(|info| info.id.as_str())
+        .collect();
+    for id in [
+        "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+        "TEMPO-ZONE-ACCOUNT-VIEW",
+        "TEMPO-TIP20-BALANCE-SUM",
+    ] {
+        assert!(ids.contains(&id), "{id} is in the catalog: {ids:?}");
+    }
+    // Zones run no fee AMM or DEX, and keep no configurable account commitments of their own.
+    assert!(
+        ids.iter().all(|id| !id.starts_with("TEMPO-FEE-")
+            && !id.starts_with("TEMPO-DEX-")
+            && !id.starts_with("TEMPO-ACCOUNT-")),
+        "{ids:?}"
+    );
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.doc.is_empty())
+    );
     assert_eq!(capabilities.supported_hardforks.as_slice(), Zone::HARDFORKS);
     assert_eq!(
         Zone::HARDFORKS.first(),
