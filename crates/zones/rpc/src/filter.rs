@@ -324,7 +324,15 @@ fn scope_filter_to_account(filter: &mut Filter, caller: &Address) -> Result<Addr
         let account = Address::from_word(*word);
         (account.into_word() == *word).then_some(account)
     };
-    let mut candidates = [(1, named(1)), (2, named(2)), (3, named(3))];
+    // topic3 names a creator only in `MasterRegistered`; in other events it is data such as a memo,
+    // so it scopes only a filter that asks for `MasterRegistered` alone.
+    let master_registered_only =
+        filter.topics[0].len() == 1 && filter.topics[0].contains(&MASTER_REGISTERED_TOPIC);
+    let mut candidates = [
+        (1, named(1)),
+        (2, named(2)),
+        (3, named(3).filter(|_| master_registered_only)),
+    ];
     // Positions naming the caller come first, so the caller's own filters keep their meaning.
     candidates.sort_by_key(|(_, account)| *account != Some(*caller));
     for (position, account) in candidates.into_iter().filter_map(|(p, a)| Some((p, a?))) {
@@ -1155,6 +1163,15 @@ mod tests {
         );
         assert_eq!(filter.topics[0], FilterSet::from(MASTER_REGISTERED_TOPIC));
         assert_eq!(filter.topics[3], FilterSet::from(caller.into_word()));
+
+        // A memo in topic3 that encodes the caller doesn't narrow a delegated memo-transfer filter.
+        let sender = Address::with_last_byte(2);
+        let mut memo = Filter::default().topic1(sender.into_word());
+        memo.topics[3] = FilterSet::from(caller.into_word());
+        assert_eq!(scope_filter_to_account(&mut memo, &caller).unwrap(), sender);
+        assert!(memo.topics[0].contains(&TRANSFER_WITH_MEMO_TOPIC));
+        assert_eq!(memo.topics[1], FilterSet::from(sender.into_word()));
+        assert_eq!(memo.topics[3], FilterSet::from(caller.into_word()));
 
         // topic3 scopes only MasterRegistered.
         let mut transfers = Filter::default().event_signature(TRANSFER_TOPIC);
