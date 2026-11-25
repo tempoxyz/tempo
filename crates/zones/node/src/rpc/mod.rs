@@ -2272,7 +2272,17 @@ mod tests {
         block["transactions"] = serde_json::json!([]);
         block["uncles"] = serde_json::json!([]);
         module.register_method("eth_getBlockByNumber", move |_, _| block.clone())?;
-        module.register_method("eth_getMultiProof", |params, ctx| {
+        let account = Address::repeat_byte(0xaa);
+        let slot = B256::repeat_byte(0xbb);
+        // A single-leaf state trie: the account proof is the root, and empty storage proves the slot.
+        let leaf = Bytes::from(alloy_rlp::encode(reth_trie_common::TrieNode::Leaf(
+            reth_trie_common::LeafNode::new(
+                reth_trie_common::Nibbles::unpack(keccak256(account)),
+                alloy_rlp::encode(reth_trie_common::TrieAccount::default()),
+            ),
+        )));
+        let proof_leaf = leaf.clone();
+        module.register_method("eth_getMultiProof", move |params, ctx| {
             let params: serde_json::Value = params.parse()?;
             ctx.0.lock().unwrap().push(params.clone());
             if ctx.1.load(Ordering::Relaxed) {
@@ -2282,16 +2292,21 @@ mod tests {
                     None::<()>,
                 ));
             }
-            let proofs = params[0].as_array().unwrap().iter().map(|target| {
-                serde_json::json!({
-                    "address": target[0], "balance": "0x0", "nonce": "0x0",
-                    "codeHash": B256::ZERO, "storageHash": B256::ZERO,
-                    "accountProof": ["0x01"],
-                    "storageProof": target[1].as_array().unwrap().iter().map(|slot| {
-                        serde_json::json!({"key": slot, "value": "0x0", "proof": ["0x01", "0x02"]})
-                    }).collect::<Vec<_>>()
+            let proofs = params[0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|target| {
+                    serde_json::json!({
+                        "address": target[0], "balance": "0x0", "nonce": "0x0",
+                        "codeHash": B256::ZERO, "storageHash": B256::ZERO,
+                        "accountProof": [proof_leaf],
+                        "storageProof": target[1].as_array().unwrap().iter().map(|slot| {
+                            serde_json::json!({"key": slot, "value": "0x0", "proof": []})
+                        }).collect::<Vec<_>>()
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
             Ok::<_, ErrorObjectOwned>(proofs)
         })?;
         let server = jsonrpsee::server::ServerBuilder::default()
@@ -2302,28 +2317,35 @@ mod tests {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(format!("http://{address}").parse()?)
             .erased();
-        let account = Address::repeat_byte(0xaa);
-        let slot = B256::repeat_byte(0xbb);
         let reads = HashSet::from([zone_evm::TempoStorageRead {
             account,
             slot: Some(slot),
         }]);
         let mut checkpoint = TempoHeader::default();
         checkpoint.inner.number = 10;
-        let first_tx_input = IZoneInbox::advanceTempoCall {
-            header: alloy_rlp::encode(&checkpoint).into(),
-            deposits: Vec::new(),
-            decryptions: Vec::new(),
-            enabledTokens: Vec::new(),
-        }
-        .abi_encode();
+        checkpoint.inner.state_root = B256::repeat_byte(0xcc);
+        let advance = |checkpoint: &TempoHeader| {
+            IZoneInbox::advanceTempoCall {
+                header: alloy_rlp::encode(checkpoint).into(),
+                deposits: Vec::new(),
+                decryptions: Vec::new(),
+                enabledTokens: Vec::new(),
+            }
+            .abi_encode()
+        };
+        // Proofs against another root never verify, so collection refetches, then fails.
+        let error = collect_tempo_witness(&provider, initial, Some(&advance(&checkpoint)), &reads)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("incomplete account proof"));
+        assert_eq!(requests.lock().unwrap().len(), 1 + MULTI_PROOF_RETRIES);
+        requests.lock().unwrap().clear();
+        checkpoint.inner.state_root = keccak256(&leaf);
+        let first_tx_input = advance(&checkpoint);
         let (actual_header, nodes) =
             collect_tempo_witness(&provider, initial, Some(&first_tx_input), &reads).await?;
         assert_eq!(actual_header, header);
-        assert_eq!(
-            nodes.into_iter().collect::<BTreeSet<_>>(),
-            BTreeSet::from([Bytes::from(vec![1]), Bytes::from(vec![2])])
-        );
+        assert_eq!(nodes, vec![leaf.clone()]);
         {
             let requests = requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
@@ -2370,7 +2392,7 @@ mod tests {
             .collect::<HashSet<_>>();
         let (_, nodes) =
             collect_tempo_witness(&provider, initial, Some(&first_tx_input), &many_reads).await?;
-        assert_eq!(nodes, vec![Bytes::from(vec![1])]);
+        assert_eq!(nodes, vec![leaf]);
         {
             let requests = requests.lock().unwrap();
             assert_eq!(requests.len(), 3);

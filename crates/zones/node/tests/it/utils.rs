@@ -2,7 +2,7 @@ use alloy::genesis::{Genesis, GenesisAccount};
 use alloy_consensus::{Header, Sealable as _};
 use alloy_eips::NumHash;
 use alloy_network::{ReceiptResponse as _, TransactionBuilder as _};
-use alloy_primitives::{Address, B256, U256, address, keccak256};
+use alloy_primitives::{Address, B256, Bytes, U256, address, keccak256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder, bindings::IMulticall3};
 use alloy_rpc_types_eth::{BlockId, BlockNumberOrTag, Filter, TransactionRequest};
 use alloy_signer::SignerSync;
@@ -269,6 +269,15 @@ fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::R
     Ok(())
 }
 
+/// Tempo trie nodes the stub L1 serves from `eth_getMultiProof`, for synthetic checkpoint roots.
+static TEMPO_PROOF_NODES: std::sync::Mutex<Vec<Bytes>> = std::sync::Mutex::new(Vec::new());
+
+/// Serve `nodes` from the stub L1's proofs. Extra nodes are harmless: witnesses dedupe them and
+/// verification walks only the paths it reads.
+pub(crate) fn serve_tempo_proof_nodes(nodes: &[Bytes]) {
+    TEMPO_PROOF_NODES.lock().unwrap().extend_from_slice(nodes);
+}
+
 async fn spawn_test_l1_rpc(chain_id: u64) -> eyre::Result<String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -345,9 +354,11 @@ async fn handle_test_l1_rpc_request(
         "eth_getCode" => serde_json::json!("0x01"),
         // Accounts have no TIP-1108 configuration commitment on the test L1.
         "eth_getAccountInfo" => serde_json::json!({"balance": "0x0", "nonce": "0x0", "code": "0x"}),
-        // Synthetic SPF fixtures supply their own Tempo trie nodes; only the initial header
-        // and a successful proof RPC are needed when generating their Zone witness.
-        "eth_getMultiProof" => serde_json::json!([]),
+        "eth_getMultiProof" => serde_json::json!([{
+            "address": Address::ZERO, "balance": "0x0", "nonce": "0x0",
+            "codeHash": B256::ZERO, "storageHash": B256::ZERO,
+            "accountProof": TEMPO_PROOF_NODES.lock().unwrap().clone(), "storageProof": [],
+        }]),
         "eth_getBlockByNumber" => {
             let mut block = serde_json::to_value(TempoHeaderResponse {
                 inner: alloy_rpc_types_eth::Header::new(TempoHeader::default()),

@@ -236,6 +236,7 @@ async fn spf_replays_migrated_policy_transaction_with_parent_forks() -> eyre::Re
 
     let (tempo_state_root, tempo_state_nodes) =
         tempo_state_with_transfer_policy(PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
+    crate::utils::serve_tempo_proof_nodes(&tempo_state_nodes);
     let built = build_single_transaction_block(&genesis, Some(tempo_state_root)).await?;
     let legacy_policy_slot = B256::with_last_byte(7);
     assert!(
