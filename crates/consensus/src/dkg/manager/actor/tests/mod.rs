@@ -1665,7 +1665,7 @@ fn replaying_unacknowledged_blocks_after_restart_is_idempotent() {
                 .identity(keys[0].clone())
                 .execution(execution.clone())
                 .finalized_floor(Height::new(15))
-                .startup(trusted.clone(), Some(tip.clone()))
+                .startup(trusted.clone(), Some(tip.clone()), None)
                 .network(network.clone())
                 .build()
         };

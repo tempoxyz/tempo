@@ -103,6 +103,10 @@ pub(crate) mod marshal {
         /// The archive certificate to authenticate during initialization.
         /// `None` only at genesis.
         pub finalized_tip_certificate: Option<Certificate>,
+
+        /// The lowest archive certificate, which marshal starts from, at its
+        /// height. `None` only at genesis.
+        pub finalized_floor_certificate: Option<(Height, Certificate)>,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
@@ -177,6 +181,10 @@ pub(crate) mod marshal {
             start_from_finalized_floor(&finalizations_by_height, &execution_node, finalized_floor)
                 .await?;
 
+        let finalized_floor_certificate = match &start {
+            marshal::Start::Floor(finalization) => Some((finalized_floor.0, finalization.clone())),
+            marshal::Start::Genesis(_) => None,
+        };
         if let marshal::Start::Floor(finalization) = &start {
             register_scheme(
                 &mut context,
@@ -232,6 +240,7 @@ pub(crate) mod marshal {
             finalized_floor: last_finalized_height,
             finalized_tip: (tip_round, tip_height, tip_digest),
             finalized_tip_certificate: finalized_tip.map(|(_, certificate)| certificate),
+            finalized_floor_certificate,
         })
     }
 

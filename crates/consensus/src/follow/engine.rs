@@ -116,6 +116,7 @@ impl<TUpstream> Config<TUpstream> {
             finalized_floor: last_finalized_height,
             finalized_tip,
             finalized_tip_certificate,
+            finalized_floor_certificate: _,
         } = alias::marshal::init(
             context.child("marshal"),
             page_cache_ref,

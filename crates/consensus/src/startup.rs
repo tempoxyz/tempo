@@ -6,7 +6,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_parallel::Sequential;
-use eyre::ensure;
+use eyre::{bail, ensure};
 use rand_core::CryptoRng;
 use tempo_chainspec::NetworkIdentity;
 use tracing::{info, instrument, warn};
@@ -111,4 +111,39 @@ pub(crate) fn ensure_outcome_within_tip_epoch(
         );
     }
     Ok(())
+}
+
+/// Verifies the finalized floor certificate against the trusted identity and returns it.
+///
+/// The trusted identity is the persisted one when it is at least as new as the configured one,
+/// and the configured one otherwise. Fails when the certificate does not verify, such as for a
+/// snapshot taken before the last full DKG the node knows about.
+#[instrument(skip_all, err)]
+pub(crate) fn verify_finalized_floor(
+    rng: &mut impl CryptoRng,
+    configured_identity: &NetworkIdentity,
+    persisted: Option<&NetworkIdentity>,
+    (height, certificate): (Height, &Certificate),
+) -> eyre::Result<NetworkIdentity> {
+    let trusted = match persisted {
+        Some(persisted) if persisted.from_epoch >= configured_identity.from_epoch => persisted,
+        _ => configured_identity,
+    };
+    let epoch = certificate.proposal.round.epoch();
+    let scheme = Scheme::<PublicKey, _>::certificate_verifier(NAMESPACE, trusted.identity);
+    if !certificate.verify(rng, &scheme, &Sequential) {
+        ensure!(
+            epoch.get() >= trusted.from_epoch,
+            "finalized floor certificate at height `{height}` in epoch `{epoch}` predates the \
+             trusted network identity from epoch `{}`; restore a snapshot taken at or after that \
+             epoch",
+            trusted.from_epoch,
+        );
+        bail!(
+            "finalized floor certificate at height `{height}` in epoch `{epoch}` failed \
+             verification against the trusted network identity from epoch `{}`",
+            trusted.from_epoch,
+        );
+    }
+    Ok(trusted.clone())
 }

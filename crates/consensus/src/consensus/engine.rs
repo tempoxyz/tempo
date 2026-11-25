@@ -180,6 +180,7 @@ where
             finalized_floor,
             finalized_tip,
             finalized_tip_certificate,
+            finalized_floor_certificate,
         } = Box::pin(alias::marshal::init(
             context.child("marshal"),
             page_cache_ref.clone(),
@@ -288,6 +289,7 @@ where
                 initial_share: self.share.clone(),
                 finalized_tip: finalized_tip_certificate
                     .map(|certificate| (finalized_tip.1, certificate)),
+                finalized_floor: finalized_floor_certificate,
                 network_identity: self.network_identity,
                 scheme_provider: scheme_provider.clone(),
                 last_finalized_height: finalized_floor,

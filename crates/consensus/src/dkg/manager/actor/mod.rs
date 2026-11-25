@@ -48,6 +48,7 @@ use futures::{
     stream::FuturesOrdered,
 };
 use rand_core::CryptoRng;
+use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_chainspec::{NetworkIdentity, TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_primitives::TempoHeader;
@@ -147,6 +148,9 @@ pub(crate) struct Actor<
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
+    /// The persisted identity read at initialization, before healing can replace the state.
+    persisted_identity: Option<NetworkIdentity>,
+
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
     metrics: Metrics,
@@ -201,6 +205,7 @@ where
             context,
             storage: Some(storage),
             mailbox,
+            persisted_identity,
             metrics,
             pending_finalized_blocks: FuturesOrdered::new(),
         })
@@ -1455,16 +1460,71 @@ where
             outcome from last boundary height"
         );
 
-        // The boundary header is not checked against the finalized floor's
-        // certificate, so an outcome for a later epoch could otherwise persist
-        // a future identity that startup then trusts over the configured one.
-        let onchain_outcome = read_outcome_from_boundary(
+        let boundary_header = get_header(
             &self.config.execution_node,
             &self.config.marshal,
             latest_boundary,
-            outcome_epoch,
         )
-        .await?;
+        .await
+        .wrap_err_with(|| {
+            format!("failed to read latest boundary header at height `{latest_boundary}`")
+        })?;
+        let onchain_outcome =
+            outcome_from_boundary_header(&boundary_header, latest_boundary, outcome_epoch)?;
+        // Only a boundary at or below the floor certificate is covered by it. One above it comes
+        // from a processed height this node wrote, such as on a node synced from genesis whose
+        // archive starts long before its current epoch.
+        if latest_boundary.is_zero() {
+            let genesis_hash = self.config.execution_node.chain_spec().genesis_hash();
+            ensure!(
+                boundary_header.hash_slow() == genesis_hash,
+                "genesis header does not match the chain spec's genesis hash `{genesis_hash}`",
+            );
+        }
+        // Marshal lacks a floor certificate only at genesis (see `alias::marshal::init`), where
+        // `verify_finalized_tip` already requires a zero floor.
+        match &self.config.finalized_floor {
+            Some((height, certificate)) if latest_boundary <= *height => {
+                let identity = crate::startup::verify_finalized_floor(
+                    self.context.as_present_mut(),
+                    &self.config.network_identity,
+                    self.persisted_identity.as_ref(),
+                    (*height, certificate),
+                )?;
+                let floor_epoch = certificate.proposal.round.epoch();
+                if latest_boundary == *height {
+                    // The boundary is the certified block itself.
+                    ensure!(
+                        Digest(boundary_header.hash_slow()) == certificate.proposal.payload,
+                        "boundary header at height `{latest_boundary}` does not match the \
+                         finalized floor certificate",
+                    );
+                } else {
+                    // Below the floor, the outcome is for the floor's epoch and must carry the
+                    // identity its certificate verified against.
+                    ensure!(
+                        onchain_outcome.epoch() == floor_epoch,
+                        "boundary outcome at height `{latest_boundary}` is for epoch `{}`, but the \
+                         finalized floor certificate is in epoch `{floor_epoch}`",
+                        onchain_outcome.epoch(),
+                    );
+                    ensure!(
+                        *onchain_outcome.network_identity() == identity.identity,
+                        "boundary outcome at height `{latest_boundary}` carries a network identity \
+                         other than the one the finalized floor certificate in epoch \
+                         `{floor_epoch}` verified against",
+                    );
+                }
+            }
+            Some((height, _)) => {
+                warn!(
+                    floor_height = %height,
+                    "boundary is above the finalized floor certificate; trusting locally \
+                    processed blocks"
+                );
+            }
+            None => {}
+        }
 
         crate::startup::ensure_outcome_within_tip_epoch(
             onchain_outcome.epoch(),
@@ -1703,7 +1763,15 @@ where
         .wrap_err_with(|| {
             format!("failed to read latest boundary header at height `{boundary}`")
         })?;
+    outcome_from_boundary_header(&header, boundary, expected_epoch)
+}
 
+/// Decodes the DKG outcome for `expected_epoch` from the header at `boundary`.
+fn outcome_from_boundary_header(
+    header: &TempoHeader,
+    boundary: Height,
+    expected_epoch: Epoch,
+) -> eyre::Result<OnchainDkgOutcome> {
     let outcome =
         OnchainDkgOutcome::read(&mut commonware_codec::Copying(header.extra_data().as_ref()))
             .wrap_err("the boundary block did not contain the on-chain DKG outcome")?;
