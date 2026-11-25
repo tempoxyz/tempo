@@ -7,13 +7,12 @@
 //! L1 and prints the recipients as JSON, for deposits that make the Zone read those slots.
 
 use alloy::{
-    primitives::{Address, B256, Bytes, U256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
     providers::{Provider, ProviderBuilder},
 };
 use alloy_rlp::Decodable as _;
-use alloy_trie::{Nibbles, nodes::TrieNode};
-use eyre::{OptionExt as _, WrapErr as _, bail, ensure};
-use std::collections::{HashMap, hash_map::Entry};
+use alloy_trie::nodes::TrieNode;
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::ITIP403Registry;
 use tempo_precompiles::{
@@ -24,7 +23,11 @@ use crate::zone_utils::{check, parse_private_key};
 
 /// Leading nibbles the whitelisted accounts' keys share. The recipients' keys share one fewer
 /// (diverging inside the extension) and exactly this many (an empty child of the branch).
-const SHARED: usize = 4;
+///
+/// The extension only exists while no other registry key shares `SHARED - 1` nibbles with the
+/// accounts, which each of N keys does with odds 16^-(SHARED - 1). Grinding costs about
+/// 16^SHARED hashes, a few seconds in release at 5.
+const SHARED: usize = 5;
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
@@ -49,7 +52,7 @@ impl WitnessShapes {
 
         // The policy ID is part of every member's slot, so grind for the next one.
         let policy_id = registry.policyIdCounter().call().await?;
-        let (members, recipients) = grind(policy_id);
+        let (members, recipients) = grind(policy_id, SHARED);
         let receipt = registry
             .createPolicyWithAccounts(
                 admin,
@@ -76,16 +79,18 @@ impl WitnessShapes {
             .number(block)
             .await
             .wrap_err("failed to read registry proofs")?;
-        for ((slot, storage), expected) in slots
-            .iter()
-            .zip(&proof.storage_proof)
-            .zip([ProofEnd::Extension, ProofEnd::EmptyChild])
-        {
+        for (i, (slot, storage)) in slots.iter().zip(&proof.storage_proof).enumerate() {
             ensure!(storage.value.is_zero(), "receive policy {slot} is set");
-            let end = proof_end(&storage.proof, keccak256(slot))?;
+            // An absence proof ends at the node its key diverges from: the extension, then the
+            // branch. Neither recipient's last node can be embedded at these depths.
+            let end = storage.proof.last().ok_or_eyre("empty proof")?;
+            let end = TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")?;
             ensure!(
-                end == expected,
-                "proof for {slot} ends at {end:?}, not {expected:?}"
+                matches!(
+                    (i, &end),
+                    (0, TrieNode::Extension(_)) | (1, TrieNode::Branch(_))
+                ),
+                "proof for {slot} ends at {end:?}"
             );
         }
 
@@ -100,86 +105,42 @@ impl WitnessShapes {
     }
 }
 
-/// The node at which a proof for an absent key stops.
-#[derive(Debug, PartialEq, Eq)]
-enum ProofEnd {
-    /// The key diverges inside an extension node.
-    Extension,
-    /// The key reaches a branch without a child at its next nibble.
-    EmptyChild,
-    /// The key reaches a leaf for another key.
-    Leaf,
-}
-
-/// Picks two members whose policy-set keys share exactly [`SHARED`] nibbles, and two recipients
-/// whose receive-policy keys share `SHARED - 1` and exactly `SHARED` nibbles with both members.
-fn grind(policy_id: u64) -> ([Address; 2], [Address; 2]) {
+/// Picks two members whose policy-set keys share exactly `shared` nibbles, and two recipients
+/// whose receive-policy keys share `shared - 1` and exactly `shared` nibbles with both members.
+fn grind(policy_id: u64, shared: usize) -> ([Address; 2], [Address; 2]) {
     let set = policy_id.mapping_slot(tip403_registry_slots::POLICY_SET);
+    let member_key = |account: Address| trie_key(account.mapping_slot(set));
+    let receive_key = |account: Address| trie_key(receive_policy_slot(account));
     let mut candidates = (0u64..).map(|i| Address::from_word(keccak256(i.to_be_bytes())));
-    let mut seen = HashMap::new();
-    let members = loop {
-        let member = candidates.next().expect("unbounded candidates");
-        let key = trie_key(member.mapping_slot(set));
-        match seen.entry(key.slice(..SHARED)) {
-            Entry::Vacant(entry) => {
-                entry.insert((member, key));
-            }
-            Entry::Occupied(entry) if entry.get().1.common_prefix_length(&key) == SHARED => {
-                break [*entry.get(), (member, key)];
-            }
-            Entry::Occupied(_) => {}
-        }
+    let mut find = |key: &dyn Fn(Address) -> B256, matches: &dyn Fn(B256) -> bool| {
+        candidates
+            .find(|&account| matches(key(account)))
+            .expect("unbounded candidates")
     };
 
-    let (mut extension, mut empty_child) = (None, None);
-    loop {
-        let recipient = candidates.next().expect("unbounded candidates");
-        let key = trie_key(receive_policy_slot(recipient));
-        match members
-            .each_ref()
-            .map(|(_, member)| member.common_prefix_length(&key))
-        {
-            [shared, _] if shared == SHARED - 1 => extension = extension.or(Some(recipient)),
-            [SHARED, SHARED] => empty_child = empty_child.or(Some(recipient)),
-            _ => {}
-        }
-        if let (Some(extension), Some(empty_child)) = (extension, empty_child) {
-            return (members.map(|(member, _)| member), [extension, empty_child]);
-        }
-    }
-}
-
-/// Walks a storage proof from the root along `key` and reports where it stops.
-fn proof_end(nodes: &[Bytes], key: B256) -> eyre::Result<ProofEnd> {
-    let path = Nibbles::unpack(key);
-    let mut depth = 0;
-    for node in nodes {
-        match TrieNode::decode(&mut node.as_ref()).wrap_err("invalid proof node")? {
-            TrieNode::Branch(branch) => {
-                if !branch.state_mask.is_bit_set(path.get_unchecked(depth)) {
-                    return Ok(ProofEnd::EmptyChild);
-                }
-                depth += 1;
-            }
-            TrieNode::Extension(extension) => {
-                if !path.slice(depth..).starts_with(&extension.key) {
-                    return Ok(ProofEnd::Extension);
-                }
-                depth += extension.key.len();
-            }
-            TrieNode::Leaf(_) => return Ok(ProofEnd::Leaf),
-            TrieNode::EmptyRoot => bail!("registry storage is empty"),
-        }
-    }
-    bail!("proof stops at depth {depth} without reaching its end")
+    let first = find(&member_key, &|_| true);
+    let first_key = member_key(first);
+    let second = find(&member_key, &|key| shared_nibbles(key, first_key) == shared);
+    let second_key = member_key(second);
+    let extension = find(&receive_key, &|key| {
+        shared_nibbles(key, first_key) == shared - 1
+    });
+    let empty_child = find(&receive_key, &|key| {
+        shared_nibbles(key, first_key) == shared && shared_nibbles(key, second_key) == shared
+    });
+    ([first, second], [extension, empty_child])
 }
 
 fn receive_policy_slot(account: Address) -> U256 {
     account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES)
 }
 
-fn trie_key(slot: U256) -> Nibbles {
-    Nibbles::unpack(keccak256(B256::from(slot)))
+fn trie_key(slot: U256) -> B256 {
+    keccak256(B256::from(slot))
+}
+
+fn shared_nibbles(a: B256, b: B256) -> usize {
+    U256::from_be_bytes((a ^ b).0).leading_zeros() / 4
 }
 
 #[cfg(test)]
@@ -188,15 +149,17 @@ mod tests {
 
     #[test]
     fn ground_keys_share_the_requested_prefixes() {
+        // Four nibbles keep the search fast in debug builds.
+        let shared = 4;
         let set = 2u64.mapping_slot(tip403_registry_slots::POLICY_SET);
-        let (members, [extension, empty_child]) = grind(2);
+        let (members, [extension, empty_child]) = grind(2, shared);
         let [first, second] = members.map(|member| trie_key(member.mapping_slot(set)));
-        assert_eq!(first.common_prefix_length(&second), SHARED);
+        assert_eq!(shared_nibbles(first, second), shared);
         for member in [first, second] {
-            let shared =
-                |recipient| member.common_prefix_length(&trie_key(receive_policy_slot(recipient)));
-            assert_eq!(shared(extension), SHARED - 1);
-            assert_eq!(shared(empty_child), SHARED);
+            let shares =
+                |recipient| shared_nibbles(member, trie_key(receive_policy_slot(recipient)));
+            assert_eq!(shares(extension), shared - 1);
+            assert_eq!(shares(empty_child), shared);
         }
     }
 }
