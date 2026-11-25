@@ -13,11 +13,15 @@ use alloy_primitives::{Address, B256, U256};
 
 use tempo_contracts::precompiles::ITIP20;
 
-use crate::{Batch, Observe, ObserveError, Replay, Views};
+use crate::{
+    Batch, Observe, ObserveError, Replay, Views,
+    model::{Reader, Scope, logged_addresses},
+};
 
 pub use tempo_contracts::precompiles::{
     IFeeManager,
     ITIPFeeAMM::{self, Burn, Mint, RebalanceSwap},
+    TIP_FEE_MANAGER_ADDRESS,
 };
 
 mod checks;
@@ -26,6 +30,35 @@ pub use checks::{
     CHECKS, CUSTODY_STEP, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY,
     POOL_SHAPE, STEP_CHECKS, VIEW,
 };
+
+/// Checks the fee manager's books when the scope selects them.
+pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
+    let fee_manager = TIP_FEE_MANAGER_ADDRESS;
+    if !(scope.selected)(&fee_manager) {
+        return;
+    }
+    let tokens = scope.tokens;
+    let pairs: Vec<(Address, Address)> = tokens
+        .iter()
+        .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
+        .filter(|(user, validator)| user != validator)
+        .collect();
+    // Fees are collected for the block's beneficiary, and a step that distributes another
+    // validator's fees names it in its logs.
+    let mut validators: Vec<Address> = logged_addresses(scope.logs())
+        .chain([scope.beneficiary])
+        .collect();
+    validators.sort_unstable();
+    validators.dedup();
+    let at = At {
+        fee_manager,
+        tokens,
+        pairs: &pairs,
+        validators: &validators,
+        holders: scope.holders,
+    };
+    reader.check::<Books>(at, fee_manager, VIEW);
+}
 
 /// The LP supply a pool's first mint locks, as `tempo_precompiles::tip_fee_manager::amm::MIN_LIQUIDITY`
 /// (not depended on: it pulls in revm).

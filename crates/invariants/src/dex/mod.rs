@@ -15,16 +15,41 @@ use alloy_primitives::{Address, B256, U256};
 
 use tempo_contracts::precompiles::ITIP20;
 
-use crate::{Batch, Observe, ObserveError, Views};
+use crate::{
+    Batch, Observe, ObserveError, Views,
+    model::{Reader, Scope},
+    view,
+};
 
 pub use tempo_contracts::precompiles::{
     IStablecoinDEX::{self, OrderCancelled, OrderFilled, OrderFlipped, OrderPlaced},
-    PRICE_SCALE,
+    PRICE_SCALE, STABLECOIN_DEX_ADDRESS,
 };
 
 mod checks;
 
 pub use checks::{CHECKS, CUSTODY_STEP, DEX_CUSTODY, STEP_CHECKS, VIEW};
+
+/// How many of the newest orders the books are read over.
+const MAX_ORDERS: u128 = 256;
+
+/// Checks the DEX's books, over its newest orders, when the scope selects them.
+pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
+    let dex = STABLECOIN_DEX_ADDRESS;
+    if !(scope.selected)(&dex) {
+        return;
+    }
+    // Order IDs start at 1.
+    let next = view(reader.after(), dex, IStablecoinDEX::nextOrderIdCall {}).unwrap_or(0);
+    let orders: Vec<u128> = (next.saturating_sub(MAX_ORDERS).max(1)..next).collect();
+    let at = At {
+        dex,
+        tokens: scope.tokens,
+        users: scope.holders,
+        orders: &orders,
+    };
+    reader.check::<Books>(at, dex, VIEW);
+}
 
 /// One live order and the escrow it holds.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,10 +1,10 @@
 //! Configurable account checks: the signatures' authority and the accounts' leaves.
 
-use super::{Reader, StepEffects};
+use super::{EvmReader, StepEffects};
 use crate::state::{Db, Net};
 use alloy_primitives::{Address, B256};
 use evm2::evm::{AccountInfo, Database as _};
-use invariants_core::{Checked, Report};
+use invariants_core::Checked as _;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS};
 use tempo_invariants::{
@@ -13,6 +13,7 @@ use tempo_invariants::{
         Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role,
         VIEW, delegate_grants, spec,
     },
+    model::Reader as _,
 };
 use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::{
@@ -91,13 +92,7 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address) -> Authority {
 }
 
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
-pub(super) fn check(
-    reader: &Reader<'_>,
-    db: &Db,
-    effects: &StepEffects<'_>,
-    tx: &Tx,
-    report: &mut Report,
-) {
+pub(super) fn check(reader: &mut EvmReader<'_>, db: &Db, effects: &StepEffects<'_>, tx: &Tx) {
     let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, &effects.logs, tx);
     let mut accounts: Vec<Address> = effects
         .net
@@ -122,7 +117,7 @@ pub(super) fn check(
         admins: &admins,
         keys: &keys,
     };
-    reader.check::<Commitments>(report, at, CONFIGURABLE_ACCOUNT_ADDRESS, VIEW);
+    reader.check::<Commitments>(at, CONFIGURABLE_ACCOUNT_ADDRESS, VIEW);
     let leaves = Leaves {
         of: accounts
             .iter()
@@ -135,7 +130,7 @@ pub(super) fn check(
         tx: tx.clone(),
         delegates,
     };
-    report.run(Leaves::CHECKS, &leaves, reader.fork());
+    reader.run(Leaves::CHECKS, &leaves);
 }
 
 /// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.

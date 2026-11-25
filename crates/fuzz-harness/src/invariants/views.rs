@@ -95,11 +95,12 @@ impl<'a> EvmViews<'a> {
                 }
             }
         };
-        let mut reads = self.reads.take();
+        let mut reads = self.reads.borrow_mut();
         reads.sort_unstable();
         reads.dedup();
         self.view_cache
-            .insert(call, self.before, output.clone(), reads);
+            .insert(call, self.before, output.clone(), &reads);
+        reads.clear();
         output
     }
 }
@@ -108,7 +109,11 @@ impl Views for EvmViews<'_> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
-        calls.iter().map(|call| self.call_one(call)).collect()
+        let mut answers = Vec::with_capacity(calls.len());
+        for call in calls {
+            answers.push(self.call_one(call)?);
+        }
+        Ok(answers)
     }
 
     /// The seeded pre-state may hold only the accounts and slots execution touched.
@@ -118,20 +123,19 @@ impl Views for EvmViews<'_> {
 }
 
 /// The view calls a block's steps made, with their outputs, indexed by what each read: storage
-/// slots, and accounts as `None`. A transaction step undoes only the calls that read what it
-/// changed, so only those and calls not made before are read again after it.
+/// slots, and accounts as `None`. A step undoes only the calls that read what it changed, so only
+/// those and calls not made before are read again after it.
 #[derive(Default)]
 pub(crate) struct ViewCache(RefCell<Calls>);
 
 impl ViewCache {
-    /// Advances to the next transaction step, which made `net`'s changes, undoing the calls that
-    /// read a slot or account it changed.
+    /// Advances to the next step, which made `net`'s changes, undoing the calls that read a slot or
+    /// account it changed.
     pub(crate) fn advance(&self, net: &Net) {
         let calls = &mut *self.0.borrow_mut();
         calls.step += 1;
         calls.before.clear();
-        for address in net.addresses() {
-            let account = net.get(address).expect("the span changed it");
+        for (address, account) in net.accounts() {
             let slots = account.changed_slots().map(|(slot, _)| Some(*slot));
             for read in account.changed().then_some(None).into_iter().chain(slots) {
                 for call in calls.readers.remove(&(*address, read)).unwrap_or_default() {
@@ -157,13 +161,13 @@ impl ViewCache {
         output.cloned()
     }
 
-    fn insert(&self, call: &Call, before: bool, output: Output, reads: Vec<Read>) {
+    fn insert(&self, call: &Call, before: bool, output: Output, reads: &[Read]) {
         let calls = &mut *self.0.borrow_mut();
         if before {
             calls.before.insert(call.clone(), output);
             return;
         }
-        for read in reads {
+        for &read in reads {
             calls.readers.entry(read).or_default().push(call.clone());
         }
         calls.after.insert(call.clone(), (calls.step, output));
@@ -177,7 +181,7 @@ type Read = (Address, Option<U256>);
 
 #[derive(Default)]
 struct Calls {
-    /// The transaction step being checked, counted from the block's first.
+    /// The step being checked, counted from the block's first.
     step: u64,
     /// Outputs on the state after it, with the step each was read at.
     after: HashMap<Call, (u64, Output)>,

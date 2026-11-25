@@ -13,12 +13,11 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    IStablecoinDEX, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope};
-use tempo_invariants::{Check, Ran, VIEWS, configurable_account as account, dex, fee_amm, tip20};
+use tempo_invariants::{
+    Check, Ran, VIEWS, configurable_account as account, dex, fee_amm, model, tip20,
+};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
@@ -28,7 +27,7 @@ use crate::state::{Db, Net};
 pub(crate) static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("TEMPO_FUZZ_INVARIANTS").is_none_or(|value| value != "0"));
 
-use reader::Reader;
+use reader::EvmReader;
 pub(crate) use views::ViewCache;
 
 mod configurable_account;
@@ -36,9 +35,6 @@ mod reader;
 mod views;
 
 pub(crate) use configurable_account::authority;
-
-/// How many of the newest DEX orders the books are read over.
-const MAX_ORDERS: u128 = 256;
 
 /// What a step did: its net state changes, already written to the database, and what
 /// every model's step shares, which it derefs to.
@@ -52,9 +48,8 @@ impl<'a> StepEffects<'a> {
     /// The effects of `ran`, which made `net`'s changes and emitted `logs`.
     pub(crate) fn new(net: &'a Net, logs: &[Log], ran: Ran, spec: TempoHardfork) -> Self {
         let changes = net
-            .addresses()
-            .flat_map(|&address| {
-                let account = net.get(&address).expect("the step changed it");
+            .accounts()
+            .flat_map(|(&address, account)| {
                 account
                     .changed_slots()
                     .map(move |(slot, value)| SlotChange {
@@ -124,16 +119,6 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         .collect()
 }
 
-/// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
-pub(crate) fn logged_addresses<'a>(
-    logs: impl IntoIterator<Item = &'a Log>,
-) -> impl Iterator<Item = Address> {
-    logs.into_iter()
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12])
-        .map(|topic| Address::from_word(*topic))
-}
-
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
 /// and adds how many subjects each judged, was armed for and found broken to `report`; `holders`
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
@@ -169,7 +154,7 @@ pub(crate) fn check(
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
     }
-    let mut accounts: Vec<Address> = db
+    let accounts: Vec<Address> = db
         .cache
         .borrow()
         .accounts
@@ -177,10 +162,9 @@ pub(crate) fn check(
         .filter(|(_, account)| account.is_some())
         .map(|(address, _)| *address)
         .collect();
-    accounts.sort_unstable();
     // A step's own logs name holders its transitions touched only through a token's storage,
     // such as a transfer's recipient.
-    let logged = logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
+    let logged = model::logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
     let mut all_holders: Vec<Address> = accounts
         .iter()
         .chain(holders)
@@ -189,72 +173,31 @@ pub(crate) fn check(
         .collect();
     all_holders.sort_unstable();
     all_holders.dedup();
-    let tokens: Vec<Address> = accounts
+    let mut tokens: Vec<Address> = accounts
         .iter()
         .copied()
         .filter(|account| is_tip20_prefix(*account))
         .collect();
+    tokens.sort_unstable();
 
-    let reader = Reader {
-        db,
-        evm_config,
-        env: &env,
-        effects: effects.as_ref(),
-        view_cache,
-    };
     let start = report.violations.len();
-
-    for &token in tokens.iter().filter(|token| selected(token)) {
-        let at = tip20::At {
-            token,
-            holders: &all_holders,
-        };
-        reader.check::<tip20::Ledger>(report, at, token, tip20::VIEW);
-    }
-    if selected(&TIP_FEE_MANAGER_ADDRESS) {
-        let pairs: Vec<(Address, Address)> = tokens
-            .iter()
-            .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
-            .filter(|(user, validator)| user != validator)
-            .collect();
-        // Fees are collected for the block's beneficiary; a step that distributes another
-        // validator's fees names it in its logs.
-        let mut validators: Vec<Address> = logged_addresses(effects.iter().flat_map(|e| &e.logs))
-            .chain([env.block.beneficiary])
-            .collect();
-        validators.sort_unstable();
-        validators.dedup();
-        let at = fee_amm::At {
-            fee_manager: TIP_FEE_MANAGER_ADDRESS,
-            tokens: &tokens,
-            pairs: &pairs,
-            validators: &validators,
-            holders: &all_holders,
-        };
-        reader.check::<fee_amm::Books>(report, at, TIP_FEE_MANAGER_ADDRESS, fee_amm::VIEW);
-    }
-    if selected(&STABLECOIN_DEX_ADDRESS) {
-        // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
-        let mut views = reader.views(db.view(), false);
-        let next = invariants_core::view(
-            &mut views,
-            STABLECOIN_DEX_ADDRESS,
-            IStablecoinDEX::nextOrderIdCall {},
-        )
-        .unwrap_or(0);
-        let orders: Vec<u128> = (next.saturating_sub(MAX_ORDERS).max(1)..next).collect();
-        let at = dex::At {
-            dex: STABLECOIN_DEX_ADDRESS,
-            tokens: &tokens,
-            users: &all_holders,
-            orders: &orders,
-        };
-        reader.check::<dex::Books>(report, at, STABLECOIN_DEX_ADDRESS, dex::VIEW);
-    }
-    if let Some(effects) = &effects
-        && let Some(tx) = effects.ran.tx()
     {
-        configurable_account::check(&reader, db, effects, tx, report);
+        let mut reader = EvmReader::new(db, evm_config, &env, effects.as_ref(), view_cache, report);
+        model::check(
+            &mut reader,
+            &model::Scope {
+                tokens: &tokens,
+                holders: &all_holders,
+                beneficiary: env.block.beneficiary,
+                effects: effects.as_deref(),
+                selected: &selected,
+            },
+        );
+        if let Some(effects) = &effects
+            && let Some(tx) = effects.ran.tx()
+        {
+            configurable_account::check(&mut reader, db, effects, tx);
+        }
     }
 
     failures.extend(

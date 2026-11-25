@@ -20,6 +20,7 @@ pub mod configurable_account;
 pub mod dex;
 pub mod fee_amm;
 pub mod keychain;
+pub mod model;
 pub mod receive_policy;
 pub mod tip20;
 

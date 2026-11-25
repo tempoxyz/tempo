@@ -275,7 +275,7 @@ fn broken_start(
         .accounts
         .keys()
         .copied()
-        .chain(invariants::logged_addresses(logged))
+        .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
     invariants::check(

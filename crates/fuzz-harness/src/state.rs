@@ -430,6 +430,11 @@ impl Net {
         self.0.keys()
     }
 
+    /// The accounts the span changed, with what it changed in each.
+    pub(crate) fn accounts(&self) -> impl Iterator<Item = (&Address, &AccountNet)> {
+        self.0.iter()
+    }
+
     /// What the span changed in the account at `address`.
     pub(crate) fn get(&self, address: &Address) -> Option<&AccountNet> {
         self.0.get(address)
