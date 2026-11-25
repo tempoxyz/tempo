@@ -85,8 +85,8 @@ where
         if address_overrides != AddressOverrides::default() {
             warn!(
                 ?address_overrides,
-                "overriding validator config contract addresses of peers; remove the \
-                overrides once the contract is fixed",
+                "overriding validator config contract addresses of peers while the \
+                contract holds the addresses named in the overrides",
             );
         }
         let context = ContextCell::new(context);
@@ -290,24 +290,49 @@ impl Peers {
         self.primary.len().saturating_add(self.secondary.len())
     }
 
-    /// Replaces the ingress or egress address of every peer named in
-    /// `overrides`, keeping the contract's value for the side not named.
+    /// Rewrites the ingress or egress address of every peer named in
+    /// `overrides` whose contract address is the rewrite's `from`, keeping
+    /// the contract's value for every side that does not match.
     fn apply_overrides(&mut self, overrides: &AddressOverrides) {
         for (key, address) in self
             .primary
             .iter_pairs_mut()
             .chain(self.secondary.iter_pairs_mut())
         {
-            let ingress = overrides.ingress.get(key);
-            let egress = overrides.egress.get(key);
+            let ingress = overrides.ingress.get(key).and_then(|rewrite| {
+                let matched = match address.ingress() {
+                    Ingress::Socket(contract) => rewrite.rewrite(contract),
+                    Ingress::Dns { .. } => None,
+                };
+                if matched.is_none() {
+                    debug!(
+                        peer = %key,
+                        from = %rewrite.from,
+                        contract = ?address.ingress(),
+                        "contract no longer holds the overridden ingress; using the contract's",
+                    );
+                }
+                matched
+            });
+            let egress = overrides.egress.get(key).and_then(|rewrite| {
+                let matched = rewrite.rewrite(address.egress_ip());
+                if matched.is_none() {
+                    debug!(
+                        peer = %key,
+                        from = %rewrite.from,
+                        contract = %address.egress_ip(),
+                        "contract no longer holds the overridden egress; using the contract's",
+                    );
+                }
+                matched
+            });
             if ingress.is_none() && egress.is_none() {
                 continue;
             }
             *address = Address::Asymmetric {
-                ingress: ingress
-                    .map_or_else(|| address.ingress(), |socket| Ingress::Socket(*socket)),
+                ingress: ingress.map_or_else(|| address.ingress(), Ingress::Socket),
                 // Commonware only reads the IP of the egress address.
-                egress: egress.map_or_else(|| address.egress(), |ip| SocketAddr::new(*ip, 0)),
+                egress: egress.map_or_else(|| address.egress(), |ip| SocketAddr::new(ip, 0)),
             };
         }
     }
@@ -484,6 +509,7 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+    use crate::peer_manager::AddressRewrite;
 
     const VALIDATOR_CONFIG_V2_ADDRESS: AlloyAddress =
         alloy_primitives::address!("0xCCCCCCCC00000000000000000000000000000001");
@@ -807,7 +833,13 @@ mod tests {
             let execution = Arc::new(bootstrap_execution(19, 2));
             let mut actor = init_at(context, execution.clone(), oracle.clone());
             let ingress: SocketAddr = "203.0.113.7:8000".parse().unwrap();
-            actor.address_overrides.ingress = HashMap::from([(peer(2).public_key, ingress)]);
+            actor.address_overrides.ingress = HashMap::from([(
+                peer(2).public_key,
+                AddressRewrite {
+                    from: peer(2).ingress.parse().unwrap(),
+                    to: ingress,
+                },
+            )]);
 
             actor
                 .handle_message(Span::none(), finalized(&execution))
@@ -839,19 +871,26 @@ mod tests {
             PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
         let ingress = ingress.map(str::parse::<SocketAddr>).transpose()?;
         let egress = egress.map(str::parse::<IpAddr>).transpose()?;
+        let contract = peer(2).p2p_address;
 
         peers.apply_overrides(&AddressOverrides {
             ingress: ingress
-                .map(|ingress| (peer(2).public_key, ingress))
+                .map(|to| {
+                    let from = peer(2).ingress.parse()?;
+                    eyre::Ok((peer(2).public_key, AddressRewrite { from, to }))
+                })
+                .transpose()?
                 .into_iter()
                 .collect(),
             egress: egress
-                .map(|egress| (peer(2).public_key, egress))
+                .map(|to| {
+                    let from = contract.egress_ip();
+                    (peer(2).public_key, AddressRewrite { from, to })
+                })
                 .into_iter()
                 .collect(),
         });
 
-        let contract = peer(2).p2p_address;
         assert_eq!(
             peers.secondary.get_value(&peer(2).public_key),
             Some(&Address::Asymmetric {
@@ -871,13 +910,69 @@ mod tests {
             PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
 
         peers.apply_overrides(&AddressOverrides {
-            ingress: HashMap::from([(peer(2).public_key, "203.0.113.7:8000".parse()?)]),
-            egress: HashMap::from([(peer(2).public_key, "198.51.100.9".parse()?)]),
+            ingress: HashMap::from([(
+                peer(2).public_key,
+                AddressRewrite {
+                    from: peer(2).ingress.parse()?,
+                    to: "203.0.113.7:8000".parse()?,
+                },
+            )]),
+            egress: HashMap::from([(
+                peer(2).public_key,
+                AddressRewrite {
+                    from: peer(2).p2p_address.egress_ip(),
+                    to: "198.51.100.9".parse()?,
+                },
+            )]),
         });
 
         assert_eq!(peers.len(), 1);
         assert_peer(&peers.primary, &peer(1));
         assert_no_peer(&peers.secondary, &peer(2));
+        Ok(())
+    }
+
+    /// The contract now holds an address other than the overrides' `from`,
+    /// as after the peer registers a new one, so the contract's address wins.
+    #[test_case(Some("192.0.2.1:8000"), None)]
+    #[test_case(None, Some("192.0.2.1"))]
+    #[test_case(Some("192.0.2.1:8000"), Some("192.0.2.1"))]
+    fn overrides_of_another_contract_address_do_not_apply(
+        ingress_from: Option<&str>,
+        egress_from: Option<&str>,
+    ) -> eyre::Result<()> {
+        let execution = execution_with_validators(&[peer(1), peer(2)])?;
+        let outcome = dkg_outcome([peer(1).public_key], [peer(1).public_key])?;
+        let mut peers =
+            PeersBuilder::with_dkg_outcome(&outcome).resolve_at_hash(&execution, execution.hash)?;
+
+        peers.apply_overrides(&AddressOverrides {
+            ingress: ingress_from
+                .map(|from| {
+                    let rewrite = AddressRewrite {
+                        from: from.parse()?,
+                        to: "203.0.113.7:8000".parse()?,
+                    };
+                    eyre::Ok((peer(2).public_key, rewrite))
+                })
+                .transpose()?
+                .into_iter()
+                .collect(),
+            egress: egress_from
+                .map(|from| {
+                    let rewrite = AddressRewrite {
+                        from: from.parse()?,
+                        to: "198.51.100.9".parse()?,
+                    };
+                    eyre::Ok((peer(2).public_key, rewrite))
+                })
+                .transpose()?
+                .into_iter()
+                .collect(),
+        });
+
+        assert_peer(&peers.secondary, &peer(2));
+        assert_peer(&peers.primary, &peer(1));
         Ok(())
     }
 

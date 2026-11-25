@@ -44,10 +44,12 @@
 //!
 //! # Address overrides
 //!
-//! [`AddressOverrides`] replace the contract's ingress or egress address of
+//! [`AddressOverrides`] rewrite the contract's ingress or egress address of
 //! peers already in the set, on this node only. They let validators reach a
 //! peer whose registered address is wrong while the chain cannot finalize the
-//! transaction that fixes it.
+//! transaction that fixes it. Each rewrite names the contract address it
+//! replaces and applies only while the contract holds it, so it stops on its
+//! own once the peer registers any other address.
 
 use std::{
     collections::HashMap,
@@ -89,15 +91,33 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     pub(crate) address_overrides: AddressOverrides,
 }
 
-/// Addresses that replace peers' validator config contract entries on this
-/// node only, keyed by the peer's public key. A public key that is not in the
-/// peer set is ignored; overrides never add peers.
+/// Rewrites of peers' validator config contract entries on this node only,
+/// keyed by the peer's public key. A public key that is not in the peer set is
+/// ignored; overrides never add peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressOverrides {
-    /// Replaces the ingress address this node dials.
-    pub ingress: HashMap<PublicKey, SocketAddr>,
-    /// Replaces the egress IP this node accepts connections from.
-    pub egress: HashMap<PublicKey, IpAddr>,
+    /// Rewrites the ingress address this node dials.
+    pub ingress: HashMap<PublicKey, AddressRewrite<SocketAddr>>,
+    /// Rewrites the egress IP this node accepts connections from.
+    pub egress: HashMap<PublicKey, AddressRewrite<IpAddr>>,
+}
+
+/// Replaces a peer's contract address `from` with `to`, only while the
+/// validator config contract holds exactly `from`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressRewrite<T> {
+    /// The contract address this rewrite applies to.
+    pub from: T,
+    /// The address used instead of `from`.
+    pub to: T,
+}
+
+impl<T: Copy + PartialEq> AddressRewrite<T> {
+    /// Returns `to` if `contract` is `from`, and `None` for any other
+    /// contract address.
+    fn rewrite(&self, contract: T) -> Option<T> {
+        (self.from == contract).then_some(self.to)
+    }
 }
 
 /// Initializes the actor. It reads no peers until the executor reports a
