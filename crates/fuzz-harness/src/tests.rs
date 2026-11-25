@@ -338,7 +338,6 @@ fn receipts_report_what_the_fee_hooks_did() {
         (SENDER, max_amount, max_amount - charged)
     );
 
-    // The post-transaction hook's log is its fee transfer.
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs[log]).expect("a transfer");
     assert_eq!(
         (

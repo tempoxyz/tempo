@@ -394,8 +394,6 @@ pub struct TxReceiptOutput {
     pub effective_gas_price: u128,
     pub output: Bytes,
     pub logs: Vec<Log>,
-    /// The storage actions of Tempo's precompiles during the transaction, in order, including the
-    /// markers around its fee hooks.
     pub actions: Vec<StorageAction>,
 }
 

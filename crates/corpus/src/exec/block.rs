@@ -39,7 +39,6 @@ pub struct Executed {
     pub gas: u64,
 }
 
-/// State updates an executor's state hook collected, in commit order.
 pub(crate) type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
 /// Installs a state hook on `executor` that collects its committed updates.
@@ -53,7 +52,6 @@ pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Upda
     Ok(updates)
 }
 
-/// Takes the updates collected since the last drain.
 pub(crate) fn drain(updates: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *updates.lock())
 }

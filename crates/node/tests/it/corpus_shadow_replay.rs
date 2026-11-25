@@ -1,5 +1,3 @@
-//! Shadow replay of captured corpus blocks from their recorded pre-state alone.
-
 use crate::utils::{ForkSchedule, TestNodeBuilder, t1_account};
 use alloy_primitives::Address;
 use reth_e2e_test_utils::wallet::Wallet;
@@ -16,8 +14,6 @@ use tempo_corpus::exec::{
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 
-/// Builds blocks with transactions under `canonical` rules, captures each one into the corpus
-/// format and shadow replays it under `candidate` rules from the captured pre-state.
 async fn replay_captured_blocks(
     canonical: TempoHardfork,
     candidate: TempoHardfork,

@@ -16,8 +16,8 @@ boundary with an `uncaptured` error. That boundary is not compared, so the block
 
 ## Execution model
 
-For each selected canonical block, replay opens the canonical parent state and creates two
-executors:
+For each selected canonical block, replay creates two executors over the pre-state the corpus
+recorded:
 
 - the **control** uses the hardfork active for the canonical block.
 - the **shadow** uses the selected candidate hardfork and its hardfork schedule.
@@ -32,9 +32,8 @@ Candidate post-block behavior runs against this isolated prefix, not a fully com
 block. The candidate schedule activates all predecessor forks so their required pre-block setup
 is included.
 
-All execution uses isolated in-memory overlays. State is never persisted, shared with block
-production, submitted to fork choice, or carried into the next block. Every block starts
-independently from its own canonical parent. Replay executes only canonical transactions; it does
+All execution uses isolated in-memory overlays. State is never persisted or carried into the next
+block. Every block starts independently from its own canonical parent. Replay executes only canonical transactions; it does
 not generate candidate-only transactions.
 
 The control also acts as a re-execution test for the binary: it checks that the binary can

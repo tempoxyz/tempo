@@ -1,15 +1,15 @@
 //! Counterfactual replay of canonical blocks under shadow (candidate) Tempo hardfork rules.
 //!
-//! For each canonical block, such as one from a captured corpus, it executes every transaction
-//! under both the canonical (control) and candidate rules from the same canonical prefix, with
-//! candidate pre-block setup retained in the shadow arm. The candidate transaction
+//! For each verified corpus block, it executes every transaction under both the canonical
+//! (control) and candidate rules from the same canonical prefix, with candidate pre-block setup
+//! retained in the shadow arm. The candidate transaction
 //! result is observed, then discarded; the control result advances both executors before the next
 //! transaction. This isolates differences to the transaction that caused
 //! them instead of cascading candidate state through the rest of the block.
 //!
 //! Execution uses private in-memory overlays. Candidate pre-block changes remain in the prestate
-//! of every shadow transaction; candidate transaction writes are never persisted, submitted to
-//! forkchoice, or used as prestate for another transaction or block.
+//! of every shadow transaction; candidate transaction writes are never persisted or used as
+//! prestate for another transaction or block.
 //!
 //! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
 //! non-canonical STF and is returned as an error. Shadow findings never stop replay.
