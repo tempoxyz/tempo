@@ -1,5 +1,5 @@
 //! Typed node-facing ports and single-owner coordinator for deposit allowlist requests, which
-//! RPC-only members relay to every quorum member.
+//! RPC-only members relay to quorum members.
 
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -24,7 +24,7 @@ use crate::{
     routing::{RoutingMembership, RoutingPolicy},
 };
 
-/// How long a request waits for every quorum member before returning.
+/// How long a request waits for its recipients before returning.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a request is resent to the quorum members that have not answered it.
 const RETRY_INTERVAL: Duration = Duration::from_millis(500);
@@ -51,23 +51,29 @@ pub struct AllowlistPorts {
     pub requests: mpsc::Receiver<AllowlistRequest>,
 }
 
-/// Relays allowlist requests from an RPC-only member to every quorum member.
+/// Relays allowlist requests from an RPC-only member to quorum members.
 #[derive(Clone)]
 pub struct AllowlistClient {
     calls: mpsc::Sender<Call>,
 }
 
 impl AllowlistClient {
-    /// Send `payload` to every quorum member, resending it to members that have not answered,
-    /// and return the answers once all have answered or the 10 s timeout passes. Dropping the
-    /// future stops the resends.
+    /// Send `payload` to `recipient`, or to every quorum member when it is `None`, resending it
+    /// to members that have not answered, and return the answers once all have answered or the
+    /// 10 s timeout passes. A `recipient` that is not another quorum member gets nothing, and the
+    /// request returns no answers at once. Dropping the future stops the resends.
     pub async fn request(
         &self,
+        recipient: Option<P2pPeerId>,
         payload: Vec<u8>,
     ) -> Result<AllowlistResponses, AllowlistRequestError> {
         let (reply, response) = oneshot::channel();
         self.calls
-            .send(Call { payload, reply })
+            .send(Call {
+                recipient,
+                payload,
+                reply,
+            })
             .await
             .map_err(|_| AllowlistRequestError::Stopped)?;
         response.await.map_err(|_| AllowlistRequestError::Stopped)?
@@ -115,6 +121,8 @@ impl AllowlistRequest {
 }
 
 pub(crate) struct Call {
+    /// The one quorum member to ask, or `None` for all of them.
+    recipient: Option<PublicKey>,
     payload: Vec<u8>,
     reply: Reply,
 }
@@ -356,7 +364,14 @@ where
         RoutingPolicy::new(&self.local, &self.membership, &self.leadership)
     }
 
-    fn start(&mut self, Call { payload, reply }: Call) {
+    fn start(
+        &mut self,
+        Call {
+            recipient,
+            payload,
+            reply,
+        }: Call,
+    ) {
         let policy = self.policy();
         if !policy.may_relay_allowlist_update() {
             let _ = reply.send(Err(AllowlistRequestError::NotRelayer));
@@ -366,7 +381,10 @@ where
             let _ = reply.send(Err(AllowlistRequestError::TooLarge(payload.len())));
             return;
         }
-        let unanswered = policy.allowlist_update_recipients();
+        let mut unanswered = policy.allowlist_update_recipients();
+        if let Some(recipient) = recipient {
+            unanswered.retain(|member| *member == recipient);
+        }
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
         let frame = AllowlistFrame::Request { id, payload }.encode();
@@ -578,7 +596,7 @@ mod tests {
             for _ in 0..PORT_BACKLOG {
                 let (reply, response) = oneshot::channel();
                 replies.push(response);
-                ports.client.calls.try_send(Call { payload: vec![], reply }).unwrap();
+                ports.client.calls.try_send(Call { recipient: None, payload: vec![], reply }).unwrap();
             }
             // Each iteration earns one token. All five outstanding requests, including the
             // last write, must get a resend before any queued call can consume that token.

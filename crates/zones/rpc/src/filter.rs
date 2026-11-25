@@ -1,16 +1,23 @@
 //! Privacy-enforced log filtering for the zone's redacted RPC.
 //!
-//! Only whitelisted TIP-20 and receipt-recovery event logs are returned to callers. A caller must
-//! appear in an eligible indexed topic or, for `TransferBlocked`, be a stakeholder encoded in the
-//! claim receipt. This prevents users from observing other users' token activity.
+//! Each query returns one scope the caller may read: an account's whitelisted TIP-20,
+//! receipt-recovery and TIP-1094 virtual deposit result logs, where it is in an eligible indexed
+//! topic or, for `TransferBlocked`, a stakeholder in the claim receipt, or an org's `ZoneIdentity`
+//! events. This prevents users from observing other users' activity.
 
 use alloy_consensus::TxReceipt;
 use alloy_network::ReceiptResponse;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rpc_types_eth::{Filter, FilterSet, Log};
 use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS};
+use tempo_contracts::{
+    precompiles::{IReceivePolicyGuard, ITIP20, RECEIVE_POLICY_GUARD_ADDRESS},
+    zones::{
+        IZoneAddressRegistry, IZoneIdentity, IZoneInbox, ZONE_ADDRESS_REGISTRY_ADDRESS,
+        ZONE_IDENTITY_ADDRESS, ZONE_INBOX_ADDRESS,
+    },
+};
 
 use crate::types::JsonRpcError;
 
@@ -32,14 +39,32 @@ pub const BURN_TOPIC: B256 = ITIP20::Burn::SIGNATURE_HASH;
 /// `TransferBlocked(address,address,uint64,uint256,uint8,bytes)`.
 pub const TRANSFER_BLOCKED_TOPIC: B256 = IReceivePolicyGuard::TransferBlocked::SIGNATURE_HASH;
 
+/// TIP-1094 `VirtualDepositProcessed`, served to its recipient.
+pub const VIRTUAL_DEPOSIT_PROCESSED_TOPIC: B256 =
+    IZoneInbox::VirtualDepositProcessed::SIGNATURE_HASH;
+
+/// TIP-1094 `VirtualDepositFailed`, served to its resolved recipient.
+pub const VIRTUAL_DEPOSIT_FAILED_TOPIC: B256 = IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH;
+
+/// TIP-1094 `MasterRegistered`, served to its recipient.
+pub const MASTER_REGISTERED_TOPIC: B256 = IZoneAddressRegistry::MasterRegistered::SIGNATURE_HASH;
+
 /// All event topic hashes exposed by the redacted RPC.
-pub const WHITELISTED_TOPICS: [B256; 6] = [
+pub const WHITELISTED_TOPICS: [B256; 9] = [
     TRANSFER_TOPIC,
     APPROVAL_TOPIC,
     TRANSFER_WITH_MEMO_TOPIC,
     MINT_TOPIC,
     BURN_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
+    VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+    VIRTUAL_DEPOSIT_FAILED_TOPIC,
+    MASTER_REGISTERED_TOPIC,
+];
+
+const VIRTUAL_DEPOSIT_TOPICS: [B256; 2] = [
+    VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+    VIRTUAL_DEPOSIT_FAILED_TOPIC,
 ];
 
 const TWO_PARTY_TOPICS: [B256; 4] = [
@@ -48,8 +73,54 @@ const TWO_PARTY_TOPICS: [B256; 4] = [
     TRANSFER_WITH_MEMO_TOPIC,
     TRANSFER_BLOCKED_TOPIC,
 ];
-const CALLER_SCOPED_FILTER_ERROR: &str =
-    "private log filter must include authenticated caller in topic1 or topic2";
+const ACCOUNT_SCOPED_FILTER_ERROR: &str =
+    "private log filter must name the caller, or one other account, in topic1 or topic2";
+
+/// `ZoneIdentity` events that name an org in topic1.
+const ORG_IN_TOPIC1: [B256; 6] = [
+    IZoneIdentity::OrgCreated::SIGNATURE_HASH,
+    IZoneIdentity::OrgAdminUpdated::SIGNATURE_HASH,
+    IZoneIdentity::EdgeUpdated::SIGNATURE_HASH,
+    IZoneIdentity::L1TargetUpdated::SIGNATURE_HASH,
+    IZoneIdentity::L1PolicyUpdated::SIGNATURE_HASH,
+    IZoneIdentity::ReaderUpdated::SIGNATURE_HASH,
+];
+
+/// `ZoneIdentity` events that name an org in topic2.
+const ORG_IN_TOPIC2: [B256; 3] = [
+    IZoneIdentity::MemberAdded::SIGNATURE_HASH,
+    IZoneIdentity::MemberRemoved::SIGNATURE_HASH,
+    IZoneIdentity::EdgeUpdated::SIGNATURE_HASH,
+];
+
+const ORG_SCOPED_FILTER_ERROR: &str =
+    "ZoneIdentity log filter must name one org in topic1 or topic2";
+
+/// Whose logs a log query returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogScope {
+    /// An account's TIP-20 and receipt-recovery logs.
+    Account(Address),
+    /// The `ZoneIdentity` events that name an org.
+    Org(u64),
+}
+
+impl LogScope {
+    /// Whether `log` is one of this scope's logs.
+    pub fn includes(&self, log: &Log) -> bool {
+        match *self {
+            Self::Account(account) => is_log_visible(log, &account),
+            Self::Org(org) => {
+                let (topics, org) = (log.topics(), B256::from(U256::from(org)));
+                log.address() == ZONE_IDENTITY_ADDRESS
+                    && topics.first().is_some_and(|topic0| {
+                        ORG_IN_TOPIC1.contains(topic0) && topics.get(1) == Some(&org)
+                            || ORG_IN_TOPIC2.contains(topic0) && topics.get(2) == Some(&org)
+                    })
+            }
+        }
+    }
+}
 
 /// Returns `true` if `caller` appears in an eligible indexed-topic position
 /// for the log's event type.
@@ -61,6 +132,9 @@ const CALLER_SCOPED_FILTER_ERROR: &str =
 /// - **Burn**: topic1 (from)
 /// - **TransferBlocked**: the indexed receiver, or the originator/recovery authority encoded in
 ///   the receipt
+/// - **VirtualDepositProcessed / VirtualDepositFailed**: topic1 (recipient), only when emitted by
+///   the zone inbox. The originator is not eligible: the event names the recipient behind the
+///   deposit address it paid.
 pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
     let topics = log.topics();
     let Some(topic0) = log.topic0() else {
@@ -71,6 +145,15 @@ pub fn is_caller_eligible(log: &Log, caller: &Address) -> bool {
 
     if *topic0 == TRANSFER_BLOCKED_TOPIC {
         return is_transfer_blocked_caller_eligible(log, caller);
+    }
+
+    if VIRTUAL_DEPOSIT_TOPICS.contains(topic0) {
+        return log.address() == ZONE_INBOX_ADDRESS && topics.get(1) == Some(&caller_word);
+    }
+
+    if *topic0 == MASTER_REGISTERED_TOPIC {
+        return log.address() == ZONE_ADDRESS_REGISTRY_ADDRESS
+            && topics.get(1) == Some(&caller_word);
     }
 
     if *topic0 == TRANSFER_TOPIC || *topic0 == APPROVAL_TOPIC || *topic0 == TRANSFER_WITH_MEMO_TOPIC
@@ -105,13 +188,13 @@ fn is_transfer_blocked_caller_eligible(log: &Log, caller: &Address) -> bool {
         || (!receipt.recoveryAuthority.is_zero() && *caller == receipt.recoveryAuthority)
 }
 
-/// Filters logs to only those the caller is allowed to see.
+/// Whether `log` is one of `account`'s logs.
 ///
 /// A log is included only when **both** of the following hold:
 /// 1. Its topic0 is one of the [`WHITELISTED_TOPICS`].
-/// 2. The `caller` is eligible per [`is_caller_eligible`].
-pub fn is_log_visible(log: &Log, caller: &Address) -> bool {
-    log.topic0().is_some_and(|t| WHITELISTED_TOPICS.contains(t)) && is_caller_eligible(log, caller)
+/// 2. `account` is eligible per [`is_caller_eligible`].
+fn is_log_visible(log: &Log, account: &Address) -> bool {
+    log.topic0().is_some_and(|t| WHITELISTED_TOPICS.contains(t)) && is_caller_eligible(log, account)
 }
 
 /// Renumbers ordering fields on a sequence of logs so that
@@ -141,12 +224,11 @@ impl LogOrderingRedactor {
     }
 }
 
-/// Filters logs to only those the caller is allowed to see, renumbering the
-/// `log_index` via [`LogOrderingRedactor`].
-pub fn filter_logs(logs: Vec<Log>, caller: &Address) -> Vec<Log> {
+/// Filters logs to `scope`'s, renumbering the `log_index` via [`LogOrderingRedactor`].
+pub fn filter_logs(logs: Vec<Log>, scope: LogScope) -> Vec<Log> {
     let mut redactor = LogOrderingRedactor::default();
     logs.into_iter()
-        .filter(|log| is_log_visible(log, caller))
+        .filter(|log| scope.includes(log))
         .map(|log| redactor.redact(log))
         .collect()
 }
@@ -157,12 +239,13 @@ pub fn filter_receipt_logs(mut receipt: TempoTransactionReceipt) -> TempoTransac
     receipt.inner.transaction_index = Some(0);
     receipt.inner.inner.receipt.cumulative_gas_used = receipt.inner.gas_used;
     let logs = core::mem::take(&mut receipt.inner.inner.receipt.logs);
-    receipt.inner.inner.receipt.logs = filter_logs(logs, &caller);
+    receipt.inner.inner.receipt.logs = filter_logs(logs, LogScope::Account(caller));
     receipt.inner.inner.logs_bloom = receipt.inner.inner.receipt.bloom();
     receipt
 }
 
-/// Scopes a user-supplied filter to enabled zone tokens and the receive-policy guard.
+/// Scopes a user-supplied filter to enabled zone tokens, the receive-policy guard and the zone
+/// inbox.
 pub fn scope_filter_addresses(
     filter: &mut Filter,
     zone_tokens: &[Address],
@@ -172,14 +255,18 @@ pub fn scope_filter_addresses(
     if requested_addresses.is_empty() {
         let mut allowed_addresses = zone_tokens.to_vec();
         allowed_addresses.push(RECEIVE_POLICY_GUARD_ADDRESS);
+        allowed_addresses.push(ZONE_INBOX_ADDRESS);
+        allowed_addresses.push(ZONE_ADDRESS_REGISTRY_ADDRESS);
         filter.address = FilterSet::from(allowed_addresses);
         return Ok(());
     }
 
-    if requested_addresses
-        .iter()
-        .all(|address| zone_tokens.contains(address) || *address == RECEIVE_POLICY_GUARD_ADDRESS)
-    {
+    if requested_addresses.iter().all(|address| {
+        zone_tokens.contains(address)
+            || *address == RECEIVE_POLICY_GUARD_ADDRESS
+            || *address == ZONE_INBOX_ADDRESS
+            || *address == ZONE_ADDRESS_REGISTRY_ADDRESS
+    }) {
         Ok(())
     } else {
         Err(JsonRpcError::invalid_params("invalid filter address"))
@@ -217,43 +304,77 @@ pub fn scope_filter(filter: &mut Filter) {
     }
 }
 
-/// Scopes a user-supplied filter to whitelisted event topics and requires the
-/// authenticated caller to appear in an eligible indexed topic before backend
-/// log retrieval.
-pub fn scope_filter_for_caller(filter: &mut Filter, caller: &Address) -> Result<(), JsonRpcError> {
+/// Scopes a filter to one account: `caller` if topic1 or topic2 names it, else their only address.
+fn scope_filter_to_account(filter: &mut Filter, caller: &Address) -> Result<Address, JsonRpcError> {
     scope_filter(filter);
     if filter.topics[0].len() == 1 && filter.topics[0].contains(&B256::ZERO) {
-        return Ok(());
+        return Ok(*caller);
     }
 
-    let caller_word = caller.into_word();
-    if filter.topics[1].contains(&caller_word) {
+    // The account a topic position names: the caller if among them, or else its only address.
+    let named = |position: usize| {
+        let topics = &filter.topics[position];
+        if topics.contains(&caller.into_word()) {
+            return Some(*caller);
+        }
+        let word = topics.iter().next().filter(|_| topics.len() == 1)?;
+        let account = Address::from_word(*word);
+        (account.into_word() == *word).then_some(account)
+    };
+    let mut candidates = [(1, named(1)), (2, named(2))];
+    // Positions naming the caller come first, so the caller's own filters keep their meaning.
+    candidates.sort_by_key(|(_, account)| *account != Some(*caller));
+    for (position, account) in candidates.into_iter().filter_map(|(p, a)| Some((p, a?))) {
         let topic0 = filter.topics[0]
             .iter()
             .copied()
-            .filter(|topic| *topic != TRANSFER_BLOCKED_TOPIC)
+            .filter(|topic| {
+                if position == 1 {
+                    *topic != TRANSFER_BLOCKED_TOPIC
+                } else {
+                    TWO_PARTY_TOPICS.contains(topic)
+                }
+            })
             .collect::<Vec<_>>();
         if !topic0.is_empty() {
             filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[1] = FilterSet::from(caller_word);
-            return Ok(());
+            filter.topics[position] = FilterSet::from(account.into_word());
+            return Ok(account);
         }
     }
 
-    if filter.topics[2].contains(&caller_word) {
-        let topic0 = filter.topics[0]
+    Err(JsonRpcError::invalid_params(ACCOUNT_SCOPED_FILTER_ERROR))
+}
+
+/// Scopes a filter to one org's `ZoneIdentity` events or one account's logs; access is unchecked.
+pub fn scope_log_filter(
+    filter: &mut Filter,
+    caller: &Address,
+    zone_tokens: &[Address],
+) -> Result<LogScope, JsonRpcError> {
+    if filter.address.len() != 1 || !filter.address.contains(&ZONE_IDENTITY_ADDRESS) {
+        scope_filter_addresses(filter, zone_tokens)?;
+        return scope_filter_to_account(filter, caller).map(LogScope::Account);
+    }
+    for (position, events) in [(1, &ORG_IN_TOPIC1[..]), (2, &ORG_IN_TOPIC2[..])] {
+        let topics = &filter.topics[position];
+        let org = (topics.iter().next())
+            .filter(|_| topics.len() == 1)
+            .and_then(|word| u64::try_from(U256::from_be_bytes(word.0)).ok());
+        let requested = &filter.topics[0];
+        let topic0 = events
             .iter()
             .copied()
-            .filter(|topic| TWO_PARTY_TOPICS.contains(topic))
+            .filter(|topic| requested.is_empty() || requested.contains(topic))
             .collect::<Vec<_>>();
-        if !topic0.is_empty() {
+        if let Some(org) = org
+            && !topic0.is_empty()
+        {
             filter.topics[0] = FilterSet::from(topic0);
-            filter.topics[2] = FilterSet::from(caller_word);
-            return Ok(());
+            return Ok(LogScope::Org(org));
         }
     }
-
-    Err(JsonRpcError::invalid_params(CALLER_SCOPED_FILTER_ERROR))
+    Err(JsonRpcError::invalid_params(ORG_SCOPED_FILTER_ERROR))
 }
 
 #[cfg(test)]
@@ -265,6 +386,7 @@ mod tests {
     use alloy_sol_types::SolValue;
     use tempo_alloy::rpc::TempoTransactionReceipt;
     use tempo_primitives::{TempoReceipt, TempoTxType};
+    use test_case::test_case;
 
     /// Build a test `Log` with the given emitting address and topics.
     fn make_log(emitter: Address, topics: Vec<B256>) -> Log {
@@ -581,7 +703,7 @@ mod tests {
         );
 
         let logs = vec![eligible.clone(), wrong_topic, not_eligible];
-        let result = filter_logs(logs, &caller);
+        let result = filter_logs(logs, LogScope::Account(caller));
 
         assert_eq!(result.len(), 1);
         let mut expected = eligible;
@@ -593,7 +715,7 @@ mod tests {
     #[test]
     fn filter_logs_empty_input() {
         let caller = Address::with_last_byte(1);
-        let result = filter_logs(vec![], &caller);
+        let result = filter_logs(vec![], LogScope::Account(caller));
         assert!(result.is_empty());
     }
 
@@ -636,7 +758,7 @@ mod tests {
 
         let result = filter_logs(
             vec![a_visible_0, a_hidden, a_visible_1, b_visible_0],
-            &caller,
+            LogScope::Account(caller),
         );
 
         // Only the caller's three logs survive, in order.
@@ -689,7 +811,7 @@ mod tests {
             ),
         ];
 
-        let batch = filter_logs(visible.clone(), &caller);
+        let batch = filter_logs(visible.clone(), LogScope::Account(caller));
 
         // Mirror the WS stream: filter, then feed survivors one at a time.
         let mut redactor = LogOrderingRedactor::default();
@@ -798,18 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_broad_filter() {
-        let caller = Address::with_last_byte(1);
-        let mut filter = Filter::default();
-
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
-
-        assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
-    }
-
-    #[test]
-    fn scope_filter_for_caller_scopes_topic1_caller() {
+    fn scope_filter_to_account_scopes_topic1_caller() {
         let caller = Address::with_last_byte(1);
         let other = Address::with_last_byte(2);
         let caller_topic = caller.into_word();
@@ -818,7 +929,10 @@ mod tests {
         filter.topics[1] = FilterSet::from(vec![caller_topic, other_topic]);
         filter.topics[2] = FilterSet::from(other_topic);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        assert_eq!(
+            scope_filter_to_account(&mut filter, &caller).unwrap(),
+            caller
+        );
 
         assert!(!filter.topics[0].contains(&TRANSFER_BLOCKED_TOPIC));
         assert_eq!(filter.topics[0].len(), WHITELISTED_TOPICS.len() - 1);
@@ -827,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_scopes_topic2_caller_for_two_party_events() {
+    fn scope_filter_to_account_scopes_topic2_caller_for_two_party_events() {
         let caller = Address::with_last_byte(1);
         let other = Address::with_last_byte(2);
         let caller_topic = caller.into_word();
@@ -838,7 +952,10 @@ mod tests {
         filter.topics[1] = FilterSet::from(other_topic);
         filter.topics[2] = FilterSet::from(vec![caller_topic, other.into_word()]);
 
-        scope_filter_for_caller(&mut filter, &caller).unwrap();
+        assert_eq!(
+            scope_filter_to_account(&mut filter, &caller).unwrap(),
+            caller
+        );
 
         assert_eq!(
             filter.topics[0],
@@ -849,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_wrong_caller() {
+    fn scope_filter_to_account_scopes_the_only_other_account() {
         let caller = Address::with_last_byte(1);
         let a = Address::with_last_byte(2);
         let b = Address::with_last_byte(3);
@@ -857,24 +974,41 @@ mod tests {
         filter.topics[0] = FilterSet::from(TRANSFER_TOPIC);
         filter.topics[1] = FilterSet::from(a.into_word());
         filter.topics[2] = FilterSet::from(b.into_word());
+        assert_eq!(scope_filter_to_account(&mut filter, &caller).unwrap(), a);
+        assert_eq!(filter.topics[1], FilterSet::from(a.into_word()));
+        assert_eq!(filter.topics[2], FilterSet::from(b.into_word()));
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let mut filter = Filter::default();
+        filter.topics[0] = FilterSet::from(vec![TRANSFER_TOPIC, MINT_TOPIC]);
+        filter.topics[2] = FilterSet::from(b.into_word());
+        assert_eq!(scope_filter_to_account(&mut filter, &caller).unwrap(), b);
+        assert_eq!(filter.topics[0], FilterSet::from(TRANSFER_TOPIC));
+    }
+
+    #[test_case(vec![Address::with_last_byte(2).into_word(), Address::with_last_byte(3).into_word()])]
+    #[test_case(vec![B256::repeat_byte(0xff)])]
+    #[test_case(vec![])]
+    fn scope_filter_to_account_rejects_unnamed_account(topic1: Vec<B256>) {
+        let mut filter = Filter::default();
+        filter.topics[1] = FilterSet::from(topic1);
+
+        let err = scope_filter_to_account(&mut filter, &Address::with_last_byte(1)).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
+        assert_eq!(err.message, ACCOUNT_SCOPED_FILTER_ERROR);
     }
 
     #[test]
-    fn scope_filter_for_caller_rejects_topic2_only_for_one_party_events() {
+    fn scope_filter_to_account_rejects_topic2_only_for_one_party_events() {
         let caller = Address::with_last_byte(1);
         let mut filter = Filter::default();
         filter.topics[0] = FilterSet::from(MINT_TOPIC);
         filter.topics[2] = FilterSet::from(caller.into_word());
 
-        let err = scope_filter_for_caller(&mut filter, &caller).unwrap_err();
+        let err = scope_filter_to_account(&mut filter, &caller).unwrap_err();
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
-        assert_eq!(err.message, CALLER_SCOPED_FILTER_ERROR);
+        assert_eq!(err.message, ACCOUNT_SCOPED_FILTER_ERROR);
     }
 
     #[test]
@@ -888,13 +1022,20 @@ mod tests {
         assert!(filter.address.contains(&token_a));
         assert!(filter.address.contains(&token_b));
         assert!(filter.address.contains(&RECEIVE_POLICY_GUARD_ADDRESS));
-        assert_eq!(filter.address.len(), 3);
+        assert!(filter.address.contains(&ZONE_INBOX_ADDRESS));
+        assert!(filter.address.contains(&ZONE_ADDRESS_REGISTRY_ADDRESS));
+        assert_eq!(filter.address.len(), 5);
     }
 
     #[test]
     fn scope_filter_addresses_allows_enabled_addresses() {
         let token = Address::with_last_byte(0xaa);
-        for address in [token, RECEIVE_POLICY_GUARD_ADDRESS] {
+        for address in [
+            token,
+            RECEIVE_POLICY_GUARD_ADDRESS,
+            ZONE_INBOX_ADDRESS,
+            ZONE_ADDRESS_REGISTRY_ADDRESS,
+        ] {
             let mut filter = Filter {
                 address: FilterSet::from(address),
                 ..Default::default()
@@ -919,5 +1060,159 @@ mod tests {
 
         assert_eq!(err.code, JsonRpcError::invalid_params("").code);
         assert_eq!(err.message, "invalid filter address");
+    }
+
+    // ---------------------------------------------------------------
+    // TIP-1094 virtual deposit results
+    // ---------------------------------------------------------------
+
+    fn virtual_deposit_logs(emitter: Address, to: Address, originator: Address) -> [Log; 2] {
+        let token = address!("0x20c0000000000000000000000000000000000001");
+        let processed = IZoneInbox::VirtualDepositProcessed {
+            to,
+            originator,
+            depositHash: B256::repeat_byte(0xd0),
+            token,
+            amount: 500,
+            version: 1,
+            masterId: Default::default(),
+            userTag: Default::default(),
+            memo: B256::ZERO,
+        };
+        let failed = IZoneInbox::VirtualDepositFailed {
+            to,
+            originator,
+            depositHash: B256::repeat_byte(0xd1),
+            token,
+            amount: 300,
+            masterId: Default::default(),
+            userTag: Default::default(),
+        };
+        [processed.encode_log_data(), failed.encode_log_data()].map(|data| {
+            let mut log = make_log(emitter, Vec::new());
+            log.inner.data = data;
+            log
+        })
+    }
+
+    #[test]
+    fn virtual_deposit_results_are_visible_only_to_their_recipient() {
+        let recipient = Address::with_last_byte(1);
+        let originator = Address::with_last_byte(2);
+        let other = Address::with_last_byte(3);
+        for log in virtual_deposit_logs(ZONE_INBOX_ADDRESS, recipient, originator) {
+            assert!(is_log_visible(&log, &recipient));
+            assert!(!is_log_visible(&log, &originator));
+            assert!(!is_log_visible(&log, &other));
+        }
+        for log in virtual_deposit_logs(Address::with_last_byte(0xee), recipient, originator) {
+            assert!(!is_log_visible(&log, &recipient), "only inbox logs count");
+        }
+    }
+
+    #[test]
+    fn master_registrations_are_visible_only_to_their_recipient() {
+        let recipient = Address::with_last_byte(1);
+        let other = Address::with_last_byte(3);
+        let data = IZoneAddressRegistry::MasterRegistered {
+            recipient,
+            masterId: Default::default(),
+        }
+        .encode_log_data();
+        let mut log = make_log(ZONE_ADDRESS_REGISTRY_ADDRESS, Vec::new());
+        log.inner.data = data.clone();
+        assert!(is_log_visible(&log, &recipient));
+        assert!(!is_log_visible(&log, &other));
+        let mut spoofed = make_log(Address::with_last_byte(0xee), Vec::new());
+        spoofed.inner.data = data;
+        assert!(!is_log_visible(&spoofed, &recipient));
+    }
+
+    #[test]
+    fn scope_filter_to_account_scopes_virtual_deposit_results_to_topic1() {
+        let caller = Address::with_last_byte(1);
+        let mut filter = Filter::default()
+            .event_signature(vec![
+                VIRTUAL_DEPOSIT_PROCESSED_TOPIC,
+                VIRTUAL_DEPOSIT_FAILED_TOPIC,
+            ])
+            .topic1(caller.into_word());
+        scope_filter_to_account(&mut filter, &caller).unwrap();
+        assert_eq!(filter.topics[1], FilterSet::from(caller.into_word()));
+
+        let mut by_topic2 = Filter::default()
+            .event_signature(VIRTUAL_DEPOSIT_PROCESSED_TOPIC)
+            .topic2(caller.into_word());
+        assert!(scope_filter_to_account(&mut by_topic2, &caller).is_err());
+    }
+
+    fn org_word(org: u64) -> B256 {
+        B256::from(U256::from(org))
+    }
+
+    fn identity_filter(topics: [Vec<B256>; 3]) -> Filter {
+        let mut filter = Filter {
+            address: FilterSet::from(ZONE_IDENTITY_ADDRESS),
+            ..Default::default()
+        };
+        for (position, topic) in topics.into_iter().enumerate() {
+            filter.topics[position] = FilterSet::from(topic);
+        }
+        filter
+    }
+
+    #[test_case([vec![], vec![org_word(7)], vec![]] => FilterSet::from(ORG_IN_TOPIC1.to_vec()))]
+    #[test_case([vec![], vec![], vec![org_word(7)]] => FilterSet::from(ORG_IN_TOPIC2.to_vec()))]
+    #[test_case([vec![IZoneIdentity::MemberAdded::SIGNATURE_HASH, TRANSFER_TOPIC], vec![org_word(7)], vec![org_word(7)]] => FilterSet::from(IZoneIdentity::MemberAdded::SIGNATURE_HASH))]
+    fn scope_log_filter_scopes_one_org(topics: [Vec<B256>; 3]) -> FilterSet<B256> {
+        let mut filter = identity_filter(topics);
+
+        let scope = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[]).unwrap();
+
+        assert_eq!(scope, LogScope::Org(7));
+        filter.topics[0].clone()
+    }
+
+    #[test_case([vec![], vec![], vec![]])]
+    #[test_case([vec![], vec![org_word(7), org_word(8)], vec![]])]
+    #[test_case([vec![], vec![B256::repeat_byte(0xff)], vec![]])]
+    #[test_case([vec![IZoneIdentity::MemberAdded::SIGNATURE_HASH], vec![org_word(7)], vec![]])]
+    #[test_case([vec![TRANSFER_TOPIC], vec![org_word(7)], vec![org_word(7)]])]
+    fn scope_log_filter_rejects_unnamed_org(topics: [Vec<B256>; 3]) {
+        let mut filter = identity_filter(topics);
+
+        let err = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[]).unwrap_err();
+
+        assert_eq!(err.code, JsonRpcError::invalid_params("").code);
+        assert_eq!(err.message, ORG_SCOPED_FILTER_ERROR);
+    }
+
+    #[test]
+    fn scope_log_filter_rejects_identity_mixed_with_tokens() {
+        let token = Address::with_last_byte(0xaa);
+        let mut filter = identity_filter([vec![], vec![org_word(7)], vec![]]);
+        filter.address = FilterSet::from(vec![ZONE_IDENTITY_ADDRESS, token]);
+
+        let err = scope_log_filter(&mut filter, &Address::with_last_byte(1), &[token]).unwrap_err();
+
+        assert_eq!(err.message, "invalid filter address");
+    }
+
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [7, 9] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [9, 7] => false)]
+    #[test_case(Address::with_last_byte(0xaa), IZoneIdentity::ReaderUpdated::SIGNATURE_HASH, [7, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::MemberRemoved::SIGNATURE_HASH, [9, 7] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::MemberRemoved::SIGNATURE_HASH, [7, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [7, 9] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [9, 7] => true)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, IZoneIdentity::EdgeUpdated::SIGNATURE_HASH, [8, 9] => false)]
+    #[test_case(ZONE_IDENTITY_ADDRESS, TRANSFER_TOPIC, [7, 7] => false)]
+    fn org_scope_includes_events_naming_the_org(
+        emitter: Address,
+        topic0: B256,
+        orgs: [u64; 2],
+    ) -> bool {
+        let log = make_log(emitter, vec![topic0, org_word(orgs[0]), org_word(orgs[1])]);
+        LogScope::Org(7).includes(&log)
     }
 }

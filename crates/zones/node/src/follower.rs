@@ -38,7 +38,10 @@ use zone_payload::{
 };
 use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
 use zone_prover::VerifierMode;
-use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
+use zone_sequencer::{
+    DurableBlockReader,
+    attestation::{SettlementAttestation, SignedSettlementAttestation},
+};
 
 use crate::{
     replication::{PeerBlock, decode_peer_block},
@@ -230,6 +233,7 @@ impl<P> FollowerBlockSync<P>
 where
     P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
+        + DurableBlockReader
         + StateProviderFactory
         + Clone
         + 'static,
@@ -417,15 +421,31 @@ where
             .zoneHeight
             .try_into()
             .wrap_err("settlement height does not fit in u64")?;
-        let persisted_head = self
+        let durable = self
             .context
             .provider
-            .last_block_number()
+            .last_durable_block_num_hash()
             .wrap_err("failed reading persisted zone head")?;
+        let persisted_head = durable.number;
         eyre::ensure!(
             height <= persisted_head,
             "settlement proposal at height {height} is not durable; persisted head is {persisted_head}"
         );
+        if height == persisted_head {
+            // The attestation is rebuilt from the canonical header, which may be served from
+            // memory. At the durable tip it must be the block a restart keeps.
+            let canonical = self
+                .context
+                .provider
+                .sealed_header(height)?
+                .ok_or_eyre("durable zone header is missing")?
+                .hash();
+            eyre::ensure!(
+                canonical == durable.hash,
+                "canonical block {canonical} at durable height {height} is not the committed block {}",
+                durable.hash
+            );
+        }
         let verifier_mode = VerifierMode::try_from(proposal.verifierConfigHash)?;
         let expected = build_settlement_attestation(
             &self.context.provider,
@@ -750,10 +770,10 @@ where
                 .wrap_err_with(|| {
                     format!("cannot defer checkpoint work from block {block_number}")
                 })?,
-            DecodedTempoImport::Full { .. } => self
+            DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor)
+                .confirm_operational_through(anchor, deposits.len())
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -804,7 +824,9 @@ fn reconcile_canonical_import(
         .num_hash();
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
-        DecodedTempoImport::Full { .. } => deposit_queue.confirm_operational_through(anchor),
+        DecodedTempoImport::Full { deposits, .. } => {
+            deposit_queue.confirm_operational_through(anchor, deposits.len())
+        }
     }
 }
 
@@ -814,7 +836,8 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let work = deposit_queue.operational_work(anchor)?;
+    // A full import's range is a prefix of the owed entries. Longer calldata fails the count check.
+    let work = deposit_queue.operational_work(anchor, deposits.len())?;
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {
@@ -1043,7 +1066,10 @@ fn decode_advance_tempo(block: &SealedBlock<Block>) -> eyre::Result<DecodedTempo
             block.transaction_count() == 1,
             "advanceTempoHeaders must be the only transaction in its block"
         );
-        let call = IZoneInbox::advanceTempoHeadersCall::abi_decode(signed.tx().input.as_ref())?;
+        let call = IZoneInbox::advanceTempoHeadersCall::abi_decode_with_config(
+            signed.tx().input.as_ref(),
+            abi_decoder_config_for_spec(TempoHardfork::latest()),
+        )?;
         eyre::ensure!(
             call.headers.len() <= MAX_TEMPO_HEADERS_PER_ZONE_BLOCK,
             "advanceTempoHeaders has too many headers"
@@ -1120,6 +1146,7 @@ mod tests {
             header: SealedHeader::seal_slow(l1_header),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
@@ -1193,6 +1220,7 @@ mod tests {
             header: SealedHeader::seal_slow(TempoHeader::default()),
             queued_deposits: vec![],
             decryptions: vec![],
+            recipients: vec![],
             enabled_tokens: vec![],
             follows_checkpoint_blocks: false,
         };
@@ -1243,6 +1271,61 @@ mod tests {
             error
                 .to_string()
                 .contains("does not decode as advanceTempo")
+        );
+    }
+
+    #[test]
+    fn rejects_aliased_offsets_in_advance_tempo_headers_calldata() {
+        let make_block = |tx: TempoTxEnvelope| {
+            SealedBlock::seal_slow(Block {
+                header: TempoHeader::default(),
+                body: alloy_consensus::BlockBody {
+                    transactions: vec![tx],
+                    ommers: vec![],
+                    withdrawals: None,
+                },
+            })
+        };
+
+        let header = SealedHeader::seal_slow(TempoHeader::default());
+        let tx = zone_payload::build_advance_tempo_headers_tx(std::slice::from_ref(&header), 1337)
+            .unwrap();
+        let decoded = decode_advance_tempo(&make_block(tx.into_inner())).unwrap();
+        let DecodedTempoImport::CheckpointOnly { headers } = decoded else {
+            panic!("expected a checkpoint-only import");
+        };
+        assert_eq!(headers, vec![header]);
+
+        // Every element offset of `headers` points at the same tail, so the decoded
+        // `bytes[]` is much larger than the calldata.
+        let word = |value: usize| U256::from(value).to_be_bytes::<32>();
+        let count = 8;
+        let tail_len = 1024;
+        let mut input = IZoneInbox::advanceTempoHeadersCall::SELECTOR.to_vec();
+        input.extend_from_slice(&word(0x20));
+        input.extend_from_slice(&word(count));
+        for _ in 0..count {
+            input.extend_from_slice(&word(32 * count));
+        }
+        input.extend_from_slice(&word(tail_len));
+        input.resize(input.len() + tail_len, 0);
+        let tx = TxLegacy {
+            to: ZONE_INBOX_ADDRESS.into(),
+            value: U256::ZERO,
+            input: input.into(),
+            ..Default::default()
+        };
+        let block = make_block(TempoTxEnvelope::Legacy(
+            tx.into_signed(TEMPO_SYSTEM_TX_SIGNATURE),
+        ));
+
+        let error = decode_advance_tempo(&block).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref(),
+                Some(alloy_sol_types::Error::ReserMismatch)
+            ),
+            "{error}"
         );
     }
 

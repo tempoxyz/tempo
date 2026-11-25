@@ -11,8 +11,11 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
+use reth_chainspec::{ChainKind, ChainSpecProvider, EthChainSpec, Hardforks, NamedChain};
+use reth_ethereum::{
+    network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives},
+    tasks::Runtime,
+};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -36,14 +39,17 @@ use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
-use reth_storage_api::{AccountInfoReader, EmptyBodyStorage};
+use reth_storage_api::{
+    AccountInfoReader, BlockReaderIdExt, EmptyBodyStorage, StateProviderFactory,
+};
 use reth_tracing::tracing::{debug, info, warn};
 use reth_transaction_pool::{
-    Pool, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
+    Pool, PoolConfig, PoolPooledTx, PoolTransaction, StatefulValidationFn, StatelessValidationFn,
     TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
+    validate::EthTransactionValidatorBuilder,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{TempoPayloadBuilder, TempoPayloadBuilderConfig};
@@ -54,6 +60,7 @@ use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxTyp
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
     amm::AmmLiquidityCache,
+    delayed_pool::{DEFAULT_DELAYED_MAX_COUNT, DelayedPoolConfig},
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
     tt_2d_pool::DEFAULT_MAX_TXS_PER_LANE,
@@ -92,6 +99,11 @@ pub struct TempoNodeArgs {
     #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
     pub max_txs_per_lane: usize,
 
+    /// Maximum number of transactions in the delayed sub-pool, which holds transactions that are
+    /// not valid yet outside the pending and queued transactions and their limits.
+    #[arg(long = "txpool.delayed-max-count", default_value_t = DEFAULT_DELAYED_MAX_COUNT)]
+    pub delayed_max_count: NonZeroUsize,
+
     /// Comma-separated addresses or a file containing comma/newline-separated addresses checked
     /// against each transaction's sender, fee payer, direct call targets, authorization delegates
     /// and authorities, and access list entries.
@@ -107,7 +119,15 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    ///
+    /// Pass `--builder.disable-prewarming=false` to enable prewarming.
+    #[arg(
+        long = "builder.disable-prewarming",
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true
+    )]
     pub builder_disable_prewarming: bool,
 
     /// No-op legacy flag for payload builder prewarming.
@@ -151,6 +171,7 @@ impl Default for TempoNodeArgs {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            delayed_max_count: DEFAULT_DELAYED_MAX_COUNT,
             txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
@@ -170,6 +191,7 @@ impl TempoNodeArgs {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
             max_txs_per_lane: self.max_txs_per_lane,
+            delayed_max_count: self.delayed_max_count,
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
@@ -760,6 +782,8 @@ pub struct TempoPoolBuilder {
     pub max_tempo_authorizations: usize,
     /// Maximum pending and queued transactions per regular 2D nonce lane.
     pub max_txs_per_lane: usize,
+    /// Maximum number of transactions in the delayed sub-pool.
+    pub delayed_max_count: NonZeroUsize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
     /// Addresses checked during pool admission; see [`AddressFilter`] for what it checks.
@@ -771,6 +795,91 @@ pub struct TempoPoolBuilder {
 }
 
 impl TempoPoolBuilder {
+    /// Builds the Tempo transaction pool over `client` from an ETH validator builder that already
+    /// carries the caller's node-level settings (input size, fee cap, gas limits).
+    ///
+    /// Spawns the validation tasks on `executor`. Pool maintenance is not spawned: callers that
+    /// follow the canonical chain must spawn it themselves.
+    pub fn build_with_validator<Client>(
+        self,
+        client: Client,
+        validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
+        executor: Runtime,
+        pool_config: PoolConfig,
+        lazy_kzg_settings: bool,
+    ) -> eyre::Result<TempoTransactionPool<Client>>
+    where
+        Client: StateProviderFactory
+            + BlockReaderIdExt<Header = TempoHeader>
+            + ChainSpecProvider<ChainSpec = TempoChainSpec>
+            + Clone
+            + 'static,
+    {
+        // this store is effectively a noop
+        let blob_store = InMemoryBlobStore::default();
+        let validator = validator
+            .disable_balance_check()
+            .with_custom_tx_type(TempoTxType::AA as u8)
+            .no_eip4844()
+            .build_with_tasks(executor.clone(), blob_store.clone());
+
+        if !lazy_kzg_settings {
+            let kzg_settings = validator.validator().kzg_settings().clone();
+            executor.spawn_blocking_task(async move {
+                let _ = kzg_settings.get();
+                debug!(target: "reth::cli", "Initialized KZG settings");
+            });
+        }
+
+        let aa_2d_config = AA2dPoolConfig {
+            price_bump_config: pool_config.price_bumps,
+            pending_limit: pool_config.pending_limit,
+            queued_limit: pool_config.queued_limit,
+            max_txs_per_authority: pool_config.max_account_slots,
+            max_txs_per_lane: self.max_txs_per_lane,
+        };
+        let aa_2d_pool = AA2dPool::new(aa_2d_config);
+        let delayed_pool_config = DelayedPoolConfig {
+            max_count: self.delayed_max_count,
+            max_txs_per_authority: pool_config.max_account_slots,
+            ..Default::default()
+        };
+        let amm_liquidity_cache = AmmLiquidityCache::new(&client)?;
+
+        let Self {
+            aa_valid_after_max_secs,
+            max_tempo_authorizations,
+            max_txs_per_lane: _,
+            delayed_max_count: _,
+            disable_fee_amm_check,
+            address_filter,
+            additional_stateless_validation,
+            additional_stateful_validation,
+        } = self;
+        let validator = validator.map(move |mut v| {
+            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
+            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
+            TempoTransactionValidator::new(
+                v,
+                aa_valid_after_max_secs,
+                max_tempo_authorizations,
+                amm_liquidity_cache.clone(),
+            )
+            .with_disable_fee_amm_check(disable_fee_amm_check)
+            .with_address_filter(address_filter.clone())
+        });
+        let reth_pool = Pool::new(
+            validator,
+            TempoTipOrdering::default(),
+            blob_store,
+            pool_config,
+        );
+
+        // The Reth pool only validates and notifies: the 2D nonce pool holds the transactions
+        Ok(TempoTransactionPool::new(reth_pool, aa_2d_pool)
+            .with_delayed_pool_config(delayed_pool_config))
+    }
+
     /// Sets the maximum number of transactions per regular 2D nonce lane.
     pub const fn with_max_txs_per_lane(mut self, max: usize) -> Self {
         self.max_txs_per_lane = max;
@@ -876,6 +985,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
             .field("max_txs_per_lane", &self.max_txs_per_lane)
+            .field("delayed_max_count", &self.delayed_max_count)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field("address_filter", &self.address_filter)
             .field(
@@ -896,6 +1006,7 @@ impl Default for TempoPoolBuilder {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+            delayed_max_count: DEFAULT_DELAYED_MAX_COUNT,
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
@@ -915,11 +1026,8 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        let mut pool_config = ctx.pool_config();
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+        let pool_config = ctx.pool_config();
 
-        // this store is effectively a noop
-        let blob_store = InMemoryBlobStore::default();
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -927,53 +1035,16 @@ where
                 .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
                 .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
                 .set_block_gas_limit(ctx.chain_spec().inner.genesis().gas_limit)
-                .disable_balance_check()
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
-                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
-                .with_custom_tx_type(TempoTxType::AA as u8)
-                .no_eip4844()
-                .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        let aa_2d_config = AA2dPoolConfig {
-            price_bump_config: pool_config.price_bumps,
-            pending_limit: pool_config.pending_limit,
-            queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
-            max_txs_per_lane: self.max_txs_per_lane,
-        };
-        let aa_2d_pool = AA2dPool::new(aa_2d_config);
-        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
-
-        let Self {
-            aa_valid_after_max_secs,
-            max_tempo_authorizations,
-            max_txs_per_lane: _,
-            disable_fee_amm_check,
-            address_filter,
-            additional_stateless_validation,
-            additional_stateful_validation,
-        } = self;
-        let validator = validator.map(move |mut v| {
-            v.set_additional_stateless_validation_fn_opt(additional_stateless_validation.clone());
-            v.set_additional_stateful_validation_fn_opt(additional_stateful_validation.clone());
-            TempoTransactionValidator::new(
-                v,
-                aa_valid_after_max_secs,
-                max_tempo_authorizations,
-                amm_liquidity_cache.clone(),
-            )
-            .with_disable_fee_amm_check(disable_fee_amm_check)
-            .with_address_filter(address_filter.clone())
-        });
-        let protocol_pool = Pool::new(
+                .with_additional_tasks(ctx.config().txpool.additional_validation_tasks);
+        let lazy_kzg_settings = ctx.config().debug.lazy_kzg_settings;
+        let transaction_pool = self.build_with_validator(
+            ctx.provider().clone(),
             validator,
-            TempoTipOrdering::default(),
-            blob_store,
+            ctx.task_executor().clone(),
             pool_config.clone(),
-        );
-
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+            lazy_kzg_settings,
+        )?;
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
@@ -1152,6 +1223,25 @@ mod tests {
                 .max_txs_per_lane,
             32
         );
+    }
+
+    #[test]
+    fn delayed_max_count_cli_reaches_pool_builder() {
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert_eq!(
+            defaults.node.pool_builder().delayed_max_count,
+            DEFAULT_DELAYED_MAX_COUNT
+        );
+
+        let args = Args::try_parse_from(["tempo", "--txpool.delayed-max-count", "10"]).unwrap();
+        assert_eq!(args.node.pool_builder().delayed_max_count.get(), 10);
+
+        assert!(Args::try_parse_from(["tempo", "--txpool.delayed-max-count", "0"]).is_err());
     }
 
     #[test]

@@ -296,7 +296,7 @@ pub struct TempoExecutionOutcome {
     pub invariant_failures: Vec<InvariantFailure>,
     /// By invariant ID, how many subjects (tokens, accounts, signatures...) each judged after a
     /// step, for how many its precondition held (armed), and how many broke it (fired). An
-    /// invariant that is never armed checks nothing.
+    /// invariant that is never armed checks nothing; one that never applied is absent.
     pub invariant_counts: BTreeMap<String, Counts>,
 }
 

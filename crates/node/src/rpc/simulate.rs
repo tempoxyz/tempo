@@ -119,7 +119,6 @@ fn extract_tip20_targets(
     addrs
 }
 
-#[async_trait::async_trait]
 impl<EthApi> TempoSimulateApiServer for TempoSimulate<EthApi>
 where
     EthApi: EthCall<NetworkTypes = TempoNetwork>,
@@ -144,6 +143,12 @@ where
         let base_block_timestamp = base_block.timestamp();
         let block = BlockId::hash(base_block.hash());
 
+        let _permit = self
+            .eth_api
+            .tracing_task_guard()
+            .clone()
+            .acquire_owned()
+            .await;
         let blocks = self
             .eth_api
             .simulate_v1(payload, Some(block))

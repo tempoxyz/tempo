@@ -91,6 +91,7 @@ fn written_slot(action: &StorageAction) -> Option<(Address, U256)> {
         StorageAction::Sload(..)
         | StorageAction::FeeTokenBalanceCheck(..)
         | StorageAction::FeeAmmLiquidityCheck(..)
+        | StorageAction::ConfigCommitment(..)
         | StorageAction::Marker(_) => None,
     }
 }

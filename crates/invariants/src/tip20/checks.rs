@@ -4,7 +4,7 @@ use std::fmt;
 
 use invariants_core::{check, ensure};
 
-use super::{Ledger, Transfer, transfer};
+use super::{Ledger, moves};
 use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
 
 /// A TIP-20's views answer. Counted by runners that read the model, not judged by a check here.
@@ -19,6 +19,7 @@ pub const CHECKS: &[Check<Ledger>] = &[
     // rejects a cap below the supply.
     check! {
         id: SUPPLY_CAP,
+        doc: "A token's total supply never exceeds its supply cap.",
         judge: |l: &Ledger| {
             let cap = l.supply_cap?;
             ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
@@ -27,6 +28,7 @@ pub const CHECKS: &[Check<Ledger>] = &[
     // The balances read may be any subset of the holders, so their sum is a lower bound.
     check! {
         id: BALANCE_SUM,
+        doc: "The observed holders' balances sum to at most the total supply.",
         judge: |l: &Ledger| {
             let sum = l.balance_sum();
             ensure!(
@@ -42,17 +44,15 @@ pub const CHECKS: &[Check<Ledger>] = &[
 
 /// A step's effect on one token, its ledgers read over the same accounts before and after it.
 pub const STEP_CHECKS: &[Check<Step<Ledger, Option<Tx>>>] = &[
-    // Each observed balance moves by exactly the step's `Transfer` events into and out of it,
-    // never going negative, and the supply by the mints (from the zero address) and burns (to
-    // it). A transfer between an observed and an unobserved account moves only the observed side.
+    // A balance never goes negative. A (-T3) mint to the zero address credits its balance, and a
+    // burn from it debits it. A transfer between an observed and an unobserved account moves only
+    // the observed side.
     check! {
         id: TRANSFER_EVENTS,
+        doc: "Each observed balance moves by exactly the step's `Transfer` events into and out of it, and the supply by its mints and burns.",
         over: |step: &Step<Ledger, Option<Tx>>| [&step.post],
         judge: |s, _| {
-            let transfers: Vec<Transfer> = s
-                .logs_from(s.post.token)
-                .filter_map(|log| transfer(&log.data))
-                .collect();
+            let transfers = moves(s.logs_from(s.post.token));
             let (pre, post) = s.pre.common(&s.post);
             let detail = match pre.replay(&transfers) {
                 // `Transfer` events say nothing of the cap.

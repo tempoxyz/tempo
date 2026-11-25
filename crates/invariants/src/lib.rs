@@ -10,12 +10,12 @@
 
 use alloy_primitives::{Address, U256};
 pub use invariants_core::{
-    AnyCheck, Check, Checked, Complete, Observe, ObserveError, Replay, Report, Step, StepChecked,
-    Verdict, Views, Violation, view,
+    AnyCheck, Check, Checked, Observe, ObserveError, Replay, Report, Step, StepChecked, Verdict,
+    Views, Violation, view,
 };
-use invariants_core::{decode, optional, view_many};
+use invariants_core::{Batch, optional, view_many};
 
-pub mod account;
+pub mod configurable_account;
 pub mod dex;
 pub mod fee_amm;
 pub mod keychain;
@@ -23,11 +23,13 @@ pub mod receive_policy;
 pub mod tip20;
 
 /// The transaction a step ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tx {
     pub sender: Address,
     /// Whether execution succeeded (not reverted or halted).
     pub success: bool,
+    /// Who its signatures authorize it for.
+    pub authority: configurable_account::Authority,
 }
 
 /// Every Tempo check, whatever its context.
@@ -43,7 +45,8 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
         .chain(erased(fee_amm::STEP_CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(dex::STEP_CHECKS))
-        .chain(erased(account::STEP_CHECKS))
+        .chain(erased(configurable_account::STEP_CHECKS))
+        .chain(erased(configurable_account::LEAF_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
 }
@@ -51,4 +54,19 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck> {
 /// `value` as text, `missing` when there is none.
 fn or_text(value: Option<U256>, missing: &str) -> String {
     value.map_or_else(|| missing.to_string(), |value| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runners count checks by ID, so two checks sharing one would merge their counts.
+    #[test]
+    fn check_ids_are_unique() {
+        let mut ids: Vec<_> = all().map(|check| check.id()).collect();
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+    }
 }

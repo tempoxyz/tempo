@@ -55,12 +55,14 @@ artifacts:
   ZoneToZoneSettlementFixture: ../zones/ZoneToZoneSettlementFixture.json
 setup:
   steps:
+    # Tempo anchor offset; the helper sets it from TXGEN_ZONE_ANCHOR_OFFSET (see zones.yml).
     - id: settlement
       deploy:
         type: eip1559
         from: {pool: deployer, select: {index: 0}}
         artifact: ZoneToZoneSettlementFixture
         gas_limit: 5000000
+        constructor_args: [1]
     - id: messenger
       deploy:
         type: eip1559

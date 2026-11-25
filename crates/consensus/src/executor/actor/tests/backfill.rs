@@ -556,3 +556,80 @@ fn new_payload_transport_error_fails_startup() {
         assert_eq!(h.execution.fcus(), vec![STARTUP_FCU]);
     });
 }
+
+#[test_traced]
+fn reports_the_finalized_floor_once_after_startup_backfill() {
+    deterministic::Runner::default().start(|context| async move {
+        // More blocks than one forkchoice batch, so backfill finalizes an
+        // intermediate block before the floor.
+        let marshal = FakeMarshal::new();
+        let mut parent = GENESIS;
+        for height in 1..=10 {
+            let block = make_block(height, height, parent);
+            parent = block.digest();
+            marshal.add_block(block);
+        }
+        let floor = parent;
+
+        let h = Harness::builder()
+            .marshal(marshal)
+            .harness_options(HarnessOptions {
+                finalized_floor: 10,
+                finalized_tip: (round(10), 10, floor),
+                ..Default::default()
+            })
+            .start(&context);
+
+        h.wait_until(|| !h.finalized_reports.reports().is_empty())
+            .await;
+        assert!(
+            h.execution
+                .fcus()
+                .iter()
+                .filter(|(_, finalized, _)| *finalized != GENESIS)
+                .count()
+                > 1,
+            "backfill should finalize in more than one forkchoice update",
+        );
+        // Reports during backfill are held back: the first one is the floor.
+        assert_eq!(h.finalized_reports.reports(), vec![(10, floor)]);
+    });
+}
+
+#[test_traced]
+fn reports_the_floor_below_execution_finality_after_snapshot_restore() {
+    deterministic::Runner::default().start(|context| async move {
+        let b1 = make_block(1, 1, GENESIS);
+        let b2 = make_block(2, 2, b1.digest());
+        let (d1, d2) = (b1.digest(), b2.digest());
+
+        let execution = FakeExecution::new();
+        execution.seed_canonical_block(&b1);
+        execution.seed_canonical_block(&b2);
+        execution.set_finalized(2, d2);
+
+        let mut h = Harness::builder()
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 1,
+                finalized_tip: (round(2), 2, d2),
+                ..Default::default()
+            })
+            .start(&context);
+
+        // The executor starts from the floor, not the execution layer's
+        // finality, and reports it.
+        h.wait_until(|| h.finalized_reports.reports() == vec![(1, d1)])
+            .await;
+
+        // Re-delivery up to the execution layer's finality raises it.
+        h.deliver_finalized(b1)
+            .await
+            .expect("the re-delivered block should be acknowledged");
+        h.deliver_finalized(b2)
+            .await
+            .expect("the block at the execution finality should be acknowledged");
+        h.wait_until(|| h.finalized_reports.reports() == vec![(1, d1), (2, d2)])
+            .await;
+    });
+}

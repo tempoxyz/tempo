@@ -5,7 +5,10 @@
 
 use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
-    deposit_allowlist::{AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests},
+    deposit_allowlist::{
+        AllowlistMirror, AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests,
+        mirror_leader,
+    },
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
     role::{
@@ -15,20 +18,20 @@ use crate::{
     },
     rpc::{
         NodeZoneDebugApi, OperatorWeb3Api, OperatorZoneApi, SequencerRpcContext,
-        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_zone_rpc_module, rpc_connection_config,
-        start_redacted_rpc,
+        ZoneApiServer as _, ZoneRpc, ZoneRpcApi, operator_get_code_module,
+        operator_zone_rpc_module, rpc_connection_config, start_redacted_rpc,
     },
     settlement_attestation::AttestationContext,
-    shadow_prover::RpcFollowerShadowProver,
 };
 use alloy_chains::Chain;
 use alloy_consensus::{BlockHeader as _, TxReceipt as _};
-use alloy_eips::{BlockHashOrNumber, BlockNumberOrTag};
+use alloy_eips::{BlockNumberOrTag, NumHash};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider as _};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolEvent as _;
 use evm2::registry::HandlerError;
+use eyre::WrapErr as _;
 use k256::SecretKey;
 use reth_chainspec::EthChainSpec;
 use reth_eth_wire_types::primitives::BasicNetworkPrimitives;
@@ -66,12 +69,15 @@ use std::{
     time::Duration,
 };
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt as _};
+use tempo_chainspec::spec::TempoHardforks as _;
 use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
 };
 use tempo_node::{
-    DEFAULT_AA_VALID_AFTER_MAX_SECS, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
+    DEFAULT_AA_VALID_AFTER_MAX_SECS,
+    engine::{EagerHeaderValidatorBuilder, TempoEngineValidator},
+    rpc::TempoEthApiBuilder,
 };
 use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{
@@ -80,6 +86,7 @@ use tempo_primitives::{
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool, TempoTransactionPoolExt,
     amm::AmmLiquidityCache,
+    delayed_pool::DelayedPoolConfig,
     ordering::TempoTipOrdering,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     validator::{DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator},
@@ -89,9 +96,9 @@ use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_evm::ZoneEvmConfig;
 use zone_l1::{
-    DepositQueue, EncryptionKeyRing, EncryptionKeyRotation, L1BlockTracker, L1Subscriber,
-    L1SubscriberConfig, LeaderTransition, LeadershipSink, TempoStateExt, encryption_key_address,
-    initialize_portal_pause,
+    DeferredWorkRecovery, DepositQueue, DepositQueuePosition, EncryptionKeyRing,
+    EncryptionKeyRotation, L1BlockTracker, L1Subscriber, L1SubscriberConfig, LeaderTransition,
+    LeadershipSink, TempoStateExt, encryption_key_address, initialize_portal_pause,
     state::{EnabledTokenRegistry, L1StateCache, L1StateProvider, L1StateProviderConfig},
     watch_portal_pause,
 };
@@ -100,8 +107,8 @@ use zone_p2p::{
     P2pCommand, P2pConfig, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
-    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
-    ZonePayloadFactory, ZonePayloadTypes,
+    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, TransferAllowlist, WithdrawalRevealEncryptor,
+    ZonePayloadAttributes, ZonePayloadFactory, ZonePayloadTypes, validate_transfer_calls,
 };
 use zone_primitives::constants::{decode_l1_chain_id, zone_chain_id};
 use zone_rpc::ZoneDebugApiRpcServer;
@@ -109,7 +116,7 @@ use zone_sequencer::{
     BatchAnchorConfig, ProofCollectorConfig, ProofCollectorHandle, ProverAddresses,
     SettlementManager, SettlementProver, SettlementProverConfig, WithdrawalBatchLimits,
     ZoneSequencerConfig, attestation::AttestationDomain, create_proof_collector,
-    spawn_settlement_prover, spawn_shadow_prover, spawn_zone_sequencer,
+    spawn_settlement_prover, spawn_zone_sequencer,
 };
 
 fn validate_zone_chain_id(parent_chain_id: u64, zone_id: u32, chain_id: u64) -> eyre::Result<()> {
@@ -202,46 +209,9 @@ pub struct ZoneSequencerAddOnsConfig {
     pub withdrawal_poll_interval: Duration,
     /// Gas and concurrency limits for withdrawal processing transactions.
     pub withdrawal_batch_limits: WithdrawalBatchLimits,
-    /// Depositor allowlist enforced while leading. `None` credits every deposit.
+    /// Depositor and transfer allowlist enforced while leading. `None` credits every deposit and
+    /// admits every transfer.
     pub deposit_allowlist: Option<DepositAllowlist>,
-}
-
-/// How this node validates Zone batches with the SPF.
-#[derive(Debug, Clone)]
-pub enum ZoneProverConfig {
-    /// Require SPF validation and a Nitro NSM attestation from the prover assigned to the live
-    /// L1 hardfork before settlement. Requires a sequencer and implies proof persistence.
-    Settlement(ProverAddresses),
-    /// Observationally validate finalized L1 submissions. Requires an rpc_only P2P follower.
-    Shadow {
-        /// Remote provers routed by the live L1 hardfork. When absent, execute the SPF in
-        /// this process.
-        prover_addresses: Option<ProverAddresses>,
-        /// Independently approved enclave measurements for local, observational verification.
-        proof_verifier: Option<zone_prover::ShadowProofVerifier>,
-    },
-}
-
-impl ZoneProverConfig {
-    const fn is_shadow(&self) -> bool {
-        matches!(self, Self::Shadow { .. })
-    }
-
-    const fn prover_addresses(&self) -> Option<&ProverAddresses> {
-        match self {
-            Self::Settlement(addresses) => Some(addresses),
-            Self::Shadow {
-                prover_addresses, ..
-            } => prover_addresses.as_ref(),
-        }
-    }
-
-    const fn proof_verifier(&self) -> Option<&zone_prover::ShadowProofVerifier> {
-        match self {
-            Self::Settlement(_) => None,
-            Self::Shadow { proof_verifier, .. } => proof_verifier.as_ref(),
-        }
-    }
 }
 
 /// Configuration for the Zone redacted RPC server extension.
@@ -279,16 +249,20 @@ pub struct ZoneNode {
     withdrawal_batch_interval_blocks: u64,
     /// Encrypts authenticated-withdrawal sender reveal data during payload construction.
     withdrawal_reveal_encryptor: Option<Arc<dyn WithdrawalRevealEncryptor>>,
+    /// TIP-1094 address keys in version order, which this node initializes when it builds blocks.
+    virtual_address_keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
     /// Redacted RPC config.
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Optional sequencer config. When set, sequencer tasks are spawned.
     sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-    /// Optional SPF validation config.
-    prover_config: Option<ZoneProverConfig>,
+    /// Remote provers whose attested proofs gate settlement. `None` disables SPF validation.
+    prover_addresses: Option<ProverAddresses>,
     /// Optional static Zone P2P networking config.
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+    /// Copy of the sequencers' allowlist that an RPC-only node checks transfers against.
+    allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -312,7 +286,7 @@ impl ZoneNode {
             l1_fetch_concurrency,
             retry_connection_interval,
             retain_portal_evidence: false,
-            deferred_work_start: None,
+            deferred_work: None,
         };
 
         let l1_state_provider_config = L1StateProviderConfig {
@@ -333,11 +307,13 @@ impl ZoneNode {
             portal_address,
             withdrawal_batch_interval_blocks: DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS,
             withdrawal_reveal_encryptor: None,
+            virtual_address_keys: Vec::new(),
             redacted_rpc_config: ZoneRedactedRpcConfig::default(),
             sequencer_config: None,
-            prover_config: None,
+            prover_addresses: None,
             p2p_config: None,
             deposit_allowlist_admin: None,
+            allowlist_mirror: AllowlistMirror::default(),
             external_deposit_consumer: false,
         }
     }
@@ -374,9 +350,10 @@ impl ZoneNode {
         self
     }
 
-    /// Enable SPF validation, either gating settlement or shadowing finalized submissions.
-    pub fn with_prover(mut self, config: ZoneProverConfig) -> Self {
-        self.prover_config = Some(config);
+    /// Require SPF validation and a Nitro NSM attestation from the prover assigned to the live
+    /// L1 hardfork before settlement. Requires a sequencer and implies proof persistence.
+    pub fn with_prover(mut self, prover_addresses: ProverAddresses) -> Self {
+        self.prover_addresses = Some(prover_addresses);
         self
     }
 
@@ -406,6 +383,25 @@ impl ZoneNode {
     /// Enable static Zone P2P networking for this node.
     pub fn with_p2p(mut self, config: P2pConfig) -> Self {
         self.p2p_config = Some(config);
+        self
+    }
+
+    /// Initialize `key` as TIP-1094 address key version 1 once T15 is active.
+    ///
+    /// The key is written to zone state in a block's calldata, so every replica, prover and RPC
+    /// node of the zone is inside its confidentiality boundary.
+    pub fn with_virtual_address_key(self, key: zone_payload::VirtualAddressKey) -> Self {
+        self.with_virtual_address_keys(vec![(1, key)])
+    }
+
+    /// TIP-1094 address keys to initialize, each with its version. Once T15 is active, each built
+    /// block initializes the lowest listed version not yet in state. Initialized keys are read
+    /// from state, so only keys not yet rotated in need to be configured.
+    pub fn with_virtual_address_keys(
+        mut self,
+        keys: Vec<(u8, zone_payload::VirtualAddressKey)>,
+    ) -> Self {
+        self.virtual_address_keys = keys;
         self
     }
 
@@ -486,7 +482,7 @@ where
         TempoEthApiBuilder<N>,
         ZoneEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>,
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>,
         Identity,
     >,
     /// Queue of L1 deposit messages to be included in the next zone block.
@@ -507,12 +503,14 @@ where
     redacted_rpc_config: ZoneRedactedRpcConfig,
     /// Sequencer configuration.
     sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-    /// SPF validation configuration.
-    prover_config: Option<ZoneProverConfig>,
+    /// Remote provers whose attested proofs gate settlement.
+    prover_addresses: Option<ProverAddresses>,
     /// Static Zone P2P networking configuration.
     p2p_config: Option<P2pConfig>,
     /// Admin whose signed allowlist writes an RPC-only node relays to the sequencers.
     deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+    /// Copy of the sequencers' allowlist that an RPC-only node keeps current.
+    allowlist_mirror: AllowlistMirror,
     /// Whether a consumer outside this builder drains the deposit queue.
     external_deposit_consumer: bool,
 }
@@ -532,7 +530,7 @@ where
     N: FullNodeTypes<Types = ZoneNode>,
 {
     /// Creates a new ZoneAddOns instance.
-    pub fn new(
+    pub(crate) fn new(
         deposit_queue: DepositQueue,
         l1_config: L1SubscriberConfig,
         l1_state_cache: L1StateCache,
@@ -542,9 +540,10 @@ where
         portal_address: Address,
         redacted_rpc_config: ZoneRedactedRpcConfig,
         sequencer_config: Option<ZoneSequencerAddOnsConfig>,
-        prover_config: Option<ZoneProverConfig>,
+        prover_addresses: Option<ProverAddresses>,
         p2p_config: Option<P2pConfig>,
         deposit_allowlist_admin: Option<DepositAllowlistAdmin>,
+        allowlist_mirror: AllowlistMirror,
         external_deposit_consumer: bool,
     ) -> Self {
         Self {
@@ -552,7 +551,7 @@ where
                 TempoEthApiBuilder::default(),
                 ZoneEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                EagerHeaderValidatorBuilder::default(),
                 Identity::default(),
                 Default::default(),
             ),
@@ -565,9 +564,10 @@ where
             portal_address,
             redacted_rpc_config,
             sequencer_config,
-            prover_config,
+            prover_addresses,
             p2p_config,
             deposit_allowlist_admin,
+            allowlist_mirror,
             external_deposit_consumer,
         }
     }
@@ -601,7 +601,7 @@ where
         TempoEthApiBuilder<N>,
         ZoneEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>,
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>,
         Identity,
     > as NodeAddOns<N>>::Handle;
 
@@ -614,11 +614,8 @@ where
         );
 
         let tempo_block_number = ctx.node.provider().latest()?.tempo_block_number()?;
-        let last_operational_tempo_block = latest_operational_tempo_block(ctx.node.provider())?;
-        if last_operational_tempo_block < tempo_block_number {
-            self.l1_config.deferred_work_start =
-                Some(last_operational_tempo_block.saturating_add(1));
-        }
+        let latest_import =
+            LatestImport::find(ctx.node.provider(), &ctx.node.provider().chain_spec())?;
         let l1_provider = alloy_provider::ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_with_config(
                 &self.l1_config.l1_rpc_url,
@@ -668,17 +665,23 @@ where
             validate_zone_chain_id(l1_chain_id, portal_zone_id, chain_id)?;
         }
 
-        let mut finalized_batch_submission_sender = None;
-        let mut finalized_batch_submissions = None;
-        if self
-            .prover_config
-            .as_ref()
-            .is_some_and(ZoneProverConfig::is_shadow)
-        {
-            let (sender, receiver) =
-                tokio::sync::mpsc::channel(zone_sequencer::SHADOW_PROVER_QUEUE_CAPACITY);
-            finalized_batch_submission_sender = Some(sender);
-            finalized_batch_submissions = Some(receiver);
+        let last_operational = latest_import.l1_num_hash;
+        let start = DepositQueuePosition::find(
+            &l1_provider,
+            self.portal_address,
+            last_operational.number,
+            // Synthetic-L1 nodes use the zero address to mean that no Portal is configured.
+            latest_import
+                .last_processed_deposit
+                .filter(|_| !self.portal_address.is_zero()),
+        )
+        .await
+        .wrap_err("failed to locate the first owed deposit queue entry on L1")?;
+        if start.block_number <= tempo_block_number {
+            self.l1_config.deferred_work = Some(DeferredWorkRecovery {
+                last_operational,
+                start,
+            });
         }
 
         self.resolve_and_seed_tokens(&l1_provider, tempo_block_number)
@@ -764,7 +767,6 @@ where
             self.l1_state_cache.clone(),
             self.l1_block_tracker.clone(),
             leadership_sink,
-            finalized_batch_submission_sender,
             self.encryption_keys.clone(),
         );
         task_executor.spawn_critical_task("l1-block-subscriber", Box::pin(l1_subscriber.run()));
@@ -819,11 +821,18 @@ where
             provider.clone(),
         );
         let portal_address = self.portal_address;
+        let get_code_l1_state = L1StateProvider::new_raw(
+            L1StateProviderConfig::default(),
+            self.l1_state_cache.clone(),
+            l1_provider.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let l1_state = get_code_l1_state.clone();
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
-        // A sequencer serves its own allowlist; an RPC-only node configured with the admin relays
-        // each call to every sequencer over P2P.
+        // A sequencer serves its own allowlist. An RPC-only node mirrors the sequencers' lists and,
+        // when configured with the admin, relays each call to every sequencer over P2P.
         let local_allowlist = self
             .sequencer_config
             .as_ref()
@@ -839,12 +848,22 @@ where
                     "zone-deposit-allowlist-applier",
                     apply_relayed_requests(local_allowlist, ports.requests),
                 );
-            } else if let Some(admin) = self.deposit_allowlist_admin {
-                allowlist_rpc = Some(
-                    AllowlistRelay::new(ports.client, admin, task_executor.clone())
-                        .into_rpc()
-                        .remove_context(),
-                );
+            } else {
+                task_executor.spawn_task(mirror_leader(
+                    ports.client.clone(),
+                    runtime.schedule.clone(),
+                    self.allowlist_mirror.clone(),
+                    pool.clone(),
+                ));
+                if let Some(admin) = self.deposit_allowlist_admin {
+                    let relay = AllowlistRelay::new(
+                        ports.client,
+                        admin,
+                        self.allowlist_mirror.clone(),
+                        task_executor.clone(),
+                    );
+                    allowlist_rpc = Some(relay.into_rpc().remove_context());
+                }
             }
         }
         let handle = self
@@ -860,6 +879,14 @@ where
                 container
                     .modules
                     .merge_configured(operator_zone_api.into_rpc())?;
+                // Only on transports that serve the eth namespace, like the methods they replace.
+                container.modules.add_or_replace_if_module_configured(
+                    reth_rpc_builder::RethRpcModule::Eth,
+                    operator_get_code_module(
+                        container.registry.eth_api().clone(),
+                        get_code_l1_state,
+                    )?,
+                )?;
                 container.modules.merge_configured(
                     NodeZoneDebugApi::new(container.registry.eth_api().clone(), debug_l1_provider)
                         .into_rpc(),
@@ -877,71 +904,41 @@ where
         // One proof collector and prover per node, shared by every leader generation.
         let mut proof_collector = None;
         let mut settlement_prover = None;
-        if let Some(prover_config) = self.prover_config.as_ref() {
+        if let Some(prover_addresses) = self.prover_addresses.clone() {
             let debug_api = Arc::new(NodeZoneDebugApi::new(
                 handle.eth_handlers().api.clone(),
                 l1_provider.clone(),
             ));
             let proof_collector_config = ProofCollectorConfig {
                 directory: datadir.join("proofs"),
-                debug_api: debug_api.clone(),
+                debug_api,
                 portal_address: self.portal_address,
                 l1_provider: l1_provider.clone(),
-                retain_for_shadow_proving: matches!(prover_config, ZoneProverConfig::Shadow { .. }),
             };
             let (collector, collector_task) =
                 create_proof_collector(proof_collector_config, provider.clone()).await?;
             task_executor.spawn_critical_task("zone-proof-collector", collector_task);
 
-            if let Some(addresses) = prover_config.prover_addresses().cloned() {
-                let chain_spec = evm_chain_spec.clone();
-                task_executor.spawn_critical_task("prover-upgrade-readiness", async move {
-                    addresses.monitor_upgrade_readiness(chain_spec).await;
-                });
-            }
+            let addresses = prover_addresses.clone();
+            let chain_spec = evm_chain_spec.clone();
+            task_executor.spawn_critical_task("prover-upgrade-readiness", async move {
+                addresses.monitor_upgrade_readiness(chain_spec).await;
+            });
             let spf_config = SettlementProverConfig {
                 parent_chain_id: l1_chain_id,
                 zone_id: genesis_zone_id,
                 chain_spec: evm_chain_spec,
-                debug_api,
-                prover_addresses: prover_config.prover_addresses().cloned(),
-                proof_verifier: prover_config.proof_verifier().cloned(),
+                prover_addresses,
             };
-            match prover_config {
-                ZoneProverConfig::Settlement(_) => {
-                    // Repair a pre-existing canonical tail before admitting new blocks or
-                    // starting settlement.
-                    collector.collect_canonical_tail(&provider).await?;
-                    settlement_prover = Some(spawn_settlement_prover(
-                        spf_config,
-                        collector.clone(),
-                        provider.clone(),
-                        l1_provider.clone(),
-                    ));
-                }
-                ZoneProverConfig::Shadow { .. } => {
-                    let prover = spawn_shadow_prover(
-                        spf_config,
-                        Some(collector.clone()),
-                        provider.clone(),
-                        l1_provider.clone(),
-                    );
-                    task_executor.spawn_critical_task(
-                        "rpc-follower-shadow-prover",
-                        RpcFollowerShadowProver::new(
-                            self.portal_address,
-                            provider.clone(),
-                            l1_provider.clone(),
-                            prover,
-                        )
-                        .run(
-                            finalized_batch_submissions
-                                .take()
-                                .expect("shadow proving wires finalized submissions"),
-                        ),
-                    );
-                }
-            }
+            // Repair a pre-existing canonical tail before admitting new blocks or starting
+            // settlement.
+            collector.collect_canonical_tail(&provider).await?;
+            settlement_prover = Some(spawn_settlement_prover(
+                spf_config,
+                collector.clone(),
+                provider.clone(),
+                l1_provider.clone(),
+            ));
             proof_collector = Some(collector);
         }
 
@@ -952,6 +949,7 @@ where
             self.l1_config.retry_connection_interval,
             self.l1_config.portal_address,
             self.enabled_tokens.clone(),
+            self.l1_state_cache.clone(),
             chain_id,
             max_response_size,
         )
@@ -1012,6 +1010,7 @@ where
                 attestation,
                 settlements,
                 portal_address: self.portal_address,
+                l1_state: l1_state.clone(),
                 sequencer,
                 peer_tips,
                 status: role_status,
@@ -1048,9 +1047,11 @@ where
                     .clone()
                     .expect("sequencer mode configures deposit decryption keys"),
                 self.portal_address,
+                l1_state.clone(),
                 proof_collector.clone(),
             )
-            .with_deposit_allowlist(config.deposit_allowlist.clone());
+            .with_deposit_allowlist(config.deposit_allowlist.clone())
+            .with_zone_state(crate::engine::zone_state_reader(provider.clone()));
             task_executor.spawn_critical_task("zone-engine", engine.run());
 
             Self::launch_sequencer_tasks(
@@ -1612,11 +1613,14 @@ where
                 // deferred Portal-work range.
                     && self
                         .l1_config
-                        .deferred_work_start.is_none_or(|from| validity.expiresAtBlock <= from),
+                        .deferred_work
+                        .is_none_or(|work| validity.expiresAtBlock <= work.start.block_number),
                 "missing private decryption key for Portal key index {key_index} required at L1 \
                  checkpoint {block_number} or by deferred work starting at {:?} (expires at L1 \
                  block {})",
-                self.l1_config.deferred_work_start,
+                self.l1_config
+                    .deferred_work
+                    .map(|work| work.start.block_number),
                 validity.expiresAtBlock,
             );
         }
@@ -1632,6 +1636,7 @@ where
         retry_connection_interval: Duration,
         portal_address: Address,
         enabled_tokens: EnabledTokenRegistry,
+        l1_state_cache: L1StateCache,
         chain_id: u64,
         max_response_size: usize,
     ) -> eyre::Result<()> {
@@ -1656,6 +1661,7 @@ where
             redacted_rpc_config.clone(),
             enabled_tokens,
             l1_provider,
+            l1_state_cache,
         ));
         let local_addr = start_redacted_rpc(redacted_rpc_config, api).await?;
         info!(target: "reth::cli", %local_addr, "Redacted zone RPC server started");
@@ -1750,7 +1756,8 @@ where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
     N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>;
+    type ValidatorBuilder =
+        EagerHeaderValidatorBuilder<BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>>;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -1781,11 +1788,29 @@ where
         if let Some(encryptor) = self.withdrawal_reveal_encryptor.clone() {
             payload_factory = payload_factory.with_withdrawal_reveal_encryptor(encryptor);
         }
+        let mut pool_builder = ZonePoolBuilder::new(
+            executor_builder.enabled_tokens.clone(),
+            self.l1_state_cache.clone(),
+        );
+        if let Some(allowlist) = self
+            .sequencer_config
+            .as_ref()
+            .and_then(|config| config.deposit_allowlist.clone())
+        {
+            let allowlist: Arc<dyn TransferAllowlist> = Arc::new(allowlist);
+            payload_factory = payload_factory.with_transfer_allowlist(allowlist.clone());
+            pool_builder = pool_builder.with_transfer_allowlist(allowlist);
+        } else if self.p2p_config.as_ref().is_some_and(P2pConfig::is_rpc_only) {
+            pool_builder =
+                pool_builder.with_transfer_allowlist(Arc::new(self.allowlist_mirror.clone()));
+        }
+        if !self.virtual_address_keys.is_empty() {
+            payload_factory =
+                payload_factory.with_virtual_address_keys(self.virtual_address_keys.clone());
+        }
         ComponentsBuilder::default()
             .node_types::<N>()
-            .pool(ZonePoolBuilder::new(
-                executor_builder.enabled_tokens.clone(),
-            ))
+            .pool(pool_builder)
             .executor(executor_builder)
             .payload(BasicPayloadServiceBuilder::new(payload_factory))
             .network(NoopNetworkBuilder::<ZoneNetworkPrimitives>::default())
@@ -1803,9 +1828,10 @@ where
             self.portal_address,
             self.redacted_rpc_config.clone(),
             self.sequencer_config.clone(),
-            self.prover_config.clone(),
+            self.prover_addresses.clone(),
             self.p2p_config.clone(),
             self.deposit_allowlist_admin,
+            self.allowlist_mirror.clone(),
             self.external_deposit_consumer,
         )
     }
@@ -1946,12 +1972,27 @@ where
 #[non_exhaustive]
 pub struct ZonePoolBuilder {
     enabled_tokens: EnabledTokenRegistry,
+    l1_state_cache: L1StateCache,
+    /// Allowlist that transfer calls must satisfy. `None` admits every transfer.
+    transfer_allowlist: Option<Arc<dyn TransferAllowlist>>,
 }
 
 impl ZonePoolBuilder {
-    /// Create a pool builder using the shared enabled-token registry.
-    pub fn new(enabled_tokens: EnabledTokenRegistry) -> Self {
-        Self { enabled_tokens }
+    /// Create a pool builder using the shared enabled-token registry, and the shared L1 state
+    /// cache, whose recorded Tempo changes revalidate pooled transactions.
+    pub fn new(enabled_tokens: EnabledTokenRegistry, l1_state_cache: L1StateCache) -> Self {
+        Self {
+            enabled_tokens,
+            l1_state_cache,
+            transfer_allowlist: None,
+        }
+    }
+
+    /// Reject transactions whose calls move funds to or from accounts `allowlist` does not
+    /// allow.
+    pub(crate) fn with_transfer_allowlist(mut self, allowlist: Arc<dyn TransferAllowlist>) -> Self {
+        self.transfer_allowlist = Some(allowlist);
+        self
     }
 }
 
@@ -1998,9 +2039,7 @@ where
         ctx: &BuilderContext<Node>,
         evm_config: ZoneEvmConfig,
     ) -> eyre::Result<Self::Pool> {
-        // Zone blocks have no protocol base fee, so allow zero-fee transactions into the pool.
-        let mut pool_config = ctx.pool_config().with_disabled_protocol_base_fee();
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
+        let pool_config = ctx.pool_config();
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
@@ -2021,7 +2060,12 @@ where
 
         let provider = ctx.provider().clone();
         let enabled_tokens = self.enabled_tokens;
+        let transfer_allowlist = self.transfer_allowlist;
         validator.set_additional_stateful_validation(move |_origin, tx, _account_state| {
+            // The in-memory allowlist check runs before the balance check, which reads state.
+            if let Some(allowlist) = &transfer_allowlist {
+                validate_transfer_calls(allowlist.as_ref(), tx)?;
+            }
             validate_has_enabled_token_balance(&provider, &enabled_tokens, *tx.sender_ref())
         });
 
@@ -2032,7 +2076,7 @@ where
             price_bump_config: pool_config.price_bumps,
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
-            max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_authority: pool_config.max_account_slots,
             ..Default::default()
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
@@ -2049,14 +2093,18 @@ where
             // Zones collect the selected fee token directly and never route through FeeAMM.
             .with_disable_fee_amm_check(true)
         });
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             validator,
             TempoTipOrdering::default(),
             blob_store,
             pool_config.clone(),
         );
 
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+        let transaction_pool = TempoTransactionPool::new(reth_pool, aa_2d_pool)
+            .with_delayed_pool_config(DelayedPoolConfig {
+                max_txs_per_authority: pool_config.max_account_slots,
+                ..Default::default()
+            });
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
@@ -2066,6 +2114,13 @@ where
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
+        ctx.task_executor().spawn_critical_task(
+            "txpool maintenance - mirrored commitments",
+            crate::pool_maintenance::maintain_mirrored_commitments(
+                transaction_pool.clone(),
+                self.l1_state_cache,
+            ),
+        );
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
@@ -2074,47 +2129,68 @@ where
     }
 }
 
-/// Returns the latest Tempo block whose portal work was processed by a full `advanceTempo` import.
-///
-/// Checkpoint-only `advanceTempoHeaders` imports move the Zone's Tempo checkpoint without consuming
-/// their deposits, withdrawals, token updates, key rotations, or leader transitions. On restart,
-/// the caller uses the block after this operational boundary as the beginning of the deferred-work
-/// recovery range. If no operational import exists after genesis, the genesis Tempo anchor is the
-/// boundary.
-fn latest_operational_tempo_block<P>(provider: &P) -> eyre::Result<u64>
-where
-    P: ReceiptProvider + StateProviderFactory,
-{
-    let best = provider.best_block_number()?;
-    for number in (1..=best).rev() {
-        let Some(receipts) = provider.receipts_by_block(BlockHashOrNumber::Number(number))? else {
-            continue;
-        };
-        for receipt in receipts {
-            for log in receipt.logs() {
+/// The latest full `advanceTempo` import.
+struct LatestImport {
+    /// L1 block it imported.
+    l1_num_hash: NumHash,
+    /// Number of its last executed entry, if it may have left entries owed.
+    last_processed_deposit: Option<u64>,
+}
+
+impl LatestImport {
+    /// Returns the latest full import, or the genesis anchor if there is none.
+    fn find<P>(provider: &P, chain_spec: &ZoneChainSpec) -> eyre::Result<Self>
+    where
+        P: HeaderProvider<Header = TempoHeader> + ReceiptProvider + StateProviderFactory,
+    {
+        for number in (1..=provider.best_block_number()?).rev() {
+            let receipts = provider
+                .receipts_by_block(number.into())?
+                .unwrap_or_default();
+            for log in receipts.iter().flat_map(|receipt| receipt.logs()) {
                 if log.address != ZONE_INBOX_ADDRESS {
                     continue;
                 }
                 match log.topics().first() {
                     Some(topic) if topic == &TempoAdvanced::SIGNATURE_HASH => {
-                        return Ok(TempoAdvanced::decode_log(log)?.tempoBlockNumber);
+                        let event = TempoAdvanced::decode_log(log)?.data;
+                        let timestamp = provider
+                            .header_by_number(number)?
+                            .ok_or_else(|| {
+                                eyre::eyre!("zone block {number} header is unavailable")
+                            })?
+                            .timestamp();
+                        // Before T15, a full import executes every owed entry.
+                        let may_leave_entries_owed = !event.depositsProcessed.is_zero()
+                            && chain_spec.tempo_hardfork_at(timestamp).is_t15();
+                        return Ok(Self {
+                            l1_num_hash: NumHash::new(event.tempoBlockNumber, event.tempoBlockHash),
+                            last_processed_deposit: may_leave_entries_owed
+                                .then_some(event.lastProcessedDepositNumber),
+                        });
                     }
                     Some(topic) if topic == &LegacyTempoAdvanced::SIGNATURE_HASH => {
-                        return Ok(LegacyTempoAdvanced::decode_log(log)?.tempoBlockNumber);
+                        let event = LegacyTempoAdvanced::decode_log(log)?.data;
+                        return Ok(Self {
+                            l1_num_hash: NumHash::new(event.tempoBlockNumber, event.tempoBlockHash),
+                            last_processed_deposit: None,
+                        });
                     }
                     _ => {}
                 }
             }
         }
-    }
 
-    let genesis_hash = provider
-        .block_hash(0)?
-        .ok_or_else(|| eyre::eyre!("zone genesis block hash is unavailable"))?;
-    Ok(provider
-        .state_by_block_hash(genesis_hash)?
-        .tempo_num_hash()?
-        .number)
+        let genesis_hash = provider
+            .block_hash(0)?
+            .ok_or_else(|| eyre::eyre!("zone genesis block hash is unavailable"))?;
+        Ok(Self {
+            l1_num_hash: provider
+                .state_by_block_hash(genesis_hash)?
+                .tempo_num_hash()?,
+            last_processed_deposit: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -2122,11 +2198,10 @@ mod tests {
 
     use super::*;
     use alloy_consensus::{SignableTransaction, TxEip1559};
-    use alloy_primitives::{Bytes, Signature, TxKind, U256};
+    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
     use reth_primitives_traits::Recovered;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::transaction::{Call, TempoTransaction};
     use zone_chainspec::tempo_chain_spec_for_l1;
 
@@ -2287,16 +2362,12 @@ mod tests {
         );
         let transaction = pooled_transaction(envelope, sender);
 
-        let err = zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7)
-            .unwrap_err();
+        let err = zone_evm::validate_transaction(transaction.tx_env(), &[]).unwrap_err();
         assert!(matches!(
             err,
             tempo_evm::TempoInvalidTransaction::CallsValidation(_)
         ));
-        assert!(
-            zone_evm::validate_transaction(transaction.tx_env(), &[sender], TempoHardfork::T7)
-                .is_ok()
-        );
+        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[sender]).is_ok());
     }
 
     #[test]
@@ -2317,8 +2388,54 @@ mod tests {
             ],
         );
 
-        assert!(
-            zone_evm::validate_transaction(transaction.tx_env(), &[], TempoHardfork::T7).is_err()
+        assert!(zone_evm::validate_transaction(transaction.tx_env(), &[]).is_err());
+    }
+
+    #[test_case::test_case(0, 0 => None)]
+    #[test_case::test_case(2, 999 => None)]
+    #[test_case::test_case(2, 1_000 => Some(5))]
+    fn latest_import_reports_the_last_executed_entry(
+        deposits_processed: u64,
+        timestamp: u64,
+    ) -> Option<u64> {
+        let mut genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        zone_chainspec::test_utils::set_tempo_fork(
+            &mut genesis,
+            tempo_chainspec::hardfork::TempoHardfork::T15,
+            1_000,
         );
+        let chain_spec = ZoneChainSpec {
+            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+        };
+        let provider = reth_provider::test_utils::MockEthProvider::<TempoPrimitives>::new();
+        let mut header = TempoHeader::default();
+        header.inner.number = 3;
+        header.inner.timestamp = timestamp;
+        provider.add_header(alloy_consensus::Sealable::hash_slow(&header), header);
+        let event = TempoAdvanced {
+            tempoBlockHash: B256::repeat_byte(1),
+            tempoBlockNumber: 9,
+            depositsProcessed: U256::from(deposits_processed),
+            newProcessedDepositQueueHash: B256::repeat_byte(5),
+            lastProcessedDepositNumber: 5,
+            lastProcessedEnabledTokenCount: 0,
+        };
+        provider.add_receipts(
+            3,
+            vec![tempo_primitives::TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 0,
+                logs: vec![alloy_primitives::Log {
+                    address: ZONE_INBOX_ADDRESS,
+                    data: event.encode_log_data(),
+                }],
+            }],
+        );
+
+        let import = LatestImport::find(&provider, &chain_spec).unwrap();
+
+        assert_eq!(import.l1_num_hash, NumHash::new(9, B256::repeat_byte(1)));
+        import.last_processed_deposit
     }
 }
