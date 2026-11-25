@@ -738,12 +738,16 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
+        let precompiles = evm
+            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
+            .unwrap();
         assert!(
-            evm.precompiles_as::<TempoPrecompiles<
-                TempoEvmTypes,
-                CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
-            >>()
-            .is_some()
+            precompiles
+                .downcast_ref::<TempoPrecompiles<
+                    TempoEvmTypes,
+                    CachedPrecompileProvider<TempoEvmTypes, TempoHardfork>,
+                >>()
+                .is_some()
         );
 
         let evm_config =
@@ -756,6 +760,9 @@ mod tests {
             PrecompileCacheMap::default(),
             false,
         );
-        assert!(evm.precompiles_as::<NoPrecompiles>().is_some());
+        let precompiles = evm
+            .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
+            .unwrap();
+        assert!(precompiles.downcast_ref::<NoPrecompiles>().is_some());
     }
 }
