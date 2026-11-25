@@ -246,7 +246,8 @@ impl ReplayCommand {
 
 /// Replays each verified corpus block again under `hardfork`'s rules from the pre-state it
 /// recorded, and compares the two as shadow replay does. A candidate execution that reads state
-/// the canonical one did not fails at that boundary, since the corpus did not capture it.
+/// the canonical one did not fails at that boundary, since the corpus did not capture it, and the
+/// block is inconclusive.
 struct Shadow {
     chain: Arc<TempoChainSpec>,
     hardfork: TempoHardfork,

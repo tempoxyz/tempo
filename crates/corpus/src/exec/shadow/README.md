@@ -11,7 +11,8 @@ captured corpus range. Each block is first verified against its corpus record, t
 execute on the pre-state the corpus recorded. Blocks where the candidate hardfork is already
 canonical are skipped. The corpus holds only what the canonical execution read, so a candidate
 that reads anything else, such as a precompile account its pre-block setup deploys, fails at that
-boundary with an `uncaptured` error and is reported as a finding.
+boundary with an `uncaptured` error. That boundary is not compared, so the block is
+`Inconclusive` rather than a finding.
 
 ## Execution model
 
