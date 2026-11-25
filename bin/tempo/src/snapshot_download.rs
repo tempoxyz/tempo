@@ -8,9 +8,13 @@ use std::{
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
-use reth_cli_commands::download::{
-    DownloadCommand, DownloadPlanArchive,
-    manifest::{OutputFileChecksum, SnapshotManifest},
+use reth_chainspec::EthChainSpec;
+use reth_cli_commands::{
+    common::EnvironmentArgs,
+    download::{
+        DownloadCommand, DownloadPlanArchive,
+        manifest::{OutputFileChecksum, SnapshotManifest},
+    },
 };
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -80,6 +84,23 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             return Ok(());
         }
 
+        if !matches.get_flag("list") {
+            let env = EnvironmentArgs::<TempoChainSpecParser>::from_arg_matches(matches)?;
+            let datadir = env.datadir.resolve_datadir(env.chain.chain());
+            let consensus_dir = args
+                .consensus_datadir
+                .clone()
+                .unwrap_or_else(|| datadir.data_dir().join("consensus"));
+            let execution_paths = [
+                datadir.data_dir().join("db"),
+                datadir.data_dir().join("rocksdb"),
+                datadir.static_files(),
+                datadir.data_dir().join("reth.toml"),
+                datadir.data_dir().join(".download-cache"),
+            ];
+            check_restore_directories(&consensus_dir, &execution_paths)?;
+        }
+
         info!("running execution layer download...");
 
         let start = Instant::now();
@@ -106,6 +127,45 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
 
         Ok(())
     })
+}
+
+fn check_restore_directories(consensus: &Path, execution_paths: &[PathBuf]) -> eyre::Result<()> {
+    let consensus = resolve_restore_path(consensus)?;
+    for path in execution_paths {
+        let path = resolve_restore_path(path)?;
+        ensure!(
+            !path.starts_with(&consensus) && !consensus.starts_with(&path),
+            "execution snapshot destination `{}` overlaps consensus directory `{}`",
+            path.display(),
+            consensus.display(),
+        );
+    }
+    Ok(())
+}
+
+/// Resolve existing ancestors (including directory aliases) without creating any paths.
+fn resolve_restore_path(path: &Path) -> eyre::Result<PathBuf> {
+    let mut path = absolute(path)?;
+    let mut missing = Vec::new();
+    loop {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let mut resolved = path.canonicalize().wrap_err_with(|| {
+                    format!("failed to resolve snapshot destination {}", path.display())
+                })?;
+                resolved.extend(missing.into_iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = path.file_name().ok_or_else(|| {
+                    eyre::eyre!("cannot resolve snapshot destination {}", path.display())
+                })?;
+                missing.push(name.to_os_string());
+                path.pop();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 struct LoadedConsensusManifest {
@@ -535,6 +595,53 @@ mod tests {
             },
             archive_source: ConsensusArchiveSource::Path(archive.path().to_owned()),
         }
+    }
+
+    #[test]
+    fn snapshot_execution_accepts_disjoint_consensus_destination() {
+        let target = tempfile::tempdir().unwrap();
+        let consensus = target.path().join("consensus");
+        let execution = target.path().join("db");
+        check_restore_directories(&consensus, &[execution]).unwrap();
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn snapshot_execution_rejects_nested_consensus_destination() {
+        let target = tempfile::tempdir().unwrap();
+        let execution = target.path().canonicalize().unwrap().join("db");
+        let consensus = execution.join("partition");
+        assert_eq!(
+            check_restore_directories(&consensus, std::slice::from_ref(&execution))
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "execution snapshot destination `{}` overlaps consensus directory `{}`",
+                execution.display(),
+                consensus.display(),
+            ),
+        );
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_execution_and_consensus_destinations_resolve_aliases() {
+        let target = tempfile::tempdir().unwrap();
+        let consensus = target.path().join("consensus");
+        fs::create_dir(&consensus).unwrap();
+        let alias = target.path().join("external");
+        std::os::unix::fs::symlink(&consensus, &alias).unwrap();
+        let result = check_restore_directories(&consensus, &[alias.join("static_files")]);
+        let consensus = consensus.canonicalize().unwrap();
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            format!(
+                "execution snapshot destination `{}` overlaps consensus directory `{}`",
+                consensus.join("static_files").display(),
+                consensus.display(),
+            ),
+        );
     }
 
     #[test]
