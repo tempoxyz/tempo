@@ -540,8 +540,7 @@ fn normalized_fee_transfer(
     actions: &[StorageAction],
 ) -> Option<B256> {
     let fee = fees::post_tx_fee(actions)?;
-    let index = fee.log;
-    let log = logs.get(index)?;
+    let log = logs.get(fee.log)?;
     if log.address != fee.token {
         return None;
     }
@@ -555,7 +554,7 @@ fn normalized_fee_transfer(
     }
     transfer.data.amount = U256::ZERO;
     let mut normalized = logs.to_vec();
-    normalized[index] = ITIP20::Transfer::encode_log(&transfer);
+    normalized[fee.log] = ITIP20::Transfer::encode_log(&transfer);
     Some(hash_logs(&normalized))
 }
 
@@ -640,7 +639,7 @@ mod tests {
                 },
             ]
         };
-        let writes = |amount| {
+        let actions = |amount| {
             vec![
                 StorageAction::Marker(FeeHook::PreTx {
                     payer,
@@ -656,20 +655,20 @@ mod tests {
             ]
         };
         let (canonical, candidate) = (logs(U256::from(85)), logs(U256::from(79)));
-        let candidate_writes = writes(U256::from(79));
-        let expected = normalized_fee_transfer(&canonical, &writes(U256::from(85))).unwrap();
-        let actual = normalized_fee_transfer(&candidate, &candidate_writes).unwrap();
+        let candidate_actions = actions(U256::from(79));
+        let expected = normalized_fee_transfer(&canonical, &actions(U256::from(85))).unwrap();
+        let actual = normalized_fee_transfer(&candidate, &candidate_actions).unwrap();
         assert_eq!(actual, expected);
         assert_ne!(hash_logs(&canonical), hash_logs(&candidate));
-        assert!(normalized_fee_transfer(&candidate, &writes(U256::from(85))).is_none());
+        assert!(normalized_fee_transfer(&candidate, &actions(U256::from(85))).is_none());
 
         let mut changed = candidate.clone();
         changed[0] = changed[1].clone();
-        let changed_fees = normalized_fee_transfer(&changed, &candidate_writes).unwrap();
+        let changed_fees = normalized_fee_transfer(&changed, &candidate_actions).unwrap();
         assert_ne!(changed_fees, expected);
         let mut swapped = candidate;
         swapped.swap(0, 1);
-        assert!(normalized_fee_transfer(&swapped, &candidate_writes).is_none());
+        assert!(normalized_fee_transfer(&swapped, &candidate_actions).is_none());
     }
 
     #[test]
