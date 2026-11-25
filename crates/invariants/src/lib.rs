@@ -39,10 +39,8 @@ pub struct Tx {
 /// What a step ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ran {
-    /// The block's system changes before its transactions.
     PreBlock,
     Tx(Tx),
-    /// The block's system changes after its transactions.
     PostBlock,
 }
 

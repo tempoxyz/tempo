@@ -263,18 +263,9 @@ pub struct InvariantFailure {
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum InvariantScope {
-    Transaction {
-        block_index: u64,
-        tx_index: u64,
-    },
-    /// The block's system changes before its transactions.
-    Block {
-        block_index: u64,
-    },
-    /// The block's system changes after its transactions.
-    PostBlock {
-        block_index: u64,
-    },
+    Transaction { block_index: u64, tx_index: u64 },
+    Block { block_index: u64 },
+    PostBlock { block_index: u64 },
     Execution,
 }
 
