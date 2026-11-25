@@ -14147,6 +14147,7 @@ dependencies = [
  "tempo-telemetry-util",
  "tempo-transaction-pool",
  "tempo-validator-config",
+ "test-case",
  "tokio",
  "tokio-util",
  "tracing",

@@ -221,7 +221,7 @@ fn resolve_chainspec(
 
 /// Lock file every Commonware runtime creates at the root of its storage
 /// directory. `commonware_runtime` keeps the name private.
-const COMMONWARE_HOLD_FILE: &str = ".hold";
+pub(crate) const COMMONWARE_HOLD_FILE: &str = ".hold";
 
 /// Commonware runtimes take an exclusive advisory lock on `<dir>/.hold` for the
 /// lifetime of the process and block indefinitely while another holder exists.

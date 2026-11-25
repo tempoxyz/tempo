@@ -138,6 +138,7 @@ nix = { version = "0.30.1", features = ["signal"], optional = true }
 
 [dev-dependencies]
 jsonrpsee.workspace = true
+test-case.workspace = true
 
 [build-dependencies]
 smolgen.workspace = true
