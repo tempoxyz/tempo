@@ -24,7 +24,7 @@ use commonware_utils::vec::NonEmptyVec;
 use rand_core::CryptoRng;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
-    BlockIdReader, HeaderProvider,
+    HeaderProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_chainspec::NetworkIdentity;
@@ -83,9 +83,8 @@ where
     actor::try_init(context, config).await
 }
 
-/// Finalized execution-layer state needed to establish the driver's trusted boundary.
+/// Execution-layer state needed to establish the driver's trusted boundary.
 pub(super) trait ExecutionProvider: Send + Sync {
-    fn finalized_block_number(&self) -> eyre::Result<u64>;
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>>;
 }
 
@@ -102,10 +101,6 @@ where
     N: ProviderNodeTypes,
     N::Primitives: NodePrimitives<BlockHeader = TempoHeader>,
 {
-    fn finalized_block_number(&self) -> eyre::Result<u64> {
-        Ok(BlockIdReader::finalized_block_num_hash(self)?.map_or(0, |f| f.number))
-    }
-
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>> {
         HeaderProvider::header_by_number(self, number).map_err(eyre::Report::new)
     }

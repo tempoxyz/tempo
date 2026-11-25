@@ -4,6 +4,10 @@
 //! updates, periodically refreshes that forkchoice with a heartbeat, and advances marshal's floor
 //! to one epoch behind Reth's finalized state.
 //!
+//! Like the validator executor, finalized blocks are acknowledged to marshal only once Reth has
+//! durably persisted them, so marshal's processed height never runs ahead of the execution
+//! layer's durable state and a restart never skips a block marshal considers processed.
+//!
 //! One hash serves as head, safe and finalized, so a forkchoice target must never name a block
 //! marshal has not stored. Marshal tips are the only source of one: the driver does not address
 //! this actor, so a bare verified certificate cannot move Reth's finalized watermark ahead of
@@ -15,7 +19,10 @@
 //! marshal gap repair to fill history.
 
 use commonware_cryptography::{Digested, Digestible as _};
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Duration,
+};
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError};
 use commonware_consensus::{
@@ -28,13 +35,18 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
+use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use tempo_node::TempoExecutionData;
+use tokio::sync::watch;
 use tracing::{Level, debug, error, instrument};
 
 use super::{
     Config, ExecutionEngine, FinalizedBlockProvider, Marshal, ingress::Message, target::Target,
 };
-use crate::{consensus::block::Block, utils::OptionFuture};
+use crate::{
+    consensus::{Digest, block::Block},
+    utils::OptionFuture,
+};
 
 pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
@@ -54,6 +66,11 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
 
     block_queue: VecDeque<(Digested<Block>, Exact)>,
     floor_candidate: Option<Height>,
+
+    // Finalized blocks handed to the execution layer, waiting for it to
+    // durably persist them before they are acknowledged to marshal.
+    pending_acknowledgements: BTreeMap<Height, (Digest, Exact)>,
+    persisted_blocks: watch::Receiver<Option<BlockNumHash>>,
 
     execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
 
@@ -86,6 +103,7 @@ where
             .finalized_header()
             .expect("failed reading finalized execution header");
         let tip = Target::from_header(&finalized_header);
+        let persisted_blocks = execution_provider.subscribe_persisted_block();
 
         Self {
             context: ContextCell::new(context),
@@ -101,6 +119,8 @@ where
             latest_tip: tip,
             block_queue: VecDeque::new(),
             floor_candidate: None,
+            pending_acknowledgements: BTreeMap::new(),
+            persisted_blocks,
             execution_task: OptionFuture::none(),
 
             fcu_heartbeat_interval,
@@ -126,7 +146,14 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        ExecutionTaskResult::Completed(last_fcu) => {
+                        ExecutionTaskResult::Completed(last_fcu, delivered) => {
+                            if let Some((height, digest, ack)) = delivered {
+                                self.pending_acknowledgements.insert(height, (digest, ack));
+                            }
+                            if let Err(error) = self.acknowledge_persisted() {
+                                error!(%error, "failed acknowledging persisted blocks");
+                                break;
+                            }
                             self.last_fcu = last_fcu;
                             if last_fcu.supersedes(&self.latest_tip) {
                                 self.latest_tip = last_fcu;
@@ -160,6 +187,19 @@ where
                             }
                         }
                     }
+                }
+
+                changed = self.persisted_blocks.changed() => {
+                    if let Err(error) = changed
+                        .wrap_err("execution layer closed its persisted-block notifications")
+                        .and_then(|()| self.acknowledge_persisted())
+                    {
+                        error!(%error, "failed acknowledging persisted blocks");
+                        break;
+                    }
+
+                    // Emits an event on error.
+                    let _: Result<_, _> = self.try_advance_floor().await;
                 }
 
                 _ = (&mut self.fcu_heartbeat_timer).fuse() => {
@@ -207,6 +247,41 @@ where
         self.execution_task.replace(result.boxed());
     }
 
+    /// Acknowledges every pending block at or below the execution layer's
+    /// durable frontier. Pending blocks are finalized and contiguous, so a
+    /// durable block matching the pending block at its height proves every
+    /// lower pending block durable too. A mismatch waits for the execution
+    /// layer to unwind the conflicting block.
+    #[instrument(skip_all, err)]
+    fn acknowledge_persisted(&mut self) -> eyre::Result<()> {
+        let Some((highest, _)) = self.pending_acknowledgements.last_key_value() else {
+            return Ok(());
+        };
+        let durable = self
+            .execution_provider
+            .durable_block_at_or_below(highest.get())
+            .wrap_err("failed reading the execution layer's durable block")?;
+        let height = Height::new(durable.number);
+        let Some((digest, _)) = self.pending_acknowledgements.get(&height) else {
+            return Ok(());
+        };
+        if digest.0 != durable.hash {
+            debug!(
+                durable.height = durable.number,
+                durable.hash = %durable.hash,
+                finalized.digest = %digest,
+                "durable block conflicts with the finalized block at its height; \
+                waiting for the execution layer to unwind it",
+            );
+            return Ok(());
+        }
+        let pending = self.pending_acknowledgements.split_off(&height.next());
+        for (_, (_, ack)) in std::mem::replace(&mut self.pending_acknowledgements, pending) {
+            ack.acknowledge();
+        }
+        Ok(())
+    }
+
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
         let finalized_height = Height::new(
@@ -230,16 +305,18 @@ where
             return Ok(());
         }
 
-        let Some(floor_digest) = self
+        // A floor marks every block below it processed without an acknowledgement,
+        // so it must not pass the execution layer's crash-safe frontier.
+        let durable = self
             .execution_provider
-            .durable_block_hash(floor_height.get())
-            .wrap_err("failed reading floor block hash")?
-        else {
-            debug!(%finalized_height, %floor_height, "floor not durable in execution");
+            .durable_block_at_or_below(floor_height.get())
+            .wrap_err("failed reading the execution layer's durable block")?;
+        if durable.number < floor_height.get() {
+            debug!(%finalized_height, %floor_height, durable.height = durable.number, "floor not durable in execution");
             return Ok(());
-        };
+        }
 
-        debug!(%finalized_height, %floor_height, %floor_digest, "advancing marshal floor");
+        debug!(%finalized_height, %floor_height, "advancing marshal floor");
 
         let finalization = self
             .marshal
@@ -248,6 +325,10 @@ where
             .ok_or_else(|| eyre!("floor candidate `{floor_height}` missing finalization"))?;
 
         self.marshal.set_floor(finalization);
+
+        // Marshal drops its in-flight acks below a newly installed floor and
+        // redelivers from the floor, so their pending acknowledgements are stale.
+        self.pending_acknowledgements = self.pending_acknowledgements.split_off(&floor_height);
 
         self.floor = floor_height;
         self.floor_candidate = None;
@@ -262,7 +343,9 @@ enum ExecutionRequest {
 }
 
 enum ExecutionTaskResult {
-    Completed(Target),
+    /// The new forkchoice watermark, and the delivered finalized block that
+    /// is acknowledged once it is durable.
+    Completed(Target, Option<(Height, Digest, Exact)>),
     Fatal(Report),
 }
 
@@ -277,10 +360,11 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockP
         ExecutionRequest::Forkchoice(tip) => (tip, None),
         ExecutionRequest::Block(block, ack) => {
             let tip = Target::from_block(block.inner());
+            let delivered = (block.height(), block.digest());
             if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
                 return ExecutionTaskResult::Fatal(error);
             }
-            (tip, Some(ack))
+            (tip, Some((delivered, ack)))
         }
     };
 
@@ -300,17 +384,17 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockP
         }
     };
 
-    // Acknowledge SYNCING to unblock marshal. Its floor still requires finalized, durable state.
-    if let Some(ack) = ack {
-        ack.acknowledge();
-    }
-
     // Keep the watermark monotonic so older catch-up blocks cannot immediately retry a newer tip.
-    ExecutionTaskResult::Completed(if handled.supersedes(&last_fcu) {
-        handled
-    } else {
-        last_fcu
-    })
+    // The block is acknowledged once the execution layer persists it, which on SYNCING is after
+    // its pipeline sync passes the block.
+    ExecutionTaskResult::Completed(
+        if handled.supersedes(&last_fcu) {
+            handled
+        } else {
+            last_fcu
+        },
+        ack.map(|((height, digest), ack)| (height, digest, ack)),
+    )
 }
 
 #[instrument(

@@ -73,66 +73,54 @@ where
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
-    // Use the last boundary block available in the execution layer as the
-    // trusted starting point.
+    // Seed the verifier from the last boundary at or below marshal's floor,
+    // like the DKG manager does. Marshal resumes delivery above the floor, so
+    // every later boundary reaches the driver as a block update. The executor
+    // acknowledges blocks only once the execution layer durably persisted
+    // them, so the execution layer normally holds this boundary; marshal's
+    // archive is the fallback for a consensus snapshot restored ahead of it.
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let mut last_finalized_number = config.execution_provider.finalized_block_number()?;
-    // The execution layer can be finalized past the consensus tip, such as after
-    // restoring a newer execution snapshot. Start no later than the tip epoch's
-    // last block so the outcome stays within the epoch after the tip's.
-    if let Some((_, tip)) = tip {
-        let tip_epoch_last = config
-            .epoch_strategy
-            .last(tip.proposal.round.epoch())
-            .expect("strategy valid for all heights and epochs");
-        last_finalized_number = last_finalized_number.min(tip_epoch_last.get());
-    }
+    let boundary_outcome_epoch = floor_epoch;
+    let boundary = boundary_outcome_epoch
+        .previous()
+        .map_or(Height::zero(), |previous| {
+            config
+                .epoch_strategy
+                .last(previous)
+                .expect("strategy valid for all heights and epochs")
+        });
 
-    let epoch_info = config
-        .epoch_strategy
-        .containing(Height::new(last_finalized_number))
-        .expect("strategy valid for all heights and epochs");
-
-    let (startup_execution_boundary, boundary_outcome_epoch) =
-        if epoch_info.last().get() == last_finalized_number {
-            (epoch_info.last(), epoch_info.epoch().next())
-        } else if let Some(previous) = epoch_info.epoch().previous() {
-            (
-                config
-                    .epoch_strategy
-                    .last(previous)
-                    .expect("strategy valid for all heights and epochs"),
-                epoch_info.epoch(),
-            )
-        } else {
-            (Height::zero(), Epoch::zero())
-        };
-
-    let boundary_header = config
+    let boundary_header = match config
         .execution_provider
-        .finalized_header_by_number(startup_execution_boundary.get())
-        .and_then(|header| header.ok_or_eyre("execution layer did not have header"))
-        .wrap_err_with(|| {
-            format!(
-                "cannot establish baseline - unable to read the header \
-                from the last boundary block at height `{startup_execution_boundary}` \
-                from the execution layer"
-            )
-        })?;
+        .finalized_header_by_number(boundary.get())?
+    {
+        Some(header) => Some(header),
+        None => config
+            .marshal
+            .get_block(boundary)
+            .await
+            .map(|block| block.inner().header().clone()),
+    }
+    .ok_or_eyre("neither the execution layer nor marshal had the header")
+    .wrap_err_with(|| {
+        format!(
+            "cannot establish baseline - unable to read the header \
+            from the last boundary block at height `{boundary}`"
+        )
+    })?;
 
-    let claimed_epoch =
-        OnchainDkgOutcome::read(&mut commonware_codec::Copying(boundary_header.extra_data().as_ref()))
-            .wrap_err_with(|| {
-                format!(
-                    "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
-                )
-            })?
-            .epoch();
+    let claimed_epoch = OnchainDkgOutcome::read(&mut commonware_codec::Copying(
+        boundary_header.extra_data().as_ref(),
+    ))
+    .wrap_err_with(|| {
+        format!("the last boundary (`{boundary}`) block header did not contain a DKG outcome")
+    })?
+    .epoch();
     ensure!(
         claimed_epoch == boundary_outcome_epoch,
-        "the last boundary (`{startup_execution_boundary}`) contains an outcome for epoch \
+        "the last boundary (`{boundary}`) contains an outcome for epoch \
          `{claimed_epoch}`, expected epoch `{boundary_outcome_epoch}`",
     );
 
@@ -141,9 +129,7 @@ where
     let outcome = verifier
         .decode_dkg_outcome_and_register_boundary(boundary_header.extra_data().as_ref())
         .wrap_err_with(|| {
-            format!(
-                "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
-            )
+            format!("the last boundary (`{boundary}`) block header did not contain a DKG outcome")
         })?;
 
     let actor = Driver {
@@ -151,7 +137,6 @@ where
         state,
         config,
         mailbox: rx,
-        startup_execution_boundary,
         current_epoch: outcome.epoch(),
         epoch_sync_target: None,
         verifier,
@@ -166,7 +151,6 @@ pub(crate) struct Driver<TContext: Clock + Metrics + Storage, P, M> {
     context: ContextCell<TContext>,
     config: Config<P, M>,
     mailbox: mpsc::UnboundedReceiver<Message>,
-    startup_execution_boundary: Height,
     current_epoch: Epoch,
     epoch_sync_target: Option<Epoch>,
     verifier: FinalizationVerifier,
@@ -184,10 +168,6 @@ where
     }
 
     async fn run(mut self) {
-        if self.install_scheme_for_latest_epoch().await.is_err() {
-            return;
-        }
-
         loop {
             select!(
                 biased;
@@ -218,88 +198,6 @@ where
                 }
             );
         }
-    }
-
-    /// Fills in the missing scheme if the execution layer did not persist.
-    #[instrument(skip_all, err(Display))]
-    async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
-        let last_finalized_height = self.config.last_finalized_height;
-        let floor_epoch_info = self
-            .config
-            .epoch_strategy
-            .containing(last_finalized_height)
-            .expect("strategy is valid for all heights and epochs");
-
-        // A floor inside epoch `E` needs the scheme from `last(E-1)`. A floor at
-        // `last(E)` has already processed that boundary and needs the scheme for
-        // `E+1` it carries.
-        let floor_boundary_height = if floor_epoch_info.last() == last_finalized_height {
-            Some(last_finalized_height)
-        } else {
-            floor_epoch_info.epoch().previous().map(|previous| {
-                self.config
-                    .epoch_strategy
-                    .last(previous)
-                    .expect("strategy is valid for all heights and epochs")
-            })
-        };
-
-        if let Some(last_consensus_boundary) = floor_boundary_height
-            && last_consensus_boundary > self.startup_execution_boundary
-        {
-            let boundary_epoch = self
-                .config
-                .epoch_strategy
-                .containing(last_consensus_boundary)
-                .expect("strategy is valid for all heights and epochs")
-                .epoch();
-
-            let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
-            else {
-                let execution_boundary = self.startup_execution_boundary;
-                warn!(
-                    "cannot install scheme; consensus layer boundary `{last_consensus_boundary}` is ahead \
-                    of execution layer boundary `{execution_boundary}`, but the consensus layer does not have \
-                    the boundary block. The node likely previously skipped \
-                    epoch boundaries via the network identity and will continue to try use it to verify finalizations"
-                );
-
-                return Ok(());
-            };
-
-            let extra_data = boundary_block.inner().header().extra_data();
-            let claimed_epoch =
-                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
-                    .wrap_err_with(|| {
-                        format!(
-                            "the boundary block at height `{last_consensus_boundary}` \
-                            contained no or a malformed DKG outcome"
-                        )
-                    })?
-                    .epoch();
-            ensure!(
-                claimed_epoch == boundary_epoch.next(),
-                "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
-                 epoch `{claimed_epoch}`, expected the next epoch `{}`",
-                boundary_epoch.next(),
-            );
-
-            let onchain_outcome = self
-                .verifier
-                .decode_dkg_outcome_and_register_boundary(extra_data.as_ref())
-                .wrap_err_with(|| {
-                    format!(
-                        "the boundary block at height `{last_consensus_boundary}` \
-                        contained no or a malformed DKG outcome"
-                    )
-                })?;
-
-            self.current_epoch = self.current_epoch.max(onchain_outcome.epoch());
-        } else {
-            debug!("no gap detected");
-        }
-
-        Ok(())
     }
 
     #[instrument(skip_all, err)]

@@ -23,7 +23,6 @@ use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage, buffer::paged::CacheRef,
     spawn_cell,
 };
-use commonware_utils::NZUsize;
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_core::{CryptoRng, Rng};
@@ -110,6 +109,9 @@ impl<TUpstream> Config<TUpstream> {
 
         let epoch_strategy = self.epoch_strategy.clone();
 
+        // The executor acknowledges finalized blocks once reth persisted them.
+        let max_pending_acks = alias::marshal::max_pending_acks(&self.execution_node)?;
+
         let alias::marshal::Initialized {
             actor: marshal_actor,
             mailbox: marshal_mailbox,
@@ -124,7 +126,7 @@ impl<TUpstream> Config<TUpstream> {
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
-                max_pending_acks: NZUsize!(1),
+                max_pending_acks,
                 finalized_blocks_retention: self.finalized_blocks_retention,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
