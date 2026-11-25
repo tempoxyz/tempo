@@ -306,7 +306,11 @@ fn is_empty(account: &AccountInput) -> bool {
 /// Replaces the account at `address` with `account`, its code and the slots the pre-state holds for
 /// it, or records that it does not exist if it holds nothing. Other slots are read from the
 /// database. `InvalidInput` if its code is a malformed EIP-7702 delegation.
-fn insert(cache: &mut Cache, address: Address, account: &AccountInput) -> Result<(), ErrorClass> {
+pub(crate) fn insert(
+    cache: &mut Cache,
+    address: Address,
+    account: &AccountInput,
+) -> Result<(), ErrorClass> {
     cache.storage.remove(&address);
     if is_empty(account) {
         cache.accounts.insert(address, None);
