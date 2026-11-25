@@ -2,11 +2,10 @@
 //! their rejection on one that does not.
 use super::*;
 use alloy::sol_types::SolError;
+use jsonrpsee::types::error::INVALID_PARAMS_CODE;
 use tempo_contracts::precompiles::{ISignatureVerifier, SIGNATURE_VERIFIER_ADDRESS};
 use tempo_evm::transaction_error::ConfigurableAccountError;
-use tempo_primitives::transaction::{
-    ConfigurableAccountQuorumError, SlhDsaSignature, derive_slh_dsa_address,
-};
+use tempo_primitives::transaction::{SlhDsaSignature, derive_slh_dsa_address};
 
 /// An SLH-DSA-SHA2-128s owner key.
 struct SlhDsaOwner {
@@ -229,17 +228,16 @@ async fn slh_dsa_owner_signs_and_removes_the_passkey() -> eyre::Result<()> {
     assert!(verify(&env, account, &quantum_only, &slh).await?);
     assert!(!verify(&env, account, &initial, &slh).await?);
 
-    // The passkey no longer signs: not under the new configuration, which lacks it...
+    // The passkey no longer signs: not under the new configuration, which lacks it, so sender
+    // recovery fails and the pool rejects the signature...
     let tx = create_basic_aa_tx(chain_id, 3, vec![noop()], GAS_LIMIT);
-    reject_with(
+    let error = rejection(
         &env,
         tx.clone(),
         signed_by(account, &quantum_only, &tx, |digest| passkey.sign(digest))?,
-        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
-            ConfigurableAccountQuorumError::SignerNotOwner,
-        )),
     )
-    .await?;
+    .await;
+    assert_rpc_error(&error, INVALID_PARAMS_CODE, "invalid transaction signature")?;
     // ...nor under the old one, whose commitment was replaced.
     reject_with(
         &env,

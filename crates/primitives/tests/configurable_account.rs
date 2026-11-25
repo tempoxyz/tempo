@@ -258,7 +258,22 @@ fn owner_approval_bytes() -> impl Strategy<Value = Vec<u8>> {
         prop::collection::vec(any::<u8>(), 128..=192)
             .prop_map(|fields| [vec![0x02], fields].concat()),
         prop::collection::vec(any::<u8>(), 0..=192),
+        // SLH-DSA: valid and off-by-one lengths, and unknown parameter sets.
+        prop::collection::vec(any::<u8>(), 7_887..=7_889).prop_map(|fields| [
+            vec![0x06, 0x01],
+            fields
+        ]
+        .concat()),
+        prop::collection::vec(any::<u8>(), 7_889).prop_map(|fields| [vec![0x06], fields].concat()),
     ]
+}
+
+/// Decodes one RLP owner approval the way a configurable account signature does.
+fn decode_owner_approval(approval: &[u8]) -> Result<PrimitiveSignature, RlpError> {
+    let encoded = alloy_rlp::encode(approval);
+    let mut buf = encoded.as_slice();
+    let bytes = Header::decode_bytes(&mut buf, false)?;
+    PrimitiveSignature::from_owner_approval_bytes(bytes).map_err(RlpError::Custom)
 }
 
 #[cfg(feature = "arbitrary")]
@@ -968,7 +983,7 @@ proptest! {
         );
         match approvals
             .iter()
-            .map(|approval| decode_exact::<PrimitiveSignature>(alloy_rlp::encode(approval.as_slice())))
+            .map(|approval| decode_owner_approval(approval))
             .collect::<Result<Vec<_>, _>>()
         {
             // Accepted approvals decode in order and re-encode canonically.
