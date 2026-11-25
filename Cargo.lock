@@ -17423,7 +17423,6 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
- "alloy-transport",
  "antithesis_sdk",
  "backon",
  "base64 0.22.1",

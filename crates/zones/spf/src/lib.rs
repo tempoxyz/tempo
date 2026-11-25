@@ -27,21 +27,21 @@ pub use execution::database::{TempoWitnessDatabase, WitnessDatabase, WitnessData
 pub use mpt::StatelessSparseTrieError;
 pub use types::*;
 
-/// Checks that `node_pool` proves every Tempo read from `state_root`, as the SPF reads it.
-/// `slot` is `None` for an account-only read.
+/// Checks that `node_pool` proves every target account and slot from `state_root` as the SPF does.
 pub fn verify_tempo_reads<'a>(
     state_root: B256,
     node_pool: impl IntoIterator<Item = &'a Bytes>,
-    reads: impl IntoIterator<Item = (Address, Option<B256>)>,
+    targets: &[(Address, Vec<B256>)],
 ) -> Result<(), StatelessSparseTrieError> {
     let nodes = mpt::WitnessNodes::decode(node_pool)?;
     let reader = mpt::WitnessPathReader::new(state_root, &nodes);
-    reads
-        .into_iter()
-        .try_for_each(|(account, slot)| match slot {
-            Some(slot) => reader.storage(account, slot.into()).map(drop),
-            None => reader.account(account).map(drop),
-        })
+    for (account, slots) in targets {
+        reader.account(*account)?;
+        for slot in slots {
+            reader.storage(*account, (*slot).into())?;
+        }
+    }
+    Ok(())
 }
 
 /// Execute a Zone batch witness and return its public commitments.

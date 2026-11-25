@@ -19,7 +19,7 @@ use alloy_network::{ReceiptResponse, TransactionBuilder, TransactionResponse};
 use alloy_primitives::{
     Address, B256, Bloom, Bytes, KECCAK256_EMPTY, U64, U256, keccak256, map as alloy_map,
 };
-use alloy_provider::{DynProvider, Provider};
+use alloy_provider::{DynProvider, Provider, transport::TransportError};
 use alloy_rpc_types_eth::{
     Block, BlockId, BlockNumberOrTag, BlockTransactions, EIP1186AccountProofResponse, FeeHistory,
     Filter, FilterChanges, FilterId, Log, TransactionRequest,
@@ -27,7 +27,6 @@ use alloy_rpc_types_eth::{
     state::{EvmOverrides, StateOverride},
 };
 use alloy_sol_types::{SolCall, SolError};
-use alloy_transport::TransportError;
 use backon::{ConstantBuilder, Retryable as _};
 use eyre::{OptionExt as _, WrapErr};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
@@ -605,10 +604,9 @@ async fn collect_tempo_witness(
         targets.entry(read.account).or_default().extend(read.slot);
     }
     let state_root = tempo_header.state_root();
-    // The L1 RPC may balance connections across nodes whose heads differ by a few milliseconds,
-    // so the node serving a chunk can lack a block the subscriber already saw finalized
-    // (`block not found`), or answer before its state there is complete. Retry only that chunk
-    // on either; return every other error.
+    // A load-balanced L1 RPC can route a chunk to a node that lacks the finalized block
+    // (`block not found`) or has not finished importing its state. Retry only that chunk on
+    // either and return every other error.
     let nodes = futures::stream::iter(multi_proof_chunks(targets))
         .map(|chunk| async move {
             (|| fetch_verified_proofs(provider, &chunk, tempo_block_number, state_root))
@@ -669,15 +667,7 @@ async fn fetch_verified_proofs(
         })
         .map(|node| (keccak256(&node), node))
         .collect::<BTreeMap<_, _>>();
-    // An account-only target has no slots but still needs its account proof.
-    let reads = chunk.iter().flat_map(|(account, slots)| {
-        slots
-            .is_empty()
-            .then_some((*account, None))
-            .into_iter()
-            .chain(slots.iter().map(move |slot| (*account, Some(*slot))))
-    });
-    zone_spf::verify_tempo_reads(state_root, nodes.values(), reads)?;
+    zone_spf::verify_tempo_reads(state_root, nodes.values(), chunk)?;
     Ok(nodes)
 }
 
