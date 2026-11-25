@@ -618,13 +618,18 @@ async fn collect_tempo_witness(
                         .with_max_times(MULTI_PROOF_RETRIES),
                 )
                 .when(|error| {
-                    error.is::<zone_spf::StatelessSparseTrieError>()
-                        || error
-                            .downcast_ref::<TransportError>()
-                            .and_then(TransportError::as_error_resp)
-                            .is_some_and(|response| {
-                                response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
-                            })
+                    matches!(
+                        error.downcast_ref(),
+                        Some(
+                            zone_spf::StatelessSparseTrieError::IncompleteAccountProof { .. }
+                                | zone_spf::StatelessSparseTrieError::IncompleteStorageProof { .. }
+                        )
+                    ) || error
+                        .downcast_ref::<TransportError>()
+                        .and_then(TransportError::as_error_resp)
+                        .is_some_and(|response| {
+                            response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                        })
                 })
                 .await
         })
