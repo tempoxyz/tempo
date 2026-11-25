@@ -10,7 +10,7 @@ use tempo_primitives::is_tip20_prefix;
 
 use super::{Mirror, ZoneLeaves, ZoneStep, reserved};
 use crate::{
-    Check, Checked, StepChecked, Tx, Verdict,
+    Check, Checked, Ran, StepChecked, TempoHardfork, Verdict,
     configurable_account::{
         Quorum,
         spec::{self, MARKER_CODE_HASH},
@@ -26,6 +26,9 @@ pub const CHECKS: &[Check<Mirror>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L182>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+        doc: "Every commitment the zone reads is Tempo's at the zone's anchor.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |m: &Mirror| m.zone.of.keys(),
         judge: |m, account| {
             if m.ineligible(**account).is_some() {
@@ -43,6 +46,9 @@ pub const CHECKS: &[Check<Mirror>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L59>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-INELIGIBLE",
+        doc: "A reserved address or an account with zone code reads no commitment from Tempo.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |m: &Mirror| m.zone.of.keys(),
         judge: |m, account| {
             let why = m.ineligible(**account)?;
@@ -56,6 +62,9 @@ pub const CHECKS: &[Check<Mirror>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L76>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-MARKER-CALL",
+        doc: "An eligible account answers as the account marker exactly when Tempo holds a commitment for it at the anchor.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |m: &Mirror| m.zone.marked.keys(),
         judge: |m, account| {
             let (marked, tempo) = (m.zone.marked[*account], m.tempo(**account)?);
@@ -76,6 +85,9 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L163>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+        doc: "Only a system transaction moves the anchor, forward, to the last Tempo block it finalized.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| [step.post.zone.anchor],
         judge: |s, post| {
             let pre = s.pre.zone.anchor;
@@ -88,7 +100,7 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
                     .windows(2)
                     .all(|pair| pair[0].blockNumber < pair[1].blockNumber);
             ensure!(
-                s.tx.is_none()
+                s.ran.tx().is_none()
                     && ascending
                     && last.blockNumber == post.number
                     && last.blockHash == post.hash,
@@ -96,7 +108,7 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
                 finalized.len(),
                 last.blockNumber,
                 last.blockHash,
-                if s.tx.is_some() { ", in a user transaction" } else { "" }
+                if s.ran.tx().is_some() { ", in a user transaction" } else { "" }
             )
         },
     },
@@ -105,6 +117,9 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L113>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-COMMITMENT-ANCHORED",
+        doc: "While the anchor stays, no step changes a commitment or the account marker.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| step.post.zone.of.keys(),
         judge: |s, account| {
             let (pre, post) = (s.pre.zone.of.get(*account)?, s.post.zone.of.get(*account)?);
@@ -125,6 +140,9 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L82-L85>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-NO-WRITE",
+        doc: "A zone never writes a commitment: the precompile emits no configuration event.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| [step.post.zone.precompile],
         judge: |s, precompile| {
             let logs = s.logs_from(*precompile).count();
@@ -136,6 +154,9 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L60>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-PERMIT-RETIRED",
+        doc: "A permit's owner has no Tempo commitment at the anchor, whose root key it would have retired.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| permits(step),
         judge: |s, permit| {
             let Permit { token, owner } = permit;
@@ -152,10 +173,13 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L59>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-NO-AUTHORIZATION-LIST",
-        over: |step: &ZoneStep| step.tx.iter().map(|tx| tx.sender),
+        doc: "No zone transaction carries an authorization list.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
+        over: |step: &ZoneStep| step.ran.tx().into_iter().map(|tx| tx.sender),
         judge: |s, _| {
             ensure!(
-                !s.tx.as_ref()?.authority.authorization_list,
+                !s.ran.tx()?.authority.authorization_list,
                 "sent a zone transaction with an authorization list"
             )
         },
@@ -166,6 +190,9 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L186>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-QUORUM-COMMITMENT",
+        doc: "A configurable-account signature matches Tempo's commitment at the anchor, or derives its unregistered account at version zero.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| quorums(step),
         judge: |s, q| {
             let at = at_tx(s)?;
@@ -199,10 +226,13 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L184>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-ROOT-KEY-RETIRED",
+        doc: "An ordinary signature never authorizes for an account with a Tempo commitment at the anchor.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |step: &ZoneStep| {
-            step.tx
-                .iter()
-                .filter(|tx| tx.authority.active)
+            step.ran
+                .tx()
+                .into_iter()
                 .flat_map(|tx| tx.authority.keys.iter())
         },
         judge: |s, key| {
@@ -226,6 +256,9 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L86>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
+        doc: "Zone state never stores a commitment or the account marker.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |l: &ZoneLeaves| l.of.keys(),
         judge: |l, account| {
             let stored = l.of.get(*account)?.stored;
@@ -244,6 +277,9 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L78>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+        doc: "The zone serves the marker for an eligible account without code that has a Tempo commitment, its stored code otherwise.",
+        tip: "TIP-1154",
+        since: TempoHardfork::T14,
         over: |l: &ZoneLeaves| l.of.keys(),
         judge: |l, account| {
             let leaf = l.of.get(*account)?;
@@ -264,15 +300,15 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
     },
 ];
 
-impl Checked for Mirror {
+impl Checked<TempoHardfork> for Mirror {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked<Option<Tx>> for Mirror {
+impl StepChecked<Ran, TempoHardfork> for Mirror {
     const STEP_CHECKS: &'static [Check<ZoneStep>] = STEP_CHECKS;
 }
 
-impl Checked for ZoneLeaves {
+impl Checked<TempoHardfork> for ZoneLeaves {
     const CHECKS: &'static [Check<Self>] = LEAF_CHECKS;
 }
 
@@ -292,7 +328,7 @@ impl fmt::Display for Permit {
 /// The token and owner of each TIP-20 approval in a user transaction's step whose owner is not the
 /// sender. Zones run no contracts, so only `permit` approves for another account.
 fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
-    let sender = step.tx.as_ref().filter(|tx| tx.success).map(|tx| tx.sender);
+    let sender = step.ran.tx().filter(|tx| tx.success).map(|tx| tx.sender);
     step.logs
         .iter()
         .filter(move |_| sender.is_some())
@@ -309,7 +345,10 @@ fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
 
 /// The quorums of the step's transaction.
 fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
-    step.tx.iter().flat_map(|tx| tx.authority.quorums.iter())
+    step.ran
+        .tx()
+        .into_iter()
+        .flat_map(|tx| tx.authority.quorums.iter())
 }
 
 /// The mirror a transaction's authority is judged against: the one before it, when the step kept

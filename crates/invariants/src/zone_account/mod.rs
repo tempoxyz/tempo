@@ -13,17 +13,18 @@ use std::{
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolCall;
+use invariants_core::{Call, Outcome};
 use tempo_contracts::{
     precompiles::IConfigurableAccountShim::onERC721ReceivedCall,
     zones::{
         TEMPO_STATE_ADDRESS,
         TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
-        ZONE_FEE_MANAGER_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
+        ZONE_FEE_MANAGER_ADDRESS,
     },
 };
 
 use crate::{
-    Observe, ObserveError, Step, Tx, Views,
+    Observe, ObserveError, Ran, Step, Views,
     configurable_account::{Leaf, read_commitments, spec as account_spec},
     view,
 };
@@ -100,30 +101,34 @@ impl Observe for Zone {
         }
         .abi_encode()
         .into();
-        let calls: Vec<(Address, Bytes)> = at
+        let calls: Vec<Call> = at
             .accounts
             .iter()
             .filter(|&&account| !coded.contains(&account) && reserved(account).is_none())
-            .map(|&account| (account, input.clone()))
+            .map(|&account| Call {
+                from: None,
+                to: account,
+                input: input.clone(),
+            })
             .collect();
         let magic = onERC721ReceivedCall::abi_encode_returns(&FixedBytes::from(
             onERC721ReceivedCall::SELECTOR,
         ));
         let mut marked = BTreeMap::new();
-        for ((account, _), output) in calls
+        for (call, answer) in calls
             .iter()
             .zip(views.call(&calls).map_err(ObserveError::Views)?)
         {
-            match output {
+            match answer {
                 None => {}
-                Some(output) if output.is_empty() || output[..] == magic[..] => {
-                    marked.insert(*account, !output.is_empty());
+                Some(Outcome::Return(output)) if output.is_empty() || output[..] == magic[..] => {
+                    marked.insert(call.to, !output.is_empty());
                 }
-                Some(output) => {
-                    return Err(ObserveError::Malformed {
+                answer => {
+                    return Err(ObserveError::Unexpected {
                         call: onERC721ReceivedCall::SIGNATURE,
-                        to: *account,
-                        output: Some(output),
+                        to: call.to,
+                        answer,
                     });
                 }
             }
@@ -145,6 +150,14 @@ pub struct Tempo {
     /// The block the views answered at, as the producer states it.
     block: u64,
     of: BTreeMap<Address, B256>,
+}
+
+impl Tempo {
+    /// Tempo's commitments `of` the accounts at block `block`, as a producer that holds Tempo's
+    /// state itself states them; an account left out was not read.
+    pub const fn new(block: u64, of: BTreeMap<Address, B256>) -> Self {
+        Self { block, of }
+    }
 }
 
 /// The Tempo block the views answer at, and the accounts to read.
@@ -223,8 +236,8 @@ impl Mirror {
 }
 
 /// A zone transaction or block: the mirror before and after it, its zone logs, and its
-/// transaction (`None` for a system transaction or a whole block).
-pub type ZoneStep = Step<Mirror, Option<Tx>>;
+/// step ran.
+pub type ZoneStep = Step<Mirror, Ran>;
 
 /// One account's leaf in zone state after a step, beside what the zone serves for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,13 +263,10 @@ pub struct ZoneLeaves {
 /// eligible: Tempo's reserved address spaces and the zone's system contracts.
 // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L59>
 pub(crate) fn reserved(account: Address) -> Option<&'static str> {
-    const SYSTEM: [Address; 4] = [
-        TEMPO_STATE_ADDRESS,
-        ZONE_INBOX_ADDRESS,
-        ZONE_OUTBOX_ADDRESS,
-        ZONE_FEE_MANAGER_ADDRESS,
-    ];
-    if SYSTEM.contains(&account) {
+    // The zone's predeploys share `TempoState`'s address but for its last byte: the inbox, outbox,
+    // identity and address registry so far.
+    let predeploy = account[..19] == TEMPO_STATE_ADDRESS[..19];
+    if predeploy || account == ZONE_FEE_MANAGER_ADDRESS {
         Some("a zone system contract")
     } else {
         account_spec::reserved(account)
