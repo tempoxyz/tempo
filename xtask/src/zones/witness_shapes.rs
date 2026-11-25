@@ -19,7 +19,6 @@ const MAX_BATCHES: usize = 32;
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
-    /// Tempo L1 RPC URL.
     #[arg(long, env = "L1_RPC_URL")]
     l1_rpc_url: String,
 }
