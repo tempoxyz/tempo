@@ -2385,7 +2385,7 @@ mod slh_dsa_tests {
         assert!(signature.has_slh_dsa_approval());
         assert_eq!(signature.verify_approvals(inner), Ok(()));
 
-        let outer = TempoSignature::ConfigurableAccount(signature.clone());
+        let outer = TempoSignature::ConfigurableAccount(signature);
         let decoded = TempoSignature::from_bytes(&outer.to_bytes()).unwrap();
         assert_eq!(decoded, outer);
         assert_eq!(decoded.recover_signer(&inner).unwrap(), account);
@@ -2433,7 +2433,11 @@ mod slh_dsa_tests {
             Err(ConfigurableAccountSignatureError::InvalidSlhDsaSignatureLength)
         );
         // A full-length SLH-DSA approval exceeds the 2,049-byte cap of other approval types.
-        assert!(SLH_DSA_SIGNATURE_ENCODED_LENGTH > MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES);
+        const {
+            assert!(
+                SLH_DSA_SIGNATURE_ENCODED_LENGTH > MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES
+            )
+        };
         assert!(
             ConfigurableAccountSignature::try_new(
                 account,
