@@ -20,7 +20,6 @@ pub const CHECKS: &[Check<Ledger>] = &[
     check! {
         id: SUPPLY_CAP,
         doc: "A token's total supply never exceeds its supply cap.",
-        covers: ["TEMPO-TIP22"],
         judge: |l: &Ledger| {
             let cap = l.supply_cap?;
             ensure!(l.supply <= cap, "totalSupply {} exceeds supplyCap {cap}", l.supply)
@@ -30,7 +29,6 @@ pub const CHECKS: &[Check<Ledger>] = &[
     check! {
         id: BALANCE_SUM,
         doc: "The observed holders' balances sum to at most the total supply.",
-        covers: ["TEMPO-TIP20"],
         judge: |l: &Ledger| {
             let sum = l.balance_sum();
             ensure!(
@@ -52,7 +50,6 @@ pub const STEP_CHECKS: &[Check<Step<Ledger, Ran>>] = &[
     check! {
         id: TRANSFER_EVENTS,
         doc: "Each observed balance moves by exactly the step's `Transfer` events into and out of it, and the supply by its mints and burns.",
-        covers: ["TEMPO-TIP18"],
         over: |step: &Step<Ledger, Ran>| [&step.post],
         judge: |s, _| {
             let transfers = moves(s.logs_from(s.post.token));

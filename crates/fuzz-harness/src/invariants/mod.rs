@@ -18,7 +18,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope};
-use tempo_invariants::{Ran, VIEWS, dex, fee_amm, tip20};
+use tempo_invariants::{Check, Ran, VIEWS, configurable_account as account, dex, fee_amm, tip20};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::state::{Db, Net};
@@ -94,17 +94,16 @@ impl Deref for StepEffects<'_> {
 
 /// Every invariant the harness checks, and each model's counter of reads that failed.
 pub(crate) fn catalog() -> Vec<InvariantInfo> {
-    let checks = tempo_invariants::all().map(|check| {
-        let meta = check.meta();
-        InvariantInfo {
-            id: check.id().to_string(),
-            doc: meta.doc.to_string(),
-            tip: meta.tip.map(String::from),
-            covers: meta.covers.iter().map(|&id| id.to_string()).collect(),
-            since: meta.since,
-            until: meta.until,
-        }
-    });
+    fn infos<C>(checks: &[Check<C>]) -> impl Iterator<Item = InvariantInfo> + '_ {
+        checks.iter().map(|check| InvariantInfo {
+            id: check.id.to_string(),
+            doc: check.meta.doc.to_string(),
+            tip: check.meta.tip.map(String::from),
+            covers: check.meta.covers.iter().map(|&id| id.to_string()).collect(),
+            since: check.meta.since,
+            until: check.meta.until,
+        })
+    }
     let views = VIEWS.map(|(id, doc)| InvariantInfo {
         id: id.to_string(),
         doc: doc.to_string(),
@@ -113,7 +112,16 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         since: None,
         until: None,
     });
-    checks.chain(views).collect()
+    infos(tip20::CHECKS)
+        .chain(infos(tip20::STEP_CHECKS))
+        .chain(infos(fee_amm::CHECKS))
+        .chain(infos(fee_amm::STEP_CHECKS))
+        .chain(infos(dex::CHECKS))
+        .chain(infos(dex::STEP_CHECKS))
+        .chain(infos(account::STEP_CHECKS))
+        .chain(infos(account::LEAF_CHECKS))
+        .chain(views)
+        .collect()
 }
 
 /// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
@@ -131,8 +139,8 @@ pub(crate) fn logged_addresses<'a>(
 /// are read as balance holders too, but never checked as contracts. `env` is the block's
 /// environment, which the views run in. Only contracts for which `selected` holds are checked, and
 /// of those only the ones the step changed, as no other contract's invariants can have broken,
-/// except at the block's first step. With `effects`, a changed model's step checks also run on it
-/// before the step against it after. Views are answered from `view_cache`, the calls the block's
+/// except at the block's first step. With a transaction's `effects`, a model's step checks also run
+/// on it before the step against it after. Views are answered from `view_cache`, the calls the block's
 /// earlier steps made that this step left as they were.
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn check(

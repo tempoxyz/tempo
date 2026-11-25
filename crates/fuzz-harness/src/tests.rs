@@ -4,7 +4,7 @@ use std::{
 };
 
 use alloy_consensus::{SignableTransaction, TxLegacy, proofs::calculate_transaction_root};
-use alloy_eips::{Decodable2718, Encodable2718};
+use alloy_eips::{Decodable2718, Encodable2718, eip2935::HISTORY_STORAGE_ADDRESS};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall;
 use bincode::Options as _;
@@ -30,7 +30,13 @@ use tempo_fuzz_types::{
     TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
     TxOutcome,
 };
-use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
+use tempo_precompiles::{
+    storage::StorageKey as _,
+    tip20::{
+        slots::{SUPPLY_CAP, TOTAL_SUPPLY},
+        tip20_slots,
+    },
+};
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
     crypto::mock,
@@ -177,12 +183,15 @@ fn genesis_state() -> StateInput {
     state::encode(&accounts, &Contracts(&[&cache.contracts]))
 }
 
-/// The dev genesis as an exact pre-state for `blocks`, listing what they read, as an extractor
-/// reading a witness would: every account and slot execution loads, zeros included, with its value
-/// before the blocks.
-fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
+/// The dev genesis with the accounts of `edits` replaced, as an exact pre-state for `blocks`,
+/// listing what they read, as an extractor reading a witness would: every account and slot
+/// execution loads, zeros included, with its value before the blocks.
+fn exact_genesis(edits: StateInput, blocks: &[TempoBlock]) -> StateInput {
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
     let db = state::seed(&genesis()).unwrap();
+    for (address, account) in &edits.accounts {
+        state::insert(&mut db.cache.borrow_mut(), *address, account).unwrap();
+    }
     let blocks: Vec<_> = blocks
         .iter()
         .map(|block| execute::recover_block(&spec, block).unwrap())
@@ -197,7 +206,8 @@ fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     );
     assert_eq!(outcome.error, ErrorClass::None);
 
-    let before = genesis_state();
+    let mut before = genesis_state();
+    before.accounts.extend(edits.accounts);
     let cache = db.cache.borrow();
     let accounts = cache
         .accounts
@@ -395,7 +405,7 @@ fn system_calls_are_reported_apart_from_transactions() {
 fn an_exact_pre_state_replays_like_the_genesis_it_lists() {
     let from_genesis = run(genesis(), vec![transfer_block()]);
     let replayed = run(
-        exact(exact_genesis(&[transfer_block()])),
+        exact(exact_genesis(StateInput::default(), &[transfer_block()])),
         vec![transfer_block()],
     );
 
@@ -415,7 +425,7 @@ fn reading_outside_an_exact_pre_state_is_reported() {
         .expect("the transfer changes pathUSD")
         .slot;
 
-    let mut state = exact_genesis(&[transfer_block()]);
+    let mut state = exact_genesis(StateInput::default(), &[transfer_block()]);
     path_usd(&mut state).storage.remove(&read);
     let outcome = run(exact(state), vec![transfer_block()]);
     assert_eq!(outcome.error, ErrorClass::IncompletePreState);
@@ -555,7 +565,7 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
     fn storage(state: &mut StateInput, index: u8) -> &mut BTreeMap<U256, U256> {
         &mut state.accounts.get_mut(&token(index)).unwrap().storage
     }
-    let mut state = exact_genesis(&[transfer_block()]);
+    let mut state = exact_genesis(StateInput::default(), &[transfer_block()]);
     storage(&mut state, 0).extend([(TOTAL_SUPPLY, U256::from(1)), (SUPPLY_CAP, U256::ZERO)]);
     storage(&mut state, 1).remove(&TOTAL_SUPPLY);
     storage(&mut state, 2).insert(SUPPLY_CAP, U256::ZERO);
@@ -589,6 +599,67 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
         expected
             .map(|(id, scope, token)| (id, scope, Some(token)))
             .into()
+    );
+}
+
+#[test]
+fn a_system_step_runs_state_checks_but_no_step_checks() {
+    // The EIP-2935 history contract, run as the block's pre-execution system call, moves 1 pathUSD
+    // it holds to RECIPIENT. The executor drops the call's `Transfer` log.
+    let mut code = vec![0x63];
+    code.extend(ITIP20::transferCall::SELECTOR);
+    code.extend([0x60, 0xe0, 0x1b, 0x60, 0x00, 0x52, 0x73]);
+    code.extend(RECIPIENT);
+    code.extend([0x60, 0x04, 0x52, 0x60, 0x01, 0x60, 0x24, 0x52]);
+    code.extend([
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x44, 0x60, 0x00, 0x60, 0x00, 0x73,
+    ]);
+    code.extend(PATH_USD_ADDRESS);
+    code.extend([0x5a, 0xf1, 0x50, 0x00]);
+    let context = BlockContextInput {
+        block_number: 1,
+        ..context(TempoHardfork::T13, 0)
+    };
+    let blocks = vec![block(BlockHeaderInput::Context(context), Vec::new())];
+    // A genesis pre-state keeps protocol code, so the edited genesis is given as an exact one.
+    let mut path_usd = path_usd(&mut genesis_state()).clone();
+    path_usd.storage.insert(
+        HISTORY_STORAGE_ADDRESS.mapping_slot(tip20_slots::BALANCES),
+        U256::from(1),
+    );
+    *path_usd.storage.entry(TOTAL_SUPPLY).or_default() += U256::from(1);
+    let history = AccountInput {
+        code: code.into(),
+        ..Default::default()
+    };
+    let edits = StateInput {
+        accounts: [
+            (PATH_USD_ADDRESS, path_usd),
+            (HISTORY_STORAGE_ADDRESS, history),
+        ]
+        .into(),
+    };
+    let state = exact_genesis(edits, &blocks);
+    let outcome = run(exact(state), blocks);
+
+    assert_eq!(
+        outcome.error,
+        ErrorClass::None,
+        "{}",
+        crate::execute::with_rejection(|r| r.to_string())
+    );
+    let moved = storage_at(&outcome.state_diff.blocks[0].pre_block, PATH_USD_ADDRESS).count();
+    assert!(moved > 0, "the system call moved pathUSD");
+    assert!(
+        outcome.invariant_failures.is_empty(),
+        "{:?}",
+        outcome.invariant_failures
+    );
+    assert!(outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-TIP20-TRANSFER-EVENTS")
     );
 }
 
@@ -842,7 +913,14 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
             .find(|info| info.id == id)
             .unwrap_or_else(|| panic!("{id} is in the catalog"))
     };
-    assert_eq!(info("TEMPO-TIP20-SUPPLY-CAP").covers, ["TEMPO-TIP22"]);
+    // The keychain and receive-policy checks are not run here, so they are not listed.
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.id.starts_with("TEMPO-KEYCHAIN-")
+                && !info.id.starts_with("TEMPO-RECEIVE-"))
+    );
     let retired = info("TEMPO-ACCOUNT-ROOT-KEY-RETIRED");
     assert_eq!(
         (retired.since, retired.until, retired.tip.as_deref()),

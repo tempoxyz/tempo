@@ -13,7 +13,6 @@ pub const CUSTODY_STEP: &str = "TEMPO-DEX10-STEP";
 pub const CHECKS: &[Check<Books>] = &[check! {
     id: DEX_CUSTODY,
     doc: "The DEX holds, of each token, at least its users' internal balances of it plus its live orders' escrow in it.",
-    covers: ["TEMPO-DEX10"],
     over: |books: &Books| books.holdings.keys(),
     judge: |b, token| {
         let token = **token;

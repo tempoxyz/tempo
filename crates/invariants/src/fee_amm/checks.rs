@@ -20,7 +20,6 @@ pub const CHECKS: &[Check<Books>] = &[
     check! {
         id: FEE_CUSTODY,
         doc: "The fee manager holds, of each token, at least its pools' reserves of it plus the fees it collected in it.",
-        covers: ["TEMPO-FEE5", "TEMPO-AMM13"],
         over: |books: &Books| books.holdings.keys(),
         judge: |b, token| {
             let held = b.holdings[*token];
@@ -38,7 +37,6 @@ pub const CHECKS: &[Check<Books>] = &[
     check! {
         id: POOL_SHAPE,
         doc: "A pool is uninitialized (no LP supply, reserves or LP) or has at least the locked minimum LP supply.",
-        covers: ["TEMPO-AMM30", "TEMPO-AMM28", "TEMPO-AMM15"],
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply.is_zero() {
@@ -61,7 +59,6 @@ pub const CHECKS: &[Check<Books>] = &[
     check! {
         id: LP_SUPPLY,
         doc: "An initialized pool's LP holders hold at most its LP supply less the locked minimum.",
-        covers: ["TEMPO-AMM14"],
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply < MIN_LIQUIDITY {
@@ -112,7 +109,6 @@ pub const STEP_CHECKS: &[Check<Step<Books, Ran>>] = &[
     check! {
         id: MINT_SUPPLY,
         doc: "The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first mint.",
-        covers: ["TEMPO-AMM2"],
         over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
@@ -130,7 +126,6 @@ pub const STEP_CHECKS: &[Check<Step<Books, Ran>>] = &[
     check! {
         id: MINT_BALANCE,
         doc: "The recipient's LP balance grows by exactly the liquidity minted to it.",
-        covers: ["TEMPO-AMM3"],
         over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
@@ -143,7 +138,6 @@ pub const STEP_CHECKS: &[Check<Step<Books, Ran>>] = &[
     check! {
         id: MINT_RESERVE,
         doc: "The validator reserve grows by exactly the validator tokens deposited.",
-        covers: ["TEMPO-AMM4"],
         over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {

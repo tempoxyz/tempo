@@ -55,9 +55,9 @@ impl Reader<'_> {
         let Some(effects) = self.effects else {
             return;
         };
-        // A system step is only its state changes, so one that left the contract as it was cannot
-        // break a step check. A transaction's signatures and logs can.
-        if effects.ran.tx().is_none() && !effects.net.contains(&contract) {
+        // The executor drops a system call's logs, so a system step's step checks would judge its
+        // changes against none.
+        if effects.ran.tx().is_none() {
             return;
         }
         // A contract the step deployed has no state before it to read.
