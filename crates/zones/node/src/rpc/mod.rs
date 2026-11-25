@@ -603,48 +603,72 @@ async fn collect_tempo_witness(
         // An account-only read still needs the account proof, which every target carries.
         targets.entry(read.account).or_default().extend(read.slot);
     }
-    // The L1 RPC may balance connections across nodes whose heads differ by a few
-    // milliseconds, so the node serving this request can lack a block the subscriber already
-    // saw finalized. Retry only that answer (`block not found`); return every other error.
-    let nodes = futures::stream::iter(multi_proof_chunks(targets))
-        .map(|chunk| {
-            (move || {
-                provider
-                    .client()
-                    .request::<_, Vec<EIP1186AccountProofResponse>>(
-                        "eth_getMultiProof",
-                        (chunk.clone(), BlockId::number(tempo_block_number)),
-                    )
-            })
-            .retry(
-                ConstantBuilder::default()
-                    .with_delay(MULTI_PROOF_RETRY_DELAY)
-                    .with_max_times(MULTI_PROOF_RETRIES),
-            )
-            .when(|error| {
-                error.as_error_resp().is_some_and(|response| {
-                    response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+    let chunks = multi_proof_chunks(targets);
+    let state_root = tempo_header.state_root();
+    // A node can also answer while its state at the block is still incomplete, with nodes that
+    // do not link to the block's state root. Check every read as the SPF will and refetch on a
+    // gap, so an incomplete witness is never persisted. Before T15 the bounded collection
+    // timeout may cut this short, and settlement then recollects the witness.
+    let mut attempt = 0;
+    loop {
+        // The L1 RPC may balance connections across nodes whose heads differ by a few
+        // milliseconds, so the node serving this request can lack a block the subscriber already
+        // saw finalized. Retry only that answer (`block not found`); return every other error.
+        let nodes = futures::stream::iter(chunks.clone())
+            .map(|chunk| {
+                (move || {
+                    provider
+                        .client()
+                        .request::<_, Vec<EIP1186AccountProofResponse>>(
+                            "eth_getMultiProof",
+                            (chunk.clone(), BlockId::number(tempo_block_number)),
+                        )
+                })
+                .retry(
+                    ConstantBuilder::default()
+                        .with_delay(MULTI_PROOF_RETRY_DELAY)
+                        .with_max_times(MULTI_PROOF_RETRIES),
+                )
+                .when(|error| {
+                    error.as_error_resp().is_some_and(|response| {
+                        response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                    })
                 })
             })
-        })
-        .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
-        // Merge responses as they arrive.
-        .try_fold(BTreeMap::new(), |mut nodes, proofs| {
-            for proof in proofs {
-                for node in proof.account_proof.into_iter().chain(
-                    proof
-                        .storage_proof
-                        .into_iter()
-                        .flat_map(|proof| proof.proof),
-                ) {
-                    nodes.entry(keccak256(&node)).or_insert(node);
+            .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
+            // Merge responses as they arrive.
+            .try_fold(BTreeMap::new(), |mut nodes, proofs| {
+                for proof in proofs {
+                    for node in proof.account_proof.into_iter().chain(
+                        proof
+                            .storage_proof
+                            .into_iter()
+                            .flat_map(|proof| proof.proof),
+                    ) {
+                        nodes.entry(keccak256(&node)).or_insert(node);
+                    }
                 }
+                futures::future::ready(Ok(nodes))
+            })
+            .await
+            .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?
+            .into_values()
+            .collect::<Vec<_>>();
+        let reads = reads.iter().map(|read| (read.account, read.slot));
+        match zone_spf::verify_tempo_reads(state_root, &nodes, reads) {
+            Ok(()) => return Ok((initial_header, nodes)),
+            Err(error) if attempt < MULTI_PROOF_RETRIES => {
+                attempt += 1;
+                tracing::warn!(tempo_block_number, attempt, %error, "Refetching incomplete Tempo proofs");
+                tokio::time::sleep(MULTI_PROOF_RETRY_DELAY).await;
             }
-            futures::future::ready(Ok(nodes))
-        })
-        .await
-        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
-    Ok((initial_header, nodes.into_values().collect()))
+            Err(error) => {
+                return Err(error).wrap_err_with(|| {
+                    format!("Tempo proofs at block {tempo_block_number} do not prove every read")
+                });
+            }
+        }
+    }
 }
 
 /// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
