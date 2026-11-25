@@ -485,6 +485,13 @@ fn execute_block(
         partial: Some(Box::new(mem::take(&mut outputs))),
     })?;
     let (spec, env) = env(&executor);
+    invariants::check_block(
+        &outputs.receipts,
+        spec,
+        &InvariantScope::Block { block_index },
+        &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
+    );
     let output = executor.finish().map_err(|err| BlockFailure {
         class: class(&err),
         partial: Some(Box::new(mem::take(&mut outputs))),

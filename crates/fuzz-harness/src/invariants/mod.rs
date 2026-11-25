@@ -14,9 +14,10 @@ use std::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope};
+use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope, TxReceiptOutput};
 use tempo_invariants::{
-    Check, Ran, VIEWS, configurable_account as account, dex, fee_amm, model, tip20,
+    Check, Checked as _, Ran, VIEWS, block, configurable_account as account, dex, fee_amm, model,
+    tip20,
 };
 use tempo_primitives::is_tip20_prefix;
 
@@ -97,6 +98,40 @@ impl Deref for StepEffects<'_> {
     }
 }
 
+/// Appends to `failures`, at `scope`, each invariant the block's `receipts` break at `spec`, and adds
+/// the counts to `report`.
+pub(crate) fn check_block(
+    receipts: &[TxReceiptOutput],
+    spec: TempoHardfork,
+    scope: &InvariantScope,
+    failures: &mut Vec<InvariantFailure>,
+    report: &mut Report,
+) {
+    if !*ENABLED {
+        return;
+    }
+    let start = report.violations.len();
+    let receipts = block::Receipts {
+        cumulative_gas_used: receipts.iter().map(|r| r.cumulative_gas_used).collect(),
+    };
+    report.run(block::Receipts::CHECKS, &receipts, Some(&spec));
+    take_failures(report, start, scope, failures);
+}
+
+/// Moves the violations `report` found past its first `start` to `failures`, at `scope`.
+fn take_failures(
+    report: &mut Report,
+    start: usize,
+    scope: &InvariantScope,
+    failures: &mut Vec<InvariantFailure>,
+) {
+    let violations = report.violations.drain(start..);
+    failures.extend(violations.map(|violation| InvariantFailure {
+        violation,
+        scope: scope.clone(),
+    }));
+}
+
 /// Every invariant the harness checks, and each model's counter of reads that failed.
 pub(crate) fn catalog() -> Vec<InvariantInfo> {
     fn infos<C>(checks: &[Check<C>]) -> impl Iterator<Item = InvariantInfo> + '_ {
@@ -133,6 +168,7 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         .chain(infos(dex::STEP_CHECKS))
         .chain(infos(account::STEP_CHECKS))
         .chain(infos(account::LEAF_CHECKS))
+        .chain(infos(block::CHECKS))
         .chain(views)
         .collect()
 }
@@ -225,14 +261,6 @@ pub(crate) fn check(
         traced.armed += u64::from(effects.calls.is_some());
     }
 
-    failures.extend(
-        report
-            .violations
-            .drain(start..)
-            .map(|violation| InvariantFailure {
-                violation,
-                scope: scope.clone(),
-            }),
-    );
+    take_failures(report, start, scope, failures);
     db.pre.restore_missed(missed);
 }

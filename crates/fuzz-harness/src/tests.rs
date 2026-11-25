@@ -51,7 +51,7 @@ use tempo_primitives::{
 use test_case::test_case;
 
 use crate::{
-    bincode_options, chain, execute,
+    bincode_options, chain, execute, invariants,
     state::{self, Contracts, Net},
 };
 
@@ -164,6 +164,13 @@ fn run_input(input: TempoBlockchainInput) -> TempoExecutionOutcome {
     else {
         panic!("a blockchain input has a blockchain outcome");
     };
+    let catalog = invariants::catalog();
+    for id in outcome.invariant_counts.keys() {
+        assert!(
+            catalog.iter().any(|info| &info.id == id),
+            "{id} is counted but not in the catalog"
+        );
+    }
     outcome
 }
 
@@ -1135,4 +1142,11 @@ fn an_exit_that_reads_outside_an_exact_pre_state_is_not_answered() {
         assert_eq!(counts(&outcome, id), (1, 0, 0), "{id}");
     }
     assert_eq!(outcome.invariant_failures, []);
+}
+
+#[test]
+fn each_receipt_after_a_blocks_first_is_judged_for_its_cumulative_gas() {
+    let block = t4_block(vec![transfer(0, 7), transfer(1, 7), transfer(2, 7)]);
+    let outcome = run(genesis(), vec![block]);
+    assert_eq!(counts(&outcome, "TEMPO-BLOCK-GAS-MONOTONIC"), (2, 2, 0));
 }
