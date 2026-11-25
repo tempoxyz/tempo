@@ -22,6 +22,7 @@ use crate::{
     spam_deposits::SpamDeposits,
     verify_closed_loop::VerifyClosedLoop,
     verify_portal_backing::VerifyPortalBacking,
+    witness_shapes::WitnessShapes,
     zone_info::ZoneInfoCmd,
 };
 use clap::Parser as _;
@@ -53,6 +54,7 @@ mod set_encryption_key;
 mod spam_deposits;
 mod verify_closed_loop;
 mod verify_portal_backing;
+mod witness_shapes;
 mod zone_info;
 mod zone_utils;
 
@@ -111,6 +113,10 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("Portal backing verification failed"),
+        Action::WitnessShapes(args) => args
+            .run()
+            .await
+            .wrap_err("failed to shape registry witnesses"),
         Action::ZoneInfo(args) => args.run().await.wrap_err("failed to fetch zone info"),
         Action::GenerateStateBloat(args) => args
             .run()
@@ -155,6 +161,7 @@ enum Action {
     SpamDeposits(SpamDeposits),
     VerifyClosedLoop(VerifyClosedLoop),
     VerifyPortalBacking(VerifyPortalBacking),
+    WitnessShapes(WitnessShapes),
     ZoneInfo(ZoneInfoCmd),
     GenerateStateBloat(GenerateStateBloat),
 }
