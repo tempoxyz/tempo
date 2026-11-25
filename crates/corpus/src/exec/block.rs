@@ -49,9 +49,11 @@ impl Executed {
     }
 }
 
-pub type Updates = Arc<Mutex<Vec<StateUpdate>>>;
+/// State updates an executor's state hook collected, in commit order.
+pub(crate) type Updates = Arc<Mutex<Vec<StateUpdate>>>;
 
-pub fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
+/// Installs a state hook on `executor` that collects its committed updates.
+pub(crate) fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     let updates = Updates::default();
     let sink = updates.clone();
     eyre::ensure!(
@@ -61,7 +63,8 @@ pub fn hooked(executor: &mut TempoBlockExecutor<'_>) -> eyre::Result<Updates> {
     Ok(updates)
 }
 
-pub fn drain(updates: &Updates) -> Vec<StateUpdate> {
+/// Takes the updates collected since the last drain.
+pub(crate) fn drain(updates: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *updates.lock())
 }
 
