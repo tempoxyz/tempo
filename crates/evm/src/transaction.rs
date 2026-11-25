@@ -5,7 +5,7 @@ use alloy_consensus::{
     transaction::{Either, Recovered, TxHashRef},
 };
 use alloy_eips::eip2930::AccessList;
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 pub use evm2::ethereum::RecoveredTxEnvelope;
 use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut};
@@ -296,6 +296,26 @@ pub struct TempoTxEnv {
     tx_hash: B256,
     unique_tx_identifier: B256,
     fee_payer_override: Option<Address>,
+    /// `expiring_nonce_seen[unique_tx_identifier]` slot of an expiring-nonce AA transaction,
+    /// hashed when the environment is built (pool admission) rather than during execution.
+    expiring_nonce_seen_slot: Option<U256>,
+}
+
+fn expiring_nonce_seen_slot(
+    envelope: &TempoTxEnvelope,
+    unique_tx_identifier: B256,
+) -> Option<U256> {
+    match envelope {
+        TempoTxEnvelope::AA(aa)
+            if aa.tx().nonce_key
+                == tempo_primitives::transaction::tempo_transaction::TEMPO_EXPIRING_NONCE_KEY =>
+        {
+            Some(tempo_precompiles::nonce::expiring_nonce_seen_slot(
+                unique_tx_identifier,
+            ))
+        }
+        _ => None,
+    }
 }
 
 impl TempoTxEnv {
@@ -341,6 +361,7 @@ impl TempoTxEnv {
                     tx_hash: *envelope.tx_hash(),
                     unique_tx_identifier: envelope.unique_tx_identifier(signer),
                     fee_payer_override: None,
+                    expiring_nonce_seen_slot: None,
                 });
             }
         };
@@ -402,6 +423,11 @@ impl TempoTxEnv {
         self.execution_context
     }
 
+    /// Returns the precomputed `expiring_nonce_seen` slot of [`Self::unique_tx_identifier`].
+    pub const fn expiring_nonce_seen_slot(&self) -> Option<U256> {
+        self.expiring_nonce_seen_slot
+    }
+
     /// Returns the sender-scoped identifier used by replay-sensitive protocol features.
     pub const fn unique_tx_identifier(&self) -> B256 {
         self.unique_tx_identifier
@@ -427,6 +453,9 @@ impl TempoTxEnv {
         key_id: Option<Address>,
     ) -> Self {
         self.execution_context = ExecutionContext::Simulation;
+        if self.unique_tx_identifier != unique_tx_identifier {
+            self.expiring_nonce_seen_slot = None;
+        }
         self.unique_tx_identifier = unique_tx_identifier;
         self.fee_payer_override = fee_payer;
         if let TempoEvmTx::AA(transaction) = &mut self.evm_tx {
@@ -545,12 +574,15 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
         let tx_hash = *recovered.inner().tx_hash();
         let unique_tx_identifier = recovered.inner().unique_tx_identifier(recovered.signer());
+        let expiring_nonce_seen_slot =
+            expiring_nonce_seen_slot(recovered.inner(), unique_tx_identifier);
         Self {
             evm_tx: recovered.into(),
             execution_context: ExecutionContext::Transaction { tx_hash },
             tx_hash,
             unique_tx_identifier,
             fee_payer_override: None,
+            expiring_nonce_seen_slot,
         }
     }
 }

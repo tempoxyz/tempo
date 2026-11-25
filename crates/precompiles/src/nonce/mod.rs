@@ -48,7 +48,29 @@ pub struct NonceManager {
     expiring_nonce_ring_ptr: u32,
 }
 
+/// Base slot of `NonceManager::expiring_nonce_seen` (slot 1 in the layout above).
+const EXPIRING_NONCE_SEEN_BASE_SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
+
+/// Returns the storage slot of `expiring_nonce_seen[hash]` without the keccak cache, for callers
+/// that compute it off the executing thread (pool admission) and pass it to
+/// [`NonceManager::prime_expiring_nonce_seen`].
+pub fn expiring_nonce_seen_slot(hash: B256) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[..32].copy_from_slice(hash.as_slice());
+    buf[32..].copy_from_slice(&EXPIRING_NONCE_SEEN_BASE_SLOT.to_be_bytes::<32>());
+    alloy::primitives::keccak256_uncached(buf).into()
+}
+
 impl NonceManager {
+    /// Seeds `expiring_nonce_seen[hash]` with its precomputed slot.
+    pub fn prime_expiring_nonce_seen(&self, hash: B256, slot: U256) {
+        debug_assert_eq!(
+            self.expiring_nonce_seen.slot(),
+            EXPIRING_NONCE_SEEN_BASE_SLOT
+        );
+        self.expiring_nonce_seen.prime(&hash, slot);
+    }
+
     /// Initializes the nonce manager precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
