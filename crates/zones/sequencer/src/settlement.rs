@@ -205,6 +205,9 @@ where
 /// margin. This type exists primarily so tests can shrink that otherwise large
 /// window and exercise ancestry behavior without mining thousands of L1 blocks.
 /// Production code should normally use [`Default`].
+/// Default L1 EIP-2935 blockhash lag in blocks (hankie's `BLOCKHASH_LAG = 2`).
+const DEFAULT_BLOCKHASH_LAG: u64 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchAnchorConfig {
     /// Total L1 block-hash history window to treat as available for EIP-2935
@@ -213,6 +216,9 @@ pub struct BatchAnchorConfig {
     /// Number of most-recent L1 blocks to avoid when choosing an anchor, reducing
     /// the chance that an anchor ages out before the on-chain transaction lands.
     safety_margin: u64,
+    /// Number of L1 blocks after block `N` before `hash(N)` is written to EIP-2935
+    /// (1 on Tempo, `k` on hankie).
+    blockhash_lag: u64,
 }
 
 impl BatchAnchorConfig {
@@ -231,7 +237,17 @@ impl BatchAnchorConfig {
         Ok(Self {
             history_window,
             safety_margin,
+            blockhash_lag: DEFAULT_BLOCKHASH_LAG,
         })
+    }
+
+    /// Sets the EIP-2935 blockhash lag `k` (must be at least 1).
+    pub fn with_blockhash_lag(mut self, blockhash_lag: u64) -> Result<Self> {
+        if blockhash_lag == 0 {
+            return Err(eyre::eyre!("EIP-2935 blockhash lag must be non-zero"));
+        }
+        self.blockhash_lag = blockhash_lag;
+        Ok(self)
     }
 
     /// Configured history window in L1 blocks.
@@ -242,6 +258,11 @@ impl BatchAnchorConfig {
     /// Configured safety margin in L1 blocks.
     pub const fn safety_margin(self) -> u64 {
         self.safety_margin
+    }
+
+    /// Configured EIP-2935 blockhash lag in L1 blocks.
+    pub const fn blockhash_lag(self) -> u64 {
+        self.blockhash_lag
     }
 
     /// Effective direct-submission window after subtracting the safety margin.
@@ -255,6 +276,7 @@ impl Default for BatchAnchorConfig {
         Self {
             history_window: HISTORY_SERVE_WINDOW as u64,
             safety_margin: DEFAULT_EIP2935_SAFETY_MARGIN,
+            blockhash_lag: DEFAULT_BLOCKHASH_LAG,
         }
     }
 }
@@ -448,11 +470,13 @@ impl BatchSubmitter {
         }
         let current_l1_block = self.validate_prepared_anchor(prepared).await?;
         let recent_tempo_block_number = prepared.anchor.recent_block_number();
-        // EIP-2935 exposes hash(N) starting in N+1. A transaction built after observing head N
-        // cannot land before N+1, so anchoring to the current tip is valid at execution time.
+        // EIP-2935 exposes hash(N) starting in N + lag. A transaction built after observing
+        // head >= N + lag - 1 cannot land before N + lag, so anchoring is valid at execution
+        // time, but eth_estimateGas against head < N + lag cannot see hash(N) yet.
         let anchor_block_number = prepared.anchor_block_number();
         let anchor_block_hash = prepared.anchor.block_hash();
-        let anchors_to_current_tip = anchor_block_number == current_l1_block;
+        let anchors_to_current_tip = current_l1_block
+            < anchor_block_number.saturating_add(self.anchor_config.blockhash_lag());
 
         let signatures = if let Some(certificate) = certificate {
             certificate.signatures.clone()
@@ -920,7 +944,9 @@ impl BatchSubmitter {
             )));
         }
 
-        let current_l1_block = wait_for_l1_block(&self.l1_provider, anchor_block_number).await?;
+        let min_l1_block = anchor_block_number
+            .saturating_add(self.anchor_config.blockhash_lag().saturating_sub(1));
+        let current_l1_block = wait_for_l1_block(&self.l1_provider, min_l1_block).await?;
         if current_l1_block.saturating_sub(anchor_block_number)
             >= self.anchor_config.history_window()
         {

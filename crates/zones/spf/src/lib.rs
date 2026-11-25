@@ -21,10 +21,12 @@ use zone_primitives::constants::{
 
 mod execution;
 mod mpt;
+mod qmdb;
 mod types;
 
 pub use execution::database::{TempoWitnessDatabase, WitnessDatabase, WitnessDatabaseError};
 pub use mpt::StatelessSparseTrieError;
+pub use qmdb::QmdbWitnessError;
 pub use types::*;
 
 /// Execute a Zone batch witness and return its public commitments.
@@ -87,8 +89,10 @@ pub fn prove_zone_batch(config: &SpfConfig, witness: BatchWitness) -> Result<Bat
     // The initial Tempo header supplies the root for Tempo-side reads. The
     // Zone's own TempoState must already contain the same number and hash;
     // otherwise the witness would describe a different L1 checkpoint.
-    let mut tempo_database =
-        TempoWitnessDatabase::from_tempo_state_witness(witness.tempo_state_witness)?;
+    let mut tempo_database = TempoWitnessDatabase::from_tempo_state_witness_with_format(
+        witness.tempo_state_witness,
+        config.l1_proof_format(),
+    )?;
     let (witnessed_tempo_number, witnessed_tempo_hash) = tempo_database.checkpoint();
     let zone_tempo_hash = B256::from(read_zone_storage(
         &mut zone_state,
@@ -502,6 +506,9 @@ pub enum Error {
     /// The Zone MPT witness did not prove one of its supplied reads.
     #[error(transparent)]
     MptValidation(#[from] StatelessSparseTrieError),
+    /// The Tempo QMDB witness did not prove one of its supplied reads.
+    #[error(transparent)]
+    QmdbValidation(#[from] QmdbWitnessError),
     /// A read against the provided state witness failed.
     #[error(transparent)]
     WitnessDatabase(#[from] WitnessDatabaseError),

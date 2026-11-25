@@ -19,8 +19,10 @@ use tempo_primitives::{TempoHeader, account::decode_config_commitment};
 use zone_precompiles::{L1StateError, L1StorageReader};
 
 use crate::{
-    Error, StatelessSparseTrieError, TempoStateWitness, ZoneStateWitness,
+    Error, L1ProofFormat, QmdbWitnessError, StatelessSparseTrieError, TempoStateWitness,
+    ZoneStateWitness,
     mpt::{StatelessSparseTrie, WitnessNodes, WitnessPathReader, index_witness_nodes},
+    qmdb::QmdbWitnessPool,
 };
 
 /// Errors emitted while resolving an execution read against a witness.
@@ -177,15 +179,20 @@ impl Database for WitnessDatabase {
 /// When the shared node pool includes that checkpoint's root, each read walks
 /// only its own path from that root through the pool. Otherwise the reader
 /// remains inactive and rejects any Tempo storage read as an incomplete witness.
+#[derive(Debug)]
+enum TempoWitnessStore {
+    Mpt(WitnessNodes),
+    Qmdb(QmdbWitnessPool),
+}
+
 #[derive(Clone, Debug)]
 pub struct TempoWitnessDatabase {
     /// The checkpoint's state root, when the node pool can serve reads from it.
     state_root: Option<B256>,
     tempo_block_hash: B256,
     tempo_block_number: u64,
-    /// The batch-wide Tempo node pool, indexed by hash once and shared by
-    /// every checkpoint reader.
-    nodes: Arc<WitnessNodes>,
+    /// The batch-wide Tempo witness pool, decoded once and shared by every checkpoint reader.
+    store: Arc<TempoWitnessStore>,
     missing_read: Arc<Mutex<Option<MissingTempoStorageRead>>>,
 }
 
@@ -198,17 +205,31 @@ pub(crate) struct MissingTempoStorageRead {
 }
 
 impl TempoWitnessDatabase {
-    /// Construct the reader for the initial Tempo checkpoint.
+    /// Construct the reader for the initial Tempo checkpoint using MPT proofs.
     pub fn from_tempo_state_witness(witness: TempoStateWitness) -> Result<Self, Error> {
-        let nodes = Arc::new(WitnessNodes::decode(&witness.node_pool)?);
+        Self::from_tempo_state_witness_with_format(witness, L1ProofFormat::Mpt)
+    }
+
+    /// Construct the reader for the initial Tempo checkpoint using `format`.
+    pub fn from_tempo_state_witness_with_format(
+        witness: TempoStateWitness,
+        format: L1ProofFormat,
+    ) -> Result<Self, Error> {
+        let store = match format {
+            L1ProofFormat::Mpt => TempoWitnessStore::Mpt(WitnessNodes::decode(&witness.node_pool)?),
+            L1ProofFormat::Qmdb => {
+                TempoWitnessStore::Qmdb(QmdbWitnessPool::decode(&witness.node_pool)?)
+            }
+        };
+        let store = Arc::new(store);
         let (state_root, tempo_block_hash, tempo_block_number) =
-            checkpoint_state(&witness.initial_tempo_header_rlp, &nodes)?;
+            checkpoint_state(&witness.initial_tempo_header_rlp, &store)?;
 
         Ok(Self {
             state_root,
             tempo_block_hash,
             tempo_block_number,
-            nodes,
+            store,
             missing_read: Arc::default(),
         })
     }
@@ -221,13 +242,13 @@ impl TempoWitnessDatabase {
         header_rlp: &alloy_primitives::Bytes,
     ) -> Result<Self, Error> {
         let (state_root, tempo_block_hash, tempo_block_number) =
-            checkpoint_state(header_rlp, &self.nodes)?;
+            checkpoint_state(header_rlp, &self.store)?;
 
         Ok(Self {
             state_root,
             tempo_block_hash,
             tempo_block_number,
-            nodes: self.nodes,
+            store: self.store,
             missing_read: self.missing_read,
         })
     }
@@ -273,18 +294,40 @@ impl TempoWitnessDatabase {
             error => format!("invalid Tempo witness: {error}"),
         }
     }
+
+    fn qmdb_read_failure(
+        &self,
+        error: QmdbWitnessError,
+        account: Address,
+        slot: Option<B256>,
+    ) -> String {
+        match error {
+            QmdbWitnessError::MissingAccountProof { .. }
+            | QmdbWitnessError::MissingStorageProof { .. } => {
+                self.record_missing_read(account, slot, self.tempo_block_number);
+                format!("incomplete Tempo witness: {error}")
+            }
+            error => format!("invalid Tempo witness: {error}"),
+        }
+    }
 }
 
 fn checkpoint_state(
     header_rlp: &[u8],
-    nodes: &WitnessNodes,
+    store: &TempoWitnessStore,
 ) -> Result<(Option<B256>, B256, u64), Error> {
     let header: TempoHeader = alloy_rlp::decode_exact(header_rlp)
         .map_err(|_| WitnessDatabaseError::InvalidTempoHeader)?;
 
     let state_root = header.state_root();
-    let state_root =
-        (state_root == EMPTY_ROOT_HASH || nodes.contains(&state_root)).then_some(state_root);
+    let state_root = match store {
+        TempoWitnessStore::Mpt(nodes) => {
+            (state_root == EMPTY_ROOT_HASH || nodes.contains(&state_root)).then_some(state_root)
+        }
+        // Per-key QMDB proofs verify directly against the header's state root; there is no
+        // root node entry in the pool.
+        TempoWitnessStore::Qmdb(_) => Some(state_root),
+    };
 
     Ok((state_root, keccak256(header_rlp), header.number()))
 }
@@ -314,15 +357,24 @@ impl L1StorageReader for TempoWitnessDatabase {
                 "witness does not include the checkpoint state root",
             )
         })?;
-        let state = WitnessPathReader::new(state_root, &self.nodes);
-        let value = state.storage(account, slot.into()).map_err(|error| {
-            L1StateError::StorageUnavailable {
-                account,
-                slot,
-                block_number: tempo_block_number,
-                reason: self.witness_read_failure(error, account, Some(slot)),
-            }
-        })?;
+        let value = match &*self.store {
+            TempoWitnessStore::Mpt(nodes) => WitnessPathReader::new(state_root, nodes)
+                .storage(account, slot.into())
+                .map_err(|error| L1StateError::StorageUnavailable {
+                    account,
+                    slot,
+                    block_number: tempo_block_number,
+                    reason: self.witness_read_failure(error, account, Some(slot)),
+                })?,
+            TempoWitnessStore::Qmdb(pool) => pool
+                .storage(state_root, account, slot.into())
+                .map_err(|error| L1StateError::StorageUnavailable {
+                    account,
+                    slot,
+                    block_number: tempo_block_number,
+                    reason: self.qmdb_read_failure(error, account, Some(slot)),
+                })?,
+        };
         Ok(value.into())
     }
 
@@ -345,13 +397,20 @@ impl L1StorageReader for TempoWitnessDatabase {
             self.record_missing_read(account, None, tempo_block_number);
             unavailable("witness does not include the checkpoint state root".into())
         })?;
-        let trie_account = WitnessPathReader::new(state_root, &self.nodes)
-            .account(account)
-            .map_err(|error| unavailable(self.witness_read_failure(error, account, None)))?;
+        let extension: Option<alloy_primitives::Bytes> = match &*self.store {
+            TempoWitnessStore::Mpt(nodes) => WitnessPathReader::new(state_root, nodes)
+                .account(account)
+                .map_err(|error| unavailable(self.witness_read_failure(error, account, None)))?
+                .map(|acc| alloy_primitives::Bytes::copy_from_slice(acc.extension.as_ref())),
+            TempoWitnessStore::Qmdb(pool) => pool
+                .account(state_root, account)
+                .map_err(|error| unavailable(self.qmdb_read_failure(error, account, None)))?
+                .map(|acc| acc.extension),
+        };
         // A proven absence has no commitment. A present account's extension follows TIP-1108,
         // which T14 accepts; earlier forks never write one.
-        trie_account.map_or(Ok(B256::ZERO), |trie_account| {
-            decode_config_commitment(&trie_account.extension, TempoHardfork::T14)
+        extension.map_or(Ok(B256::ZERO), |extension| {
+            decode_config_commitment(&extension, TempoHardfork::T14)
                 .map_err(|error| unavailable(format!("invalid Tempo account commitment: {error}")))
         })
     }
@@ -382,8 +441,8 @@ mod tests {
         header.inner.state_root = EMPTY_ROOT_HASH;
         header.inner.number = 42;
         let encoded = alloy_rlp::encode(header);
-        let (state, hash, number) =
-            checkpoint_state(&encoded, &WitnessNodes::decode(&[]).unwrap()).unwrap();
+        let empty = TempoWitnessStore::Mpt(WitnessNodes::decode(&[]).unwrap());
+        let (state, hash, number) = checkpoint_state(&encoded, &empty).unwrap();
         assert!(state.is_some());
         assert_eq!(hash, keccak256(&encoded));
         assert_eq!(number, 42);
@@ -394,7 +453,7 @@ mod tests {
         invalid.push([encoded.as_slice(), &[0x80]].concat());
         for bytes in invalid {
             assert_eq!(
-                checkpoint_state(&bytes, &WitnessNodes::decode(&[]).unwrap()).unwrap_err(),
+                checkpoint_state(&bytes, &empty).unwrap_err(),
                 WitnessDatabaseError::InvalidTempoHeader.into()
             );
         }

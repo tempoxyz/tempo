@@ -10,7 +10,7 @@ use std::{
 };
 
 use alloy_genesis::Genesis;
-use clap::{Args, Parser};
+use clap::{Args, Parser, ValueEnum};
 use tempo_chainspec::TempoChainSpec;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
@@ -22,7 +22,22 @@ use zone_prover::{
     ProverConnection, TrustedChainSpecs, VerifyRequest, VerifyResponse,
     attested_transport::AttestedServer, nitro_batch_attestation_hash, request_error_response,
 };
-use zone_spf::{BatchOutput, PublicInputs, SpfConfig, prove_zone_batch};
+use zone_spf::{BatchOutput, L1ProofFormat, PublicInputs, SpfConfig, prove_zone_batch};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliL1ProofFormat {
+    Mpt,
+    Qmdb,
+}
+
+impl From<CliL1ProofFormat> for L1ProofFormat {
+    fn from(value: CliL1ProofFormat) -> Self {
+        match value {
+            CliL1ProofFormat::Mpt => Self::Mpt,
+            CliL1ProofFormat::Qmdb => Self::Qmdb,
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -70,6 +85,10 @@ struct Cli {
     #[arg(long)]
     use_tcp: bool,
 
+    /// L1 state proof format verified by the SPF (`qmdb` for hankie, `mpt` for Tempo).
+    #[arg(long, env = "SPF_L1_PROOF_FORMAT", value_enum, default_value_t = CliL1ProofFormat::Qmdb)]
+    l1_proof_format: CliL1ProofFormat,
+
     #[command(flatten)]
     timeouts: Timeouts,
 }
@@ -77,6 +96,7 @@ struct Cli {
 impl Cli {
     async fn run(self) -> io::Result<()> {
         let specs = self.load_trusted_chain_specs()?;
+        let l1_proof_format: L1ProofFormat = self.l1_proof_format.into();
 
         #[cfg(target_os = "linux")]
         linux::verify_entropy_configuration()?;
@@ -85,12 +105,28 @@ impl Cli {
         })?;
 
         if self.use_tcp {
-            return serve_tcp(self.port, self.max_request_bytes, specs, self.timeouts, tls).await;
+            return serve_tcp(
+                self.port,
+                self.max_request_bytes,
+                specs,
+                l1_proof_format,
+                self.timeouts,
+                tls,
+            )
+            .await;
         }
 
         #[cfg(target_os = "linux")]
         {
-            linux::serve_vsock(self.port, self.max_request_bytes, specs, self.timeouts, tls).await
+            linux::serve_vsock(
+                self.port,
+                self.max_request_bytes,
+                specs,
+                l1_proof_format,
+                self.timeouts,
+                tls,
+            )
+            .await
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -160,6 +196,7 @@ async fn serve_tcp(
     port: u32,
     maximum: usize,
     specs: TrustedChainSpecs,
+    l1_proof_format: L1ProofFormat,
     timeouts: Timeouts,
     tls: AttestedServer,
 ) -> io::Result<()> {
@@ -185,7 +222,15 @@ async fn serve_tcp(
                 continue;
             }
         };
-        handle_connection(connection, &tls, maximum, &specs, &timeouts).await;
+        handle_connection(
+            connection,
+            &tls,
+            maximum,
+            &specs,
+            l1_proof_format,
+            &timeouts,
+        )
+        .await;
     }
 }
 
@@ -225,6 +270,7 @@ mod linux {
         port: u32,
         maximum: usize,
         specs: TrustedChainSpecs,
+        l1_proof_format: L1ProofFormat,
         timeouts: Timeouts,
         tls: AttestedServer,
     ) -> io::Result<()> {
@@ -244,7 +290,15 @@ mod linux {
                     continue;
                 }
             };
-            handle_connection(connection, &tls, maximum, &specs, &timeouts).await;
+            handle_connection(
+                connection,
+                &tls,
+                maximum,
+                &specs,
+                l1_proof_format,
+                &timeouts,
+            )
+            .await;
         }
     }
 }
@@ -257,6 +311,7 @@ async fn handle_connection<T>(
     tls: &AttestedServer,
     maximum: usize,
     specs: &TrustedChainSpecs,
+    l1_proof_format: L1ProofFormat,
     timeouts: &Timeouts,
 ) where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -287,7 +342,7 @@ async fn handle_connection<T>(
         None => return,
     };
     let request_bytes = connection.last_received_bytes().unwrap_or_default();
-    let response = process_request(request, specs);
+    let response = process_request(request, specs, l1_proof_format);
     if let Some(Ok(response_bytes)) = timed(connection.send(response), timeouts.response).await {
         info!(
             request_bytes,
@@ -316,7 +371,11 @@ where
     }
 }
 
-fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyResponse {
+fn process_request(
+    request: VerifyRequest,
+    specs: &TrustedChainSpecs,
+    l1_proof_format: L1ProofFormat,
+) -> VerifyResponse {
     if request.version != PROTOCOL_VERSION {
         return VerifyResponse::Error {
             version: PROTOCOL_VERSION,
@@ -362,7 +421,7 @@ fn process_request(request: VerifyRequest, specs: &TrustedChainSpecs) -> VerifyR
             };
         }
     };
-    let config = SpfConfig::new(Arc::new(zone_spec));
+    let config = SpfConfig::new(Arc::new(zone_spec)).with_l1_proof_format(l1_proof_format);
 
     let public_inputs = request.witness.public_inputs.clone();
     match prove_zone_batch(&config, request.witness) {
@@ -460,7 +519,7 @@ mod tests {
             request_id: "version-test".into(),
             witness: empty_witness(),
         };
-        let response = process_request(request, &TrustedChainSpecs::default());
+        let response = process_request(request, &TrustedChainSpecs::default(), L1ProofFormat::Mpt);
 
         assert!(matches!(
             response,
@@ -481,7 +540,7 @@ mod tests {
             request_id: "chain-test".into(),
             witness,
         };
-        let response = process_request(request, &TrustedChainSpecs::default());
+        let response = process_request(request, &TrustedChainSpecs::default(), L1ProofFormat::Mpt);
 
         assert!(matches!(
             response,
@@ -545,7 +604,7 @@ mod tests {
             request_id: "spf-test".into(),
             witness: empty_witness(),
         };
-        let response = process_request(request, &TrustedChainSpecs::default());
+        let response = process_request(request, &TrustedChainSpecs::default(), L1ProofFormat::Mpt);
 
         assert!(matches!(
             response,
@@ -572,7 +631,7 @@ mod tests {
             witness: empty_witness(),
         };
 
-        let response = process_request(request, &specs);
+        let response = process_request(request, &specs, L1ProofFormat::Mpt);
 
         assert!(matches!(
             response,

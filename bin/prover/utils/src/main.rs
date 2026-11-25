@@ -34,8 +34,8 @@ use zone_prover::{
 };
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness,
-    VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
+    BatchOutput, BatchWitness, L1ProofFormat, PublicInputs, SpfConfig, TempoImport,
+    TempoStateWitness, VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 mod verifier_request;
@@ -96,11 +96,30 @@ struct ProveArgs {
     output: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliL1ProofFormat {
+    Mpt,
+    Qmdb,
+}
+
+impl From<CliL1ProofFormat> for L1ProofFormat {
+    fn from(value: CliL1ProofFormat) -> Self {
+        match value {
+            CliL1ProofFormat::Mpt => Self::Mpt,
+            CliL1ProofFormat::Qmdb => Self::Qmdb,
+        }
+    }
+}
+
 #[derive(Debug, clap::Args)]
 struct GenerateInputArgs {
     /// Tempo L1 HTTP or WebSocket RPC URL.
     #[arg(long)]
     tempo_rpc_url: String,
+
+    /// L1 state proof format (`qmdb` for hankie, `mpt` for Tempo).
+    #[arg(long, value_enum, default_value_t = CliL1ProofFormat::Qmdb)]
+    l1_proof_format: CliL1ProofFormat,
 
     /// The Zone genesis JSON: a local path, inline JSON, or an HTTP(S) URL.
     #[arg(long, value_name = "CHAIN_OR_PATH_OR_URL")]
@@ -247,7 +266,7 @@ async fn generate_input(args: GenerateInputArgs) -> Result<()> {
     let tempo_provider = connect(&args.tempo_rpc_url, "Tempo").await?;
     let zone_provider = connect(&args.zone_rpc_url, "unrestricted Zone").await?;
     let mut discovery = discover(&tempo_provider, &zone_provider).await?;
-    let spf_config = SpfConfig::new(chain);
+    let spf_config = SpfConfig::new(chain).with_l1_proof_format(args.l1_proof_format.into());
     info!(
         zone_id = discovery.zone_id,
         portal = %discovery.portal,

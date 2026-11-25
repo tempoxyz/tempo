@@ -407,7 +407,8 @@ async fn configure_sequencing(
                 .and_then(P2pConfig::block_attestation_signer),
             zone_id,
             zone_poll_interval: Duration::from_secs(args.zone_poll_interval_secs),
-            batch_anchor_config: BatchAnchorConfig::default(),
+            batch_anchor_config: BatchAnchorConfig::default()
+                .with_blockhash_lag(args.l1_blockhash_lag)?,
             withdrawal_poll_interval: Duration::from_secs(args.withdrawal_poll_interval_secs),
             withdrawal_batch_limits: WithdrawalBatchLimits {
                 max_batch_gas: args.withdrawal_max_batch_gas,
@@ -556,6 +557,14 @@ pub struct ZoneArgs {
         value_parser = parse_l1_rpc_url
     )]
     pub l1_rpc_url: String,
+
+    /// L1 EIP-2935 blockhash lag in blocks (1 on Tempo, 2 by default on hankie).
+    #[arg(
+        long = "l1.blockhash-lag",
+        env = "L1_BLOCKHASH_LAG",
+        default_value_t = 2
+    )]
+    pub l1_blockhash_lag: u64,
 
     /// Deprecated compatibility flag. Ignored.
     #[arg(

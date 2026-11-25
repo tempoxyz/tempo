@@ -13,6 +13,16 @@ use zone_chainspec::ZoneChainSpec;
 use zone_evm::ZoneEvmConfig;
 use zone_precompiles::L1StorageReader;
 
+/// Which L1 state proof format the SPF expects in `TempoStateWitness::node_pool`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum L1ProofFormat {
+    /// Tempo's Merkle Patricia Trie node pool.
+    #[default]
+    Mpt,
+    /// Hankie's per-key QMDB proofs (hankie decision 47).
+    Qmdb,
+}
+
 /// Trusted network configuration for Zone execution.
 ///
 /// This is deliberately separate from [`BatchWitness`]: it is selected by the
@@ -23,13 +33,28 @@ use zone_precompiles::L1StorageReader;
 #[derive(Debug, Clone)]
 pub struct SpfConfig {
     chain_spec: Arc<ZoneChainSpec>,
+    l1_proof_format: L1ProofFormat,
 }
 
 impl SpfConfig {
     /// Creates a new [`SpfConfig`] with the given composed chainspec.
     /// The portal is derived from the zone ID encoded in the chainspec.
     pub fn new(chain_spec: Arc<ZoneChainSpec>) -> Self {
-        Self { chain_spec }
+        Self {
+            chain_spec,
+            l1_proof_format: L1ProofFormat::Mpt,
+        }
+    }
+
+    /// Selects the L1 state proof format (`Mpt` for Tempo, `Qmdb` for hankie).
+    pub const fn with_l1_proof_format(mut self, format: L1ProofFormat) -> Self {
+        self.l1_proof_format = format;
+        self
+    }
+
+    /// Returns the configured L1 state proof format.
+    pub const fn l1_proof_format(&self) -> L1ProofFormat {
+        self.l1_proof_format
     }
 
     /// Returns a reference to the [`ZoneChainSpec`].

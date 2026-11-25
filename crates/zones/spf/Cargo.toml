@@ -29,6 +29,11 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
+bytes.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
 evm2.workspace = true
 reth-chainspec = { workspace = true, default-features = true }
 reth-evm.workspace = true
