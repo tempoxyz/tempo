@@ -355,3 +355,31 @@ impl GcCommand {
         gc::gc(&store, self.force).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn shadow_replay_requires_block_replay() {
+        let parse = |args: &[&str]| {
+            ReplayCommand::try_parse_from([&["replay", "--corpus", "s3://corpus"], args].concat())
+        };
+        let cmd = parse(&["--shadow", "T14", "--fail-on-findings"]).unwrap();
+        assert_eq!(
+            (cmd.shadow, cmd.fail_on_findings),
+            (Some(TempoHardfork::T14), true)
+        );
+        assert_eq!(
+            parse(&["--fail-on-findings"]).unwrap_err().kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            parse(&["--shadow", "T14", "--tx-from", "0", "--tx-to", "1"])
+                .unwrap_err()
+                .kind(),
+            ErrorKind::ArgumentConflict
+        );
+    }
+}
