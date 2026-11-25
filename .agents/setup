@@ -86,7 +86,7 @@ drop_archil_build_cache() {
   # refuses to run without the mount, and point target/ at that disk. Remove both so Cargo builds
   # in ./target on the orb's own disk. .agents/resume does the same for orbs that already exist.
   rm -rf "$HOME/.cargo/archil-sccache" "$HOME/.config/sccache" .amp/archil-output-id
-  if grep -qs archil-sccache "$HOME/.cargo/config.toml"; then rm -f "$HOME/.cargo/config.toml"; fi
+  if grep -qs archil-sccache "$HOME/.cargo/config.toml"; then sed -i /archil-sccache/d "$HOME/.cargo/config.toml"; fi
   if grep -qs target-dir .cargo/orb.toml; then rm -f .cargo/orb.toml; fi
 }
 
