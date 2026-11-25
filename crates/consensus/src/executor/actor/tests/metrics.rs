@@ -1,20 +1,33 @@
 //! Runtime metrics after processing consensus messages and EL outcomes.
 
+use std::str::FromStr;
+
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatusEnum};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 
 use super::harness::{ForkchoiceStateExt as _, GENESIS, Harness, built_payload, make_block, round};
 
-fn gauge(h: &Harness, name: &str) -> i64 {
-    let name = format!("executor_{name}");
+fn metric<T: FromStr>(h: &Harness, published: &str) -> T {
     h.metrics()
         .lines()
         .find_map(|line| {
-            let (published, value) = line.split_once(' ')?;
-            (published == name).then(|| value.parse().expect("gauge should contain an integer"))
+            let (name, value) = line.split_once(' ')?;
+            (name == published).then(|| {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("`{published}` should contain an integer"))
+            })
         })
-        .unwrap_or_else(|| panic!("gauge `{name}` should be published"))
+        .unwrap_or_else(|| panic!("`{published}` should be published"))
+}
+
+fn gauge(h: &Harness, name: &str) -> i64 {
+    metric(h, &format!("executor_{name}"))
+}
+
+fn counter(h: &Harness, name: &str) -> u64 {
+    metric(h, &format!("executor_{name}_total"))
 }
 
 #[test_traced]
@@ -121,5 +134,35 @@ fn convergence_depth_is_negative_while_reanchoring_below_the_local_head() {
         release_fcu.send(()).unwrap();
         h.wait_until(|| gauge(&h, "convergence_depth") == 2).await;
         assert_eq!(h.execution.head(), GENESIS);
+    });
+}
+
+#[test_traced]
+fn verification_requests_count_those_joining_a_pending_verification() {
+    deterministic::Runner::default().start(|context| async move {
+        let h = Harness::start_at_genesis(&context);
+        assert_eq!(counter(&h, "verification_requests"), 0);
+        assert_eq!(counter(&h, "verification_requests_joined"), 0);
+
+        let b1 = make_block(1, 1, GENESIS);
+        let d1 = b1.digest();
+
+        // Hold the probe so the second request arrives while the first one
+        // is pending.
+        let release = h
+            .execution
+            .script_delayed_new_payload(d1, Ok(PayloadStatusEnum::Valid));
+        let first = h.verify(round(1), b1.clone());
+        let second = h.verify(round(1), b1);
+        let mut verdicts = Box::pin(futures::future::join(first, second));
+        assert!(futures::poll!(&mut verdicts).is_pending());
+        h.wait_until(|| counter(&h, "verification_requests") == 2)
+            .await;
+        assert_eq!(counter(&h, "verification_requests_joined"), 1);
+
+        release.send(()).unwrap();
+        let (first, second) = verdicts.await;
+        assert!(first.unwrap().is_some());
+        assert!(second.unwrap().is_some());
     });
 }

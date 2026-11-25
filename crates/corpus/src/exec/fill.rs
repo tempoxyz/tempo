@@ -386,6 +386,8 @@ where
                 // Code is shared across blocks: write each hash once per run, after
                 // checking whether an earlier run already stored it.
                 let mut written_code = HashSet::new();
+                // First block, transactions and gas of the page being published.
+                let (mut page_start, mut page_transactions, mut page_gas) = (begin, 0u64, 0u64);
                 for start in begin..end {
                     let Produced {
                         record,
@@ -404,7 +406,12 @@ where
                         pending.insert(produced.record.number, produced);
                     };
                     let stop = start + 1;
-                    let (transactions, gas) = (record.transactions, record.gas);
+                    page_transactions = page_transactions
+                        .checked_add(record.transactions)
+                        .ok_or_eyre("page transaction count overflow")?;
+                    page_gas = page_gas
+                        .checked_add(record.gas)
+                        .ok_or_eyre("page gas overflow")?;
                     metadata_bytes += metadata.len();
                     for (hash, value) in &code {
                         if !written_code.insert(*hash) {
@@ -502,14 +509,19 @@ where
                         handle.block_on(store.retire_checkpoint(&superseded))?;
                     }
                     info!(
-                        start,
+                        start = page_start,
                         end = stop,
+                        transactions = page_transactions,
+                        gas = page_gas,
                         blocks = catalog.cursor.next - catalog.context.start,
-                        transactions,
-                        gas,
+                        progress = %format_args!(
+                            "{:.2}%",
+                            (stop - begin) as f64 * 100.0 / (end - begin) as f64
+                        ),
                         complete = catalog.complete,
                         "Published verified corpus blocks and transactions"
                     );
+                    (page_start, page_transactions, page_gas) = (stop, 0, 0);
                 }
                 Ok(())
             })()

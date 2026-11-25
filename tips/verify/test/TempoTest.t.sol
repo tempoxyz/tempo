@@ -66,6 +66,13 @@ contract TempoTest is Tempo, Test {
         return active >= number;
     }
 
+    /// @dev From T15, ValidatorConfig (V1) and the V1 -> V2 migration calls revert with
+    ///      UnknownFunctionSelector. Suites that exercise V1 or set V2 up through migration call
+    ///      this to keep running at T14.
+    function _pinT14ForValidatorConfigV1() internal {
+        if (_isTempoForkOrLater(15)) vm.setEvmVersion("t14");
+    }
+
     function setUp() public virtual {
         _requirePrecompile("AccountKeychain", KEYCHAIN);
         _requirePrecompile("TIP403Registry", TIP403_REGISTRY);

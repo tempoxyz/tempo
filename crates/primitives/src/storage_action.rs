@@ -1,7 +1,7 @@
 //! Storage actions Tempo's precompiles record during execution, such as for replaying a block's
 //! state access or following its fee hooks.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,6 +55,10 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
+    /// Records an account's configuration commitment before and after; equal for a read.
+    ///
+    /// Commitments live in the account extension, not in a storage slot.
+    ConfigCommitment(Address, B256, B256),
     /// Marks where a step of the transaction's fee lifecycle starts or ends. It changes no state.
     Marker(FeeHook),
 }
@@ -84,7 +88,8 @@ impl StorageAction {
             | Self::FeeTokenBalanceCheck(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..) => *address,
+            | Self::Sdec(address, ..)
+            | Self::ConfigCommitment(address, ..) => *address,
             Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) | Self::Marker(_) => {
                 TIP_FEE_MANAGER_ADDRESS
             }

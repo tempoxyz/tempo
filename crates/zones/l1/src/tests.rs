@@ -150,7 +150,7 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
             l1_fetch_concurrency: 1,
             retry_connection_interval: Duration::from_secs(1),
             retain_portal_evidence: false,
-            deferred_work_start: None,
+            deferred_work: None,
         },
         zone_provider,
         deposit_queue: DepositQueue::default(),
@@ -158,7 +158,6 @@ fn test_subscriber_with_checkpoint(checkpoint: NumHash) -> L1Subscriber<MockEthP
         l1_state_cache: crate::L1StateCache::new(),
         block_tracker: L1BlockTracker::default(),
         leadership_sink: None,
-        finalized_batch_submissions: None,
         encryption_keys: None,
         subscriber_metrics: Default::default(),
     }
@@ -484,7 +483,7 @@ fn token_pause_update_refreshes_cached_token_state() {
             },
             ..Default::default()
         });
-    let (_, invalidated, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (_, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(invalidated, HashSet::from([token]));
 
     subscriber.update_l1_state_anchor(block.number, &invalidated);
@@ -1207,21 +1206,28 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         })
         .unwrap();
 
+    let deposit = Deposit {
+        token,
+        sender,
+        amount: 1_000_000,
+        fee: 0,
+        tempo_refund_recipient: sender,
+        key_index: U256::ZERO,
+        ephemeral_pubkey_x: encrypted.eph_pub_x,
+        ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
+        ciphertext: encrypted.ciphertext,
+        nonce: encrypted.nonce,
+        tag: encrypted.tag,
+    };
+    // A bad tag fails decryption but still yields an ECDH proof for the on-chain refund.
+    let mut tampered = deposit.clone();
+    tampered.tag[0] ^= 1;
     let block = L1BlockDeposits {
         header: seal(make_test_header(block_number)),
-        events: L1PortalEvents::from_deposits(vec![L1Deposit::Deposit(Deposit {
-            token,
-            sender,
-            amount: 1_000_000,
-            fee: 0,
-            tempo_refund_recipient: sender,
-            key_index: U256::ZERO,
-            ephemeral_pubkey_x: encrypted.eph_pub_x,
-            ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
-            ciphertext: encrypted.ciphertext,
-            nonce: encrypted.nonce,
-            tag: encrypted.tag,
-        })]),
+        events: L1PortalEvents::from_deposits(vec![
+            L1Deposit::Deposit(deposit),
+            L1Deposit::Deposit(tampered),
+        ]),
     };
 
     let prepared = block
@@ -1229,16 +1235,17 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
         .await
         .expect("decrypted deposit should prepare without an engine-side policy read");
 
-    assert_eq!(prepared.queued_deposits.len(), 1);
+    assert_eq!(prepared.queued_deposits.len(), 2);
     assert_eq!(
         prepared.queued_deposits[0].depositType,
         DepositType::Deposit
     );
     assert_eq!(
         prepared.decryptions.len(),
-        1,
-        "successfully decrypted deposits must provide on-chain decryption data"
+        2,
+        "every user deposit must provide on-chain decryption data"
     );
+    assert_eq!(prepared.recipients, vec![Some(recipient), None]);
 }
 
 #[tokio::test]
@@ -1251,6 +1258,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
     let encryption_keys = EncryptionKeyRing::new([old.clone(), current.clone()]);
     let mut deposits = Vec::new();
     let mut expected_shared_secrets = Vec::new();
+    let mut expected_recipients = Vec::new();
 
     for (key_index, key, recipient) in [
         (
@@ -1298,6 +1306,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
         )
         .unwrap();
         expected_shared_secrets.push(decrypted.proof.shared_secret);
+        expected_recipients.push(Some(recipient));
         deposits.push(L1Deposit::Deposit(Deposit {
             token,
             sender,
@@ -1329,6 +1338,7 @@ async fn deposits_select_the_private_key_by_portal_index() {
             .collect::<Vec<_>>(),
         expected_shared_secrets
     );
+    assert_eq!(prepared.recipients, expected_recipients);
 }
 
 #[test]
@@ -1420,9 +1430,9 @@ fn confirm_operational_through_is_idempotent_and_drains_stale_entries() {
             .unwrap();
     }
 
-    queue.confirm_operational_through(anchor).unwrap();
+    queue.confirm_operational_through(anchor, 0).unwrap();
     assert!(queue.peek().is_none());
-    queue.confirm_operational_through(anchor).unwrap();
+    queue.confirm_operational_through(anchor, 0).unwrap();
 }
 
 #[test]
@@ -1440,10 +1450,20 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
     queue.defer_through(second.num_hash()).unwrap();
     queue.defer_through(second.num_hash()).unwrap();
     assert_eq!(queue.peek().unwrap().header.num_hash(), third.num_hash());
-    assert_eq!(queue.operational_work(third.num_hash()).unwrap().len(), 2);
+    assert_eq!(
+        queue
+            .operational_work(third.num_hash(), usize::MAX)
+            .unwrap()
+            .len(),
+        2
+    );
 
-    queue.confirm_operational_through(third.num_hash()).unwrap();
-    queue.confirm_operational_through(third.num_hash()).unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
     assert!(queue.peek().is_none());
 
     let fourth = SealedHeader::seal_slow(make_chained_header(4, third.hash()));
@@ -1457,9 +1477,11 @@ fn canonical_import_reconciliation_is_idempotent_across_checkpoint_and_full_bloc
         .unwrap();
 
     // A late replay of block 3 must preserve block 4's newer deferred work.
-    queue.confirm_operational_through(third.num_hash()).unwrap();
+    queue
+        .confirm_operational_through(third.num_hash(), 0)
+        .unwrap();
     let fifth = queue.peek().unwrap().header.num_hash();
-    assert_eq!(queue.operational_work(fifth).unwrap().len(), 2);
+    assert_eq!(queue.operational_work(fifth, usize::MAX).unwrap().len(), 2);
 }
 
 #[test]
@@ -1479,7 +1501,9 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     let second = queue.peek().unwrap();
     queue.defer_through(second.header.num_hash()).unwrap();
     let current = queue.peek().unwrap();
-    let work = queue.operational_work(current.header.num_hash()).unwrap();
+    let work = queue
+        .operational_work(current.header.num_hash(), usize::MAX)
+        .unwrap();
     assert_eq!(
         work.iter()
             .map(|block| block.header.number())
@@ -1488,60 +1512,109 @@ fn deferred_checkpoint_work_survives_until_operational_confirmation() {
     );
 
     queue
-        .confirm_operational(current.header.num_hash())
+        .confirm_operational(current.header.num_hash(), 0)
         .unwrap();
     assert!(queue.peek().is_none());
 }
 
-#[test]
-fn restart_can_seed_deferred_checkpoint_work() {
-    let queue = DepositQueue::new();
-    let h10 = make_test_header(10);
-    let h11 = make_chained_header(11, h10.hash_slow());
-    let mut deferred = crate::queue::DeferredPortalWork::new(L1BlockDeposits {
-        header: seal(h10),
-        events: L1PortalEvents::default(),
-    });
-    deferred.push(L1BlockDeposits {
-        header: seal(h11),
-        events: L1PortalEvents::default(),
-    });
-    queue.restore_deferred(deferred).unwrap();
+fn amounts<'a>(deposits: impl IntoIterator<Item = &'a L1Deposit>) -> Vec<u128> {
+    deposits
+        .into_iter()
+        .map(|deposit| match deposit {
+            L1Deposit::WithdrawalBounceBack(deposit) => deposit.amount,
+            L1Deposit::Deposit(deposit) => deposit.amount,
+            L1Deposit::ZoneVirtual(deposit) => deposit.amount,
+        })
+        .collect()
+}
 
-    let h12 = make_chained_header(12, queue.last_enqueued().unwrap().hash);
-    queue
-        .try_enqueue_sealed(seal(h12), L1PortalEvents::default())
-        .unwrap();
-    let current = queue.peek().unwrap();
-    assert_eq!(
+/// Amounts of the first `max_deposits` entries the next full import at `anchor` receives.
+fn owed_amounts(queue: &DepositQueue, anchor: NumHash, max_deposits: usize) -> Vec<u128> {
+    amounts(
         queue
-            .operational_work(current.header.num_hash())
+            .operational_work(anchor, max_deposits)
             .unwrap()
-            .len(),
-        2
-    );
+            .iter()
+            .flat_map(|block| &block.events.deposits),
+    )
+}
+
+fn events_with_amounts(amounts: impl IntoIterator<Item = u128>) -> L1PortalEvents {
+    L1PortalEvents::from_deposits(
+        amounts
+            .into_iter()
+            .map(make_withdrawal_bounce_back)
+            .collect(),
+    )
 }
 
 #[test]
-fn deferred_empty_blocks_use_constant_space() {
-    let mut queue = PendingDeposits::default();
-    let mut parent_hash = B256::ZERO;
-    for number in 1..=10_000 {
-        let header = if number == 1 {
-            make_test_header(number)
-        } else {
-            make_chained_header(number, parent_hash)
-        };
-        let header = seal(header);
-        let anchor = header.num_hash();
-        parent_hash = anchor.hash;
-        queue
-            .try_enqueue(header, L1PortalEvents::default())
-            .unwrap();
-        queue.defer_through(anchor).unwrap();
-    }
+fn full_import_carries_unconsumed_deposits_ahead_of_newer_blocks() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    let second = seal(make_chained_header(11, first.hash()));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1, 2, 3]))
+        .unwrap();
+    queue
+        .try_enqueue_sealed(second.clone(), events_with_amounts([4]))
+        .unwrap();
 
-    assert_eq!(queue.deferred_event_block_len(), 0);
+    queue.confirm_operational(first.num_hash(), 1).unwrap();
+    assert_eq!(
+        owed_amounts(&queue, second.num_hash(), usize::MAX),
+        [2, 3, 4]
+    );
+    assert_eq!(owed_amounts(&queue, second.num_hash(), 1), [2]);
+    assert_eq!(queue.owed_deposit_count(second.num_hash()).unwrap(), 3);
+
+    queue.confirm_operational(second.num_hash(), 3).unwrap();
+    assert!(queue.peek().is_none());
+    let third = seal(make_chained_header(12, second.hash()));
+    queue
+        .try_enqueue_sealed(third.clone(), L1PortalEvents::default())
+        .unwrap();
+    assert!(owed_amounts(&queue, third.num_hash(), usize::MAX).is_empty());
+}
+
+#[test]
+fn follower_reconciliation_carries_deposits_once() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    let second = seal(make_chained_header(11, first.hash()));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1, 2, 3]))
+        .unwrap();
+
+    queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .unwrap();
+    // A delayed duplicate of the same canonical import must not consume again.
+    queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .unwrap();
+    queue
+        .try_enqueue_sealed(second.clone(), events_with_amounts([4]))
+        .unwrap();
+    assert_eq!(owed_amounts(&queue, second.num_hash(), usize::MAX), [3, 4]);
+}
+
+#[test]
+fn full_import_cannot_consume_more_than_owed() {
+    let queue = DepositQueue::new();
+    let first = seal(make_test_header(10));
+    queue
+        .try_enqueue_sealed(first.clone(), events_with_amounts([1]))
+        .unwrap();
+
+    let err = queue
+        .confirm_operational_through(first.num_hash(), 2)
+        .expect_err("an import cannot process unobserved deposits");
+    assert_eq!(
+        err.to_string(),
+        "full import processed 2 deposits, but only 1 were owed"
+    );
+    assert_eq!(owed_amounts(&queue, first.num_hash(), usize::MAX), [1]);
 }
 
 #[test]
@@ -1552,7 +1625,7 @@ fn confirm_operational_through_rejects_a_conflicting_anchor() {
         .unwrap();
 
     let err = queue
-        .confirm_operational_through(NumHash::new(10, B256::repeat_byte(0xab)))
+        .confirm_operational_through(NumHash::new(10, B256::repeat_byte(0xab)), 0)
         .expect_err("a different hash at the same height must fail");
     assert!(err.to_string().contains("deposit queue holds L1 block 10"));
     assert_eq!(queue.peek().unwrap().header.number(), 10);
@@ -1878,125 +1951,6 @@ fn corrupt_recognized_portal_log(portal: Address) -> Log {
 }
 
 #[test]
-fn extracts_finalized_batch_submission_for_observer() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![log]);
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 0);
-    assert_eq!(submissions[0].event.nextBlockHash, B256::repeat_byte(0x22));
-}
-
-#[test]
-fn extracts_t13_finalized_batch_submission_for_observer() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::BatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-        lastProcessedEnabledTokenCount: 4,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![log]);
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert!(!submissions[0].is_legacy);
-    assert_eq!(submissions[0].event.lastProcessedEnabledTokenCount, 4);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 0);
-    assert_eq!(submissions[0].event.nextBlockHash, B256::repeat_byte(0x22));
-}
-
-#[test]
-fn finalized_batch_observer_ignores_rpc_log_metadata() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let malformed = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: alloy_primitives::LogData::new_unchecked(
-                vec![crate::abi::LegacyBatchSubmitted::SIGNATURE_HASH],
-                Bytes::from_static(b"garbage"),
-            ),
-        },
-        log_index: Some(4),
-        ..Default::default()
-    };
-    let missing_index = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: crate::abi::LegacyBatchSubmitted {
-                withdrawalBatchIndex: 7,
-                withdrawalQueueIndex: U256::from(3),
-                nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-                nextBlockHash: B256::repeat_byte(0x22),
-                withdrawalQueueHash: B256::repeat_byte(0x33),
-                lastProcessedDepositNumber: 9,
-            }
-            .encode_log_data(),
-        },
-        log_index: None,
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(
-        10,
-        B256::with_last_byte(0x10),
-        vec![malformed, missing_index],
-    );
-
-    let block = NumHash::new(10, B256::with_last_byte(0x10));
-    let (_, _, _, submissions) = subscriber.extract_events(block, &[receipt]).unwrap();
-
-    assert_eq!(submissions.len(), 1);
-    assert_eq!(submissions[0].block, block);
-    assert_eq!(submissions[0].transaction_index, 0);
-    assert_eq!(submissions[0].log_index, 1);
-}
-
-#[test]
 fn extract_events_fails_closed_on_corrupt_recognized_portal_log() {
     let mut subscriber = test_subscriber(9);
     subscriber.config.retain_portal_evidence = true;
@@ -2025,7 +1979,7 @@ fn extract_events_fails_closed_on_corrupt_recognized_portal_log() {
         ..Default::default()
     };
     let receipt = make_receipt_with_logs(10, B256::with_last_byte(0x10), vec![unknown]);
-    let (events, _, portal_logs, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, portal_logs) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert!(events.deposits.is_empty());
     assert!(events.leader_transitions.is_empty());
     assert_eq!(portal_logs.unwrap().len(), 1);
@@ -2064,7 +2018,7 @@ fn pause_events_invalidate_cached_portal_storage() {
     let receipt = make_receipt_with_logs(1, B256::with_last_byte(0x10), logs);
 
     let block = NumHash::new(1, B256::with_last_byte(0x10));
-    let (events, invalidated, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, invalidated, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(true));
     assert!(invalidated.contains(&portal));
     subscriber.update_l1_state_anchor(1, &invalidated);
@@ -2107,123 +2061,6 @@ async fn sync_classifies_corrupt_recognized_portal_log_as_fatal() {
     ));
     assert_eq!(queue.last_enqueued(), None);
     assert_eq!(subscriber.block_tracker.latest(), None);
-}
-
-#[tokio::test]
-async fn sync_drops_submission_when_finalized_batch_observer_is_full() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-    let pending = FinalizedBatchSubmission {
-        block: NumHash::new(9, B256::with_last_byte(9)),
-        transaction_index: 0,
-        log_index: 0,
-        is_legacy: false,
-        event: crate::abi::BatchSubmitted {
-            withdrawalBatchIndex: 6,
-            withdrawalQueueIndex: U256::ZERO,
-            nextProcessedDepositQueueHash: B256::ZERO,
-            nextBlockHash: B256::repeat_byte(0x01),
-            withdrawalQueueHash: B256::ZERO,
-            lastProcessedDepositNumber: 0,
-            lastProcessedEnabledTokenCount: 0,
-        },
-    };
-    sender.try_send(pending.clone()).unwrap();
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
-    let mut header_10 = make_test_header(10);
-    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
-    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
-
-    let asserter = Asserter::new();
-    let l1_provider =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(vec![receipt]));
-    asserter.push_success(&Some(header_response(header_10)));
-
-    // A stalled shadow prover must not hold up L1 ingestion.
-    assert_eq!(
-        subscriber
-            .sync_to_finalized(&l1_provider, 10)
-            .await
-            .unwrap(),
-        11
-    );
-    assert_eq!(
-        subscriber
-            .deposit_queue
-            .last_enqueued()
-            .map(|block| block.number),
-        Some(10)
-    );
-    assert_eq!(receiver.try_recv().unwrap().block, pending.block);
-    assert!(receiver.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
-    let mut subscriber = test_subscriber(9);
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    drop(receiver);
-    subscriber.finalized_batch_submissions = Some(sender);
-    let portal = subscriber.config.portal_address;
-    let event = crate::abi::LegacyBatchSubmitted {
-        withdrawalBatchIndex: 7,
-        withdrawalQueueIndex: U256::from(3),
-        nextProcessedDepositQueueHash: B256::repeat_byte(0x11),
-        nextBlockHash: B256::repeat_byte(0x22),
-        withdrawalQueueHash: B256::repeat_byte(0x33),
-        lastProcessedDepositNumber: 9,
-    };
-    let log = Log {
-        inner: alloy_primitives::Log {
-            address: portal,
-            data: event.encode_log_data(),
-        },
-        ..Default::default()
-    };
-    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
-    let mut header_10 = make_test_header(10);
-    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
-    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
-
-    let asserter = Asserter::new();
-    let l1_provider =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
-    asserter.push_success(&Some(header_response(header_10.clone())));
-    asserter.push_success(&Some(header_response(header_10)));
-    asserter.push_success(&Some(vec![receipt]));
-
-    let err = subscriber
-        .sync_to_finalized(&l1_provider, 10)
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        L1SubscriberError::Fatal {
-            block_number: 10,
-            stage: "finalized batch observer delivery",
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -2357,7 +2194,7 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
     let block = NumHash::new(10, B256::with_last_byte(0x10));
 
     let receipt = make_receipt_with_logs(10, block.hash, vec![]);
-    let (events, _, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, None);
 
     let receipt = make_receipt_with_logs(
@@ -2368,13 +2205,8 @@ fn portal_pause_events_record_the_final_state_in_log_order() {
             log(crate::abi::ZonePortal::PortalResumed { account }.encode_log_data()),
         ],
     );
-    let (events, _, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+    let (events, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
     assert_eq!(events.portal_pause, Some(false));
-
-    // The pause is applied during ingestion and must not be carried into operational work.
-    let mut operational = L1PortalEvents::default();
-    operational.extend_operational(events);
-    assert_eq!(operational.portal_pause, None);
 }
 
 #[test]
@@ -2538,4 +2370,66 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(tracker.latest(), Some(NumHash::new(tip, parent)));
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
+}
+
+/// Recovery through checkpoint block 11 after a full import at `start_block`. Block 10 appends
+/// entries 1-3 and block 11 entry 4.
+#[test_case::test_case(10, 2 => vec![3, 4])]
+#[test_case::test_case(11, 1 => Vec::<u128>::new())]
+#[tokio::test]
+async fn recovery_restores_owed_entries(start_block: u64, entries_in_block: usize) -> Vec<u128> {
+    let portal = address!("0x0000000000000000000000000000000000000ABC");
+    let asserter = Asserter::new();
+    let mut parent_hash = B256::ZERO;
+    let mut anchors = Vec::new();
+    for (number, amounts) in [(10, vec![1, 2, 3]), (11, vec![4])] {
+        let logs = amounts
+            .into_iter()
+            .map(|amount| Log {
+                inner: alloy_primitives::Log {
+                    address: portal,
+                    data: WithdrawalBounceBack {
+                        newCurrentDepositQueueHash: B256::ZERO,
+                        fallbackNonce: 0,
+                        token: Address::ZERO,
+                        amount,
+                        depositNumber: 0,
+                    }
+                    .encode_log_data(),
+                },
+                ..Default::default()
+            })
+            .collect();
+        let receipt = make_receipt_with_logs(number, B256::ZERO, logs);
+        let mut header = make_chained_header(number, parent_hash);
+        header.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+        header.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+        parent_hash = header.hash_slow();
+        anchors.push(NumHash::new(number, parent_hash));
+        if number >= start_block {
+            asserter.push_success(&Some(header_response(header)));
+            asserter.push_success(&Some(vec![receipt]));
+        }
+    }
+    let mut subscriber = test_subscriber_with_checkpoint(anchors[1]);
+    subscriber.config.deferred_work = Some(DeferredWorkRecovery {
+        last_operational: anchors[usize::try_from(start_block - 10).unwrap()],
+        start: DepositQueuePosition {
+            block_number: start_block,
+            entries_in_block,
+        },
+    });
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter);
+    subscriber
+        .recover_deferred_work(&l1_provider)
+        .await
+        .unwrap();
+
+    let next = make_chained_header(12, anchors[1].hash);
+    let anchor = seal(next.clone()).num_hash();
+    subscriber
+        .deposit_queue
+        .enqueue(next, L1PortalEvents::default());
+    owed_amounts(&subscriber.deposit_queue, anchor, usize::MAX)
 }

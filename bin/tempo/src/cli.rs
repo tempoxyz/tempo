@@ -8,7 +8,10 @@ use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_faucet::args::FaucetArgs;
 use tempo_node::{
     TempoNodeArgs,
-    rpc::consensus::{DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION},
+    rpc::consensus::{
+        DEFAULT_MAX_CONCURRENT_LOOKUPS, DEFAULT_MAX_SUBSCRIPTIONS,
+        DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION,
+    },
 };
 
 pub type TempoCli =
@@ -111,6 +114,15 @@ pub struct TempoArgs {
         default_value_t = DEFAULT_MAX_SUBSCRIPTIONS_PER_CONNECTION
     )]
     pub(crate) consensus_max_subscriptions_per_connection: NonZeroUsize,
+
+    /// Maximum concurrent `consensus_getFinalization` height lookups across all connections.
+    /// Further ones fail with the server-busy error.
+    #[arg(
+        long = "rpc.consensus-max-concurrent-lookups",
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_CONCURRENT_LOOKUPS
+    )]
+    pub(crate) consensus_max_concurrent_lookups: NonZeroUsize,
 
     #[command(flatten)]
     pub(crate) telemetry: defaults::TelemetryArgs,

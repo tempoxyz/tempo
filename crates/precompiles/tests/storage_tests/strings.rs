@@ -90,8 +90,7 @@ fn test_string_overwrite_long_to_short_cleans_tail() -> error::Result<()> {
     let address = Address::random();
     let base_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(hardfork, || {
             let mut handler = Slot::<String>::new(base_slot, address);
 
             // 100 bytes -> ceil(100/32) = 4 tail chunks.
@@ -118,8 +117,7 @@ fn test_string_overwrite_long_to_shorter_long_cleans_only_excess() -> error::Res
     let address = Address::random();
     let base_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T4, TempoHardfork::T5] {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(hardfork, || {
             let mut handler = Slot::<String>::new(base_slot, address);
 
             // 200 bytes -> 7 chunks; shrink to 64 bytes -> 2 chunks.

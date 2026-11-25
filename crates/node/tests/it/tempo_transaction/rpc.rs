@@ -212,11 +212,7 @@ impl super::types::TestEnv for RpcEnv {
             let tx = create_basic_aa_tx(
                 self.chain_id,
                 start_nonce + i,
-                vec![Call {
-                    to: recipient.into(),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                vec![Call::new(recipient, Bytes::new())],
                 300_000,
             );
 

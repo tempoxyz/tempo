@@ -1,4 +1,5 @@
 use alloy_consensus::BlockHeader as _;
+use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Epochable as _, Heightable as _, marshal,
     simplex::types::Activity,
@@ -7,13 +8,13 @@ use commonware_consensus::{
 use commonware_cryptography::Digested;
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage, spawn_cell};
 use commonware_utils::Acknowledgement as _;
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use rand_core::{CryptoRng, Rng};
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
@@ -54,6 +55,21 @@ where
         &config.scheme_provider,
     )?;
 
+    // Marshal resumes from the floor, so bound the floor's epoch like the DKG
+    // manager does: an execution layer that lags the floor must not hide it.
+    let floor_epoch = config
+        .epoch_strategy
+        .containing(config.last_finalized_height.next())
+        .expect("strategy valid for all heights and epochs")
+        .epoch();
+    crate::startup::ensure_outcome_within_tip_epoch(floor_epoch, tip.map(|(_, tip)| tip))
+        .wrap_err_with(|| {
+            format!(
+                "the finalized floor at height `{}`",
+                config.last_finalized_height
+            )
+        })?;
+
     let (tx, rx) = mpsc::unbounded_channel();
     let mailbox = Mailbox(tx);
 
@@ -62,23 +78,37 @@ where
     //
     // TODO: Provide a certificate with the latest boundary to not just trust
     // but also verify.
-    let last_finalized_number = config.execution_provider.finalized_block_number()?;
+    let mut last_finalized_number = config.execution_provider.finalized_block_number()?;
+    // The execution layer can be finalized past the consensus tip, such as after
+    // restoring a newer execution snapshot. Start no later than the tip epoch's
+    // last block so the outcome stays within the epoch after the tip's.
+    if let Some((_, tip)) = tip {
+        let tip_epoch_last = config
+            .epoch_strategy
+            .last(tip.proposal.round.epoch())
+            .expect("strategy valid for all heights and epochs");
+        last_finalized_number = last_finalized_number.min(tip_epoch_last.get());
+    }
 
     let epoch_info = config
         .epoch_strategy
         .containing(Height::new(last_finalized_number))
         .expect("strategy valid for all heights and epochs");
 
-    let startup_execution_boundary = if epoch_info.last().get() == last_finalized_number {
-        epoch_info.last()
-    } else if let Some(previous) = epoch_info.epoch().previous() {
-        config
-            .epoch_strategy
-            .last(previous)
-            .expect("strategy valid for all heights and epochs")
-    } else {
-        Height::zero()
-    };
+    let (startup_execution_boundary, boundary_outcome_epoch) =
+        if epoch_info.last().get() == last_finalized_number {
+            (epoch_info.last(), epoch_info.epoch().next())
+        } else if let Some(previous) = epoch_info.epoch().previous() {
+            (
+                config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy valid for all heights and epochs"),
+                epoch_info.epoch(),
+            )
+        } else {
+            (Height::zero(), Epoch::zero())
+        };
 
     let boundary_header = config
         .execution_provider
@@ -91,6 +121,20 @@ where
                 from the execution layer"
             )
         })?;
+
+    let claimed_epoch =
+        OnchainDkgOutcome::read(&mut commonware_codec::Copying(boundary_header.extra_data().as_ref()))
+            .wrap_err_with(|| {
+                format!(
+                    "the last boundary (`{startup_execution_boundary}`) block header did not contain a DKG outcome"
+                )
+            })?
+            .epoch();
+    ensure!(
+        claimed_epoch == boundary_outcome_epoch,
+        "the last boundary (`{startup_execution_boundary}`) contains an outcome for epoch \
+         `{claimed_epoch}`, expected epoch `{boundary_outcome_epoch}`",
+    );
 
     let verifier = FinalizationVerifier::new(network_identity, config.epoch_strategy.clone())
         .with_scheme_provider(config.scheme_provider.clone());
@@ -179,46 +223,70 @@ where
     /// Fills in the missing scheme if the execution layer did not persist.
     #[instrument(skip_all, err(Display))]
     async fn install_scheme_for_latest_epoch(&mut self) -> eyre::Result<()> {
-        let current_consensus_epoch = self
+        let last_finalized_height = self.config.last_finalized_height;
+        let floor_epoch_info = self
             .config
             .epoch_strategy
-            .containing(self.config.last_finalized_height)
+            .containing(last_finalized_height)
             .expect("strategy is valid for all heights and epochs");
 
-        let current_execution_epoch = self
-            .config
-            .epoch_strategy
-            .containing(self.startup_execution_boundary)
-            .expect("strategy is valid for all heights and epochs");
+        // A floor inside epoch `E` needs the scheme from `last(E-1)`. A floor at
+        // `last(E)` has already processed that boundary and needs the scheme for
+        // `E+1` it carries.
+        let floor_boundary_height = if floor_epoch_info.last() == last_finalized_height {
+            Some(last_finalized_height)
+        } else {
+            floor_epoch_info.epoch().previous().map(|previous| {
+                self.config
+                    .epoch_strategy
+                    .last(previous)
+                    .expect("strategy is valid for all heights and epochs")
+            })
+        };
 
-        if let Some(previous) = current_consensus_epoch.epoch().previous()
-            && previous > current_execution_epoch.epoch()
+        if let Some(last_consensus_boundary) = floor_boundary_height
+            && last_consensus_boundary > self.startup_execution_boundary
         {
-            let last_consensus_boundary = self
+            let boundary_epoch = self
                 .config
                 .epoch_strategy
-                .last(previous)
-                .expect("strategy is valid for all heights and epochs");
+                .containing(last_consensus_boundary)
+                .expect("strategy is valid for all heights and epochs")
+                .epoch();
 
             let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
             else {
-                let consensus_epoch = current_consensus_epoch.epoch();
-                let execution_epoch = current_execution_epoch.epoch();
+                let execution_boundary = self.startup_execution_boundary;
                 warn!(
-                    "cannot install scheme; consensus layer epoch {consensus_epoch} is ahead \
-                    of execution layer epoch {execution_epoch}, but the consensus layer does not have \
-                    the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
+                    "cannot install scheme; consensus layer boundary `{last_consensus_boundary}` is ahead \
+                    of execution layer boundary `{execution_boundary}`, but the consensus layer does not have \
+                    the boundary block. The node likely previously skipped \
                     epoch boundaries via the network identity and will continue to try use it to verify finalizations"
                 );
 
                 return Ok(());
             };
 
+            let extra_data = boundary_block.inner().header().extra_data();
+            let claimed_epoch =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err_with(|| {
+                        format!(
+                            "the boundary block at height `{last_consensus_boundary}` \
+                            contained no or a malformed DKG outcome"
+                        )
+                    })?
+                    .epoch();
+            ensure!(
+                claimed_epoch == boundary_epoch.next(),
+                "the boundary block at height `{last_consensus_boundary}` contains an outcome for \
+                 epoch `{claimed_epoch}`, expected the next epoch `{}`",
+                boundary_epoch.next(),
+            );
+
             let onchain_outcome = self
                 .verifier
-                .decode_dkg_outcome_and_register_boundary(
-                    boundary_block.inner().header().extra_data().as_ref(),
-                )
+                .decode_dkg_outcome_and_register_boundary(extra_data.as_ref())
                 .wrap_err_with(|| {
                     format!(
                         "the boundary block at height `{last_consensus_boundary}` \
@@ -251,7 +319,20 @@ where
                 identity: *outcome.network_identity(),
             };
 
-            self.state.observe(identity).await?
+            self.state.observe(identity.clone()).await?;
+
+            // Retire the previous fallback in memory too. Otherwise a missing later epoch would
+            // still verify against the identity this boundary rotated away from until restart.
+            let previous = self.verifier.network_identity().clone();
+            if self.verifier.advance_network_identity(identity.clone()) {
+                info!(
+                    previous_from_epoch = previous.from_epoch,
+                    previous_network_identity = %previous.identity,
+                    from_epoch = identity.from_epoch,
+                    network_identity = %identity.identity,
+                    "retired the network identity fallback after an authenticated full DKG rotation",
+                );
+            }
         }
 
         Ok(())
@@ -299,8 +380,13 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block =
-            Digested::from(Block::from_execution_block_unchecked(certified.block));
+        let consensus_block = match Block::try_from_execution_block(certified.block) {
+            Ok(block) => Digested::from(block),
+            Err(error) => {
+                warn!(%error, "upstream finalized block failed validation");
+                return Ok(());
+            }
+        };
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);
@@ -439,9 +525,9 @@ where
                 && configured_identity.identity != *onchain_outcome.network_identity()
             {
                 warn!(
-                    compiled_from_epoch = configured_identity.from_epoch,
+                    configured_from_epoch = configured_identity.from_epoch,
+                    configured_network_identity = %configured_identity.identity,
                     onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %configured_identity.identity,
                     onchain_network_identity = %onchain_outcome.network_identity(),
                     "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
                 );

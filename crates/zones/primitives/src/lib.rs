@@ -6,6 +6,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod constants;
+pub mod deposit_queue;
 
 #[cfg(feature = "serde")]
 pub mod serde_rlp;

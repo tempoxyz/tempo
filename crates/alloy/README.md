@@ -71,7 +71,7 @@ Use `TempoAccountsWallet::from_store(path)` for a non-default store. A request
 with an explicit `key_id` pins that key: if it expires or disappears before
 signing, the wallet returns an error instead of silently switching credentials.
 
-This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://docs.tempo.xyz/protocol/tip20/overview):
+This crate also exposes bindings for all Tempo precompiles, such as [TIP20](https://tempo.com/developers/docs/protocol/tip20/overview):
 
 ```rust,no_run
 use alloy::{
@@ -220,3 +220,7 @@ broadcast may preserve original headers.
 Sponsor relay services may enforce their own policy, rate limits, and authentication. Applications
 should surface sponsor errors to users and avoid assuming every valid Tempo AA transaction is
 eligible for sponsorship.
+
+The local preflight is stateless and does not authenticate the sender: keychain access keys and
+configurable-account commitments are only checked against chain state by the node. Sponsor services
+must verify the claimed account themselves before applying identity-based policy, quotas, or signing.

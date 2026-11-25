@@ -86,7 +86,7 @@ pub struct FillCommand {
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// Re-read and fully replay published records instead of checking metadata only.
@@ -137,7 +137,7 @@ pub struct ReplayCommand {
     /// Source s3://bucket/prefix.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// First block; defaults to the corpus start.
@@ -339,7 +339,7 @@ pub struct GcCommand {
     /// Corpus s3://bucket/prefix or file:///directory; must be complete.
     #[arg(long)]
     corpus: String,
-    /// Optional S3-compatible endpoint. Credentials use the standard AWS chain.
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
     #[arg(long)]
     s3_endpoint: Option<String>,
     /// Take over a corpus an interrupted gc left marked as collecting. Only when no gc is

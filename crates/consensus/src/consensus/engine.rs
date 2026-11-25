@@ -2,7 +2,11 @@
 //!
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
-use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    num::{NonZeroU32, NonZeroUsize},
+    sync::Arc,
+    time::Duration,
+};
 
 use commonware_broadcast::buffered;
 use commonware_consensus::{
@@ -27,11 +31,10 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    VerificationMode, alias, config,
+    VerificationMode, alias,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
-    network::limit_channel,
     peer_manager, storage,
 };
 
@@ -66,8 +69,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub share: Option<Share>,
 
     pub mailbox_size: NonZeroUsize,
+    pub max_peers: NonZeroU32,
     pub deque_size: usize,
-    pub max_message_size: u32,
     pub verification_mode: VerificationMode,
 
     /// Maximum time to wait for the leader's proposal before timing out a view.
@@ -197,6 +200,16 @@ where
         .await
         .wrap_err("failed to initialize marshal")?;
 
+        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
+            context.child("peer_manager"),
+            peer_manager::Config {
+                execution_node: execution_node.clone(),
+                oracle: self.peer_manager.clone(),
+                epoch_strategy: epoch_strategy.clone(),
+                max_peers: self.max_peers,
+            },
+        );
+
         let (executor, executor_mailbox) = crate::executor::init(
             context.child("executor"),
             crate::executor::Config {
@@ -206,20 +219,10 @@ where
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
                 public_key: Some(self.signer.public_key()),
+                finalized_reporter: peer_manager_mailbox.clone(),
             },
         )
         .wrap_err("failed initialization executor actor")?;
-
-        let (peer_manager, peer_manager_mailbox) = peer_manager::init(
-            context.child("peer_manager"),
-            peer_manager::Config {
-                execution_node: execution_node.clone(),
-                oracle: self.peer_manager.clone(),
-                epoch_strategy: epoch_strategy.clone(),
-                finalized_tip: (finalized_tip.1, finalized_tip.2),
-            },
-        )
-        .wrap_err("failed initializing peer manager")?;
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.child("broadcast"),
@@ -230,6 +233,7 @@ where
                 peer_provider: peer_manager_mailbox.clone(),
                 priority: true,
                 codec_config: (),
+                blocker: self.blocker.clone(),
                 strategy: Sequential,
             },
         );
@@ -338,7 +342,6 @@ where
 
         Ok(Engine {
             context: ContextCell::new(context),
-            max_message_size: self.max_message_size,
 
             broadcast,
             broadcast_mailbox,
@@ -355,7 +358,6 @@ where
             epoch_manager_config,
 
             peer_manager,
-            peer_manager_mailbox,
 
             feed,
             feed_mailbox,
@@ -373,11 +375,10 @@ where
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
 {
     context: ContextCell<TContext>,
-    max_message_size: u32,
 
     /// broadcasts messages to and caches messages from untrusted peers.
-    // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
-    broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, Sequential>,
+    broadcast:
+        buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox, TBlocker, Sequential>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
     dkg_manager: dkg::manager::Actor<TContext, TBlocker>,
@@ -386,7 +387,12 @@ where
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
     /// forkchoice-updates.
-    executor: crate::executor::Actor<TContext, Arc<TempoFullNode>, crate::alias::marshal::Mailbox>,
+    executor: crate::executor::Actor<
+        TContext,
+        Arc<TempoFullNode>,
+        crate::alias::marshal::Mailbox,
+        peer_manager::Mailbox,
+    >,
     executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
@@ -399,7 +405,6 @@ where
     epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
-    peer_manager_mailbox: peer_manager::Mailbox,
 
     feed: crate::feed::Actor<TContext>,
     feed_mailbox: crate::feed::Mailbox,
@@ -488,43 +493,6 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> eyre::Result<()> {
-        let context = &*self.context;
-        let votes_channel = limit_channel(
-            context,
-            votes_channel,
-            config::VOTES_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let certificates_channel = limit_channel(
-            context,
-            certificates_channel,
-            config::CERTIFICATES_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let resolver_channel = limit_channel(
-            context,
-            resolver_channel,
-            config::RESOLVER_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let broadcast_channel = limit_channel(
-            context,
-            broadcast_channel,
-            config::BROADCASTER_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let marshal_channel = limit_channel(
-            context,
-            marshal_channel,
-            config::MARSHAL_CHANNEL_IDENT,
-            self.max_message_size,
-        );
-        let dkg_channel = limit_channel(
-            context,
-            dkg_channel,
-            config::DKG_CHANNEL_IDENT,
-            self.max_message_size,
-        );
         let peer_manager = self.peer_manager.start();
 
         let broadcast = self.broadcast.start(broadcast_channel);
@@ -540,12 +508,9 @@ where
             self.executor_mailbox,
             Reporters::from((
                 self.dkg_manager_mailbox,
-                Reporters::from((
-                    self.peer_manager_mailbox,
-                    Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
-                        self.feed_mailbox,
-                        self.gossip_mailbox,
-                    )),
+                Reporters::<crate::feed::Mailbox, crate::gossip::Mailbox>::from((
+                    self.feed_mailbox,
+                    self.gossip_mailbox,
                 )),
             )),
         ));

@@ -1,10 +1,13 @@
 //! Gas-metered AWS Nitro attestation verification for the Zone verifier.
 
 use tempo_nitro_attestation::{
-    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, parse_attestation, verify_parsed,
+    AwsLcP384, MAX_DOCUMENT_SIZE, NitroAttestation, P384_FIXED_SIGNATURE_SIZE,
+    P384_PUBLIC_KEY_SIZE, P384Verifier, SHA384_SIZE, Sha384Hasher, parse_attestation,
+    verify_parsed,
 };
 
 use crate::storage::StorageCtx;
+use tempo_primitives::crypto;
 
 pub(super) const BASE_GAS: u64 = 40_000;
 pub(super) const SIGNATURE_GAS: u64 = 150_000;
@@ -32,13 +35,47 @@ pub(super) fn verify_attestation_with_root(
         .saturating_mul(SIGNATURE_GAS);
     StorageCtx.deduct_gas(verification_gas)?;
 
-    Ok(verify_parsed(parsed, block_timestamp, root_der, &AwsLcP384).ok())
+    Ok(verify_parsed(parsed, block_timestamp, root_der, &Verifier).ok())
+}
+
+/// The Nitro crate's P-384 verifier, through [`crypto`] so it also accepts mocks.
+struct Verifier;
+
+impl Sha384Hasher for Verifier {
+    fn sha384(&self, input: &[u8]) -> [u8; SHA384_SIZE] {
+        AwsLcP384.sha384(input)
+    }
+}
+
+impl P384Verifier for Verifier {
+    fn validate_public_key(&self, key: &[u8; P384_PUBLIC_KEY_SIZE]) -> bool {
+        AwsLcP384.validate_public_key(key)
+    }
+
+    fn verify_der(
+        &self,
+        key: &[u8; P384_PUBLIC_KEY_SIZE],
+        digest: &[u8; SHA384_SIZE],
+        signature: &[u8],
+    ) -> bool {
+        crypto::verify_p384_der(key, digest, signature)
+    }
+
+    fn verify_fixed(
+        &self,
+        key: &[u8; P384_PUBLIC_KEY_SIZE],
+        digest: &[u8; SHA384_SIZE],
+        signature: &[u8; P384_FIXED_SIGNATURE_SIZE],
+    ) -> bool {
+        crypto::verify_p384_fixed(key, digest, signature)
+    }
 }
 
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use crate::test_util::with_storage;
+
     use base64::Engine;
     use minicbor::Encoder;
     use p384::ecdsa::{DerSignature, Signature, SigningKey, signature::Signer};
@@ -76,8 +113,7 @@ pub(super) mod tests {
     }
 
     fn verify_production_document_at(document: &[u8], timestamp: u64) -> Option<NitroAttestation> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             verify_attestation_with_root(document, timestamp, AWS_NITRO_ROOT_DER).unwrap()
         })
     }
@@ -235,8 +271,7 @@ pub(super) mod tests {
             )
         );
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
-        StorageCtx::enter(&mut storage, || {
+        with_storage(TempoHardfork::T13, || {
             let verified = verify_attestation_with_root(
                 &document,
                 PRODUCTION_FIXTURE_TIME,
