@@ -19,7 +19,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 5;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 6;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
