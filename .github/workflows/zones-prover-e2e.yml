@@ -2,9 +2,9 @@ name: Prover E2E
 
 # workflow_run runs trusted default-branch code only, for scheduled upstream runs of
 # this repository; the publisher never checks out or executes candidate code.
-# The compat suite runs the candidate L1 and Zone nodes against every prover pinned in
-# crates/precompiles/src/zone_verifier/pcrs.json and reports "Tempo Zone Prover Compat",
-# which a node release can require. Dispatch it for a release commit.
+# The compat suite runs the candidate L1 and Zone nodes against the provers pinned in
+# crates/precompiles/src/zone_verifier/pcrs.json for active and scheduled forks, and reports
+# "Tempo Zone Prover Compat", which a node release can require. Dispatch it for a release commit.
 "on": # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
     inputs:
@@ -13,7 +13,7 @@ name: Prover E2E
         type: string
         required: true
       suite:
-        description: Fast suite, full suite including ancestry, or compat against every pinned prover
+        description: Fast suite, full suite including ancestry, or compat against the pinned provers
         type: choice
         options: [fast, full, compat]
         default: fast
