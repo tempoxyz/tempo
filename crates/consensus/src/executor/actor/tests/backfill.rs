@@ -301,6 +301,52 @@ fn finalized_tip_below_the_floor_backfills_to_the_floor() {
 }
 
 #[test_traced]
+fn execution_tip_above_the_certificate_disagreeing_with_marshal_stops_startup() {
+    deterministic::Runner::default().start(|context| async move {
+        // The certificate covers height 1. Marshal processed A at height 2,
+        // but the execution layer finalized its sibling B there. With the
+        // execution layer already at the floor nothing is backfilled, so B
+        // must not be promoted to network finality.
+        let b1 = make_block(1, 1, GENESIS);
+        let a2 = make_block(2, 2, b1.digest());
+        let b2 = make_block(3, 2, b1.digest());
+        assert_ne!(a2.digest(), b2.digest());
+
+        let marshal = FakeMarshal::new();
+        marshal.add_block(b1.clone());
+        marshal.add_block(a2);
+        let execution = FakeExecution::new();
+        execution.seed_canonical_block(&b1);
+        execution.seed_canonical_block(&b2);
+        execution.set_finalized(2, b2.digest());
+
+        let h = Harness::builder()
+            .marshal(marshal)
+            .execution(execution)
+            .harness_options(HarnessOptions {
+                finalized_floor: 2,
+                finalized_tip: (round(1), 1, b1.digest()),
+                ..Default::default()
+            })
+            .start(&context);
+
+        let exited = futures::future::select(
+            h.actor,
+            Box::pin(commonware_runtime::Clock::sleep(
+                &h.context,
+                std::time::Duration::from_secs(5),
+            )),
+        )
+        .await;
+        assert!(
+            matches!(exited, futures::future::Either::Left(_)),
+            "the executor must stop instead of entering its loop"
+        );
+        assert_eq!(h.finalized_reports.reports(), vec![]);
+    });
+}
+
+#[test_traced]
 fn snapshot_restore_replays_below_execution_finality_without_forkchoice_updates() {
     deterministic::Runner::default().start(|context| async move {
         // A restored consensus snapshot anchors the floor at height 1 while
