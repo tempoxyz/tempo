@@ -57,6 +57,7 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
     let args = Args::from_arg_matches(matches).wrap_err("failed to parse args")?;
 
     let force = matches.get_one::<bool>("force").copied().unwrap_or(false);
+    let list = matches.get_one::<bool>("list").copied().unwrap_or(false);
 
     // TODO: remove after snapshot callers stop passing `--skip-consensus`.
     // Stderr, so `--print-plan-json` keeps stdout to the plan JSON alone.
@@ -78,6 +79,15 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             plan.push_archive(consensus_download_plan_archive(&loaded_consensus)?);
 
             plan.write_json(io::stdout().lock())?;
+            return Ok(());
+        }
+
+        // Listing only queries the snapshot catalog and installs nothing.
+        if list {
+            args.inner
+                .execute::<tempo_node::node::TempoNode>()
+                .await
+                .wrap_err("failed to list snapshots")?;
             return Ok(());
         }
 
@@ -842,6 +852,33 @@ mod tests {
                 datadir.path().join("consensus").display()
             )
         );
+        assert_eq!(fs::read(processed).unwrap(), b"local");
+    }
+
+    #[test]
+    fn list_ignores_a_non_empty_consensus_dir() {
+        let datadir = tempfile::tempdir().unwrap();
+        let processed = datadir
+            .path()
+            .join("consensus/engine-application-metadata/processed");
+        fs::create_dir_all(processed.parent().unwrap()).unwrap();
+        fs::write(&processed, b"local").unwrap();
+        let matches = Args::command()
+            .try_get_matches_from([
+                "download",
+                "--datadir",
+                datadir.path().to_str().unwrap(),
+                "--list",
+            ])
+            .unwrap();
+
+        // Whether the catalog is reachable depends on the network; either way
+        // listing must not stop at the consensus directory.
+        let result = run_with_runner(&matches, CliRunner::try_default_runtime().unwrap());
+
+        if let Err(error) = result {
+            assert_eq!(error.to_string(), "failed to list snapshots");
+        }
         assert_eq!(fs::read(processed).unwrap(), b"local");
     }
 
