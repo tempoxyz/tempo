@@ -1,7 +1,7 @@
 //! Which models a step could have changed, read and checked through a runner's [`Reader`].
 
 use alloy_primitives::{Address, Log};
-use invariants_core::Effects;
+use invariants_core::{Effects, Probe};
 
 use crate::{Checked, Observe, Ran, StepChecked, TempoHardfork, Views, dex, fee_amm, tip20};
 
@@ -39,6 +39,12 @@ pub trait Reader {
     fn check<M>(&mut self, at: M::At<'_>, contract: Address, view: &'static str)
     where
         M: Observe + Checked<TempoHardfork> + StepChecked<Ran, TempoHardfork>;
+
+    /// Probes the model `at` names at `contract` on a throwaway copy of the state after the step,
+    /// and runs its checks. A probe that fails breaks `view`.
+    fn probe<M>(&mut self, at: M::At<'_>, contract: Address, view: &'static str)
+    where
+        M: Probe + Checked<TempoHardfork>;
 }
 
 /// Reads and checks every model the step could have changed.

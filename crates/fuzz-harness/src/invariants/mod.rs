@@ -128,6 +128,7 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         .chain(infos(tip20::roles::STEP_CHECKS))
         .chain(infos(fee_amm::CHECKS))
         .chain(infos(fee_amm::STEP_CHECKS))
+        .chain(infos(fee_amm::exit::CHECKS))
         .chain(infos(dex::CHECKS))
         .chain(infos(dex::STEP_CHECKS))
         .chain(infos(account::STEP_CHECKS))

@@ -3,7 +3,9 @@
 use std::fmt::{self, Display};
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
-use invariants_core::{Check, Checked, Observe, ObserveError, Report, StepChecked, Violation};
+use invariants_core::{
+    Check, Checked, Observe, ObserveError, Probe, Report, StepChecked, Violation,
+};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
 use tempo_invariants::{Ran, TempoHardfork, model};
 
@@ -119,6 +121,16 @@ impl<'a> model::Reader for EvmReader<'a> {
         };
         self.report
             .run(M::STEP_CHECKS, &effects.step(pre, post), Some(&self.spec));
+    }
+
+    fn probe<M>(&mut self, at: M::At<'_>, contract: Address, view: &'static str)
+    where
+        M: Probe + Checked<TempoHardfork>,
+    {
+        let read = M::probe(&mut self.after, at);
+        if let Some(model) = observed(self.report, view, contract, read) {
+            self.report.run(M::CHECKS, &model, Some(&self.spec));
+        }
     }
 }
 

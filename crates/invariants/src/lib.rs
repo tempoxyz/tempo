@@ -80,6 +80,7 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck<TempoHardfork>> {
         .chain(erased(tip20::roles::STEP_CHECKS))
         .chain(erased(fee_amm::CHECKS))
         .chain(erased(fee_amm::STEP_CHECKS))
+        .chain(erased(fee_amm::exit::CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(dex::STEP_CHECKS))
         .chain(erased(configurable_account::STEP_CHECKS))

@@ -9,11 +9,11 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, SystemTx},
+    evm::{AccountInfo, SystemTx, TxResult},
 };
-use invariants_core::{Call, Outcome, Views};
+use invariants_core::{Call, Outcome, Simulate, Views};
 use reth_evm::{ConfigureEvm as _, Database};
-use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv};
+use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes};
 
 use crate::state::{Net, PreStateDb, Reader};
 
@@ -60,39 +60,15 @@ impl<'a> EvmViews<'a> {
         }
         // The EVM caches what it loads, so a call reaches the database for every key it reads
         // only on an empty cache.
-        let cache = &mut self.evm.overlay_db_mut().cache;
-        cache.accounts.clear();
-        cache.storage.clear();
+        self.clear_overlay();
         self.pre_state.restore_missed(false);
-        let result = self.evm.system_call(
-            SystemTx::new(call.to, call.input.clone())
-                .with_caller(call.from.unwrap_or(Address::ZERO)),
-        );
+        let result = self.evm.system_call(system_tx(call));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
             match result {
-                Err(err) => Err(ViewFailed {
-                    selector: call
-                        .input
-                        .get(..4)
-                        .map(Bytes::copy_from_slice)
-                        .unwrap_or_default(),
-                    target: call.to,
-                    reason: err.to_string(),
-                }),
-                Ok(executed) => {
-                    let result = executed.result();
-                    Ok(if result.is_success() {
-                        Some(result.output.clone())
-                            .filter(|o| !o.is_empty())
-                            .map(Outcome::Return)
-                    } else if result.is_revert() {
-                        Some(Outcome::Revert(result.output.clone()))
-                    } else {
-                        Some(Outcome::Halt)
-                    })
-                }
+                Err(err) => Err(ViewFailed::new(call, err)),
+                Ok(executed) => Ok(outcome(executed.result())),
             }
         };
         let mut reads = self.reads.borrow_mut();
@@ -102,6 +78,31 @@ impl<'a> EvmViews<'a> {
             .insert(call, self.before, output.clone(), &reads);
         reads.clear();
         output
+    }
+
+    /// Drops what the EVM loaded and wrote since it was last cleared.
+    fn clear_overlay(&mut self) {
+        let cache = &mut self.evm.overlay_db_mut().cache;
+        cache.accounts.clear();
+        cache.storage.clear();
+    }
+}
+
+/// The system call that makes `call`.
+fn system_tx(call: &Call) -> SystemTx {
+    SystemTx::new(call.to, call.input.clone()).with_caller(call.from.unwrap_or(Address::ZERO))
+}
+
+/// How an executed call ended, with an empty return as no answer, since no view returns nothing.
+fn outcome(result: &TxResult<TempoEvmTypes>) -> Option<Outcome> {
+    if result.is_success() {
+        Some(result.output.clone())
+            .filter(|o| !o.is_empty())
+            .map(Outcome::Return)
+    } else if result.is_revert() {
+        Some(Outcome::Revert(result.output.clone()))
+    } else {
+        Some(Outcome::Halt)
     }
 }
 
@@ -119,6 +120,35 @@ impl Views for EvmViews<'_> {
     /// The seeded pre-state may hold only the accounts and slots execution touched.
     fn partial(&self) -> bool {
         true
+    }
+}
+
+/// Runs the calls on the EVM's own overlay, cleared before and after, so nothing persists and
+/// nothing is cached: an answer depends on the calls before it.
+impl Simulate for EvmViews<'_> {
+    fn simulate(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
+        self.clear_overlay();
+        self.pre_state.restore_missed(false);
+        let answers = calls
+            .iter()
+            .map(|call| {
+                // A call that read a key the pre-state lacks leaves the state after it unknown, so
+                // neither it nor any call after it is answered.
+                if self.pre_state.missed() {
+                    return Ok(None);
+                }
+                match self.evm.system_call(system_tx(call)) {
+                    Ok(executed) => {
+                        Ok(outcome(&executed.commit()).filter(|_| !self.pre_state.missed()))
+                    }
+                    Err(_) if self.pre_state.missed() => Ok(None),
+                    Err(err) => Err(ViewFailed::new(call, err)),
+                }
+            })
+            .collect();
+        self.clear_overlay();
+        self.reads.borrow_mut().clear();
+        answers
     }
 }
 
@@ -271,6 +301,20 @@ pub(super) struct ViewFailed {
     selector: Bytes,
     target: Address,
     reason: String,
+}
+
+impl ViewFailed {
+    fn new(call: &Call, reason: impl Display) -> Self {
+        Self {
+            selector: call
+                .input
+                .get(..4)
+                .map(Bytes::copy_from_slice)
+                .unwrap_or_default(),
+            target: call.to,
+            reason: reason.to_string(),
+        }
+    }
 }
 
 impl Display for ViewFailed {
