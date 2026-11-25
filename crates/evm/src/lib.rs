@@ -135,6 +135,13 @@ impl TempoEvmConfig {
         &self.chain_spec
     }
 
+    /// Starts recording `evm`'s storage actions, including its native precompiles'.
+    pub fn record_storage_actions(&self, evm: &mut TempoEvm<'_>) {
+        evm.ext_mut().actions.enable();
+        // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
+        reth_evm_ethereum::EvmFactory::configure_evm(&self.evm_factory, evm);
+    }
+
     /// Returns the moderato EVM config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))

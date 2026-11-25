@@ -31,9 +31,10 @@ use evm2::evm::{Cache, PendingState, TxResultExt};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
 use reth_chainspec::ForkCondition;
-use reth_ethereum::{evm::EvmFactory as _, tasks::TaskExecutor};
+use reth_ethereum::tasks::TaskExecutor;
 use reth_evm::{
-    BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _, database::StateProviderDatabase,
+    BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
+    database::StateProviderDatabase,
 };
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
@@ -52,7 +53,7 @@ use tempo_chainspec::{
     spec::{TempoChainSpec, TempoHardforks as _},
 };
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
-use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult, evm::TempoEvm};
+use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult};
 use tempo_precompiles::storage::{FeeHook, StorageAction};
 use tempo_primitives::{Block, TempoPrimitives, TempoReceipt};
 use tokio::sync::broadcast::error::RecvError;
@@ -301,7 +302,7 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
             .real_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure control EVM: {e}"))?;
-        record_actions(&self.real_config, &mut evm);
+        self.real_config.record_storage_actions(&mut evm);
         let context = self
             .real_config
             .context_for_block(block.sealed_block())
@@ -385,7 +386,7 @@ impl<P: StateProviderFactory> ShadowReplayer<P> {
             .shadow_config
             .evm_for_block(&mut db, block.header())
             .map_err(|e| format!("failed to configure shadow EVM: {e}"))?;
-        record_actions(&self.shadow_config, &mut evm);
+        self.shadow_config.record_storage_actions(&mut evm);
         let context = self
             .shadow_config
             .context_for_block(block.sealed_block())
@@ -738,13 +739,6 @@ fn normalized_fee_transfer(
     let mut normalized = logs.to_vec();
     normalized[index] = ITIP20::Transfer::encode_log(&transfer);
     Some(hash_logs(&normalized))
-}
-
-/// Records the EVM's storage actions from now on, including the handler's fee hook markers.
-fn record_actions(config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(config).configure_evm(evm);
 }
 
 /// The fee hooks' markers and actions the executor recorded since they were last taken. The

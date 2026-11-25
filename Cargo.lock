@@ -14770,7 +14770,6 @@ dependencies = [
  "reth-engine-tree",
  "reth-errors",
  "reth-evm",
- "reth-evm-ethereum",
  "reth-metrics",
  "reth-payload-builder",
  "reth-payload-primitives",
