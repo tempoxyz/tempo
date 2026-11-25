@@ -8,6 +8,7 @@ use std::{
 use clap::{ArgMatches, FromArgMatches, Parser};
 use eyre::{Context as _, OptionExt, bail, ensure};
 use futures::TryStreamExt;
+use reth_chainspec::EthChainSpec as _;
 use reth_cli_commands::download::{
     DownloadCommand, DownloadPlanArchive,
     manifest::{OutputFileChecksum, SnapshotManifest},
@@ -73,6 +74,25 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             return Ok(());
         }
 
+        let consensus_dir = (!args.skip_consensus).then(|| {
+            args.consensus_datadir.clone().unwrap_or_else(|| {
+                let env = args.inner.env();
+                env.datadir
+                    .clone()
+                    .resolve_datadir(env.chain.chain())
+                    .data_dir()
+                    .join("consensus")
+            })
+        });
+        // Refuse before the execution layer download: failing after it would
+        // waste the download and pair new execution state with old consensus
+        // state.
+        if let Some(consensus_dir) = &consensus_dir
+            && !force
+        {
+            ensure_consensus_dir_is_empty(consensus_dir)?;
+        }
+
         info!("running execution layer download...");
 
         let start = Instant::now();
@@ -87,16 +107,13 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
             display_duration(start.elapsed())
         );
 
-        if args.skip_consensus {
+        let Some(consensus_dir) = consensus_dir else {
             return Ok(());
-        }
+        };
 
         let prepared = prepared.ok_or_eyre(
             "consensus snapshots require a modular execution layer snapshot manifest",
         )?;
-        let consensus_dir = args
-            .consensus_datadir
-            .unwrap_or_else(|| prepared.data_dir.join("consensus"));
 
         let loaded_consensus = load_consensus_manifest(&prepared.manifest)?;
         install_consensus_archive(&consensus_dir, &loaded_consensus, force).await?;
@@ -217,12 +234,10 @@ async fn install_consensus_archive(
 
     // Merging into existing state would pair the snapshot's certificates with
     // local partitions it does not cover, such as marshal's processed height.
-    if !force && consensus_dir.try_exists()? {
-        ensure!(
-            fs::read_dir(consensus_dir)?.next().is_none(),
-            "consensus directory {} is not empty; pass --force to replace it",
-            consensus_dir.display(),
-        );
+    // `run_with_runner` checks this before downloading; this catches
+    // anything written to the directory since.
+    if !force {
+        ensure_consensus_dir_is_empty(consensus_dir)?;
     }
     fs::create_dir_all(consensus_dir).wrap_err("failed to create consensus directory")?;
 
@@ -238,6 +253,18 @@ async fn install_consensus_archive(
     move_consensus_directory(staging.path(), &consensus_dir, force)?;
 
     info!("persisted consensus archive");
+    Ok(())
+}
+
+/// Errors unless `consensus_dir` is missing or empty.
+fn ensure_consensus_dir_is_empty(consensus_dir: &Path) -> eyre::Result<()> {
+    if consensus_dir.try_exists()? {
+        ensure!(
+            fs::read_dir(consensus_dir)?.next().is_none(),
+            "consensus directory {} is not empty; pass --force to replace it",
+            consensus_dir.display(),
+        );
+    }
     Ok(())
 }
 
@@ -778,6 +805,55 @@ mod tests {
         move_consensus_directory(source.path(), &consensus_dir, false).unwrap();
 
         assert_eq!(fs::read(existing).unwrap(), b"existing");
+    }
+
+    fn download_with_missing_manifest(datadir: &Path, force: bool) -> eyre::Report {
+        let manifest = datadir.join("missing-manifest.json");
+        let mut argv = vec![
+            "download",
+            "--datadir",
+            datadir.to_str().unwrap(),
+            "--manifest-path",
+            manifest.to_str().unwrap(),
+        ];
+        if force {
+            argv.push("--force");
+        }
+        let matches = Args::command().try_get_matches_from(argv).unwrap();
+        run_with_runner(&matches, CliRunner::try_default_runtime().unwrap()).unwrap_err()
+    }
+
+    #[test]
+    fn download_rejects_non_empty_consensus_dir_before_execution_layer() {
+        let datadir = tempfile::tempdir().unwrap();
+        let processed = datadir
+            .path()
+            .join("consensus/engine-application-metadata/processed");
+        fs::create_dir_all(processed.parent().unwrap()).unwrap();
+        fs::write(&processed, b"local").unwrap();
+
+        // The manifest does not exist, so reaching the execution layer
+        // download would fail with a different error.
+        let error = download_with_missing_manifest(datadir.path(), false);
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "consensus directory {} is not empty; pass --force to replace it",
+                datadir.path().join("consensus").display()
+            )
+        );
+        assert_eq!(fs::read(processed).unwrap(), b"local");
+    }
+
+    #[test]
+    fn download_with_force_skips_consensus_dir_check() {
+        let datadir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(datadir.path().join("consensus/engine-application-metadata")).unwrap();
+
+        let error = download_with_missing_manifest(datadir.path(), true);
+
+        assert_eq!(error.to_string(), "execution layer download failed");
     }
 
     #[test]
