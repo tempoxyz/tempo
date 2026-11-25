@@ -188,8 +188,8 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Experiment: keep two physical cores (and their siblings) for the engine and payload builder.
-    reth_tasks::utils::reserve_critical_cpus(2);
+    // Experiment: one hardware thread per physical core, so no two threads share a core.
+    reth_tasks::utils::restrict_to_physical_cores();
 
     install_crypto_provider();
 
