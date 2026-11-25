@@ -28,7 +28,6 @@ impl WitnessShapes {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.l1_rpc_url)
             .await?;
-        let block = provider.get_block_number().await?;
         let mut candidates = (0u64..).map(|i| Address::from_word(keccak256(i.to_be_bytes())));
         let (mut extension, mut empty_child) = (None, None);
         for _ in 0..MAX_BATCHES {
@@ -39,7 +38,6 @@ impl WitnessShapes {
                 .collect();
             let proof = provider
                 .get_proof(TIP403_REGISTRY_ADDRESS, slots)
-                .number(block)
                 .await
                 .wrap_err("failed to read registry proofs")?;
             for (recipient, storage) in recipients.into_iter().zip(proof.storage_proof) {
@@ -55,7 +53,7 @@ impl WitnessShapes {
             if let (Some(extension), Some(empty_child)) = (extension, empty_child) {
                 println!(
                     "{}",
-                    serde_json::json!({ "recipients": [extension, empty_child], "block": block })
+                    serde_json::json!({ "recipients": [extension, empty_child] })
                 );
                 return Ok(());
             }
