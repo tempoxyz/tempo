@@ -33,8 +33,8 @@ async fn replay_captured_blocks(
 
     let provider = node.inner.provider.clone();
     let config = TempoEvmConfig::new(chain_spec.clone());
-    let consensus = TempoConsensus::new(chain_spec.clone());
-    let replayer = ShadowReplayer::new(chain_spec, candidate);
+    let consensus = TempoConsensus::new(chain_spec);
+    let replayer = ShadowReplayer::new(config.clone(), candidate);
     let mut first_tx = 0;
     let mut outcomes = Vec::new();
     for number in 1..=provider.best_block_number()? {

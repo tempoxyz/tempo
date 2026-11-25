@@ -207,10 +207,10 @@ impl ReplayCommand {
             }
             None => None,
         };
-        let (config, consensus) = components(self.chain.clone());
+        let (config, consensus) = components(self.chain);
         let shadow = self
             .shadow
-            .map(|hardfork| Shadow::new(self.chain, hardfork));
+            .map(|hardfork| Shadow::new(config.clone(), hardfork));
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
@@ -253,9 +253,9 @@ struct Shadow {
 }
 
 impl Shadow {
-    fn new(chain: Arc<TempoChainSpec>, hardfork: TempoHardfork) -> Self {
+    fn new(config: TempoEvmConfig, hardfork: TempoHardfork) -> Self {
         Self {
-            replayer: ShadowReplayer::new(chain, hardfork),
+            replayer: ShadowReplayer::new(config, hardfork),
             matched: Default::default(),
             expected: Default::default(),
             inconclusive: Default::default(),

@@ -72,11 +72,12 @@ pub struct ShadowReplayer {
 }
 
 impl ShadowReplayer {
-    pub fn new(canonical_spec: Arc<TempoChainSpec>, shadow_hardfork: TempoHardfork) -> Self {
-        let shadow_spec = Arc::new(shadow_spec(&canonical_spec, shadow_hardfork));
+    /// Compares execution under `real_config` with execution under `shadow_hardfork`'s rules.
+    pub fn new(real_config: TempoEvmConfig, shadow_hardfork: TempoHardfork) -> Self {
+        let shadow_spec = shadow_spec(real_config.chain_spec(), shadow_hardfork);
         Self {
-            real_config: TempoEvmConfig::new(canonical_spec),
-            shadow_config: TempoEvmConfig::new(shadow_spec),
+            real_config,
+            shadow_config: TempoEvmConfig::new(Arc::new(shadow_spec)),
             shadow_hardfork,
         }
     }
