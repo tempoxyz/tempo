@@ -22,7 +22,9 @@ use tokio_util::io::StreamReader;
 use tracing::info;
 use url::Url;
 
-use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
+use crate::snapshot_manifest::{
+    COMMONWARE_HOLD_FILE, TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -99,6 +101,9 @@ pub(crate) fn run_with_runner(matches: &ArgMatches, runner: CliRunner) -> eyre::
                 .data_dir()
                 .join("consensus")
         });
+        // Held until the consensus archive is installed, so no node can open
+        // the directory while it is being checked, cleared or replaced.
+        let _consensus_hold = hold_consensus_dir(&consensus_dir)?;
         // Refuse before the execution layer download: failing after it would
         // waste the download and pair new execution state with old consensus
         // state.
@@ -265,14 +270,43 @@ async fn install_consensus_archive(
     Ok(())
 }
 
-/// Errors unless `consensus_dir` is missing or empty.
+/// Takes the exclusive advisory lock Commonware runtimes hold on
+/// `<consensus_dir>/.hold` while they run, creating the directory and file if
+/// missing. Fails instead of waiting when a node holds it. The lock is released
+/// when the returned file is dropped or the process exits.
+fn hold_consensus_dir(consensus_dir: &Path) -> eyre::Result<fs::File> {
+    fs::create_dir_all(consensus_dir).wrap_err("failed to create consensus directory")?;
+    let hold = consensus_dir.join(COMMONWARE_HOLD_FILE);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&hold)
+        .wrap_err_with(|| format!("failed to open {}", hold.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(eyre::eyre!(
+            "consensus storage at `{}` is held by another process; stop the node before \
+             downloading a snapshot",
+            consensus_dir.display()
+        )),
+        Err(fs::TryLockError::Error(err)) => {
+            Err(err).wrap_err_with(|| format!("failed to lock {}", hold.display()))
+        }
+    }
+}
+
+/// Errors unless `consensus_dir` is missing or holds nothing but the
+/// Commonware hold file.
 fn ensure_consensus_dir_is_empty(consensus_dir: &Path) -> eyre::Result<()> {
     if consensus_dir.try_exists()? {
-        ensure!(
-            fs::read_dir(consensus_dir)?.next().is_none(),
-            "consensus directory {} is not empty; pass --force to replace it",
-            consensus_dir.display(),
-        );
+        for entry in fs::read_dir(consensus_dir)? {
+            ensure!(
+                entry?.file_name() == COMMONWARE_HOLD_FILE,
+                "consensus directory {} is not empty; pass --force to replace it",
+                consensus_dir.display(),
+            );
+        }
     }
     Ok(())
 }
@@ -376,7 +410,9 @@ fn move_consensus_directory(source: &Path, target: &Path, force: bool) -> eyre::
         info!("removing existing consensus state");
         for entry in fs::read_dir(target)? {
             let entry = entry?;
-            if entry.path() == source {
+            // Removing the hold file would void the lock on it: a node could
+            // then lock a recreated one while this process still writes.
+            if entry.path() == source || entry.file_name() == COMMONWARE_HOLD_FILE {
                 continue;
             }
 
@@ -526,6 +562,7 @@ fn hash_file_blake3(path: &Path) -> eyre::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     use alloy_primitives::B256;
     use clap::CommandFactory;
@@ -802,6 +839,30 @@ mod tests {
         assert!(fs::read_dir(&consensus_dir).unwrap().next().is_none());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn move_consensus_directory_keeps_hold_file_when_forced() {
+        let source = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let consensus_dir = parent.path().join("consensus");
+        let _hold = hold_consensus_dir(&consensus_dir).unwrap();
+        let hold_path = consensus_dir.join(COMMONWARE_HOLD_FILE);
+        let before = fs::metadata(&hold_path).unwrap();
+        fs::write(consensus_dir.join("stale"), b"stale").unwrap();
+
+        move_consensus_directory(source.path(), &consensus_dir, true).unwrap();
+
+        let entries = fs::read_dir(&consensus_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![COMMONWARE_HOLD_FILE]);
+        assert_eq!(
+            std::os::unix::fs::MetadataExt::ino(&before),
+            std::os::unix::fs::MetadataExt::ino(&fs::metadata(&hold_path).unwrap())
+        );
+    }
+
     #[test]
     fn move_consensus_directory_preserves_existing_state_without_force() {
         let source = tempfile::tempdir().unwrap();
@@ -888,6 +949,43 @@ mod tests {
         fs::create_dir_all(datadir.path().join("consensus/engine-application-metadata")).unwrap();
 
         let error = download_with_missing_manifest(datadir.path(), true);
+
+        assert_eq!(error.to_string(), "execution layer download failed");
+    }
+
+    #[test_case(false)]
+    #[test_case(true)]
+    fn download_fails_fast_when_a_node_holds_the_consensus_dir(force: bool) {
+        let datadir = tempfile::tempdir().unwrap();
+        let consensus_dir = datadir.path().join("consensus");
+        let processed = consensus_dir.join("engine-application-metadata/processed");
+        fs::create_dir_all(processed.parent().unwrap()).unwrap();
+        fs::write(&processed, b"local").unwrap();
+        // flock locks belong to the open file description, so a second open in
+        // this process contends like a running node would.
+        let _node = hold_consensus_dir(&consensus_dir).unwrap();
+
+        let error = download_with_missing_manifest(datadir.path(), force);
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "consensus storage at `{}` is held by another process; stop the node before \
+                 downloading a snapshot",
+                consensus_dir.display()
+            )
+        );
+        assert_eq!(fs::read(processed).unwrap(), b"local");
+    }
+
+    #[test]
+    fn download_treats_a_consensus_dir_with_only_the_hold_file_as_empty() {
+        let datadir = tempfile::tempdir().unwrap();
+        let consensus_dir = datadir.path().join("consensus");
+        fs::create_dir_all(&consensus_dir).unwrap();
+        fs::write(consensus_dir.join(COMMONWARE_HOLD_FILE), b"").unwrap();
+
+        let error = download_with_missing_manifest(datadir.path(), false);
 
         assert_eq!(error.to_string(), "execution layer download failed");
     }
