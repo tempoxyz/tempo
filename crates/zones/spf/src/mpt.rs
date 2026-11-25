@@ -283,25 +283,22 @@ impl<'a> WitnessPathReader<'a> {
     /// Only computed to diagnose a failed read, so successful reads never pay for it.
     pub(crate) fn shape(&self, address: Address, slot: Option<B256>) -> PathShape {
         let mut shape = PathShape::default();
-        let end = self.walk(self.state_root, keccak256(address), |node, path, depth| {
+        let mut end = self.walk(self.state_root, keccak256(address), |node, path, depth| {
             shape.visit(node, path, depth)
         });
-        let end = match (slot, end) {
-            (Some(slot), Ok(PathEnd::Leaf(value))) => {
+        if let (Some(slot), Ok(PathEnd::Leaf(value))) = (slot, &end) {
+            end = decode_hashed_account(value).and_then(|account| {
                 shape = PathShape {
                     storage: true,
                     ..Default::default()
                 };
-                decode_hashed_account(&value).and_then(|account| {
-                    self.walk(
-                        account.storage_root,
-                        keccak256(slot),
-                        |node, path, depth| shape.visit(node, path, depth),
-                    )
-                })
-            }
-            (_, end) => end,
-        };
+                self.walk(
+                    account.storage_root,
+                    keccak256(slot),
+                    |node, path, depth| shape.visit(node, path, depth),
+                )
+            });
+        }
         shape.error = end.err();
         shape
     }
@@ -397,7 +394,7 @@ pub enum NodeKind {
 
 /// Trie shape of the path one read follows through a witness. It holds no key, hash or value,
 /// so it can be logged.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct PathShape {
     /// Whether the path ends in a storage trie rather than the account trie.
     pub storage: bool,

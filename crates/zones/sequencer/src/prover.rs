@@ -568,7 +568,6 @@ async fn verify_remotely(
     let mut connection = ProverConnection::new(stream, DEFAULT_MAX_REQUEST_BYTES);
 
     let started = Instant::now();
-    let expected_id = request.request_id.clone();
     let send_result = connection.send(Arc::clone(&request)).await;
     metrics
         .spf_remote_request_send_duration_seconds
@@ -609,7 +608,7 @@ async fn verify_remotely(
             output,
             proof_bundle,
         } => {
-            validate_response_header(version, Some(&request_id), &expected_id)?;
+            validate_response_header(version, Some(&request_id), &request.request_id)?;
             validate_proof_bundle(&proof_bundle)?;
             Ok((*output, proof_bundle))
         }
@@ -619,7 +618,7 @@ async fn verify_remotely(
             code,
             message,
         } => {
-            validate_response_header(version, request_id.as_deref(), &expected_id)?;
+            validate_response_header(version, request_id.as_deref(), &request.request_id)?;
             let witness = &request.witness;
             // Never log the message itself here: it names the read's account and slot.
             warn!(
@@ -644,21 +643,17 @@ async fn verify_remotely(
     }
 }
 
-/// Parses the Tempo read named by a `zone_spf::Error::MissingTempoStorage` message, the only form
-/// in which a pinned prover reports it. Older provers always name a slot.
+/// Parses the Tempo read a `zone_spf::Error::MissingTempoStorage` message names, the only form in
+/// which a pinned prover reports it.
 fn missing_tempo_read(message: &str) -> Option<(Address, Option<B256>, u64)> {
-    let (account, rest) = message
+    let (read, block_number) = message
         .strip_prefix("Tempo witness is missing account ")?
-        .split_at_checked(42)?;
-    let (slot, rest) = match rest.strip_prefix(" slot ") {
-        Some(rest) => {
-            let (slot, rest) = rest.split_at_checked(66)?;
-            (Some(slot.parse().ok()?), rest)
-        }
-        None => (None, rest),
+        .split_once(" at block ")?;
+    let (account, slot) = match read.split_once(" slot ") {
+        Some((account, slot)) => (account, Some(slot.parse().ok()?)),
+        None => (read, None),
     };
-    let block_number = rest.strip_prefix(" at block ")?.parse().ok()?;
-    Some((account.parse().ok()?, slot, block_number))
+    Some((account.parse().ok()?, slot, block_number.parse().ok()?))
 }
 
 fn validate_response_header(
@@ -1162,6 +1157,7 @@ fn witness_size(witness: &BatchWitness) -> usize {
 mod tests {
     use super::*;
     use alloy_consensus::Header as ConsensusHeader;
+    use test_case::test_case;
     use zone_rpc::types::ZoneExecutionWitness;
     use zone_spf::{
         BlockTransition, DepositQueueTransition, LastBatchCommitment, TokenEnablementTransition,
@@ -1334,6 +1330,22 @@ mod tests {
                 .contains("previous token count mismatch")
         );
     }
+
+    #[test_case(None)]
+    #[test_case(Some(B256::repeat_byte(2)))]
+    fn missing_tempo_read_parses_spf_error(slot: Option<B256>) {
+        let account = Address::repeat_byte(1);
+        let message = zone_spf::Error::MissingTempoStorage {
+            account,
+            slot,
+            block_number: 7,
+        };
+        assert_eq!(
+            missing_tempo_read(&message.to_string()),
+            Some((account, slot, 7))
+        );
+    }
+
     fn zone_block(number: u64) -> ZoneBlock {
         ZoneBlock {
             number,
