@@ -14,7 +14,10 @@ use std::{
     time::Duration,
 };
 
-use crate::{network_identity::NetworkIdentity, peer_manager::AddressOverrides};
+use crate::{
+    network_identity::NetworkIdentity,
+    peer_manager::{AddressOverrides, AddressRewrite},
+};
 use alloy_primitives::B256;
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::ed25519::PublicKey;
@@ -345,24 +348,24 @@ pub struct Args {
     #[arg(long = "consensus.allow-dns", default_value_t = true)]
     pub allow_dns: bool,
 
-    /// Dial the validator with this ed25519 public key at `IP:PORT` instead
-    /// of the ingress address in the validator config contract. Repeat the
-    /// flag for each validator.
+    /// Dial the validator with this ed25519 public key at `TO` while its
+    /// ingress address in the validator config contract is `FROM`; both are
+    /// `IP:PORT`. Repeat the flag for each validator.
     ///
     /// Restores connectivity when a validator's registered address is wrong
-    /// and the chain cannot finalize the transaction that fixes it. Remove
-    /// once the contract is fixed.
-    #[arg(long = "consensus.override-ingress", value_name = "PUBKEY=IP:PORT")]
+    /// and the chain cannot finalize the transaction that fixes it. Once the
+    /// contract holds any other address, the override no longer applies.
+    #[arg(long = "consensus.override-ingress", value_name = "PUBKEY=FROM->TO")]
     pub override_ingress: Vec<PeerAddressOverride<SocketAddr>>,
 
     /// Accept connections from the validator with this ed25519 public key
-    /// from `IP` instead of the egress address in the validator config
-    /// contract. Repeat the flag for each validator.
+    /// from `TO` while its egress IP in the validator config contract is
+    /// `FROM`; both are IPs. Repeat the flag for each validator.
     ///
     /// Restores connectivity when a validator's registered address is wrong
-    /// and the chain cannot finalize the transaction that fixes it. Remove
-    /// once the contract is fixed.
-    #[arg(long = "consensus.override-egress", value_name = "PUBKEY=IP")]
+    /// and the chain cannot finalize the transaction that fixes it. Once the
+    /// contract holds any other address, the override no longer applies.
+    #[arg(long = "consensus.override-egress", value_name = "PUBKEY=FROM->TO")]
     pub override_egress: Vec<PeerAddressOverride<IpAddr>>,
 
     /// Time into the future that a timestamp can be and still be considered valid.
@@ -549,14 +552,14 @@ impl PositiveDuration {
     }
 }
 
-/// A validator's ed25519 public key and the address that replaces one of its
-/// validator config contract entries, parsed from `PUBKEY=ADDRESS`.
+/// A validator's ed25519 public key and the rewrite of one of its validator
+/// config contract entries, parsed from `PUBKEY=FROM->TO`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerAddressOverride<T> {
-    /// The validator whose address is replaced.
+    /// The validator whose address is rewritten.
     pub public_key: PublicKey,
-    /// The address used instead of the contract's.
-    pub address: T,
+    /// The contract address to match and the address that replaces it.
+    pub rewrite: AddressRewrite<T>,
 }
 
 impl<T> FromStr for PeerAddressOverride<T>
@@ -567,18 +570,26 @@ where
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (public_key, address) = s.split_once('=').ok_or("expected `PUBKEY=ADDRESS`")?;
+        let (public_key, rewrite) = s.split_once('=').ok_or("expected `PUBKEY=FROM->TO`")?;
+        let (from, to) = rewrite
+            .split_once("->")
+            .ok_or("expected `PUBKEY=FROM->TO`")?;
         let public_key = public_key
             .parse::<B256>()
             .map_err(|error| format!("public key is not 32 hex bytes: {error}"))?;
         let public_key = PublicKey::decode(commonware_codec::Copying(public_key.as_slice()))
             .map_err(|error| format!("public key is not an ed25519 public key: {error}"))?;
-        let address = address
-            .parse()
-            .map_err(|error| format!("invalid address `{address}`: {error}"))?;
+        let parse_address = |address: &str| {
+            address
+                .parse()
+                .map_err(|error| format!("invalid address `{address}`: {error}"))
+        };
         Ok(Self {
             public_key,
-            address,
+            rewrite: AddressRewrite {
+                from: parse_address(from)?,
+                to: parse_address(to)?,
+            },
         })
     }
 }
@@ -794,17 +805,17 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 fn collect_overrides<T: Copy>(
     flag: &str,
     overrides: &[PeerAddressOverride<T>],
-) -> eyre::Result<HashMap<PublicKey, T>> {
+) -> eyre::Result<HashMap<PublicKey, AddressRewrite<T>>> {
     let mut collected = HashMap::with_capacity(overrides.len());
     for PeerAddressOverride {
         public_key,
-        address,
+        rewrite,
     } in overrides
     {
         match collected.entry(public_key.clone()) {
             Entry::Occupied(_) => eyre::bail!("`{flag}` names public key `{public_key}` twice"),
             Entry::Vacant(slot) => {
-                slot.insert(*address);
+                slot.insert(*rewrite);
             }
         }
     }
@@ -889,9 +900,12 @@ mod tests {
 
     #[test]
     fn address_overrides_are_collected_by_public_key() {
-        let ingress = format!("{}=203.0.113.7:8000", public_key_hex(1));
-        let ipv6_ingress = format!("{}=[2001:db8::7]:8000", public_key_hex(2));
-        let egress = format!("{}=198.51.100.9", public_key_hex(1));
+        let ingress = format!("{}=192.0.2.1:8000->203.0.113.7:8000", public_key_hex(1));
+        let ipv6_ingress = format!(
+            "{}=[2001:db8::1]:8000->[2001:db8::7]:8000",
+            public_key_hex(2)
+        );
+        let egress = format!("{}=192.0.2.1->198.51.100.9", public_key_hex(1));
         let overrides = parse(&[
             "--dev",
             "--consensus.override-ingress",
@@ -910,11 +924,17 @@ mod tests {
             HashMap::from([
                 (
                     PrivateKey::from_seed(1).public_key(),
-                    "203.0.113.7:8000".parse().unwrap()
+                    AddressRewrite {
+                        from: "192.0.2.1:8000".parse().unwrap(),
+                        to: "203.0.113.7:8000".parse().unwrap(),
+                    }
                 ),
                 (
                     PrivateKey::from_seed(2).public_key(),
-                    "[2001:db8::7]:8000".parse().unwrap()
+                    AddressRewrite {
+                        from: "[2001:db8::1]:8000".parse().unwrap(),
+                        to: "[2001:db8::7]:8000".parse().unwrap(),
+                    }
                 ),
             ]),
         );
@@ -922,15 +942,18 @@ mod tests {
             overrides.egress,
             HashMap::from([(
                 PrivateKey::from_seed(1).public_key(),
-                "198.51.100.9".parse().unwrap()
+                AddressRewrite {
+                    from: "192.0.2.1".parse().unwrap(),
+                    to: "198.51.100.9".parse().unwrap(),
+                }
             )]),
         );
     }
 
     #[test]
     fn address_overrides_reject_a_public_key_named_twice() {
-        let first = format!("{}=203.0.113.7:8000", public_key_hex(1));
-        let second = format!("{}=203.0.113.8:8000", public_key_hex(1));
+        let first = format!("{}=192.0.2.1:8000->203.0.113.7:8000", public_key_hex(1));
+        let second = format!("{}=192.0.2.2:8000->203.0.113.8:8000", public_key_hex(1));
         let error = parse(&[
             "--dev",
             "--consensus.override-ingress",
@@ -951,10 +974,12 @@ mod tests {
         );
     }
 
-    #[test_case("203.0.113.7:8000" => "expected `PUBKEY=ADDRESS`")]
-    #[test_case("0x11=203.0.113.7:8000" => "public key is not 32 hex bytes: invalid string length")]
-    #[test_case("0x0202020202020202020202020202020202020202020202020202020202020202=203.0.113.7:8000" => "public key is not an ed25519 public key: Wrapped Error: Context(ed25519)")]
-    #[test_case("SEED1=203.0.113.7" => "invalid address `203.0.113.7`: invalid socket address syntax")]
+    #[test_case("192.0.2.1:8000->203.0.113.7:8000" => "expected `PUBKEY=FROM->TO`")]
+    #[test_case("SEED1=203.0.113.7:8000" => "expected `PUBKEY=FROM->TO`")]
+    #[test_case("0x11=192.0.2.1:8000->203.0.113.7:8000" => "public key is not 32 hex bytes: invalid string length")]
+    #[test_case("0x0202020202020202020202020202020202020202020202020202020202020202=192.0.2.1:8000->203.0.113.7:8000" => "public key is not an ed25519 public key: Wrapped Error: Context(ed25519)")]
+    #[test_case("SEED1=192.0.2.1->203.0.113.7:8000" => "invalid address `192.0.2.1`: invalid socket address syntax")]
+    #[test_case("SEED1=192.0.2.1:8000->203.0.113.7" => "invalid address `203.0.113.7`: invalid socket address syntax")]
     fn peer_address_override_rejects(value: &str) -> String {
         value
             .replace("SEED1", &public_key_hex(1))
