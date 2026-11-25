@@ -20,7 +20,7 @@ assert equal $existing.fee_token any_tip20
 assert equal (txgen-parse-tip20-scenario public).recipient users
 
 # Alias resolution must retain the actual mix and state-bloat setup.
-let mix = (^uv run --no-project --with yq==3.4.3 yq -c .mix $default.spec_path | from json)
+let mix = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c .mix $default.spec_path | from json)
 assert equal ($mix | get weight | math sum) 100
 txgen-configure-existing-recipients-env $default.spec_path 1000 4
 txgen-configure-existing-recipients-env $default.spec_path 1024 4
@@ -84,7 +84,7 @@ for preset in [zone-earn-mix bridge-mix] {
     assert equal ($spec.spec_path | path basename) $"($preset).yml"
     assert ($preset in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
     assert equal (txgen-scenario-metadata-args $preset $spec.spec_path) ["-m" $"preset=($preset)" "-m" $"scenario=($preset)"]
-    let mix = (^uv run --no-project --with yq==3.4.3 yq -c .mix $spec.spec_path | from json)
+    let mix = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c .mix $spec.spec_path | from json)
     assert equal ($mix | get weight | math sum) 100
 }
 assert ("zone-earn-mix" in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
@@ -140,7 +140,7 @@ let neobank_dir = (mktemp -d)
 let neobank_spec = (txgen-resolve-bench-spec neobank-generic)
 assert ("neobank-generic" in $TXGEN_HELPER_PUBLIC_MIX_PRESETS)
 assert ("neobank-generic" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
-assert equal ((^uv run --no-project --with yq==3.4.3 yq -c .mix $neobank_spec.spec_path | from json) | get weight | math sum) 100
+assert equal ((^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c .mix $neobank_spec.spec_path | from json) | get weight | math sum) 100
 let neobank_path = (txgen-prepare-public-mix-preset $neobank_spec.spec_path 1000 40 2 1337 --out-dir $neobank_dir)
 let neobank = (open $neobank_path)
 let neobank_cards = ($neobank.mix | get template | where { |name| $name | str starts-with "card_settlement_" })
@@ -159,7 +159,7 @@ assert (($neobank.templates.reward_distribution.gas_limit) <= $TXGEN_HELPER_TX_G
 assert equal ($neobank.setup.steps | where id =~ "^dex_wall_" | length) 6
 rm -rf $neobank_dir
 # Module toggles filter neobank-generic's mix before composition; DEX and keychain setup follow it.
-assert equal ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten | sort) ((^uv run --no-project --with yq==3.4.3 yq -c .mix $neobank_spec.spec_path | from json) | get template | sort)
+assert equal ($TXGEN_HELPER_NEOBANK_MODULES | values | flatten | sort) ((^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c .mix $neobank_spec.spec_path | from json) | get template | sort)
 assert equal (txgen-neobank-modules "") [account deposit earn transfer spend cashout]
 assert equal (txgen-neobank-modules " cashout,spend ") [spend cashout]
 assert (try { txgen-neobank-modules "earn,cards"; false } catch { true })
@@ -194,7 +194,7 @@ let multi_path = (txgen-prepare-public-mix-preset $multi_spec.spec_path 1000 40 
 assert equal ($multi_path | path basename) "neobank-multi.yml"
 let multi = (open $multi_path)
 let copies_path = ($multi_dir | path join neobank-multi-templates.yml)
-let copies = (^uv run --no-project --with yq==3.4.3 yq -c '.templates | to_entries | map({name: .key, pool: .value.from.pool, setup: .value.auth.access_key.from_setup, text: (.value | tojson)})' $copies_path | from json)
+let copies = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '.templates | to_entries | map({name: .key, pool: .value.from.pool, setup: .value.auth.access_key.from_setup, text: (.value | tojson)})' $copies_path | from json)
 assert ((open --raw $copies_path) =~ 'nonce: \{ uniform: \[0, 18446744073709551615\] \}')
 assert ((open --raw $copies_path) =~ 'choice: \$\{TXGEN_TIP20_TOKENS\}')
 mut user_end = 0
@@ -251,7 +251,7 @@ for instance in $instances {
 }
 assert equal ($multi_weights | columns | where { |key| $key starts-with "payroll-earn/" } | sort) [payroll-earn/cash_out payroll-earn/payroll_existing payroll-earn/payroll_new payroll-earn/public_transfer payroll-earn/reward_distribution payroll-earn/vault_deposit payroll-earn/vault_withdraw payroll-earn/zone_deposit]
 # Only instances with delegated-key spend get keychain setup, over their own slice.
-let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map({id, pool: .keychain_authorize_pool.accounts.pool, keys: .keychain_authorize_pool.access_keys.range, depends_on})' $multi_path | from json)
+let keychain = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '.append.setup.steps | map({id, pool: .keychain_authorize_pool.accounts.pool, keys: .keychain_authorize_pool.access_keys.range, depends_on})' $multi_path | from json)
 assert equal ($keychain | get id) [authorize_keychain_full authorize_keychain_card_heavy]
 # Each waits for the prepare_user that funds its slice's last user (one ordered nonce lane).
 assert equal ($keychain.1.depends_on) [$"prepare_user_($multi.accounts.users_card_heavy.range.1 - 1)"]
@@ -281,7 +281,7 @@ let presets_dir = ($multi_spec.spec_path | path dirname)
 let plain = (txgen-neobank-instances ($presets_dir | path join neobank instances-pipeline-plain-cards.yml))
 assert equal ($plain | get name) [card-heavy earn-app remittance payroll-earn settlement]
 assert equal ($plain | get share | math sum) 100
-let base_mix = ((^uv run --no-project --with yq==3.4.3 yq -c .mix ($presets_dir | path join neobank-generic.yml)) | from json)
+let base_mix = ((^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c .mix ($presets_dir | path join neobank-generic.yml)) | from json)
 let card_mix = (txgen-neobank-instance-mix $base_mix ($plain | first))
 assert not ("card_settlement" in ($card_mix | get template))
 assert equal ($card_mix | where template == card_spend | get 0.weight) 13
@@ -341,7 +341,7 @@ with-env {TXGEN_NEOBANK_INSTANCES: "contrib/bench/txgen/presets/shapes/examples.
     }
     assert equal ($weights | get "treasury-settlement/public_transfer_memo") (($weights | get "treasury-settlement/dex_swap") * 5 / 2)
     assert equal ($rendered.templates | columns | where { |name| $name =~ '^card-earn-app/card_settlement_' } | length) 18
-    let keychain = (^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' $path | from json)
+    let keychain = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '.append.setup.steps | map(.id)' $path | from json)
     assert equal $keychain [authorize_keychain_agent_payments]
 }
 for bad in [
@@ -419,14 +419,14 @@ assert equal ($cross.templates.dex_swap.call.args.values | last 2) [{uniform: [1
 txgen-configure-existing-recipients-env $cross_spec.spec_path 1024 4
 assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
 # dex.yml keeps its walls through the shared append piece.
-assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.include' ($cross_spec.spec_path | path dirname | path join dex.yml)) | from json) [dex/walls.yml]
-assert equal ((^uv run --no-project --with yq==3.4.3 yq -c '.append.setup.steps | map(.id)' ($cross_spec.spec_path | path dirname | path join dex walls.yml)) | from json | length) 6
+assert equal ((^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '.include' ($cross_spec.spec_path | path dirname | path join dex.yml)) | from json) [dex/walls.yml]
+assert equal ((^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '.append.setup.steps | map(.id)' ($cross_spec.spec_path | path dirname | path join dex walls.yml)) | from json | length) 6
 # The access-key mix authorises keys in setup and inline, and pays one merchant account.
 let access_spec = (txgen-resolve-bench-spec access-key-mix)
 assert equal $access_spec.kind static
 assert equal $access_spec.requires_keychain_setup true
 assert equal (txgen-workload-metadata-args access-key-mix $access_spec.spec_path) ["-m" "workload_mix_weighting=gas"]
-let access = (^uv run --no-project --with yq==3.4.3 yq -c '{mix, templates}' $access_spec.spec_path | from json)
+let access = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '{mix, templates}' $access_spec.spec_path | from json)
 assert equal ($access.mix | get weight | math sum) 100
 assert equal ($access.mix | get template | sort) [access_key_create access_key_rotate keychain_agent_spend keychain_merchant_pull]
 for name in [access_key_create access_key_rotate] {
@@ -443,7 +443,7 @@ assert equal $agentic_spec.kind static
 assert equal $agentic_spec.requires_keychain_setup true
 assert ("agentic" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
 assert equal (txgen-workload-metadata-args agentic $agentic_spec.spec_path) ["-m" "workload_mix_weighting=gas"]
-let agentic = (^uv run --no-project --with yq==3.4.3 yq -c '{mix, templates, accounts}' $agentic_spec.spec_path | from json)
+let agentic = (^uv run --no-project --with yq==3.4.3 --with tomlkit==0.13.3 yq -c '{mix, templates, accounts}' $agentic_spec.spec_path | from json)
 assert equal ($agentic.mix | get weight | math sum) 100
 assert equal ($agentic.mix | get template | sort) [access_key_create keychain_agent_spend mpp_charge mpp_session_open]
 assert equal $agentic.accounts.services.range [200000 200016]
