@@ -947,6 +947,9 @@ fn startup_prepopulates_to_a_non_boundary_finalized_floor() {
         assert_eq!(
             harness.execution.reads(),
             [
+                Height::new(22),
+                Height::new(21),
+                Height::new(20),
                 boundary,
                 boundary,
                 Height::new(20),
