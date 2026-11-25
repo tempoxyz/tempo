@@ -9,6 +9,12 @@ pub const P256_VERIFY_GAS: u64 = 8_000;
 /// Gas cost for WebAuthn signature verification.
 pub const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
 
+/// Gas cost for SLH-DSA-SHA2-128s signature verification, excluding its calldata.
+///
+/// [`P256_VERIFY_GAS`] scaled by the measured verification time of the SLH-DSA verifier relative
+/// to the node's P256 verifier (433 µs against 39.8 µs, ratio 10.9), rounded up to a thousand.
+pub const SLH_DSA_VERIFY_GAS: u64 = 87_000;
+
 /// Base gas of one `KECCAK256`.
 const KECCAK256_BASE_GAS: u64 = 30;
 

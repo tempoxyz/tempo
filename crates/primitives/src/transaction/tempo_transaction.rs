@@ -42,6 +42,9 @@ pub enum SignatureType {
     WebAuthn = 2,
     /// A configurable delegate authenticated by its primitive owner quorum (T14).
     ConfigurableAccount = 3,
+    /// An SLH-DSA-SHA2-128s owner approval. Never an access key type: RLP decoding and the
+    /// keychain reject it.
+    SlhDsa = 4,
 }
 
 impl From<SignatureType> for u8 {
@@ -51,6 +54,7 @@ impl From<SignatureType> for u8 {
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
             SignatureType::ConfigurableAccount => 3,
+            SignatureType::SlhDsa => 4,
         }
     }
 }
@@ -64,6 +68,8 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
             SignatureType::ConfigurableAccount => Self::ConfigurableAccount,
+            // Not a keychain key type; the keychain rejects the invalid value.
+            SignatureType::SlhDsa => Self::__Invalid,
         }
     }
 }
@@ -100,6 +106,7 @@ impl alloy_rlp::Decodable for SignatureType {
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
             3 => Ok(Self::ConfigurableAccount),
+            // `SlhDsa` (4) is not a key authorization key type.
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }

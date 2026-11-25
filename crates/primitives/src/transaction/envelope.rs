@@ -609,11 +609,17 @@ impl PaymentRules {
 
     /// Returns `true` if `signature` is an allowed voucher signature encoding. Only the encoding
     /// is checked.
+    /// SLH-DSA owner approvals never sign vouchers.
     fn is_valid_voucher_signature(self, signature: &[u8]) -> bool {
         super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
             || (self == Self::V3
-                && super::tt_signature::TempoSignature::from_bytes(signature)
-                    .is_ok_and(|signature| signature.as_configurable_account().is_some()))
+                && super::tt_signature::TempoSignature::from_bytes(signature).is_ok_and(
+                    |signature| {
+                        signature
+                            .as_configurable_account()
+                            .is_some_and(|signature| !signature.has_slh_dsa_approval())
+                    },
+                ))
     }
 }
 

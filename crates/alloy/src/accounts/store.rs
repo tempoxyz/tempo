@@ -2571,6 +2571,12 @@ fn writable_signature(
                 },
             }
         }
+        // A primitive authorization signature never decodes as SLH-DSA.
+        PrimitiveSignature::SlhDsa(_) => {
+            return Err(TempoAccountsError::InvalidAuthorization(
+                "SLH-DSA signs only as a configurable account owner",
+            ));
+        }
     })
 }
 

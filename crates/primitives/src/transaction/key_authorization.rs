@@ -517,7 +517,11 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         Ok(Self {
             chain_id: u.arbitrary()?,
-            key_type: u.arbitrary()?,
+            // SLH-DSA is not an access key type, so it does not decode.
+            key_type: match u.arbitrary()? {
+                SignatureType::SlhDsa => SignatureType::Secp256k1,
+                key_type => key_type,
+            },
             key_id: u.arbitrary()?,
             // Zero (including exhausted input) represents an absent expiry.
             expiry: u.arbitrary::<Option<u64>>()?.and_then(NonZeroU64::new),

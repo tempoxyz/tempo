@@ -20,7 +20,7 @@ use tempo_primitives::transaction::{
     ConfigurableAccountWeightAccumulator, KeychainSignature, KeychainVersion,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
-    SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
+    SLH_DSA_SIGNATURE_ENCODED_LENGTH, SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
@@ -265,7 +265,7 @@ fn owner_approval_bytes() -> impl Strategy<Value = Vec<u8>> {
 fn arbitrary_bounded_approvals() {
     use arbitrary::{Arbitrary, Unstructured};
 
-    let mut primitive_types = [false; 3];
+    let mut primitive_types = [false; 4];
     let mut approval_counts = [false; MAX_CONFIGURABLE_ACCOUNT_SIGNATURES];
     let mut saw_max_webauthn = false;
     // 0xab repeated 10,000 times previously produced an oversized WebAuthn approval.
@@ -276,9 +276,13 @@ fn arbitrary_bounded_approvals() {
                 ConfigurableAccountSignature::arbitrary(&mut Unstructured::new(&input)).unwrap();
             approval_counts[signature.signatures().len() - 1] = true;
             for approval in signature.signatures() {
-                assert!(
-                    approval.encoded_length() <= MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES
-                );
+                if let PrimitiveSignature::SlhDsa(_) = approval {
+                    assert_eq!(approval.encoded_length(), SLH_DSA_SIGNATURE_ENCODED_LENGTH);
+                } else {
+                    assert!(
+                        approval.encoded_length() <= MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES
+                    );
+                }
                 match approval {
                     PrimitiveSignature::Secp256k1(_) => primitive_types[0] = true,
                     PrimitiveSignature::P256(_) => primitive_types[1] = true,
@@ -287,6 +291,7 @@ fn arbitrary_bounded_approvals() {
                         saw_max_webauthn |= approval.encoded_length()
                             == MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES;
                     }
+                    PrimitiveSignature::SlhDsa(_) => primitive_types[3] = true,
                 }
             }
             let bytes = alloy_rlp::encode(&signature);

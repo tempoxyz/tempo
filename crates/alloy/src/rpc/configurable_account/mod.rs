@@ -43,6 +43,9 @@ pub enum PrimitiveSignatureType {
     P256,
     /// A `WebAuthn` P256 assertion.
     WebAuthn,
+    /// An SLH-DSA-SHA2-128s signature, modeled at its fixed 7,890 bytes with every byte nonzero, so
+    /// the estimate is an upper bound on its calldata gas.
+    SlhDsa,
 }
 
 mod serde_configurable_account_config {

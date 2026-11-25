@@ -907,8 +907,10 @@ impl TIP20ChannelReserve {
         let expected_signer = self.expected_signer(descriptor);
         if self.storage.spec().is_t15() {
             let commitment = opening_commitment(descriptor, state);
+            // SLH-DSA owner approvals never sign vouchers: such a signature is malformed.
             if let Ok(TempoSignature::ConfigurableAccount(signature)) =
                 TempoSignature::from_bytes(signature)
+                && !signature.has_slh_dsa_approval()
             {
                 let valid = SignatureVerifier::new()
                     .verify_configurable_signature_against(

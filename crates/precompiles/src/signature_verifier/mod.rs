@@ -52,6 +52,10 @@ impl SignatureVerifier {
             && let Some(keychain_sig) = sig.as_keychain()
             && let Some(delegate) = keychain_sig.signature.as_configurable_account()
         {
+            // SLH-DSA approvals never authorize an access key.
+            if delegate.has_slh_dsa_approval() {
+                return Err(SignatureVerifierError::invalid_format().into());
+            }
             if keychain_sig.user_address != account {
                 return Ok(false);
             }
@@ -172,6 +176,14 @@ impl SignatureVerifier {
         let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
+        // Where SLH-DSA owner signatures are inactive, an SLH-DSA approval is malformed.
+        if signature.has_slh_dsa_approval()
+            && !self
+                .storage
+                .with_block_env(|block| block.ext.slh_dsa_owner_signatures)
+        {
+            return Err(SignatureVerifierError::invalid_format().into());
+        }
         Ok(self
             .verify_configurable_signature(account, hash, signature)?
             .is_some())

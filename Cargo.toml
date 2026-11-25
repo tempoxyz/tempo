@@ -413,6 +413,8 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc", "raw_value"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
+# SLH-DSA (FIPS 205); default features only, the build its Lean proofs cover.
+slhdsa = { git = "https://github.com/danrobinson/rust-pq", rev = "462724e2b5f8ffe63a2ce76c9b1ab07099c1807b" }
 tar = "0.4.46"
 tempfile = "3.24.0"
 thiserror = "2.0.18"

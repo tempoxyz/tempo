@@ -57,6 +57,7 @@ base64.workspace = true
 commonware-cryptography.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
+slhdsa.workspace = true
 
 [dev-dependencies]
 arbitrary.workspace = true

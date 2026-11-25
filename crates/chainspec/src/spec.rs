@@ -41,6 +41,11 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Devnet-only activation timestamp of SLH-DSA configurable account owner
+                /// approvals (signature type `0x06`). Not a hardfork: unset on mainnet and
+                /// testnet, where SLH-DSA approvals never activate.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                slh_dsa_time: Option<u64>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +86,12 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Whether SLH-DSA configurable account owner approvals are valid at `timestamp`: only on a
+    /// chain whose genesis sets `slhDsaTime` at or before it.
+    pub fn is_slh_dsa_active_at(&self, timestamp: u64) -> bool {
+        self.slh_dsa_time.is_some_and(|time| timestamp >= time)
     }
 }
 
