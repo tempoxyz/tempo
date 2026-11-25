@@ -275,6 +275,8 @@ where
             best_payload,
             ..
         } = args;
+        // Experiment: run the builder on its reserved physical core.
+        reth_tasks::utils::pin_current_thread_to_reserved_cpu(1);
         let PayloadConfig {
             parent_header,
             attributes,

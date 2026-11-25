@@ -80,6 +80,7 @@ futures = { workspace = true, features = ["executor"] }
 parking_lot.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
+reth-tasks.workspace = true
 reth-cli.workspace = true
 serde.workspace = true
 serde_json.workspace = true
