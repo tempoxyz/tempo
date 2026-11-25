@@ -20,6 +20,9 @@ ARG TARGETARCH
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
 ARG EXTRA_RUSTFLAGS=""
+# Applied to linux/amd64 builds only, and requires AVX-512 hosts. x86-64-v4 enables faster keccak
+# and other vectorized paths; it lacks AES-NI, PCLMULQDQ and ADX, which rocksdb's crc32c needs.
+ARG AMD64_RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+aes,+pclmulqdq,+adx"
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -41,5 +44,6 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    CPU_RUSTFLAGS="$(if [ "${TARGETARCH}" = amd64 ]; then echo "${AMD64_RUSTFLAGS}"; fi)" && \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${CPU_RUSTFLAGS} ${EXTRA_RUSTFLAGS}" \
     cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json
