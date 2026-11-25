@@ -43,11 +43,7 @@ use reth_provider::{
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
-use std::{
-    collections::{HashSet, hash_map::Entry},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::hash_map::Entry, sync::Arc, time::Instant};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -620,8 +616,6 @@ struct ObservedTx {
     fee_normalized: Option<B256>,
     /// The fee hooks' markers and the actions they recorded.
     actions: Vec<StorageAction>,
-    /// Slots the fee hooks wrote.
-    fee_slots: HashSet<(Address, U256)>,
     /// Net account and storage transitions observed at this transaction boundary.
     state: TransitionState,
 }
@@ -649,7 +643,6 @@ impl ObservedTx {
             receipt_logs_hash: hash_logs(logs),
             output_hash: keccak256(&execution.output),
             fee_normalized,
-            fee_slots: fees::fee_slots(&actions),
             actions,
             state: TransitionState::default(),
         }

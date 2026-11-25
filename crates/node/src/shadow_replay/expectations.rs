@@ -225,10 +225,7 @@ mod tests {
         super::{Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome},
         *,
     };
-    use crate::shadow_replay::{
-        analysis::{MAX_SAMPLES, Report},
-        fees::fee_slots,
-    };
+    use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
     use alloy::primitives::{Address, KECCAK256_EMPTY, Signature};
     use evm2::evm::{AccountInfo, TxResultExt};
     use reth_trie_common::bundle_state::{StorageSlot, TransitionAccount};
@@ -461,7 +458,6 @@ mod tests {
             3,
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
         );
-        tx.fee_slots = fee_slots(&tx.actions);
     }
 
     #[test]
