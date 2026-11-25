@@ -17,12 +17,11 @@ use std::{
 };
 use tempo_chainspec::{
     hardfork::TempoHardfork,
-    spec::{TempoChainSpec, TempoChainSpecParser, TempoHardforks as _},
+    spec::{TempoChainSpec, TempoChainSpecParser},
 };
 use tempo_corpus::{
     exec::{
         block::Executed,
-        db::View,
         fill, replay,
         shadow::{ReplayOutcome, ShadowReplayer},
     },
@@ -212,7 +211,6 @@ impl ReplayCommand {
         let shadow = self
             .shadow
             .map(|hardfork| Shadow::new(self.chain, hardfork));
-        let fail_on_findings = self.fail_on_findings;
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {
@@ -238,18 +236,14 @@ impl ReplayCommand {
                     on_block,
                 ),
             }?;
-            shadow.map_or(Ok(()), |shadow| shadow.finish(fail_on_findings))
+            shadow.map_or(Ok(()), |shadow| shadow.finish(self.fail_on_findings))
         })
         .await?
     }
 }
 
-/// Replays each verified corpus block again under `hardfork`'s rules from the pre-state it
-/// recorded, and compares the two as shadow replay does. A candidate execution that reads state
-/// the canonical one did not fails at that boundary, since the corpus did not capture it, and the
-/// block is inconclusive.
+/// Shadow replays verified corpus blocks under `hardfork`'s rules and counts their outcomes.
 struct Shadow {
-    chain: Arc<TempoChainSpec>,
     hardfork: TempoHardfork,
     replayer: ShadowReplayer,
     matched: AtomicU64,
@@ -262,8 +256,7 @@ struct Shadow {
 impl Shadow {
     fn new(chain: Arc<TempoChainSpec>, hardfork: TempoHardfork) -> Self {
         Self {
-            replayer: ShadowReplayer::new(chain.clone(), hardfork),
-            chain,
+            replayer: ShadowReplayer::new(chain, hardfork),
             hardfork,
             matched: Default::default(),
             expected: Default::default(),
@@ -279,22 +272,16 @@ impl Shadow {
         block: &RecoveredBlock<Block>,
         executed: &Executed,
     ) -> eyre::Result<()> {
-        let counter = if self.chain.tempo_hardfork_at(block.timestamp()) >= self.hardfork {
-            &self.skipped
-        } else {
-            match self
-                .replayer
-                .replay(block, &executed.receipts()?, || {
-                    Ok(View::new(input.clone()))
-                })
-                .map_err(|err| {
-                    eyre::eyre!("shadow replay failed at block {}: {err}", block.number())
-                })? {
-                ReplayOutcome::Match => &self.matched,
-                ReplayOutcome::Expected => &self.expected,
-                ReplayOutcome::Inconclusive => &self.inconclusive,
-                ReplayOutcome::Findings => &self.findings,
-            }
+        let counter = match self
+            .replayer
+            .replay(input, block, executed)
+            .map_err(|err| eyre::eyre!("shadow replay failed at block {}: {err}", block.number()))?
+        {
+            None => &self.skipped,
+            Some(ReplayOutcome::Match) => &self.matched,
+            Some(ReplayOutcome::Expected) => &self.expected,
+            Some(ReplayOutcome::Inconclusive) => &self.inconclusive,
+            Some(ReplayOutcome::Findings) => &self.findings,
         };
         counter.fetch_add(1, Ordering::Relaxed);
         Ok(())

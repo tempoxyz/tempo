@@ -23,13 +23,17 @@ mod analysis;
 mod expectations;
 mod fees;
 
-use super::block::{Updates, drain, hooked};
+use super::{
+    block::{Executed, Updates, drain, hooked},
+    db::View,
+};
+use crate::types::Input;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::Report;
-use evm2::evm::{Cache, Database, PendingState, TxResultExt};
+use evm2::evm::{Cache, PendingState, TxResultExt};
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _};
 use reth_execution_types::{BlockState, StateUpdate};
@@ -80,36 +84,45 @@ impl ShadowReplayer {
         }
     }
 
-    /// Replays a canonical block under both rule sets. Each arm executes on its own copy of the
-    /// parent state, which `parent_state` opens.
+    /// Replays a verified corpus block under both rule sets, from the pre-state `input` recorded.
+    /// `None` means the candidate hardfork is already canonical at the block.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
-    pub fn replay<DB: Database>(
+    pub fn replay(
         &self,
+        input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
-        receipts: &[TempoReceipt],
-        parent_state: impl Fn() -> Result<DB, String> + Sync,
-    ) -> Result<ReplayOutcome, String> {
-        let (real, shadow) = self.execute(block, &parent_state)?;
+        executed: &Executed,
+    ) -> Result<Option<ReplayOutcome>, String> {
+        let canonical = self
+            .real_config
+            .chain_spec()
+            .tempo_hardfork_at(block.timestamp());
+        if canonical >= self.shadow_hardfork {
+            return Ok(None);
+        }
+        let (real, shadow) = self.execute(input, block)?;
         if let Some(f) = &real.failure {
             return Err(format!(
                 "re-execution failed at {:?}: {}",
                 f.boundary, f.error
             ));
         }
-        if !matches_receipts(&real.txs, receipts) {
+        let receipts = executed
+            .transactions
+            .iter()
+            .map(|transaction| alloy_rlp::decode_exact(&transaction.receipt))
+            .collect::<alloy_rlp::Result<Vec<TempoReceipt>>>()
+            .map_err(|e| format!("invalid corpus receipt: {e}"))?;
+        if !matches_receipts(&real.txs, &receipts) {
             return Err("re-execution does not reproduce canonical receipts".into());
         }
 
-        let canonical = self
-            .real_config
-            .chain_spec()
-            .tempo_hardfork_at(block.timestamp());
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
             debug!(target: "shadow_replay", ?outcome, ?report, "Shadow replay compared all boundaries");
-            return Ok(outcome);
+            return Ok(Some(outcome));
         }
 
         let failure = shadow.failure.as_ref();
@@ -125,7 +138,7 @@ impl ShadowReplayer {
             shadow_processed_txs = shadow.txs.len(),
             "Shadow replay needs review; differences are not confirmed regressions"
         );
-        Ok(outcome)
+        Ok(Some(outcome))
     }
 
     /// Executes each transaction under both rule sets from the same canonical prefix.
@@ -133,12 +146,12 @@ impl ShadowReplayer {
     /// The candidate result is observed but never committed. Committing the control result into
     /// both executors advances the canonical prefix without cascading candidate transaction
     /// effects; candidate pre-block changes are preserved across control commits.
-    fn execute<DB: Database>(
+    fn execute(
         &self,
+        input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
-        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
     ) -> Result<(Evidence, Evidence), String> {
-        let (mut executor, updates, mut real) = start(&self.real_config, parent_state()?, block)?;
+        let (mut executor, updates, mut real) = start(&self.real_config, input, block)?;
         if real.failure.is_some() {
             return Ok((real, Evidence::default()));
         }
@@ -148,9 +161,8 @@ impl ShadowReplayer {
         let (results, canonical_results) = std::sync::mpsc::sync_channel(1);
         let canonical_bal = executor.evm().overlay_db().bal_context.clone();
         std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                self.execute_shadow(block, parent_state, canonical_bal, canonical_results)
-            });
+            let worker =
+                scope.spawn(|| self.execute_shadow(input, block, canonical_bal, canonical_results));
             let mut results = Some(results);
             for (index, tx) in block.transactions_recovered().enumerate() {
                 let result = match executor.execute_transaction_without_commit(tx) {
@@ -189,16 +201,15 @@ impl ShadowReplayer {
         })
     }
 
-    fn execute_shadow<DB: Database>(
+    fn execute_shadow(
         &self,
+        input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
-        parent_state: &(impl Fn() -> Result<DB, String> + Sync),
         canonical_bal: evm2::evm::BalContext,
         canonical_results: std::sync::mpsc::Receiver<TempoTxResult>,
     ) -> Result<Evidence, String> {
-        let (mut executor, updates, mut shadow) = parent_state()
-            .and_then(|db| start(&self.shadow_config, db, block))
-            .map_err(|e| format!("shadow arm: {e}"))?;
+        let (mut executor, updates, mut shadow) =
+            start(&self.shadow_config, input, block).map_err(|e| format!("shadow arm: {e}"))?;
         let Some(pre_block) = &shadow.pre_block else {
             return Ok(shadow);
         };
@@ -244,13 +255,13 @@ impl ShadowReplayer {
 
 /// Opens an executor for `block` that records storage actions and state updates, and applies
 /// its pre-block changes into the returned evidence.
-fn start<'a, DB: Database + 'a>(
+fn start<'a>(
     config: &'a TempoEvmConfig,
-    db: DB,
+    input: &Arc<Input>,
     block: &'a RecoveredBlock<Block>,
 ) -> Result<(TempoBlockExecutor<'a>, Updates, Evidence), String> {
     let mut evm = config
-        .evm_for_block(db, block.header())
+        .evm_for_block(View::new(input.clone()), block.header())
         .map_err(|e| format!("failed to configure EVM: {e}"))?;
     config.record_storage_actions(&mut evm);
     let context = config

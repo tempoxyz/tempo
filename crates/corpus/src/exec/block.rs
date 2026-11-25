@@ -28,7 +28,7 @@ use std::{
     sync::Arc,
 };
 use tempo_evm::{ExecutorState, TempoBlockExecutor, TempoEvmConfig};
-use tempo_primitives::{Block, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoPrimitives, TempoTxEnvelope};
 
 /// A block's execution records and resulting state.
 #[derive(Debug)]
@@ -37,16 +37,6 @@ pub struct Executed {
     pub phases: Phases,
     pub bundle: BundleState,
     pub gas: u64,
-}
-
-impl Executed {
-    /// The receipts the block's transactions produced, in order.
-    pub fn receipts(&self) -> alloy_rlp::Result<Vec<TempoReceipt>> {
-        self.transactions
-            .iter()
-            .map(|transaction| alloy_rlp::decode_exact(&transaction.receipt))
-            .collect()
-    }
 }
 
 /// State updates an executor's state hook collected, in commit order.

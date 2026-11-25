@@ -12,7 +12,6 @@ use reth_provider::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_corpus::exec::{
     capture::capture,
-    db::View,
     shadow::{ReplayOutcome, ShadowReplayer},
 };
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
@@ -22,7 +21,7 @@ use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 async fn replay_captured_blocks(
     canonical: TempoHardfork,
     candidate: TempoHardfork,
-) -> eyre::Result<Vec<ReplayOutcome>> {
+) -> eyre::Result<Vec<Option<ReplayOutcome>>> {
     reth_tracing::init_test_tracing();
     let mut node = TestNodeBuilder::new()
         .with_schedule(ForkSchedule::DevnetAt(canonical))
@@ -60,12 +59,11 @@ async fn replay_captured_blocks(
             &block,
             first_tx,
         )?;
-        let outcome = replayer
-            .replay(&block, &captured.executed.receipts()?, || {
-                Ok(View::new(captured.input.clone()))
-            })
-            .map_err(eyre::Report::msg)?;
-        outcomes.push(outcome);
+        outcomes.push(
+            replayer
+                .replay(&captured.input, &block, &captured.executed)
+                .map_err(eyre::Report::msg)?,
+        );
         first_tx += block.body().transactions.len() as u64;
     }
     Ok(outcomes)
@@ -76,9 +74,10 @@ async fn captured_blocks_compare_under_a_candidate() -> eyre::Result<()> {
     // T12's pre-block setup reads only state the canonical block reads too.
     let outcomes = replay_captured_blocks(TempoHardfork::T11, TempoHardfork::T12).await?;
     assert!(
-        outcomes
-            .iter()
-            .all(|outcome| matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected)),
+        outcomes.iter().all(|outcome| matches!(
+            outcome,
+            Some(ReplayOutcome::Match | ReplayOutcome::Expected)
+        )),
         "{outcomes:?}"
     );
     Ok(())
@@ -91,7 +90,7 @@ async fn candidate_reads_of_uncaptured_state_are_inconclusive() -> eyre::Result<
     assert!(
         outcomes
             .iter()
-            .all(|outcome| *outcome == ReplayOutcome::Inconclusive),
+            .all(|outcome| *outcome == Some(ReplayOutcome::Inconclusive)),
         "{outcomes:?}"
     );
     Ok(())

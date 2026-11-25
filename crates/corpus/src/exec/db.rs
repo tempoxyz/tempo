@@ -32,7 +32,7 @@ impl std::error::Error for Missing {}
 
 impl Missing {
     /// Whether a stringified execution error reports state the corpus did not capture.
-    pub fn in_error(error: &str) -> bool {
+    pub(crate) fn in_error(error: &str) -> bool {
         ["uncaptured ", "unresolved code "]
             .iter()
             .any(|missing| error.contains(missing))
