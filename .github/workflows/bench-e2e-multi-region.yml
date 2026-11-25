@@ -104,10 +104,6 @@ on:
         type: boolean
         required: false
         default: true
-      maxperf-v3:
-        type: boolean
-        required: false
-        default: false
     secrets:
       BENCH_LOGS_PUSH_URL:
         required: false
@@ -319,15 +315,13 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
-      # With maxperf-v3, Tempo source builds use fat LTO and x86-64-v3 with AES-NI, PCLMULQDQ
-      # and ADX, which every benchmark instance type supports. It is opt-in so callers that time
-      # release-like binaries (bench-state-read-gate.yml) keep the default build. Empty values
-      # fall back to the benchmark scripts' defaults. BENCH_BUILD_SUFFIX keeps these binaries
+      # Tempo source builds use fat LTO and x86-64-v3 with AES-NI, PCLMULQDQ and ADX, which
+      # every benchmark instance type supports. BENCH_BUILD_SUFFIX keeps these binaries
       # apart from cached builds of other flags; change it whenever the flags change.
       # Keep in sync with tempoxyz/tempo-multi-region-benchmark's copy of this workflow.
-      TEMPO_BUILD_PROFILE: ${{ inputs['maxperf-v3'] && 'maxperf' || '' }}
-      TEMPO_EXTRA_RUSTFLAGS: ${{ inputs['maxperf-v3'] && '-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx' || '' }}
-      BENCH_BUILD_SUFFIX: ${{ inputs['maxperf-v3'] && '-maxperf-v3' || '' }}
+      TEMPO_BUILD_PROFILE: maxperf
+      TEMPO_EXTRA_RUSTFLAGS: "-C target-cpu=x86-64-v3 -C target-feature=+aes,+pclmulqdq,+adx"
+      BENCH_BUILD_SUFFIX: "-maxperf-v3"
       # Stable paths let sccache reuse Rust compilations across fresh Depot runners.
       TEMPO_BUILD_ROOT: /tmp/tempo-benchmark-build
       TF_IN_AUTOMATION: "1"

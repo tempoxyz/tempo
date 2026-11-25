@@ -178,7 +178,6 @@ jobs:
       otlp: true
       tcp-highres: true
       valscope: true
-      maxperf-v3: true
     secrets:
       BENCH_LOGS_PUSH_URL: ${{ secrets.BENCH_LOGS_PUSH_URL }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
