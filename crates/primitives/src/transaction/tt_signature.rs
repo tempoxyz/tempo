@@ -6,7 +6,9 @@ use super::{
     },
 };
 use crate::{
-    crypto::{self, SLH_DSA_PUBLIC_KEY_LENGTH, SLH_DSA_SHA2_128S_PARAM_ID, SLH_DSA_SIGNATURE_LENGTH},
+    crypto::{
+        self, SLH_DSA_PUBLIC_KEY_LENGTH, SLH_DSA_SHA2_128S_PARAM_ID, SLH_DSA_SIGNATURE_LENGTH,
+    },
     gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, SLH_DSA_VERIFY_GAS, WEBAUTHN_VERIFY_GAS},
 };
 use alloc::vec::Vec;
@@ -232,8 +234,9 @@ impl PrimitiveSignature {
                 }))
             }
             SIGNATURE_TYPE_SLH_DSA if allow_slh_dsa => {
-                let (&param_id, sig_data) =
-                    sig_data.split_first().expect("signature data length checked");
+                let (&param_id, sig_data) = sig_data
+                    .split_first()
+                    .expect("signature data length checked");
                 if param_id != SLH_DSA_SHA2_128S_PARAM_ID {
                     return Err("Unknown SLH-DSA parameter set");
                 }
@@ -306,7 +309,9 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
-            Self::SlhDsa(slh_dsa_sig) => 2 + SLH_DSA_PUBLIC_KEY_LENGTH + slh_dsa_sig.signature.len(),
+            Self::SlhDsa(slh_dsa_sig) => {
+                2 + SLH_DSA_PUBLIC_KEY_LENGTH + slh_dsa_sig.signature.len()
+            }
         }
     }
 
@@ -2338,7 +2343,10 @@ mod slh_dsa_tests {
         let signature = PrimitiveSignature::SlhDsa(v.signature);
         assert_eq!(signature.base_verification_gas(), SLH_DSA_VERIFY_GAS);
         assert_eq!(v.calldata_gas, 125_912);
-        assert_eq!(signature.verification_gas(), SLH_DSA_VERIFY_GAS + v.calldata_gas);
+        assert_eq!(
+            signature.verification_gas(),
+            SLH_DSA_VERIFY_GAS + v.calldata_gas
+        );
         assert_eq!(
             signature.intrinsic_verification_gas(),
             SLH_DSA_VERIFY_GAS + v.calldata_gas - SECP256K1_VERIFY_GAS
@@ -2348,10 +2356,8 @@ mod slh_dsa_tests {
     /// A 1-of-2 account owned by a secp256k1 key and an SLH-DSA key.
     fn one_of_two(slh_owner: Address) -> (ConfigurableAccountConfig, Address, PrivateKeySigner) {
         let secp = PrivateKeySigner::from_bytes(&B256::repeat_byte(7)).unwrap();
-        let mut owners = [secp.address(), slh_owner].map(|owner| ConfigurableAccountOwner {
-            owner,
-            weight: 1,
-        });
+        let mut owners =
+            [secp.address(), slh_owner].map(|owner| ConfigurableAccountOwner { owner, weight: 1 });
         owners.sort_by_key(|owner| owner.owner);
         let config = ConfigurableAccountConfig {
             salt: B256::repeat_byte(9),
@@ -2369,7 +2375,11 @@ mod slh_dsa_tests {
         let owner = derive_slh_dsa_address(&public_key);
         let (config, account, _) = one_of_two(owner);
         let inner = B256::repeat_byte(0x42);
-        let approval = slh_sign(&sk, public_key, configurable_account_digest(inner, account, 0));
+        let approval = slh_sign(
+            &sk,
+            public_key,
+            configurable_account_digest(inner, account, 0),
+        );
         let signature =
             ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
         assert!(signature.has_slh_dsa_approval());
@@ -2383,7 +2393,10 @@ mod slh_dsa_tests {
         // The approval binds the digest: another inner digest fails at the SLH-DSA approval.
         let fresh = TempoSignature::from_bytes(&outer.to_bytes()).unwrap();
         assert_eq!(
-            fresh.as_configurable_account().unwrap().verify_approvals(B256::ZERO),
+            fresh
+                .as_configurable_account()
+                .unwrap()
+                .verify_approvals(B256::ZERO),
             Err(ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index: 0 })
         );
     }
@@ -2395,7 +2408,11 @@ mod slh_dsa_tests {
         let parent = Address::repeat_byte(0x55);
         let sig_hash = B256::repeat_byte(0x24);
         let inner = KeychainSignature::signing_hash(sig_hash, parent);
-        let approval = slh_sign(&sk, public_key, configurable_account_digest(inner, account, 0));
+        let approval = slh_sign(
+            &sk,
+            public_key,
+            configurable_account_digest(inner, account, 0),
+        );
         let delegate =
             ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
         assert_eq!(delegate.verify_approvals(inner), Ok(()));
@@ -2438,5 +2455,127 @@ mod slh_dsa_tests {
             ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
         assert!(!signature.has_slh_dsa_approval());
         assert_eq!(signature.verify_approvals(inner), Ok(()));
+    }
+
+    /// The worked examples of the SLH-DSA gas note: one 1-of-2 passkey (WebAuthn) + SLH-DSA
+    /// account, with each owner's approval, registered and unregistered.
+    const WORKED_WITNESS_GAS: u64 = 1_680;
+    const WORKED_ROWS: [(u64, u64); 3] = [(212_912, 214_694), (10_656, 12_438), (8_000, 9_782)];
+
+    #[test]
+    fn gas_worked_examples() {
+        use crate::gas::keccak_gas;
+        use p256::ecdsa::SigningKey;
+
+        let v = vector();
+        let key = SigningKey::from_bytes(&[0x61; 32].into()).unwrap();
+        let point = key.verifying_key().to_encoded_point(false);
+        let (x, y) = (
+            B256::from_slice(point.x().unwrap()),
+            B256::from_slice(point.y().unwrap()),
+        );
+        let passkey = derive_p256_address(&x, &y);
+        let mut owners =
+            [passkey, v.address].map(|owner| ConfigurableAccountOwner { owner, weight: 1 });
+        owners.sort_by_key(|owner| owner.owner);
+        let config = ConfigurableAccountConfig {
+            salt: B256::repeat_byte(0x63),
+            version: 0,
+            threshold: 1,
+            owners: owners.to_vec(),
+        };
+        let account = config.derive_account().unwrap();
+        // authenticatorData (rpIdHash, flags UP|UV, zero counter) || clientDataJSON.
+        let mut webauthn_data = [0x5c; 32].to_vec();
+        webauthn_data.extend_from_slice(&[0x05, 0, 0, 0, 0]);
+        webauthn_data.extend_from_slice(
+            br#"{"type":"webauthn.get","challenge":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","origin":"https://example.com","crossOrigin":false}"#,
+        );
+        let webauthn = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: x,
+            pub_key_y: y,
+            webauthn_data: webauthn_data.into(),
+        });
+        let p256 = PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: x,
+            pub_key_y: y,
+            pre_hash: false,
+        });
+        let slh = PrimitiveSignature::SlhDsa(v.signature.clone());
+
+        let mut witness = alloy_rlp::encode(account);
+        alloy_rlp::Encodable::encode(&config, &mut witness);
+        let witness_gas = tokens_in_calldata(&witness) * STANDARD_TOKEN_COST;
+        let commitment_gas = keccak_gas(config.commitment_preimage_len()).unwrap();
+        let digest_gas = keccak_gas(96).unwrap();
+        let derivation_gas = config.derivation_gas().unwrap();
+        println!(
+            "account {account} passkey {passkey} slh {} witness {} bytes {witness_gas} gas, \
+             commitment {commitment_gas}, digest {digest_gas}, derivation {derivation_gas}",
+            v.address,
+            witness.len()
+        );
+        let mut rows = Vec::new();
+        for (name, approval) in [("slh-dsa", slh), ("webauthn", webauthn), ("p256", p256)] {
+            let approval_cost = approval.verification_gas();
+            let signature =
+                ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval])
+                    .unwrap();
+            let registered = signature.verification_gas().unwrap();
+            assert_eq!(
+                registered,
+                witness_gas + commitment_gas + digest_gas + approval_cost
+            );
+            assert_eq!(
+                signature.intrinsic_verification_gas().unwrap(),
+                registered - 3_000
+            );
+            println!(
+                "{name}: approval_cost {approval_cost}, V registered {registered} (intrinsic +{}), \
+                 V unregistered {} (intrinsic +{}), encoded signature {} bytes",
+                registered - 3_000,
+                registered + derivation_gas,
+                registered + derivation_gas - 3_000,
+                TempoSignature::ConfigurableAccount(signature)
+                    .to_bytes()
+                    .len()
+            );
+            rows.push((approval_cost, registered));
+        }
+        assert_eq!(witness_gas, WORKED_WITNESS_GAS);
+        assert_eq!((commitment_gas, digest_gas, derivation_gas), (54, 48, 54));
+        assert_eq!(rows, WORKED_ROWS);
+
+        // After the update that drops the passkey: version 1, owners [slh], same account.
+        let quantum_only = ConfigurableAccountConfig {
+            version: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: v.address,
+                weight: 1,
+            }],
+            ..config
+        };
+        let signature = ConfigurableAccountSignature::try_new(
+            account,
+            quantum_only.clone(),
+            vec![PrimitiveSignature::SlhDsa(v.signature)],
+        )
+        .unwrap();
+        let mut witness = alloy_rlp::encode(account);
+        alloy_rlp::Encodable::encode(&quantum_only, &mut witness);
+        let witness_gas = tokens_in_calldata(&witness) * STANDARD_TOKEN_COST;
+        let registered = signature.verification_gas().unwrap();
+        println!(
+            "quantum-only: witness {} bytes {witness_gas} gas, commitment {}, V {registered} \
+             (intrinsic +{})",
+            witness.len(),
+            keccak_gas(quantum_only.commitment_preimage_len()).unwrap(),
+            registered - 3_000
+        );
+        assert_eq!((witness_gas, registered), (1_312, 214_320));
     }
 }

@@ -164,15 +164,30 @@ async fn slh_dsa_owner_signs_and_removes_the_passkey() -> eyre::Result<()> {
     let tx = create_basic_aa_tx(chain_id, 0, vec![noop()], GAS_LIMIT);
     let signature = signed_by(account, &initial, &tx, |digest| Ok(slh.sign(digest)))?;
     let registration = submit(&mut env, tx, signature, true).await?;
-    assert_eq!(commitment(&env, account).await?, initial.commitment().unwrap());
+    assert_eq!(
+        commitment(&env, account).await?,
+        initial.commitment().unwrap()
+    );
     assert!(verify(&env, account, &initial, &slh).await?);
 
     // A registered no-op: the estimate covers the SLH-DSA verification and signature bytes, and
     // the signed transaction it models uses no more.
-    let slh_estimate =
-        estimate(&env, account, &initial, slh.address(), PrimitiveSignatureType::SlhDsa).await?;
-    let p256_estimate =
-        estimate(&env, account, &initial, passkey.address(), PrimitiveSignatureType::P256).await?;
+    let slh_estimate = estimate(
+        &env,
+        account,
+        &initial,
+        slh.address(),
+        PrimitiveSignatureType::SlhDsa,
+    )
+    .await?;
+    let p256_estimate = estimate(
+        &env,
+        account,
+        &initial,
+        passkey.address(),
+        PrimitiveSignatureType::P256,
+    )
+    .await?;
     // 87,000 - 8,000 verification plus 7,890 nonzero bytes against 130 P256 bytes.
     assert!(
         slh_estimate >= p256_estimate + 79_000 + 120_000,
@@ -181,7 +196,11 @@ async fn slh_dsa_owner_signs_and_removes_the_passkey() -> eyre::Result<()> {
     let tx = create_basic_aa_tx(chain_id, 1, vec![noop()], slh_estimate);
     let signature = signed_by(account, &initial, &tx, |digest| Ok(slh.sign(digest)))?;
     let send = submit(&mut env, tx, signature, true).await?;
-    assert!(send.gas_used() <= slh_estimate, "{} > {slh_estimate}", send.gas_used());
+    assert!(
+        send.gas_used() <= slh_estimate,
+        "{} > {slh_estimate}",
+        send.gas_used()
+    );
     assert!(registration.gas_used() > send.gas_used());
 
     // The SLH-DSA owner removes the passkey: the address stays, the version becomes one.
@@ -248,7 +267,11 @@ async fn slh_dsa_owner_rejected_when_inactive() -> eyre::Result<()> {
     let chain_id = env.chain_id();
     let passkey = P256Owner::new(0x71);
     let slh = SlhDsaOwner::new(0x72);
-    let initial = config(B256::repeat_byte(0x73), 0, &[passkey.address(), slh.address()]);
+    let initial = config(
+        B256::repeat_byte(0x73),
+        0,
+        &[passkey.address(), slh.address()],
+    );
     let account = initial.derive_account().unwrap();
     env.fund_account(account).await?;
     let error = verify(&env, account, &initial, &slh)

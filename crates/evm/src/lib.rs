@@ -295,7 +295,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                slh_dsa_owner_signatures: self.chain_spec.info.is_slh_dsa_active_at(header.timestamp()),
+                slh_dsa_owner_signatures: self
+                    .chain_spec
+                    .info
+                    .is_slh_dsa_active_at(header.timestamp()),
             },
             _non_exhaustive: (),
         };

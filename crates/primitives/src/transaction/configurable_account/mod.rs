@@ -357,7 +357,9 @@ impl ConfigurableAccountSignature {
             match signature {
                 PrimitiveSignature::SlhDsa(_) => {
                     if signature.encoded_length() != SLH_DSA_SIGNATURE_ENCODED_LENGTH {
-                        return Err(ConfigurableAccountSignatureError::InvalidSlhDsaSignatureLength);
+                        return Err(
+                            ConfigurableAccountSignatureError::InvalidSlhDsaSignatureLength,
+                        );
                     }
                 }
                 _ => {

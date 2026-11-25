@@ -20,7 +20,8 @@ use tempo_primitives::transaction::{
     ConfigurableAccountWeightAccumulator, KeychainSignature, KeychainVersion,
     MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
-    SLH_DSA_SIGNATURE_ENCODED_LENGTH, SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
+    SLH_DSA_SIGNATURE_ENCODED_LENGTH, SignatureType, TempoSignature, configurable_account_digest,
+    derive_p256_address,
     tt_signature::{
         P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
         SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
