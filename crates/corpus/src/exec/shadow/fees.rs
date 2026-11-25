@@ -4,7 +4,6 @@
 //! slots, and fee paths outside these hooks are not tracked.
 
 use alloy_primitives::{Address, U256};
-use std::collections::HashSet;
 use tempo_precompiles::{
     storage::{FeeHook, StorageAction},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -67,11 +66,13 @@ pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
     })
 }
 
-/// The slots the fee hooks wrote.
-pub(super) fn fee_slots(actions: &[StorageAction]) -> HashSet<(Address, U256)> {
-    fee_hooks(actions)
-        .flat_map(|(_, actions)| actions.iter().filter_map(written_slot))
-        .collect()
+/// Whether a fee hook wrote `slot` of `address`.
+pub(super) fn fee_wrote(actions: &[StorageAction], address: Address, slot: U256) -> bool {
+    fee_hooks(actions).any(|(_, actions)| {
+        actions
+            .iter()
+            .any(|action| written_slot(action) == Some((address, slot)))
+    })
 }
 
 /// The slot a write action changes. `None` for reads, checks and markers.
@@ -199,14 +200,17 @@ mod tests {
         );
         assert_eq!(post.actions, &[write(3)]);
         assert_eq!(
-            fee_slots(&actions),
-            HashSet::from([(address, U256::from(1)), (address, U256::from(3))]),
+            [1, 2, 3].map(|slot| fee_wrote(&actions, address, U256::from(slot))),
+            [true, false, true],
             "slot 2 is written by the call"
         );
 
         // A hook that failed has no end marker and counts for nothing.
         let failed = &actions[..6];
         assert!(post_tx_fee(failed).is_none());
-        assert_eq!(fee_slots(failed), HashSet::from([(address, U256::from(1))]));
+        assert_eq!(
+            [1, 3].map(|slot| fee_wrote(failed, address, U256::from(slot))),
+            [true, false]
+        );
     }
 }

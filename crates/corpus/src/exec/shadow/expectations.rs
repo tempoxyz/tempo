@@ -223,7 +223,6 @@ mod tests {
         super::{
             Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome,
             analysis::{MAX_SAMPLES, Report},
-            fees::fee_slots,
         },
         *,
     };
@@ -459,7 +458,6 @@ mod tests {
             3,
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
         );
-        tx.fee_slots = fee_slots(&tx.actions);
     }
 
     #[test]
