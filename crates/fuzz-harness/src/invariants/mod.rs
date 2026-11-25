@@ -7,7 +7,7 @@
 //! failing.
 
 use alloy_primitives::{Address, Log};
-use invariants_core::{Effects, Report, SlotChange, Step};
+use invariants_core::{Effects, Frame, Report, SlotChange, Step};
 use std::{
     ops::Deref,
     sync::{Arc, LazyLock},
@@ -36,6 +36,9 @@ mod views;
 
 pub(crate) use configurable_account::authority;
 
+/// Counts transactions, armed for each whose call trace was kept for the checks that read calls.
+const TRACE: &str = "TEMPO-TRACE";
+
 /// What a step did: its net state changes, already written to the database, and what
 /// every model's step shares, which it derefs to.
 pub(crate) struct StepEffects<'a> {
@@ -45,8 +48,15 @@ pub(crate) struct StepEffects<'a> {
 }
 
 impl<'a> StepEffects<'a> {
-    /// The effects of `ran`, which made `net`'s changes and emitted `logs`.
-    pub(crate) fn new(net: &'a Net, logs: &[Log], ran: Ran, spec: TempoHardfork) -> Self {
+    /// The effects of `ran`, which made `net`'s changes, emitted `logs` and, when traced, made
+    /// `calls`.
+    pub(crate) fn new(
+        net: &'a Net,
+        logs: &[Log],
+        calls: Option<Vec<Frame>>,
+        ran: Ran,
+        spec: TempoHardfork,
+    ) -> Self {
         let changes = net
             .accounts()
             .flat_map(|(&address, account)| {
@@ -63,7 +73,7 @@ impl<'a> StepEffects<'a> {
         let shared = Effects {
             changes,
             logs: logs.to_vec(),
-            calls: None,
+            calls,
             ran,
         };
         Self {
@@ -99,16 +109,23 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
             until: check.meta.until,
         })
     }
-    let views = VIEWS.map(|(id, doc)| InvariantInfo {
-        id: id.to_string(),
-        doc: doc.to_string(),
-        tip: None,
-        covers: Vec::new(),
-        since: None,
-        until: None,
-    });
+    let views = VIEWS
+        .into_iter()
+        .chain([(
+            TRACE,
+            "A transaction's call trace is kept for the checks that read its calls.",
+        )])
+        .map(|(id, doc)| InvariantInfo {
+            id: id.to_string(),
+            doc: doc.to_string(),
+            tip: None,
+            covers: Vec::new(),
+            since: None,
+            until: None,
+        });
     infos(tip20::CHECKS)
         .chain(infos(tip20::STEP_CHECKS))
+        .chain(infos(tip20::roles::STEP_CHECKS))
         .chain(infos(fee_amm::CHECKS))
         .chain(infos(fee_amm::STEP_CHECKS))
         .chain(infos(dex::CHECKS))
@@ -198,6 +215,13 @@ pub(crate) fn check(
         {
             configurable_account::check(&mut reader, db, effects, tx);
         }
+    }
+    if let Some(effects) = &effects
+        && effects.ran.tx().is_some()
+    {
+        let traced = report.counts.entry(TRACE).or_default();
+        traced.evaluated += 1;
+        traced.armed += u64::from(effects.calls.is_some());
     }
 
     failures.extend(

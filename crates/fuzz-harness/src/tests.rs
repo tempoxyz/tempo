@@ -46,6 +46,7 @@ use tempo_primitives::{
         tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
     },
 };
+use test_case::test_case;
 
 use crate::{
     bincode_options, chain, execute,
@@ -145,6 +146,12 @@ fn run_input(input: TempoBlockchainInput) -> TempoExecutionOutcome {
         panic!("a blockchain input has a blockchain outcome");
     };
     outcome
+}
+
+/// How many subjects `outcome` judged for `id`, was armed for and found broken.
+fn counts(outcome: &TempoExecutionOutcome, id: &str) -> (u64, u64, u64) {
+    let counts = outcome.invariant_counts[id];
+    (counts.evaluated, counts.armed, counts.fired)
 }
 
 /// The storage changes `changes` records at `address`.
@@ -1043,4 +1050,24 @@ fn mock_signatures_verify_end_to_end() {
         sent(3, p256_sender, 1),
         "the WebAuthn key's account sent it"
     );
+}
+
+// The dev account holds pathUSD's issuer role, so its traced mint is judged.
+#[test_case(
+    call(
+        0,
+        PATH_USD_ADDRESS,
+        ITIP20::mintCall { to: RECIPIENT, amount: U256::from(5) }.abi_encode().into(),
+        1_000_000,
+    ),
+    &["TEMPO-TIP20-ROLE-AUTHZ"];
+    "a role-gated call"
+)]
+fn a_call_is_judged_by_the_checks_it_arms_and_holds(tx: Bytes, ids: &[&str]) {
+    let outcome = run(genesis(), vec![t4_block(vec![tx])]);
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Success);
+    for &id in ids.iter().chain(&["TEMPO-TRACE"]) {
+        assert_eq!(counts(&outcome, id), (1, 1, 0), "{id}");
+    }
+    assert_eq!(outcome.invariant_failures, []);
 }

@@ -14589,6 +14589,7 @@ dependencies = [
  "tempo-invariants",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
 ]
 
 [[package]]

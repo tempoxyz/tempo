@@ -20,10 +20,13 @@ use tempo_contracts::precompiles::ITIP20::{Burn, BurnAt, BurnBlocked, Mint};
 pub use tempo_contracts::precompiles::ITIP20::{self, Transfer};
 
 mod checks;
+pub mod roles;
 
 pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS, VIEW};
+pub use roles::{ROLE_AUTHZ, Roles};
 
-/// Checks the ledger of each token the scope selects.
+/// Checks the ledger of each token the scope selects and, when the step's calls were traced, the
+/// roles its committed privileged calls needed.
 pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
     for &token in scope.tokens.iter().filter(|token| (scope.selected)(token)) {
         let at = At {
@@ -31,6 +34,17 @@ pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
             holders: scope.holders,
         };
         reader.check::<Ledger>(at, token, VIEW);
+        let queries = scope
+            .effects
+            .map(|effects| roles::queries(effects, token))
+            .unwrap_or_default();
+        if !queries.is_empty() {
+            let at = roles::At {
+                token,
+                queries: &queries,
+            };
+            reader.check::<Roles>(at, token, VIEW);
+        }
     }
 }
 

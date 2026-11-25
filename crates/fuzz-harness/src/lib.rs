@@ -10,6 +10,7 @@ mod crypto;
 mod execute;
 mod invariants;
 mod state;
+mod trace;
 
 use bincode::Options as _;
 use core::ffi::c_int;
