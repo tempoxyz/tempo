@@ -27,9 +27,6 @@ pub use transaction::{
 mod header;
 pub use header::{TempoConsensusContext, TempoHeader};
 
-mod storage_action;
-pub use storage_action::{FeeHook, StorageAction};
-
 pub mod subblock;
 pub use subblock::{SubBlockMetadata, SubBlockVersion};
 

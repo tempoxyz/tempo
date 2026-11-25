@@ -9,7 +9,7 @@ use evm2::interpreter::InstrStop;
 pub use invariants_core::Counts;
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
-pub use tempo_primitives::{FeeHook, StorageAction};
+pub use tempo_precompiles::storage::{FeeHook, StorageAction};
 
 /// What a C ABI function returns.
 pub type FuzzStatus = i32;
