@@ -296,6 +296,9 @@ pub struct TempoTxEnv {
     tx_hash: B256,
     unique_tx_identifier: B256,
     fee_payer_override: Option<Address>,
+    /// Whether the transaction is a T15 payment-lane transaction
+    /// ([`TempoTxEnvelope::is_payment_v3`]).
+    is_payment_v3: bool,
 }
 
 impl TempoTxEnv {
@@ -341,6 +344,7 @@ impl TempoTxEnv {
                     tx_hash: *envelope.tx_hash(),
                     unique_tx_identifier: envelope.unique_tx_identifier(signer),
                     fee_payer_override: None,
+                    is_payment_v3: envelope.is_payment_v3(),
                 });
             }
         };
@@ -390,6 +394,12 @@ impl TempoTxEnv {
     /// Returns the contained Tempo AA transaction, if this is Tempo AA.
     pub const fn as_aa(&self) -> Option<&TempoAaTx> {
         self.evm_tx.as_aa()
+    }
+
+    /// Returns whether the transaction runs in the T15 payment lane
+    /// ([`TempoTxEnvelope::is_payment_v3`]), which prices its state loading separately.
+    pub const fn is_payment_v3(&self) -> bool {
+        self.is_payment_v3
     }
 
     /// Returns the original transaction hash.
@@ -545,12 +555,14 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
         let tx_hash = *recovered.inner().tx_hash();
         let unique_tx_identifier = recovered.inner().unique_tx_identifier(recovered.signer());
+        let is_payment_v3 = recovered.inner().is_payment_v3();
         Self {
             evm_tx: recovered.into(),
             execution_context: ExecutionContext::Transaction { tx_hash },
             tx_hash,
             unique_tx_identifier,
             fee_payer_override: None,
+            is_payment_v3,
         }
     }
 }
@@ -589,6 +601,8 @@ impl TransactionEnvMut for TempoTxEnv {
     }
 
     fn set_access_list(&mut self, access_list: AccessList) {
+        // Payment-lane transactions carry no access list.
+        self.is_payment_v3 &= access_list.is_empty();
         match &mut self.evm_tx {
             TempoEvmTx::Legacy { transaction, .. } => {
                 let signer = transaction.signer();

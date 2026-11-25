@@ -4,7 +4,10 @@ use crate::{
     TempoHardfork,
     constants::gas::{L1_COMMITMENT_READ_GAS, SSTORE_CREATE_COST, SSTORE_SET_COST},
 };
-use evm2::{EvmFeatures, SpecId, Version, version::GasId};
+use evm2::{
+    EvmFeatures, SpecId, Version,
+    version::{GasId, GasParams},
+};
 
 // TIP-1000 total gas costs (used by T1)
 const CONTRACT_CREATE_COST: u32 = 500_000;
@@ -39,6 +42,11 @@ const AMSTERDAM_CODE_DEPOSIT_STATE: u32 = 2_300;
 // Spec: state_gas(230,000) + regular(GAS_STORAGE_UPDATE - GAS_COLD_SLOAD - GAS_WARM_ACCESS)
 //      = 230,000 + (20,000 - 2,100 - 100) = 247,800
 const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800; // 230,000 + 17,800 = 247,800
+
+// T15 payment-lane state loading: discounts off the general lane's cold access surcharges.
+// TODO: replace with the values the lane pricing TIP specifies.
+const PAYMENT_LANE_COLD_STORAGE_DISCOUNT: u32 = 1_000;
+const PAYMENT_LANE_COLD_ACCOUNT_DISCOUNT: u32 = 1_500;
 
 /// Applies Tempo's hardfork-specific features and gas parameters to an EVM2 version.
 ///
@@ -77,6 +85,27 @@ pub fn configure_version(
 /// Creates an EVM2 version with Tempo's hardfork-specific gas schedule.
 pub fn version(spec_id: SpecId, spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Version {
     configure_version(Version::new(spec_id), spec, amsterdam_eip8037_enabled)
+}
+
+/// Returns the gas parameters of payment-lane transactions, or `None` when `spec` prices both
+/// lanes with `general`.
+///
+/// From T15, the payment lane prices state loading separately from the general lane: the cold
+/// storage slot and cold account surcharges are discounted from `general`'s. Every other cost,
+/// including warm reads and state creation, stays `general`'s. Discounting rather than overriding
+/// keeps changes already applied to `general`, such as a zone's [`apply_zone`] read gas.
+pub fn payment_lane_gas_params(general: &GasParams, spec: TempoHardfork) -> Option<GasParams> {
+    if !spec.is_t15() {
+        return None;
+    }
+    let mut gas = *general;
+    gas[GasId::ColdStorageAdditionalCost] = gas[GasId::ColdStorageAdditionalCost]
+        .checked_sub(PAYMENT_LANE_COLD_STORAGE_DISCOUNT)
+        .expect("cold storage surcharge covers the payment-lane discount");
+    gas[GasId::ColdAccountAdditionalCost] = gas[GasId::ColdAccountAdditionalCost]
+        .checked_sub(PAYMENT_LANE_COLD_ACCOUNT_DISCOUNT)
+        .expect("cold account surcharge covers the payment-lane discount");
+    Some(gas)
 }
 
 /// Applies a zone's changes to `spec`'s gas schedule (TIP-1154).
@@ -167,6 +196,46 @@ fn apply_amsterdam(version: &mut Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
+
+    #[test_case(TempoHardfork::T1)]
+    #[test_case(TempoHardfork::T14)]
+    fn test_payment_lane_priced_as_general_before_t15(spec: TempoHardfork) {
+        let general = version(SpecId::OSAKA, spec, false);
+        assert!(payment_lane_gas_params(&general.gas_params, spec).is_none());
+    }
+
+    /// T15: the payment lane discounts only the cold state-loading surcharges.
+    #[test]
+    fn test_payment_lane_discounts_state_loading_from_t15() {
+        let general = version(SpecId::OSAKA, TempoHardfork::T15, false);
+        let payment = payment_lane_gas_params(&general.gas_params, TempoHardfork::T15).unwrap();
+
+        assert_eq!(payment[GasId::ColdStorageAdditionalCost], 1_000);
+        assert_eq!(payment[GasId::ColdAccountAdditionalCost], 1_000);
+
+        let mut repriced = payment;
+        repriced[GasId::ColdStorageAdditionalCost] =
+            general.gas_params[GasId::ColdStorageAdditionalCost];
+        repriced[GasId::ColdAccountAdditionalCost] =
+            general.gas_params[GasId::ColdAccountAdditionalCost];
+        assert_eq!(
+            repriced, general.gas_params,
+            "only state-loading costs differ between lanes"
+        );
+    }
+
+    /// A zone's commitment read gas applies in both lanes.
+    #[test]
+    fn test_payment_lane_keeps_zone_read_gas() {
+        let mut general = version(SpecId::OSAKA, TempoHardfork::T15, false);
+        apply_zone(&mut general, TempoHardfork::T15);
+        let payment = payment_lane_gas_params(&general.gas_params, TempoHardfork::T15).unwrap();
+        assert_eq!(
+            payment[GasId::ColdAccountAdditionalCost],
+            1_000 + L1_COMMITMENT_READ_GAS as u32
+        );
+    }
 
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {

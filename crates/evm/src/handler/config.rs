@@ -14,7 +14,7 @@ use evm2::{
     ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
-    registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
+    registry::{HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest, handler},
     version::GasId,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -110,6 +110,9 @@ pub struct TempoEvmExt {
     pub resolved_fee_token: Option<ResolvedFeeToken>,
     /// Access-key expiry resolved for the most recently handled transaction.
     pub key_expiry: Option<u64>,
+    /// Whether an enclosing transaction handler has already selected the lane's gas parameters.
+    /// Nested transactions and system calls inherit that selection.
+    pub lane_pricing_active: bool,
 }
 
 impl Default for TempoEvmExt {
@@ -131,6 +134,7 @@ impl TempoEvmExt {
             skip_liquidity_check: false,
             resolved_fee_token: None,
             key_expiry: None,
+            lane_pricing_active: false,
         }
     }
 }
@@ -160,6 +164,62 @@ pub fn tempo_execution_config(
     version.features.remove(EvmFeatures::BALANCE_CHECK);
     version.features.remove(EvmFeatures::BALANCE_TOP_UP);
     ExecutionConfig::for_spec_and_version(tempo_spec, version)
+}
+
+/// Selects gas parameters for both pool validation and transaction execution.
+struct LanePricing<THandler>(THandler);
+
+impl<TTx, THandler> TxHandler<TempoEvmTypes, TTx, TxResult<TempoEvmTypes>> for LanePricing<THandler>
+where
+    THandler: TxHandler<TempoEvmTypes, TTx, TxResult<TempoEvmTypes>>,
+{
+    fn validate(&self, request: TxRequest<'_, '_, TempoEvmTypes, TTx>) -> HandlerResult<()> {
+        with_lane_pricing(request.host, request.envelope, |host| {
+            self.0.validate(TxRequest { host, ..request })
+        })
+    }
+
+    fn execute(
+        &self,
+        request: TxRequest<'_, '_, TempoEvmTypes, TTx>,
+    ) -> HandlerResult<TxResult<TempoEvmTypes>> {
+        with_lane_pricing(request.host, request.envelope, |host| {
+            self.0.execute(TxRequest { host, ..request })
+        })
+    }
+}
+
+/// Marks the enclosing transaction's selection, including when it uses general pricing.
+struct LaneGasScope<'a, 'host> {
+    host: &'a mut Evm<'host, TempoEvmTypes>,
+}
+
+impl Drop for LaneGasScope<'_, '_> {
+    fn drop(&mut self) {
+        self.host.ext_mut().lane_pricing_active = false;
+    }
+}
+
+fn with_lane_pricing<R>(
+    host: &mut Evm<'_, TempoEvmTypes>,
+    tx: &TempoTxEnv,
+    f: impl FnOnce(&mut Evm<'_, TempoEvmTypes>) -> R,
+) -> R {
+    if host.ext().lane_pricing_active || host.ext().kind == TempoEvmKind::Zone {
+        return f(host);
+    }
+    let general = host.version().gas_params;
+    let gas = if tx.is_payment_v3() {
+        tempo_chainspec::gas_params::payment_lane_gas_params(&general, host.config_spec_id())
+            .unwrap_or(general)
+    } else {
+        general
+    };
+    host.with_gas_params(gas, |host| {
+        host.ext_mut().lane_pricing_active = true;
+        let scope = LaneGasScope { host };
+        f(scope.host)
+    })
 }
 
 /// Builds a Tempo-configured EVM2 instance.
@@ -572,44 +632,171 @@ pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<
     let mut registry = TxRegistry::new().with_handler(
         0,
         TempoTxEnv::as_legacy,
-        handler(prepare_legacy, execute_legacy),
+        LanePricing(handler(prepare_legacy, execute_legacy)),
     );
 
     if spec_id.enables(SpecId::BERLIN) {
         registry.register(
             1,
             TempoTxEnv::as_eip2930,
-            handler(
+            LanePricing(handler(
                 prepare_eip2930,
                 eip2930::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
-            ),
+            )),
         );
     }
     if spec_id.enables(SpecId::LONDON) {
         registry.register(
             2,
             TempoTxEnv::as_eip1559,
-            handler(
+            LanePricing(handler(
                 prepare_eip1559,
                 eip1559::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
-            ),
+            )),
         );
     }
     if spec_id.enables(SpecId::PRAGUE) {
         registry.register(
             4,
             TempoTxEnv::as_eip7702,
-            handler(
+            LanePricing(handler(
                 prepare_eip7702,
                 eip7702::execute_prepared::<TempoEvmTypes, TempoHandlerHooks>,
-            ),
+            )),
         );
     }
     registry.register(
         0x76,
         TempoTxEnv::as_aa,
-        handler(super::prepare_aa, super::execute_aa),
+        LanePricing(handler(super::prepare_aa, super::execute_aa)),
     );
 
     registry
+}
+
+#[cfg(test)]
+mod lane_pricing_tests {
+    use super::*;
+    use alloy_consensus::{Signed, transaction::Recovered};
+    use alloy_primitives::{B256, Bytes, Signature};
+    use alloy_sol_types::SolCall;
+    use evm2::{
+        evm::{InMemoryDB, precompile::NoPrecompiles},
+        version::GasParams,
+    };
+    use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
+    use tempo_primitives::TempoTxEnvelope;
+    use test_case::test_case;
+
+    fn transaction(payment: bool, nonce: u64) -> Recovered<TempoTxEnv> {
+        let caller = Address::repeat_byte(0x11);
+        let tx = TxLegacy {
+            nonce,
+            to: TxKind::Call(if payment {
+                PATH_USD_ADDRESS
+            } else {
+                Address::repeat_byte(0x22)
+            }),
+            input: if payment {
+                ITIP20::transferCall {
+                    to: caller,
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into()
+            } else {
+                Bytes::new()
+            },
+            ..Default::default()
+        };
+        let signed = Signed::new_unchecked(tx, Signature::test_signature(), B256::ZERO);
+        Recovered::new_unchecked(
+            Recovered::new_unchecked(TempoTxEnvelope::Legacy(signed), caller).into(),
+            caller,
+        )
+    }
+
+    #[test_case(TempoHardfork::T14, TempoEvmKind::L1)]
+    #[test_case(TempoHardfork::T15, TempoEvmKind::L1)]
+    #[test_case(TempoHardfork::T15, TempoEvmKind::Zone)]
+    fn validate_and_execute_restore_alternating_lanes(spec: TempoHardfork, kind: TempoEvmKind) {
+        let ext = TempoEvmExt::new(kind, crate::TempoFeeManager::new());
+        let mut evm = build_tempo_evm(
+            spec,
+            1,
+            TempoBlockEnv::default(),
+            InMemoryDB::default(),
+            NoPrecompiles::default(),
+            ext,
+        );
+        let general = evm.version().gas_params;
+        let payment = if kind == TempoEvmKind::L1 {
+            tempo_chainspec::gas_params::payment_lane_gas_params(&general, spec).unwrap_or(general)
+        } else {
+            general
+        };
+        let mut registry = TxRegistry::new();
+        registry.register(0, |tx: &TempoTxEnv| Some(tx), LanePricing(handler(
+            move |req: &mut TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>| -> HandlerResult<GasParams> {
+                let expected = if req.envelope.is_payment_v3() { payment } else { general };
+                assert_eq!(req.host.version().gas_params, expected);
+                if req.envelope.nonce() == 1 { return Err(HandlerError::NonceOverflow); }
+                Ok(expected)
+            },
+            |req: TxRequest<'_, '_, TempoEvmTypes, TempoTxEnv>, prepared| {
+                assert_eq!(req.host.version().gas_params, prepared);
+                // A nested pricing scope inherits the enclosing lane.
+                let nested = transaction(!req.envelope.is_payment_v3(), 0);
+                {
+                    with_lane_pricing(req.host, nested.inner(), |host| {
+                        assert_eq!(host.version().gas_params, prepared);
+                    });
+                }
+                if req.envelope.nonce() == 2 { return Err(HandlerError::NonceOverflow); }
+                Ok(TxResult::<TempoEvmTypes>::default())
+            },
+        )));
+        evm.set_execution_config(
+            tempo_execution_config(spec, 1),
+            spec,
+            registry,
+            NoPrecompiles::default(),
+        );
+        // These steps deliberately share one EVM, including both preparation and execution errors.
+        for (is_payment, nonce) in [
+            (true, 0),
+            (false, 0),
+            (true, 1),
+            (false, 1),
+            (true, 2),
+            (false, 0),
+            (true, 0),
+        ] {
+            let tx = transaction(is_payment, nonce);
+            assert_eq!(
+                evm.validate_tx(&tx),
+                if nonce == 1 {
+                    Err(HandlerError::NonceOverflow)
+                } else {
+                    Ok(())
+                }
+            );
+            assert_eq!(evm.version().gas_params, general);
+            assert!(!evm.ext().lane_pricing_active);
+            let result = evm.transact(&tx).map(|executed| executed.discard());
+            if nonce == 1 || nonce == 2 {
+                assert_eq!(result.unwrap_err(), HandlerError::NonceOverflow);
+            } else {
+                assert_eq!(result.unwrap().tx_gas_used(), 0);
+            }
+            assert_eq!(evm.version().gas_params, general);
+            assert!(!evm.ext().lane_pricing_active);
+            assert!(
+                evm.execute_system_call(SystemTx::new(Address::repeat_byte(0x33), Bytes::new()))
+                    .unwrap()
+                    .status
+            );
+            assert_eq!(evm.version().gas_params, general);
+        }
+    }
 }
