@@ -19,7 +19,7 @@ use reth_evm::{BlockExecutionError, BlockValidationError};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::{
     precompiles::{IAccountKeychain, INonce, IStorageCredits, ITIP20},
-    zones::{IZoneInbox, IZoneOutbox, tempo_state::TempoState},
+    zones::{IZoneOutbox, tempo_state::TempoState},
 };
 use tempo_evm::TempoEvm;
 use tempo_fuzz_engine::{
@@ -35,15 +35,13 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use zone_chainspec::ZoneChainSpec;
-use zone_evm::ZoneEvmConfig;
+use zone_evm::{ZoneEvmConfig, build_advance_tempo_tx_from_parts};
 use zone_precompiles::{
     L1StateError, L1StorageReader,
     ecies::AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE,
     tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
 };
-use zone_primitives::constants::{
-    TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, decode_zone_chain_id,
-};
+use zone_primitives::constants::{TEMPO_STATE_ADDRESS, ZONE_OUTBOX_ADDRESS, decode_zone_chain_id};
 
 use crate::{
     accounts::{self, AccountChecks},
@@ -146,6 +144,11 @@ impl Engine for Zone {
         self.accounts.check(&self.l1, state, report);
     }
 
+    /// The sequencer leaves out the transactions the zone rejects.
+    fn skips_invalid_txs(&self) -> bool {
+        true
+    }
+
     fn own_invariants() -> Vec<InvariantInfo> {
         accounts::catalog()
     }
@@ -217,7 +220,13 @@ impl Engine for Zone {
                 .header()
                 .clone(),
         };
-        Ok(vec![advance_tempo_tx(&tempo, evm.version().chain_id)])
+        Ok(vec![build_advance_tempo_tx_from_parts(
+            &tempo,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            evm.version().chain_id,
+        )])
     }
 
     /// `finalizeWithdrawalBatch` over the withdrawals the block left pending, as the sequencer
@@ -393,18 +402,6 @@ fn view<C: SolCall>(
     }
     C::abi_decode_returns(&result.discard().output)
         .map_err(|err| fail(format!("{} view returned garbage: {err}", C::SIGNATURE)))
-}
-
-/// The `advanceTempo` system transaction importing `tempo` with no deposits, decryptions or newly
-/// enabled tokens, as the sequencer builds it.
-fn advance_tempo_tx(tempo: &TempoHeader, chain_id: u64) -> Recovered<TempoTxEnvelope> {
-    let call = IZoneInbox::advanceTempoCall {
-        header: alloy_rlp::encode(tempo).into(),
-        deposits: Vec::new(),
-        decryptions: Vec::new(),
-        enabledTokens: Vec::new(),
-    };
-    system_tx(chain_id, ZONE_INBOX_ADDRESS, call.abi_encode())
 }
 
 /// A system transaction calling `to` with `input`, as the sequencer builds them.
