@@ -650,6 +650,7 @@ async fn collect_tempo_witness(
             .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?
             .into_values()
             .collect::<Vec<_>>();
+        // Refetch unless every read links to the checkpoint's state root, as the SPF reads it.
         zone_spf::verify_tempo_reads(
             state_root,
             &nodes,
