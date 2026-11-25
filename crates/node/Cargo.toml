@@ -87,6 +87,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tempo-contracts.workspace = true
+tempo-corpus.workspace = true
 tempo-alloy = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["test-utils"] }
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
