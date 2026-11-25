@@ -2,7 +2,9 @@ use crate::{
     TempoBlockEnv, TempoEvmTypes, tempo_tx_registry,
     test_utils::{TestExecutorBuilder, test_chainspec},
 };
-use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
+use alloy_consensus::{
+    SignableTransaction, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered,
+};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
 use alloy_sol_types::{SolCall, SolError};
@@ -12,6 +14,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, DynDatabase, InMemoryDB, SystemTx},
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op as opcode},
+    version::GasId,
 };
 use p256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
 use reth_chainspec::EthChainSpec;
@@ -39,7 +42,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{
-    AASigned, TempoTransaction, TempoTxEnvelope,
+    AASigned, TempoEvmKind, TempoTransaction, TempoTxEnvelope,
     transaction::{
         AccountSignature, KeyAuthorization, KeychainSignature, SignatureType,
         TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization,
@@ -4694,5 +4697,143 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
         StorageAction::Sload(token, slot, _) if tokens.contains(token)
             && *slot == TIP20Token::from_address_unchecked(*token).balances[payer].slot()
     )));
+    Ok(())
+}
+
+#[test_case(TempoHardfork::T14, 0)]
+#[test_case(TempoHardfork::T15, 0)]
+#[test_case(TempoHardfork::T15, 1)]
+#[test_case(TempoHardfork::T15, 2)]
+#[test_case(TempoHardfork::T15, 4)]
+#[test_case(TempoHardfork::T15, 0x76)]
+fn test_handler_selects_payment_gas_params(spec: TempoHardfork, tx_type: u8) -> eyre::Result<()> {
+    let caller = Address::repeat_byte(0x11);
+    let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
+    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+    StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(caller).apply())?;
+    drop(storage);
+    evm.state_mut().commit_transaction();
+    evm.set_inspector(CountInspector::new());
+    let general = evm.version().gas_params;
+
+    // Reuse one EVM across lane switches, validation and inspected execution.
+    for is_payment in [true, false, true] {
+        let to = if is_payment {
+            PATH_USD_ADDRESS
+        } else {
+            IDENTITY_PRECOMPILE
+        };
+        let input: Bytes = if is_payment {
+            ITIP20::transferCall {
+                to: caller,
+                amount: U256::ZERO,
+            }
+            .abi_encode()
+            .into()
+        } else {
+            Bytes::new()
+        };
+        let signature = alloy_primitives::Signature::test_signature();
+        let envelope = match tx_type {
+            0 => TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    chain_id: Some(1),
+                    gas_limit: 1_000_000,
+                    to: TxKind::Call(to),
+                    input,
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            1 => TempoTxEnvelope::Eip2930(
+                TxEip2930 {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    to: TxKind::Call(to),
+                    input,
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            2 => TempoTxEnvelope::Eip1559(
+                TxEip1559 {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    to: TxKind::Call(to),
+                    input,
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            4 => TempoTxEnvelope::Eip7702(
+                TxEip7702 {
+                    chain_id: 1,
+                    gas_limit: 1_000_000,
+                    to,
+                    input,
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            0x76 => TempoTxEnvelope::AA(AASigned::new_unhashed(
+                TxBuilder::new().call(to, &input).build(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            )),
+            _ => unreachable!(),
+        };
+        assert_eq!(envelope.is_payment_v3(), is_payment);
+        let tx = Recovered::new_unchecked(
+            TempoTxEnv::from(Recovered::new_unchecked(envelope, caller)),
+            caller,
+        );
+        if tx_type == 4 {
+            assert!(matches!(
+                evm.validate_tx(&tx),
+                Err(evm2::registry::HandlerError::EmptyAuthorizationList)
+            ));
+        } else {
+            evm.validate_tx(&tx)?;
+        }
+        let mut expected = general;
+        if spec.is_t15() && is_payment {
+            expected[GasId::ColdStorageAdditionalCost] = 1_000;
+            expected[GasId::ColdAccountAdditionalCost] = 1_000;
+        }
+        assert_eq!(evm.version().gas_params, expected);
+        if tx_type != 4 {
+            let result = evm.transact(&tx)?.detach();
+            assert!(result.result.status, "{:?}", result.result);
+        }
+        assert_eq!(evm.version().gas_params, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_zone_handler_keeps_gas_params() -> eyre::Result<()> {
+    let caller = Address::repeat_byte(0x11);
+    let spec = TempoHardfork::T15;
+    let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
+    evm.ext_mut().kind = TempoEvmKind::Zone;
+    let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
+    StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(caller).apply())?;
+    drop(storage);
+    evm.state_mut().commit_transaction();
+    evm.gas_params_mut()[GasId::ColdAccountAdditionalCost] = 9_000;
+    let general = evm.version().gas_params;
+    let tx = legacy_tx_env(
+        caller,
+        0,
+        TxKind::Call(PATH_USD_ADDRESS),
+        ITIP20::transferCall {
+            to: caller,
+            amount: U256::ZERO,
+        }
+        .abi_encode()
+        .into(),
+        1_000_000,
+    );
+    evm.validate_tx(&Recovered::new_unchecked(tx, caller))?;
+    assert_eq!(evm.version().gas_params, general);
     Ok(())
 }

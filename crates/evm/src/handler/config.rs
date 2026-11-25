@@ -486,6 +486,19 @@ fn settle_storage_credit_refunds(
     Ok(())
 }
 
+/// Selects T15 L1 cold-access prices for a transaction or a general-priced system call.
+pub(crate) fn configure_tx_gas_params(host: &mut Evm<'_, TempoEvmTypes>, is_payment: bool) {
+    let spec = host.config_spec_id();
+    if !spec.is_t15() || host.ext().kind == TempoEvmKind::Zone {
+        return;
+    }
+
+    // Set both lanes on every preparation: gas_params_mut changes persist across transactions.
+    let gas = host.gas_params_mut();
+    gas[GasId::ColdStorageAdditionalCost] = spec.gas_cold_storage_additional_cost(is_payment);
+    gas[GasId::ColdAccountAdditionalCost] = spec.gas_cold_account_additional_cost(is_payment);
+}
+
 enum PreparedLegacy {
     System,
     Transaction(PreparedTx),
@@ -494,6 +507,10 @@ enum PreparedLegacy {
 fn prepare_legacy(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TxLegacy>,
 ) -> HandlerResult<PreparedLegacy> {
+    configure_tx_gas_params(
+        request.host,
+        request.envelope.is_payment_v3() && !request.envelope.evm_tx().is_system_tx(),
+    );
     validate_no_native_value(request.envelope)?;
     if request.envelope.evm_tx().is_system_tx() {
         if !matches!(request.tx.to, TxKind::Call(_)) {
@@ -541,6 +558,7 @@ fn execute_legacy(
 fn prepare_eip2930(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TxEip2930>,
 ) -> HandlerResult<PreparedTx> {
+    configure_tx_gas_params(request.host, request.envelope.is_payment_v3());
     validate_no_native_value(request.envelope)?;
     eip2930::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
@@ -548,6 +566,7 @@ fn prepare_eip2930(
 fn prepare_eip1559(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TxEip1559>,
 ) -> HandlerResult<PreparedTx> {
+    configure_tx_gas_params(request.host, request.envelope.is_payment_v3());
     validate_no_native_value(request.envelope)?;
     eip1559::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }
@@ -555,6 +574,7 @@ fn prepare_eip1559(
 fn prepare_eip7702(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, LazyTxEip7702>,
 ) -> HandlerResult<PreparedTx> {
+    configure_tx_gas_params(request.host, request.envelope.is_payment_v3());
     validate_no_native_value(request.envelope)?;
     eip7702::prepare_with_hooks::<TempoEvmTypes, TempoHandlerHooks>(request)
 }

@@ -296,6 +296,7 @@ pub struct TempoTxEnv {
     tx_hash: B256,
     unique_tx_identifier: B256,
     fee_payer_override: Option<Address>,
+    is_payment_v3_without_access_list: bool,
 }
 
 impl TempoTxEnv {
@@ -341,6 +342,7 @@ impl TempoTxEnv {
                     tx_hash: *envelope.tx_hash(),
                     unique_tx_identifier: envelope.unique_tx_identifier(signer),
                     fee_payer_override: None,
+                    is_payment_v3_without_access_list: envelope.is_payment_v3_without_access_list(),
                 });
             }
         };
@@ -348,6 +350,12 @@ impl TempoTxEnv {
         let mut env = Self::from(Recovered::new_unchecked(envelope, signer));
         env.execution_context = ExecutionContext::Simulation;
         Some(env)
+    }
+
+    /// Returns whether the transaction qualifies for T15 payment-lane pricing.
+    pub(crate) fn is_payment_v3(&self) -> bool {
+        self.is_payment_v3_without_access_list
+            && self.access_list().is_none_or(|list| list.is_empty())
     }
 
     /// Returns the transaction consumed by EVM2.
@@ -543,6 +551,8 @@ impl Transaction for TempoTxEnv {
 
 impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
     fn from(recovered: Recovered<TempoTxEnvelope>) -> Self {
+        let is_payment_v3_without_access_list =
+            recovered.inner().is_payment_v3_without_access_list();
         let tx_hash = *recovered.inner().tx_hash();
         let unique_tx_identifier = recovered.inner().unique_tx_identifier(recovered.signer());
         Self {
@@ -551,6 +561,7 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
             tx_hash,
             unique_tx_identifier,
             fee_payer_override: None,
+            is_payment_v3_without_access_list,
         }
     }
 }
@@ -639,17 +650,20 @@ mod tests {
     use alloy_primitives::{B256, Signature, U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolCall;
     use core::num::NonZeroU64;
     use evm2::ethereum::LazyAuthorization;
     use proptest::prelude::*;
     use tempo_chainspec::TempoHardfork;
+    use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
     use tempo_primitives::{
-        TempoSignature, TempoTransaction,
+        TempoSignature, TempoTransaction, TempoTxType,
         transaction::{
             Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::TEMPO_EXPIRING_NONCE_KEY,
             tt_signature::PrimitiveSignature,
         },
     };
+    use test_case::test_matrix;
 
     const SIGNER: Address = Address::new([0x11; 20]);
 
@@ -1218,6 +1232,125 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test_matrix([TempoTxType::Legacy, TempoTxType::Eip2930, TempoTxType::Eip1559, TempoTxType::Eip7702, TempoTxType::AA], [false, true])]
+    fn payment_classification_tracks_access_list(tx_type: TempoTxType, payment: bool) {
+        let input = if payment {
+            ITIP20::transferCall {
+                to: SIGNER,
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into()
+        } else {
+            Bytes::new()
+        };
+        let access_list = AccessList(vec![AccessListItem {
+            address: SIGNER,
+            storage_keys: vec![B256::ZERO],
+        }]);
+        let signature = Signature::test_signature();
+        let envelope = match tx_type {
+            TempoTxType::Legacy => TempoTxEnvelope::Legacy(
+                TxLegacy {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    input,
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            TempoTxType::Eip2930 => TempoTxEnvelope::Eip2930(
+                TxEip2930 {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    input,
+                    access_list: access_list.clone(),
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            TempoTxType::Eip1559 => TempoTxEnvelope::Eip1559(
+                TxEip1559 {
+                    to: TxKind::Call(PATH_USD_ADDRESS),
+                    input,
+                    access_list: access_list.clone(),
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            TempoTxType::Eip7702 => TempoTxEnvelope::Eip7702(
+                TxEip7702 {
+                    to: PATH_USD_ADDRESS,
+                    input,
+                    access_list: access_list.clone(),
+                    ..Default::default()
+                }
+                .into_signed(signature),
+            ),
+            TempoTxType::AA => TempoTxEnvelope::AA(
+                TempoTransaction {
+                    calls: vec![Call::new(PATH_USD_ADDRESS, input)],
+                    access_list: access_list.clone(),
+                    ..Default::default()
+                }
+                .into_signed(signature.into()),
+            ),
+        };
+        assert_eq!(
+            envelope.is_payment_v3(),
+            payment && tx_type == TempoTxType::Legacy
+        );
+        let mut env = TempoTxEnv::from(Recovered::new_unchecked(envelope, SIGNER));
+        assert_eq!(
+            env.is_payment_v3(),
+            payment && tx_type == TempoTxType::Legacy
+        );
+
+        env.set_access_list(AccessList::default());
+        assert_eq!(env.is_payment_v3(), payment);
+        env.set_gas_limit(100_000);
+        assert_eq!(env.is_payment_v3(), payment);
+        env.set_access_list(access_list);
+        assert!(!env.is_payment_v3());
+        env.set_access_list(AccessList::default());
+        assert_eq!(env.is_payment_v3(), payment);
+        env.set_access_list(AccessList::default());
+        assert_eq!(env.is_payment_v3(), payment);
+    }
+
+    #[test_matrix([false, true])]
+    fn simulated_eip7702_payment_classification_tracks_access_list(initially_nonempty: bool) {
+        let access_list = AccessList(vec![AccessListItem {
+            address: SIGNER,
+            storage_keys: vec![B256::ZERO],
+        }]);
+        let tx = TxEip7702 {
+            to: PATH_USD_ADDRESS,
+            input: ITIP20::transferCall {
+                to: SIGNER,
+                amount: U256::ONE,
+            }
+            .abi_encode()
+            .into(),
+            access_list: if initially_nonempty {
+                access_list.clone()
+            } else {
+                AccessList::default()
+            },
+            ..Default::default()
+        };
+        let mut env = TempoTxEnv::from_recovered_eth(Recovered::new_unchecked(
+            EthTxEnvelope::Eip7702(LazyTxEip7702::from_signed_authorizations(tx)),
+            SIGNER,
+        ))
+        .unwrap();
+        assert_eq!(env.is_payment_v3(), !initially_nonempty);
+        env.set_access_list(AccessList::default());
+        assert!(env.is_payment_v3());
+        env.set_access_list(access_list);
+        assert!(!env.is_payment_v3());
+        env.set_access_list(AccessList::default());
+        assert!(env.is_payment_v3());
     }
 
     #[test]

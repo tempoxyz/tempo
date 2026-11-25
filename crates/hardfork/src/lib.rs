@@ -339,6 +339,26 @@ impl TempoHardfork {
         gas::TEMPO_T1_NEW_NONCE_KEY_GAS
     }
 
+    /// Cold storage slot surcharge, discounted for payment transactions from T15.
+    pub const fn gas_cold_storage_additional_cost(&self, is_payment: bool) -> u32 {
+        // TODO: replace the draft payment price when lane pricing is specified.
+        if self.is_t15() && is_payment {
+            1_000
+        } else {
+            2_000
+        }
+    }
+
+    /// Cold account surcharge, discounted for payment transactions from T15.
+    pub const fn gas_cold_account_additional_cost(&self, is_payment: bool) -> u32 {
+        // TODO: replace the draft payment price when lane pricing is specified.
+        if self.is_t15() && is_payment {
+            1_000
+        } else {
+            2_500
+        }
+    }
+
     /// Returns the expiring nonce replay-protection capacity.
     pub const fn expiring_nonce_set_capacity(&self) -> u32 {
         const PRE_T11_CAPACITY: u32 = 300_000;
@@ -517,5 +537,46 @@ impl From<SpecId> for TempoHardfork {
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod gas_pricing_tests {
+    use super::*;
+
+    #[test]
+    fn payment_prices_activate_at_t15() {
+        assert_eq!(
+            TempoHardfork::T14.gas_cold_storage_additional_cost(false),
+            2_000
+        );
+        assert_eq!(
+            TempoHardfork::T14.gas_cold_storage_additional_cost(true),
+            2_000
+        );
+        assert_eq!(
+            TempoHardfork::T15.gas_cold_storage_additional_cost(false),
+            2_000
+        );
+        assert_eq!(
+            TempoHardfork::T15.gas_cold_storage_additional_cost(true),
+            1_000
+        );
+        assert_eq!(
+            TempoHardfork::T14.gas_cold_account_additional_cost(false),
+            2_500
+        );
+        assert_eq!(
+            TempoHardfork::T14.gas_cold_account_additional_cost(true),
+            2_500
+        );
+        assert_eq!(
+            TempoHardfork::T15.gas_cold_account_additional_cost(false),
+            2_500
+        );
+        assert_eq!(
+            TempoHardfork::T15.gas_cold_account_additional_cost(true),
+            1_000
+        );
     }
 }

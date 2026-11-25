@@ -584,6 +584,7 @@ impl<'a> TempoBlockExecutor<'a> {
         .abi_encode()
         .into();
 
+        crate::handler::configure_tx_gas_params(self.evm_mut(), false);
         let result = self
             .evm_mut()
             .system_call(
@@ -857,6 +858,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if self.evm().config_spec_id().is_t13() {
             if self.prague_active && !self.evm().block().number.is_zero() {
                 let parent_hash = self.inner.context().parent_hash;
+                crate::handler::configure_tx_gas_params(self.evm_mut(), false);
                 let result = self
                     .evm_mut()
                     .system_call(SystemTx::new(
@@ -2522,8 +2524,9 @@ mod tests {
         assert!(executor.receipts().is_empty());
     }
 
-    #[test]
-    fn test_current_committee_system_call_writes_boundary_outcome() {
+    #[test_case(TempoHardfork::T8)]
+    #[test_case(TempoHardfork::T15)]
+    fn test_current_committee_system_call_writes_boundary_outcome(spec: TempoHardfork) {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let outcome = OnchainDkgOutcome::dealt(42, 3);
@@ -2537,13 +2540,16 @@ mod tests {
             .with_block_number(4)
             .with_epoch_length(5)
             .with_extra_data(outcome.encode().into())
-            .with_spec(TempoHardfork::T8)
+            .with_spec(spec)
             .build(&mut db, &chainspec);
         executor
             .deploy_precompile_at_boundary(CURRENT_COMMITTEE_ADDRESS, &[])
             .unwrap();
 
+        let general = executor.evm().version().gas_params;
+        crate::handler::configure_tx_gas_params(executor.evm_mut(), true);
         executor.apply_current_committee_system_call().unwrap();
+        assert_eq!(executor.evm().version().gas_params, general);
 
         let committee = read_current_committee(&mut executor);
         assert_eq!(committee.epoch, outcome.epoch);

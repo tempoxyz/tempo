@@ -3,6 +3,7 @@
 mod config;
 pub(crate) mod configurable_account;
 
+pub(crate) use self::config::configure_tx_gas_params;
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
     TempoTxResultExt, build_tempo_evm, tempo_execution_config, tempo_opcode_config,
@@ -1392,6 +1393,7 @@ struct PreparedAa {
 fn prepare_aa(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
 ) -> HandlerResult<PreparedAa> {
+    configure_tx_gas_params(request.host, request.envelope.is_payment_v3());
     let caller = request.tx.signer();
     let signed = request.tx.inner();
     let tx = signed.tx();
