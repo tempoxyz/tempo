@@ -275,6 +275,9 @@ where
             best_payload,
             ..
         } = args;
+        // Experiment: compute the state root once after execution instead of streaming it
+        // through the sparse trie while transactions execute.
+        drop(state_root_handle.take());
         let PayloadConfig {
             parent_header,
             attributes,
