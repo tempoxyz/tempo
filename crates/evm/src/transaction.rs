@@ -642,6 +642,7 @@ impl TransactionEnvMut for TempoTxEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::test_tx_envelope;
     use alloy_consensus::{TxEip7702, transaction::TxHashRef};
     use alloy_eips::{
         eip2930::AccessListItem,
@@ -1250,52 +1251,7 @@ mod tests {
             address: SIGNER,
             storage_keys: vec![B256::ZERO],
         }]);
-        let signature = Signature::test_signature();
-        let envelope = match tx_type {
-            TempoTxType::Legacy => TempoTxEnvelope::Legacy(
-                TxLegacy {
-                    to: TxKind::Call(PATH_USD_ADDRESS),
-                    input,
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            TempoTxType::Eip2930 => TempoTxEnvelope::Eip2930(
-                TxEip2930 {
-                    to: TxKind::Call(PATH_USD_ADDRESS),
-                    input,
-                    access_list: access_list.clone(),
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            TempoTxType::Eip1559 => TempoTxEnvelope::Eip1559(
-                TxEip1559 {
-                    to: TxKind::Call(PATH_USD_ADDRESS),
-                    input,
-                    access_list: access_list.clone(),
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            TempoTxType::Eip7702 => TempoTxEnvelope::Eip7702(
-                TxEip7702 {
-                    to: PATH_USD_ADDRESS,
-                    input,
-                    access_list: access_list.clone(),
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            TempoTxType::AA => TempoTxEnvelope::AA(
-                TempoTransaction {
-                    calls: vec![Call::new(PATH_USD_ADDRESS, input)],
-                    access_list: access_list.clone(),
-                    ..Default::default()
-                }
-                .into_signed(signature.into()),
-            ),
-        };
+        let envelope = test_tx_envelope(tx_type, PATH_USD_ADDRESS, input, access_list.clone());
         assert_eq!(
             envelope.is_payment_v3(),
             payment && tx_type == TempoTxType::Legacy

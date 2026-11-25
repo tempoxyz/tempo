@@ -546,37 +546,15 @@ mod gas_pricing_tests {
 
     #[test]
     fn payment_prices_activate_at_t15() {
-        assert_eq!(
-            TempoHardfork::T14.gas_cold_storage_additional_cost(false),
-            2_000
-        );
-        assert_eq!(
-            TempoHardfork::T14.gas_cold_storage_additional_cost(true),
-            2_000
-        );
-        assert_eq!(
-            TempoHardfork::T15.gas_cold_storage_additional_cost(false),
-            2_000
-        );
-        assert_eq!(
-            TempoHardfork::T15.gas_cold_storage_additional_cost(true),
-            1_000
-        );
-        assert_eq!(
-            TempoHardfork::T14.gas_cold_account_additional_cost(false),
-            2_500
-        );
-        assert_eq!(
-            TempoHardfork::T14.gas_cold_account_additional_cost(true),
-            2_500
-        );
-        assert_eq!(
-            TempoHardfork::T15.gas_cold_account_additional_cost(false),
-            2_500
-        );
-        assert_eq!(
-            TempoHardfork::T15.gas_cold_account_additional_cost(true),
-            1_000
-        );
+        let t14 = TempoHardfork::T14;
+        let t15 = TempoHardfork::T15;
+        assert_eq!(t14.gas_cold_storage_additional_cost(false), 2_000);
+        assert_eq!(t14.gas_cold_storage_additional_cost(true), 2_000);
+        assert_eq!(t15.gas_cold_storage_additional_cost(false), 2_000);
+        assert_eq!(t15.gas_cold_storage_additional_cost(true), 1_000);
+        assert_eq!(t14.gas_cold_account_additional_cost(false), 2_500);
+        assert_eq!(t14.gas_cold_account_additional_cost(true), 2_500);
+        assert_eq!(t15.gas_cold_account_additional_cost(false), 2_500);
+        assert_eq!(t15.gas_cold_account_additional_cost(true), 1_000);
     }
 }

@@ -1,10 +1,8 @@
 use crate::{
     TempoBlockEnv, TempoEvmTypes, tempo_tx_registry,
-    test_utils::{TestExecutorBuilder, test_chainspec},
+    test_utils::{TestExecutorBuilder, test_chainspec, test_tx_envelope},
 };
-use alloy_consensus::{
-    SignableTransaction, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered,
-};
+use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
 use alloy_sol_types::{SolCall, SolError};
@@ -42,7 +40,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{
-    AASigned, TempoEvmKind, TempoTransaction, TempoTxEnvelope,
+    AASigned, TempoEvmKind, TempoTransaction, TempoTxEnvelope, TempoTxType,
     transaction::{
         AccountSignature, KeyAuthorization, KeychainSignature, SignatureType,
         TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization,
@@ -4700,13 +4698,16 @@ fn test_fee_fallback_records_affordability_instead_of_exact_balances(
     Ok(())
 }
 
-#[test_case(TempoHardfork::T14, 0)]
-#[test_case(TempoHardfork::T15, 0)]
-#[test_case(TempoHardfork::T15, 1)]
-#[test_case(TempoHardfork::T15, 2)]
-#[test_case(TempoHardfork::T15, 4)]
-#[test_case(TempoHardfork::T15, 0x76)]
-fn test_handler_selects_payment_gas_params(spec: TempoHardfork, tx_type: u8) -> eyre::Result<()> {
+#[test_case(TempoHardfork::T14, TempoTxType::Legacy)]
+#[test_case(TempoHardfork::T15, TempoTxType::Legacy)]
+#[test_case(TempoHardfork::T15, TempoTxType::Eip2930)]
+#[test_case(TempoHardfork::T15, TempoTxType::Eip1559)]
+#[test_case(TempoHardfork::T15, TempoTxType::Eip7702)]
+#[test_case(TempoHardfork::T15, TempoTxType::AA)]
+fn test_handler_selects_payment_gas_params(
+    spec: TempoHardfork,
+    tx_type: TempoTxType,
+) -> eyre::Result<()> {
     let caller = Address::repeat_byte(0x11);
     let mut evm = configured_evm(spec, 0, false, InMemoryDB::default());
     let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
@@ -4733,60 +4734,13 @@ fn test_handler_selects_payment_gas_params(spec: TempoHardfork, tx_type: u8) -> 
         } else {
             Bytes::new()
         };
-        let signature = alloy_primitives::Signature::test_signature();
-        let envelope = match tx_type {
-            0 => TempoTxEnvelope::Legacy(
-                TxLegacy {
-                    chain_id: Some(1),
-                    gas_limit: 1_000_000,
-                    to: TxKind::Call(to),
-                    input,
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            1 => TempoTxEnvelope::Eip2930(
-                TxEip2930 {
-                    chain_id: 1,
-                    gas_limit: 1_000_000,
-                    to: TxKind::Call(to),
-                    input,
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            2 => TempoTxEnvelope::Eip1559(
-                TxEip1559 {
-                    chain_id: 1,
-                    gas_limit: 1_000_000,
-                    to: TxKind::Call(to),
-                    input,
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            4 => TempoTxEnvelope::Eip7702(
-                TxEip7702 {
-                    chain_id: 1,
-                    gas_limit: 1_000_000,
-                    to,
-                    input,
-                    ..Default::default()
-                }
-                .into_signed(signature),
-            ),
-            0x76 => TempoTxEnvelope::AA(AASigned::new_unhashed(
-                TxBuilder::new().call(to, &input).build(),
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-            )),
-            _ => unreachable!(),
-        };
+        let envelope = test_tx_envelope(tx_type, to, input, Default::default());
         assert_eq!(envelope.is_payment_v3(), is_payment);
         let tx = Recovered::new_unchecked(
             TempoTxEnv::from(Recovered::new_unchecked(envelope, caller)),
             caller,
         );
-        if tx_type == 4 {
+        if tx_type == TempoTxType::Eip7702 {
             assert!(matches!(
                 evm.validate_tx(&tx),
                 Err(evm2::registry::HandlerError::EmptyAuthorizationList)
@@ -4800,7 +4754,7 @@ fn test_handler_selects_payment_gas_params(spec: TempoHardfork, tx_type: u8) -> 
             expected[GasId::ColdAccountAdditionalCost] = 1_000;
         }
         assert_eq!(evm.version().gas_params, expected);
-        if tx_type != 4 {
+        if tx_type != TempoTxType::Eip7702 {
             let result = evm.transact(&tx)?.detach();
             assert!(result.result.status, "{:?}", result.result);
         }
