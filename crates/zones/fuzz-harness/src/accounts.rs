@@ -100,7 +100,7 @@ impl AccountChecks {
             return;
         };
         let anchor = zone.anchor().number;
-        let tempo = Tempo::new(anchor, l1.commitments(&self.watched));
+        let tempo = Tempo::new(anchor, l1.commitments(&self.watched, anchor));
         let post = Mirror::new(zone, Some(tempo)).expect("Tempo is read at the zone's anchor");
         let fork = Some(&state.env().spec);
         report.run(Mirror::CHECKS, &post, fork);

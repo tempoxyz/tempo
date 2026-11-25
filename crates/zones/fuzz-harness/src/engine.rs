@@ -2,11 +2,14 @@
 //! transactions its sequencer opens and closes every block with.
 
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::{Arc, LazyLock},
 };
 
-use alloy_consensus::{Header, SignableTransaction as _, TxLegacy, transaction::Recovered};
+use alloy_consensus::{
+    Header, Sealable as _, SignableTransaction as _, TxLegacy, transaction::Recovered,
+};
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::SolCall;
@@ -19,11 +22,13 @@ use tempo_contracts::{
     zones::{IZoneInbox, IZoneOutbox, tempo_state::TempoState},
 };
 use tempo_evm::TempoEvm;
-use tempo_fuzz_engine::{Chain, Engine, Rejection, StepState, chain_spec_on, genesis_cache};
+use tempo_fuzz_engine::{
+    Anchor, Chain, Engine, Rejection, StepState, chain_spec_on, genesis_cache,
+};
 use tempo_fuzz_types::{ChainSpecInput, ErrorClass, HarnessInputKind, InvariantInfo};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    tip20::is_tip20_prefix,
+    storage::account_config_commitment, tip20::is_tip20_prefix,
 };
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
@@ -32,7 +37,9 @@ use tempo_primitives::{
 use zone_chainspec::ZoneChainSpec;
 use zone_evm::ZoneEvmConfig;
 use zone_precompiles::{
-    L1StateError, L1StorageReader, ecies::AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE,
+    L1StateError, L1StorageReader,
+    ecies::AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE,
+    tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
 };
 use zone_primitives::constants::{
     TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, decode_zone_chain_id,
@@ -61,17 +68,40 @@ static GENESIS_SPEC: LazyLock<TempoChainSpec> =
 #[derive(Debug, Clone)]
 pub struct Zone {
     l1: L1,
+    /// The zone genesis, anchored to the Tempo genesis on a Tempo chain.
+    genesis: Cow<'static, Cache>,
     /// The TIP-1154 account checks, over the zone's system contracts, `watched` and the accounts
     /// `l1` commits to.
     accounts: AccountChecks,
 }
 
 impl Zone {
-    /// A zone that reads `l1` at every anchor, its account checks watching `watched`.
-    pub fn new(l1: L1StateInput, watched: impl IntoIterator<Item = Address>) -> Self {
-        let l1 = L1(Arc::new(l1));
+    /// A zone that reads `l1`, its account checks watching `watched`.
+    pub fn new(l1: L1, watched: impl IntoIterator<Item = Address>) -> Self {
+        let genesis = match &l1 {
+            L1::State(_) => Cow::Borrowed(&*GENESIS_STATE),
+            // The zone starts anchored to the Tempo genesis.
+            L1::Chain(chain) => {
+                let mut genesis = GENESIS_STATE.clone();
+                let hash = chain.anchors[0].header().hash_slow();
+                genesis
+                    .storage
+                    .entry(TEMPO_STATE_ADDRESS)
+                    .or_default()
+                    .slots
+                    .extend([
+                        (TEMPO_BLOCK_HASH, hash.into()),
+                        (TEMPO_BLOCK_NUMBER_SLOT, U256::ZERO),
+                    ]);
+                Cow::Owned(genesis)
+            }
+        };
         let accounts = AccountChecks::new(&l1, watched);
-        Self { l1, accounts }
+        Self {
+            l1,
+            genesis,
+            accounts,
+        }
     }
 }
 
@@ -109,7 +139,7 @@ impl Engine for Zone {
     }
 
     fn genesis(&self) -> &Cache {
-        &GENESIS_STATE
+        &self.genesis
     }
 
     fn check_step(&self, state: &StepState<'_, Self::EvmConfig>, report: &mut Report) {
@@ -170,15 +200,22 @@ impl Engine for Zone {
         )?
         .checked_add(1)
         .ok_or_else(|| BlockValidationError::msg("the next Tempo block number overflows"))?;
-        let tempo = TempoHeader {
-            inner: Header {
-                number,
-                parent_hash,
-                timestamp: header.inner.timestamp,
+        let tempo = match &self.l1 {
+            L1::State(_) => TempoHeader {
+                inner: Header {
+                    number,
+                    parent_hash,
+                    timestamp: header.inner.timestamp,
+                    ..Default::default()
+                },
+                timestamp_millis_part: header.timestamp_millis_part,
                 ..Default::default()
             },
-            timestamp_millis_part: header.timestamp_millis_part,
-            ..Default::default()
+            L1::Chain(chain) => chain
+                .anchor(number)
+                .ok_or_else(|| BlockValidationError::msg("no Tempo block to advance to"))?
+                .header()
+                .clone(),
         };
         Ok(vec![advance_tempo_tx(&tempo, evm.version().chain_id)])
     }
@@ -220,28 +257,68 @@ impl Engine for Zone {
     }
 }
 
-/// Tempo L1 as an input describes it: the same storage at every block.
+/// The Tempo L1 a zone reads.
 #[derive(Debug, Clone)]
-pub struct L1(Arc<L1StateInput>);
+pub enum L1 {
+    /// The same storage at every block.
+    State(Arc<L1StateInput>),
+    /// A Tempo chain the harness executed, read at each block.
+    Chain(Arc<L1Chain>),
+}
+
+/// A Tempo chain the harness executed, which a zone reads.
+#[derive(Debug)]
+pub struct L1Chain {
+    /// The genesis, then each block that applied, by number.
+    anchors: Vec<Anchor>,
+}
+
+impl L1Chain {
+    /// Tempo block `number`, `None` past the last that applied.
+    fn anchor(&self, number: u64) -> Option<&Anchor> {
+        self.anchors.get(usize::try_from(number).ok()?)
+    }
+}
 
 impl L1 {
-    /// The accounts L1 holds a nonzero commitment for.
-    pub(crate) fn committed(&self) -> impl Iterator<Item = Address> + '_ {
-        self.0
-            .commitments
-            .iter()
-            .filter(|(_, commitment)| !commitment.is_zero())
-            .map(|(address, _)| *address)
+    /// The L1 `input` describes: the same storage at every block.
+    pub fn state(input: L1StateInput) -> Self {
+        Self::State(Arc::new(input))
     }
 
-    /// The commitment of each of `accounts`, zero for one L1 holds none for.
-    pub(crate) fn commitments(&self, accounts: &[Address]) -> BTreeMap<Address, B256> {
+    /// A Tempo chain's `anchors`, from its genesis.
+    pub fn chain(anchors: Vec<Anchor>) -> Self {
+        assert!(!anchors.is_empty(), "a Tempo chain has a genesis");
+        Self::Chain(Arc::new(L1Chain { anchors }))
+    }
+
+    /// The accounts L1 holds a nonzero commitment for, at any block.
+    pub(crate) fn committed(&self) -> Vec<Address> {
+        match self {
+            Self::State(state) => state
+                .commitments
+                .iter()
+                .filter(|(_, commitment)| !commitment.is_zero())
+                .map(|(address, _)| *address)
+                .collect(),
+            Self::Chain(chain) => chain
+                .anchors
+                .iter()
+                .flat_map(|anchor| {
+                    anchor.accounts().filter_map(|(address, info)| {
+                        let commitment = account_config_commitment(info, anchor.spec()).ok()?;
+                        (!commitment.is_zero()).then_some(*address)
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    /// The commitment of each of `accounts` at block `number`, leaving out those L1 cannot read.
+    pub(crate) fn commitments(&self, accounts: &[Address], number: u64) -> BTreeMap<Address, B256> {
         accounts
             .iter()
-            .map(|account| {
-                let commitment = self.0.commitments.get(account).copied();
-                (*account, commitment.unwrap_or_default())
-            })
+            .filter_map(|account| Some((*account, self.read_l1_commitment(*account, number).ok()?)))
             .collect()
     }
 }
@@ -251,27 +328,51 @@ impl L1StorageReader for L1 {
         &self,
         account: Address,
         slot: B256,
-        _block_number: u64,
+        block_number: u64,
     ) -> Result<B256, L1StateError> {
-        let value = self
-            .0
-            .storage
-            .get(&account)
-            .and_then(|slots| slots.get(&U256::from_be_bytes(slot.0)));
-        Ok(value.copied().map(B256::from).unwrap_or_default())
+        match self {
+            Self::State(state) => {
+                let value = state
+                    .storage
+                    .get(&account)
+                    .and_then(|slots| slots.get(&U256::from_be_bytes(slot.0)));
+                Ok(value.copied().map(B256::from).unwrap_or_default())
+            }
+            Self::Chain(chain) => match chain.anchor(block_number) {
+                Some(anchor) => Ok(anchor.storage(&account, slot)),
+                None => Err(L1StateError::StorageUnavailable {
+                    account,
+                    slot,
+                    block_number,
+                    reason: "no such Tempo block".to_string(),
+                }),
+            },
+        }
     }
 
     fn read_l1_commitment(
         &self,
         account: Address,
-        _block_number: u64,
+        block_number: u64,
     ) -> Result<B256, L1StateError> {
-        Ok(self
-            .0
-            .commitments
-            .get(&account)
-            .copied()
-            .unwrap_or_default())
+        match self {
+            Self::State(state) => Ok(state.commitments.get(&account).copied().unwrap_or_default()),
+            Self::Chain(chain) => {
+                let unavailable = |reason| L1StateError::AccountUnavailable {
+                    account,
+                    block_number,
+                    reason,
+                };
+                let anchor = chain
+                    .anchor(block_number)
+                    .ok_or_else(|| unavailable("no such Tempo block".to_string()))?;
+                match anchor.account(&account) {
+                    Some(info) => account_config_commitment(info, anchor.spec())
+                        .map_err(|err| unavailable(err.to_string())),
+                    None => Ok(B256::ZERO),
+                }
+            }
+        }
     }
 }
 
@@ -337,6 +438,6 @@ mod tests {
     #[test_case(PATH_USD_ADDRESS, ITIP20::totalSupplyCall {}.abi_encode() => Address::ZERO)]
     #[test_case(ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain::getKeyCall { account: OWNER, keyId: OTHER }.abi_encode() => OWNER)]
     fn views_run_as_the_account_a_scoped_getter_reads(target: Address, data: Vec<u8>) -> Address {
-        Zone::new(L1StateInput::default(), []).view_caller(target, &data)
+        Zone::new(L1::state(L1StateInput::default()), []).view_caller(target, &data)
     }
 }

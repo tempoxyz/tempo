@@ -10,7 +10,7 @@ use tempo_contracts::{
     precompiles::{ITIP20, PATH_USD_ADDRESS},
     zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
 };
-use tempo_fuzz_engine::{Engine, ffi::bincode_options};
+use tempo_fuzz_engine::{Engine, Rejection, ffi::bincode_options};
 use tempo_fuzz_types::{
     AccountInput, BlockContextInput, BlockHeaderInput, ChainSpecInput, ErrorClass, FUZZ_ACCEPT,
     PreState, StateInput, TYPED_HARNESS_SCHEMA_VERSION, TempoBlock, TempoBlockchainInput,
@@ -27,7 +27,7 @@ use test_case::test_case;
 use zone_precompiles::tempo_state::TEMPO_BLOCK_NUMBER_SLOT;
 use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
-use crate::{L1StateInput, Zone, ZoneHarnessInput, engine::GENESIS, run};
+use crate::{L1Input, L1StateInput, Zone, ZoneHarnessInput, engine::GENESIS, run};
 
 const ZONE_ID: u32 = 1;
 const SENDER: Address = address!("00000000000000000000000000000000000000a1");
@@ -161,8 +161,10 @@ fn execute(
     blocks: Vec<Vec<Bytes>>,
 ) -> TempoExecutionOutcome {
     let input = TempoHarnessInput::Blockchain(blockchain(fork, blocks));
-    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(ZoneHarnessInput { l1, input })
-    else {
+    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(ZoneHarnessInput {
+        l1: L1Input::State(l1),
+        input,
+    }) else {
         panic!("a blockchain input has a blockchain outcome");
     };
     assert_eq!(rejection, None);
@@ -309,7 +311,7 @@ fn inputs_the_zone_node_would_not_execute_are_stopped(
     input: TempoHarnessInput,
 ) -> (ErrorClass, String) {
     let (outcome, rejection) = run(ZoneHarnessInput {
-        l1: l1(true),
+        l1: L1Input::State(l1(true)),
         input,
     });
     let error = match outcome {
@@ -365,7 +367,7 @@ fn zone_account_checks_start_at_t14() {
 #[test]
 fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
     let input = ZoneHarnessInput {
-        l1: l1(true),
+        l1: L1Input::State(l1(true)),
         input: TempoHarnessInput::Blockchain(blockchain(
             TempoHardfork::T15,
             vec![vec![transfer(0, RECIPIENT, 100)]],
@@ -426,4 +428,113 @@ fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
         Some(&TempoHardfork::T13),
         "zones launched on T13"
     );
+}
+
+/// A Tempo chain of `blocks` empty blocks at `fork`, the chain the test zone belongs to.
+fn tempo_chain(fork: TempoHardfork, blocks: usize) -> TempoBlockchainInput {
+    TempoBlockchainInput {
+        chain_spec: ChainSpecInput {
+            chain_id: 1_337,
+            ..chain(fork)
+        },
+        pre_state: PreState::Genesis(StateInput::default()),
+        blocks: (0..blocks)
+            .map(|index| TempoBlock {
+                header: BlockHeaderInput::Context(context(fork, index as u64)),
+                txs: Vec::new(),
+                senders: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("at least one Tempo block"),
+    }
+}
+
+/// `zone`'s blocks on the Tempo chain `tempo`.
+fn on_chain(
+    tempo: TempoBlockchainInput,
+    zone: TempoBlockchainInput,
+) -> (TempoExecutionOutcome, Option<Rejection>) {
+    let input = ZoneHarnessInput {
+        l1: L1Input::Chain(tempo),
+        input: TempoHarnessInput::Blockchain(zone),
+    };
+    let (TempoHarnessOutcome::Blockchain(outcome), rejection) = run(input) else {
+        panic!("a blockchain input has a blockchain outcome");
+    };
+    (outcome, rejection)
+}
+
+#[test]
+fn a_zone_on_a_tempo_chain_imports_each_tempo_block() {
+    let (outcome, rejection) = on_chain(
+        tempo_chain(TempoHardfork::T15, 3),
+        blockchain(
+            TempoHardfork::T15,
+            vec![vec![], vec![transfer(0, RECIPIENT, 100)]],
+        ),
+    );
+    assert_eq!(rejection, None);
+    assert!(
+        outcome.invariant_failures.is_empty(),
+        "{:#?}",
+        outcome.invariant_failures
+    );
+    // Each zone block opens by importing the next Tempo block's real header, which advanceTempo
+    // accepts only as the child of the one before.
+    let receipts = receipts(&outcome);
+    assert_eq!(receipts[0], ADVANCED);
+    assert_eq!(receipts[1], ADVANCED);
+    let number = outcome
+        .final_state
+        .accounts
+        .get(&TEMPO_STATE_ADDRESS)
+        .and_then(|account| account.storage.get(&TEMPO_BLOCK_NUMBER_SLOT))
+        .copied();
+    assert_eq!(
+        number,
+        Some(U256::from(2)),
+        "the zone is anchored to Tempo block 2"
+    );
+    // Tempo's invariants are counted with the zone's.
+    assert!(outcome.invariant_counts["TEMPO-FEE-VIEW"].evaluated > 0);
+    // The zone's account checks read Tempo at each anchor.
+    assert!(outcome.invariant_counts["TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR"].armed > 0);
+}
+
+#[test]
+fn a_zone_needs_a_tempo_chain_it_belongs_to_and_can_anchor_to() {
+    let zone = blockchain(TempoHardfork::T15, vec![vec![], vec![]]);
+    let other = TempoBlockchainInput {
+        chain_spec: ChainSpecInput {
+            chain_id: 1_338,
+            ..chain(TempoHardfork::T15)
+        },
+        ..tempo_chain(TempoHardfork::T15, 2)
+    };
+    let short = tempo_chain(TempoHardfork::T15, 1);
+    let exact = TempoBlockchainInput {
+        pre_state: PreState::Exact {
+            state: StateInput::default(),
+            block_hashes: Default::default(),
+        },
+        ..tempo_chain(TempoHardfork::T15, 2)
+    };
+    for (tempo, why) in [
+        (
+            other,
+            "the zone chain ID is not one of the Tempo chain's zones",
+        ),
+        (short, "more zone blocks than Tempo blocks"),
+        (
+            exact,
+            "an anchored chain needs a genesis pre-state and context headers",
+        ),
+    ] {
+        let (outcome, rejection) = on_chain(tempo, zone.clone());
+        assert_eq!(outcome.error, ErrorClass::InvalidInput, "{why}");
+        assert!(outcome.receipts.is_empty(), "{why}");
+        let reason = rejection.expect("a rejection explains the error");
+        assert!(reason.reason().ends_with(why), "{}", reason.reason());
+    }
 }

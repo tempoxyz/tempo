@@ -9,6 +9,7 @@
 //! cdylib, or a chain built on Tempo's EVM, such as a zone, which implements [`Engine`] and gets the
 //! same inputs, outcomes and invariants. Each harness exports the shared C ABI with [`ffi`].
 
+mod anchor;
 mod chain;
 pub mod crypto;
 mod engine;
@@ -19,9 +20,10 @@ mod rejection;
 mod state;
 mod step;
 
+pub use anchor::Anchor;
 pub use chain::chain_spec_on;
 pub use engine::{BlockConsensus, Chain, Engine, EvmConfig, Tempo};
-pub use execute::run;
+pub use execute::{execute_anchored, run};
 pub use invariants::{infos as invariant_infos, observed};
 pub use rejection::Rejection;
 pub use state::genesis_cache;

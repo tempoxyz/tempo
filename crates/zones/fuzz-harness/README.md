@@ -10,12 +10,23 @@ cargo build -p zone-fuzz-harness --release
 ```
 
 An input is a `ZoneHarnessInput`: a `TempoHarnessInput` whose chain ID is a
-zone chain ID, with the Tempo L1 storage the zone reads (the portal's
-TIP-1160 transfer opt-in and token configuration, TIP-20 pause flags, the
-TIP-1022 address registry, TIP-1108 commitments). Blocks execute with the zone
-node's `ZoneEvmConfig` and block executor, after its consensus checks, from the
-zone dev genesis, on hardforks T13 and later; `Transaction` inputs are not
-supported.
+zone chain ID, with the Tempo L1 the zone reads, one of:
+
+- `State`: fixed L1 storage and TIP-1108 commitments (the portal's TIP-1160
+  transfer opt-in and token configuration, TIP-20 pause flags, the TIP-1022
+  address registry), the same at every L1 block. Each zone block imports a
+  header made up as the child of the last.
+- `Chain`: a Tempo chain from its genesis, which the harness executes first
+  with the Tempo engine. Zone block `i` imports Tempo block `i`'s header and
+  reads Tempo's state after it, as a sequencer anchors each zone block to the
+  next Tempo block, so the zone sees what Tempo transactions did. The zone
+  takes the chain's hardfork schedule and its blocks' timestamps, and may have
+  no more blocks than the chain; what the chain breaks is reported with its
+  subjects prefixed `on Tempo:`.
+
+Blocks execute with the zone node's `ZoneEvmConfig` and block executor, after
+its consensus checks, from the zone dev genesis, on hardforks T13 and later;
+`Transaction` inputs are not supported.
 
 A block whose header the harness builds opens with the `advanceTempo` system
 transaction the sequencer adds, and closes with `finalizeWithdrawalBatch` when
