@@ -29,9 +29,9 @@ pub use types::*;
 
 /// Checks that `node_pool` proves every Tempo read from `state_root`, as the SPF reads it.
 /// `slot` is `None` for an account-only read.
-pub fn verify_tempo_reads(
+pub fn verify_tempo_reads<'a>(
     state_root: B256,
-    node_pool: &[Bytes],
+    node_pool: impl IntoIterator<Item = &'a Bytes>,
     reads: impl IntoIterator<Item = (Address, Option<B256>)>,
 ) -> Result<(), StatelessSparseTrieError> {
     let nodes = mpt::WitnessNodes::decode(node_pool)?;
