@@ -1,18 +1,21 @@
 //! Configurable account checks: the signatures' authority and the accounts' leaves.
 
-use super::{Reader, StepEffects, all};
+use super::{Reader, StepEffects};
 use crate::{
     engine::Engine,
     state::{Db, Net},
 };
 use alloy_primitives::{Address, B256};
 use evm2::evm::{AccountInfo, Database as _};
-use invariants_core::Report;
+use invariants_core::{Checked, Report};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS};
-use tempo_invariants::configurable_account::{
-    Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role, VIEW,
-    delegate_grants, spec,
+use tempo_invariants::{
+    Tx,
+    configurable_account::{
+        Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role,
+        VIEW, delegate_grants, spec,
+    },
 };
 use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::{
@@ -23,9 +26,8 @@ use tempo_primitives::{
 };
 
 /// What `tx`'s signatures authorize it for; signers that don't recover are left out.
-pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> Authority {
+pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address) -> Authority {
     let mut authority = Authority {
-        active,
         authorization_list: tx.authorization_list().is_some_and(|list| !list.is_empty())
             || tx
                 .tempo_authorization_list()
@@ -96,25 +98,25 @@ pub(super) fn check(
     reader: &Reader<'_, impl Engine>,
     db: &Db,
     effects: &StepEffects<'_>,
+    tx: &Tx,
     report: &mut Report,
 ) {
-    let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, effects.logs, &effects.tx);
+    let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, &effects.logs, tx);
     let mut accounts: Vec<Address> = effects
         .net
         .addresses()
         .copied()
-        .chain([effects.tx.sender])
-        .chain(effects.tx.authority.accounts())
+        .chain([tx.sender])
+        .chain(tx.authority.accounts())
         .chain(delegates.iter().map(|g| g.delegate))
         .collect();
     accounts.sort_unstable();
     accounts.dedup();
-    let admins = effects.tx.authority.admin_queries(effects.tx.sender);
-    let keys: Vec<_> = effects
-        .tx
+    let admins = tx.authority.admin_queries(tx.sender);
+    let keys: Vec<_> = tx
         .authority
         .access_keys()
-        .map(|(key, _)| (effects.tx.sender, key))
+        .map(|(key, _)| (tx.sender, key))
         .collect();
     let at = At {
         precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
@@ -133,10 +135,10 @@ pub(super) fn check(
                 Some((address, LeafChange { before, after }))
             })
             .collect(),
-        tx: effects.tx.clone(),
+        tx: tx.clone(),
         delegates,
     };
-    report.run_any(all(), &leaves);
+    report.run(Leaves::CHECKS, &leaves, reader.fork());
 }
 
 /// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.

@@ -1059,7 +1059,7 @@ async fn submit_withdrawals(
     for (offset, amount) in amounts.iter().copied().enumerate() {
         pending.push(
             outbox
-                .requestWithdrawal(
+                .requestWithdrawal_0(
                     PATH_USD_ADDRESS,
                     dev_address,
                     amount,
@@ -1439,7 +1439,7 @@ async fn test_withdrawal_request_rejects_over_max_callback_gas() -> eyre::Result
     let max_callback_gas = outbox.MAX_WITHDRAWAL_GAS_LIMIT().call().await?;
 
     let withdrawal_pending = outbox
-        .requestWithdrawal(
+        .requestWithdrawal_0(
             PATH_USD_ADDRESS,
             dev_address,
             250_000,

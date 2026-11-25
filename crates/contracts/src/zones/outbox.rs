@@ -43,7 +43,7 @@ crate::sol! {
             bytes revealTo
         );
 
-        /// Emitted after `WithdrawalRequested` when the sender is in an org other than 0.
+        /// Emitted after `WithdrawalRequested` when the withdrawal reveals an org other than 0.
         event WithdrawalSenderOrg(uint64 indexed withdrawalIndex, uint64 senderOrg);
 
         event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
@@ -69,6 +69,7 @@ crate::sol! {
         error InvalidCurrentTxHash();
         error ZeroAmountWithdrawal();
         error StaticCallNotAllowed();
+        error OrgRevealRequiresCallback();
 
         // -- View functions --
 
@@ -102,11 +103,37 @@ crate::sol! {
             bytes calldata data,
             bytes calldata revealTo
         ) external;
+        function requestWithdrawal(
+            address token,
+            address to,
+            uint128 amount,
+            bytes32 memo,
+            uint64 gasLimit,
+            address zoneFallbackRecipient,
+            bytes calldata data,
+            bytes calldata revealTo,
+            bool revealOrg
+        ) external;
         function enqueueDepositBounceBack(
             address token,
             uint128 amount,
             address tempoRefundRecipient
         ) external;
         function finalizeWithdrawalBatch(uint256 count, uint64 blockNumber, bytes[] calldata encryptedSenders) external returns (bytes32 withdrawalQueueHash);
+    }
+}
+
+impl From<IZoneOutbox::requestWithdrawal_1Call> for IZoneOutbox::requestWithdrawal_0Call {
+    fn from(call: IZoneOutbox::requestWithdrawal_1Call) -> Self {
+        Self {
+            token: call.token,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+            gasLimit: call.gasLimit,
+            zoneFallbackRecipient: call.zoneFallbackRecipient,
+            data: call.data,
+            revealTo: call.revealTo,
+        }
     }
 }

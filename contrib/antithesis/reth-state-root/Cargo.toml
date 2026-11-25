@@ -34,6 +34,7 @@ reth-tasks = { workspace = true, features = ["rayon", "test-utils"] }
 reth-trie.workspace = true
 reth-trie-db.workspace = true
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-rlp.workspace = true
 alloy-trie.workspace = true

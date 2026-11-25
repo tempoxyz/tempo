@@ -231,6 +231,43 @@ impl FeeTokenResolver for TempoFeeManager {
     }
 }
 
+/// Returns the token a transaction without a fee token or preference pays with if it is a valid
+/// fee token: the called TIP-20, or a Stablecoin DEX swap's `tokenIn`. `None` means no inference.
+pub fn fee_token_inference_target(
+    tx: &impl TempoTx,
+    fee_payer: Address,
+    spec: TempoHardfork,
+) -> Option<Address> {
+    let mut calls = tx.calls();
+    let (kind, input) = calls.next()?;
+    let to = *kind.to()?;
+
+    // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
+    // use the input token as the fee token (the token that will be pulled from the user).
+    // For AA transactions, this only applies if there's exactly one call.
+    if to == STABLECOIN_DEX_ADDRESS {
+        if tx.is_aa() && calls.next().is_some() {
+            return None;
+        }
+        if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input) {
+            return Some(call.tokenIn);
+        }
+        if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input) {
+            return Some(call.tokenIn);
+        }
+        return None;
+    }
+
+    // Infer from the called TIP-20 for AA txs only when fee_payer == tx.origin.
+    if tx.is_aa() && fee_payer != tx.caller() {
+        return None;
+    }
+    // Otherwise, restricted to TIP-20 calls that move the called token.
+    tx.calls()
+        .all(|(kind, input)| kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input))
+        .then_some(to)
+}
+
 fn resolve_fee_token<S, M>(
     state: &mut S,
     tx: &TempoTxEnv,
@@ -269,40 +306,10 @@ where
         return Ok(ResolvedFeeToken::Selected(user_token));
     }
 
-    // Check if the fee can be inferred from the TIP20 token being called
-    if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
-        // AA txs only when fee_payer == tx.origin.
-        let can_infer_tip20 = if tx.is_aa() && fee_payer != tx.caller() {
-            false
-        } else {
-            // Otherwise, restricted to TIP-20 calls that move the called token.
-            tx.calls().all(|(kind, input)| {
-                kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
-            })
-        };
-
-        if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
-            return Ok(ResolvedFeeToken::Selected(to));
-        }
-    }
-
-    // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
-    // use the input token as the fee token (the token that will be pulled from the user).
-    // For AA transactions, this only applies if there's exactly one call.
-    let mut calls = tx.calls();
-    if let Some((kind, input)) = calls.next()
-        && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-        && (!tx.is_aa() || calls.next().is_none())
+    if let Some(token) = fee_token_inference_target(tx, fee_payer, spec)
+        && state.is_valid_fee_token(spec, token, actions.clone())?
     {
-        if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-        {
-            return Ok(ResolvedFeeToken::Selected(call.tokenIn));
-        } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-        {
-            return Ok(ResolvedFeeToken::Selected(call.tokenIn));
-        }
+        return Ok(ResolvedFeeToken::Selected(token));
     }
 
     if !spec.is_t13() || max_fee.is_zero() {

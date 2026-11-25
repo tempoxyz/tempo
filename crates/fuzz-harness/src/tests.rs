@@ -102,7 +102,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
         "InvalidInput/HarnessInput: harness input does not decode"
     );
 
-    let mut out = vec![0; 1024];
+    let mut out = vec![0; 1 << 16];
     let mut written = 0;
     let status =
         unsafe { crate::tempo_fuzz_capabilities_v1(out.as_mut_ptr(), out.len(), &mut written) };
@@ -111,6 +111,37 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
         bincode_options().deserialize(&out[..written]).unwrap();
     assert_eq!(capabilities.schema_version, TYPED_HARNESS_SCHEMA_VERSION);
     assert_eq!(capabilities.implementation, "tempo");
+    let info = |id: &str| {
+        capabilities
+            .invariants
+            .iter()
+            .find(|info| info.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the catalog"))
+    };
+    // The keychain and receive-policy checks are not run here, so they are not listed.
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.id.starts_with("TEMPO-KEYCHAIN-")
+                && !info.id.starts_with("TEMPO-RECEIVE-"))
+    );
+    let retired = info("TEMPO-ACCOUNT-ROOT-KEY-RETIRED");
+    assert_eq!(
+        (retired.since, retired.until, retired.tip.as_deref()),
+        (Some(TempoHardfork::T14), None, Some("TIP-1113"))
+    );
+    assert_eq!(
+        info("TEMPO-ACCOUNT-FORK-GATED").until,
+        Some(TempoHardfork::T14)
+    );
+    assert!(!info("TEMPO-FEE-VIEW").doc.is_empty());
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.doc.is_empty())
+    );
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS

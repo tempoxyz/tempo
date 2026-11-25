@@ -82,11 +82,23 @@ pub unsafe fn capabilities<E: Engine>(
             .to_vec()
             .try_into()
             .expect("an engine supports inputs"),
+        invariants: crate::invariants::catalog::<E>(),
     };
     let Ok(bytes) = bincode_options().serialize(&capabilities) else {
         return FUZZ_REJECT;
     };
     unsafe { write_output(out_ptr, out_len, out_written, &bytes) }
+}
+
+/// Makes every check also accept [`tempo_primitives::crypto::mock`] signatures, if no input ran
+/// yet, as `tempo_fuzz_enable_mock_crypto_v1` does. Returns the mock format's version, or 0 when
+/// mocks stay off.
+pub fn enable_mock_crypto() -> u32 {
+    if crate::crypto::enable() {
+        tempo_primitives::crypto::mock::VERSION
+    } else {
+        0
+    }
 }
 
 /// Writes why the last input this thread executed stopped short, as

@@ -22,7 +22,10 @@ use reth_evm::{
 };
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
-use tempo_chainspec::{hardfork::TempoHardforks as _, spec::TempoConsensusSpec};
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks as _},
+    spec::TempoConsensusSpec,
+};
 use tempo_evm::{TempoEvm, TempoEvmEnv, TempoInvalidTransaction};
 use tempo_fuzz_types::{
     BlockChanges, BlockHeaderInput, ChainSpecInput, ErrorClass, HarnessInputKind, InvariantFailure,
@@ -30,7 +33,7 @@ use tempo_fuzz_types::{
     TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput, TransactionOutcome, TxIndex,
     TxOutcome, TxReceiptOutput,
 };
-use tempo_invariants::Tx;
+use tempo_invariants::{Ran, Tx};
 use tempo_primitives::{Block, BlockBody, TempoReceipt, TempoTxEnvelope};
 
 use crate::{
@@ -61,6 +64,7 @@ pub fn run<E: Engine>(
     engine: &E,
     input: TempoHarnessInput,
 ) -> (TempoHarnessOutcome, Option<Rejection>) {
+    crate::crypto::settle();
     match input {
         TempoHarnessInput::Transaction(input) => {
             let (outcome, rejection) = transaction::<E>(&input);
@@ -184,7 +188,7 @@ fn execute<E: Engine>(
             &failed_logs,
         );
         if !invariant_failures.is_empty() {
-            let rejection = Rejection::new(ErrorClass::InvalidInput, Check::PreStateInvariants);
+            let rejection = Rejection::new(ErrorClass::BrokenPreState, Check::PreStateInvariants);
             let outcome = TempoExecutionOutcome {
                 invariant_failures,
                 ..stopped(rejection.class())
@@ -248,7 +252,7 @@ fn prepare<E: Engine>(
 /// after execution and every address in a log topic of `outcome`'s receipts (such as a holder whose
 /// balance only a transaction touched, or one `transferFrom` or `burnBlocked` moved without loading
 /// it). A pre-state that breaks one is not a reachable state, so nothing executed on it is a
-/// finding: the input is invalid, and these failures are reported at `Execution` scope. Only the
+/// finding: the outcome is `BrokenPreState`, with these failures at `Execution` scope. Only the
 /// accounts it lists can break one.
 fn broken_start<E: Engine>(
     engine: &E,
@@ -404,18 +408,21 @@ struct BlockOutputs {
 }
 
 impl BlockOutputs {
-    /// Adds the broken invariants and counted to `outcome`. Returns the receipts and changes.
+    /// Adds the broken invariants and counted to `outcome`, leaving out invariants that judged
+    /// nothing, such as one gated off at the block's hardfork. Returns the receipts and changes.
     fn report_into(
         self,
         outcome: &mut TempoExecutionOutcome,
     ) -> (Vec<TxReceiptOutput>, BlockChanges) {
         outcome.invariant_failures.extend(self.invariant_failures);
         for (id, counts) in self.invariant_report.counts {
-            outcome
-                .invariant_counts
-                .entry(id.into())
-                .or_default()
-                .add(counts);
+            if counts.evaluated > 0 {
+                outcome
+                    .invariant_counts
+                    .entry(id.into())
+                    .or_default()
+                    .add(counts);
+            }
         }
         (self.receipts, self.changes)
     }
@@ -484,6 +491,7 @@ fn execute_block<E: Engine>(
     };
     run.execute_txs(&mut executor, block)
         .map_err(|err| failed(&mut run, &err))?;
+    let (spec, env) = env(executor.evm());
     let output = executor.finish().map_err(|err| failed(&mut run, &err))?;
     let post_block = take(&run.hooked_updates);
     let net = Net::of(&post_block);
@@ -492,6 +500,24 @@ fn execute_block<E: Engine>(
     run.outputs.changes.post_block = state::changes(&net, &contracts);
     drop(cache);
     db.commit(&net, |hash| output.state.contracts.get(hash).cloned());
+    invariants::check(
+        engine,
+        db,
+        evm_config,
+        env,
+        &InvariantScope::PostBlock { block_index },
+        |_| true,
+        &[],
+        Some(invariants::StepEffects::new(
+            &net,
+            &[],
+            Ran::PostBlock,
+            spec,
+        )),
+        &run.view_cache,
+        &mut run.outputs.invariant_failures,
+        &mut run.outputs.invariant_report,
+    );
     run.state_updates.extend(post_block);
     Ok((run.state_updates, run.outputs))
 }
@@ -520,7 +546,7 @@ impl<E: Engine> BlockRun<'_, E> {
         let scope = InvariantScope::Block {
             block_index: self.block_index,
         };
-        self.outputs.changes.pre_block = self.step(executor, scope, None);
+        self.outputs.changes.pre_block = self.step(executor, scope, Ran::PreBlock, &[]);
 
         let header = block.recovered.header();
         let basefee = header.base_fee_per_gas();
@@ -564,8 +590,7 @@ impl<E: Engine> BlockRun<'_, E> {
     ) -> Result<StateChanges, BlockExecutionError> {
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
-        let spec = executor.evm().config_spec_id();
-        let authority = invariants::authority(tx.inner(), sender, spec.is_t14());
+        let authority = invariants::authority(tx.inner(), sender);
         let result = executor.execute_transaction_without_commit(tx)?;
         let execution = &result.result().result;
         let outcome = if execution.status {
@@ -606,17 +631,20 @@ impl<E: Engine> BlockRun<'_, E> {
             block_index: self.block_index,
             tx: index,
         };
-        let changes = self.step(executor, scope, Some((tx, &receipt.logs)));
+        let changes = self.step(executor, scope, Ran::Tx(tx), &receipt.logs);
         self.outputs.receipts.push(receipt);
         Ok(changes)
     }
 
-    /// Writes changes to the db, checks invariants at `scope`, and returns the step's changes.
+    /// Ends a step that ran `ran` and emitted `logs`: writes its changes to the db, checks
+    /// invariants at `scope`, reading again only the views that read what it changed, and returns
+    /// the step's changes.
     fn step<'e>(
         &mut self,
         executor: &impl BlockExecutor<Evm = TempoEvm<'e>>,
         scope: InvariantScope,
-        tx: Option<(Tx, &[Log])>,
+        ran: Ran,
+        logs: &[Log],
     ) -> StateChanges {
         let step = take(&self.hooked_updates);
         let net = Net::of(&step);
@@ -627,25 +655,16 @@ impl<E: Engine> BlockRun<'_, E> {
             let cache = self.db.cache.borrow();
             state::changes(&net, &Contracts(&[&overlay.contracts, &cache.contracts]))
         };
-        let is_tx = tx.is_some();
-        let selected = |contract: &_| !is_tx || net.contains(contract);
-        let evm = executor.evm();
-        let effects = tx.map(|(tx, logs)| invariants::StepEffects {
-            net: &net,
-            logs,
-            tx,
-            spec: evm.config_spec_id(),
-        });
-        let env = TempoEvmEnv::new_with_version(evm.config_spec_id(), *evm.block(), *evm.version());
+        let (spec, env) = env(executor.evm());
         invariants::check(
             self.engine,
             self.db,
             self.evm_config,
             env,
             &scope,
-            selected,
+            |_| true,
             &[],
-            effects,
+            Some(invariants::StepEffects::new(&net, logs, ran, spec)),
             &self.view_cache,
             &mut self.outputs.invariant_failures,
             &mut self.outputs.invariant_report,
@@ -653,6 +672,15 @@ impl<E: Engine> BlockRun<'_, E> {
         self.state_updates.extend(step);
         changes
     }
+}
+
+/// The hardfork and environment `evm` executes the block in.
+fn env(evm: &TempoEvm<'_>) -> (TempoHardfork, TempoEvmEnv) {
+    let spec = evm.config_spec_id();
+    (
+        spec,
+        TempoEvmEnv::new_with_version(spec, *evm.block(), *evm.version()),
+    )
 }
 
 /// The updates `hooked` holds, which it then no longer does.

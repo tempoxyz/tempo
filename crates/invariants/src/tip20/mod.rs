@@ -6,10 +6,10 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use alloy_primitives::{Address, Bytes, Log, LogData, U256};
-use alloy_sol_types::{SolCall, SolEvent};
+use alloy_primitives::{Address, Log, LogData, U256};
+use alloy_sol_types::SolEvent;
 
-use crate::{Observe, ObserveError, Replay, Views, decode, optional, or_text};
+use crate::{Batch, Observe, ObserveError, Replay, Views, optional, or_text};
 
 use tempo_contracts::precompiles::ITIP20::{Burn, BurnAt, BurnBlocked, Mint};
 
@@ -132,28 +132,19 @@ impl Observe for Ledger {
             token,
             holders: accounts,
         } = at;
-        let calls: Vec<(Address, Bytes)> = [
-            ITIP20::totalSupplyCall {}.abi_encode(),
-            ITIP20::supplyCapCall {}.abi_encode(),
-        ]
-        .into_iter()
-        .chain(
-            accounts
-                .iter()
-                .map(|&account| ITIP20::balanceOfCall { account }.abi_encode()),
-        )
-        .map(|input| (token, input.into()))
-        .collect();
-        let mut outputs = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
-        let supply = decode::<ITIP20::totalSupplyCall, _>(token, outputs.next())?;
-        let supply_cap = optional(
-            views,
-            decode::<ITIP20::supplyCapCall, _>(token, outputs.next()),
-        )?;
+        let mut batch = Batch::default();
+        let supply = batch.push(None, token, &ITIP20::totalSupplyCall {});
+        let supply_cap = batch.push(None, token, &ITIP20::supplyCapCall {});
+        let reads: Vec<_> = accounts
+            .iter()
+            .map(|&account| batch.push(None, token, &ITIP20::balanceOfCall { account }))
+            .collect();
+        let answers = batch.run(views)?;
+        let supply = answers.decode(&supply)?;
+        let supply_cap = optional(views, answers.decode(&supply_cap))?;
         let mut balances = BTreeMap::new();
-        for &account in accounts {
-            let balance = decode::<ITIP20::balanceOfCall, _>(token, outputs.next());
-            if let Some(balance) = optional(views, balance)? {
+        for (&account, read) in accounts.iter().zip(&reads) {
+            if let Some(balance) = optional(views, answers.decode(read))? {
                 balances.insert(account, balance);
             }
         }
