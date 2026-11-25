@@ -82,7 +82,7 @@ const NON_TRANSACTION_SIZE_ESTIMATE: usize = 2048;
 
 /// Ring indices whose expiring-nonce keys are hashed ahead of each build: more than a block of
 /// expiring-nonce transactions.
-const RING_HINT_WINDOW: usize = 65_536;
+const RING_HINT_WINDOW: usize = 8_192;
 
 /// Source of transactions for payload building.
 enum PayloadTransactions {
