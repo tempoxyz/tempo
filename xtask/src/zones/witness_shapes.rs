@@ -36,10 +36,13 @@ impl WitnessShapes {
                 .iter()
                 .map(|r| B256::from(r.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES)))
                 .collect();
-            let proof = provider
-                .get_proof(TIP403_REGISTRY_ADDRESS, slots)
-                .await
-                .wrap_err("failed to read registry proofs")?;
+            let proof = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                provider.get_proof(TIP403_REGISTRY_ADDRESS, slots),
+            )
+            .await
+            .wrap_err("timed out reading registry proofs")?
+            .wrap_err("failed to read registry proofs")?;
             for (recipient, storage) in recipients.into_iter().zip(proof.storage_proof) {
                 // A proof ends where its key diverges. Leaves this deep are never embedded, so a
                 // set slot ends at its leaf and an absent one at an extension or a branch.
