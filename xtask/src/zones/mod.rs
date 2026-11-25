@@ -116,7 +116,7 @@ async fn main() -> eyre::Result<()> {
         Action::WitnessShapes(args) => args
             .run()
             .await
-            .wrap_err("failed to shape registry witnesses"),
+            .wrap_err("failed to find registry witness shapes"),
         Action::ZoneInfo(args) => args.run().await.wrap_err("failed to fetch zone info"),
         Action::GenerateStateBloat(args) => args
             .run()
