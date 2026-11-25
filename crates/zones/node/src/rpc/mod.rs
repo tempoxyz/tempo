@@ -2801,6 +2801,7 @@ mod tests {
             let created = registry
                 .register_master(7, recipient, creator, B256::ZERO)
                 .unwrap();
+            const NOT_REGISTERED: &str = "masterId is not registered to the caller";
             let derive = |caller, master_id| {
                 derive_deposit_addresses(
                     7,
@@ -2822,9 +2823,12 @@ mod tests {
             assert_eq!(by_creator.addresses.len(), 2);
 
             // The creator can't derive the recipient's other master IDs, nor can anyone else.
-            assert!(derive(creator, plain).is_err());
-            assert!(derive(other, created).is_err());
-            assert!(derive(Address::ZERO, plain).is_err());
+            assert_eq!(derive(creator, plain).unwrap_err().message, NOT_REGISTERED);
+            assert_eq!(derive(other, created).unwrap_err().message, NOT_REGISTERED);
+            assert_eq!(
+                derive(Address::ZERO, plain).unwrap_err().message,
+                NOT_REGISTERED
+            );
             let own = derive(recipient, plain).unwrap();
             assert_eq!(own.creator, Address::ZERO);
             assert_ne!(own.addresses, by_creator.addresses);

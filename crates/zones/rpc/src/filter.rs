@@ -1159,7 +1159,12 @@ mod tests {
         // topic3 scopes only MasterRegistered.
         let mut transfers = Filter::default().event_signature(TRANSFER_TOPIC);
         transfers.topics[3] = FilterSet::from(caller.into_word());
-        assert!(scope_filter_to_account(&mut transfers, &caller).is_err());
+        assert_eq!(
+            scope_filter_to_account(&mut transfers, &caller)
+                .unwrap_err()
+                .message,
+            ACCOUNT_SCOPED_FILTER_ERROR
+        );
     }
 
     #[test]

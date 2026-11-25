@@ -229,13 +229,21 @@ mod tests {
             );
             request
         };
+        const REFUSED: &str = "registerMaster can only be simulated for the caller";
         let other = Address::repeat_byte(0x22);
         assert!(enforce_registration_recipient(&call(caller, Address::ZERO), caller).is_ok());
         assert!(enforce_registration_recipient(&call(other, caller), caller).is_ok());
-        assert!(enforce_registration_recipient(&call(other, Address::ZERO), caller).is_err());
-        assert!(
+        assert_eq!(
+            enforce_registration_recipient(&call(other, Address::ZERO), caller)
+                .unwrap_err()
+                .message,
+            REFUSED
+        );
+        assert_eq!(
             enforce_registration_recipient(&call(other, Address::repeat_byte(0x33)), caller)
-                .is_err()
+                .unwrap_err()
+                .message,
+            REFUSED
         );
     }
 }
