@@ -1046,7 +1046,7 @@ The RPC uses a default-deny model. Any method not explicitly listed returns `-32
 
 **Allowed.** `eth_chainId`, `eth_blockNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_feeHistory`, `eth_getBlockByNumber` and `eth_getBlockByHash` (without full transactions), `eth_syncing`, `eth_coinbase`, `net_version`, `net_listening`, `web3_clientVersion`, `web3_sha3`, `zone_getAuthorizationTokenInfo`, `zone_getZoneInfo`, and `zone_getEncryptionKey`.
 
-**Recipient-scoped.** `zone_deriveDepositAddresses` derives TIP-1094 deposit addresses only for a master ID registered to the authenticated account, from the last settled zone block.
+**Recipient-scoped.** `zone_deriveDepositAddresses` derives TIP-1094 deposit addresses only for a master ID whose recipient or registration-named creator is the authenticated account, from the last settled zone block. The response names the master ID's recipient and creator.
 
 Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price and `eth_maxPriorityFeePerGas` returns `0`.
 
@@ -1128,7 +1128,7 @@ operator RPC transports and the authenticated redacted RPC.
 | `zone_getAuthorizationTokenInfo` | Authenticated redacted RPC only | Returns the authenticated account address and token expiry |
 | `zone_getZoneInfo` | Operator RPC and authenticated redacted RPC | Returns `zoneId`, `isAccessEnforced`, `isGatewayOpen`, `zoneTokens`, `sequencers`, `chainId`, and `tempoBlockNumber` |
 | `zone_getEncryptionKey` | Operator RPC and authenticated redacted RPC | Returns the active sequencer encryption key at the current Tempo L1 head |
-| `zone_deriveDepositAddresses` | Authenticated redacted RPC only | Returns TIP-1094 deposit addresses for the caller's master ID and up to 1024 user tags, using the registry and key versions at the zone block the portal last settled |
+| `zone_deriveDepositAddresses` | Authenticated redacted RPC only | Returns TIP-1094 deposit addresses, with the master ID's recipient and creator, for a master ID whose recipient or creator is the caller and up to 1024 user tags, using the registry and key versions at the zone block the portal last settled |
 
 `zone_getEncryptionKey` reads the active key directly from the portal at the current Tempo L1 head.
 Its response is:

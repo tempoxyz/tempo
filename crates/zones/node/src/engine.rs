@@ -854,8 +854,12 @@ mod tests {
                     .initialize_virtual_address_key_for_test(1, KEY)
                     .unwrap();
                 let mut registry = zone_precompiles::address_registry::ZoneAddressRegistry::new();
-                registry.register_master(0, LISTED, B256::ZERO).unwrap();
-                registry.register_master(0, UNLISTED, B256::ZERO).unwrap();
+                registry
+                    .register_master(0, LISTED, Address::ZERO, B256::ZERO)
+                    .unwrap();
+                registry
+                    .register_master(0, UNLISTED, Address::ZERO, B256::ZERO)
+                    .unwrap();
                 f()
             })
         }

@@ -1913,28 +1913,41 @@ where
             })?;
             to_raw(&DeriveDepositAddressesResponse {
                 zone_block_hash: settled,
-                version: derived.0,
-                addresses: derived.1,
+                version: derived.version,
+                recipient: derived.recipient,
+                creator: derived.creator,
+                addresses: derived.addresses,
             })
         })
     }
 }
 
+/// Deposit addresses derived for one master ID, with the bindings they were derived from.
+#[derive(Debug, PartialEq, Eq)]
+struct DerivedDepositAddresses {
+    version: u8,
+    recipient: Address,
+    creator: Address,
+    addresses: Vec<Address>,
+}
+
 /// Derives TIP-1094 deposit addresses for `request` from zone state in the current storage context.
 ///
-/// The master ID must be registered to `caller`; an unregistered ID and another recipient's ID
-/// fail alike, so the method does not reveal registrations. The version defaults to the highest
-/// initialized key version and must not be below the portal's minimum.
+/// The caller must be the master ID's recipient or its nonzero creator; an unregistered ID and
+/// anyone else's ID fail alike, so the method does not reveal registrations. The version defaults
+/// to the highest initialized key version and must not be below the portal's minimum.
 fn derive_deposit_addresses(
     zone_id: u32,
     minimum_version: u8,
     caller: Address,
     request: &DeriveDepositAddressesRequest,
-) -> Result<(u8, Vec<Address>), JsonRpcError> {
-    let recipient = zone_precompiles::address_registry::ZoneAddressRegistry::new()
-        .recipient_of(request.master_id)
-        .map_err(internal)?;
-    if recipient.is_zero() || recipient != caller {
+) -> Result<DerivedDepositAddresses, JsonRpcError> {
+    let registry = zone_precompiles::address_registry::ZoneAddressRegistry::new();
+    let recipient = registry.recipient_of(request.master_id).map_err(internal)?;
+    let creator = registry.creator_of(request.master_id).map_err(internal)?;
+    let authorized =
+        !recipient.is_zero() && !caller.is_zero() && (caller == recipient || caller == creator);
+    if !authorized {
         return Err(JsonRpcError::invalid_params(
             "masterId is not registered to the caller",
         ));
@@ -1974,7 +1987,12 @@ fn derive_deposit_addresses(
             .encode()
         })
         .collect();
-    Ok((version, addresses))
+    Ok(DerivedDepositAddresses {
+        version,
+        recipient,
+        creator,
+        addresses,
+    })
 }
 
 /// Who created a filter, and whose logs it returns.
@@ -2763,5 +2781,53 @@ mod tests {
         let stale_ids = stale_filter_owner_ids(Vec::new(), &HashSet::new());
 
         assert!(stale_ids.is_empty());
+    }
+
+    #[test]
+    fn derivation_is_served_to_the_recipient_and_creator_only() {
+        use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+        let recipient = Address::repeat_byte(0xb0);
+        let creator = Address::repeat_byte(0xc0);
+        let other = Address::repeat_byte(0xd0);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T15);
+        StorageCtx::enter(&mut storage, || {
+            zone_precompiles::inbox::ZoneInbox::new()
+                .initialize_virtual_address_key_for_test(1, B256::repeat_byte(0x01))
+                .unwrap();
+            let mut registry = zone_precompiles::address_registry::ZoneAddressRegistry::new();
+            let plain = registry
+                .register_master(7, recipient, Address::ZERO, B256::ZERO)
+                .unwrap();
+            let created = registry
+                .register_master(7, recipient, creator, B256::ZERO)
+                .unwrap();
+            let derive = |caller, master_id| {
+                derive_deposit_addresses(
+                    7,
+                    1,
+                    caller,
+                    &DeriveDepositAddressesRequest {
+                        master_id,
+                        user_tags: vec![1, 2],
+                        version: None,
+                    },
+                )
+            };
+
+            let by_recipient = derive(recipient, created).unwrap();
+            let by_creator = derive(creator, created).unwrap();
+            assert_eq!(by_recipient, by_creator);
+            assert_eq!(by_creator.recipient, recipient);
+            assert_eq!(by_creator.creator, creator);
+            assert_eq!(by_creator.addresses.len(), 2);
+
+            // The creator can't derive the recipient's other master IDs, nor can anyone else.
+            assert!(derive(creator, plain).is_err());
+            assert!(derive(other, created).is_err());
+            assert!(derive(Address::ZERO, plain).is_err());
+            let own = derive(recipient, plain).unwrap();
+            assert_eq!(own.creator, Address::ZERO);
+            assert_ne!(own.addresses, by_creator.addresses);
+        });
     }
 }

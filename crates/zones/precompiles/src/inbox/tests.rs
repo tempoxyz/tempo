@@ -1013,7 +1013,7 @@ fn init_key(env: &mut ZoneEnv, version: u8) -> PrecompileResult {
 fn register(env: &mut ZoneEnv, recipient: Address) -> eyre::Result<u32> {
     env.with_storage(|| {
         let id = crate::address_registry::ZoneAddressRegistry::new()
-            .register_master(0, recipient, B256::random())
+            .register_master(0, recipient, Address::ZERO, B256::random())
             .map_err(|err| eyre::eyre!("{err:?}"))?;
         Ok(u32::from_be_bytes(id.0))
     })

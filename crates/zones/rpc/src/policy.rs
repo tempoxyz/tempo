@@ -23,7 +23,8 @@ pub fn enforce_authorized(
     enforce_contract_creation(request, auth.caller)
 }
 
-/// Refuse simulations of TIP-1094 `registerMaster` for another recipient.
+/// Refuse simulations of TIP-1094 `registerMaster` unless the caller is its recipient or its
+/// named creator.
 ///
 /// Its return value is the recipient's existing master ID, or the next sequential one, so a
 /// simulation for someone else reveals their registrations and the registration count. Submitting
@@ -35,7 +36,7 @@ pub fn enforce_registration_recipient(
     let registers_other = |to: Option<Address>, input: &[u8]| {
         to == Some(ZONE_ADDRESS_REGISTRY_ADDRESS)
             && IZoneAddressRegistry::registerMasterCall::abi_decode(input)
-                .is_ok_and(|call| call.recipient != caller)
+                .is_ok_and(|call| call.recipient != caller && call.creator != caller)
     };
     let outer = registers_other(
         request.inner.to.and_then(|to| to.to().copied()),
@@ -212,7 +213,7 @@ mod tests {
     #[test]
     fn simulating_register_master_for_another_recipient_is_refused() {
         let caller = Address::repeat_byte(0x11);
-        let call = |recipient: Address| {
+        let call = |recipient: Address, creator: Address| {
             let mut request = TempoTransactionRequest::default();
             request.inner.to = Some(alloy_primitives::TxKind::Call(
                 ZONE_ADDRESS_REGISTRY_ADDRESS,
@@ -220,6 +221,7 @@ mod tests {
             request.inner.input = alloy_rpc_types_eth::TransactionInput::new(
                 IZoneAddressRegistry::registerMasterCall {
                     recipient,
+                    creator,
                     salt: alloy_primitives::B256::ZERO,
                 }
                 .abi_encode()
@@ -227,7 +229,13 @@ mod tests {
             );
             request
         };
-        assert!(enforce_registration_recipient(&call(caller), caller).is_ok());
-        assert!(enforce_registration_recipient(&call(Address::repeat_byte(0x22)), caller).is_err());
+        let other = Address::repeat_byte(0x22);
+        assert!(enforce_registration_recipient(&call(caller, Address::ZERO), caller).is_ok());
+        assert!(enforce_registration_recipient(&call(other, caller), caller).is_ok());
+        assert!(enforce_registration_recipient(&call(other, Address::ZERO), caller).is_err());
+        assert!(
+            enforce_registration_recipient(&call(other, Address::repeat_byte(0x33)), caller)
+                .is_err()
+        );
     }
 }

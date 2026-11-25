@@ -62,11 +62,11 @@ async fn test_transfer_to_zone_deposit_address() -> eyre::Result<()> {
     let recipient = Address::repeat_byte(0xbe);
     let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
     let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(1))
         .call()
         .await?;
     let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(1))
         .gas(TIP20_TX_GAS * 10)
         .send()
         .await?
@@ -179,11 +179,11 @@ async fn test_deposit_allowlist_rejects_virtual_deposits_to_unlisted_recipients(
     let recipient = Address::repeat_byte(0xbe);
     let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
     let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(1))
         .call()
         .await?;
     let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(1))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(1))
         .gas(TIP20_TX_GAS * 10)
         .send()
         .await?
@@ -299,11 +299,11 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
     sender.deposit(1_000_000, L1_TIMEOUT, &zone).await?;
     let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
     let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient.address(), B256::repeat_byte(2))
+        .registerMaster(recipient.address(), Address::ZERO, B256::repeat_byte(2))
         .call()
         .await?;
     let receipt = registry
-        .registerMaster(recipient.address(), B256::repeat_byte(2))
+        .registerMaster(recipient.address(), Address::ZERO, B256::repeat_byte(2))
         .gas(TIP20_TX_GAS * 10)
         .send()
         .await?
@@ -327,6 +327,14 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
     assert_eq!(derived["version"], 1);
+    assert_eq!(
+        serde_json::from_value::<Address>(derived["recipient"].clone())?,
+        recipient.address()
+    );
+    assert_eq!(
+        serde_json::from_value::<Address>(derived["creator"].clone())?,
+        Address::ZERO
+    );
     let addresses: Vec<Address> = serde_json::from_value(derived["addresses"].clone())?;
     assert_eq!(
         addresses,
@@ -424,11 +432,11 @@ async fn test_second_key_version_is_initialized_and_used() -> eyre::Result<()> {
     let recipient = Address::repeat_byte(0xc7);
     let registry = IZoneAddressRegistry::new(ZONE_ADDRESS_REGISTRY_ADDRESS, sender.l2_provider());
     let master_id: FixedBytes<4> = registry
-        .registerMaster(recipient, B256::repeat_byte(3))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(3))
         .call()
         .await?;
     let receipt = registry
-        .registerMaster(recipient, B256::repeat_byte(3))
+        .registerMaster(recipient, Address::ZERO, B256::repeat_byte(3))
         .gas(TIP20_TX_GAS * 10)
         .send()
         .await?
