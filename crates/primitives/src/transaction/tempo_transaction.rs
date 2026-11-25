@@ -115,7 +115,7 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -128,7 +128,10 @@ pub struct Call {
     pub value: U256,
 
     /// Call input.
-    #[cfg_attr(feature = "serde", serde(flatten, with = "serde_input"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(flatten, serialize_with = "serde_input::serialize")
+    )]
     pub input: Bytes,
 }
 
@@ -950,17 +953,44 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
 
 #[cfg(feature = "serde")]
 mod serde_input {
-    //! Helper module for serializing and deserializing the `input` field of a [`Call`] as either `input` or `data` fields.
+    //! Serde for a [`Call`], whose input is encoded as either an `input` or a `data` field.
 
     use alloc::borrow::Cow;
 
     use super::*;
+    use crate::serde_helpers::MapOnly;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize)]
     struct SerdeHelper<'a> {
         input: Option<Cow<'a, Bytes>>,
         data: Option<Cow<'a, Bytes>>,
+    }
+
+    /// The fields of a [`Call`] as encoded, decoded without the buffering of
+    /// `#[serde(flatten)]`.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", expecting = "struct Call")]
+    struct CallFields {
+        to: TxKind,
+        value: U256,
+        input: Option<Bytes>,
+        data: Option<Bytes>,
+    }
+
+    impl<'de> Deserialize<'de> for Call {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let CallFields {
+                to,
+                value,
+                input,
+                data,
+            } = CallFields::deserialize(MapOnly(deserializer))?;
+            let input = input.or(data).ok_or(serde::de::Error::missing_field(
+                "missing `input` or `data` field",
+            ))?;
+            Ok(Self { to, value, input })
+        }
     }
 
     pub(super) fn serialize<S>(input: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
@@ -972,20 +1002,6 @@ mod serde_input {
             data: None,
         }
         .serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let helper = SerdeHelper::deserialize(deserializer)?;
-        Ok(helper
-            .input
-            .or(helper.data)
-            .ok_or(serde::de::Error::missing_field(
-                "missing `input` or `data` field",
-            ))?
-            .into_owned())
     }
 }
 
@@ -2393,6 +2409,84 @@ mod tests {
             ..Default::default()
         };
         assert!(valid_expiring_tx.validate().is_ok());
+    }
+
+    #[cfg(feature = "serde")]
+    mod serde_flatten {
+        use super::*;
+        use crate::serde_helpers::test_utils::{mutate_object, without_position};
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        /// [`Call`] decoded by the `#[serde(flatten)]` derive it used before.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", expecting = "struct Call")]
+        struct FlattenedCall {
+            to: TxKind,
+            value: U256,
+            #[serde(flatten, deserialize_with = "flattened_input")]
+            input: Bytes,
+        }
+
+        fn flattened_input<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Bytes, D::Error> {
+            #[derive(serde::Deserialize)]
+            struct SerdeHelper {
+                input: Option<Bytes>,
+                data: Option<Bytes>,
+            }
+            let helper = <SerdeHelper as serde::Deserialize>::deserialize(deserializer)?;
+            helper
+                .input
+                .or(helper.data)
+                .ok_or(serde::de::Error::missing_field(
+                    "missing `input` or `data` field",
+                ))
+        }
+
+        fn decode_flattened(json: &str) -> Result<Call, String> {
+            serde_json::from_str::<FlattenedCall>(json)
+                .map(|call| Call {
+                    to: call.to,
+                    value: call.value,
+                    input: call.input,
+                })
+                .map_err(|err| without_position(&err))
+        }
+
+        fn decode(json: &str) -> Result<Call, String> {
+            serde_json::from_str::<Call>(json).map_err(|err| without_position(&err))
+        }
+
+        proptest! {
+            #[test]
+            fn call_serde_matches_flattened_derive(
+                call in arb::<Call>(),
+                edits in proptest::collection::vec(any::<(u8, u8, u8)>(), 0..8),
+            ) {
+                let json = serde_json::to_string(&call).unwrap();
+                prop_assert_eq!(decode(&json), Ok(call.clone()));
+                prop_assert_eq!(decode_flattened(&json), Ok(call));
+
+                let mutated = mutate_object(
+                    &serde_json::from_str(&json).unwrap(),
+                    &["to", "value", "input", "data"],
+                    &edits,
+                );
+                prop_assert_eq!(decode(&mutated).ok(), decode_flattened(&mutated).ok());
+            }
+        }
+
+        #[test_case::test_case(r#"{"to":null,"value":"0x0","input":"0x01","data":"0x02"}"#)]
+        #[test_case::test_case(r#"{"to":null,"value":"0x0","data":"0x02"}"#)]
+        #[test_case::test_case(r#"{"to":null,"value":"0x0"}"#)]
+        #[test_case::test_case(r#"{"to":null,"value":"0x0","input":"0x","input":"0x"}"#)]
+        #[test_case::test_case(r#"[null,"0x0","0x"]"#)]
+        #[test_case::test_case("null")]
+        fn call_serde_edge_cases_match_flattened_derive(json: &str) {
+            assert_eq!(decode(json), decode_flattened(json));
+        }
     }
 }
 

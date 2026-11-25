@@ -410,7 +410,7 @@ pub struct KeyAuthorizationChainIdError {
 
 /// Signed key authorization that can be attached to a transaction.
 #[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable, derive_more::Deref)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
@@ -510,6 +510,59 @@ impl Hash for SignedKeyAuthorization {
         self.authorization.hash(state);
         self.signature.hash(state);
     }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SignedKeyAuthorization {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let SignedKeyAuthorizationFields {
+            chain_id,
+            key_type,
+            key_id,
+            expiry,
+            limits,
+            allowed_calls,
+            witness,
+            is_admin,
+            account,
+            signature,
+        } = serde::Deserialize::deserialize(crate::serde_helpers::MapOnly(deserializer))?;
+        Ok(Self::new(
+            KeyAuthorization {
+                chain_id,
+                key_type,
+                key_id,
+                expiry,
+                limits,
+                allowed_calls,
+                witness,
+                is_admin,
+                account,
+            },
+            signature,
+        ))
+    }
+}
+
+/// The fields of a [`SignedKeyAuthorization`] as encoded, decoded without the buffering of
+/// `#[serde(flatten)]`. The [`KeyAuthorization`] fields keep its serde attributes.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", expecting = "struct SignedKeyAuthorization")]
+struct SignedKeyAuthorizationFields {
+    #[serde(with = "alloy_serde::quantity")]
+    chain_id: u64,
+    key_type: SignatureType,
+    key_id: Address,
+    #[serde(with = "alloy_serde::quantity::opt")]
+    expiry: Option<NonZeroU64>,
+    limits: Option<Vec<TokenLimit>>,
+    allowed_calls: Option<Vec<CallScope>>,
+    witness: Option<B256>,
+    #[serde(default)]
+    is_admin: bool,
+    account: Option<Address>,
+    signature: AccountSignature,
 }
 
 #[cfg(any(test, feature = "arbitrary"))]
@@ -1531,6 +1584,82 @@ mod tests {
 
         rule.recipients.push(Address::repeat_byte(0x33));
         assert!(!rule.allows_all_recipients());
+    }
+
+    #[cfg(feature = "serde")]
+    mod serde_flatten {
+        use super::*;
+        use crate::serde_helpers::test_utils::{mutate_object, without_position};
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        /// [`SignedKeyAuthorization`] decoded by the `#[serde(flatten)]` derive it used
+        /// before.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", expecting = "struct SignedKeyAuthorization")]
+        struct FlattenedSignedKeyAuthorization {
+            #[serde(flatten)]
+            authorization: KeyAuthorization,
+            signature: AccountSignature,
+        }
+
+        fn decode_flattened(json: &str) -> Result<SignedKeyAuthorization, String> {
+            serde_json::from_str::<FlattenedSignedKeyAuthorization>(json)
+                .map(|auth| SignedKeyAuthorization::new(auth.authorization, auth.signature))
+                .map_err(|err| without_position(&err))
+        }
+
+        fn decode(json: &str) -> Result<SignedKeyAuthorization, String> {
+            serde_json::from_str::<SignedKeyAuthorization>(json)
+                .map_err(|err| without_position(&err))
+        }
+
+        proptest! {
+            #[test]
+            fn signed_key_authorization_serde_matches_flattened_derive(
+                auth in arb::<SignedKeyAuthorization>(),
+                edits in proptest::collection::vec(any::<(u8, u8, u8)>(), 0..8),
+            ) {
+                let json = serde_json::to_string(&auth).unwrap();
+                prop_assert_eq!(decode(&json), Ok(auth.clone()));
+                prop_assert_eq!(decode_flattened(&json), Ok(auth));
+
+                let mutated = mutate_object(
+                    &serde_json::from_str(&json).unwrap(),
+                    &[
+                        "chainId",
+                        "keyType",
+                        "keyId",
+                        "expiry",
+                        "limits",
+                        "allowedCalls",
+                        "witness",
+                        "isAdmin",
+                        "account",
+                        "signature",
+                    ],
+                    &edits,
+                );
+                prop_assert_eq!(decode(&mutated).ok(), decode_flattened(&mutated).ok());
+            }
+        }
+
+        const SIGNATURE: &str =
+            r#""signature":{"type":"secp256k1","r":"0x1","s":"0x1","yParity":"0x0"}"#;
+
+        #[test_case::test_case(r#""chainId":"0x1","keyType":"secp256k1","keyId":"0x0000000000000000000000000000000000000001","expiry":null"#)]
+        #[test_case::test_case(r#""chainId":"0x1","keyType":"secp256k1","keyId":"0x0000000000000000000000000000000000000001""#)]
+        #[test_case::test_case(r#""chainId":1,"keyType":"p256","keyId":"0x0000000000000000000000000000000000000001","expiry":"0x5","isAdmin":true,"limits":[],"allowedCalls":null"#)]
+        fn signed_key_authorization_serde_edge_cases_match_flattened_derive(fields: &str) {
+            let json = format!("{{{fields},{SIGNATURE}}}");
+            assert_eq!(decode(&json), decode_flattened(&json));
+        }
+
+        #[test_case::test_case(r#"["0x1","secp256k1","0x0000000000000000000000000000000000000001",null,null,null,null,false,null,null]"#)]
+        #[test_case::test_case("null")]
+        fn signed_key_authorization_serde_rejects_non_objects(json: &str) {
+            assert_eq!(decode(json), decode_flattened(json));
+        }
     }
 }
 

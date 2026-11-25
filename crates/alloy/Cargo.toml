@@ -60,6 +60,10 @@ http.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
+alloy-rpc-types-eth = { workspace = true, features = ["arbitrary"] }
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
+tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 eyre.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

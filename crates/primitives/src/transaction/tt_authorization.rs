@@ -23,7 +23,7 @@ pub const MAGIC: u8 = 0x05;
 /// The structure and methods mirror `SignedAuthorization` exactly to maintain
 /// compatibility with the EIP-7702 spec.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct TempoSignedAuthorization {
@@ -168,6 +168,42 @@ impl Deref for TempoSignedAuthorization {
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for TempoSignedAuthorization {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let TempoSignedAuthorizationFields {
+            chain_id,
+            address,
+            nonce,
+            signature,
+        } = serde::Deserialize::deserialize(crate::serde_helpers::MapOnly(deserializer))?;
+        Ok(Self::new_unchecked(
+            Authorization {
+                chain_id,
+                address,
+                nonce: nonce.to(),
+            },
+            signature,
+        ))
+    }
+}
+
+/// The fields of a [`TempoSignedAuthorization`] as encoded, decoded without the buffering of
+/// `#[serde(flatten)]`.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    expecting = "struct TempoSignedAuthorization"
+)]
+struct TempoSignedAuthorizationFields {
+    chain_id: alloy_primitives::U256,
+    address: Address,
+    /// Decoded like [`Authorization::nonce`], as a quantity.
+    nonce: alloy_primitives::U64,
+    signature: TempoSignature,
 }
 
 /// A recovered EIP-7702 authorization with AA signature support.
@@ -429,5 +465,64 @@ pub mod tests {
         let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
         assert!(bad_lazy.authority().is_some());
         assert_ne!(bad_lazy.authority().unwrap(), expected_address);
+    }
+
+    #[cfg(feature = "serde")]
+    mod serde_flatten {
+        use super::*;
+        use crate::serde_helpers::test_utils::{mutate_object, without_position};
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+
+        /// [`TempoSignedAuthorization`] decoded by the `#[serde(flatten)]` derive it used
+        /// before.
+        #[derive(serde::Deserialize)]
+        #[serde(expecting = "struct TempoSignedAuthorization")]
+        struct FlattenedTempoSignedAuthorization {
+            #[serde(flatten)]
+            inner: Authorization,
+            signature: TempoSignature,
+        }
+
+        fn decode_flattened(json: &str) -> Result<TempoSignedAuthorization, String> {
+            serde_json::from_str::<FlattenedTempoSignedAuthorization>(json)
+                .map(|auth| TempoSignedAuthorization::new_unchecked(auth.inner, auth.signature))
+                .map_err(|err| without_position(&err))
+        }
+
+        fn decode(json: &str) -> Result<TempoSignedAuthorization, String> {
+            serde_json::from_str::<TempoSignedAuthorization>(json)
+                .map_err(|err| without_position(&err))
+        }
+
+        proptest! {
+            #[test]
+            fn tempo_signed_authorization_serde_matches_flattened_derive(
+                auth in arb::<TempoSignedAuthorization>(),
+                edits in proptest::collection::vec(any::<(u8, u8, u8)>(), 0..8),
+            ) {
+                let json = serde_json::to_string(&auth).unwrap();
+                prop_assert_eq!(decode(&json), Ok(auth.clone()));
+                prop_assert_eq!(decode_flattened(&json), Ok(auth));
+
+                let mutated = mutate_object(
+                    &serde_json::from_str(&json).unwrap(),
+                    &["chainId", "address", "nonce", "signature"],
+                    &edits,
+                );
+                prop_assert_eq!(decode(&mutated).ok(), decode_flattened(&mutated).ok());
+            }
+        }
+
+        #[test_case::test_case(r#"{"chainId":"0x1","address":"0x0000000000000000000000000000000000000001","nonce":"0x1","signature":{"type":"secp256k1","r":"0x1","s":"0x1","yParity":"0x0"}}"#)]
+        #[test_case::test_case(r#"{"chainId":1,"address":"0x0000000000000000000000000000000000000001","nonce":1,"signature":{"type":"secp256k1","r":"0x1","s":"0x1","yParity":"0x0"}}"#)]
+        #[test_case::test_case(r#"{"chainId":"0x1","address":"0x0000000000000000000000000000000000000001","nonce":"0x10000000000000000","signature":{"type":"secp256k1","r":"0x1","s":"0x1","yParity":"0x0"}}"#)]
+        #[test_case::test_case(
+            r#"["0x1","0x0000000000000000000000000000000000000001","0x1",null]"#
+        )]
+        #[test_case::test_case("null")]
+        fn tempo_signed_authorization_serde_edge_cases_match_flattened_derive(json: &str) {
+            assert_eq!(decode(json), decode_flattened(json));
+        }
     }
 }
