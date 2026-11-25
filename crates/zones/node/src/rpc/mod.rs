@@ -603,68 +603,74 @@ async fn collect_tempo_witness(
         // An account-only read still needs the account proof, which every target carries.
         targets.entry(read.account).or_default().extend(read.slot);
     }
-    let chunks = &multi_proof_chunks(targets);
     let state_root = tempo_header.state_root();
-    let backoff = ConstantBuilder::default()
-        .with_delay(MULTI_PROOF_RETRY_DELAY)
-        .with_max_times(MULTI_PROOF_RETRIES);
-    // A lagging node can also answer with nodes that don't link to the block's state root.
-    // Refetch until every read verifies as the SPF checks it, so a gap is never persisted.
-    let nodes = (move || async move {
-        // The L1 RPC may balance connections across nodes whose heads differ by a few
-        // milliseconds, so the node serving this request can lack a block the subscriber already
-        // saw finalized. Retry only that answer (`block not found`); return every other error.
-        let nodes = futures::stream::iter(chunks.to_vec())
-            .map(|chunk| {
-                (move || {
-                    provider
+    // The L1 RPC may balance connections across nodes whose heads differ by a few milliseconds,
+    // so the node serving a chunk can lack a block the subscriber already saw finalized
+    // (`block not found`), or answer before its state there is complete, with nodes that don't
+    // link to the block's state root. Retry only that chunk on either; return every other error.
+    let nodes = futures::stream::iter(multi_proof_chunks(targets))
+        .map(|chunk| {
+            (move || {
+                let chunk = chunk.clone();
+                async move {
+                    let proofs = provider
                         .client()
                         .request::<_, Vec<EIP1186AccountProofResponse>>(
                             "eth_getMultiProof",
                             (chunk.clone(), BlockId::number(tempo_block_number)),
                         )
-                })
-                .retry(backoff)
-                .when(|error| {
-                    error.as_error_resp().is_some_and(|response| {
-                        response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
-                    })
-                })
-            })
-            .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
-            // Merge responses as they arrive.
-            .try_fold(BTreeMap::new(), |mut nodes, proofs| {
-                for proof in proofs {
-                    for node in proof.account_proof.into_iter().chain(
-                        proof
-                            .storage_proof
+                        .await
+                        .map_err(|error| {
+                            let not_found = error.as_error_resp().is_some_and(|response| {
+                                response.code == i64::from(EthRpcErrorCode::ResourceNotFound.code())
+                            });
+                            (not_found, eyre::Report::new(error))
+                        })?;
+                    let nodes = proofs
+                        .into_iter()
+                        .flat_map(|proof| {
+                            proof.account_proof.into_iter().chain(
+                                proof
+                                    .storage_proof
+                                    .into_iter()
+                                    .flat_map(|proof| proof.proof),
+                            )
+                        })
+                        .map(|node| (keccak256(&node), node))
+                        .collect::<BTreeMap<_, _>>()
+                        .into_values()
+                        .collect::<Vec<_>>();
+                    // Refetch unless every target links to the checkpoint's state root, as the SPF reads it.
+                    let reads = chunk.iter().flat_map(|(account, slots)| {
+                        let account_only = slots.is_empty().then_some((*account, None));
+                        account_only
                             .into_iter()
-                            .flat_map(|proof| proof.proof),
-                    ) {
-                        nodes.entry(keccak256(&node)).or_insert(node);
-                    }
+                            .chain(slots.iter().map(move |slot| (*account, Some(*slot))))
+                    });
+                    zone_spf::verify_tempo_reads(state_root, &nodes, reads)
+                        .map_err(|error| (true, error.into()))?;
+                    Ok(nodes)
                 }
-                futures::future::ready(Ok(nodes))
             })
-            .await
-            .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?
-            .into_values()
-            .collect::<Vec<_>>();
-        // Refetch unless every read links to the checkpoint's state root, as the SPF reads it.
-        zone_spf::verify_tempo_reads(
-            state_root,
-            &nodes,
-            reads.iter().map(|read| (read.account, read.slot)),
-        )?;
-        Ok::<_, eyre::Report>(nodes)
-    })
-    .retry(backoff)
-    .when(|error| error.is::<zone_spf::StatelessSparseTrieError>())
-    .notify(
-        |error, _| tracing::warn!(tempo_block_number, %error, "Refetching incomplete Tempo proofs"),
-    )
-    .await?;
-    Ok((initial_header, nodes))
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(MULTI_PROOF_RETRY_DELAY)
+                    .with_max_times(MULTI_PROOF_RETRIES),
+            )
+            .when(|(retry, _)| *retry)
+        })
+        .buffer_unordered(MULTI_PROOF_MAX_PARALLEL)
+        .map_err(|(_, error)| error)
+        // Merge chunks as they arrive.
+        .try_fold(BTreeMap::new(), |mut nodes, chunk| {
+            for node in chunk {
+                nodes.entry(keccak256(&node)).or_insert(node);
+            }
+            futures::future::ready(Ok(nodes))
+        })
+        .await
+        .wrap_err_with(|| format!("eth_getMultiProof at Tempo block {tempo_block_number}"))?;
+    Ok((initial_header, nodes.into_values().collect()))
 }
 
 /// Split proof targets into even parallel `eth_getMultiProof` requests, each within reth's
