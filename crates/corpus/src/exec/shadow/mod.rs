@@ -433,7 +433,7 @@ struct ObservedTx {
     output_hash: B256,
     /// Full receipt hash with only the validated post-fee amount zeroed.
     fee_normalized: Option<B256>,
-    /// Storage actions the transaction recorded, with the handler's fee hook markers.
+    /// The fee hooks' markers and the actions they recorded.
     actions: Vec<StorageAction>,
     /// Slots the fee hooks wrote.
     fee_slots: HashSet<(Address, U256)>,
@@ -554,16 +554,24 @@ fn normalized_fee_transfer(
 /// The fee hooks' markers and actions the executor recorded since they were last taken. The
 /// analysis reads nothing else, so the rest is dropped rather than kept for the whole block.
 fn take_actions(executor: &TempoBlockExecutor<'_>) -> Vec<StorageAction> {
-    let mut actions = executor.evm().ext().actions.take().unwrap_or_default();
+    let recorder = &executor.evm().ext().actions;
+    let mut recorded = recorder.take().unwrap_or_default();
     let mut in_hook = false;
-    actions.retain(|action| match action {
-        StorageAction::Marker(marker) => {
-            in_hook = !matches!(marker, FeeHook::End);
-            true
-        }
-        _ => in_hook,
-    });
-    actions
+    let hook_actions = recorded
+        .iter()
+        .filter(|action| match action {
+            StorageAction::Marker(marker) => {
+                in_hook = !matches!(marker, FeeHook::End);
+                true
+            }
+            _ => in_hook,
+        })
+        .copied()
+        .collect();
+    // Hand the buffer back so the next transaction records into the same allocation.
+    recorded.clear();
+    recorder.replace(recorded);
+    hook_actions
 }
 
 fn hash_logs<T: alloy_rlp::Encodable>(logs: &[T]) -> B256 {

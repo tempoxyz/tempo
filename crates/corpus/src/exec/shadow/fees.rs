@@ -10,28 +10,25 @@ use tempo_precompiles::{
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
 
-/// One fee hook that returned: the marker that started it and the actions it recorded in order.
-struct Hook<'a> {
-    start: FeeHook,
-    actions: &'a [StorageAction],
-}
-
 /// The post-transaction fee hook, if it returned, with the pre-transaction charge it settles.
 pub(super) struct PostTxFee<'a> {
+    /// Account the fee is charged to.
     pub(super) payer: Address,
+    /// Token the fee is paid in.
     pub(super) token: Address,
     /// The most the pre-transaction hook charged.
     pub(super) max: U256,
+    /// What the fee came to after the refund.
     pub(super) charged: U256,
-    /// The index its fee transfer log has, if it emitted one.
+    /// Index of its fee transfer log.
     pub(super) log: usize,
     /// Actions the hook recorded, in order.
     pub(super) actions: &'a [StorageAction],
 }
 
-/// The fee hooks in `actions` that returned, in order. A hook that failed has no end marker and
-/// is skipped.
-fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = Hook<'_>> {
+/// The fee hooks in `actions` that returned, with the marker that started each and the actions it
+/// recorded, in order. A hook that failed has no end marker and is skipped.
+fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = (FeeHook, &[StorageAction])> {
     actions.iter().enumerate().filter_map(|(at, action)| {
         let StorageAction::Marker(start @ (FeeHook::PreTx { .. } | FeeHook::PostTx { .. })) =
             *action
@@ -42,10 +39,7 @@ fn fee_hooks(actions: &[StorageAction]) -> impl Iterator<Item = Hook<'_>> {
         let end = rest
             .iter()
             .position(|action| matches!(action, StorageAction::Marker(_)))?;
-        matches!(rest[end], StorageAction::Marker(FeeHook::End)).then(|| Hook {
-            start,
-            actions: &rest[..end],
-        })
+        matches!(rest[end], StorageAction::Marker(FeeHook::End)).then(|| (start, &rest[..end]))
     })
 }
 
@@ -56,12 +50,11 @@ pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
         payer,
         token,
         amount,
-    } = hooks.next()?.start
+    } = hooks.next()?.0
     else {
         return None;
     };
-    let post = hooks.next()?;
-    let FeeHook::PostTx { refund, log } = post.start else {
+    let (FeeHook::PostTx { refund, log }, post_actions) = hooks.next()? else {
         return None;
     };
     Some(PostTxFee {
@@ -70,14 +63,14 @@ pub(super) fn post_tx_fee(actions: &[StorageAction]) -> Option<PostTxFee<'_>> {
         max: amount,
         charged: amount.checked_sub(refund)?,
         log,
-        actions: post.actions,
+        actions: post_actions,
     })
 }
 
 /// The slots the fee hooks wrote.
 pub(super) fn fee_slots(actions: &[StorageAction]) -> HashSet<(Address, U256)> {
     fee_hooks(actions)
-        .flat_map(|hook| hook.actions.iter().filter_map(written_slot))
+        .flat_map(|(_, actions)| actions.iter().filter_map(written_slot))
         .collect()
 }
 

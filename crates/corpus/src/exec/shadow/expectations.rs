@@ -73,13 +73,8 @@ const FEE_STATE: Expectation = Expectation {
         let (real, shadow) = ctx.observed_txs()?;
         ctx.verified_fee_log_hashes()?;
         let (real_fee, shadow_fee) = (post_tx_fee(&real.actions)?, post_tx_fee(&shadow.actions)?);
-        if (real_fee.log, real_fee.token, real_fee.payer, real_fee.max)
-            != (
-                shadow_fee.log,
-                shadow_fee.token,
-                shadow_fee.payer,
-                shadow_fee.max,
-            )
+        if (real_fee.token, real_fee.payer, real_fee.max)
+            != (shadow_fee.token, shadow_fee.payer, shadow_fee.max)
         {
             return None;
         }
@@ -459,20 +454,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        tx.actions = vec![
-            StorageAction::Marker(FeeHook::PreTx {
-                payer: Address::ZERO,
-                token: Address::ZERO,
-                amount: U256::ZERO,
-            }),
-            StorageAction::Marker(FeeHook::End),
-            StorageAction::Marker(FeeHook::PostTx {
-                refund: U256::ZERO,
-                log: 0,
-            }),
+        tx.actions = post_fee(U256::ZERO, 0);
+        tx.actions.insert(
+            3,
             StorageAction::Sstore(address, slot, U256::from(1_000), U256::from(value)),
-            StorageAction::Marker(FeeHook::End),
-        ];
+        );
         tx.fee_slots = fee_slots(&tx.actions);
     }
 
@@ -507,7 +493,6 @@ mod tests {
         assert!(field.fee_associated);
     }
 
-    /// A post-transaction fee hook charging `charged` that emits one log at `log`.
     fn post_fee(charged: U256, log: usize) -> Vec<StorageAction> {
         vec![
             StorageAction::Marker(FeeHook::PreTx {
