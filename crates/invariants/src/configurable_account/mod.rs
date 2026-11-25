@@ -133,8 +133,6 @@ pub struct At<'a> {
 /// Who a transaction's signatures authorize it for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Authority {
-    /// Whether configurable accounts are active (T14) at the transaction's block.
-    pub active: bool,
     /// Each configurable-account signature: an owner quorum approving for its account.
     pub quorums: Vec<Quorum>,
     /// Each ordinary signature acting as account authority.

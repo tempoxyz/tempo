@@ -233,7 +233,7 @@ fn a_withdrawal_is_finalized_with_its_sender_revealed_at_the_end_of_its_block() 
         spender: ZONE_OUTBOX_ADDRESS,
         amount: U256::MAX,
     };
-    let withdraw = IZoneOutbox::requestWithdrawalCall {
+    let withdraw = IZoneOutbox::requestWithdrawal_0Call {
         token: PATH_USD_ADDRESS,
         to: SENDER,
         amount: 100,

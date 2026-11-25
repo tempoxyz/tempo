@@ -11,7 +11,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, SystemTx},
 };
-use invariants_core::Views;
+use invariants_core::{Call, Outcome, Views};
 use reth_evm::Database;
 use tempo_evm::{TempoEvm, TempoEvmEnv};
 
@@ -59,41 +59,48 @@ impl<'a, E: Engine> EvmViews<'a, E> {
         }
     }
 
-    /// The output of `call`. `Ok(None)` when nothing answers: its target has no code, or the call
-    /// read a key the pre-state lacks. `Err` when the call reverts or halts.
+    /// How `call` ended. `Ok(None)` when nothing answers: its target has no code, or the call read
+    /// a key the pre-state lacks. `Err` when the EVM could not run it.
     fn call_one(&mut self, call: &Call) -> Output {
         if let Some(output) = self.view_cache.get(call, self.before) {
             return output;
         }
-        let (target, input) = call;
         // The EVM caches what it loads, so a call reaches the database for every key it reads
         // only on an empty cache.
         let cache = &mut self.evm.overlay_db_mut().cache;
         cache.accounts.clear();
         cache.storage.clear();
         self.pre_state.restore_missed(false);
-        let caller = self.engine.view_caller(*target, input);
+        let caller = call
+            .from
+            .unwrap_or_else(|| self.engine.view_caller(call.to, &call.input));
         let result = self
             .evm
-            .system_call(SystemTx::new(*target, input.clone()).with_caller(caller));
+            .system_call(SystemTx::new(call.to, call.input.clone()).with_caller(caller));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
-            let failed = |reason| ViewFailed {
-                selector: input
-                    .get(..4)
-                    .map(Bytes::copy_from_slice)
-                    .unwrap_or_default(),
-                target: *target,
-                reason,
-            };
             match result {
-                Err(err) => Err(failed(err.to_string())),
-                Ok(executed) if !executed.result().is_success() => {
-                    Err(failed(format!("{:?}", executed.result())))
-                }
+                Err(err) => Err(ViewFailed {
+                    selector: call
+                        .input
+                        .get(..4)
+                        .map(Bytes::copy_from_slice)
+                        .unwrap_or_default(),
+                    target: call.to,
+                    reason: err.to_string(),
+                }),
                 Ok(executed) => {
-                    Ok(Some(executed.result().output.clone()).filter(|o| !o.is_empty()))
+                    let result = executed.result();
+                    Ok(if result.is_success() {
+                        Some(result.output.clone())
+                            .filter(|o| !o.is_empty())
+                            .map(Outcome::Return)
+                    } else if result.is_revert() {
+                        Some(Outcome::Revert(result.output.clone()))
+                    } else {
+                        Some(Outcome::Halt)
+                    })
                 }
             }
         };
@@ -109,7 +116,7 @@ impl<'a, E: Engine> EvmViews<'a, E> {
 impl<E: Engine> Views for EvmViews<'_, E> {
     type Error = ViewFailed;
 
-    fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Bytes>>, ViewFailed> {
+    fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
         calls.iter().map(|call| self.call_one(call)).collect()
     }
 
@@ -172,10 +179,7 @@ impl ViewCache {
     }
 }
 
-/// A view call: a target and its input.
-type Call = (Address, Bytes);
-
-type Output = Result<Option<Bytes>, ViewFailed>;
+type Output = Result<Option<Outcome>, ViewFailed>;
 
 /// A storage slot or, as `None`, an account, that a view call read.
 type Read = (Address, Option<U256>);
@@ -266,19 +270,12 @@ impl Database for PreView<'_> {
     }
 }
 
-/// A view call that reverted, halted or could not run.
+/// A view call the EVM could not run.
 #[derive(Debug, Clone)]
 pub(super) struct ViewFailed {
     selector: Bytes,
     target: Address,
     reason: String,
-}
-
-impl ViewFailed {
-    /// The contract the call was made to.
-    pub(super) fn target(&self) -> Address {
-        self.target
-    }
 }
 
 impl Display for ViewFailed {

@@ -19,7 +19,7 @@ workspace = true
 [dependencies]
 tempo-contracts.workspace = true
 tempo-chainspec = { workspace = true, features = ["evm"] }
-tempo-primitives = { workspace = true, features = ["evm"] }
+tempo-primitives = { workspace = true, features = ["std", "evm"] }
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-json-abi = { workspace = true, optional = true }
@@ -62,7 +62,7 @@ serde_json.workspace = true
 sha2 = { workspace = true, features = ["oid"] }
 x509-cert = { version = "=0.2.5", features = ["builder"] }
 tempo-evm.workspace = true
-tempo-primitives = { workspace = true, features = ["test-utils"] }
+tempo-primitives = { workspace = true, features = ["test-utils", "mock-crypto"] }
 
 [build-dependencies]
 serde.workspace = true

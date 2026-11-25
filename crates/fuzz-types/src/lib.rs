@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::interpreter::InstrStop;
-pub use invariants_core::Counts;
+pub use invariants_core::{Counts, Violation};
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
 
@@ -29,9 +29,8 @@ pub enum ErrorClass {
     #[default]
     None = 0,
     /// The input contradicts itself or this harness's contract, e.g. a decreasing hardfork
-    /// schedule, senders that do not match the transactions, blocks out of timestamp order, a
-    /// hardfork or input mode the harness's capabilities do not list, or a pre-state that already
-    /// breaks an invariant (reported in `invariant_failures` at [`InvariantScope::Execution`]).
+    /// schedule, senders that do not match the transactions, blocks out of timestamp order, or a
+    /// hardfork or input mode the harness's capabilities do not list.
     InvalidInput = 1,
     /// A transaction or header does not decode, or has trailing bytes.
     RlpDecode = 2,
@@ -43,6 +42,9 @@ pub enum ErrorClass {
     /// Execution read an account, storage slot, code or block hash that an exact pre-state
     /// ([`PreState::Exact`]) does not hold.
     IncompletePreState = 5,
+    /// The pre-state already breaks an invariant, so it is not a reachable state and nothing ran on
+    /// it. Its failures are in `invariant_failures` at [`InvariantScope::Execution`].
+    BrokenPreState = 6,
 }
 
 /// A sequence with at least one element.
@@ -255,12 +257,11 @@ pub struct TransactionOutcome {
     pub tx_type: Option<u8>,
 }
 
-/// A protocol invariant broken at `scope`. `id` names the invariant, e.g. `TEMPO-TIP20-SUPPLY-CAP`;
-/// `message` describes this instance.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+/// A protocol invariant broken at `scope`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InvariantFailure {
-    pub id: String,
-    pub message: String,
+    /// The invariant, e.g. `TEMPO-TIP20-SUPPLY-CAP`, the subject that broke it and how.
+    pub violation: Violation,
     pub scope: InvariantScope,
 }
 
@@ -268,6 +269,7 @@ pub struct InvariantFailure {
 pub enum InvariantScope {
     Transaction { block_index: u64, tx: TxIndex },
     Block { block_index: u64 },
+    PostBlock { block_index: u64 },
     Execution,
 }
 
@@ -310,7 +312,8 @@ pub struct TempoExecutionOutcome {
     pub invariant_failures: Vec<InvariantFailure>,
     /// By invariant ID, how many subjects (tokens, accounts, signatures...) each judged after a
     /// step, for how many its precondition held (armed), and how many broke it (fired). An
-    /// invariant that is never armed checks nothing.
+    /// invariant that is never armed checks nothing. Only invariants that judged a subject are
+    /// listed: one of [`TempoHarnessCapabilities::invariants`] missing here never applied.
     pub invariant_counts: BTreeMap<String, Counts>,
 }
 
@@ -323,6 +326,25 @@ pub struct TempoHarnessCapabilities {
     pub git_revision: String,
     pub supported_hardforks: NonEmpty<TempoHardfork>,
     pub supported_inputs: NonEmpty<HarnessInputKind>,
+    /// Every invariant the harness knows, whether or not any input applies it.
+    pub invariants: Vec<InvariantInfo>,
+}
+
+/// An invariant a harness checks, as its catalog describes it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InvariantInfo {
+    /// The ID its counts and failures carry, e.g. `TEMPO-TIP20-SUPPLY-CAP`.
+    pub id: String,
+    /// The invariant in one sentence.
+    pub doc: String,
+    /// The specification that states it, such as `TIP-1107`.
+    pub tip: Option<String>,
+    /// The IDs of earlier invariants, such as Solidity ones, that it replaces.
+    pub covers: Vec<String>,
+    /// The first hardfork it applies at, every one when `None`.
+    pub since: Option<TempoHardfork>,
+    /// The first hardfork it no longer applies at, `None` if it never stops.
+    pub until: Option<TempoHardfork>,
 }
 
 /// What changed, overall and at each step of each block that applied.

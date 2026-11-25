@@ -9,12 +9,11 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_sol_types::SolCall;
+use alloy_primitives::{Address, B256, U256};
 
 use tempo_contracts::precompiles::ITIP20;
 
-use crate::{Observe, ObserveError, Replay, Views, decode};
+use crate::{Batch, Observe, ObserveError, Replay, Views};
 
 pub use tempo_contracts::precompiles::{
     IFeeManager,
@@ -154,72 +153,80 @@ impl Observe for Books {
         all.sort();
         all.dedup();
 
-        let ids: Vec<(Address, Bytes)> = pairs
+        let mut batch = Batch::default();
+        let reads: Vec<_> = pairs
             .iter()
             .map(|&(user_token, validator_token)| {
                 let call = ITIPFeeAMM::getPoolIdCall {
                     userToken: user_token,
                     validatorToken: validator_token,
                 };
-                (fee_manager, call.abi_encode().into())
+                batch.push(None, fee_manager, &call)
             })
             .collect();
-        let mut out = views.call(&ids).map_err(ObserveError::Views)?.into_iter();
-        let ids: Vec<B256> = pairs
+        let answers = batch.run(views)?;
+        let ids: Vec<B256> = reads
             .iter()
-            .map(|_| decode::<ITIPFeeAMM::getPoolIdCall, _>(fee_manager, out.next()))
+            .map(|read| answers.decode(read))
             .collect::<Result<_, _>>()?;
 
-        let mut calls: Vec<(Address, Bytes)> = Vec::with_capacity(
-            all.len() + pairs.len() * (2 + holders.len()) + validators.len() * all.len(),
-        );
-        for &token in &all {
-            let c = ITIP20::balanceOfCall {
-                account: fee_manager,
-            };
-            calls.push((token, c.abi_encode().into()));
-        }
-        for (&(user_token, validator_token), &pool_id) in pairs.iter().zip(&ids) {
-            let get = ITIPFeeAMM::getPoolCall {
-                userToken: user_token,
-                validatorToken: validator_token,
-            };
-            calls.push((fee_manager, get.abi_encode().into()));
-            let supply = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-            calls.push((fee_manager, supply.abi_encode().into()));
-            for &user in holders {
-                let c = ITIPFeeAMM::liquidityBalancesCall {
-                    poolId: pool_id,
-                    user,
+        let mut batch = Batch::default();
+        let held: Vec<_> = all
+            .iter()
+            .map(|&token| {
+                let call = ITIP20::balanceOfCall {
+                    account: fee_manager,
                 };
-                calls.push((fee_manager, c.abi_encode().into()));
-            }
-        }
-        for &validator in validators {
-            for &token in &all {
-                let c = IFeeManager::collectedFeesCall { validator, token };
-                calls.push((fee_manager, c.abi_encode().into()));
-            }
-        }
-        let mut out = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
+                batch.push(None, token, &call)
+            })
+            .collect();
+        let pool_reads: Vec<_> = pairs
+            .iter()
+            .zip(&ids)
+            .map(|(&(user_token, validator_token), &pool_id)| {
+                let get = ITIPFeeAMM::getPoolCall {
+                    userToken: user_token,
+                    validatorToken: validator_token,
+                };
+                let pool = batch.push(None, fee_manager, &get);
+                let supply = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
+                let supply = batch.push(None, fee_manager, &supply);
+                let lp: Vec<_> = holders
+                    .iter()
+                    .map(|&user| {
+                        let call = ITIPFeeAMM::liquidityBalancesCall {
+                            poolId: pool_id,
+                            user,
+                        };
+                        (user, batch.push(None, fee_manager, &call))
+                    })
+                    .collect();
+                (pool, supply, lp)
+            })
+            .collect();
+        let fee_reads: Vec<_> = validators
+            .iter()
+            .flat_map(|&validator| all.iter().map(move |&token| (validator, token)))
+            .map(|(validator, token)| {
+                let call = IFeeManager::collectedFeesCall { validator, token };
+                ((validator, token), batch.push(None, fee_manager, &call))
+            })
+            .collect();
+        let answers = batch.run(views)?;
 
         let mut holdings = BTreeMap::new();
-        for &token in &all {
-            holdings.insert(
-                token,
-                decode::<ITIP20::balanceOfCall, _>(token, out.next())?,
-            );
+        for (&token, read) in all.iter().zip(&held) {
+            holdings.insert(token, answers.decode(read)?);
         }
         let mut pools = Vec::with_capacity(pairs.len());
-        for &(user_token, validator_token) in pairs {
-            let pool = decode::<ITIPFeeAMM::getPoolCall, _>(fee_manager, out.next())?;
-            let total_supply = decode::<ITIPFeeAMM::totalSupplyCall, _>(fee_manager, out.next())?;
+        for (&(user_token, validator_token), (pool, supply, lp_reads)) in
+            pairs.iter().zip(&pool_reads)
+        {
+            let pool = answers.decode(pool)?;
+            let total_supply = answers.decode(supply)?;
             let mut lp = BTreeMap::new();
-            for &user in holders {
-                lp.insert(
-                    user,
-                    decode::<ITIPFeeAMM::liquidityBalancesCall, _>(fee_manager, out.next())?,
-                );
+            for (user, read) in lp_reads {
+                lp.insert(*user, answers.decode(read)?);
             }
             pools.push(PoolState {
                 user_token,
@@ -231,11 +238,8 @@ impl Observe for Books {
             });
         }
         let mut collected = BTreeMap::new();
-        for &validator in validators {
-            for &token in &all {
-                let fees = decode::<IFeeManager::collectedFeesCall, _>(fee_manager, out.next())?;
-                collected.insert((validator, token), fees);
-            }
+        for (key, read) in &fee_reads {
+            collected.insert(*key, answers.decode(read)?);
         }
         Ok(Self {
             fee_manager,

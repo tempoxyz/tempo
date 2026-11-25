@@ -10,6 +10,7 @@
 //! same inputs, outcomes and invariants. Each harness exports the shared C ABI with [`ffi`].
 
 mod chain;
+pub mod crypto;
 mod engine;
 mod execute;
 pub mod ffi;
