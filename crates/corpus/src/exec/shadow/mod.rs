@@ -31,8 +31,7 @@ use alloy_sol_types::SolEvent as _;
 use analysis::Report;
 use evm2::evm::{Cache, Database, PendingState, TxResultExt};
 use reth_chainspec::ForkCondition;
-use reth_evm::{BlockExecutor as _, BlockExecutorFactory, ConfigureEvm as _};
-use reth_evm_ethereum::EvmFactory as _;
+use reth_evm::{BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _};
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
@@ -253,9 +252,7 @@ fn start<'a, DB: Database + 'a>(
     let mut evm = config
         .evm_for_block(db, block.header())
         .map_err(|e| format!("failed to configure EVM: {e}"))?;
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(config).configure_evm(&mut evm);
+    config.record_storage_actions(&mut evm);
     let context = config
         .context_for_block(block.sealed_block())
         .map_err(|e| format!("failed to configure executor: {e}"))?;

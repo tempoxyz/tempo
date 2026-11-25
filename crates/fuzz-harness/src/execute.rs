@@ -16,10 +16,9 @@ use evm2::bytecode::Bytecode;
 use invariants_core::Report;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
-    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory, BlockValidationError,
+    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
     ConfigureEvm as _,
 };
-use reth_evm_ethereum::EvmFactory as _;
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
 use tempo_chainspec::TempoChainSpec;
@@ -446,9 +445,7 @@ fn execute_block(
     let mut evm = evm_config
         .evm_for_block(db.reader(), block.header())
         .map_err(|err| BlockFailure::rejected(reject(ErrorClass::Rejected, err)))?;
-    evm.ext_mut().actions.enable();
-    // Enabling replaces the disabled recorder, so reconnect native precompiles to the new buffer.
-    BlockExecutorFactory::evm_factory(evm_config).configure_evm(&mut evm);
+    evm_config.record_storage_actions(&mut evm);
     let ctx = evm_config
         .context_for_block(block.sealed_block())
         .map_err(|err| BlockFailure::rejected(reject(ErrorClass::Rejected, err)))?;
