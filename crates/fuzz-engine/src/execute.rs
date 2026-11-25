@@ -621,8 +621,20 @@ impl<E: Engine> BlockRun<'_, E> {
             let opening = self.engine.open_block(executor.evm_mut(), header)?;
             self.execute_synthesized(executor, opening, basefee)?;
         }
+        let skips = block.built_header && self.engine.skips_invalid_txs();
         for (index, tx) in block.recovered.transactions_recovered().enumerate() {
-            let changes = self.execute_tx(executor, tx, TxIndex::Input(index as u64), basefee)?;
+            // The builder's pool admits no system transaction and no subblock transaction.
+            if skips && (tx.is_system_tx() || tx.has_sub_block_nonce_key_prefix()) {
+                self.outputs.changes.txs.push(StateChanges::default());
+                continue;
+            }
+            let changes = match self.execute_tx(executor, tx, TxIndex::Input(index as u64), basefee)
+            {
+                // An invalid transaction changed nothing, so leaving it out is as if the block
+                // never held it.
+                Err(err) if skips && builder_skips(&err) => StateChanges::default(),
+                changes => changes?,
+            };
             self.outputs.changes.txs.push(changes);
         }
         if block.built_header {
@@ -755,6 +767,18 @@ impl<E: Engine> BlockRun<'_, E> {
         self.state_updates.extend(step);
         changes
     }
+}
+
+/// Whether a block builder leaves out a transaction that failed with `err`: invalid at its position,
+/// or needing more gas than the block has left.
+const fn builder_skips(err: &BlockExecutionError) -> bool {
+    matches!(
+        err,
+        BlockExecutionError::Validation(
+            BlockValidationError::InvalidTx { .. }
+                | BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas { .. }
+        )
+    )
 }
 
 /// The hardfork and environment `evm` executes the block in.

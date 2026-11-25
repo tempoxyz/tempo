@@ -120,6 +120,16 @@ pub trait Engine {
     /// process turns invariants off. None by default; a zone's TIP-1154 account checks.
     fn check_step(&self, _state: &StepState<'_, Self::EvmConfig>, _report: &mut Report) {}
 
+    /// Whether a block the harness builds leaves out each of the input's transactions that the
+    /// chain's block builder would, rather than failing: one invalid at its position or needing
+    /// more gas than the block has left, and a system or subblock transaction, which its pool never
+    /// admits. A left-out transaction has no receipt and empty changes. A block given as an RLP
+    /// header executes exactly its own transactions, as imported, and the chain's own
+    /// transactions from [`Self::open_block`] and [`Self::close_block`] are never left out.
+    fn skips_invalid_txs(&self) -> bool {
+        false
+    }
+
     /// The invariants [`Self::check_step`] checks, for the harness's catalog.
     fn own_invariants() -> Vec<InvariantInfo> {
         Vec::new()

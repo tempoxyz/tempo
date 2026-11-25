@@ -538,3 +538,29 @@ fn a_zone_needs_a_tempo_chain_it_belongs_to_and_can_anchor_to() {
         assert!(reason.reason().ends_with(why), "{}", reason.reason());
     }
 }
+
+#[test]
+fn a_built_block_leaves_out_the_transactions_the_zone_rejects() {
+    // Nonce 5 is invalid at its position, as is a replay of nonce 0; the sequencer leaves both out.
+    let outcome = execute(
+        TempoHardfork::T15,
+        l1(true),
+        vec![vec![
+            transfer(5, RECIPIENT, 1),
+            transfer(0, RECIPIENT, 100),
+            transfer(0, RECIPIENT, 100),
+        ]],
+    );
+    assert_eq!(
+        receipts(&outcome),
+        [ADVANCED, (TxIndex::Input(1), TxOutcome::Success)]
+    );
+    // Every input transaction keeps its place in the changes, a left-out one with none.
+    let txs = &outcome.state_diff.blocks[0].txs;
+    assert_eq!(txs.len(), 3);
+    assert_eq!(
+        (txs[0].clone(), txs[2].clone()),
+        (Default::default(), Default::default())
+    );
+    assert_ne!(txs[1], Default::default());
+}
