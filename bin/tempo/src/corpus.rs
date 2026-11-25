@@ -242,9 +242,8 @@ impl ReplayCommand {
     }
 }
 
-/// Shadow replays verified corpus blocks under `hardfork`'s rules and counts their outcomes.
+/// Shadow replays verified corpus blocks under a candidate hardfork and counts their outcomes.
 struct Shadow {
-    hardfork: TempoHardfork,
     replayer: ShadowReplayer,
     matched: AtomicU64,
     expected: AtomicU64,
@@ -257,7 +256,6 @@ impl Shadow {
     fn new(chain: Arc<TempoChainSpec>, hardfork: TempoHardfork) -> Self {
         Self {
             replayer: ShadowReplayer::new(chain, hardfork),
-            hardfork,
             matched: Default::default(),
             expected: Default::default(),
             inconclusive: Default::default(),
@@ -298,7 +296,7 @@ impl Shadow {
         .map(AtomicU64::into_inner);
         info!(
             blocks = matched + expected + inconclusive + findings + skipped,
-            hardfork = %self.hardfork,
+            hardfork = %self.replayer.shadow_hardfork(),
             matched,
             expected,
             inconclusive,

@@ -84,6 +84,11 @@ impl ShadowReplayer {
         }
     }
 
+    /// The candidate hardfork blocks are replayed under.
+    pub const fn shadow_hardfork(&self) -> TempoHardfork {
+        self.shadow_hardfork
+    }
+
     /// Replays a verified corpus block under both rule sets, from the pre-state `input` recorded.
     /// `None` means the candidate hardfork is already canonical at the block.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
