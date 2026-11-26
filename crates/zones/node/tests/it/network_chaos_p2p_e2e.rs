@@ -33,9 +33,10 @@ const RECOVERY_GAP: u64 = 6;
 const REPLICATION_BATCH_INTERVAL_BLOCKS: u64 = 1_000;
 const INITIAL_DEPOSIT: u128 = 10_000_000;
 const WITHDRAWAL_AMOUNT: u128 = 250_000;
-// Crosses the real EIP-2935 window in about 90 seconds, under nextest's 3-minute kill.
+// A debug L1 serving three zone nodes reaches ~25ms blocks, so the real EIP-2935 window takes
+// ~3.5 minutes. The nextest config extends this test's slow timeout to match.
 const ANCESTRY_L1_BLOCK_TIME: Duration = Duration::from_millis(10);
-const ANCESTRY_TIMEOUT: Duration = Duration::from_secs(150);
+const ANCESTRY_TIMEOUT: Duration = Duration::from_secs(360);
 
 const OUTGOING_LEADER: usize = 0;
 const INCOMING_LEADER: usize = 1;
