@@ -15,7 +15,7 @@ use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
 use tempo_primitives::{TempoHeader, TempoPrimitives};
 use zone_precompiles::{inbox, outbox, tempo_state};
 use zone_primitives::constants::{
-    MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
+    DEPOSITS_PER_BUCKET, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, TEMPO_STATE_ADDRESS,
     ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
 
@@ -458,7 +458,7 @@ fn validate_system_inputs(block: &ZoneBlock, index: usize) -> Result<(), Error> 
             enabled_tokens,
             ..
         } => {
-            if deposits.len() > MAX_UNPROCESSED_DEPOSITS
+            if deposits.len() > DEPOSITS_PER_BUCKET
                 || enabled_tokens.len() > MAX_UNPROCESSED_TOKEN_ENABLEMENTS
             {
                 return Err(Error::PortalWorkCapacityExceeded { block_index: index });
@@ -466,6 +466,7 @@ fn validate_system_inputs(block: &ZoneBlock, index: usize) -> Result<(), Error> 
         }
         TempoImport::CheckpointOnly { .. } => {
             if !block.transactions.is_empty()
+                || block.virtual_address_key.is_some()
                 || block.finalize_withdrawal_batch_count.is_some()
                 || !block.finalize_withdrawal_batch_encrypted_senders.is_empty()
             {
@@ -618,6 +619,9 @@ pub enum Error {
         reason: String,
         output: alloy_primitives::Bytes,
     },
+    /// The TIP-1094 key initialization system transaction failed.
+    #[error("failed to execute initializeVirtualAddressKey in zone block {block_index}")]
+    VirtualAddressKeyExecution { block_index: usize },
     /// The ZoneOutbox system transaction failed while finalizing withdrawals.
     #[error("failed to execute finalizeWithdrawalBatch in zone block {block_index}")]
     FinalizeWithdrawalBatchExecution { block_index: usize },
@@ -808,6 +812,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         }
     }
 
@@ -930,6 +935,7 @@ mod tests {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: Vec::new(),
                 transactions: Vec::new(),
+                virtual_address_key: None,
             });
         }
         validate_system_inputs(&witness.zone_blocks[0], 0).unwrap();
@@ -951,6 +957,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         validate_system_inputs(&block, 0).unwrap();
@@ -970,11 +977,37 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         });
         validate_system_inputs(&witness.zone_blocks[0], 0).unwrap();
         assert_eq!(
             validate_batch_block_shape(&witness.zone_blocks[0], true),
             Err(Error::InvalidBatchShape)
+        );
+    }
+
+    #[test]
+    fn checkpoint_only_blocks_reject_virtual_address_key_initialization() {
+        let mut block = ZoneBlock {
+            number: 1,
+            parent_hash: B256::ZERO,
+            timestamp: 100,
+            timestamp_millis_part: 0,
+            beneficiary: Address::ZERO,
+            tempo_import: checkpoint_import(vec![Bytes::from([0x01])]),
+            finalize_withdrawal_batch_count: None,
+            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
+            transactions: Vec::new(),
+            virtual_address_key: None,
+        };
+        validate_system_inputs(&block, 0).unwrap();
+        block.virtual_address_key = Some(VirtualAddressKeyInit {
+            version: 1,
+            key: B256::repeat_byte(0x5a),
+        });
+        assert_eq!(
+            validate_system_inputs(&block, 0),
+            Err(Error::InvalidCheckpointOnlyBlock { block_index: 0 })
         );
     }
 
@@ -993,6 +1026,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         });
 
         assert_eq!(
@@ -1251,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_reveals_the_active_tempo_checkpoint() {
+    fn reads_storage_from_the_active_tempo_checkpoint() {
         let account = Address::repeat_byte(0x34);
         let slot = U256::from(7);
         let value = U256::from(11);
@@ -1296,6 +1330,7 @@ mod tests {
             finalize_withdrawal_batch_count: Some(U256::ZERO),
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         let config = test_config();
@@ -1325,7 +1360,7 @@ mod tests {
     #[test]
     fn rejects_portal_work_above_capacity() {
         for (deposit_count, token_count) in [
-            (MAX_UNPROCESSED_DEPOSITS + 1, 0),
+            (DEPOSITS_PER_BUCKET + 1, 0),
             (0, MAX_UNPROCESSED_TOKEN_ENABLEMENTS + 1),
         ] {
             let block = ZoneBlock {
@@ -1358,6 +1393,7 @@ mod tests {
                 finalize_withdrawal_batch_count: None,
                 finalize_withdrawal_batch_encrypted_senders: Vec::new(),
                 transactions: Vec::new(),
+                virtual_address_key: None,
             };
             assert_eq!(
                 validate_system_inputs(&block, 0),
@@ -1379,6 +1415,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         assert_eq!(validate_system_inputs(&block, 0), Ok(()));
@@ -1408,6 +1445,7 @@ mod tests {
             finalize_withdrawal_batch_count: None,
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: Vec::new(),
+            virtual_address_key: None,
         };
 
         assert_eq!(validate_system_inputs(&block, 0), Ok(()));
@@ -1426,32 +1464,7 @@ mod tests {
             finalize_withdrawal_batch_count: Some(U256::ZERO),
             finalize_withdrawal_batch_encrypted_senders: Vec::new(),
             transactions: vec![Bytes::from([0x01])],
-        });
-
-        assert!(matches!(
-            prove_zone_batch(&test_config(), witness),
-            Err(Error::InitialTempoCheckpointMismatch {
-                expected_number: 0,
-                expected_hash: B256::ZERO,
-                actual_number: 2,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn initial_tempo_checkpoint_binding_precedes_header_import_validation() {
-        let mut witness = minimal_batch_witness();
-        witness.zone_blocks.push(ZoneBlock {
-            number: 1,
-            parent_hash: witness.parent_header.hash_slow(),
-            timestamp: 0,
-            timestamp_millis_part: 0,
-            beneficiary: Address::ZERO,
-            tempo_import: full_import(Bytes::from([0x01])),
-            finalize_withdrawal_batch_count: Some(U256::ZERO),
-            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
-            transactions: vec![Bytes::from([0x01])],
+            virtual_address_key: None,
         });
 
         assert!(matches!(

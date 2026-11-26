@@ -508,6 +508,40 @@ fn decode_inbox(log: &Log, block: u64) -> eyre::Result<Option<ReceiptEvent>> {
                 result: DepositResult::Failed,
             })
         }
+        IZoneInbox::VirtualDepositProcessed::SIGNATURE_HASH => {
+            let event = decode_event::<IZoneInbox::VirtualDepositProcessed>(
+                log,
+                "VirtualDepositProcessed",
+                block,
+            )?;
+            ReceiptEvent::Action(L2BridgeAction::Deposit {
+                token: event.token,
+                amount: U256::from(event.amount),
+                result: DepositResult::Processed {
+                    recipient: event.to,
+                },
+            })
+        }
+        IZoneInbox::VirtualDepositFailed::SIGNATURE_HASH => {
+            let event = decode_event::<IZoneInbox::VirtualDepositFailed>(
+                log,
+                "VirtualDepositFailed",
+                block,
+            )?;
+            ReceiptEvent::Action(L2BridgeAction::Deposit {
+                token: event.token,
+                amount: U256::from(event.amount),
+                result: DepositResult::Failed,
+            })
+        }
+        IZoneInbox::VirtualAddressKeyInitialized::SIGNATURE_HASH => {
+            decode_event::<IZoneInbox::VirtualAddressKeyInitialized>(
+                log,
+                "VirtualAddressKeyInitialized",
+                block,
+            )?;
+            return Ok(None);
+        }
         IZoneInbox::WithdrawalBounceBackProcessed::SIGNATURE_HASH => {
             let event = decode_event::<IZoneInbox::WithdrawalBounceBackProcessed>(
                 log,
@@ -629,6 +663,10 @@ fn decode_outbox(
             decode_event::<IZoneOutbox::BatchFinalized>(log, "BatchFinalized", block)?;
             return Ok(None);
         }
+        IZoneOutbox::WithdrawalSenderOrg::SIGNATURE_HASH => {
+            decode_event::<IZoneOutbox::WithdrawalSenderOrg>(log, "WithdrawalSenderOrg", block)?;
+            return Ok(None);
+        }
         IZoneOutbox::TempoGasRateUpdated::SIGNATURE_HASH => {
             decode_event::<IZoneOutbox::TempoGasRateUpdated>(log, "TempoGasRateUpdated", block)?;
             return Ok(None);
@@ -656,6 +694,7 @@ mod tests {
     use alloy_sol_types::{SolCall, SolEvent};
     use reth_ethereum_primitives::Receipt;
     use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
+    use test_case::test_case;
 
     fn collect<T, R>(
         transactions: &[T],
@@ -1021,19 +1060,16 @@ mod tests {
         assert!(duplicate.to_string().contains("duplicate TempoAdvanced"));
     }
 
-    #[test]
-    fn rejects_inconsistent_withdrawal_origins() {
-        for log in [
-            withdrawal_request_log(Address::ZERO, 1),
-            withdrawal_request_log(Address::repeat_byte(1), 0),
-        ] {
-            let error = decode_outbox(&log, 4, B256::ZERO).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("invalid WithdrawalRequested origin")
-            );
-        }
+    #[test_case(Address::ZERO, 1)]
+    #[test_case(Address::repeat_byte(1), 0)]
+    fn rejects_inconsistent_withdrawal_origins(sender: Address, fallback_nonce: u64) {
+        let log = withdrawal_request_log(sender, fallback_nonce);
+        let error = decode_outbox(&log, 4, B256::ZERO).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid WithdrawalRequested origin")
+        );
     }
 
     #[test]
@@ -1286,6 +1322,62 @@ mod tests {
         });
         let mint = transfer(token, Address::ZERO, recipient, U256::from(10));
 
+        authenticate_mints(vec![mint, outcome]).unwrap();
+    }
+
+    #[test]
+    fn decodes_virtual_deposit_events_as_deposits() {
+        let token = address!("20c0000000000000000000000000000000000000");
+        let recipient = Address::repeat_byte(0xaa);
+        let processed = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualDepositProcessed {
+                depositHash: B256::repeat_byte(0xd0),
+                originator: Address::repeat_byte(0x11),
+                to: recipient,
+                token,
+                amount: 500,
+                version: 1,
+                masterId: Default::default(),
+                userTag: Default::default(),
+                memo: B256::ZERO,
+            },
+        );
+        let failed = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualDepositFailed {
+                depositHash: B256::repeat_byte(0xd1),
+                originator: Address::repeat_byte(0x11),
+                to: Address::ZERO,
+                token,
+                amount: 300,
+                masterId: Default::default(),
+                userTag: Default::default(),
+            },
+        );
+        let key = event_log(
+            ZONE_INBOX_ADDRESS,
+            IZoneInbox::VirtualAddressKeyInitialized { version: 1 },
+        );
+
+        assert!(matches!(
+            decode_inbox(&processed, 1).unwrap(),
+            Some(ReceiptEvent::Action(L2BridgeAction::Deposit {
+                result: DepositResult::Processed { recipient: r },
+                ..
+            })) if r == recipient
+        ));
+        assert!(matches!(
+            decode_inbox(&failed, 1).unwrap(),
+            Some(ReceiptEvent::Action(L2BridgeAction::Deposit {
+                result: DepositResult::Failed,
+                ..
+            }))
+        ));
+        assert!(decode_inbox(&key, 1).unwrap().is_none());
+
+        let mint = transfer(token, Address::ZERO, recipient, U256::from(500));
+        let outcome = decode_inbox(&processed, 1).unwrap().unwrap();
         authenticate_mints(vec![mint, outcome]).unwrap();
     }
 

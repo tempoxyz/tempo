@@ -805,7 +805,7 @@ impl TempoPoolBuilder {
         client: Client,
         validator: EthTransactionValidatorBuilder<Client, TempoEvmConfig>,
         executor: Runtime,
-        mut pool_config: PoolConfig,
+        pool_config: PoolConfig,
         lazy_kzg_settings: bool,
     ) -> eyre::Result<TempoTransactionPool<Client>>
     where
@@ -815,8 +815,6 @@ impl TempoPoolBuilder {
             + Clone
             + 'static,
     {
-        pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
-
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
         let validator = validator
@@ -870,15 +868,15 @@ impl TempoPoolBuilder {
             .with_disable_fee_amm_check(disable_fee_amm_check)
             .with_address_filter(address_filter.clone())
         });
-        let protocol_pool = Pool::new(
+        let reth_pool = Pool::new(
             validator,
             TempoTipOrdering::default(),
             blob_store,
             pool_config,
         );
 
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        Ok(TempoTransactionPool::new(protocol_pool, aa_2d_pool)
+        // The Reth pool only validates and notifies: the 2D nonce pool holds the transactions
+        Ok(TempoTransactionPool::new(reth_pool, aa_2d_pool)
             .with_delayed_pool_config(delayed_pool_config))
     }
 
@@ -1184,6 +1182,41 @@ mod tests {
     use super::*;
     use alloy_primitives::Address;
     use clap::Parser;
+    use reth_db_common::init::init_genesis;
+    use reth_provider::{
+        ProviderError, StageCheckpointWriter, providers::BlockchainProvider,
+        test_utils::create_test_provider_factory_with_node_types,
+    };
+    use reth_stages_types::{StageCheckpoint, StageId};
+    use tempo_chainspec::spec::DEV;
+
+    #[test]
+    fn amm_liquidity_cache_starts_during_interrupted_pipeline_sync() -> eyre::Result<()> {
+        let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+        init_genesis(&factory)?;
+        // Execution committed past Finish, as when the node stops mid pipeline run.
+        let provider_rw = factory.provider_rw()?;
+        provider_rw.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(1))?;
+        provider_rw.commit()?;
+
+        let provider = BlockchainProvider::new(factory.clone())?;
+        let genesis_hash = DEV.genesis_hash();
+        assert!(matches!(
+            provider.state_by_block_hash(genesis_hash),
+            Err(ProviderError::StateUnavailableDuringSync)
+        ));
+        let cache = AmmLiquidityCache::new(&provider)?;
+        assert!(cache.is_empty());
+
+        // The pipeline finishes, so pool maintenance can repopulate the cache.
+        let provider_rw = factory.provider_rw()?;
+        provider_rw.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(0))?;
+        provider_rw.commit()?;
+        cache.repopulate(&provider)?;
+        assert!(!cache.is_empty());
+
+        Ok(())
+    }
 
     #[test]
     fn build_time_multiplier_cli_rejects_values_outside_learned_range() {

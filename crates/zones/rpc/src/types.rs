@@ -2,7 +2,7 @@
 
 use std::{future::Future, pin::Pin};
 
-use alloy_primitives::{Address, B256, Bytes, U64, U256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U64, U256};
 use alloy_rpc_types_debug::ExecutionWitness;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, value::RawValue};
@@ -232,6 +232,34 @@ pub struct ZoneInfoResponse {
     pub chain_id: U64,
     /// The latest Tempo block imported into the zone.
     pub tempo_block_number: U64,
+}
+
+/// Most user tags one `zone_deriveDepositAddresses` call accepts.
+pub const MAX_DERIVE_DEPOSIT_ADDRESSES: usize = 1024;
+
+/// Parameters of `zone_deriveDepositAddresses`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeriveDepositAddressesRequest {
+    /// A TIP-1094 master ID registered to the authenticated caller.
+    pub master_id: FixedBytes<4>,
+    /// User tags to derive addresses for, at most [`MAX_DERIVE_DEPOSIT_ADDRESSES`].
+    pub user_tags: Vec<u16>,
+    /// Address key version. Defaults to the highest settled version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
+}
+
+/// Result of `zone_deriveDepositAddresses`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeriveDepositAddressesResponse {
+    /// The settled zone block whose registry and keys the addresses were derived from.
+    pub zone_block_hash: B256,
+    /// Address key version used.
+    pub version: u8,
+    /// One deposit address per requested user tag, in request order.
+    pub addresses: Vec<Address>,
 }
 
 /// Local view of one sequencer node for `zone_getSequencerInfo`.
@@ -465,6 +493,7 @@ define_methods! {
     ZoneGetAuthorizationTokenInfo => "zone_getAuthorizationTokenInfo",
     ZoneGetZoneInfo => "zone_getZoneInfo",
     ZoneGetEncryptionKey => "zone_getEncryptionKey",
+    ZoneDeriveDepositAddresses => "zone_deriveDepositAddresses",
     EthGetTransactionByHash => "eth_getTransactionByHash",
     EthGetTransactionReceipt => "eth_getTransactionReceipt",
     EthGetLogs => "eth_getLogs",

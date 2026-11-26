@@ -263,7 +263,7 @@ pub(crate) struct DepositAllowlistStatus {
 /// A sequencer's allowlist and its status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DepositAllowlistSnapshot {
+pub struct DepositAllowlistSnapshot {
     #[serde(flatten)]
     pub(crate) status: DepositAllowlistStatus,
     /// Addresses in ascending order.
@@ -273,7 +273,7 @@ pub(crate) struct DepositAllowlistSnapshot {
 /// One sequencer's entry in `zoneAdmin_getDepositAllowlistStatus`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SequencerAllowlistStatus {
+pub struct SequencerAllowlistStatus {
     /// The sequencer's P2P public key; omitted when a sequencer reports itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) sequencer: Option<String>,
@@ -422,6 +422,17 @@ impl DepositAllowlist {
         tokio::task::spawn_blocking(move || allowlist.apply_signed(write))
             .await
             .map_err(|err| DepositAllowlistError::Internal(err.to_string()))?
+    }
+
+    /// Whether a deposit from §sender§ to §recipient§ is admitted. An uninitialized list admits
+    /// every deposit; a §None§ recipient (the deposit is refunded anyway) is not checked.
+    pub fn admits(&self, sender: Address, recipient: Option<Address>) -> bool {
+        let state = self.inner.state.read();
+        let Some(state) = state.as_ref() else {
+            return true;
+        };
+        state.addresses.contains(&sender)
+            && recipient.is_none_or(|recipient| state.addresses.contains(&recipient))
     }
 
     /// Replace the decryption data of every deposit whose sender or decrypted zone recipient is
@@ -646,7 +657,6 @@ pub(crate) trait DepositAllowlistApi {
     async fn get_deposit_allowlist_status(&self) -> RpcResult<Vec<SequencerAllowlistStatus>>;
 }
 
-#[jsonrpsee::core::async_trait]
 impl DepositAllowlistApiServer for DepositAllowlist {
     async fn set_deposit_allowed(
         &self,

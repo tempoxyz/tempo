@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
 use reth_evm_ethereum::EvmFactory as _;
@@ -212,7 +212,7 @@ impl BestTransactionsPrewarming {
                     return None;
                 }
 
-                let actions = evm.ext().actions.take()?;
+                let actions = evm.ext().actions.take_replay()?;
                 let expiring_nonce = tx
                     .transaction
                     .is_expiring_nonce()
@@ -473,36 +473,24 @@ struct InvalidTransaction {
     kind: InvalidPoolTransactionError,
 }
 
-/// Transaction lanes invalidated during a payload build.
+/// Nonce lanes invalidated during a payload build.
 ///
-/// Invalidating a regular transaction blocks every later regular transaction from the same
-/// sender. Invalidating a 2D nonce transaction blocks only its `(sender, nonce_key)` sequence.
+/// Invalidating a transaction blocks every later transaction of its `(sender, nonce_key)` lane.
+/// A sender's non-AA transactions share the lane of nonce key 0.
 #[derive(Debug, Default)]
 struct InvalidatedLanes {
-    senders: HashSet<Address>,
     sequences: HashSet<AASequenceId>,
 }
 
 impl InvalidatedLanes {
     fn insert(&mut self, invalid: &BestTransaction) {
-        if invalid.transaction.is_aa_2d() {
-            if let Some(id) = invalid.transaction.aa_transaction_id() {
-                self.sequences.insert(*id.seq_id());
-            }
-        } else {
-            self.senders.insert(invalid.transaction.sender());
-        }
+        self.sequences
+            .insert(*invalid.transaction.lane_transaction_id().seq_id());
     }
 
     fn contains(&self, candidate: &BestTransaction) -> bool {
-        if candidate.transaction.is_aa_2d() {
-            candidate
-                .transaction
-                .aa_transaction_id()
-                .is_some_and(|id| self.sequences.contains(id.seq_id()))
-        } else {
-            self.senders.contains(&candidate.transaction.sender())
-        }
+        self.sequences
+            .contains(candidate.transaction.lane_transaction_id().seq_id())
     }
 }
 
@@ -659,11 +647,7 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(token),
             gas_limit,
-            calls: vec![Call {
-                to: TxKind::Call(token),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(token, input)],
             nonce_key,
             valid_before: (nonce_key == U256::MAX).then_some(NonZeroU64::new(100).unwrap()),
             ..Default::default()
@@ -1101,11 +1085,7 @@ mod tests {
             chain_id: 42431,
             fee_token: Some(PATH_USD_ADDRESS),
             gas_limit: 1_000_000,
-            calls: vec![Call {
-                to: TxKind::Call(PATH_USD_ADDRESS),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
+            calls: vec![Call::new(PATH_USD_ADDRESS, input)],
             nonce_key: U256::ONE,
             ..Default::default()
         };
@@ -1201,6 +1181,37 @@ mod tests {
     }
 
     #[test]
+    fn unreplayable_actions_yield_no_replay_for_their_transaction_only() {
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block.basefee = U256::ZERO;
+
+        let pool = WorkerStatefulPool::new(Arc::new(WorkerPool::new(1, "prewarm-replay-test")));
+        pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
+
+        pool.install_fn(|| {
+            // Model a transaction whose precompile makes a nested call: none does yet.
+            pool.get_or_init(
+                || context.evm_for_ctx(),
+                |evm| {
+                    let evm = evm.as_mut().expect("prewarm EVM");
+                    evm.ext().actions.mark_unreplayable();
+                },
+            );
+
+            // Only that transaction is left without a replay.
+            for replayed in [false, true] {
+                let prewarmed = BestTransactionsPrewarming::prewarm_transaction(
+                    &pool,
+                    context.clone(),
+                    test_payment_tx(Address::random(), 500_000),
+                    None,
+                );
+                assert_eq!(prewarmed.replay.is_some(), replayed);
+            }
+        });
+    }
+
+    #[test]
     fn mark_invalid_skips_buffered_transactions_on_invalidated_lanes() {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
@@ -1245,6 +1256,23 @@ mod tests {
         assert_eq!(prewarming.next().unwrap().tx.hash(), buffered[3].hash());
         // Both transactions were already buffered, so no source poll was needed.
         assert!(commands_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn invalidated_lanes_join_non_aa_and_protocol_nonce_aa() {
+        let sender = Address::random();
+        let non_aa = test_tx(sender, 0);
+        let protocol_nonce_aa = test_payment_tx_with_nonce_key(sender, 500_000, U256::ZERO);
+        let other_lane = test_payment_tx_with_nonce_key(sender, 500_000, U256::ONE);
+
+        for invalid in [&non_aa, &protocol_nonce_aa] {
+            let mut invalidated = InvalidatedLanes::default();
+            invalidated.insert(invalid);
+            assert!(invalidated.contains(&test_tx(sender, 1)));
+            assert!(invalidated.contains(&protocol_nonce_aa));
+            assert!(!invalidated.contains(&other_lane));
+            assert!(!invalidated.contains(&test_tx(Address::random(), 0)));
+        }
     }
 
     #[test]

@@ -1,6 +1,11 @@
 use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
 use evm2::evm::precompile::PrecompileProvider;
+use reth_evm::precompile_cache::{
+    CachedPrecompileProvider, PrecompileCacheMap, PrecompileCachePolicy,
+};
 use std::sync::Arc;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::TempoPrecompiles;
 
 /// Tempo's EVM is EVM2 with the Tempo type family.
 pub type TempoEvm<'a> = evm2::Evm<'a, TempoEvmTypes>;
@@ -16,7 +21,8 @@ pub type PrecompilesBuilder =
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
-    precompiles_builder: PrecompilesBuilder,
+    /// Builds the precompiles in place of the built-in [`TempoPrecompiles`], if set.
+    precompiles_builder: Option<PrecompilesBuilder>,
     #[cfg(feature = "jit")]
     jit: Option<(crate::jit::JitBackend, crate::jit::JitMetrics)>,
     #[cfg(feature = "jit")]
@@ -25,13 +31,14 @@ pub struct TempoEvmFactory {
 
 impl Default for TempoEvmFactory {
     fn default() -> Self {
-        Self::new_with_precompiles(|env, ext| {
-            Box::new(tempo_precompiles::TempoPrecompiles::new(
-                env.spec,
-                ext.actions.clone(),
-                ext.non_creditable_slots.clone(),
-            ))
-        })
+        Self {
+            fee_manager: Arc::new(TempoFeeManager::new()),
+            precompiles_builder: None,
+            #[cfg(feature = "jit")]
+            jit: None,
+            #[cfg(feature = "jit")]
+            jit_support: false,
+        }
     }
 }
 
@@ -39,12 +46,8 @@ impl TempoEvmFactory {
     /// Creates a factory with precompiles built from its environment and shared accounting state.
     pub fn new_with_precompiles(builder: PrecompilesBuilder) -> Self {
         Self {
-            fee_manager: Arc::new(TempoFeeManager::new()),
-            precompiles_builder: builder,
-            #[cfg(feature = "jit")]
-            jit: None,
-            #[cfg(feature = "jit")]
-            jit_support: false,
+            precompiles_builder: Some(builder),
+            ..Default::default()
         }
     }
 
@@ -53,7 +56,45 @@ impl TempoEvmFactory {
         env: &TempoEvmEnv,
         ext: &TempoEvmExt,
     ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
-        (self.precompiles_builder)(env, ext)
+        match self.precompiles_builder {
+            Some(builder) => builder(env, ext),
+            None => Box::new(TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            )),
+        }
+    }
+
+    /// Builds precompiles whose Ethereum precompile results are cached in `cache_map`.
+    ///
+    /// Tempo's own precompiles are never cached. Precompiles from a custom builder are not cached
+    /// either, since it may install stateful precompiles at Ethereum precompile addresses.
+    pub(crate) fn cached_precompiles(
+        &self,
+        env: &TempoEvmEnv,
+        ext: &TempoEvmExt,
+        cache_map: PrecompileCacheMap<TempoHardfork>,
+        metrics_enabled: bool,
+    ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
+        if self.precompiles_builder.is_some() {
+            return self.precompiles(env, ext);
+        }
+        // The base table holds only Ethereum precompiles, whose results depend only on their
+        // input and the hardfork.
+        let base = CachedPrecompileProvider::new(
+            TempoPrecompiles::base_precompiles(env.spec),
+            cache_map,
+            env.spec,
+            PrecompileCachePolicy::All,
+            metrics_enabled,
+        );
+        Box::new(TempoPrecompiles::with_base(
+            base,
+            env.spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+        ))
     }
 
     /// Uses a custom protocol fee implementation for subsequently created EVMs.
@@ -221,7 +262,10 @@ mod runtime_tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
+        test_util::{
+            KeychainSetup, TIP20Setup, set_empty_compound_transfer_policy,
+            set_empty_receive_policies,
+        },
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -435,6 +479,175 @@ mod runtime_tests {
             .discard();
         assert!(result.status, "portal call failed: {result:?}");
         assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+    }
+
+    #[test]
+    fn tip20_transfer_to_zone_deposit_address_queues_virtual_deposit() {
+        let owner = Address::repeat_byte(0x11);
+        let admin = Address::repeat_byte(0x22);
+        let sequencer = Address::repeat_byte(0x33);
+        let alice = Address::repeat_byte(0xa1);
+        let amount = U256::from(1_000_000u64);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &ZONE_PORTAL_IMPL_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(
+                tempo_contracts::zones::T15_ZONE_PORTAL_RUNTIME,
+            )),
+        );
+        initialize_zone_factory(&mut db, owner);
+        // The portal's deposit checkpoints call the TIP-1060 precompile, which Solidity only calls
+        // when it has code.
+        db.insert_account_info(
+            &tempo_contracts::precompiles::STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
+        let mut evm = configured_evm(TempoHardfork::T15, 0, false, db);
+        StorageCtx::enter_evm(&mut evm, || {
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount * U256::from(2))
+                .apply()
+        })
+        .unwrap();
+
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    ZONE_FACTORY_ADDRESS,
+                    IZoneFactory::createZoneCall {
+                        params: IZoneFactory::CreateZoneParams {
+                            initialToken: PATH_USD_ADDRESS,
+                            accessMode: false,
+                            gatewayMode: false,
+                            allowedAccounts: vec![],
+                            zoneGateways: vec![],
+                            admin,
+                            sequencers: vec![sequencer],
+                            threshold: 1,
+                            rpcUrl: "https://zone.example".to_string(),
+                        },
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(owner),
+            )
+            .unwrap()
+            .commit();
+        assert!(result.status, "createZone failed: {result:?}");
+        let created = IZoneFactory::createZoneCall::abi_decode_returns(&result.output).unwrap();
+        let destination = tempo_contracts::zones::ZoneDepositAddress {
+            zone_id: created.zoneId,
+            version: 1,
+            ciphertext: [1, 2, 3, 4, 5, 6].into(),
+        }
+        .encode();
+        let transfer = ITIP20::transferCall {
+            to: destination,
+            amount,
+        }
+        .abi_encode();
+        let balance = |evm: &mut TempoEvm<'static>, account| {
+            StorageCtx::enter_evm(evm, || {
+                TIP20Token::from_address(PATH_USD_ADDRESS)?
+                    .balance_of(ITIP20::balanceOfCall { account })
+            })
+            .unwrap()
+        };
+
+        let result = evm
+            .system_call(SystemTx::new(PATH_USD_ADDRESS, transfer.into()).with_caller(alice))
+            .unwrap()
+            .commit();
+        assert!(result.status, "transfer failed: {result:?}");
+        assert_eq!(balance(&mut evm, alice), amount);
+        assert_eq!(balance(&mut evm, destination), U256::ZERO);
+        let queued = result
+            .logs
+            .iter()
+            .find_map(|log| IZonePortal::VirtualDepositMade::decode_log(log).ok())
+            .expect("portal queued the deposit");
+        assert_eq!(queued.originator, alice);
+        assert_eq!(queued.destination, destination);
+        assert_eq!(queued.depositNumber, 1);
+        assert_eq!(
+            balance(&mut evm, created.portal) + balance(&mut evm, admin),
+            amount
+        );
+
+        // A deposit address for a zone that does not exist reverts with ZoneUnregistered.
+        let unregistered = tempo_contracts::zones::ZoneDepositAddress {
+            zone_id: created.zoneId + 1,
+            version: 1,
+            ciphertext: [1, 2, 3, 4, 5, 6].into(),
+        }
+        .encode();
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::transferCall {
+                        to: unregistered,
+                        amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(alice),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            ITIP20::ZoneUnregistered {
+                zoneId: created.zoneId + 1
+            }
+            .abi_encode()
+        );
+        assert_eq!(balance(&mut evm, alice), amount);
+
+        // A zero-amount transfer to a deposit address reverts: it needs no allowance, so it could
+        // name any account as the originator.
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::transferCall {
+                        to: destination,
+                        amount: U256::ZERO,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(alice),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
+        assert_eq!(
+            result.output.as_ref(),
+            ITIP20::InvalidAmount {}.abi_encode()
+        );
+
+        // Mints to deposit addresses revert.
+        let result = evm
+            .system_call(
+                SystemTx::new(
+                    PATH_USD_ADDRESS,
+                    ITIP20::mintCall {
+                        to: destination,
+                        amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                )
+                .with_caller(admin),
+            )
+            .unwrap()
+            .commit();
+        assert!(!result.status);
     }
 
     #[test]
@@ -1323,11 +1536,7 @@ mod runtime_tests {
                             max_priority_fee_per_gas: u128::from(gas_price),
                             max_fee_per_gas: u128::from(gas_price),
                             gas_limit,
-                            calls: vec![Call {
-                                to: TxKind::Call(PATH_USD_ADDRESS),
-                                value: U256::ZERO,
-                                input: calldata,
-                            }],
+                            calls: vec![Call::new(PATH_USD_ADDRESS, calldata)],
                             nonce_key,
                             nonce,
                             ..Default::default()
@@ -1647,27 +1856,17 @@ mod runtime_tests {
                         .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
                         .with_mint(holder, U256::from(balance))
                         .apply()?;
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
-                    keychain.set_tx_origin(holder)?;
-                    keychain.authorize_key(
-                        holder,
-                        key.address(),
-                        IAccountKeychain::SignatureType::Secp256k1,
-                        IAccountKeychain::KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: true,
-                            limits: vec![IAccountKeychain::TokenLimit {
-                                token: token.address(),
-                                amount: U256::from(100),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                        None,
-                    )?;
-                    keychain.set_transaction_key(key.address())?;
+                    KeychainSetup::new(holder)
+                        .key(
+                            key.address(),
+                            IAccountKeychain::KeyRestrictions::unrestricted().limit(
+                                token.address(),
+                                U256::from(100),
+                                0,
+                            ),
+                        )
+                        .acting_as(key.address())
+                        .apply()?;
                     Ok(token.address())
                 })?;
             evm.state_mut().commit_transaction();
@@ -1709,11 +1908,7 @@ mod runtime_tests {
                 fee_token: Some(PATH_USD_ADDRESS),
                 gas_limit: 1_000_000,
                 nonce: self.nonce,
-                calls: vec![Call {
-                    to: TxKind::Call(MULTICALL3_ADDRESS),
-                    value: U256::ZERO,
-                    input: data,
-                }],
+                calls: vec![Call::new(MULTICALL3_ADDRESS, data)],
                 ..Default::default()
             };
             let signature = self.key.sign_hash_sync(&KeychainSignature::signing_hash(

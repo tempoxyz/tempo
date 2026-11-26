@@ -68,7 +68,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getBalance(address, block)` — returns the balance of an account.
     ///
-    /// Returns `0x0` when querying an address that does not match `auth.caller`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_balance(
         &self,
         address: Address,
@@ -78,7 +78,7 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
 
     /// `eth_getTransactionCount(address, block)` — returns the nonce.
     ///
-    /// Returns `0x0` when querying an address that does not match `auth.caller`.
+    /// Returns `0x0` when `auth.caller` may not read the account.
     fn get_transaction_count(
         &self,
         address: Address,
@@ -98,9 +98,13 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     fn block_by_hash(&self, hash: B256, full: bool, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getTransactionByHash(hash)` — returns a transaction by hash.
+    ///
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_by_hash(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getTransactionReceipt(hash)` — returns a transaction receipt.
+    ///
+    /// Returns `null` when `auth.caller` may not read the sender.
     fn transaction_receipt(&self, hash: B256, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_call(request, block, state_override)` — executes a call without
@@ -148,10 +152,11 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// Same `from`-enforcement as [`call`](Self::call).
     fn fill_transaction(&self, request: TempoTransactionRequest, auth: AuthContext) -> BoxFut<'_>;
 
-    /// `eth_getLogs(filter)` — returns logs matching the filter, scoped to the caller.
+    /// `eth_getLogs(filter)` — returns matching logs of one account or org the caller may read.
     fn get_logs(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
-    /// `eth_newFilter(filter)` — creates a new log filter, scoped to the caller.
+    /// `eth_newFilter(filter)` — creates a new log filter, scoped like
+    /// [`get_logs`](Self::get_logs).
     fn new_filter(&self, filter: Filter, auth: AuthContext) -> BoxFut<'_>;
 
     /// `eth_getFilterLogs(id)` — returns all logs for a filter.
@@ -186,6 +191,16 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// `zone_getEncryptionKey()` — returns the active encryption key at the
     /// current Tempo L1 head.
     fn zone_get_encryption_key(&self, auth: AuthContext) -> BoxFut<'_>;
+
+    /// `zone_deriveDepositAddresses(request)` — derives TIP-1094 deposit addresses for a master
+    /// ID registered to the authenticated caller, from the last settled zone block.
+    fn zone_derive_deposit_addresses(
+        &self,
+        _request: crate::types::DeriveDepositAddressesRequest,
+        _auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async { Err(JsonRpcError::method_disabled()) })
+    }
 }
 
 /// Deserialize JSON-RPC params, returning an error response on failure.
@@ -328,6 +343,22 @@ pub async fn dispatch(
         }
         Method::ZoneGetEncryptionKey => {
             api_result(id, method, api.zone_get_encryption_key(auth.clone()).await)
+        }
+        Method::ZoneDeriveDepositAddresses => {
+            let (request,) = match parse_params::<(crate::types::DeriveDepositAddressesRequest,)>(
+                raw,
+                &id,
+                "expected [{masterId, userTags, version?}]",
+            ) {
+                Ok(v) => v,
+                Err(resp) => return resp,
+            };
+            api_result(
+                id,
+                method,
+                api.zone_derive_deposit_addresses(request, auth.clone())
+                    .await,
+            )
         }
     }
 }
@@ -744,6 +775,7 @@ pub fn normalize_block_id(block: BlockId) -> BlockId {
 mod tests {
     use alloy_primitives::Address;
     use serde_json::json;
+    use test_case::test_case;
 
     use super::*;
     use crate::types::to_raw;
@@ -1011,34 +1043,33 @@ mod tests {
         assert_eq!(err.message, "state overrides not allowed");
     }
 
+    // The mock echoes the block it is asked to run against.
+    #[test_case("eth_call", "pending" => json!("latest"))]
+    #[test_case("eth_call", "latest" => json!("latest"))]
+    #[test_case("eth_call", "0x10" => json!("0x10"))]
+    #[test_case("eth_estimateGas", "pending" => json!("latest"))]
+    #[test_case("eth_estimateGas", "latest" => json!("latest"))]
+    #[test_case("eth_estimateGas", "0x10" => json!("0x10"))]
     #[tokio::test]
-    async fn simulations_treat_pending_as_latest() {
+    async fn simulations_treat_pending_as_latest(
+        method: &str,
+        requested: &str,
+    ) -> serde_json::Value {
         let api = MockZoneRpcApi::default();
-        for method in ["eth_call", "eth_estimateGas"] {
-            // The mock echoes the block it is asked to run against.
-            for (requested, forwarded) in [
-                (json!("pending"), json!("latest")),
-                (json!("latest"), json!("latest")),
-                (json!("0x10"), json!("0x10")),
-            ] {
-                let resp = dispatch(
-                    &request(
-                        method,
-                        json!([
-                            {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
-                            requested,
-                        ]),
-                    ),
-                    &auth(),
-                    &api,
-                )
-                .await;
+        let resp = dispatch(
+            &request(
+                method,
+                json!([
+                    {"to": format!("{:#x}", Address::repeat_byte(0x11)), "data": "0x"},
+                    requested,
+                ]),
+            ),
+            &auth(),
+            &api,
+        )
+        .await;
 
-                let block: serde_json::Value =
-                    serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap();
-                assert_eq!(block, forwarded, "{method} at {requested}");
-            }
-        }
+        serde_json::from_str(resp.result.expect("should dispatch").get()).unwrap()
     }
 
     #[tokio::test]
@@ -1085,26 +1116,23 @@ mod tests {
         }
     }
 
+    #[test_case("eth_getCode")]
+    #[test_case("eth_getProof")]
+    #[test_case("admin_peers")]
+    #[test_case("debug_accountRange")]
+    #[test_case("txpool_contentFrom")]
+    #[test_case("missing_method")]
     #[tokio::test]
-    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label() {
+    async fn unregistered_methods_are_not_found_and_share_the_unknown_metric_label(name: &str) {
         let api = MockZoneRpcApi::default();
 
-        for name in [
-            "eth_getCode",
-            "eth_getProof",
-            "admin_peers",
-            "debug_accountRange",
-            "txpool_contentFrom",
-            "missing_method",
-        ] {
-            assert_eq!(Method::from_name(name), None, "method: {name}");
-            assert_eq!(Method::metric_label(name), "unknown");
-            let error = dispatch(&request(name, json!([])), &auth(), &api)
-                .await
-                .error
-                .expect("method must return an error");
-            assert_eq!(error.code, -32601, "method: {name}");
-            assert_eq!(error.message, "Method not found", "method: {name}");
-        }
+        assert_eq!(Method::from_name(name), None);
+        assert_eq!(Method::metric_label(name), "unknown");
+        let error = dispatch(&request(name, json!([])), &auth(), &api)
+            .await
+            .error
+            .expect("method must return an error");
+        assert_eq!(error.code, -32601);
+        assert_eq!(error.message, "Method not found");
     }
 }

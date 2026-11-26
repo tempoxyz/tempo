@@ -1324,9 +1324,8 @@ impl ValidatorInfo {
                 .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
                 .unwrap_or_default();
 
-            let boundary_block = provider
-                .get_block_by_number(boundary_height.get().into())
-                .hashes()
+            let boundary_header = provider
+                .get_header_by_number(boundary_height.get().into())
                 .await
                 .wrap_err_with(|| {
                     format!(
@@ -1334,9 +1333,9 @@ impl ValidatorInfo {
                         boundary_height.get()
                     )
                 })?
-                .ok_or_eyre("boundary block not found")?;
+                .ok_or_eyre("boundary header not found")?;
 
-            let extra_data = boundary_block.header.extra_data();
+            let extra_data = boundary_header.extra_data();
             if extra_data.is_empty() {
                 return Err(eyre!(
                     "boundary block at height {} has no DKG outcome in extra_data",
@@ -1476,9 +1475,8 @@ impl Info {
             .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
             .unwrap_or_default();
 
-        let boundary_block = provider
-            .get_block_by_number(boundary_height.get().into())
-            .hashes()
+        let boundary_header = provider
+            .get_header_by_number(boundary_height.get().into())
             .await
             .wrap_err_with(|| {
                 format!(
@@ -1486,9 +1484,9 @@ impl Info {
                     boundary_height.get()
                 )
             })?
-            .ok_or_eyre("boundary block not found")?;
+            .ok_or_eyre("boundary header not found")?;
 
-        let extra_data = boundary_block.header.extra_data();
+        let extra_data = boundary_header.extra_data();
         if extra_data.is_empty() {
             return Err(eyre!(
                 "boundary block at height {} has no DKG outcome in extra_data",
@@ -1690,12 +1688,15 @@ impl ClaimFees {
 mod tests {
     use super::*;
     use alloy::transports::mock::Asserter;
+    use alloy_primitives::U64;
     use clap::Parser;
     use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use std::sync::Mutex;
+    use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_chainspec::spec::TempoChainSpecParser;
+    use tempo_primitives::TempoHeader;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -2248,6 +2249,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn info_reads_boundary_header_only() {
+        let chain_id = tempo_chainspec::spec::PRESTO.chain_id();
+        let epoch_length = tempo_chainspec::spec::PRESTO
+            .info
+            .epoch_length()
+            .unwrap()
+            .get();
+        let boundary_height = 3 * epoch_length - 1;
+        let boundary_header = TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: boundary_height,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            timestamp_millis: 0,
+        };
+
+        // Pruned nodes may lack the boundary block's body, so the server serves headers only
+        // and leaves `eth_getBlockByNumber` unregistered.
+        let mut module = RpcModule::new(());
+        module
+            .register_method("eth_chainId", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(U64::from(chain_id))
+            })
+            .unwrap();
+        module
+            .register_method("eth_blockNumber", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(U64::from(3 * epoch_length + 5))
+            })
+            .unwrap();
+        module
+            .register_method("eth_getHeaderByNumber", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(boundary_header.clone())
+            })
+            .unwrap();
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", server.local_addr().unwrap());
+        let handle = server.start(module);
+
+        let cli = TempoCli::try_parse_from(["tempo", "consensus", "info", "--rpc-url", &rpc_url])
+            .unwrap();
+        let info = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::Info(cmd),
+            )) => cmd,
+            other => panic!("expected Info, got `{other:?}`"),
+        };
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), info.run())
+            .await
+            .unwrap()
+            .unwrap_err();
+        handle.stop().unwrap();
+
+        assert_eq!(
+            err.to_string(),
+            format!("boundary block at height {boundary_height} has no DKG outcome in extra_data")
+        );
+    }
+
+    #[tokio::test]
     async fn claim_fees_infers_recipient_token() {
         for (source, value) in [
             ("--at-address", TEST_FEE_RECIPIENT),
@@ -2328,10 +2391,10 @@ mod tests {
             let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
-                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .register_method("eth_chainId", |_, _| "0xa5bf")
                 .unwrap();
             module
-                .register_method("eth_call", move |params, requests, _| {
+                .register_method("eth_call", move |params, requests| {
                     let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
                     let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
                         IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
@@ -2345,7 +2408,7 @@ mod tests {
             for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
                 let submissions = submissions.clone();
                 module
-                    .register_method(method, move |_, _, _| {
+                    .register_method(method, move |_, _| {
                         submissions.lock().unwrap().push(method);
                         Ok::<_, ErrorObjectOwned>(B256::ZERO)
                     })

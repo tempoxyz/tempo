@@ -5,6 +5,7 @@ use alloy::{
 };
 use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
+use tempo_alloy::test_utils::CallBuilderExt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
 
@@ -29,9 +30,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
         .mint(caller, mint_amount)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
+        .mined()
         .await?;
 
     // Construct a TIP20 call and insert into calls
@@ -93,51 +92,23 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     Ok(())
 }
 
+/// `tempo_simulateV1` rejects a payload over the call limit before decoding its calls, like
+/// `eth_simulateV1`.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_simulate_block_gas_override_exceeds_general_limit() -> eyre::Result<()> {
-    let mut genesis: serde_json::Value =
-        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
-    genesis["config"]["generalGasLimit"] = json!(100_000);
-    let setup = TestNodeBuilder::new()
-        .with_genesis(serde_json::to_string(&genesis)?)
-        .with_gas_limit("0xf4240") // 1,000,000
-        .build_http_only()
-        .await?;
-    let provider = ProviderBuilder::new().connect_http(setup.http_url.clone());
-    let target = Address::repeat_byte(0x42);
-    // An infinite loop consumes the call's full gas allowance.
-    let payload = json!({
-        "blockStateCalls": [{
-            "blockOverrides": { "gasLimit": "0x1e8480" },
-            "stateOverrides": { format!("{target:#x}"): { "code": "0x5b600056" } },
-            "calls": [{
-                "from": format!("{:#x}", Address::ZERO),
-                "to": format!("{target:#x}"),
-                "gas": "0x16e360"
-            }]
-        }],
-        "validation": false
-    });
-    for method in ["eth_simulateV1", "tempo_simulateV1"] {
-        for trace_transfers in [false, true] {
-            let mut payload = payload.clone();
-            payload["traceTransfers"] = json!(trace_transfers);
-            let response: serde_json::Value =
-                provider.raw_request(method.into(), (payload,)).await?;
-            let blocks = if method == "tempo_simulateV1" {
-                &response["blocks"]
-            } else {
-                &response
-            };
-            let gas_used = U256::from_str_radix(
-                blocks[0]["gasUsed"]
-                    .as_str()
-                    .expect("simulated block gas used")
-                    .trim_start_matches("0x"),
-                16,
-            )?;
-            assert!(gas_used > U256::from(1_000_000), "{method}: {response}");
-        }
-    }
+async fn test_tempo_simulate_v1_bounds_calls() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    let payload = json!({ "blockStateCalls": [{ "calls": vec![json!({}); 4097] }] });
+    let err = provider
+        .raw_request::<_, serde_json::Value>("tempo_simulateV1".into(), (payload,))
+        .await
+        .unwrap_err();
+    let err = err.as_error_resp().expect("JSON-RPC error");
+    assert_eq!(err.code, -32602);
+    assert_eq!(err.message, "too many calls in simulation payload");
+
     Ok(())
 }

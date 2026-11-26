@@ -328,7 +328,7 @@ def main():
         else:
             meta = {
                 'edition': '"2024"',
-                'rust-version': '"1.96.0"',
+                'rust-version': '"1.100.0"',
                 'authors': '["Tempo Contributors"]',
                 'license': '"MIT OR Apache-2.0"',
                 'homepage': '"https://docs.tempo.xyz"',
@@ -391,18 +391,24 @@ def main():
         })
 
     elif action == "sanitize_alloy":
+        # Track removed deps so we can auto-strip orphaned feature entries
+        removed = set()
+
         # Remove reth dependency lines
-        text = strip_dep_lines(text, lambda n: n.startswith('reth-'))
+        text = strip_dep_lines(text, lambda n: n.startswith('reth-'), removed)
         # Remove internal non-publishable deps (path-only workspace crates, except
         # the crates we're publishing: tempo-contracts and tempo-primitives)
         ws_toml_path = sys.argv[3]
         _, _, ws_path_deps, _, _ = parse_workspace_deps(ws_toml_path)
         publish_keep = {'tempo-hardfork', 'tempo-contracts', 'tempo-primitives', 'tempo-chainspec', 'tempo-alloy'}
         internal_deps = ws_path_deps - publish_keep
-        text = strip_dep_lines(text, lambda n: n in internal_deps)
+        text = strip_dep_lines(text, lambda n: n in internal_deps, removed)
 
         # Strip node-internal compatibility feature blocks
         text = strip_feature_blocks(text, ['reth'])
+
+        # Auto-strip feature entries referencing removed deps
+        text = strip_orphaned_feature_entries(text, removed)
 
         # Strip "rpc" from tempo-primitives features (rpc feature is stripped during publish)
         text = re.sub(r', "rpc"', '', text)

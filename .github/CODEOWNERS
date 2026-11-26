@@ -7,7 +7,7 @@
 /docs/ @klkvr @mattsse
 /examples/ @klkvr @mattsse
 
-bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy
+bin/tempo @0xKitsune @klkvr @Zygimantass @SuperFluffy @rkrasiuk @shekhirin @jenpaff
 contrib/ @Zygimantass @shekhirin
 scripts/ @0xKitsune
 xtask/ @0xKitsune @Zygimantass @SuperFluffy @joshieDo
@@ -22,6 +22,7 @@ crates/evm/ @0xKitsune @klkvr @mattsse @shekhirin @rakita
 crates/ext/ @shekhirin @Slokh
 crates/eyre/ @SuperFluffy
 crates/faucet/ @klkvr @mattsse
+crates/fuzz-engine/ @0xrusowsky
 crates/fuzz-harness/ @0xrusowsky
 crates/fuzz-types/ @0xrusowsky
 crates/hardfork/ @klkvr @0xrusowsky @legion2002 @jenpaff @mattsse @rakita @0xKitsune
@@ -39,24 +40,33 @@ crates/validator-config/ @joshieDo @SuperFluffy @hamdiallam
 tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush
 
 # Zones (imported from tempoxyz/zones)
-/zones/ @rkrasiuk @shekhirin
-bin/tempo-zone/ @0xKitsune @mattsse @klkvr @rkrasiuk
-bin/prover/ @rkrasiuk @shekhirin
-crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
-crates/zones/checker/ @rkrasiuk
-crates/zones/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @0xalpharush
-crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune @rakita
-crates/zones/exithatch/ @rkrasiuk
-crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00 @rkrasiuk
-crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002 @rkrasiuk
-crates/zones/p2p/ @adityapk00 @legion2002 @klkvr @rkrasiuk
-crates/zones/payload/ @mattsse @0xKitsune @0xrusowsky @adityapk00 @klkvr
-crates/zones/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
-crates/zones/primitives/ @mattsse @0xKitsune @0xrusowsky @klkvr
-crates/zones/prover/ @rkrasiuk @shekhirin
-crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00 @rkrasiuk
-crates/zones/sequencer/ @mattsse @0xKitsune @adityapk00 @rkrasiuk @klkvr
-crates/zones/spf/ @rkrasiuk @shekhirin @klkvr
-xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002
-zones/zone-genesis/ @mattsse @0xKitsune @klkvr @0xrusowsky
+/zones/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+bin/tempo-zone/ @0xKitsune @mattsse @klkvr @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+bin/prover/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse @shekhirin @joshieDo
+crates/zones/checker/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @0xalpharush @shekhirin @joshieDo
+crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune @rakita @shekhirin @joshieDo
+crates/zones/exithatch/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00 @rkrasiuk @shekhirin @joshieDo
+crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002 @rkrasiuk @shekhirin @joshieDo
+crates/zones/p2p/ @adityapk00 @legion2002 @klkvr @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/payload/ @mattsse @0xKitsune @0xrusowsky @adityapk00 @klkvr @shekhirin @joshieDo
+crates/zones/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @shekhirin @joshieDo
+crates/zones/primitives/ @mattsse @0xKitsune @0xrusowsky @klkvr @shekhirin @joshieDo
+crates/zones/prover/ @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00 @rkrasiuk @shekhirin @joshieDo @0xrusowsky
+crates/zones/sequencer/ @mattsse @0xKitsune @adityapk00 @rkrasiuk @klkvr @shekhirin @joshieDo @0xrusowsky
+crates/zones/spf/ @rkrasiuk @shekhirin @klkvr @joshieDo @0xrusowsky
+xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002 @shekhirin @joshieDo @0xrusowsky
+zones/zone-genesis/ @mattsse @0xKitsune @klkvr @0xrusowsky @shekhirin @joshieDo
 zones/specs/ @dankrad @danrobinson
+
+# Zone runtime integrity: the runtimes zone hardforks install must match the
+# Solidity sources, checked by the runtime-bytecode job in zones-contracts.yml.
+/.github/workflows/zones-contracts.yml @legion2002 @rkrasiuk @0xalpharush
+/crates/contracts/src/zones.rs @legion2002 @0xrusowsky @0xalpharush
+/crates/contracts/src/zones/tests.rs @legion2002 @0xrusowsky @0xalpharush
+/crates/contracts/src/precompiles/zone_factory.rs @legion2002 @0xrusowsky @0xalpharush
+/.github/CODEOWNERS @rkrasiuk @mattsse @0xalpharush
+/review.yml @rkrasiuk @mattsse @0xalpharush

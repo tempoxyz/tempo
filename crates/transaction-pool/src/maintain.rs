@@ -6,18 +6,21 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    map::{AddressMap, AddressSet, B256Map, B256Set, Entry, HashSet},
 };
 use alloy_sol_types::SolEvent;
-use futures::StreamExt;
+use futures::{
+    FutureExt, StreamExt,
+    future::{Fuse, FusedFuture},
+};
 use itertools::{Either, Itertools};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{AllPoolTransactions, TransactionPool, ValidPoolTransaction};
 use reth_trie_common::bundle_state::BundleAccount;
-use std::{iter, time::Instant};
+use std::{collections::VecDeque, iter, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
@@ -29,6 +32,12 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+/// Maximum number of transactions revalidated in one batch.
+const MAX_REVALIDATION_BATCH: usize = 1_000;
+
+/// Maximum number of removed transactions waiting for revalidation.
+const MAX_QUEUED_REVALIDATIONS: usize = 100_000;
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -60,10 +69,14 @@ pub struct TempoPoolUpdates {
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
     pub user_token_changes: AddressSet,
-    /// TIP403 blacklist additions: (policy_id, account).
-    pub blacklist_additions: Vec<(u64, Address)>,
-    /// TIP403 whitelist removals: (policy_id, account).
-    pub whitelist_removals: Vec<(u64, Address)>,
+    /// TIP403 blacklist additions: account to the policy IDs that blacklisted it.
+    ///
+    /// Keyed by account so duplicate events are processed once and each pooled transaction
+    /// looks up only its fee payer.
+    pub blacklist_additions: AddressMap<HashSet<u64>>,
+    /// TIP403 whitelist removals: account to the policy IDs that removed it, keyed like
+    /// [`Self::blacklist_additions`].
+    pub whitelist_removals: AddressMap<HashSet<u64>>,
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
@@ -224,12 +237,16 @@ impl TempoPoolUpdates {
                     Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
                         updates
                             .blacklist_additions
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
                         updates
                             .whitelist_removals
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(_) | None => {}
                 }
@@ -489,12 +506,75 @@ impl Default for PendingStalenessTracker {
     }
 }
 
+/// Transactions removed from the pool that wait to be validated again and re-added.
+///
+/// They are handed to the validator in batches of at most [`MAX_REVALIDATION_BATCH`], one batch
+/// at a time, so a large revalidation set occupies one validation task in bounded steps.
+#[derive(Debug, Default)]
+struct RevalidationQueue {
+    /// Queued hashes in removal order. Hashes dropped from `txs` stay until a batch skips them.
+    order: VecDeque<TxHash>,
+    /// Queued transactions by hash.
+    txs: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+}
+
+impl RevalidationQueue {
+    /// Queues `txs` behind the transactions already waiting.
+    ///
+    /// Returns how many were dropped because the queue holds [`MAX_QUEUED_REVALIDATIONS`].
+    fn extend(
+        &mut self,
+        txs: impl IntoIterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> usize {
+        let mut dropped = 0;
+        for tx in txs {
+            if self.order.len() >= MAX_QUEUED_REVALIDATIONS {
+                dropped += 1;
+                continue;
+            }
+            if let Entry::Vacant(entry) = self.txs.entry(*tx.hash()) {
+                self.order.push_back(*tx.hash());
+                entry.insert(tx);
+            }
+        }
+        dropped
+    }
+
+    /// Drops queued transactions that a block included, which would only fail revalidation.
+    fn remove_mined<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        if self.txs.is_empty() {
+            return;
+        }
+        for hash in hashes {
+            self.txs.remove(hash);
+        }
+    }
+
+    /// Takes the next batch of at most [`MAX_REVALIDATION_BATCH`] transactions in queue order.
+    fn next_batch(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut batch = Vec::with_capacity(self.txs.len().min(MAX_REVALIDATION_BATCH));
+        while batch.len() < MAX_REVALIDATION_BATCH
+            && let Some(hash) = self.order.pop_front()
+        {
+            if let Some(tx) = self.txs.remove(&hash) {
+                batch.push(tx);
+            }
+        }
+        batch
+    }
+
+    /// Returns the number of queued transactions.
+    fn len(&self) -> usize {
+        self.txs.len()
+    }
+}
+
 /// Unified maintenance task for the Tempo transaction pool.
 ///
 /// Handles:
 /// - Evicting expired AA transactions (`valid_before <= tip_timestamp`)
 /// - Evicting transactions using expired keychain keys (`AuthorizedKey.expiry <= tip_timestamp`)
-/// - Updating the AA 2D nonce pool from `NonceManager` changes
+/// - Updating the AA 2D nonce pool from `NonceManager` and account nonce changes
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
 /// - Evicting transactions when their fee token is paused
@@ -522,8 +602,50 @@ where
     // Hardfork the pooled transactions were last validated against.
     let mut last_spec = None;
 
-    // Process all maintenance operations on new block commit or reorg.
-    while let Some(event) = chain_events.next().await {
+    let mut revalidation_queue = RevalidationQueue::default();
+    // The batch being revalidated. The next one starts once it finishes.
+    let mut revalidation = Fuse::terminated();
+
+    loop {
+        if revalidation.is_terminated() {
+            let batch = revalidation_queue.next_batch();
+            if !batch.is_empty() {
+                let pool = pool.clone();
+                revalidation = tokio::spawn(async move {
+                    let txs = batch
+                        .into_iter()
+                        .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
+                        .collect();
+                    let results = pool.add_transactions_with_origins(txs).await;
+                    debug!(target: "txpool", total = results.len(),
+                        success = results.iter().filter(|result| result.is_ok()).count(),
+                        "Revalidated transactions");
+                })
+                .fuse();
+            }
+        }
+        metrics
+            .revalidation_queue_size
+            .set(revalidation_queue.len() as f64);
+
+        // Process all maintenance operations on new block commit or reorg.
+        let event = tokio::select! {
+            result = &mut revalidation => {
+                if let Err(err) = result {
+                    error!(target: "txpool", %err, "Transaction revalidation task failed");
+                }
+                continue;
+            }
+            event = chain_events.next() => {
+                let Some(event) = event else { break };
+                event
+            }
+        };
+
+        // The 2D nonce update below repairs the pool for this update. An admission that validated
+        // against the previous state would insert after it with the nonce it read then.
+        pool.advance_admission_epoch();
+
         let (new, orphaned) = match event {
             CanonStateNotification::Reorg { old, new } => {
                 // Repopulate AMM liquidity cache from the new canonical chain
@@ -561,16 +683,28 @@ where
 
         // 2. Update AMM liquidity cache before revalidation/invalidation scans.
         let amm_start = Instant::now();
-        amm_cache.on_new_state(tip.execution_outcome());
-        if let Err(err) = amm_cache.on_new_blocks(
-            tip.blocks_iter().map(|block| block.sealed_header()),
-            pool.client(),
-        ) {
-            error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+        if amm_cache.is_empty() {
+            // The cache started during pipeline sync. Load the whole window now that state is
+            // readable, instead of only this update's blocks.
+            if let Err(err) = amm_cache.repopulate(pool.client()) {
+                error!(target: "txpool", ?err, "AMM liquidity cache repopulate failed");
+            }
+        } else {
+            amm_cache.on_new_state(tip.execution_outcome());
+            if let Err(err) = amm_cache.on_new_blocks(
+                tip.blocks_iter().map(|block| block.sealed_header()),
+                pool.client(),
+            ) {
+                error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+            }
         }
         metrics
             .amm_cache_update_duration_seconds
             .record(amm_start.elapsed());
+
+        // Validation reads the caches refreshed above. An admission that validated while they
+        // were stale validates again instead of inserting too late for the scans below.
+        pool.advance_admission_epoch();
 
         // 3. Collect all block-level invalidation events
         let updates = TempoPoolUpdates::from_chain(tip);
@@ -727,22 +861,15 @@ where
             revalidate_txs.extend(transactions);
         }
 
-        // Delayed transactions that are about to become valid enter the live sub-pools the same
-        // way: resubmitted, so they are validated against current state first.
+        // Delayed transactions that are about to become valid enter the live pool the same way:
+        // resubmitted, so they are validated against current state first.
         revalidate_txs.extend(pool.take_due_delayed_transactions());
 
-        if !revalidate_txs.is_empty() {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let txs = revalidate_txs
-                    .into_iter()
-                    .map(|tx| (tx.origin, tx.transaction.with_discarded_caches()))
-                    .collect();
-                let results = pool.add_transactions_with_origins(txs).await;
-                debug!(target: "txpool", total = results.len(),
-                    success = results.iter().filter(|result| result.is_ok()).count(),
-                    "Revalidated transactions");
-            });
+        revalidation_queue.remove_mined(tip.transaction_hashes());
+        let dropped = revalidation_queue.extend(revalidate_txs);
+        if dropped > 0 {
+            metrics.revalidation_dropped.increment(dropped as u64);
+            debug!(target: "txpool", dropped, "Revalidation queue full, dropped transactions");
         }
 
         // 5. Evict expired and invalidated transactions in one pool traversal.
@@ -1479,6 +1606,71 @@ mod tests {
                 Some(token_b),
                 "last-write-wins: second token should overwrite the first"
             );
+        }
+    }
+
+    mod revalidation_queue {
+        use super::*;
+        use crate::test_utils::wrap_valid_tx;
+        use reth_transaction_pool::TransactionOrigin;
+
+        fn queued_tx(nonce: u64) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+            Arc::new(wrap_valid_tx(
+                TxBuilder::aa(Address::random()).nonce(nonce).build(),
+                TransactionOrigin::External,
+            ))
+        }
+
+        fn hashes(txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>]) -> Vec<TxHash> {
+            txs.iter().map(|tx| *tx.hash()).collect()
+        }
+
+        #[test]
+        fn batches_are_bounded_and_keep_queue_order() {
+            let txs = (0..MAX_REVALIDATION_BATCH as u64 + 5)
+                .map(queued_tx)
+                .collect::<Vec<_>>();
+            let mut queue = RevalidationQueue::default();
+            assert_eq!(queue.extend(txs.iter().cloned()), 0);
+            assert_eq!(queue.len(), txs.len());
+
+            assert_eq!(
+                hashes(&queue.next_batch()),
+                hashes(&txs[..MAX_REVALIDATION_BATCH])
+            );
+            assert_eq!(
+                hashes(&queue.next_batch()),
+                hashes(&txs[MAX_REVALIDATION_BATCH..])
+            );
+            assert!(queue.next_batch().is_empty());
+            assert_eq!(queue.len(), 0);
+        }
+
+        #[test]
+        fn skips_duplicate_and_mined_transactions() {
+            let [first, second, third] = [0, 1, 2].map(queued_tx);
+            let mut queue = RevalidationQueue::default();
+            assert_eq!(
+                queue.extend([first.clone(), second.clone(), first.clone(), third.clone()]),
+                0
+            );
+            queue.remove_mined([second.hash()]);
+
+            assert_eq!(queue.len(), 2);
+            assert_eq!(hashes(&queue.next_batch()), hashes(&[first, third]));
+            assert!(queue.order.is_empty());
+        }
+
+        #[test]
+        fn drops_transactions_beyond_capacity() {
+            let mut queue = RevalidationQueue::default();
+            queue
+                .order
+                .extend(iter::repeat_n(B256::ZERO, MAX_QUEUED_REVALIDATIONS - 1));
+            let [kept, dropped] = [0, 1].map(queued_tx);
+
+            assert_eq!(queue.extend([kept.clone(), dropped]), 1);
+            assert_eq!(hashes(&queue.next_batch()), hashes(&[kept]));
         }
     }
 }

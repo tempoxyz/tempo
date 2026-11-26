@@ -64,8 +64,10 @@ pub trait TempoAddressExt {
     /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
     fn is_virtual(&self) -> bool;
 
-    /// Returns `true` if the address is eligible to be a virtual-address master per TIP-1022.
-    fn is_valid_master(&self) -> bool;
+    /// Returns `true` if the address is eligible to be a virtual-address master per TIP-1022 at
+    /// `spec`. From T15 this excludes TIP-1094 zone deposit addresses, so neither resolver forwards
+    /// into the other.
+    fn is_valid_master(&self, spec: TempoHardfork) -> bool;
 
     /// Decodes a virtual address into its `(masterId, userTag)` components.
     ///
@@ -115,8 +117,11 @@ impl TempoAddressExt for Address {
         self.as_slice()[4..14] == Self::VIRTUAL_MAGIC
     }
 
-    fn is_valid_master(&self) -> bool {
-        !self.is_zero() && !self.is_virtual() && !self.is_tip20()
+    fn is_valid_master(&self, spec: TempoHardfork) -> bool {
+        !self.is_zero()
+            && !self.is_virtual()
+            && !self.is_tip20()
+            && !(spec.is_t15() && tempo_contracts::zones::ZoneDepositAddress::is_reserved(self))
     }
 
     fn decode_virtual(&self) -> Option<(MasterId, UserTag)> {
@@ -232,22 +237,31 @@ mod tests {
     fn is_valid_master_variations() {
         // regular address is valid master
         let regular = Address::repeat_byte(0x11);
-        assert!(regular.is_valid_master());
+        assert!(regular.is_valid_master(TempoHardfork::Genesis));
 
         // zero address is not valid master
-        assert!(!Address::ZERO.is_valid_master());
+        assert!(!Address::ZERO.is_valid_master(TempoHardfork::Genesis));
 
         // virtual address is not valid master
         let vaddr = Address::new_virtual(
             MasterId::from([1, 2, 3, 4]),
             UserTag::from([5, 6, 7, 8, 9, 10]),
         );
-        assert!(!vaddr.is_valid_master());
+        assert!(!vaddr.is_valid_master(TempoHardfork::Genesis));
 
         // TIP20 address is not valid master
         let mut tip20_bytes = [0u8; 20];
         tip20_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
-        assert!(!Address::from(tip20_bytes).is_valid_master());
+        assert!(!Address::from(tip20_bytes).is_valid_master(TempoHardfork::Genesis));
+        // From T15, a zone deposit address is not a valid master.
+        let deposit_address = tempo_contracts::zones::ZoneDepositAddress {
+            zone_id: 1,
+            version: 1,
+            ciphertext: FixedBytes::from([1, 2, 3, 4, 5, 6]),
+        }
+        .encode();
+        assert!(deposit_address.is_valid_master(TempoHardfork::T14));
+        assert!(!deposit_address.is_valid_master(TempoHardfork::T15));
     }
 
     #[test]

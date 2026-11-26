@@ -264,32 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_manager_invalid_token_error() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut fee_manager = TipFeeManager::new();
-
-            // Test setValidatorToken with zero address
-            let set_validator_call = IFeeManager::setValidatorTokenCall {
-                token: Address::ZERO,
-            };
-            let result = fee_manager.call(&set_validator_call.abi_encode(), validator);
-            expect_precompile_revert(&result, FeeManagerError::invalid_token());
-
-            // Test setUserToken with zero address
-            let set_user_call = IFeeManager::setUserTokenCall {
-                token: Address::ZERO,
-            };
-            let result = fee_manager.call(&set_user_call.abi_encode(), user);
-            expect_precompile_revert(&result, FeeManagerError::invalid_token());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_amm_constants() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();

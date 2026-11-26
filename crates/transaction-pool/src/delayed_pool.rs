@@ -292,7 +292,7 @@ pub struct DelayedPoolConfig {
     /// Maximum total size of delayed transactions in bytes.
     pub max_size: NonZeroUsize,
     /// Maximum number of delayed transactions naming the same authority, counted separately
-    /// from the live sub-pools' limits; see [`TempoPooledTransaction::authorities`].
+    /// from the live sub-pools' limits; see `TempoPooledTransaction::authorities`.
     pub max_txs_per_authority: usize,
 }
 

@@ -26,6 +26,7 @@ use tempo_precompiles::{
     tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
+use tracing::warn;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
@@ -38,6 +39,10 @@ pub struct AmmLiquidityCache {
 impl AmmLiquidityCache {
     /// Creates a new [`AmmLiquidityCache`] and pre-populates the cache with
     /// validator fee tokens of the latest blocks.
+    ///
+    /// Starts with an empty cache when an interrupted pipeline sync leaves historical state
+    /// unavailable; pool maintenance repopulates it on the first block committed after the
+    /// pipeline finishes.
     pub fn new<Client>(client: Client) -> ProviderResult<Self>
     where
         Client: StateProviderFactory
@@ -47,7 +52,14 @@ impl AmmLiquidityCache {
         let this = Self {
             inner: Default::default(),
         };
-        this.repopulate(&client)?;
+        match this.repopulate(&client) {
+            // The pipeline only resumes after the node launches, so failing here would block it.
+            Err(ProviderError::StateUnavailableDuringSync) => warn!(
+                target: "txpool",
+                "historical state is unavailable during pipeline sync, starting with an empty AMM liquidity cache"
+            ),
+            result => result?,
+        }
 
         Ok(this)
     }
@@ -163,6 +175,12 @@ impl AmmLiquidityCache {
                 },
             )
             .map_err(ProviderError::other)
+    }
+
+    /// Returns `true` while the cache has not seen any block, which happens when [`Self::new`]
+    /// ran during an interrupted pipeline sync.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().last_seen_validators.is_empty()
     }
 
     /// Clears all cached state. Used on reorg to invalidate stale entries
@@ -430,6 +448,10 @@ mod tests {
     use alloy_consensus::Header;
     use alloy_primitives::address;
     use reth_trie_common::bundle_state::{AccountStatus, BundleAccount, BundleState, StorageSlot};
+    use test_case::test_case;
+
+    const ACTIVE: Address = Address::repeat_byte(0x11);
+    const INACTIVE: Address = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
@@ -1074,26 +1096,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_active_validator() {
-        let active = Address::repeat_byte(0x11);
-        let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
-
-        let cases = [
-            (vec![active], active, true, "active validator in set"),
-            (
-                vec![active],
-                inactive,
-                false,
-                "inactive validator not in set",
-            ),
-            (vec![], active, false, "empty set"),
-        ];
-
-        for (unique_validators, query, expected, desc) in cases {
-            let cache = AmmLiquidityCache::with_unique_validators(unique_validators);
-            assert_eq!(cache.is_active_validator(&query), expected, "{desc}");
-        }
+    #[test_case(vec![ACTIVE], ACTIVE => true)]
+    #[test_case(vec![ACTIVE], INACTIVE => false)]
+    #[test_case(vec![], ACTIVE => false)]
+    fn test_is_active_validator(unique_validators: Vec<Address>, query: Address) -> bool {
+        AmmLiquidityCache::with_unique_validators(unique_validators).is_active_validator(&query)
     }
 
     #[test]

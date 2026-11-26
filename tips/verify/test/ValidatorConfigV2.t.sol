@@ -102,6 +102,7 @@ contract ValidatorConfigV2Test is TempoTest {
 
     function setUp() public override {
         super.setUp();
+        _pinT14ForValidatorConfigV1();
 
         // Generate Ed25519 keypairs deterministically
         (SETUP_PUB_KEY_A, SETUP_PRIV_KEY_A) = vm.createEd25519Key(keccak256("setup_key_a"));

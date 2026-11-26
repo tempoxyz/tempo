@@ -6,6 +6,7 @@ use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
+use eyre::OptionExt as _;
 use reth_chainspec::EthChainSpec as _;
 use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
@@ -21,8 +22,7 @@ use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
 use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
 
 use crate::{
-    DepositAllowlist, ZoneConsensus, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
-    ZoneSequencerAddOnsConfig,
+    DepositAllowlist, ZoneConsensus, ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig,
     deposit_allowlist::{DEPOSIT_ALLOWLIST_FILE_NAME, DepositAllowlistAdmin},
     dev::DevCommand,
     rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
@@ -356,43 +356,45 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    eyre::ensure!(
-        args.shadow_prover_pcrs.is_none() || (rpc_only && !should_sequence_blocks),
-        "--shadow-prover.pcrs requires an rpc_only follower; it is not a settlement policy"
-    );
     let policy = args
         .prover_attestation_policy
         .as_deref()
         .map(std::fs::read)
         .transpose()?;
     let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
-    let prover_config = if !args.enable_prover {
-        None
-    } else if should_sequence_blocks {
-        let addresses = prover_addresses.ok_or_else(|| {
-            eyre::eyre!(
-                "settlement proving requires --sequencer.prover-address for Nitro attestation"
-            )
-        })?;
-        Some(ZoneProverConfig::Settlement(addresses))
-    } else {
+    let prover_addresses = if args.enable_prover {
         eyre::ensure!(
-            rpc_only,
-            "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
+            should_sequence_blocks,
+            "--sequencer.enable-prover requires a sequencer; it is not supported on rpc_only P2P followers"
         );
-        Some(ZoneProverConfig::Shadow {
-            prover_addresses,
-            proof_verifier: args.shadow_prover_pcrs.clone(),
-        })
+        Some(prover_addresses.ok_or_eyre(
+            "settlement proving requires --sequencer.prover-address for Nitro attestation",
+        )?)
+    } else {
+        None
     };
 
     eyre::ensure!(
         !args.deposit_allowlist || should_sequence_blocks,
         "--deposits.allowlist requires a sequencer"
     );
+    eyre::ensure!(
+        args.virtual_address_key_files.is_empty() || should_sequence_blocks,
+        "--sequencer.virtual-address-key-file requires a node that produces blocks"
+    );
     let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
+        let mut virtual_address_keys = Vec::new();
+        for (version, path) in &args.virtual_address_key_files {
+            if let Some(key) = load_virtual_address_key(Some(path))
+                .await
+                .map_err(|err| eyre::eyre!("virtual address key version {version}: {err}"))?
+            {
+                virtual_address_keys.push((*version, key));
+            }
+        }
+        node = node.with_virtual_address_keys(virtual_address_keys);
         let deposit_allowlist = enforced_allowlist_admin
             .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
             .transpose()?;
@@ -420,8 +422,8 @@ async fn configure_sequencing(
             zone_chain_id,
         });
     }
-    if let Some(config) = prover_config {
-        node = node.with_prover(config);
+    if let Some(prover_addresses) = prover_addresses {
+        node = node.with_prover(prover_addresses);
     }
     if let Some(config) = p2p_config {
         node = node.with_p2p(config);
@@ -465,6 +467,49 @@ async fn load_sequencer_signer(
     key.trim()
         .parse::<PrivateKeySigner>()
         .map_err(|_| eyre::eyre!("invalid sequencer key from {source}"))
+}
+
+/// Parses a `--sequencer.virtual-address-key-file` entry, `VERSION=PATH` with VERSION in 1..=255.
+fn parse_virtual_address_key_file(value: &str) -> Result<(u8, PathBuf), String> {
+    let (version, path) = value
+        .split_once('=')
+        .ok_or_else(|| format!("expected VERSION=PATH, got {value:?}"))?;
+    let version: u8 = version
+        .parse()
+        .map_err(|_| format!("invalid key version {version:?}"))?;
+    if version == 0 || path.is_empty() {
+        return Err(format!(
+            "expected VERSION=PATH with VERSION in 1..=255, got {value:?}"
+        ));
+    }
+    Ok((version, PathBuf::from(path)))
+}
+
+async fn load_virtual_address_key(
+    key_file: Option<&std::path::Path>,
+) -> eyre::Result<Option<zone_payload::VirtualAddressKey>> {
+    let Some(path) = key_file else {
+        return Ok(None);
+    };
+    let path = path.to_path_buf();
+    let display_path = path.display().to_string();
+    let key = tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+        .await
+        .map_err(|err| {
+            eyre::eyre!("virtual address key reader task failed for {display_path}: {err}")
+        })?
+        .map_err(|err| {
+            eyre::eyre!("failed to read virtual address key from {display_path}: {err}")
+        })?;
+    let key = Zeroizing::new(key);
+    let key = key
+        .trim()
+        .parse::<alloy_primitives::B256>()
+        .map_err(|_| eyre::eyre!("invalid virtual address key in {display_path}"))?;
+    if key.is_zero() {
+        eyre::bail!("virtual address key in {display_path} is zero");
+    }
+    Ok(Some(zone_payload::VirtualAddressKey::new(key)))
 }
 
 async fn load_decryption_keys(
@@ -539,6 +584,20 @@ pub struct ZoneArgs {
         value_name = "PATH"
     )]
     pub deposit_decryption_keys_file: Option<PathBuf>,
+
+    /// TIP-1094 FF1 key files (32-byte hex) to initialize, as `VERSION=PATH`. Repeat the flag, or
+    /// comma-separate entries in the env var. Once T15 is active, each built block initializes the
+    /// lowest listed version not yet in state. Initialized keys are read from state, so only keys
+    /// not yet rotated in need to be listed. Keep them secret: each decrypts every address of its
+    /// version.
+    #[arg(
+        long = "sequencer.virtual-address-key-file",
+        env = "ZONE_VIRTUAL_ADDRESS_KEY_FILE",
+        value_name = "VERSION=PATH",
+        value_delimiter = ',',
+        value_parser = parse_virtual_address_key_file
+    )]
+    pub virtual_address_key_files: Vec<(u8, PathBuf)>,
 
     /// Path to the static multi-sequencer manifest. Its presence activates
     /// multi-sequencer mode and makes the manifest authoritative for role selection.
@@ -701,8 +760,8 @@ pub struct ZoneArgs {
     )]
     pub checker_mode: zone_checker::CheckerMode,
 
-    /// Require Nitro-attested SPF validation for settlement, or run observational SPF validation
-    /// on an rpc_only follower.
+    /// Require Nitro-attested SPF validation for settlement. Requires a sequencer; rejected on
+    /// rpc_only P2P followers.
     ///
     /// Enables durable witness persistence.
     #[arg(long = "sequencer.enable-prover", env = "SEQUENCER_ENABLE_PROVER")]
@@ -727,16 +786,6 @@ pub struct ZoneArgs {
         requires_all = ["enable_prover", "prover_addresses"]
     )]
     pub prover_attestation_policy: Option<PathBuf>,
-
-    /// Verify shadow Nitro proofs locally against independently approved PCR0, PCR1 and PCR2.
-    /// Works before T13; applies only to RPC followers and never enables settlement enforcement.
-    #[arg(
-        long = "shadow-prover.pcrs",
-        env = "SHADOW_PROVER_PCRS",
-        value_name = "PCR0,PCR1,PCR2",
-        requires = "prover_addresses"
-    )]
-    pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
 
     /// Bounce deposits whose L1 sender or zone recipient is not on the allowlist persisted at
     /// `<datadir>/deposit-allowlist.json`, and reject Zone TIP-20 transfers unless both parties
@@ -804,9 +853,10 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use alloy_primitives::address;
+    use alloy_primitives::{Address, address};
     use clap::Parser as _;
     use reth_evm::ConfigureEvm as _;
+    use test_case::test_case;
 
     use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
@@ -913,79 +963,28 @@ mod tests {
         );
     }
 
+    #[test_case(11 => address!("5ad000000000000000000000000000000000000b"))]
+    #[test_case(0x0102_0304 => address!("5ad0000000000000000000000000000001020304"))]
     #[tokio::test]
-    async fn cli_evm_derives_portal_from_chain_spec() {
+    async fn cli_evm_derives_portal_from_chain_spec(zone_id: u32) -> Address {
         let parent = tempo_chainspec::spec::MODERATO.clone();
-        for (zone_id, expected) in [
-            (
-                11,
-                alloy_primitives::address!("5ad000000000000000000000000000000000000b"),
-            ),
-            (
-                0x0102_0304,
-                alloy_primitives::address!("5ad0000000000000000000000000000001020304"),
-            ),
-        ] {
-            let mut genesis = parent.genesis().clone();
-            genesis.config.chain_id =
-                zone_primitives::constants::zone_chain_id(parent.chain_id(), zone_id).unwrap();
-            let spec =
-                std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
-            let config =
-                super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
-            let evm = config.evm_with_env(
-                evm2::evm::InMemoryDB::default(),
-                tempo_evm::TempoEvmEnv::default(),
-            );
-            assert_eq!(
-                evm.database_as::<zone_evm::L1OverlayDB<
-                    evm2::evm::Db<evm2::evm::InMemoryDB>,
-                    zone_l1::state::L1StateProvider,
-                >>()
-                .expect("zone database")
-                .l1_state()
-                .portal(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn shadow_verification_requires_remote_proving_and_complete_measurements() {
-        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
-        let pcr = "11".repeat(48);
-        let pcrs = format!("{pcr},{pcr},{pcr}");
-        assert!(
-            ZoneArgsParser::try_parse_from(
-                common
-                    .into_iter()
-                    .chain(["--shadow-prover.pcrs", pcrs.as_str(),])
-            )
-            .is_err()
+        let mut genesis = parent.genesis().clone();
+        genesis.config.chain_id =
+            zone_primitives::constants::zone_chain_id(parent.chain_id(), zone_id).unwrap();
+        let spec =
+            std::sync::Arc::new(zone_chainspec::ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = super::cli_evm_config(spec, Some("http://localhost:8545".parse().unwrap()));
+        let evm = config.evm_with_env(
+            evm2::evm::InMemoryDB::default(),
+            tempo_evm::TempoEvmEnv::default(),
         );
-        let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
-            "--sequencer.enable-prover",
-            "--sequencer.prover-attestation-policy",
-            "policy.json",
-            "--sequencer.prover-address",
-            "T13=localhost:5000",
-            "--shadow-prover.pcrs",
-            pcrs.as_str(),
-        ]))
-        .unwrap();
-        assert!(args.zone.shadow_prover_pcrs.is_some());
-        assert!(
-            ZoneArgsParser::try_parse_from(common.into_iter().chain([
-                "--sequencer.enable-prover",
-                "--sequencer.prover-attestation-policy",
-                "policy.json",
-                "--sequencer.prover-address",
-                "T13=localhost:5000",
-                "--shadow-prover.pcrs",
-                "00,00,00",
-            ]))
-            .is_err()
-        );
+        evm.database_as::<zone_evm::L1OverlayDB<
+            evm2::evm::Db<evm2::evm::InMemoryDB>,
+            zone_l1::state::L1StateProvider,
+        >>()
+        .expect("zone database")
+        .l1_state()
+        .portal()
     }
 
     #[test]
@@ -1042,6 +1041,33 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[tokio::test]
+    async fn prover_requires_a_sequencer() {
+        let args = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.enable-prover",
+            "--sequencer.prover-address",
+            "T13=prover:5000",
+        ])
+        .unwrap()
+        .zone;
+        let node = ZoneNode::new(
+            "ws://localhost:8546".to_owned(),
+            Address::ZERO,
+            1,
+            Duration::from_secs(1),
+        );
+        let error = configure_sequencing(&args, 1, 1, std::path::Path::new("unused"), node)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--sequencer.enable-prover requires a sequencer; it is not supported on rpc_only P2P followers"
+        );
     }
 
     #[test]
@@ -1167,6 +1193,69 @@ mod tests {
             signer.address(),
             alloy_primitives::address!("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf")
         );
+    }
+
+    #[test]
+    fn virtual_address_key_files_name_their_version() {
+        let parsed = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key-file",
+            "3=/run/secrets/v3",
+            "--sequencer.virtual-address-key-file",
+            "4=/run/secrets/v4",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.zone.virtual_address_key_files,
+            vec![
+                (3, PathBuf::from("/run/secrets/v3")),
+                (4, PathBuf::from("/run/secrets/v4"))
+            ]
+        );
+        for bad in ["/run/secrets/v1", "0=/k", "256=/k", "1="] {
+            assert!(parse_virtual_address_key_file(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loads_virtual_address_key_from_file_and_redacts_it() {
+        let path = std::env::temp_dir().join(format!(
+            "tempo-zone-virtual-address-key-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n",
+        )
+        .unwrap();
+
+        let key = load_virtual_address_key(Some(&path))
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(key.expose(), alloy_primitives::B256::repeat_byte(0x5a));
+        assert!(!format!("{key:?}").contains("5a5a"));
+        assert!(load_virtual_address_key(None).await.unwrap().is_none());
+
+        let zero = path.with_extension("zero");
+        std::fs::write(&zero, format!("{}\n", alloy_primitives::B256::ZERO)).unwrap();
+        let result = load_virtual_address_key(Some(&zero)).await;
+        std::fs::remove_file(&zero).unwrap();
+        assert!(result.unwrap_err().to_string().contains("is zero"));
+
+        let error = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--sequencer.virtual-address-key",
+            "0x01",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[tokio::test(flavor = "current_thread")]

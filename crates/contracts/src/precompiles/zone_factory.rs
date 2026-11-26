@@ -1,6 +1,7 @@
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-    T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+    T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+    ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, FixedBytes, U256, address, fixed_bytes};
 
@@ -98,9 +99,19 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
     ]
 }
 
+/// Returns the native ZoneFactory state with the T14 shared runtimes.
+///
+/// Accounts are ordered as factory, portal implementation, verifier, and messenger.
+pub fn t14_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, mut portal, verifier, messenger] = t13_zone_factory_state(owner);
+    portal.code = T14_ZONE_PORTAL_RUNTIME;
+    [factory, portal, verifier, messenger]
+}
+
 /// Returns the native ZoneFactory state with the T15 shared runtimes.
 ///
-/// T15 replaces only the portal runtime; the verifier and messenger keep their T13 code.
+/// T15 replaces only the portal runtime; the verifier and messenger keep their T13 code. The T15
+/// portal keeps T14's pause-gated refund claims.
 pub fn t15_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
     let [factory, _, verifier, messenger] = t13_zone_factory_state(owner);
     [

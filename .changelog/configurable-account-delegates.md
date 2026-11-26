@@ -1,7 +1,5 @@
 ---
 tempo-primitives: minor
-tempo-evm: minor
-tempo-precompiles: minor
 tempo-alloy: patch
 ---
 

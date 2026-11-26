@@ -590,11 +590,7 @@ pub(crate) mod tests {
         TempoTransaction {
             chain_id: 1,
             gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         }
     }
@@ -811,11 +807,7 @@ pub(crate) mod tests {
                 fee_token: Some(Address::repeat_byte(0xFE)),
                 fee_payer_signature: Some(fee_payer_sig),
                 valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-                calls: vec![Call {
-                    to: TxKind::Call(Address::repeat_byte(0x42)),
-                    value: U256::ZERO,
-                    input: Bytes::new(),
-                }],
+                calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
                 ..Default::default()
             }
         };
@@ -851,11 +843,7 @@ pub(crate) mod tests {
             nonce_key: U256::MAX,
             nonce: 0,
             valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         };
         let mut discriminated_tx = tx.clone();
@@ -880,11 +868,7 @@ pub(crate) mod tests {
             nonce_key: U256::MAX,
             nonce: 0,
             valid_before: Some(core::num::NonZeroU64::new(100).unwrap()),
-            calls: vec![Call {
-                to: TxKind::Call(Address::repeat_byte(0x42)),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
+            calls: vec![Call::new(Address::repeat_byte(0x42), Bytes::new())],
             ..Default::default()
         };
         let signed = tx.into_signed(Signature::test_signature().into());
