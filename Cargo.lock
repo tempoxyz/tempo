@@ -3261,7 +3261,7 @@ dependencies = [
 [[package]]
 name = "commonware-actor"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3274,7 +3274,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3290,7 +3290,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3308,7 +3308,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec-macros"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3319,7 +3319,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -3334,7 +3334,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-conformance-macros",
  "commonware-formatting",
@@ -3348,7 +3348,7 @@ dependencies = [
 [[package]]
 name = "commonware-conformance-macros"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3358,7 +3358,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3387,7 +3387,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3430,7 +3430,7 @@ dependencies = [
 [[package]]
 name = "commonware-formatting"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-macros",
  "const-hex",
@@ -3439,7 +3439,7 @@ dependencies = [
 [[package]]
 name = "commonware-invariants"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "arbitrary",
  "commonware-formatting",
@@ -3452,7 +3452,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -3461,7 +3461,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3473,7 +3473,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "arbitrary",
  "bytes",
@@ -3488,7 +3488,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -3512,7 +3512,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -3527,7 +3527,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "ahash",
  "bytes",
@@ -3547,7 +3547,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "ahash",
  "axum",
@@ -3587,7 +3587,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime-macros"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3598,7 +3598,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "ahash",
  "bytes",
@@ -3621,7 +3621,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -3637,7 +3637,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.11.0"
-source = "git+https://github.com/klkvr/monorepo?rev=96d086aa96d81d85bcb2797798a5ddc21b0a51d4#96d086aa96d81d85bcb2797798a5ddc21b0a51d4"
+source = "git+https://github.com/klkvr/monorepo?rev=b6a0a22773f0fea4246a27f47ac0e2f6436248d5#b6a0a22773f0fea4246a27f47ac0e2f6436248d5"
 dependencies = [
  "ahash",
  "arbitrary",

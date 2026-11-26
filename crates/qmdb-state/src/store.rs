@@ -101,6 +101,15 @@ static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| 
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
 });
+/// Lowest Merkle node height kept in memory: the bitmap grafts at height 8 (256-bit chunks), so
+/// nodes below it are only rebuilt for proofs. `TEMPO_QMDB_RESIDENT_HEIGHT` overrides it.
+static RESIDENT_HEIGHT: std::sync::LazyLock<ResidentHeight> = std::sync::LazyLock::new(|| {
+    std::env::var("TEMPO_QMDB_RESIDENT_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .and_then(ResidentHeight::new)
+        .unwrap_or(ResidentHeight::new(ResidentHeight::MAX).expect("max is valid"))
+});
 /// Most open stages: opening another drops the oldest, whose block then builds without it.
 const MAX_STAGES: usize = 32;
 /// A database shared between the store thread, which alone writes it, and concurrent reads.
@@ -1873,7 +1882,7 @@ fn db_config(
     DbConfig {
         merkle: MerkleConfig {
             partition: format!("{name}-merkle"),
-            resident_height: ResidentHeight::default(),
+            resident_height: *RESIDENT_HEIGHT,
             replay_buffer: IO_BUFFER,
             strategy: context.strategy(threads),
         },
