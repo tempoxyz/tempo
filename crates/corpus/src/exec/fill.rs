@@ -113,8 +113,11 @@ where
     // Blocks below this were published before an overwriting fill rewound the cursor; their
     // stored keys are replaced without comparing.
     let mut overwrite_end = 0;
+    // Where an overwriting fill restarts. The catalog keeps its published cursor, which its
+    // checkpoint stores, until the writer is claimed.
+    let mut rewind = None;
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
-        Some((mut catalog, version)) => {
+        Some((catalog, version)) => {
             // Published blocks were captured under the stored fork schedule, so the current
             // one must agree up to the published tip; later blocks are captured under it.
             let published = catalog.cursor.next - 1;
@@ -169,7 +172,7 @@ where
                     "Overwriting published corpus blocks"
                 );
                 overwrite_end = catalog.cursor.next;
-                catalog.cursor = store::Cursor::initial(&context)?;
+                rewind = Some(store::Cursor::initial(&context)?);
             }
             (catalog, Some(version))
         }
@@ -189,6 +192,8 @@ where
     // Each worker opens its own transaction; holding this one through the capture would
     // keep the archive from reusing pages for the whole fill.
     drop(expected);
+    // Published blocks the fill keeps.
+    let kept = rewind.as_ref().unwrap_or(&catalog.cursor).clone();
     if catalog.checkpoint.is_some() {
         let reader = handle.block_on(store.reader(&catalog))?;
         // Errors must not skip closing the reader below.
@@ -197,7 +202,7 @@ where
                 handle.block_on(store::for_each_published(
                     &reader,
                     from,
-                    &catalog.cursor,
+                    &kept,
                     true,
                     |record, bytes, cases| {
                         eyre::ensure!(!cancellation.is_cancelled(), "capture cancelled");
@@ -212,7 +217,7 @@ where
         handle.block_on(reader.close())?;
         verified?;
     }
-    if end <= catalog.cursor.next {
+    if end <= kept.next {
         info!(
             records = catalog.cursor.next - catalog.context.start,
             verified = args.verify_existing,
@@ -232,6 +237,8 @@ where
     // Claim before writer open: SlateDB fences database writes, while this
     // CAS token independently fences external catalog publication.
     let mut version = handle.block_on(store.publish(&catalog, prior))?;
+    // The first sealed page publishes the rewound cursor with a checkpoint that stores it.
+    catalog.cursor = kept;
     let db = handle.block_on(
         Db::builder(store.data(), store.objects.clone())
             .with_settings(Settings {
