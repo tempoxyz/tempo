@@ -53,9 +53,9 @@ pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Transaction as _};
 use alloy_eips::eip7840::BlobParams;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use evm2::{
     ExecutionConfig,
     env::BlockEnv,
@@ -72,7 +72,7 @@ use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
+use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions, tip20::TIP20Token};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 #[cfg(feature = "engine")]
@@ -395,6 +395,41 @@ impl ConfigureEvm for TempoEvmConfig {
             consensus_context: attributes.consensus_context,
         })
     }
+
+    fn warms_tx_targets(&self) -> bool {
+        true
+    }
+
+    /// Reports the sender, every call target, the access list and, for AA transactions whose
+    /// sender pays an explicit fee token, the sender's balance slot of that token.
+    fn tx_warm_targets(
+        &self,
+        tx: &TempoTxEnvelope,
+        signer: Address,
+        target: &mut dyn FnMut(Address, &[B256]),
+    ) {
+        target(signer, &[]);
+        for (kind, _) in tx.calls() {
+            if let TxKind::Call(to) = kind {
+                target(to, &[]);
+            }
+        }
+        if let Some(access_list) = tx.access_list() {
+            for item in access_list.iter() {
+                target(item.address, &item.storage_keys);
+            }
+        }
+        // A fee payer signature means another account pays, which takes a signature recovery to
+        // find, so only the sender-paid case is warmed. Fee tokens without a TIP-20 address are
+        // rejected by validation, so they have no balance slot to warm.
+        if let Some(aa) = tx.as_aa()
+            && aa.tx().fee_payer_signature.is_none()
+            && let Some(fee_token) = aa.tx().fee_token
+            && let Ok(token) = TIP20Token::from_address(fee_token)
+        {
+            target(fee_token, &[token.balances[signer].slot().into()]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,17 +437,21 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, SignableTransaction, TxLegacy};
-    use alloy_primitives::{Address, B256, Bytes, TxKind};
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
+    use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use evm2::evm::{EmptyDB, precompile::NoPrecompiles};
     use reth_evm::{
         ConfigureEvm, NextBlockEnvAttributes, precompile_cache::CachedPrecompileProvider,
     };
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_precompiles::TempoPrecompiles;
     use tempo_primitives::{
-        BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
-        subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope,
+        ed25519::PublicKey,
+        subblock::SubBlockVersion,
+        transaction::{Call, TempoTransaction, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
 
     #[test]
@@ -764,5 +803,57 @@ mod tests {
             .precompiles_as::<Box<dyn PrecompileProvider<TempoEvmTypes>>>()
             .unwrap();
         assert!(precompiles.downcast_ref::<NoPrecompiles>().is_some());
+    }
+
+    #[test]
+    fn tx_warm_targets_reports_calls_access_list_and_fee_balance() {
+        let sender = Address::repeat_byte(1);
+        let to = Address::repeat_byte(2);
+        let slot = B256::repeat_byte(4);
+        let aa = |fee_token, fee_payer_signature| {
+            TempoTxEnvelope::AA(
+                TempoTransaction {
+                    fee_token: Some(fee_token),
+                    calls: vec![Call::new(to, Bytes::new())],
+                    access_list: AccessList(vec![AccessListItem {
+                        address: to,
+                        storage_keys: vec![slot],
+                    }]),
+                    fee_payer_signature,
+                    ..Default::default()
+                }
+                .into_signed(Signature::test_signature().into()),
+            )
+        };
+        let targets = |tx: &TempoTxEnvelope| {
+            let mut targets = Vec::new();
+            TempoEvmConfig::moderato().tx_warm_targets(tx, sender, &mut |address, slots| {
+                targets.push((address, slots.to_vec()))
+            });
+            targets
+        };
+        let fee_slot = TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[sender]
+            .slot()
+            .into();
+
+        assert_eq!(
+            targets(&aa(PATH_USD_ADDRESS, None)),
+            [
+                (sender, vec![]),
+                (to, vec![]),
+                (to, vec![slot]),
+                (PATH_USD_ADDRESS, vec![fee_slot]),
+            ]
+        );
+        // Another account pays the fee, so the sender's fee token balance is not read.
+        assert_eq!(
+            targets(&aa(PATH_USD_ADDRESS, Some(Signature::test_signature()))),
+            [(sender, vec![]), (to, vec![]), (to, vec![slot])]
+        );
+        // Not a TIP-20 address, so there is no balance slot.
+        assert_eq!(
+            targets(&aa(Address::repeat_byte(3), None)),
+            [(sender, vec![]), (to, vec![]), (to, vec![slot])]
+        );
     }
 }

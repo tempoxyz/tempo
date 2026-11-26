@@ -16,7 +16,9 @@ use crate::{
         block_transaction_length,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    prewarming::{
+        BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext, TxWarmPool,
+    },
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
@@ -133,6 +135,9 @@ pub struct TempoPayloadBuilder<Provider> {
     /// One [`tempo_payload_types::BuildPlan`] is taken from it per paced build,
     /// and the finished build's replayable work is reported back to it.
     estimator: Estimator,
+    /// Pool that loads transaction warm targets during prewarming, `None` if prewarming is
+    /// disabled.
+    tx_warm_pool: Option<TxWarmPool>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -196,6 +201,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             estimator,
+            tx_warm_pool: config.enable_prewarming.then(TxWarmPool::new),
         }
     }
 }
@@ -470,7 +476,8 @@ where
             prewarm_evm_env,
             self.evm_config.clone(),
             self.config.enable_parallel,
-        );
+        )
+        .with_tx_warm_pool(self.tx_warm_pool.clone());
         let mut best_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
