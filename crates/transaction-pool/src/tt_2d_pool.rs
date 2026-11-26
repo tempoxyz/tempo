@@ -1394,13 +1394,17 @@ impl AA2dPool {
         self.remove_transaction_by_id(&last_pending)
     }
 
-    /// Returns the last transaction of the pending run that starts at the pending transaction
-    /// `id`: a pending transaction at or after `id` in its lane whose next nonce is not pending.
+    /// Returns the last pending transaction of the run that starts at the pending transaction
+    /// `id`: the last transaction of its lane before the lane's first queued one.
     ///
-    /// A lane's pending transactions are a contiguous nonce run, so whether a nonce is pending
-    /// changes once along the lane. This finds that change with an exponential search from `id`
-    /// followed by a binary search, in `O(log n)` lookups instead of walking the run, which made
-    /// evicting a long lane quadratic.
+    /// A lane's pending transactions come before its queued ones, and they are usually a
+    /// contiguous nonce run, so whether a nonce is pending changes once along the lane. This finds
+    /// that change with an exponential search from `id` followed by a binary search, in
+    /// `O(log n)` lookups instead of walking the run, which made evicting a long lane quadratic.
+    ///
+    /// The pending run can skip a nonce gap: a transaction added with an older state nonce, such
+    /// as after a reorg, is pending in front of a gap that pending transactions follow. The search
+    /// then continues from the first transaction after the gap.
     fn pending_run_end(&self, id: &AA2dTransactionId) -> Option<AA2dTransactionId> {
         let is_pending = |nonce| {
             self.by_id
@@ -1417,33 +1421,40 @@ impl AA2dPool {
             return Some(*last_id);
         }
 
-        // `lo` is pending and `hi` is not.
         let mut lo = id.nonce;
-        let mut hi = last_id.nonce;
-        let mut step = 1u64;
         loop {
-            let probe = lo.saturating_add(step);
-            if probe >= hi {
-                break;
+            // `lo` is pending and `hi` is not.
+            let mut hi = last_id.nonce;
+            let mut step = 1u64;
+            loop {
+                let probe = lo.saturating_add(step);
+                if probe >= hi {
+                    break;
+                }
+                if is_pending(probe) {
+                    lo = probe;
+                    step = step.saturating_mul(2);
+                } else {
+                    hi = probe;
+                    break;
+                }
             }
-            if is_pending(probe) {
-                lo = probe;
-                step = step.saturating_mul(2);
-            } else {
-                hi = probe;
-                break;
+            while hi - lo > 1 {
+                let mid = lo + (hi - lo) / 2;
+                if is_pending(mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
             }
-        }
-        while hi - lo > 1 {
-            let mid = lo + (hi - lo) / 2;
-            if is_pending(mid) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
 
-        Some(AA2dTransactionId::new(id.seq_id, lo))
+            // The run ends at `lo` unless a pending transaction follows the nonce gap after it.
+            let end = AA2dTransactionId::new(id.seq_id, lo);
+            match self.descendant_txs_exclusive(&end).next() {
+                Some((next, tx)) if tx.is_pending() => lo = next.nonce,
+                _ => return Some(end),
+            }
+        }
     }
 
     /// Evicts the worst expiring nonce transaction.
@@ -5622,44 +5633,52 @@ mod tests {
 
     /// The pending run end found by search matches walking the lane for every layout of a short
     /// lane, alone and followed by a far queued nonce.
-    #[test]
-    fn test_pending_run_end_matches_lane_walk() {
+    ///
+    /// With `reorg`, each transaction is added with its own nonce as the state nonce, highest
+    /// first, as after a reorg, so pending transactions sit on both sides of nonce gaps.
+    #[test_case::test_matrix([None, Some(1 << 40), Some(u64::MAX)], [false, true])]
+    fn test_pending_run_end_matches_lane_walk(far: Option<u64>, reorg: bool) {
         let sender = Address::with_last_byte(1);
         let nonce_key = U256::ONE;
         let seq_id = AASequenceId::new(sender, nonce_key);
-        for far in [None, Some(1 << 40), Some(u64::MAX)] {
-            for layout in 1u32..1 << 10 {
-                let mut pool = AA2dPool::default();
-                let nonces = (0..10).filter(|nonce| layout & (1 << nonce) != 0);
-                for nonce in nonces.chain(far) {
-                    let tx = TxBuilder::aa(sender)
-                        .nonce_key(nonce_key)
-                        .nonce(nonce)
-                        .build();
-                    pool.add_transaction(
-                        Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
-                        0,
-                        TempoHardfork::T1,
-                    )
-                    .unwrap();
-                }
+        for layout in 1u32..1 << 10 {
+            let mut pool = AA2dPool::default();
+            let mut nonces = (0..10)
+                .filter(|nonce| layout & (1 << nonce) != 0)
+                .map(|nonce| (nonce, if reorg { nonce } else { 0 }))
+                .collect::<Vec<_>>();
+            if reorg {
+                nonces.reverse();
+            }
+            for (nonce, state_nonce) in far.map(|far| (far, 0)).into_iter().chain(nonces) {
+                let tx = TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .build();
+                pool.add_transaction(
+                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                    state_nonce,
+                    TempoHardfork::T1,
+                )
+                .unwrap();
+            }
+            pool.assert_invariants();
 
-                for (id, tx) in pool.by_id.range(seq_id.range()) {
-                    let walked = tx
-                        .is_pending()
-                        .then(|| {
-                            pool.descendant_txs(id)
-                                .take_while(|(_, tx)| tx.is_pending())
-                                .last()
-                                .map(|(id, _)| *id)
-                        })
-                        .flatten();
-                    assert_eq!(
-                        pool.pending_run_end(id),
-                        walked,
-                        "layout {layout:#012b}, far {far:?}, {id:?}"
-                    );
-                }
+            for (id, tx) in pool.by_id.range(seq_id.range()) {
+                let walked = tx
+                    .is_pending()
+                    .then(|| {
+                        pool.descendant_txs(id)
+                            .take_while(|(_, tx)| tx.is_pending())
+                            .last()
+                            .map(|(id, _)| *id)
+                    })
+                    .flatten();
+                assert_eq!(
+                    pool.pending_run_end(id),
+                    walked,
+                    "layout {layout:#012b}, {id:?}"
+                );
             }
         }
     }
