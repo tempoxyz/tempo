@@ -1280,8 +1280,7 @@ impl AA2dPool {
     /// to avoid eviction.
     ///
     /// Evicts queued transactions first, then pending if either the transaction count or reported
-    /// size exceeds the configured subpool limit. Pending eviction can demote descendants, so the
-    /// queued limit is checked again afterwards.
+    /// size exceeds the configured subpool limit.
     pub(crate) fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
@@ -1299,14 +1298,6 @@ impl AA2dPool {
             .is_exceeded(self.pending_count, self.pending_size.into())
         {
             self.evict_lowest_priority(true, &mut removed);
-        }
-
-        if self
-            .config
-            .queued_limit
-            .is_exceeded(self.queued_count, self.queued_size.into())
-        {
-            self.evict_lowest_priority(false, &mut removed);
         }
 
         if !removed.is_empty() {
@@ -1391,14 +1382,20 @@ impl AA2dPool {
         }
     }
 
-    /// Evicts a regular 2D pending transaction by ID.
+    /// Evicts the last pending transaction of the lane holding the pending transaction `id`.
+    ///
+    /// Evicting from the end of the lane's pending run keeps it contiguous, so eviction never
+    /// demotes transactions that would be promoted again once the gap is refilled.
     fn evict_2d_pending_tx(
         &mut self,
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let tx = self.remove_transaction_by_id(id)?;
-        self.demote_descendants(id);
-        Some(tx)
+        let last_pending = self
+            .descendant_txs(id)
+            .take_while(|(_, tx)| tx.is_pending())
+            .last()
+            .map(|(id, _)| *id)?;
+        self.remove_transaction_by_id(&last_pending)
     }
 
     /// Evicts the worst expiring nonce transaction.
@@ -5488,10 +5485,10 @@ mod tests {
         pool.assert_invariants();
     }
 
-    /// Evicting a pending transaction can demote its entire nonce chain. Once those demotions
-    /// restore the pending limit, eviction must stop instead of removing unrelated transactions.
+    /// Pending eviction removes the lowest-priority lane from its end and stops once the pending
+    /// limit is restored, without removing unrelated transactions.
     #[test]
-    fn test_pending_eviction_stops_after_descendant_demotion() {
+    fn test_pending_eviction_evicts_lane_from_its_end() {
         let config = AA2dPoolConfig {
             price_bump_config: PriceBumpConfig::default(),
             pending_limit: SubPoolLimit {
@@ -5544,14 +5541,13 @@ mod tests {
             .unwrap();
         }
 
-        // Filling the gap promotes all five attacker transactions. Evicting the root then demotes
-        // its four descendants, which is sufficient to restore the pending limit by itself.
+        // Filling the gap promotes all five attacker transactions. Pending eviction removes the
+        // lowest-priority lane from its end, so no attacker transaction is left demoted.
         let root = TxBuilder::aa(attacker)
             .nonce_key(nonce_key)
             .max_fee(max_fee)
             .max_priority_fee(1)
             .build();
-        let root_hash = *root.hash();
         let added = pool
             .add_transaction(
                 Arc::new(wrap_valid_tx(root, TransactionOrigin::Local)),
@@ -5561,13 +5557,8 @@ mod tests {
             .unwrap();
         let discarded = &added.as_pending().unwrap().discarded;
 
-        assert_eq!(
-            discarded.len(),
-            1,
-            "only the attacker root should be evicted"
-        );
-        assert_eq!(*discarded[0].hash(), root_hash);
-        assert!(!pool.contains(&root_hash));
+        let discarded_nonces = discarded.iter().map(|tx| tx.nonce()).collect::<Vec<_>>();
+        assert_eq!(discarded_nonces, [4, 3, 2, 1, 0]);
         for hash in victim_hashes {
             assert!(
                 pool.contains(&hash),
@@ -5577,7 +5568,88 @@ mod tests {
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 5);
-        assert_eq!(queued, 4);
+        assert_eq!(queued, 0);
+        pool.assert_invariants();
+    }
+
+    /// Evicting a lane whose head is the cheapest pending transaction removes the lane's last
+    /// pending transaction, so the rest of the lane stays pending and refilling it promotes nothing.
+    #[test]
+    fn test_pending_eviction_keeps_lane_contiguous() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 4,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            max_txs_per_authority: DEFAULT_MAX_TXS_PER_AUTHORITY,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
+        };
+        let mut pool = AA2dPool::new(config);
+        let max_fee = 30_000_000_000u128;
+
+        // A lane whose cheap head is followed by more expensive transactions.
+        let sender = Address::with_last_byte(1);
+        let nonce_key = U256::ONE;
+        let mut lane = Vec::new();
+        for (nonce, priority_fee) in [(0, 1), (1, 5_000_000_000), (2, 5_000_000_000)] {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .max_fee(max_fee)
+                .max_priority_fee(priority_fee)
+                .build();
+            lane.push(*tx.hash());
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // Two more transactions exceed the pending limit by one.
+        for i in 0..2usize {
+            let tx = TxBuilder::aa(Address::from_word(B256::from(U256::from(100 + i))))
+                .nonce_key(U256::from(100 + i))
+                .max_fee(max_fee)
+                .max_priority_fee(5_000_000_000)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        // The cheap head selects the lane, and its last pending transaction is evicted.
+        assert!(pool.contains(&lane[0]));
+        assert!(pool.contains(&lane[1]));
+        assert!(!pool.contains(&lane[2]));
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 4);
+        assert_eq!(queued, 0);
+
+        // Re-adding the evicted transaction extends the lane without promoting anything.
+        let tail = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(2)
+            .max_fee(max_fee)
+            .max_priority_fee(6_000_000_000)
+            .build();
+        let added = pool
+            .add_transaction(
+                Arc::new(wrap_valid_tx(tail, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        assert!(added.as_pending().unwrap().promoted.is_empty());
         pool.assert_invariants();
     }
 
@@ -6999,10 +7071,10 @@ mod tests {
         assert!(promoted.iter().any(|tx| tx.hash() == &tx3_hash));
         assert!(mined.is_empty());
         assert_eq!(discarded.len(), 1);
-        assert_eq!(discarded[0].hash(), &tx2_hash);
-        assert!(!pool.contains(&tx2_hash));
-        assert!(pool.contains(&tx3_hash));
-        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
+        assert_eq!(discarded[0].hash(), &tx3_hash);
+        assert!(pool.contains(&tx2_hash));
+        assert!(!pool.contains(&tx3_hash));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 0));
         pool.assert_invariants();
     }
 
