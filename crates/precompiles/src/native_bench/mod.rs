@@ -23,7 +23,7 @@ use evm2::{
     interpreter::{GasTracker, Message, MessageKind},
     precompiles::{PrecompileHalt, PrecompileResult},
 };
-use std::{rc::Rc, sync::LazyLock};
+use std::{cell::Cell, rc::Rc, sync::LazyLock};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockExt;
 
@@ -64,6 +64,15 @@ impl Entry {
         }
     }
 
+    /// Whether the state is one the native entry reproduces the bytecode in; otherwise the frame
+    /// runs its bytecode. Runs on scratch gas, and its reads are rolled back.
+    fn applies(self) -> Result<bool> {
+        match self {
+            Self::VaultDeposit | Self::VaultRedeem => vault::applies(),
+            Self::PortalDeposit | Self::SettlementSettle => Ok(true),
+        }
+    }
+
     fn run(self, frame: &NativeFrame<'_>) -> Result<Bytes> {
         match self {
             Self::VaultDeposit => vault::deposit(frame),
@@ -83,6 +92,8 @@ pub struct NativeFrame<'a> {
     pub caller: Address,
     /// Calldata, selector included.
     pub input: &'a [u8],
+    /// Gas the entry charges on top of [Entry::extra_gas] for the branch it took.
+    pub extra_gas: Cell<u64>,
 }
 
 /// Picks the native entry replacing the frame of message, whose calldata is input and bytecode
@@ -100,12 +111,13 @@ pub fn select<T: EvmTypes>(
     let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
     let vault = ENABLED
         .0
-        .then(|| vault::select(message.destination, selector))
+        .then(|| vault::select(message.destination, selector, input))
         .flatten();
     vault.or_else(|| ENABLED.1.then(|| portal::select(selector, code)).flatten())
 }
 
-/// Runs entry natively over the frame of message, charging gas to gas.
+/// Runs entry natively over the frame of message, charging gas to gas, or returns None, having
+/// changed nothing, when the frame must run its bytecode instead.
 pub fn run<T>(
     evm: &mut Evm<'_, T>,
     spec: TempoHardfork,
@@ -113,17 +125,28 @@ pub fn run<T>(
     message: &Message<T>,
     input: &[u8],
     gas: &mut GasTracker,
-) -> PrecompileResult
+) -> Option<PrecompileResult>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
     T::EvmExt: EvmStorageExt,
 {
+    let applies = {
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(evm, spec);
+        StorageCtx::enter(&mut storage, || {
+            let _rollback = StorageCtx.checkpoint();
+            entry.applies()
+        })
+    };
+    if !applies.unwrap_or(false) {
+        return None;
+    }
     let actions = evm.ext().storage_actions();
     let non_creditable_slots = evm.ext().non_creditable_slots();
     let frame = NativeFrame {
         address: message.destination,
         caller: message.caller,
         input,
+        extra_gas: Cell::new(0),
     };
     let result = {
         let mut storage = EvmPrecompileStorageProvider::new(evm, gas, spec, false)
@@ -136,8 +159,12 @@ where
             });
         StorageCtx::enter(&mut storage, || entry.run(&frame))
     };
-    if result.is_ok() && gas.spend(entry.extra_gas()).is_err() {
-        return Err(PrecompileHalt::OutOfGas.into());
+    if result.is_ok()
+        && gas
+            .spend(entry.extra_gas() + frame.extra_gas.get())
+            .is_err()
+    {
+        return Some(Err(PrecompileHalt::OutOfGas.into()));
     }
-    result.encode_precompile_result(|output| output)
+    Some(result.encode_precompile_result(|output| output))
 }

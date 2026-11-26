@@ -57,7 +57,7 @@ fn run_native<'frame, 'host>(
         message,
         &input,
         interpreter.gas_mut().tracker_mut(),
-    );
+    )?;
     let (stop, output) = match result {
         Ok(output) => (InstrStop::Return, output.into_bytes()),
         Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
