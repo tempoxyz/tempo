@@ -11,7 +11,7 @@ use commonware_utils::ordered;
 use core::marker::PhantomData;
 use evm2::{
     DatabaseError, Evm,
-    evm::{AccountInfo, Database, DynDatabase, StateCheckpoint},
+    evm::{AccountInfo, Database, DynDatabase},
     registry::{HandlerError, HandlerResult},
 };
 use std::net::{IpAddr, SocketAddr};
@@ -21,7 +21,7 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{
         ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
-        StorageActions, StorageCtx, account_config_commitment,
+        StorageActions, StorageCheckpoint, StorageCtx, account_config_commitment,
     },
     tip20::{ITIP20, TIP20Token},
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2, ValidatorConfigV2Error},
@@ -549,15 +549,15 @@ where
         unreachable!("'refund_gas' not supported in read-only context")
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         unreachable!("'checkpoint' not supported in read-only context")
     }
 
-    fn checkpoint_commit(&mut self, _: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, _: StorageCheckpoint) {
         unreachable!("'checkpoint_commit' not supported in read-only context")
     }
 
-    fn checkpoint_revert(&mut self, _: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, _: StorageCheckpoint) {
         unreachable!("'checkpoint_revert' not supported in read-only context")
     }
 
