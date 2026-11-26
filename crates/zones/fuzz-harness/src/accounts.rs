@@ -10,7 +10,7 @@ use std::{
 
 use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Signature, TxKind, U256};
 use evm2::EvmFeatures;
-use invariants_core::{Call, Observe as _, Outcome, Report, Views};
+use invariants_core::{Call, Observe as _, ObserveError, Outcome, Report, Views};
 use reth_evm::ConfigureEvm as _;
 use reth_primitives_traits::Recovered;
 use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, PATH_USD_ADDRESS};
@@ -68,8 +68,8 @@ pub(crate) struct AccountChecks {
 }
 
 impl AccountChecks {
-    /// Checks watching the zone's system contracts, then `watched`, then the accounts `l1` holds a
-    /// commitment for, up to [`MAX_WATCHED`] in all.
+    /// Checks watching the zone's system contracts, then the accounts `l1` holds a commitment for,
+    /// the ones TIP-1154 treats differently, then `watched`, up to [`MAX_WATCHED`] in all.
     pub(crate) fn new(l1: &L1, watched: impl IntoIterator<Item = Address>) -> Self {
         let mut accounts = vec![
             TEMPO_STATE_ADDRESS,
@@ -77,8 +77,8 @@ impl AccountChecks {
             ZONE_OUTBOX_ADDRESS,
             ZONE_FEE_MANAGER_ADDRESS,
         ];
-        accounts.extend(watched);
         accounts.extend(l1.committed());
+        accounts.extend(watched);
         let mut seen = HashSet::new();
         accounts.retain(|account| seen.insert(*account));
         accounts.truncate(MAX_WATCHED);
@@ -131,11 +131,8 @@ impl AccountChecks {
             let step = ZoneStep::new(pre, post.clone(), effects);
             report.run(Mirror::STEP_CHECKS, &step, fork);
         }
-        report.run(
-            ZoneLeaves::CHECKS,
-            &self.leaves(l1, state, &accounts, anchor),
-            fork,
-        );
+        let leaves = self.leaves(l1, state, &accounts, anchor, report);
+        report.run(ZoneLeaves::CHECKS, &leaves, fork);
         *self.pre.borrow_mut() = Some(post);
     }
 
@@ -166,18 +163,21 @@ impl AccountChecks {
             precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
             accounts: &self.watched,
             coded: &coded,
+            spec: state.env().spec,
         };
         observed(report, VIEW, "the zone", ZoneModel::observe(&mut views, at))
     }
 
     /// The TIP-1108 leaves of `accounts`: what the zone stores, what it serves through Tempo's
-    /// overlay at `anchor`, and what Tempo commits to there.
+    /// overlay at `anchor`, and what Tempo commits to there. A read that fails breaks [`VIEW`]
+    /// in `report`; one that needs a key an exact pre-state lacks is left unread.
     fn leaves(
         &self,
         l1: &L1,
         state: &StepState<'_, ZoneEvmConfig<L1>>,
         accounts: &[Address],
         anchor: u64,
+        report: &mut Report,
     ) -> ZoneLeaves {
         use evm2::evm::DynDatabase as _;
         let spec = state.env().spec;
@@ -193,12 +193,18 @@ impl AccountChecks {
             let Some(stored) = state.leaf(address) else {
                 continue;
             };
-            let served = overlay
-                .get_account(&address)
-                .ok()
-                .map(|info| info.map_or(KECCAK256_EMPTY, |info| info.code_hash));
+            state.forget_missed();
+            let served = overlay.get_account(&address);
+            let served = if state.missed() {
+                None
+            } else {
+                let read = served.map_err(|err| ObserveError::Views(err.to_string()));
+                observed(report, VIEW, address, read)
+                    .map(|info| info.map_or(KECCAK256_EMPTY, |info| info.code_hash))
+            };
             // An unread commitment leaves the checks on Tempo's side unarmed.
-            let tempo = l1.read_l1_commitment(address, anchor).ok();
+            let read = l1.read_l1_commitment(address, anchor);
+            let tempo = observed(report, VIEW, address, read.map_err(ObserveError::Views));
             of.insert(
                 address,
                 ZoneLeaf {
@@ -210,6 +216,7 @@ impl AccountChecks {
         }
         ZoneLeaves {
             active: spec.is_t14(),
+            spec,
             of,
         }
     }
@@ -224,14 +231,18 @@ fn portal(env: &TempoEvmEnv) -> Address {
 
 /// Read-only calls against zone state, each run as a simulated zone transaction from the zero
 /// address without fees: Tempo's overlay applies only inside a zone transaction.
-struct ZoneViews<'a> {
+///
+/// A call that reads a key an exact pre-state lacks is unanswered, as the engine's own views treat
+/// it: the pre-state holds only what execution touched.
+struct ZoneViews<'a, 's> {
+    state: &'a StepState<'s, ZoneEvmConfig<L1>>,
     evm: TempoEvm<'a>,
     chain_id: u64,
 }
 
-impl<'a> ZoneViews<'a> {
+impl<'a, 's> ZoneViews<'a, 's> {
     /// Views of the state after `state`'s step, in the zone block environment `env`.
-    fn new(state: &'a StepState<'_, ZoneEvmConfig<L1>>, mut env: TempoEvmEnv) -> Self {
+    fn new(state: &'a StepState<'s, ZoneEvmConfig<L1>>, mut env: TempoEvmEnv) -> Self {
         // A view pays no fee, so neither the sender's balance nor the block's base fee applies.
         for feature in [
             EvmFeatures::FEE_CHARGE,
@@ -245,13 +256,14 @@ impl<'a> ZoneViews<'a> {
         }
         let chain_id = env.version.chain_id;
         Self {
+            state,
             evm: state.evm_config().evm_with_env(state.database(), env),
             chain_id,
         }
     }
 }
 
-impl Views for ZoneViews<'_> {
+impl Views for ZoneViews<'_, '_> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
@@ -273,10 +285,19 @@ impl Views for ZoneViews<'_> {
                 let envelope = TempoTxEnvelope::AA(tx.into_signed(signature));
                 let sender = call.from.unwrap_or(Address::ZERO);
                 let tx = Recovered::new_unchecked(envelope, sender);
-                match self
+                // The EVM caches what it loads, so a call reaches the database for every key it
+                // reads only on an empty cache.
+                let cache = &mut self.evm.overlay_db_mut().cache;
+                cache.accounts.clear();
+                cache.storage.clear();
+                self.state.forget_missed();
+                let result = self
                     .evm
-                    .call_tx(&Recovered::new_unchecked(tx.into(), sender))
-                {
+                    .call_tx(&Recovered::new_unchecked(tx.into(), sender));
+                if self.state.missed() {
+                    return Ok(None);
+                }
+                match result {
                     Err(err) => Err(ViewFailed {
                         selector: call
                             .input
@@ -294,7 +315,7 @@ impl Views for ZoneViews<'_> {
     }
 
     fn partial(&self) -> bool {
-        false
+        self.state.partial()
     }
 }
 
@@ -309,5 +330,24 @@ struct ViewFailed {
 impl fmt::Display for ViewFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} on {}: {}", self.selector, self.target, self.reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::B256;
+
+    use super::*;
+    use crate::L1StateInput;
+
+    #[test]
+    fn accounts_l1_commits_to_are_watched_ahead_of_the_inputs() {
+        let committed = Address::repeat_byte(0xc0);
+        let mut l1 = L1StateInput::default();
+        l1.commitments.insert(committed, B256::repeat_byte(1));
+        let many = (1..=2 * MAX_WATCHED as u8).map(Address::repeat_byte);
+        let checks = AccountChecks::new(&L1(std::sync::Arc::new(l1)), many);
+        assert_eq!(checks.watched.len(), MAX_WATCHED);
+        assert_eq!(checks.watched[4], committed);
     }
 }

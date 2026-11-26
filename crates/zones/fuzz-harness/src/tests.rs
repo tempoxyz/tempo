@@ -427,3 +427,21 @@ fn the_c_abi_takes_a_zone_input_and_reports_zone_capabilities() {
         "zones launched on T13"
     );
 }
+
+#[test]
+fn an_l1_commitment_on_an_address_the_zone_does_not_reserve_is_mirrored() {
+    // 0x1c00..04 is no zone predeploy, and ZoneIdentity only becomes one at T15, so at T14 the
+    // zone reads Tempo's commitment for both as for any account.
+    let unused = address!("1c00000000000000000000000000000000000004");
+    let identity = zone_primitives::constants::ZONE_IDENTITY_ADDRESS;
+    for fork in [TempoHardfork::T14, TempoHardfork::T15] {
+        let mut l1 = l1(true);
+        l1.commitments.insert(unused, B256::repeat_byte(0x22));
+        if fork == TempoHardfork::T14 {
+            l1.commitments.insert(identity, B256::repeat_byte(0x33));
+        }
+        let outcome = execute(fork, l1, vec![vec![transfer(0, RECIPIENT, 100)]]);
+        let counts = &outcome.invariant_counts["TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR"];
+        assert!(counts.armed > 0, "{fork:?}: {counts:?}");
+    }
+}

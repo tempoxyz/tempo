@@ -222,7 +222,7 @@ impl Engine for Zone {
 
 /// Tempo L1 as an input describes it: the same storage at every block.
 #[derive(Debug, Clone)]
-pub struct L1(Arc<L1StateInput>);
+pub struct L1(pub(crate) Arc<L1StateInput>);
 
 impl L1 {
     /// The accounts L1 holds a nonzero commitment for.

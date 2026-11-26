@@ -68,6 +68,24 @@ impl<C> StepState<'_, C> {
         invariants::leaf(self.account(address)?, self.env.spec)
     }
 
+    /// Whether a read since [`Self::forget_missed`] needed a key an exact pre-state lacks, which
+    /// leaves what it read unknown.
+    pub fn missed(&self) -> bool {
+        self.db.pre.missed()
+    }
+
+    /// Clears the record of reads that missed the pre-state, before a read whose miss to tell
+    /// apart. The engine restores the execution's own record after [`Engine::check_step`].
+    pub fn forget_missed(&self) {
+        self.db.pre.restore_missed(false);
+    }
+
+    /// Whether the pre-state may lack keys a read needs: an exact one, holding only what execution
+    /// touched.
+    pub fn partial(&self) -> bool {
+        self.db.pre.exact()
+    }
+
     /// The state after the step, as a database to execute over.
     pub fn database(&self) -> impl Database + '_ {
         self.db.view()
