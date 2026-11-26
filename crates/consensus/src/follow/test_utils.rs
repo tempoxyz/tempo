@@ -7,7 +7,7 @@ use std::{
     num::NonZeroU64,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -103,12 +103,17 @@ pub(super) struct StubExecutionProvider {
 
 #[derive(Default)]
 struct StubExecutionProviderInner {
+    finalized: AtomicU64,
     headers: Mutex<HashMap<u64, TempoHeader>>,
     header_reads: Mutex<Vec<u64>>,
-    fail_header_reads: AtomicBool,
+    fail_finalized_read: AtomicBool,
 }
 
 impl StubExecutionProvider {
+    pub(super) fn set_finalized(&self, height: u64) {
+        self.inner.finalized.store(height, Ordering::SeqCst);
+    }
+
     pub(super) fn add_header(&self, block: &Block) {
         self.inner
             .headers
@@ -116,8 +121,8 @@ impl StubExecutionProvider {
             .insert(block.number(), block.header().clone());
     }
 
-    pub(super) fn fail_header_reads(&self) {
-        self.inner.fail_header_reads.store(true, Ordering::SeqCst);
+    pub(super) fn fail_finalized_read(&self) {
+        self.inner.fail_finalized_read.store(true, Ordering::SeqCst);
     }
 
     pub(super) fn header_reads(&self) -> Vec<u64> {
@@ -126,11 +131,15 @@ impl StubExecutionProvider {
 }
 
 impl ExecutionProvider for StubExecutionProvider {
+    fn finalized_block_number(&self) -> eyre::Result<u64> {
+        if self.inner.fail_finalized_read.load(Ordering::SeqCst) {
+            eyre::bail!("finalized block read failed");
+        }
+        Ok(self.inner.finalized.load(Ordering::SeqCst))
+    }
+
     fn finalized_header_by_number(&self, number: u64) -> eyre::Result<Option<TempoHeader>> {
         self.inner.header_reads.lock().push(number);
-        if self.inner.fail_header_reads.load(Ordering::SeqCst) {
-            eyre::bail!("header read failed");
-        }
         Ok(self.inner.headers.lock().get(&number).cloned())
     }
 }

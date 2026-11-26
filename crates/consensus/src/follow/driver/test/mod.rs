@@ -48,6 +48,7 @@ fn startup_uses_previous_execution_boundary() {
         let fixture = dkg_fixture(&mut context, Epoch::new(1));
         let boundary_block = make_block(expected_boundary.get(), Some(&fixture.outcome));
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(finalized_height.get());
         provider.add_header(&boundary_block);
 
         let schemes = SchemeProvider::new();
@@ -129,12 +130,11 @@ fn startup_rejects_an_unobserved_snapshot_identity_before_loading_boundaries() {
 }
 
 #[test_traced]
-fn startup_propagates_execution_header_read_failure() {
+fn startup_propagates_finalized_block_read_failure() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let provider = StubExecutionProvider::default();
-        provider.fail_header_reads();
-        let marshal = StubMarshal::default();
+        provider.fail_finalized_read();
 
         let result = try_init(
             context.child("driver"),
@@ -148,15 +148,14 @@ fn startup_propagates_execution_header_read_failure() {
                 last_finalized_height: Height::zero(),
                 finalized_tip: None,
                 partition_prefix: "test".into(),
-                marshal: marshal.clone(),
+                marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
             },
         )
         .await;
 
         assert!(result.is_err());
-        assert_eq!(provider.header_reads(), vec![0]);
-        assert!(marshal.block_reads().is_empty());
+        assert!(provider.header_reads().is_empty());
     });
 }
 
@@ -639,6 +638,7 @@ fn observed_boundary_is_durable_before_acknowledgement() {
 
         let height = Height::new(EPOCH_LENGTH.get() + 1);
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(height.get());
         provider.add_header(&make_block(boundary.get(), Some(&next.outcome)));
         let tip = make_block(height.get(), None);
         let (restarted, _) = try_init(
@@ -735,6 +735,7 @@ fn historical_boundaries_do_not_replace_a_newer_configured_anchor_for_the_same_k
         let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
         let block = make_block(boundary.get(), Some(&historical.outcome));
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(boundary.get());
         provider.add_header(&block);
         let (actor, mailbox) = try_init(
             context.child("driver"),
@@ -793,8 +794,7 @@ fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
             let next = dkg_fixture(&mut context, Epoch::new(1));
             let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
             let provider = StubExecutionProvider::default();
-            provider.add_header(&make_block(0, Some(&old.outcome)));
-            // The execution layer holds a boundary above the authenticated tip.
+            provider.set_finalized(boundary.get());
             provider.add_header(&make_block(boundary.get(), Some(&next.outcome)));
             let configured = NetworkIdentity {
                 from_epoch,
@@ -805,7 +805,7 @@ fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
             let (actor, _) = try_init(
                 context.child("driver"),
                 Config {
-                    execution_provider: provider.clone(),
+                    execution_provider: provider,
                     scheme_provider: schemes.clone(),
                     network_identity: configured.clone(),
                     last_finalized_height: Height::new(1),
@@ -821,8 +821,6 @@ fn startup_does_not_persist_a_boundary_above_its_authenticated_tip() {
             .await
             .unwrap();
             assert!(schemes.scoped(Epoch::new(from_epoch)).is_some());
-            assert_eq!(provider.header_reads(), vec![0]);
-            assert!(schemes.scoped(Epoch::new(1)).is_none());
             drop(actor);
             let state = super::actor::State::init(context.child("restart_state"), "test")
                 .await
@@ -988,6 +986,7 @@ fn startup_does_not_observe_a_boundary_only_read_from_execution() {
         let boundary = FixedEpocher::new(EPOCH_LENGTH).last(Epoch::zero()).unwrap();
         let block = make_block(boundary.get(), Some(&next.outcome));
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(boundary.get());
         provider.add_header(&block);
         let configured = NetworkIdentity {
             from_epoch: 0,
@@ -1624,7 +1623,7 @@ fn non_boundary_update_is_acknowledged_without_registering_a_scheme() {
 }
 
 #[test_traced]
-fn startup_reads_the_floor_boundary_from_marshal_behind_a_lagging_execution_layer() {
+fn startup_installs_missing_consensus_epoch_scheme_from_marshal() {
     deterministic::Runner::default().start(|mut context| async move {
         let fixture = dkg_fixture(&mut context, Epoch::zero());
         let mut recovered_outcome = fixture.outcome.clone();
@@ -1676,13 +1675,71 @@ fn startup_reads_the_floor_boundary_from_marshal_behind_a_lagging_execution_laye
         .await
         .expect("driver should initialize");
 
+        let handle = actor.start();
+        wait_until(&context, || marshal.block_reads() == vec![boundary]).await;
+
         assert_eq!(marshal.block_reads(), vec![boundary]);
         assert!(schemes.scoped(recovered_outcome.epoch()).is_some());
-        drop(actor);
+        handle.abort();
+        assert!(
+            context
+                .timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .is_err()
+        );
         let state = super::actor::State::init(context.child("restart_state"), "test")
             .await
             .unwrap();
         assert_eq!(state.identity(), None);
+    });
+}
+
+#[test_traced]
+fn startup_seeds_from_the_execution_finalized_boundary_without_reading_marshal() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let strategy = FixedEpocher::new(EPOCH_LENGTH);
+        let fixture = dkg_fixture(&mut context, Epoch::new(1));
+        let execution_boundary = strategy.last(Epoch::zero()).unwrap();
+        // The floor sits in epoch 3, but the execution layer lags at epoch 0's boundary.
+        let floor = Height::new(3 * EPOCH_LENGTH.get() + 1);
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(execution_boundary.get());
+        provider.add_header(&make_block(
+            execution_boundary.get(),
+            Some(&fixture.outcome),
+        ));
+        let marshal = StubMarshal::default();
+        let schemes = SchemeProvider::new();
+        let result = try_init(
+            context.child("driver"),
+            Config {
+                execution_provider: provider.clone(),
+                scheme_provider: schemes.clone(),
+                network_identity: NetworkIdentity {
+                    from_epoch: 0,
+                    identity: *fixture.outcome.network_identity(),
+                },
+                last_finalized_height: floor,
+                finalized_tip: Some((
+                    floor,
+                    make_finalization(
+                        &make_block(floor.get(), None),
+                        Epoch::new(3),
+                        &fixture.schemes,
+                    ),
+                )),
+                partition_prefix: "test".into(),
+                marshal: marshal.clone(),
+                epoch_strategy: strategy.clone(),
+            },
+        )
+        .await;
+
+        assert!(result.is_ok(), "{:?}", result.err());
+        assert_eq!(provider.header_reads(), vec![execution_boundary.get()]);
+        assert!(marshal.block_reads().is_empty());
+        assert!(schemes.scoped(Epoch::new(1)).is_some());
     });
 }
 
@@ -1732,17 +1789,16 @@ fn non_finalized_events_are_ignored() {
 }
 
 #[test_traced]
-fn startup_seeds_from_the_floor_when_execution_is_finalized_past_it() {
+fn startup_bounds_the_execution_boundary_by_the_tip_epoch() {
     deterministic::Runner::default().start(|mut context| async move {
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
-        let floor_boundary = strategy.last(Epoch::zero()).unwrap();
         let tip_epoch_last = strategy.last(Epoch::new(1)).unwrap();
         let tip_height = Height::new(EPOCH_LENGTH.get() + 1);
         let current = dkg_fixture(&mut context, Epoch::new(1));
         let next = dkg_fixture(&mut context, Epoch::new(2));
         let provider = StubExecutionProvider::default();
-        // The execution layer also holds a later boundary, past the floor's epoch.
-        provider.add_header(&make_block(floor_boundary.get(), Some(&current.outcome)));
+        // The execution layer is finalized two epochs past the tip's epoch.
+        provider.set_finalized(3 * EPOCH_LENGTH.get() + 1);
         provider.add_header(&make_block(tip_epoch_last.get(), Some(&next.outcome)));
         let result = try_init(
             context.child("driver"),
@@ -1770,7 +1826,7 @@ fn startup_seeds_from_the_floor_when_execution_is_finalized_past_it() {
         .await;
 
         assert!(result.is_ok(), "{:?}", result.err());
-        assert_eq!(provider.header_reads(), vec![floor_boundary.get()]);
+        assert_eq!(provider.header_reads(), vec![tip_epoch_last.get()]);
     });
 }
 
@@ -1778,12 +1834,13 @@ fn startup_seeds_from_the_floor_when_execution_is_finalized_past_it() {
 fn startup_rejects_a_boundary_outcome_for_another_epoch() {
     deterministic::Runner::default().start(|mut context| async move {
         let strategy = FixedEpocher::new(EPOCH_LENGTH);
-        let floor_boundary = strategy.last(Epoch::zero()).unwrap();
+        let tip_epoch_last = strategy.last(Epoch::new(1)).unwrap();
         let tip_height = Height::new(EPOCH_LENGTH.get() + 1);
         let current = dkg_fixture(&mut context, Epoch::new(1));
         let future = dkg_fixture(&mut context, Epoch::new(5));
         let provider = StubExecutionProvider::default();
-        provider.add_header(&make_block(floor_boundary.get(), Some(&future.outcome)));
+        provider.set_finalized(tip_epoch_last.get());
+        provider.add_header(&make_block(tip_epoch_last.get(), Some(&future.outcome)));
         let error = try_init(
             context.child("driver"),
             Config {
@@ -1811,7 +1868,7 @@ fn startup_rejects_a_boundary_outcome_for_another_epoch() {
         .err()
         .expect("an outcome for another epoch must fail startup");
         assert!(
-            format!("{error:#}").contains("contains an outcome for epoch `5`, expected epoch `1`"),
+            format!("{error:#}").contains("contains an outcome for epoch `5`, expected epoch `2`"),
             "{error:#}"
         );
     });
@@ -1829,12 +1886,13 @@ fn startup_rejects_a_marshal_boundary_for_another_epoch() {
         let tip_height = Height::new(3 * EPOCH_LENGTH.get() + 1);
         let consensus_boundary = strategy.last(Epoch::new(2)).unwrap();
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(1);
         provider.add_header(&make_block(0, Some(&genesis.outcome)));
         let marshal = StubMarshal::default();
         // The boundary ending epoch 2 claims to start epoch 7.
         marshal.add_block(make_block(consensus_boundary.get(), Some(&skipped.outcome)));
         let schemes = SchemeProvider::new();
-        let error = try_init(
+        let (actor, _mailbox) = try_init(
             context.child("driver"),
             Config {
                 execution_provider: provider,
@@ -1858,13 +1916,9 @@ fn startup_rejects_a_marshal_boundary_for_another_epoch() {
             },
         )
         .await
-        .err()
-        .expect("a marshal boundary for another epoch must fail startup");
+        .unwrap();
 
-        assert!(
-            format!("{error:#}").contains("contains an outcome for epoch `7`, expected epoch `3`"),
-            "{error:#}"
-        );
+        actor.start().await.unwrap();
         assert!(schemes.scoped(Epoch::new(7)).is_none());
     });
 }
@@ -1880,6 +1934,7 @@ fn startup_rejects_a_floor_past_the_epoch_after_the_tip_behind_a_lagging_executi
         // execution layer reports only the genesis epoch as finalized.
         let tip_height = Height::new(7 * EPOCH_LENGTH.get() + 1);
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(1);
         provider.add_header(&make_block(0, Some(&attacker.outcome)));
         let error = try_init(
             context.child("driver"),
@@ -1928,6 +1983,7 @@ fn startup_restores_the_scheme_carried_by_an_exact_boundary_floor() {
         let floor_block = make_block(floor.get(), Some(&second.outcome));
 
         let provider = StubExecutionProvider::default();
+        provider.set_finalized(execution_boundary.get());
         provider.add_header(&make_block(execution_boundary.get(), Some(&first.outcome)));
         let marshal = StubMarshal::default();
         marshal.add_block(floor_block.clone());
