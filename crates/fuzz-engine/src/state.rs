@@ -107,7 +107,7 @@ impl Db {
 }
 
 thread_local! {
-    /// The misses of exact pre-states while [`crate::run_collecting`] runs, `None` otherwise.
+    /// The misses of exact pre-states while [`crate::execute::run_collecting`] runs, `None` otherwise.
     pub(crate) static COLLECTED: RefCell<Option<Vec<MissingPreState>>> =
         const { RefCell::new(None) };
     /// What exact pre-states seed to while [`crate::run_collecting_on`] runs, `None` otherwise.

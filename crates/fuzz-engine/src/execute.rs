@@ -106,6 +106,15 @@ pub(crate) fn run_collecting<E: Engine>(
     engine: &E,
     input: TempoHarnessInput,
 ) -> (TempoHarnessOutcome, Vec<state::MissingPreState>) {
+    /// Clears the collecting overrides however the run ends, so a caught panic leaves none set.
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            state::COLLECTED.set(None);
+            state::SEEDED.set(None);
+        }
+    }
+    let _reset = Reset;
     state::COLLECTED.set(Some(Vec::new()));
     let (outcome, _) = run(engine, input);
     (outcome, state::COLLECTED.take().unwrap_or_default())
@@ -130,9 +139,7 @@ pub fn run_collecting_on<E: Engine>(
     input: TempoHarnessInput,
 ) -> (TempoHarnessOutcome, Vec<state::MissingPreState>) {
     state::SEEDED.set(Some(seeded.0.clone()));
-    let result = run_collecting(engine, input);
-    state::SEEDED.set(None);
-    result
+    run_collecting(engine, input)
 }
 
 /// An outcome that executed nothing, with `error`.
