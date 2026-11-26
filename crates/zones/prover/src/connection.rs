@@ -50,7 +50,7 @@ where
         .map_err(|_| ProverConnectionError::WorkerPanic)??;
         let bytes = payload.len();
         self.inner
-            .send(payload.into())
+            .send(alloy_primitives::bytes::Bytes::from(payload))
             .await
             .map_err(|error| classify_io_error(error, self.maximum))?;
         Ok(bytes)
