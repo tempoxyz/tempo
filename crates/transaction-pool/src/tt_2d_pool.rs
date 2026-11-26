@@ -1698,6 +1698,23 @@ impl AA2dPool {
         }
         assert_eq!(self.txs_by_lane, lane_counts);
 
+        // `pending_run_end` searches past nonce gaps but stops at a queued transaction, so a
+        // queued transaction never sits between two pending ones in a lane.
+        let mut pending_lane = None;
+        let mut queued_after_pending = None;
+        for (id, tx) in &self.by_id {
+            if tx.is_pending() {
+                assert_ne!(
+                    queued_after_pending,
+                    Some(id.seq_id),
+                    "A queued transaction sits between pending ones before {id:?}"
+                );
+                pending_lane = Some(id.seq_id);
+            } else if pending_lane == Some(id.seq_id) {
+                queued_after_pending = Some(id.seq_id);
+            }
+        }
+
         // Basic size constraints
         assert!(
             self.independent_transactions.len() <= self.by_id.len(),
