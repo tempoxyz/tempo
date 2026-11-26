@@ -10,11 +10,13 @@ pub mod abi {
 mod attrs;
 mod builder;
 mod prewarming;
+mod transfer_allowlist;
 mod withdrawal_reveal;
 
 pub use attrs::{TempoImport, ZonePayloadAttributes, ZonePayloadTypes};
 pub use builder::{
-    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, ZonePayloadBuilder, ZonePayloadFactory,
-    build_advance_tempo_headers_tx, build_advance_tempo_tx,
+    DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, VirtualAddressKey, ZonePayloadBuilder,
+    ZonePayloadFactory, build_advance_tempo_headers_tx, build_advance_tempo_tx,
 };
+pub use transfer_allowlist::{TransferAllowlist, validate_transfer_calls};
 pub use withdrawal_reveal::WithdrawalRevealEncryptor;

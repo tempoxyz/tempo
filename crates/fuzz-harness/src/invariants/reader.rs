@@ -3,13 +3,14 @@
 use std::fmt::Display;
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
-use invariants_core::{Observe, ObserveError, Report, Violation};
+use invariants_core::{Checked, Observe, ObserveError, Report, StepChecked, Violation};
+use reth_evm::Database;
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_invariants::all;
+use tempo_invariants::{Ran, TempoHardfork};
 
 use super::{
     StepEffects,
-    views::{EvmViews, PreView, ViewFailed},
+    views::{EvmViews, PreView, ViewCache, ViewFailed},
 };
 use crate::state::Db;
 
@@ -19,28 +20,46 @@ pub(super) struct Reader<'a> {
     pub(super) evm_config: &'a TempoEvmConfig,
     pub(super) env: &'a TempoEvmEnv,
     pub(super) effects: Option<&'a StepEffects<'a>>,
+    pub(super) view_cache: &'a ViewCache,
 }
 
 impl Reader<'_> {
+    /// Views of the state `db` reads, the one before the step with `before`.
+    pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b> {
+        let (config, env) = (self.evm_config, self.env.clone());
+        EvmViews::new(db, config, env, &self.db.pre, self.view_cache, before)
+    }
+
+    /// The hardfork the step ran at, which gates the checks.
+    pub(super) fn fork(&self) -> Option<&TempoHardfork> {
+        Some(&self.env.spec)
+    }
+
     /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
     /// the step's effects, also reads it before the step and checks the step. A read that fails
     /// is counted under `view` as [`observed`] does.
-    pub(super) fn check<M: Observe + 'static>(
+    pub(super) fn check<M>(
         &self,
         report: &mut Report,
         at: M::At<'_>,
         contract: Address,
         view: &'static str,
-    ) {
-        let pre_state = &self.db.pre;
-        let after = EvmViews::new(self.db.view(), self.evm_config, self.env.clone(), pre_state);
+    ) where
+        M: Observe + Checked<TempoHardfork> + StepChecked<Ran, TempoHardfork>,
+    {
+        let after = self.views(self.db.view(), false);
         let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
             return;
         };
-        report.run_any(all(), &post);
+        report.run(M::CHECKS, &post, self.fork());
         let Some(effects) = self.effects else {
             return;
         };
+        // The executor drops a system call's logs, so a system step's step checks would judge its
+        // changes against none.
+        if effects.ran.tx().is_none() {
+            return;
+        }
         // A contract the step deployed has no state before it to read.
         let deployed = |address: &Address| {
             effects.net.get(address).is_some_and(|account| {
@@ -56,19 +75,19 @@ impl Reader<'_> {
             reader: self.db.view(),
             net: effects.net,
         };
-        let before = EvmViews::new(before, self.evm_config, self.env.clone(), pre_state);
+        let before = self.views(before, true);
         let subject = format!("{contract} before the step");
         let read = M::observe(&mut { before }, at);
-        // Nor does one it reads, such as a token the step created.
-        if let Err(ObserveError::Views(failed)) = &read
-            && deployed(&failed.target())
+        // Nor does one it reads, such as a token the step created, whose views revert.
+        if let Err(ObserveError::Unexpected { to, .. }) = &read
+            && deployed(to)
         {
             return;
         }
         let Some(pre) = observed(report, view, subject, read) else {
             return;
         };
-        report.run_any(all(), &effects.step(contract, pre, post));
+        report.run(M::STEP_CHECKS, &effects.step(pre, post), self.fork());
     }
 }
 
@@ -92,7 +111,7 @@ fn observed<T>(
             counts.armed += 1;
             counts.fired += 1;
             report.violations.push(Violation {
-                id: view,
+                id: view.into(),
                 subject: subject.to_string(),
                 detail: err.to_string(),
             });

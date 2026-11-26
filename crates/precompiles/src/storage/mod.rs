@@ -27,7 +27,9 @@ use evm2::{
     version::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment, gas::keccak_gas};
+use tempo_primitives::{
+    TempoBlockEnv, TempoEvmKind, account::decode_config_commitment, gas::keccak_gas,
+};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -165,8 +167,10 @@ pub trait PrecompileStorageProvider {
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
 
-    /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
-    fn state_gas_used(&self) -> u64;
+    /// Returns the net state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    ///
+    /// Negative when a nested callee clears state that an earlier frame created.
+    fn state_gas_used(&self) -> i64;
 
     /// Returns the state gas that was drawn from regular gas because the reservoir was empty
     /// (EIP-8037's `state_gas_from_gas_left`).
@@ -192,6 +196,34 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Sets whether SLOADs are charged as cold even when the slot is already warm, and returns the
+    /// previous setting. Providers without gas metering ignore it.
+    fn set_cold_pricing(&mut self, enabled: bool) -> bool {
+        let _ = enabled;
+        false
+    }
+
+    /// The address of the precompile this call frame runs, when known. A nested call's callee
+    /// sees it as `msg.sender`.
+    fn call_frame_address(&self) -> Option<Address> {
+        None
+    }
+
+    /// Calls `target` as `STATICCALL` when `is_static` and as a zero-value `CALL` otherwise, with
+    /// the precompile as the caller and the gas rules of `CALL`. A failed callee is rolled back
+    /// and reported as [`CallOutcome::Failure`]: an `Err` is the precompile's own and must be
+    /// propagated. Refused with [`TempoPrecompileError::NestedCallUnavailable`] while a
+    /// [`checkpoint`](Self::checkpoint) is open.
+    fn call(
+        &mut self,
+        _target: Address,
+        _input: Bytes,
+        _gas_limit: u64,
+        _is_static: bool,
+    ) -> Result<CallOutcome> {
+        Err(TempoPrecompileError::NestedCallUnavailable)
+    }
 
     /// Creates a new journal checkpoint so that all subsequent state-changing
     /// operations can be atomically committed ([`checkpoint_commit`](Self::checkpoint_commit))
@@ -224,6 +256,13 @@ pub trait PrecompileStorageProvider {
     /// refund-mode settlement. Implementations that do not run TIP-1060 accounting may treat this
     /// as a no-op.
     fn set_tip1060_storage_credit_minting(&mut self, _enabled: bool) {}
+
+    /// Returns the kind of EVM this context executes over, which fixes the protocol rules that
+    /// differ between Tempo L1 and its zones. Providers that cannot write state may keep the
+    /// [`TempoEvmKind::L1`] default, since those rules only affect state changes.
+    fn kind(&self) -> TempoEvmKind {
+        TempoEvmKind::L1
+    }
 
     /// Computes keccak256 and charges the appropriate gas.
     ///
@@ -269,6 +308,16 @@ pub trait PrecompileStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<()>;
+}
+
+/// Outcome of a nested call made with [`PrecompileStorageProvider::call`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a failed callee is rolled back but does not fail the precompile on its own"]
+pub enum CallOutcome {
+    /// The callee returned this data.
+    Success(Bytes),
+    /// The callee reverted with this data or halted, and was rolled back.
+    Failure(Bytes),
 }
 
 /// Storage operations for a given (contract) address.

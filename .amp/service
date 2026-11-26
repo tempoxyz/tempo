@@ -6,7 +6,6 @@ export PATH="$HOME/.foundry/bin:$HOME/.cargo/bin:$PATH"
 state="$PWD/.amp/state"
 mkdir -p "$state"
 
-# Cargo output lives where .agents/resume points it (the Archil disk), not in ./target.
 zone_bin() {
     cargo build --locked --bin tempo-zone >&2
     printf '%s/debug/tempo-zone' "$(cargo metadata --locked --format-version 1 --no-deps | jq -er .target_directory)"
@@ -24,7 +23,7 @@ wait_http() {
 
 case "${1:?service name required}" in
     l1)
-        # Genesis needs the zone xtask, which can only be built once Archil is mounted.
+        # Genesis needs the zone xtask, which setup does not build.
         [[ -s .amp/deps/l1-genesis.json ]] || bash .amp/genesis
         node .amp/runtime.mjs seed-l1
         chain_id=$(jq -er .config.chainId .amp/deps/l1-genesis.json)

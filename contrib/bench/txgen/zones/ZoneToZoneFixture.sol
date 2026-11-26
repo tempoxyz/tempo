@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-import {IPortal} from "./PortalFixture.sol";
+import {IPortal, processWithdrawals} from "./PortalFixture.sol";
 
 interface IZoneToZonePortal is IPortal {
     function isGatewayOpen() external view returns (bool);
@@ -199,13 +199,16 @@ contract ZoneToZoneGatewayFixture {
 /// No zone or prover runs. Same settlement as SettlementFixture, plus callback withdrawals.
 contract ZoneToZoneSettlementFixture {
     mapping(address => bytes32) private processedHash;
+    /// Same Tempo anchor offset as SettlementFixture.
+    uint256 private immutable anchorOffset;
 
     /// @notice Marks a zone -> zone transfer receipt; its WithdrawalProcessed log says whether
     /// the callback delivered (callbackSuccess) or bounced back to zone A.
     event ZoneToZoneTransfer(address indexed source, address indexed target);
 
-    constructor() {
+    constructor(uint256 anchorOffset_) {
         require(block.chainid == 1337, "local benchmark chain only");
+        anchorOffset = anchorOffset_;
     }
 
     // Accept either verifier ABI (before or after TIP-1096). No proof is checked.
@@ -264,7 +267,7 @@ contract ZoneToZoneSettlementFixture {
             portal.depositCount()
         );
         // The real portal authenticates a recent Tempo anchor even with a dummy verifier.
-        uint64 anchor = uint64(block.number - 1);
+        uint64 anchor = uint64(block.number - anchorOffset);
         bytes[] memory signatures = new bytes[](0);
         // TIP-1096 adds the enabled-token cursor to the settlement ABI.
         try portal.lastProcessedEnabledTokenCount() returns (uint64 tokens) {
@@ -284,7 +287,7 @@ contract ZoneToZoneSettlementFixture {
             portal.submitBatch(anchor, 0, blocks, deposits, withdrawalRoot, "", "", height, signatures);
         }
         processedHash[address(portal)] = deposits.nextProcessedHash;
-        if (items.length != 0) portal.processWithdrawals(items, bytes32(0));
+        if (items.length != 0) processWithdrawals(portal, items);
     }
 }
 

@@ -11,12 +11,11 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_sol_types::SolCall;
+use alloy_primitives::{Address, B256, U256};
 
 use tempo_contracts::precompiles::ITIP20;
 
-use crate::{Observe, ObserveError, Views, decode};
+use crate::{Batch, Observe, ObserveError, Views};
 
 pub use tempo_contracts::precompiles::{
     IStablecoinDEX::{self, OrderCancelled, OrderFilled, OrderFlipped, OrderPlaced},
@@ -86,28 +85,22 @@ impl Observe for Books {
             users,
             orders,
         } = at;
-        // Live orders in one batch; a deleted order's read reverts and fails the
-        // batch, so then one call each, skipping the reverted ones.
-        let get = |id: u128| -> (Address, Bytes) {
-            let call = IStablecoinDEX::getOrderCall { orderId: id };
-            (dex, call.abi_encode().into())
-        };
-        let batch: Vec<(Address, Bytes)> = orders.iter().map(|&id| get(id)).collect();
-        let outputs: Vec<Option<Bytes>> = match views.call(&batch) {
-            Ok(out) => out,
-            Err(_) => orders
-                .iter()
-                .map(|&id| {
-                    views
-                        .call(&[get(id)])
-                        .ok()
-                        .and_then(|o| o.into_iter().next().flatten())
-                })
-                .collect(),
-        };
+        // A deleted order's read reverts, so only the orders that returned are live.
+        let mut batch = Batch::default();
+        let reads: Vec<_> = orders
+            .iter()
+            .map(|&id| batch.push(None, dex, &IStablecoinDEX::getOrderCall { orderId: id }))
+            .collect();
+        let answers = batch.run(views)?;
         let mut live = Vec::new();
-        for output in outputs.into_iter().flatten() {
-            let order = decode::<IStablecoinDEX::getOrderCall, _>(dex, Some(Some(output)))?;
+        for read in &reads {
+            if !answers
+                .outcome(read)
+                .is_some_and(|outcome| outcome.succeeded())
+            {
+                continue;
+            }
+            let order = answers.decode(read)?;
             if !order.maker.is_zero() {
                 live.push(order);
             }
@@ -115,51 +108,44 @@ impl Observe for Books {
         let mut keys: Vec<B256> = live.iter().map(|o| o.bookKey).collect();
         keys.sort();
         keys.dedup();
-        let calls: Vec<(Address, Bytes)> = keys
+        let mut batch = Batch::default();
+        let reads: Vec<_> = keys
             .iter()
             .map(|&pair_key| {
-                let c = IStablecoinDEX::booksCall { pairKey: pair_key };
-                (dex, c.abi_encode().into())
+                batch.push(None, dex, &IStablecoinDEX::booksCall { pairKey: pair_key })
             })
             .collect();
-        let mut out = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
+        let answers = batch.run(views)?;
         let mut book = BTreeMap::new();
-        for &key in &keys {
-            book.insert(
-                key,
-                decode::<IStablecoinDEX::booksCall, _>(dex, out.next())?,
-            );
+        for (&key, read) in keys.iter().zip(&reads) {
+            book.insert(key, answers.decode(read)?);
         }
 
         let mut all: Vec<Address> = tokens.to_vec();
         all.extend(book.values().flat_map(|b| [b.base, b.quote]));
         all.sort();
         all.dedup();
-        let mut calls: Vec<(Address, Bytes)> = Vec::with_capacity(all.len() * (1 + users.len()));
-        for &token in &all {
-            let c = ITIP20::balanceOfCall { account: dex };
-            calls.push((token, c.abi_encode().into()));
-        }
-        for &user in users {
-            for &token in &all {
-                let c = IStablecoinDEX::balanceOfCall { user, token };
-                calls.push((dex, c.abi_encode().into()));
-            }
-        }
-        let mut out = views.call(&calls).map_err(ObserveError::Views)?.into_iter();
+        let mut batch = Batch::default();
+        let held: Vec<_> = all
+            .iter()
+            .map(|&token| batch.push(None, token, &ITIP20::balanceOfCall { account: dex }))
+            .collect();
+        let owed: Vec<_> = users
+            .iter()
+            .flat_map(|&user| all.iter().map(move |&token| (user, token)))
+            .map(|(user, token)| {
+                let read = batch.push(None, dex, &IStablecoinDEX::balanceOfCall { user, token });
+                ((user, token), read)
+            })
+            .collect();
+        let answers = batch.run(views)?;
         let mut holdings = BTreeMap::new();
-        for &token in &all {
-            holdings.insert(
-                token,
-                decode::<ITIP20::balanceOfCall, _>(token, out.next())?,
-            );
+        for (&token, read) in all.iter().zip(&held) {
+            holdings.insert(token, answers.decode(read)?);
         }
         let mut internal = BTreeMap::new();
-        for &user in users {
-            for &token in &all {
-                let v = decode::<IStablecoinDEX::balanceOfCall, _>(dex, out.next())?;
-                internal.insert((user, token), U256::from(v));
-            }
+        for (key, read) in &owed {
+            internal.insert(*key, U256::from(answers.decode(read)?));
         }
         let escrow = live
             .iter()

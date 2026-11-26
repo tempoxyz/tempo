@@ -3,14 +3,19 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{Signed, TxLegacy, proofs::calculate_transaction_root};
-use alloy_eips::{Decodable2718, Encodable2718};
+use alloy_consensus::{SignableTransaction, TxLegacy, proofs::calculate_transaction_root};
+use alloy_eips::{Decodable2718, Encodable2718, eip2935::HISTORY_STORAGE_ADDRESS};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, address};
 use alloy_sol_types::SolCall;
 use bincode::Options as _;
 use commonware_codec::Encode as _;
 use evm2::evm::{AccountInfo, Cache, Database as _};
+use reth_consensus::HeaderValidator as _;
 use reth_execution_types::{AccountUpdate, StateUpdate};
+use reth_trie_common::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
 use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -25,8 +30,22 @@ use tempo_fuzz_types::{
     TempoHarnessCapabilities, TempoHarnessInput, TempoHarnessOutcome, TempoTransactionInput,
     TxOutcome,
 };
-use tempo_precompiles::tip20::slots::{SUPPLY_CAP, TOTAL_SUPPLY};
-use tempo_primitives::{TempoHeader, TempoTxEnvelope};
+use tempo_precompiles::{
+    storage::StorageKey as _,
+    tip20::{
+        slots::{SUPPLY_CAP, TOTAL_SUPPLY},
+        tip20_slots,
+    },
+};
+use tempo_primitives::{
+    TempoHeader, TempoTxEnvelope,
+    crypto::mock,
+    is_tip20_prefix,
+    transaction::{
+        Call, TempoTransaction,
+        tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
+    },
+};
 
 use crate::{
     bincode_options, chain, execute,
@@ -51,7 +70,7 @@ fn tip20_transfer(nonce: u64, to: Address, amount: U256, gas_limit: u64) -> Byte
 
 /// A call without value, signed with a placeholder: tests give its sender.
 fn call(nonce: u64, to: Address, input: Bytes, gas_limit: u64) -> Bytes {
-    let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+    let tx = TempoTxEnvelope::Legacy(
         TxLegacy {
             chain_id: Some(CHAIN_ID),
             nonce,
@@ -60,9 +79,9 @@ fn call(nonce: u64, to: Address, input: Bytes, gas_limit: u64) -> Bytes {
             to: TxKind::Call(to),
             value: U256::ZERO,
             input,
-        },
-        Signature::test_signature(),
-    ));
+        }
+        .into_signed(Signature::test_signature()),
+    );
     tx.encoded_2718().into()
 }
 
@@ -164,12 +183,15 @@ fn genesis_state() -> StateInput {
     state::encode(&accounts, &Contracts(&[&cache.contracts]))
 }
 
-/// The dev genesis as an exact pre-state for `blocks`, listing what they read, as an extractor
-/// reading a witness would: every account and slot execution loads, zeros included, with its value
-/// before the blocks.
-fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
+/// The dev genesis with the accounts of `edits` replaced, as an exact pre-state for `blocks`,
+/// listing what they read, as an extractor reading a witness would: every account and slot
+/// execution loads, zeros included, with its value before the blocks.
+fn exact_genesis(edits: StateInput, blocks: &[TempoBlock]) -> StateInput {
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
     let db = state::seed(&genesis()).unwrap();
+    for (address, account) in &edits.accounts {
+        state::insert(&mut db.cache.borrow_mut(), *address, account).unwrap();
+    }
     let blocks: Vec<_> = blocks
         .iter()
         .map(|block| execute::recover_block(&spec, block).unwrap())
@@ -184,7 +206,8 @@ fn exact_genesis(blocks: &[TempoBlock]) -> StateInput {
     );
     assert_eq!(outcome.error, ErrorClass::None);
 
-    let before = genesis_state();
+    let mut before = genesis_state();
+    before.accounts.extend(edits.accounts);
     let cache = db.cache.borrow();
     let accounts = cache
         .accounts
@@ -214,10 +237,6 @@ fn path_usd(state: &mut StateInput) -> &mut AccountInput {
 
 /// The state root of `state`, computed independently of the harness.
 fn trie_root(state: &StateInput) -> B256 {
-    use reth_trie_common::{
-        TrieAccount,
-        root::{state_root_unhashed, storage_root_unhashed},
-    };
     state_root_unhashed(state.accounts.iter().map(|(address, account)| {
         let storage = account
             .storage
@@ -252,6 +271,42 @@ fn a_transfer_reports_its_receipt_changes_and_state_root() {
         outcome.invariant_failures.is_empty(),
         "{:?}",
         outcome.invariant_failures
+    );
+    // Only invariants that judged something are counted: the keychain's never apply here.
+    assert!(outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-KEYCHAIN-SPEND-LIMIT")
+    );
+    assert!(
+        outcome
+            .invariant_counts
+            .values()
+            .all(|counts| counts.evaluated > 0)
+    );
+    // A T4 block runs the checks that apply before T14, not those that apply from it.
+    assert!(outcome.invariant_counts["TEMPO-ACCOUNT-FORK-GATED"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-ACCOUNT-ACCESS-KEY-TYPE")
+    );
+    // The block's first step checks every token's state, the transfer and the post-block step only
+    // what they changed: pathUSD, and nothing. Only the transfer changed a token, so only it ran a
+    // step check.
+    let tokens = genesis_state()
+        .accounts
+        .keys()
+        .filter(|address| is_tip20_prefix(**address))
+        .count() as u64;
+    assert_eq!(
+        outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated,
+        tokens + 1
+    );
+    assert_eq!(
+        outcome.invariant_counts["TEMPO-TIP20-TRANSFER-EVENTS"].evaluated,
+        1
     );
 
     // The transfer moves two pathUSD balances and creates the sender, which
@@ -350,7 +405,7 @@ fn system_calls_are_reported_apart_from_transactions() {
 fn an_exact_pre_state_replays_like_the_genesis_it_lists() {
     let from_genesis = run(genesis(), vec![transfer_block()]);
     let replayed = run(
-        exact(exact_genesis(&[transfer_block()])),
+        exact(exact_genesis(StateInput::default(), &[transfer_block()])),
         vec![transfer_block()],
     );
 
@@ -370,7 +425,7 @@ fn reading_outside_an_exact_pre_state_is_reported() {
         .expect("the transfer changes pathUSD")
         .slot;
 
-    let mut state = exact_genesis(&[transfer_block()]);
+    let mut state = exact_genesis(StateInput::default(), &[transfer_block()]);
     path_usd(&mut state).storage.remove(&read);
     let outcome = run(exact(state), vec![transfer_block()]);
     assert_eq!(outcome.error, ErrorClass::IncompletePreState);
@@ -510,7 +565,7 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
     fn storage(state: &mut StateInput, index: u8) -> &mut BTreeMap<U256, U256> {
         &mut state.accounts.get_mut(&token(index)).unwrap().storage
     }
-    let mut state = exact_genesis(&[transfer_block()]);
+    let mut state = exact_genesis(StateInput::default(), &[transfer_block()]);
     storage(&mut state, 0).extend([(TOTAL_SUPPLY, U256::from(1)), (SUPPLY_CAP, U256::ZERO)]);
     storage(&mut state, 1).remove(&TOTAL_SUPPLY);
     storage(&mut state, 2).insert(SUPPLY_CAP, U256::ZERO);
@@ -518,14 +573,18 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
 
     assert_eq!(
         (outcome.error, outcome.receipts.len()),
-        (ErrorClass::InvalidInput, 0)
+        (ErrorClass::BrokenPreState, 0)
     );
+    let encoded = bincode_options().serialize(&outcome).unwrap();
+    let decoded: TempoExecutionOutcome = bincode_options().deserialize(&encoded).unwrap();
+    assert_eq!(decoded, outcome, "failures survive the wire");
     let failures: HashSet<_> = outcome
         .invariant_failures
         .iter()
         .map(|failure| {
-            let id = failure.id.strip_prefix("TEMPO-TIP20-").unwrap();
-            let token = (0..4).find(|&index| failure.message.contains(&token(index).to_string()));
+            let id = failure.violation.id.strip_prefix("TEMPO-TIP20-").unwrap();
+            let token = (0..4)
+                .find(|&index| failure.violation.subject == format!("token={}", token(index)));
             (id, &failure.scope, token)
         })
         .collect();
@@ -540,6 +599,67 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
         expected
             .map(|(id, scope, token)| (id, scope, Some(token)))
             .into()
+    );
+}
+
+#[test]
+fn a_system_step_runs_state_checks_but_no_step_checks() {
+    // The EIP-2935 history contract, run as the block's pre-execution system call, moves 1 pathUSD
+    // it holds to RECIPIENT. The executor drops the call's `Transfer` log.
+    let mut code = vec![0x63];
+    code.extend(ITIP20::transferCall::SELECTOR);
+    code.extend([0x60, 0xe0, 0x1b, 0x60, 0x00, 0x52, 0x73]);
+    code.extend(RECIPIENT);
+    code.extend([0x60, 0x04, 0x52, 0x60, 0x01, 0x60, 0x24, 0x52]);
+    code.extend([
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x44, 0x60, 0x00, 0x60, 0x00, 0x73,
+    ]);
+    code.extend(PATH_USD_ADDRESS);
+    code.extend([0x5a, 0xf1, 0x50, 0x00]);
+    let context = BlockContextInput {
+        block_number: 1,
+        ..context(TempoHardfork::T13, 0)
+    };
+    let blocks = vec![block(BlockHeaderInput::Context(context), Vec::new())];
+    // A genesis pre-state keeps protocol code, so the edited genesis is given as an exact one.
+    let mut path_usd = path_usd(&mut genesis_state()).clone();
+    path_usd.storage.insert(
+        HISTORY_STORAGE_ADDRESS.mapping_slot(tip20_slots::BALANCES),
+        U256::from(1),
+    );
+    *path_usd.storage.entry(TOTAL_SUPPLY).or_default() += U256::from(1);
+    let history = AccountInput {
+        code: code.into(),
+        ..Default::default()
+    };
+    let edits = StateInput {
+        accounts: [
+            (PATH_USD_ADDRESS, path_usd),
+            (HISTORY_STORAGE_ADDRESS, history),
+        ]
+        .into(),
+    };
+    let state = exact_genesis(edits, &blocks);
+    let outcome = run(exact(state), blocks);
+
+    assert_eq!(
+        outcome.error,
+        ErrorClass::None,
+        "{}",
+        crate::execute::with_rejection(|r| r.to_string())
+    );
+    let moved = storage_at(&outcome.state_diff.blocks[0].pre_block, PATH_USD_ADDRESS).count();
+    assert!(moved > 0, "the system call moved pathUSD");
+    assert!(
+        outcome.invariant_failures.is_empty(),
+        "{:?}",
+        outcome.invariant_failures
+    );
+    assert!(outcome.invariant_counts["TEMPO-TIP20-BALANCE-SUM"].evaluated > 0);
+    assert!(
+        !outcome
+            .invariant_counts
+            .contains_key("TEMPO-TIP20-TRANSFER-EVENTS")
     );
 }
 
@@ -700,7 +820,6 @@ fn a_context_header_lands_where_its_hardfork_is_active() {
 
 #[test]
 fn context_headers_pass_the_nodes_header_validation_at_every_hardfork() {
-    use reth_consensus::HeaderValidator as _;
     let spec = Arc::new(chain::chain_spec(&ChainSpecInput::default()).unwrap());
     let consensus = TempoConsensus::new(Arc::clone(&spec));
     for &hardfork in TempoHardfork::VARIANTS {
@@ -779,16 +898,149 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     trailing.push(0);
     assert_eq!(call(&trailing, &mut out).0, FUZZ_REJECT);
 
-    let mut out = vec![0; 1024];
+    let mut out = vec![0; 1 << 16];
     let mut written = 0;
     let status =
         unsafe { crate::tempo_fuzz_capabilities_v1(out.as_mut_ptr(), out.len(), &mut written) };
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 4);
+    assert_eq!(capabilities.schema_version, 5);
+    let info = |id: &str| {
+        capabilities
+            .invariants
+            .iter()
+            .find(|info| info.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the catalog"))
+    };
+    // The keychain and receive-policy checks are not run here, so they are not listed.
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.id.starts_with("TEMPO-KEYCHAIN-")
+                && !info.id.starts_with("TEMPO-RECEIVE-"))
+    );
+    let retired = info("TEMPO-ACCOUNT-ROOT-KEY-RETIRED");
+    assert_eq!(
+        (retired.since, retired.until, retired.tip.as_deref()),
+        (Some(TempoHardfork::T14), None, Some("TIP-1113"))
+    );
+    assert_eq!(
+        info("TEMPO-ACCOUNT-FORK-GATED").until,
+        Some(TempoHardfork::T14)
+    );
+    assert!(!info("TEMPO-TIP20-VIEW").doc.is_empty());
+    assert!(
+        capabilities
+            .invariants
+            .iter()
+            .all(|info| !info.doc.is_empty())
+    );
     assert_eq!(
         capabilities.supported_hardforks.as_slice(),
         TempoHardfork::VARIANTS
+    );
+}
+
+/// A legacy transaction signed with `signer`'s secp256k1 mock signature.
+fn mock_legacy(signer: Address, nonce: u64, to: Address, input: Bytes) -> Bytes {
+    let tx = TxLegacy {
+        chain_id: Some(CHAIN_ID),
+        nonce,
+        gas_price: 0,
+        gas_limit: 1_000_000,
+        to: TxKind::Call(to),
+        value: U256::ZERO,
+        input,
+    };
+    let signature = mock::secp256k1(signer, &tx.signature_hash());
+    TempoTxEnvelope::Legacy(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
+}
+
+/// Mocks pass end to end: legacy sender, ECRECOVER, P256VERIFY, WebAuthn sender and fee payer.
+#[test]
+fn mock_signatures_verify_end_to_end() {
+    assert_eq!(crate::tempo_fuzz_enable_mock_crypto_v1(), mock::VERSION);
+    let digest = B256::repeat_byte(0x5a);
+    let signer = address!("00000000000000000000000000000000000000c0");
+    let signature = mock::secp256k1(signer, &digest);
+    let ecrecover = [
+        digest,
+        B256::with_last_byte(27),
+        signature.r().into(),
+        signature.s().into(),
+    ];
+    let (_, x, y, p256_sender) = p256_keypair();
+    let (r, s) = mock::p256(&x, &y, &digest);
+    let p256verify = [digest, r, s, x, y].concat();
+    let mut wrong = p256verify.clone();
+    wrong[0] ^= 1;
+
+    let mut aa = TempoTransaction {
+        chain_id: CHAIN_ID,
+        fee_token: Some(PATH_USD_ADDRESS),
+        calls: vec![Call::new(RECIPIENT, Bytes::new())],
+        gas_limit: 1_000_000,
+        ..Default::default()
+    };
+    // SENDER, funded with pathUSD, sponsors the fees without its key.
+    aa.fee_payer_signature = Some(mock::secp256k1(
+        SENDER,
+        &aa.fee_payer_signature_hash(p256_sender),
+    ));
+    let hash = aa.signature_hash();
+    let webauthn = mock::webauthn(x, y, mock::webauthn_data(&hash), &hash).unwrap();
+    let aa = TempoTxEnvelope::AA(aa.into_signed(TempoSignature::Primitive(
+        PrimitiveSignature::WebAuthn(webauthn),
+    )));
+
+    let p256verify_address = address!("0000000000000000000000000000000000000100");
+    let txs = vec![
+        mock_legacy(
+            SENDER,
+            0,
+            address!("0000000000000000000000000000000000000001"),
+            ecrecover.concat().into(),
+        ),
+        mock_legacy(SENDER, 1, p256verify_address, p256verify.into()),
+        mock_legacy(SENDER, 2, p256verify_address, wrong.into()),
+        aa.encoded_2718().into(),
+    ];
+    // No senders, so the harness recovers them from the mock signatures.
+    let block = TempoBlock {
+        senders: Vec::new(),
+        ..t4_block(txs)
+    };
+    let outcome = run(genesis(), vec![block]);
+    assert_eq!(outcome.error, ErrorClass::None, "{outcome:?}");
+    let receipts = &outcome.receipts;
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.outcome == TxOutcome::Success)
+    );
+    assert_eq!(receipts[0].output, Bytes::from(signer.into_word().0));
+    assert_eq!(
+        receipts[1].output,
+        Bytes::from(U256::from(1).to_be_bytes::<32>())
+    );
+    assert_eq!(
+        receipts[2].output,
+        Bytes::new(),
+        "a mock signature for another digest fails"
+    );
+    let sent = |tx: usize, sender: Address, nonce: u64| {
+        outcome.state_diff.blocks[0].txs[tx]
+            .accounts
+            .iter()
+            .any(|account| account.address == sender && account.nonce == Some(nonce))
+    };
+    assert!(sent(0, SENDER, 1), "the mock signature's signer sent it");
+    assert!(
+        sent(3, p256_sender, 1),
+        "the WebAuthn key's account sent it"
     );
 }

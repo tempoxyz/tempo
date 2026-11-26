@@ -22,7 +22,7 @@ use std::{
 use alloy_consensus::{Header, Sealable as _};
 use alloy_primitives::B256;
 use commonware_consensus::Heightable as _;
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZU16, NZUsize};
 use parking_lot::Mutex;
@@ -202,12 +202,9 @@ impl FinalizedBlocksProvider for StubProvider {
     }
 }
 
-/// Build a fresh page cache rooted in `context`.
-pub(in crate::storage) fn fresh_page_cache<TContext>(context: &TContext) -> CacheRef
-where
-    TContext: BufferPooler,
-{
-    CacheRef::from_pooler(context, TEST_PAGE_SIZE, TEST_POOL_CAPACITY)
+/// Build a fresh page cache.
+pub(in crate::storage) fn fresh_page_cache() -> CacheRef {
+    CacheRef::new(TEST_PAGE_SIZE, TEST_POOL_CAPACITY)
 }
 
 /// Initialize a fresh prunable finalized blocks archive against `context`
@@ -223,9 +220,9 @@ pub(in crate::storage) async fn fresh_prunable_with_section_size<TContext>(
     items_per_section: std::num::NonZeroU64,
 ) -> Prunable<TContext>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
-    let cache = fresh_page_cache(context);
+    let cache = fresh_page_cache();
     prunable::Archive::init(
         context.child("finalized_blocks_prunable"),
         prunable::Config {

@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use alloy_consensus::{
-    Signed, TxLegacy,
+    SignableTransaction, TxLegacy,
     transaction::{Recovered, SignerRecoverable as _},
 };
 use alloy_eips::{eip2718::Decodable2718 as _, eip4895::Withdrawals};
@@ -31,7 +31,7 @@ use tempo_primitives::{
 use zone_evm::{ZoneBlockExecutor, ZoneEvmConfig};
 
 use crate::{
-    Error, TempoImport, ZoneBlock,
+    Error, TempoImport, VirtualAddressKeyInit, ZoneBlock,
     execution::database::{TempoWitnessDatabase, WitnessDatabase},
 };
 
@@ -140,6 +140,14 @@ pub(crate) fn execute_zone_block(
         TempoImport::CheckpointOnly { headers_rlp } => transactions.push(
             execute_advance_tempo_headers(&mut executor, headers_rlp, zone_block_index, chain_id)?,
         ),
+    }
+    if let Some(init) = block.virtual_address_key {
+        transactions.push(execute_initialize_virtual_address_key(
+            &mut executor,
+            init,
+            zone_block_index,
+            chain_id,
+        )?);
     }
     transactions.extend(execute_user_transactions(
         &mut executor,
@@ -253,8 +261,7 @@ fn execute_advance_tempo(
         value: U256::ZERO,
         input: calldata.into(),
     };
-    let transaction =
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, TEMPO_SYSTEM_TX_SIGNATURE));
+    let transaction = TempoTxEnvelope::Legacy(transaction.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
     let recovered = Recovered::new_unchecked(transaction.clone(), TEMPO_SYSTEM_TX_SENDER);
 
     execute_recovered_transaction(
@@ -285,13 +292,43 @@ fn execute_advance_tempo_headers(
         value: U256::ZERO,
         input: calldata.into(),
     };
-    let transaction =
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, TEMPO_SYSTEM_TX_SIGNATURE));
+    let transaction = TempoTxEnvelope::Legacy(transaction.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
     let recovered = Recovered::new_unchecked(transaction.clone(), TEMPO_SYSTEM_TX_SENDER);
     execute_recovered_transaction(
         executor,
         recovered,
         Error::AdvanceTempoExecution { block_index },
+        true,
+    )?;
+    Ok(transaction)
+}
+
+fn execute_initialize_virtual_address_key(
+    executor: &mut WitnessExecutor<'_>,
+    init: VirtualAddressKeyInit,
+    block_index: usize,
+    chain_id: u64,
+) -> Result<TempoTxEnvelope, Error> {
+    let calldata = IZoneInbox::initializeVirtualAddressKeyCall {
+        version: init.version,
+        key: init.key,
+    }
+    .abi_encode();
+    let transaction = TxLegacy {
+        chain_id: Some(chain_id),
+        nonce: 0,
+        gas_price: 0,
+        gas_limit: 0,
+        to: ZONE_INBOX_ADDRESS.into(),
+        value: U256::ZERO,
+        input: calldata.into(),
+    };
+    let transaction = TempoTxEnvelope::Legacy(transaction.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
+    let recovered = Recovered::new_unchecked(transaction.clone(), TEMPO_SYSTEM_TX_SENDER);
+    execute_recovered_transaction(
+        executor,
+        recovered,
+        Error::VirtualAddressKeyExecution { block_index },
         true,
     )?;
     Ok(transaction)
@@ -320,8 +357,7 @@ fn execute_finalize_withdrawal_batch(
         value: U256::ZERO,
         input: calldata.into(),
     };
-    let transaction =
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(transaction, TEMPO_SYSTEM_TX_SIGNATURE));
+    let transaction = TempoTxEnvelope::Legacy(transaction.into_signed(TEMPO_SYSTEM_TX_SIGNATURE));
     let recovered = Recovered::new_unchecked(transaction.clone(), TEMPO_SYSTEM_TX_SENDER);
 
     execute_recovered_transaction(
@@ -478,7 +514,7 @@ mod tests {
         let database_error = DatabaseError::new(witness_error, true);
         let transaction_error = reth_evm::InternalBlockExecutionError::EVM {
             hash: B256::ZERO,
-            error: Box::new(HandlerError::Database(database_error.clone())),
+            error: evm2::AnyError::new(HandlerError::Database(database_error.clone())),
         };
         for error in [
             transaction_error.into(),

@@ -844,8 +844,7 @@ mod tests {
     }
 
     fn numbered_hash(number: u64) -> B256 {
-        let mut hash = [0u8; 32];
-        hash[24..].copy_from_slice(&number.to_be_bytes());
+        let hash: [u8; 32] = B256::left_padding_from(&number.to_be_bytes()).into();
         B256::from(hash)
     }
 

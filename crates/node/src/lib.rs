@@ -3,8 +3,11 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub use tempo_payload_types::{Estimator, TempoExecutionData, TempoPayloadTypes, estimator};
-pub use version::{init_version_metadata, version_metadata};
+pub use tempo_payload_types::{
+    ConfigError, Estimator, EstimatorConfig, NetworkReservation, TempoExecutionData,
+    TempoPayloadTypes, estimator,
+};
+pub use version::init_version_metadata;
 
 use crate::node::TempoAddOns;
 pub use crate::{
@@ -41,7 +44,7 @@ pub use tempo_evm as evm;
 pub use tempo_evm::consensus;
 pub use tempo_primitives as primitives;
 
-mod version;
+pub mod version;
 
 type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
 type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;

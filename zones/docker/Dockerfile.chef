@@ -11,6 +11,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
+# Images ship, so build dependencies with real vergen data too. This must match the final
+# stage, since smolgen reruns build scripts when VERGEN_IDEMPOTENT changes.
+ENV VERGEN_IDEMPOTENT=0
+
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
     pkg-config \

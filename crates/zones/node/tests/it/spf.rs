@@ -19,10 +19,10 @@ use reth_chainspec::EthChainSpec as _;
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles, TrieAccount, proof::ProofRetainer};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS,
     storage::StorageKey as _,
     tip20::tip20_slots,
-    tip403_registry::{ALLOW_ALL_POLICY_ID, tip403_registry_slots},
+    tip403_registry::{ALLOW_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::TempoHeader;
 use zone_chainspec::ZoneChainSpec;
@@ -33,7 +33,8 @@ use zone_spf::{
 };
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, TIP20_TX_GAS, start_local_zone_with_fixture_and_withdrawal_batch_interval,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, alloc_precompile_writes,
+    start_local_zone_with_fixture_and_withdrawal_batch_interval,
 };
 
 const ZONE_ID: u32 = 1;
@@ -47,11 +48,15 @@ async fn spf_batch_execute() -> eyre::Result<()> {
     let provider = zone.provider();
     let (wallet_provider, sender) = crate::utils::local_dev_zone_account(&zone)?;
     let initial_fee_balance = zone.balance_of(PATH_USD_ADDRESS, sender).await?;
+    let (first_recipient, second_recipient) = (
+        address!("000000000000000000000000000000000000b001"),
+        address!("000000000000000000000000000000000000b002"),
+    );
+    fixture.seed_no_commitment(first_recipient);
+    fixture.seed_no_commitment(second_recipient);
 
     let first_pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b001"
-        )))
+        .send_transaction(state_changing_transaction(first_recipient))
         .await?;
     let first_transaction_hash = *first_pending.tx_hash();
     let mut first_tempo_block = fixture.next_block();
@@ -61,9 +66,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
     zone.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
 
     let second_pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b002"
-        )))
+        .send_transaction(state_changing_transaction(second_recipient))
         .await?;
     let second_transaction_hash = *second_pending.tx_hash();
     let mut second_tempo_block = fixture.next_block();
@@ -137,6 +140,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
                 finalize_withdrawal_batch_count: None,
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![first_raw_transaction],
+                virtual_address_key: None,
             },
             ZoneBlock {
                 number: second_built_block.header.number(),
@@ -153,6 +157,7 @@ async fn spf_batch_execute() -> eyre::Result<()> {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![second_raw_transaction],
+                virtual_address_key: None,
             },
         ],
         parent_header,
@@ -307,6 +312,7 @@ impl BuiltTransactionBlock {
                 finalize_withdrawal_batch_count: Some(U256::ZERO),
                 finalize_withdrawal_batch_encrypted_senders: vec![],
                 transactions: vec![self.raw_user_transaction.clone()],
+                virtual_address_key: None,
             }],
             zone_state_witness,
             tempo_state_witness: TempoStateWitness {
@@ -327,10 +333,10 @@ async fn build_single_transaction_block(
             .await?;
     let (wallet_provider, sender) = crate::utils::local_dev_zone_account(&zone)?;
     let initial_fee_balance = zone.balance_of(PATH_USD_ADDRESS, sender).await?;
+    let recipient = address!("000000000000000000000000000000000000b0b0");
+    fixture.seed_no_commitment(recipient);
     let pending = wallet_provider
-        .send_transaction(state_changing_transaction(address!(
-            "000000000000000000000000000000000000b0b0"
-        )))
+        .send_transaction(state_changing_transaction(recipient))
         .await?;
     let user_transaction_hash = *pending.tx_hash();
 
@@ -418,19 +424,11 @@ fn spf_config(genesis: &Genesis) -> SpfConfig {
 }
 
 fn tempo_state_with_transfer_policy(token: Address, policy_id: u64) -> (B256, Vec<Bytes>) {
-    let policy_slot = token.mapping_slot(tip403_registry_slots::TOKEN_TRANSFER_POLICIES);
-    let packed_policy = U256::from(policy_id) | (U256::ONE << u64::BITS);
-    let genesis = Genesis {
-        alloc: [(
-            TIP403_REGISTRY_ADDRESS,
-            GenesisAccount {
-                storage: Some([(policy_slot.into(), packed_policy.into())].into()),
-                ..Default::default()
-            },
-        )]
-        .into(),
-        ..Default::default()
-    };
+    let mut genesis = Genesis::default();
+    alloc_precompile_writes(&mut genesis, || {
+        TIP403Registry::new().set_token_transfer_policy(token, policy_id)
+    })
+    .expect("in-memory policy write succeeds");
 
     let (state_root, nodes, _) = genesis_state_witness(&genesis);
     (state_root, nodes)

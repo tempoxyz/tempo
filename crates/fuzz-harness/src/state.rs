@@ -306,7 +306,11 @@ fn is_empty(account: &AccountInput) -> bool {
 /// Replaces the account at `address` with `account`, its code and the slots the pre-state holds for
 /// it, or records that it does not exist if it holds nothing. Other slots are read from the
 /// database. `InvalidInput` if its code is a malformed EIP-7702 delegation.
-fn insert(cache: &mut Cache, address: Address, account: &AccountInput) -> Result<(), ErrorClass> {
+pub(crate) fn insert(
+    cache: &mut Cache,
+    address: Address,
+    account: &AccountInput,
+) -> Result<(), ErrorClass> {
     cache.storage.remove(&address);
     if is_empty(account) {
         cache.accounts.insert(address, None);
@@ -358,6 +362,17 @@ impl AccountNet {
             Some(value) => Some(value.original_value()),
             None => self.original.is_none().then_some(U256::ZERO),
         }
+    }
+
+    /// Whether the span changed the account other than its slots: its balance, nonce, code or
+    /// extension, whether it exists, or by clearing its storage.
+    pub(crate) fn changed(&self) -> bool {
+        let info = |a: &AccountInfo| (a.balance, a.nonce, a.code_hash);
+        self.storage_cleared
+            || match (&self.original, &self.current) {
+                (Some(a), Some(b)) => info(a) != info(b) || a.extension != b.extension,
+                (a, b) => a.is_some() != b.is_some(),
+            }
     }
 
     /// The slots the span changed, with their values before and after it.

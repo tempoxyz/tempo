@@ -101,6 +101,11 @@ pub mod gas {
     /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
     pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 
+    /// TIP-1154 gas for a zone's first read of an account's Tempo configuration commitment in a
+    /// transaction, on top of the account access when an EVM load reads it, so a batch's Tempo
+    /// witness stays within the prover's budget.
+    pub const L1_COMMITMENT_READ_GAS: u64 = 10_000;
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -244,6 +249,9 @@ pub mod mainnet {
 
     /// T13 activation timestamp (Nov 3rd 2026 15:00 UTC).
     pub const MAINNET_T13_TIMESTAMP: u64 = 1_793_718_000;
+
+    /// T14 activation timestamp (Dec 8th 2026 15:00 UTC).
+    pub const MAINNET_T14_TIMESTAMP: u64 = 1_796_742_000;
 }
 
 pub mod moderato {
@@ -317,4 +325,7 @@ pub mod moderato {
 
     /// T13 activation timestamp (Oct 29th 2026 15:00 UTC).
     pub const MODERATO_T13_TIMESTAMP: u64 = 1_793_286_000;
+
+    /// T14 activation timestamp (Nov 24th 2026 15:00 UTC).
+    pub const MODERATO_T14_TIMESTAMP: u64 = 1_795_532_400;
 }

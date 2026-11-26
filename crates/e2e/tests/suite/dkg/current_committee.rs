@@ -39,12 +39,12 @@ fn current_committee_matches_boundary_dkg_outcome() {
         let state = provider.history_by_block_number(epoch_length - 1).unwrap();
 
         let epoch = state
-            .storage(CURRENT_COMMITTEE_ADDRESS, U256::ZERO.into())
+            .storage(CURRENT_COMMITTEE_ADDRESS, B256::ZERO)
             .unwrap()
             .unwrap_or_default()
             .to::<u64>();
         let public_keys_len = state
-            .storage(CURRENT_COMMITTEE_ADDRESS, U256::ONE.into())
+            .storage(CURRENT_COMMITTEE_ADDRESS, B256::with_last_byte(1))
             .unwrap()
             .unwrap_or_default()
             .to::<usize>();

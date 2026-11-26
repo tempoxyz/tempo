@@ -1,0 +1,2 @@
+#!/bin/sh
+exec reth-state-root-commands parallel_driver_writes

@@ -9,7 +9,7 @@ use commonware_cryptography::{
         dkg::feldman_desmedt::{self as dkg, Info, Logs, Reveal, SignedDealerLog},
         primitives::{sharing::Mode, variant::MinSig},
     },
-    ed25519::{Batch, PrivateKey, PublicKey},
+    ed25519::PublicKey,
 };
 use commonware_macros::test_traced;
 use commonware_parallel::Sequential;
@@ -111,8 +111,8 @@ fn validators_switch_dkg_reveal_version_at_t12() {
                     continue;
                 }
 
-                let signed = SignedDealerLog::<MinSig, PrivateKey>::read_cfg(
-                    &mut extra_data.as_ref(),
+                let signed = SignedDealerLog::<MinSig, PublicKey>::read_cfg(
+                    &mut commonware_codec::Copying(extra_data.as_ref()),
                     &NZU32!(input.next_players.len() as u32),
                 )
                 .unwrap();
@@ -132,8 +132,7 @@ fn validators_switch_dkg_reveal_version_at_t12() {
                 log_count >= 3,
                 "a four-validator ceremony needs a dealer quorum"
             );
-            let observed =
-                dkg::observe::<_, _, N3f1, Batch>(&mut context, logs, &Sequential).unwrap();
+            let observed = dkg::observe::<_, _, N3f1>(&mut context, logs, &Sequential).unwrap();
             assert_eq!(
                 observed, outcome.output,
                 "on-chain outcome must match the ceremony logs"

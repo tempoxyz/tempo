@@ -11,6 +11,7 @@
 //! scripting. Fault injection (scripted payload statuses, FCU rejections,
 //! call gating) is layered on top.
 
+use commonware_cryptography::{Digested, Digestible as _};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     future::Future,
@@ -45,7 +46,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     consensus::{Digest, block::Block},
-    executor::{Config, DeferredExtraData, ExecutionLayer, Mailbox, Marshal, init},
+    executor::{Config, DeferredCeremonyOutput, ExecutionLayer, Finalized, Mailbox, Marshal, init},
 };
 
 /// The genesis digest all harness chains hang off.
@@ -882,7 +883,7 @@ impl ExecutionLayer for FakeExecution {
 struct MarshalSubscription {
     digest: Digest,
     notarized_in: Round,
-    senders: Vec<oneshot::Sender<Arc<Block>>>,
+    senders: Vec<oneshot::Sender<Digested<Block>>>,
 }
 
 struct MarshalSubscriptions(Mutex<Vec<MarshalSubscription>>);
@@ -898,7 +899,7 @@ impl MarshalSubscriptions {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> (oneshot::Receiver<Arc<Block>>, bool) {
+    ) -> (oneshot::Receiver<Digested<Block>>, bool) {
         let (sender, receiver) = oneshot::channel();
         let mut subscriptions = self.0.lock();
         Self::prune(&mut subscriptions);
@@ -946,7 +947,7 @@ impl MarshalSubscriptions {
 
     /// Delivers `block` to every waiter for `digest`. Every waiter is
     /// served, not only the first; returns whether any received it.
-    fn fulfill(&self, digest: Digest, block: Arc<Block>) -> bool {
+    fn fulfill(&self, digest: Digest, block: Digested<Block>) -> bool {
         let Some(subscription) = self.take(digest) else {
             return false;
         };
@@ -1045,7 +1046,11 @@ impl FakeMarshal {
         digest: Digest,
         block: impl Into<Arc<Block>>,
     ) -> bool {
-        self.inner.subscriptions.fulfill(digest, block.into())
+        let block: Arc<Block> = block.into();
+        let block_digest = block.digest();
+        self.inner
+            .subscriptions
+            .fulfill(digest, Digested::precomputed(block, block_digest))
     }
 
     /// Drops the open subscription for `digest`, simulating marshal giving
@@ -1059,7 +1064,7 @@ impl Marshal for FakeMarshal {
     fn get_block(
         &self,
         identifier: impl Into<Identifier<Digest>>,
-    ) -> impl Future<Output = Option<Block>> + Send {
+    ) -> impl Future<Output = Option<Digested<Block>>> + Send {
         let block = match identifier.into() {
             Identifier::Height(height) => {
                 self.inner.get_block_log.lock().push(height.get());
@@ -1080,6 +1085,7 @@ impl Marshal for FakeMarshal {
                 .max_by_key(|block| block.height())
                 .cloned(),
         };
+        let block = block.map(Digested::from);
         async move { block }
     }
 
@@ -1097,12 +1103,38 @@ impl Marshal for FakeMarshal {
         &self,
         digest: Digest,
         notarized_in: Round,
-    ) -> oneshot::Receiver<Arc<Block>> {
+    ) -> oneshot::Receiver<Digested<Block>> {
         let (receiver, opened) = self.inner.subscriptions.subscribe(digest, notarized_in);
         if opened {
             self.inner.subscribe_log.lock().push((digest, notarized_in));
         }
         receiver
+    }
+}
+
+/// Records the executor's finalized reports.
+#[derive(Clone, Default)]
+pub(super) struct FinalizedRecorder {
+    reports: Arc<Mutex<Vec<Finalized>>>,
+}
+
+impl FinalizedRecorder {
+    /// The reported `(height, digest)` pairs, in order.
+    pub(super) fn reports(&self) -> Vec<(u64, Digest)> {
+        self.reports
+            .lock()
+            .iter()
+            .map(|finalized| (finalized.height.get(), finalized.digest))
+            .collect()
+    }
+}
+
+impl commonware_consensus::Reporter for FinalizedRecorder {
+    type Activity = Finalized;
+
+    fn report(&mut self, activity: Finalized) -> commonware_actor::Feedback {
+        self.reports.lock().push(activity);
+        commonware_actor::Feedback::Ok
     }
 }
 
@@ -1177,6 +1209,7 @@ impl HarnessBuilder {
             marshal,
             options,
         } = self;
+        let finalized_reports = FinalizedRecorder::default();
         let (actor, mailbox) = init(
             context.child("executor"),
             Config {
@@ -1190,6 +1223,7 @@ impl HarnessBuilder {
                 marshal: marshal.clone(),
                 fcu_heartbeat_interval: options.fcu_heartbeat_interval,
                 public_key: options.public_key,
+                finalized_reporter: finalized_reports.clone(),
             },
         )?;
         let actor = actor.start();
@@ -1197,6 +1231,7 @@ impl HarnessBuilder {
             context: context.child("harness"),
             execution,
             marshal,
+            finalized_reports,
             mailbox,
             actor,
         })
@@ -1208,6 +1243,7 @@ pub(super) struct Harness<TContext = deterministic::Context> {
     pub(super) context: TContext,
     pub(super) execution: FakeExecution,
     pub(super) marshal: FakeMarshal,
+    pub(super) finalized_reports: FinalizedRecorder,
     pub(super) mailbox: Mailbox,
     pub(super) actor: Handle<()>,
 }
@@ -1288,7 +1324,7 @@ where
         let mailbox = self.mailbox.clone();
         let mut context = block.context();
         context.round = round;
-        async move { mailbox.verify_block(context, block).await }
+        async move { mailbox.verify_block(context, Digested::from(block)).await }
     }
 
     /// Requests a proposal build on top of `parent`, returning the payload
@@ -1310,16 +1346,16 @@ where
         self.request_build(round, parent, attributes, None)
     }
 
-    /// Requests a build with deferred extra data, which the executor resolves
+    /// Requests a build with a deferred DKG ceremony output, which the executor resolves
     /// after `parent` returned VALID.
-    pub(super) fn build_with_deferred_extra_data(
+    pub(super) fn build_with_deferred_ceremony_output(
         &self,
         round: Round,
         parent: Digest,
         attributes: TempoPayloadAttributes,
-        deferred_extra_data: DeferredExtraData,
+        deferred_ceremony_output: DeferredCeremonyOutput,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
-        self.request_build(round, parent, attributes, Some(deferred_extra_data))
+        self.request_build(round, parent, attributes, Some(deferred_ceremony_output))
     }
 
     fn request_build(
@@ -1327,7 +1363,7 @@ where
         round: Round,
         parent: Digest,
         attributes: TempoPayloadAttributes,
-        deferred_extra_data: Option<DeferredExtraData>,
+        deferred_ceremony_output: Option<DeferredCeremonyOutput>,
     ) -> futures::channel::oneshot::Receiver<TempoBuiltPayload> {
         let parent_view = if parent == GENESIS {
             0
@@ -1342,7 +1378,7 @@ where
                     parent: (View::new(parent_view), parent),
                 },
                 attributes,
-                deferred_extra_data,
+                deferred_ceremony_output,
             )
             .expect("actor should accept the build request")
     }

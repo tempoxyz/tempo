@@ -328,12 +328,12 @@ impl CreateZone {
                 .migrateTransferPolicyIds(vec![self.initial_token])
                 .send_sync()
                 .await?;
-            if !receipt.status() {
-                return Err(eyre!(
+            receipt.ensure_success().map_err(|_| {
+                eyre!(
                     "transfer policy migration reverted (tx: {:?})",
                     receipt.transaction_hash
-                ));
-            }
+                )
+            })?;
 
             policy = registry
                 .tokenTransferPolicyId(self.initial_token)
@@ -482,12 +482,12 @@ impl CreateZone {
         println!("Status: {}", receipt.status());
         println!("Gas used: {:?}", receipt.gas_used);
 
-        if !receipt.status() {
-            return Err(eyre!(
+        receipt.ensure_success().map_err(|_| {
+            eyre!(
                 "createZone transaction reverted (tx: {:?})",
                 receipt.transaction_hash
-            ));
-        }
+            )
+        })?;
         let creation_block = receipt
             .block_number
             .ok_or_else(|| eyre!("createZone receipt is missing its block number"))?;
@@ -535,8 +535,13 @@ impl CreateZone {
         println!("Sequencer set version: {sequencer_set_version}");
 
         println!("Waiting for creation block {creation_block} to finalize...");
-        let anchor =
-            wait_for_finalized_pre_creation_anchor(&provider, portal, creation_block).await?;
+        let anchor = wait_for_finalized_pre_creation_anchor(
+            &provider,
+            self.zone_factory,
+            portal,
+            creation_block,
+        )
+        .await?;
         println!(
             "Using pre-creation block {} (hash: {}) as genesis anchor",
             anchor.block_number, anchor.hash
@@ -548,6 +553,7 @@ impl CreateZone {
             base_fee_per_gas: self.base_fee_per_gas,
             gas_limit: self.gas_limit,
             tempo_portal: None,
+            zone_factory: self.zone_factory,
             l1_rpc_url: None,
             default_fee_token: self.initial_token,
             tempo_genesis_header_rlp: None,

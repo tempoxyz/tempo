@@ -91,8 +91,7 @@ mod tests {
         assert_eq!(pk, recovered);
 
         // RLP encode → decode roundtrip
-        let mut buf = Vec::new();
-        pk.encode(&mut buf);
+        let buf = alloy_rlp::encode(pk);
         assert_eq!(buf, alloy_rlp::encode(b256));
         assert_eq!(buf.len(), pk.length());
         let decoded = PublicKey::decode(&mut buf.as_slice()).unwrap();

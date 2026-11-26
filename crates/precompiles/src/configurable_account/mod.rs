@@ -138,11 +138,11 @@ impl ConfigurableAccount {
     ) -> Result<B256> {
         // Only the transaction's own sender may migrate itself.
         if self.tx_origin.t_read()? != sender {
-            return Err(ConfigurableAccountError::upgrade_must_be_only_call().into());
+            return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
         }
         match self.upgrade_eligibility.t_read()? {
-            UpgradeEligibility::NotSoleCall => {
-                return Err(ConfigurableAccountError::upgrade_must_be_only_call().into());
+            UpgradeEligibility::HasAuthorizationList => {
+                return Err(ConfigurableAccountError::upgrade_must_be_direct_call().into());
             }
             UpgradeEligibility::NotPrimitiveRoot => {
                 return Err(ConfigurableAccountError::primitive_root_required().into());
@@ -186,6 +186,25 @@ impl ConfigurableAccount {
         Ok(hash)
     }
 
+    /// Registers `account` at its initial `config` when it has no commitment yet, and emits
+    /// [`registration_event`]. The write and the event are charged in intrinsic gas.
+    pub fn register(
+        &mut self,
+        account: Address,
+        config: &ConfigurableAccountConfig,
+        commitment: B256,
+    ) -> Result<()> {
+        if !self.get_config_commitment(account)?.is_zero() {
+            return Ok(());
+        }
+        self.storage.set_config_commitment(
+            account,
+            commitment,
+            ConfigCommitmentWriteGas::Intrinsic,
+        )?;
+        self.emit_event(registration_event(account, config))
+    }
+
     /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
@@ -199,11 +218,11 @@ impl ConfigurableAccount {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub enum UpgradeEligibility {
-    /// The transaction is not a lone, direct call to this precompile without authorizations.
-    NotSoleCall,
-    /// The transaction is a sole call, but its outer signature is not a primitive root signature.
+    /// The transaction carries an authorization list.
+    HasAuthorizationList,
+    /// No authorization list, but the outer signature is not a primitive root signature.
     NotPrimitiveRoot,
-    /// The transaction is a sole call signed by a primitive root key.
+    /// The transaction carries no authorization list and is signed by a primitive root key.
     PrimitiveRoot,
 }
 
@@ -226,6 +245,27 @@ pub fn config(
             })
             .collect(),
     }
+}
+
+/// The `ConfigurableAccountConfigUpdated` event announcing `account`'s initial `config`.
+pub fn registration_event(
+    account: Address,
+    config: &ConfigurableAccountConfig,
+) -> ConfigurableAccountEvent {
+    ConfigurableAccountEvent::configurable_account_config_updated(
+        account,
+        config.salt,
+        config.version,
+        config.threshold,
+        config
+            .owners
+            .iter()
+            .map(|owner| IConfigurableAccount::ConfigurableAccountOwner {
+                owner: owner.owner,
+                weight: owner.weight,
+            })
+            .collect(),
+    )
 }
 
 /// Whether code matches the account's registration state.

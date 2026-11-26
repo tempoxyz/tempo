@@ -568,7 +568,7 @@ impl DemoBlacklist {
 
             let l1_block_before = l1.get_block_number().await?;
             let receipt = outbox
-                .requestWithdrawal(
+                .requestWithdrawal_0(
                     token_addr,
                     target,
                     withdraw_amount,
@@ -697,7 +697,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     };
 
     let receipt = portal
-        .deposit(token, amount, key_index, payload, tempo_refund_recipient)
+        .deposit_0(token, amount, key_index, payload, tempo_refund_recipient)
         .send_sync()
         .await
         .wrap_err("deposit send failed")?;

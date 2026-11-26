@@ -77,6 +77,7 @@ contract MockZonePortalForRouter {
     uint128 public lastDepositAmount;
     uint256 public lastDepositKeyIndex;
     address public lastDepositBouncebackRecipient;
+    uint128 public lastDepositMaxFee;
     bool public encryptedDepositCalled;
 
     function enableToken(address _token) external {
@@ -94,7 +95,7 @@ contract MockZonePortalForRouter {
         DepositPayload calldata,
         address tempoRefundRecipient
     )
-        external
+        public
         returns (bytes32)
     {
         ITIP20(_token).transferFrom(msg.sender, address(this), amount);
@@ -103,6 +104,21 @@ contract MockZonePortalForRouter {
         lastDepositBouncebackRecipient = tempoRefundRecipient;
         encryptedDepositCalled = true;
         return bytes32(0);
+    }
+
+    function deposit(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint128 maxFee
+    )
+        external
+        returns (bytes32)
+    {
+        lastDepositMaxFee = maxFee;
+        return deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
     }
 
 }
@@ -120,6 +136,7 @@ contract SwapAndDepositRouterTest is BaseTest {
     address public sourcePortal = address(0x501);
     address public refundBurner = address(0xb000000000000000000000000000000000000123);
     uint128 public constant AMOUNT = 1000e6;
+    uint128 public constant MAX_FEE = 12_345;
 
     function setUp() public override {
         super.setUp();
@@ -243,6 +260,49 @@ contract SwapAndDepositRouterTest is BaseTest {
         assertEq(mockPortal.lastDepositAmount(), AMOUNT);
         assertEq(mockPortal.lastDepositKeyIndex(), 0);
         assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
+        assertEq(mockPortal.lastDepositMaxFee(), 0);
+    }
+
+    function test_deposit_maxFeeLayout() public {
+        bytes memory data = abi.encode(
+            address(pathUSD),
+            address(mockPortal),
+            0,
+            _defaultDepositPayload(),
+            refundBurner,
+            0,
+            MAX_FEE
+        );
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        bytes4 ret = router.onWithdrawalReceived(
+            SOURCE_ZONE_ID, sourcePortal, senderTag, address(pathUSD), AMOUNT, data
+        );
+
+        assertEq(ret, IWithdrawalReceiver.onWithdrawalReceived.selector);
+        assertEq(mockPortal.lastDepositAmount(), AMOUNT);
+        assertEq(mockPortal.lastDepositBouncebackRecipient(), refundBurner);
+        assertEq(mockPortal.lastDepositMaxFee(), MAX_FEE);
+    }
+
+    function test_revertInvalidCallbackLayout() public {
+        // An extra trailing field gives an 8-word head, which matches neither layout.
+        bytes memory data = abi.encode(
+            address(pathUSD),
+            address(mockPortal),
+            0,
+            _defaultDepositPayload(),
+            refundBurner,
+            0,
+            MAX_FEE,
+            0
+        );
+
+        vm.prank(ZONE_MESSENGER_ADDRESS);
+        vm.expectRevert(SwapAndDepositRouter.InvalidCallbackLayout.selector);
+        router.onWithdrawalReceived(
+            SOURCE_ZONE_ID, sourcePortal, senderTag, address(pathUSD), AMOUNT, data
+        );
     }
 
     function test_deposit_withSwap() public {

@@ -1,6 +1,10 @@
 //! Tempo Zone L2 Node.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+// Links Antithesis's coverage runtime shim into binaries built with its sancov flags.
+#[cfg(all(target_os = "linux", feature = "antithesis-coverage"))]
+use antithesis_instrumentation as _;
+
 mod defaults;
 
 use zone_node::cli::ZoneCli;
@@ -21,7 +25,7 @@ fn main() {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
-    zone_node::init_version_metadata();
+    zone_node::init_version_metadata(zone_node::zone_version_metadata!());
     defaults::init_defaults();
 
     if let Err(err) = ZoneCli::parse().run() {

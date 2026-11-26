@@ -88,8 +88,9 @@ impl EnabledToken {
 
 impl L1PortalEvents {
     /// Event signature hashes that this container knows how to decode.
-    const SIGNATURE_HASHES: [B256; 7] = [
+    const SIGNATURE_HASHES: [B256; 8] = [
         DepositMade::SIGNATURE_HASH,
+        VirtualDepositMade::SIGNATURE_HASH,
         WithdrawalBounceBack::SIGNATURE_HASH,
         TokenEnabled::SIGNATURE_HASH,
         SequencerEncryptionKeyUpdated::SIGNATURE_HASH,
@@ -104,15 +105,6 @@ impl L1PortalEvents {
             deposits,
             ..Default::default()
         }
-    }
-
-    /// Append only events consumed by `advanceTempo`.
-    ///
-    /// Key rotations and leadership transitions are applied during L1 ingestion and must not be
-    /// retained for a later operational import.
-    pub(crate) fn extend_operational(&mut self, mut other: Self) {
-        self.deposits.append(&mut other.deposits);
-        self.enabled_tokens.append(&mut other.enabled_tokens);
     }
 
     /// Validate that `advanceTempo` processes every deposit and token enable observed in this
@@ -176,6 +168,17 @@ impl L1PortalEvents {
                 );
                 self.deposits
                     .push(L1Deposit::Deposit(Deposit::from_event(event)));
+            }
+            ZonePortalEvents::VirtualDepositMade(event) => {
+                info!(
+                    l1_block = block_number,
+                    token = %event.token,
+                    originator = %event.originator,
+                    amount = %event.netAmount,
+                    "🔒 Virtual deposit from L1"
+                );
+                self.deposits
+                    .push(L1Deposit::ZoneVirtual(VirtualDeposit::from_event(event)));
             }
             ZonePortalEvents::WithdrawalBounceBack(event) => {
                 info!(

@@ -15,7 +15,7 @@ use commonware_consensus::{
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Verifier as _, ed25519::PublicKey,
 };
-use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
+use commonware_runtime::{Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
     archive::{Archive as _, Identifier, immutable, prunable},
     translator::TwoCap,
@@ -63,7 +63,7 @@ pub(crate) async fn init_finalizations_archive<TContext>(
     immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
 >
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     let start = Instant::now();
     let archive = immutable::Archive::init(
@@ -133,7 +133,7 @@ pub(crate) async fn init_finalized_blocks<TContext, P>(
     retention_blocks: u64,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
     P: FinalizedBlocksProvider + 'static,
 {
     ensure!(
@@ -188,7 +188,7 @@ async fn init_prunable_finalized_blocks_archive<TContext>(
     page_cache: CacheRef,
 ) -> Result<prunable::Archive<TwoCap, TContext, Digest, Block>, commonware_storage::archive::Error>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
 {
     let start = Instant::now();
     let archive = prunable::Archive::init(
@@ -230,10 +230,10 @@ pub async fn find_last_finalized_marker<TContext, P>(
     epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
 where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TContext: Clock + Metrics + Spawner + Storage + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + ?Sized,
 {
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+    let page_cache = CacheRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let archive =
         init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache, epoch_strategy)
             .await

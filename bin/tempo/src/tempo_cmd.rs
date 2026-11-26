@@ -8,6 +8,7 @@ use std::{
 };
 
 use alloy::hex::ToHexExt;
+use alloy_consensus::BlockHeader;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_provider::{Provider, ProviderBuilder};
@@ -45,7 +46,9 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, shadow_replay};
+#[cfg(feature = "corpus")]
+use crate::corpus;
+use crate::{init_state, p2p_proxy::P2pProxyArgs, payload_bench, regenesis, shadow_replay};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -83,6 +86,14 @@ pub enum TempoSubcommand {
 
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
+
+    /// Benchmark the payload builder alone on an existing database and a real transaction pool.
+    PayloadBench(Box<payload_bench::PayloadBench>),
+
+    /// Historical execution corpus: capture an archive range once, replay it without a DB.
+    #[cfg(feature = "corpus")]
+    #[command(subcommand)]
+    Corpus(corpus::CorpusCommand),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -132,7 +143,18 @@ impl ExtendedCommand for TempoSubcommand {
                 )?;
                 Ok(())
             }
+            #[cfg(feature = "corpus")]
+            Self::Corpus(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::PayloadBench(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())
@@ -458,7 +480,7 @@ pub struct ValidatorTransactionArgs {
     wallet: WalletArgs,
 
     /// The RPC URL to submit the transaction to.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Skip the interactive confirmation prompt.
@@ -685,7 +707,7 @@ pub struct CreateAddValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -726,7 +748,7 @@ pub struct CreateRotateValidatorSignatureArgs {
     #[arg(
         long,
         value_name = "RPC_URL",
-        default_value = "https://rpc.presto.tempo.xyz"
+        default_value = "https://rpc.mainnet.tempo.xyz"
     )]
     chain_id_from_rpc_url: String,
     #[command(flatten)]
@@ -1211,7 +1233,7 @@ pub struct ValidatorInfo {
     id: ValidatorId,
 
     /// RPC URL to query.
-    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    #[arg(long, default_value = "https://rpc.mainnet.tempo.xyz")]
     rpc_url: String,
 
     /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
@@ -1297,16 +1319,13 @@ impl ValidatorInfo {
         let mut in_committee = None;
 
         if !self.no_dkg_information {
-            use alloy_consensus::BlockHeader;
-
             let boundary_height = current_epoch
                 .previous()
                 .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
                 .unwrap_or_default();
 
-            let boundary_block = provider
-                .get_block_by_number(boundary_height.get().into())
-                .hashes()
+            let boundary_header = provider
+                .get_header_by_number(boundary_height.get().into())
                 .await
                 .wrap_err_with(|| {
                     format!(
@@ -1314,9 +1333,9 @@ impl ValidatorInfo {
                         boundary_height.get()
                     )
                 })?
-                .ok_or_eyre("boundary block not found")?;
+                .ok_or_eyre("boundary header not found")?;
 
-            let extra_data = boundary_block.header.extra_data();
+            let extra_data = boundary_header.extra_data();
             if extra_data.is_empty() {
                 return Err(eyre!(
                     "boundary block at height {} has no DKG outcome in extra_data",
@@ -1324,10 +1343,11 @@ impl ValidatorInfo {
                 ));
             }
 
-            let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-                .wrap_err("failed to decode DKG outcome from extra_data")?;
+            let dkg_outcome =
+                OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                    .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-            let key = PublicKey::decode(&mut &pubkey_bytes[..])
+            let key = PublicKey::decode(commonware_codec::Copying(&pubkey_bytes[..]))
                 .wrap_err("failed decoding on-chain ed25519 key")?;
 
             let committee = dkg_outcome.players().position(&key).is_some();
@@ -1404,8 +1424,6 @@ impl Info {
         self,
         connect: impl AsyncFnOnce(&str) -> eyre::Result<P>,
     ) -> eyre::Result<()> {
-        use alloy_consensus::BlockHeader;
-
         let rpc_url = match (self.rpc_url.as_deref(), self.chain.as_deref()) {
             (Some(rpc_url), _) => rpc_url,
             (None, Some(chain)) => chain
@@ -1457,9 +1475,8 @@ impl Info {
             .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
             .unwrap_or_default();
 
-        let boundary_block = provider
-            .get_block_by_number(boundary_height.get().into())
-            .hashes()
+        let boundary_header = provider
+            .get_header_by_number(boundary_height.get().into())
             .await
             .wrap_err_with(|| {
                 format!(
@@ -1467,9 +1484,9 @@ impl Info {
                     boundary_height.get()
                 )
             })?
-            .ok_or_eyre("boundary block not found")?;
+            .ok_or_eyre("boundary header not found")?;
 
-        let extra_data = boundary_block.header.extra_data();
+        let extra_data = boundary_header.extra_data();
         if extra_data.is_empty() {
             return Err(eyre!(
                 "boundary block at height {} has no DKG outcome in extra_data",
@@ -1477,8 +1494,9 @@ impl Info {
             ));
         }
 
-        let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
-            .wrap_err("failed to decode DKG outcome from extra_data")?;
+        let dkg_outcome =
+            OnchainDkgOutcome::read(&mut commonware_codec::Copying(extra_data.as_ref()))
+                .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let next_dkg_result = provider
             .call(
@@ -1549,7 +1567,7 @@ impl Info {
 
         let mut validators: Vec<ValidatorOutput> = Vec::new();
         for (key, validator) in validators_by_public_key {
-            let public_key = match PublicKey::decode(key.as_ref()) {
+            let public_key = match PublicKey::decode(commonware_codec::Copying(key.as_ref())) {
                 Ok(key) => key,
                 Err(e) => {
                     let index = validator.index;
@@ -1670,12 +1688,15 @@ impl ClaimFees {
 mod tests {
     use super::*;
     use alloy::transports::mock::Asserter;
+    use alloy_primitives::U64;
     use clap::Parser;
     use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use std::sync::Mutex;
+    use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_chainspec::spec::TempoChainSpecParser;
+    use tempo_primitives::TempoHeader;
 
     type TempoCli = Cli<
         TempoChainSpecParser,
@@ -2219,9 +2240,74 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
+        assert_eq!(
+            requested_url.as_deref(),
+            Some("wss://rpc.mainnet.tempo.xyz")
+        );
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn info_reads_boundary_header_only() {
+        let chain_id = tempo_chainspec::spec::PRESTO.chain_id();
+        let epoch_length = tempo_chainspec::spec::PRESTO
+            .info
+            .epoch_length()
+            .unwrap()
+            .get();
+        let boundary_height = 3 * epoch_length - 1;
+        let boundary_header = TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: boundary_height,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            timestamp_millis: 0,
+        };
+
+        // Pruned nodes may lack the boundary block's body, so the server serves headers only
+        // and leaves `eth_getBlockByNumber` unregistered.
+        let mut module = RpcModule::new(());
+        module
+            .register_method("eth_chainId", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(U64::from(chain_id))
+            })
+            .unwrap();
+        module
+            .register_method("eth_blockNumber", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(U64::from(3 * epoch_length + 5))
+            })
+            .unwrap();
+        module
+            .register_method("eth_getHeaderByNumber", move |_, _| {
+                Ok::<_, ErrorObjectOwned>(boundary_header.clone())
+            })
+            .unwrap();
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", server.local_addr().unwrap());
+        let handle = server.start(module);
+
+        let cli = TempoCli::try_parse_from(["tempo", "consensus", "info", "--rpc-url", &rpc_url])
+            .unwrap();
+        let info = match cli.command {
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::Info(cmd),
+            )) => cmd,
+            other => panic!("expected Info, got `{other:?}`"),
+        };
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), info.run())
+            .await
+            .unwrap()
+            .unwrap_err();
+        handle.stop().unwrap();
+
+        assert_eq!(
+            err.to_string(),
+            format!("boundary block at height {boundary_height} has no DKG outcome in extra_data")
+        );
     }
 
     #[tokio::test]
@@ -2305,10 +2391,10 @@ mod tests {
             let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
-                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .register_method("eth_chainId", |_, _| "0xa5bf")
                 .unwrap();
             module
-                .register_method("eth_call", move |params, requests, _| {
+                .register_method("eth_call", move |params, requests| {
                     let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
                     let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
                         IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
@@ -2322,7 +2408,7 @@ mod tests {
             for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
                 let submissions = submissions.clone();
                 module
-                    .register_method(method, move |_, _, _| {
+                    .register_method(method, move |_, _| {
                         submissions.lock().unwrap().push(method);
                         Ok::<_, ErrorObjectOwned>(B256::ZERO)
                     })

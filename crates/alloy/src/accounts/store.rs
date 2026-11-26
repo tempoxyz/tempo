@@ -2500,7 +2500,7 @@ fn writable_bigint(value: U256) -> String {
 }
 
 fn writable_b256(value: B256) -> String {
-    writable_bigint(U256::from_be_bytes(value.0))
+    writable_bigint(value.into())
 }
 
 fn writable_signature(
@@ -2634,7 +2634,7 @@ fn writable_access_key(
             is_admin: authorization.is_admin,
             account: authorization.account,
             key_type: "secp256k1",
-            signature: writable_signature(&authorization.signature)?,
+            signature: writable_signature(authorization.signature())?,
         },
     })
 }
@@ -3142,19 +3142,16 @@ fn persisted_scopes_to_call_scopes(
             return Err(PersistedKeyError::RecipientsWithoutSelector);
         }
 
-        let index = match grouped
+        let index = grouped
             .iter()
             .position(|candidate| candidate.target == scope.address)
-        {
-            Some(index) => index,
-            None => {
+            .unwrap_or_else(|| {
                 grouped.push(CallScope {
                     target: scope.address,
                     selector_rules: Vec::new(),
                 });
                 grouped.len() - 1
-            }
-        };
+            });
         let entry = &mut grouped[index];
         let Some(selector) = scope.selector else {
             continue;
@@ -3657,7 +3654,7 @@ mod tests {
             )
         );
         let AccountSignature::Primitive(PrimitiveSignature::WebAuthn(signature)) =
-            &authorization.signature
+            authorization.signature()
         else {
             panic!("expected WebAuthn root signature")
         };
@@ -4045,11 +4042,10 @@ mod tests {
                 input: TransactionInput::new(Bytes::from_static(&[0x01, 0x02, 0x03, 0x04])),
                 ..Default::default()
             },
-            calls: vec![Call {
-                to: TARGET.parse::<Address>().unwrap().into(),
-                value: U256::ZERO,
-                input: Bytes::from_static(&[0xaa, 0xbb, 0xcc, 0xdd]),
-            }],
+            calls: vec![Call::new(
+                TARGET.parse::<Address>().unwrap(),
+                Bytes::from_static(&[0xaa, 0xbb, 0xcc, 0xdd]),
+            )],
             ..Default::default()
         };
 
@@ -4547,10 +4543,10 @@ mod tests {
             &root,
         );
         let different = expected
-            .authorization
+            .authorization()
             .clone()
             .with_expiry(4_000_000_000)
-            .into_signed(expected.signature.clone());
+            .into_signed(expected.signature().clone());
         let key = TempoAccessKey::from_secp256k1(account, 4217, signer.clone())
             .with_key_authorization(expected.clone());
         let mut request = TempoTransactionRequest {

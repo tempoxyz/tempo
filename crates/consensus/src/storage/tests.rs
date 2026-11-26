@@ -27,7 +27,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
             let mut archive = init_finalizations_archive(
                 &context,
                 "test",
-                fresh_page_cache(&context),
+                fresh_page_cache(),
                 &epoch_strategy,
             )
             .await
@@ -39,7 +39,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
                 let digest = Digest(alloy_primitives::B256::with_last_byte(height as u8));
                 let certificate =
                     make_certificate(digest, Epoch::new(epoch), 1, &fixture.schemes);
-                archive = archive.put(height, digest, certificate).await.unwrap();
+                archive = archive.put(height, digest, &certificate).await.unwrap();
             }
             drop(archive.sync().await.unwrap());
 
@@ -47,7 +47,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
             let result = init_finalizations_archive(
                 &context,
                 "test",
-                fresh_page_cache(&context),
+                fresh_page_cache(),
                 &epoch_strategy,
             )
             .await;

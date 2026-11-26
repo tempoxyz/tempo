@@ -11,6 +11,7 @@ mod blocked_transfers;
 mod consensus_context;
 mod consensus_rpc;
 mod dkg;
+mod estimator;
 mod fee_recipient;
 mod follow;
 mod metrics;
@@ -24,23 +25,6 @@ mod testing_node;
 
 #[test_traced]
 fn spawning_execution_node_works() {
-    //
-    //
-    // NOTE / DEBUG:
-    //
-    //
-    // To debug the node instance running in tokio, it is useful to
-    // isolate the tracing subscriber and install it globally (the
-    // `test_traced` tests defined by commonware are thread-local
-    //
-    // #[test]
-    // fn spawning_execution_node_works() {
-    // let _telemetry = tracing_subscriber::fmt()
-    //     .with_max_level(tracing::Level::DEBUG)
-    //     .with_test_writer()
-    //     .try_init();
-    // <rest>
-
     let runtime = ExecutionRuntime::with_chain_spec(chainspec());
     let handle = runtime.handle();
 
