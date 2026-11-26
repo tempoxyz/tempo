@@ -19,6 +19,8 @@ pub struct StepState<'a, C> {
     pub(crate) env: &'a TempoEvmEnv,
     /// The accounts the step changed or, for a pre-state checked on its own, the ones it lists.
     pub(crate) changed: Vec<Address>,
+    /// Whether this is a pre-state checked on its own, before anything executed on it.
+    pub(crate) start: bool,
     pub(crate) effects: Arc<Effects<Ran>>,
 }
 
@@ -46,6 +48,13 @@ impl<C> StepState<'_, C> {
     /// What the step did, as a model's step over it shares it.
     pub fn effects(&self) -> Arc<Effects<Ran>> {
         Arc::clone(&self.effects)
+    }
+
+    /// Whether the state is a pre-state checked on its own, before anything executed on it:
+    /// only failures the pre-state can cause, such as what it stores, count against it there, not
+    /// how the chain reads or serves state, which a broken chain gets wrong on any pre-state.
+    pub const fn start(&self) -> bool {
+        self.start
     }
 
     /// The accounts the step changed or, for a pre-state checked on its own, the accounts it

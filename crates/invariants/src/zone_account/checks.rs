@@ -159,7 +159,12 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
         over: |step: &ZoneStep| permits(step),
         judge: |s, permit| {
             let Permit { token, owner } = permit;
-            let tempo = at_tx(s)?.tempo(*owner)?;
+            let at = at_tx(s)?;
+            // The zone reads no commitment for an ineligible owner, so its root key is live.
+            if at.ineligible(*owner).is_some() {
+                return None;
+            }
+            let tempo = at.tempo(*owner)?;
             ensure!(
                 tempo.is_zero(),
                 "{token} accepted a permit signed by the root key of {owner}, Tempo's commitment \
@@ -614,6 +619,22 @@ mod tests {
                 ),
             )
         );
+    }
+
+    #[test]
+    fn a_permit_of_an_owner_with_zone_code_is_not_judged() {
+        let m = || {
+            let mut z = zone(7, &[]);
+            z.coded.insert(ALICE);
+            mirror(z, &[(ALICE, word(1))])
+        };
+        let e = effects(tx(Authority::default())).call(
+            SENDER,
+            TOKEN,
+            &permit(ALICE),
+            Outcome::Return(Bytes::new()),
+        );
+        assert_eq!(broken(STEP_CHECKS, &step(m(), m(), e)), vec![]);
     }
 
     #[test]
