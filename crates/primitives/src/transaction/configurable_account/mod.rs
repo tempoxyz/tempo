@@ -1,10 +1,13 @@
-use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
+use super::{
+    tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH,
+    tt_signature::{PrimitiveSignature, SLH_DSA_SIGNATURE_ENCODED_LENGTH},
+};
 use crate::gas::{SECP256K1_VERIFY_GAS, keccak_gas};
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7623::{STANDARD_TOKEN_COST, tokens_in_calldata};
 use alloy_primitives::{Address, B256, Keccak256, keccak256};
-use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -28,7 +31,8 @@ pub const MAX_CONFIGURABLE_ACCOUNT_OWNERS: usize = 48;
 /// Maximum number of owner approvals allowed in one configurable account signature.
 pub const MAX_CONFIGURABLE_ACCOUNT_SIGNATURES: usize = 8;
 
-/// Maximum encoded byte length for one primitive owner approval.
+/// Maximum encoded byte length for one primitive owner approval other than SLH-DSA, which must be
+/// exactly [`SLH_DSA_SIGNATURE_ENCODED_LENGTH`].
 pub const MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES: usize = 1 + MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
 /// Domain prefix for configurable account address derivation.
@@ -319,6 +323,15 @@ impl ConfigurableAccountSignature {
         &self.signatures
     }
 
+    /// Whether any owner approval is an SLH-DSA signature, which is valid only where the chain
+    /// enables SLH-DSA owner signatures and only for the account's own transactions and
+    /// `verifyConfigurableAccount`.
+    pub fn has_slh_dsa_approval(&self) -> bool {
+        self.signatures
+            .iter()
+            .any(|signature| matches!(signature, PrimitiveSignature::SlhDsa(_)))
+    }
+
     /// Returns the configurable account owner-approval digest for this signature.
     pub fn digest(&self, inner_digest: B256) -> B256 {
         configurable_account_digest(inner_digest, self.account(), self.config.version)
@@ -341,8 +354,19 @@ impl ConfigurableAccountSignature {
             return Err(ConfigurableAccountSignatureError::TooManySignatures);
         }
         for signature in &self.signatures {
-            if signature.encoded_length() > MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES {
-                return Err(ConfigurableAccountSignatureError::OwnerSignatureTooLarge);
+            match signature {
+                PrimitiveSignature::SlhDsa(_) => {
+                    if signature.encoded_length() != SLH_DSA_SIGNATURE_ENCODED_LENGTH {
+                        return Err(
+                            ConfigurableAccountSignatureError::InvalidSlhDsaSignatureLength,
+                        );
+                    }
+                }
+                _ => {
+                    if signature.encoded_length() > MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES {
+                        return Err(ConfigurableAccountSignatureError::OwnerSignatureTooLarge);
+                    }
+                }
             }
         }
         Ok(())
@@ -361,7 +385,7 @@ impl ConfigurableAccountSignature {
         let digest = self.digest(inner_digest);
         let mut weight = ConfigurableAccountWeightAccumulator::new(self.config.threshold)?;
         for (approval_index, approval) in self.signatures.iter().enumerate() {
-            let owner = approval.recover_signer(&digest).map_err(|_| {
+            let owner = approval.recover_owner(&digest).map_err(|_| {
                 ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index }
             })?;
             let owner_weight = self
@@ -482,11 +506,28 @@ impl Decodable for ConfigurableAccountSignature {
         struct WireSignature {
             account: Address,
             config: ConfigurableAccountConfig,
-            signatures: Vec<PrimitiveSignature>,
+            signatures: Vec<OwnerApproval>,
         }
         let wire = <WireSignature as Decodable>::decode(buf)?;
-        Self::try_new(wire.account, wire.config, wire.signatures)
+        let signatures = wire
+            .signatures
+            .into_iter()
+            .map(|approval| approval.0)
+            .collect();
+        Self::try_new(wire.account, wire.config, signatures)
             .map_err(|error| RlpError::Custom(error.as_str()))
+    }
+}
+
+/// One owner approval on the wire, decoded by [`PrimitiveSignature::from_owner_approval_bytes`].
+struct OwnerApproval(PrimitiveSignature);
+
+impl Decodable for OwnerApproval {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let bytes = Header::decode_bytes(buf, false)?;
+        PrimitiveSignature::from_owner_approval_bytes(bytes)
+            .map(Self)
+            .map_err(RlpError::Custom)
     }
 }
 
@@ -561,6 +602,8 @@ pub enum ConfigurableAccountSignatureError {
     /// An encoded primitive owner approval exceeds
     /// [`MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES`].
     OwnerSignatureTooLarge,
+    /// An SLH-DSA owner approval is not exactly [`SLH_DSA_SIGNATURE_ENCODED_LENGTH`] bytes.
+    InvalidSlhDsaSignatureLength,
 }
 
 impl ConfigurableAccountSignatureError {
@@ -572,6 +615,9 @@ impl ConfigurableAccountSignatureError {
             Self::EmptySignatures => "configurable account signatures cannot be empty",
             Self::TooManySignatures => "too many configurable account signatures",
             Self::OwnerSignatureTooLarge => "configurable account owner signature too large",
+            Self::InvalidSlhDsaSignatureLength => {
+                "configurable account SLH-DSA owner signature has the wrong length"
+            }
         }
     }
 }
@@ -819,7 +865,12 @@ mod arbitrary_impl {
             let len = u.int_in_range(1..=MAX_CONFIGURABLE_ACCOUNT_SIGNATURES)?;
             let mut signatures = Vec::with_capacity(len);
             for _ in 0..len {
-                let mut signature = PrimitiveSignature::arbitrary(u)?;
+                // Standalone generation excludes SLH-DSA, which only an owner approval may be.
+                let mut signature = if u.ratio(1, 4)? {
+                    PrimitiveSignature::SlhDsa(u.arbitrary()?)
+                } else {
+                    PrimitiveSignature::arbitrary(u)?
+                };
                 if let PrimitiveSignature::WebAuthn(signature) = &mut signature {
                     // Standalone primitive generation is unbounded; an owner approval is not.
                     let len = signature

@@ -6,8 +6,10 @@ use super::{
     },
 };
 use crate::{
-    crypto,
-    gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, WEBAUTHN_VERIFY_GAS},
+    crypto::{
+        self, SLH_DSA_PUBLIC_KEY_LENGTH, SLH_DSA_SHA2_128S_PARAM_ID, SLH_DSA_SIGNATURE_LENGTH,
+    },
+    gas::{P256_VERIFY_GAS, SECP256K1_VERIFY_GAS, SLH_DSA_VERIFY_GAS, WEBAUTHN_VERIFY_GAS},
 };
 use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
@@ -19,7 +21,9 @@ use sha2::{Digest, Sha256};
 // Always mark `p256` as used to avoid `unused_crate_dependencies` warnings in `std` builds.
 use p256 as _;
 
-pub use crate::crypto::{P256_ORDER, P256N_HALF, derive_p256_address, normalize_p256_s};
+pub use crate::crypto::{
+    P256_ORDER, P256N_HALF, derive_p256_address, derive_slh_dsa_address, normalize_p256_s,
+};
 
 #[cfg(not(feature = "std"))]
 use once_cell::race::OnceBox as OnceLock;
@@ -32,6 +36,13 @@ pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
+/// SLH-DSA signature type identifier. Decodes only as a configurable account owner approval.
+pub const SIGNATURE_TYPE_SLH_DSA: u8 = 0x06;
+
+/// Encoded length of an SLH-DSA-SHA2-128s signature:
+/// `0x06 || param_id || public_key (32) || signature (7,856)`.
+pub const SLH_DSA_SIGNATURE_ENCODED_LENGTH: usize =
+    2 + SLH_DSA_PUBLIC_KEY_LENGTH + SLH_DSA_SIGNATURE_LENGTH;
 
 /// P256 signature with pre-hash flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -75,6 +86,32 @@ pub struct WebAuthnSignature {
     pub webauthn_data: Bytes,
 }
 
+/// SLH-DSA-SHA2-128s signature (FIPS 205, pure, empty context) with its public key.
+///
+/// Encoded as `0x06 || param_id || public_key || signature`, where only
+/// [`SLH_DSA_SHA2_128S_PARAM_ID`] decodes. Valid only as a configurable account owner approval: it
+/// never decodes as a standalone signature and [`PrimitiveSignature::recover_signer`] rejects it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct SlhDsaSignature {
+    /// `PK.seed || PK.root`.
+    pub public_key: B256,
+    /// The 7,856-byte signature; decoding rejects any other length.
+    pub signature: Bytes,
+}
+
+impl SlhDsaSignature {
+    /// Calldata gas of the encoded signature after its type byte: `param_id || public_key ||
+    /// signature`, priced like `WebAuthn` data.
+    pub fn calldata_gas(&self) -> u64 {
+        (tokens_in_calldata(&[SLH_DSA_SHA2_128S_PARAM_ID])
+            + tokens_in_calldata(self.public_key.as_slice())
+            + tokens_in_calldata(&self.signature))
+            * STANDARD_TOKEN_COST
+    }
+}
+
 fn split_p256_signature_fields(
     sig_data: &[u8; P256_SIGNATURE_LENGTH],
 ) -> (&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], bool) {
@@ -94,7 +131,8 @@ fn split_p256_signature_fields(
 }
 
 /// Primitive signature types that can be used standalone or within a Keychain signature.
-/// This enum contains only the base signature types: Secp256k1, P256, and WebAuthn.
+/// This enum contains only the base signature types: Secp256k1, P256, WebAuthn, and SLH-DSA,
+/// which is valid only as a configurable account owner approval.
 /// It does NOT support Keychain signatures to prevent recursion.
 ///
 /// Custom RLP and Compact encoding writes signature bytes directly through
@@ -106,7 +144,6 @@ fn split_p256_signature_fields(
     all(test, feature = "reth-codec"),
     reth_codecs::add_arbitrary_tests(compact, rlp)
 )]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum PrimitiveSignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
@@ -116,6 +153,10 @@ pub enum PrimitiveSignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+
+    /// SLH-DSA-SHA2-128s signature with embedded public key (7,890 bytes). Decodes only as a
+    /// configurable account owner approval (see [`Self::from_owner_approval_bytes`]).
+    SlhDsa(SlhDsaSignature),
 }
 
 impl PrimitiveSignature {
@@ -124,7 +165,19 @@ impl PrimitiveSignature {
     /// For backward compatibility with existing secp256k1 signatures:
     /// - If length is 65 bytes: treat as secp256k1 signature (no type identifier)
     /// - Otherwise: first byte is the signature type identifier
+    ///
+    /// SLH-DSA (`0x06`) is rejected as an unknown type: it is valid only as a configurable account
+    /// owner approval, which [`Self::from_owner_approval_bytes`] decodes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        Self::decode_typed(data, false)
+    }
+
+    /// Parses a configurable account owner approval: [`Self::from_bytes`], plus SLH-DSA.
+    pub fn from_owner_approval_bytes(data: &[u8]) -> Result<Self, &'static str> {
+        Self::decode_typed(data, true)
+    }
+
+    fn decode_typed(data: &[u8], allow_slh_dsa: bool) -> Result<Self, &'static str> {
         if data.is_empty() {
             return Err("Signature data is empty");
         }
@@ -180,6 +233,22 @@ impl PrimitiveSignature {
                     webauthn_data: Bytes::copy_from_slice(webauthn_data),
                 }))
             }
+            SIGNATURE_TYPE_SLH_DSA if allow_slh_dsa => {
+                let (&param_id, sig_data) = sig_data
+                    .split_first()
+                    .expect("signature data length checked");
+                if param_id != SLH_DSA_SHA2_128S_PARAM_ID {
+                    return Err("Unknown SLH-DSA parameter set");
+                }
+                if sig_data.len() != SLH_DSA_PUBLIC_KEY_LENGTH + SLH_DSA_SIGNATURE_LENGTH {
+                    return Err("Invalid SLH-DSA signature length");
+                }
+                let (public_key, signature) = sig_data.split_at(SLH_DSA_PUBLIC_KEY_LENGTH);
+                Ok(Self::SlhDsa(SlhDsaSignature {
+                    public_key: B256::from_slice(public_key),
+                    signature: Bytes::copy_from_slice(signature),
+                }))
+            }
 
             _ => Err("Unknown signature type identifier"),
         }
@@ -221,6 +290,12 @@ impl PrimitiveSignature {
                 out.put_slice(webauthn_sig.pub_key_x.as_slice());
                 out.put_slice(webauthn_sig.pub_key_y.as_slice());
             }
+            Self::SlhDsa(slh_dsa_sig) => {
+                out.put_u8(SIGNATURE_TYPE_SLH_DSA);
+                out.put_u8(SLH_DSA_SHA2_128S_PARAM_ID);
+                out.put_slice(slh_dsa_sig.public_key.as_slice());
+                out.put_slice(&slh_dsa_sig.signature);
+            }
         }
     }
 
@@ -234,6 +309,9 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
+            Self::SlhDsa(slh_dsa_sig) => {
+                2 + SLH_DSA_PUBLIC_KEY_LENGTH + slh_dsa_sig.signature.len()
+            }
         }
     }
 
@@ -243,6 +321,7 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
+            Self::SlhDsa(_) => SignatureType::SlhDsa,
         }
     }
 
@@ -252,6 +331,7 @@ impl PrimitiveSignature {
             + match self {
                 Self::Secp256k1(_) | Self::P256(_) => 0,
                 Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+                Self::SlhDsa(slh_dsa_sig) => slh_dsa_sig.signature.len(),
             }
     }
 
@@ -261,6 +341,7 @@ impl PrimitiveSignature {
     /// - secp256k1: Uses standard ecrecover (signature verification + address recovery)
     /// - P256: Verifies P256 signature then derives address from public key
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
+    /// - SLH-DSA: always rejected; it authorizes only as a configurable account owner approval
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -303,6 +384,22 @@ impl PrimitiveSignature {
                     &webauthn_sig.pub_key_y,
                 ))
             }
+            Self::SlhDsa(_) => Err(RecoveryError::new()),
+        }
+    }
+
+    /// Recovers a configurable account owner approval: [`Self::recover_signer`], plus SLH-DSA,
+    /// whose owner is [`derive_slh_dsa_address`] of its public key.
+    pub(crate) fn recover_owner(&self, digest: &B256) -> Result<Address, RecoveryError> {
+        match self {
+            Self::SlhDsa(slh_dsa_sig) => {
+                if !crypto::verify_slh_dsa(&slh_dsa_sig.public_key, &slh_dsa_sig.signature, digest)
+                {
+                    return Err(RecoveryError::new());
+                }
+                Ok(derive_slh_dsa_address(&slh_dsa_sig.public_key))
+            }
+            _ => self.recover_signer(digest),
         }
     }
 
@@ -312,11 +409,13 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SECP256K1_VERIFY_GAS,
             Self::P256(_) => P256_VERIFY_GAS,
             Self::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
+            Self::SlhDsa(_) => SLH_DSA_VERIFY_GAS,
         }
     }
 
     /// Full gas to verify the signature: [`Self::base_verification_gas`] plus, for `WebAuthn`,
-    /// the calldata cost of `webauthn_data`.
+    /// the calldata cost of `webauthn_data` and, for SLH-DSA, of `param_id || public_key ||
+    /// signature`.
     ///
     /// This does not subtract the ecrecover baseline already covered by ordinary intrinsic gas.
     pub fn verification_gas(&self) -> u64 {
@@ -326,6 +425,7 @@ impl PrimitiveSignature {
                 self.base_verification_gas()
                     + tokens_in_calldata(&sig.webauthn_data) * STANDARD_TOKEN_COST
             }
+            Self::SlhDsa(sig) => self.base_verification_gas() + sig.calldata_gas(),
         }
     }
 
@@ -334,6 +434,8 @@ impl PrimitiveSignature {
     /// - Secp256k1: 0
     /// - P256: 5000
     /// - WebAuthn: 5000 + calldata cost of `webauthn_data`
+    /// - SLH-DSA: `SLH_DSA_VERIFY_GAS` - 3000 + calldata cost of `param_id || public_key ||
+    ///   signature`
     pub fn intrinsic_verification_gas(&self) -> u64 {
         // Every signature type costs at least a secp256k1 verification, so this cannot underflow.
         self.verification_gas() - SECP256K1_VERIFY_GAS
@@ -501,6 +603,14 @@ impl KeychainSignature {
         if self.is_legacy() && self.signature.is_configurable_account() {
             return Err(RecoveryError::new());
         }
+        // SLH-DSA approvals authorize only an account's own transactions, not an access key.
+        if self
+            .signature
+            .as_configurable_account()
+            .is_some_and(ConfigurableAccountSignature::has_slh_dsa_approval)
+        {
+            return Err(RecoveryError::new());
+        }
         // Check if already cached
         if let Some(cached) = self.cached_key_id.get() {
             return Ok(*cached);
@@ -568,6 +678,31 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
             },
             version,
             cached_key_id: OnceLock::new(), // Always start with empty cache
+        })
+    }
+}
+
+// Standalone signatures never decode as SLH-DSA, so generation leaves it to owner approvals.
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for PrimitiveSignature {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(match u.int_in_range(0..=2u8)? {
+            0 => Self::Secp256k1(u.arbitrary()?),
+            1 => Self::P256(u.arbitrary()?),
+            _ => Self::WebAuthn(u.arbitrary()?),
+        })
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for SlhDsaSignature {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let public_key = u.arbitrary()?;
+        let mut signature = alloc::vec![0u8; SLH_DSA_SIGNATURE_LENGTH];
+        u.fill_buffer(&mut signature)?;
+        Ok(Self {
+            public_key,
+            signature: signature.into(),
         })
     }
 }
@@ -2037,5 +2172,414 @@ mod compact_tests {
 
         let (decoded, _) = WebAuthnSignature::from_compact(&expected, expected.len());
         assert_eq!(decoded, sig);
+    }
+}
+
+#[cfg(test)]
+mod slh_dsa_tests {
+    use super::*;
+    use crate::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountQuorumError,
+        ConfigurableAccountSignatureError, MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES,
+        configurable_account_digest,
+    };
+    use alloy_primitives::hex;
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use test_case::test_case;
+
+    /// A rust-pq signature over a fixed digest, with its independently derived address.
+    struct Vector {
+        signature: SlhDsaSignature,
+        digest: B256,
+        address: Address,
+        calldata_gas: u64,
+    }
+
+    fn vector() -> Vector {
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../testdata/slh_dsa_sha2_128s.json")).unwrap();
+        let field = |name: &str| hex::decode(json[name].as_str().unwrap()).unwrap();
+        Vector {
+            signature: SlhDsaSignature {
+                public_key: B256::from_slice(&field("publicKey")),
+                signature: field("signature").into(),
+            },
+            digest: B256::from_slice(&field("digest")),
+            address: Address::from_slice(&field("address")),
+            calldata_gas: json["calldataGas"].as_u64().unwrap(),
+        }
+    }
+
+    fn encoded(signature: &SlhDsaSignature) -> Vec<u8> {
+        [
+            &[SIGNATURE_TYPE_SLH_DSA, SLH_DSA_SHA2_128S_PARAM_ID][..],
+            signature.public_key.as_slice(),
+            &signature.signature,
+        ]
+        .concat()
+    }
+
+    /// Deterministic SLH-DSA key from `seed`, as (secret key, owner signature template).
+    fn slh_key(seed: u8) -> ([u8; 64], B256) {
+        let mut sk = [0u8; 64];
+        let mut pk = [0u8; 32];
+        slhdsa::sha2_128s::keygen(&[seed; 48], &mut sk, &mut pk);
+        (sk, B256::from(pk))
+    }
+
+    fn slh_sign(sk: &[u8; 64], public_key: B256, digest: B256) -> PrimitiveSignature {
+        PrimitiveSignature::SlhDsa(SlhDsaSignature {
+            public_key,
+            signature: slhdsa::sha2_128s::sign_deterministic(digest.as_slice(), &[], sk)
+                .unwrap()
+                .into(),
+        })
+    }
+
+    #[test]
+    fn vector_round_trips_and_recovers_its_owner() {
+        let v = vector();
+        let bytes = encoded(&v.signature);
+        assert_eq!(bytes.len(), SLH_DSA_SIGNATURE_ENCODED_LENGTH);
+        assert_eq!(bytes.len(), 7_890);
+
+        let signature = PrimitiveSignature::from_owner_approval_bytes(&bytes).unwrap();
+        assert_eq!(signature, PrimitiveSignature::SlhDsa(v.signature.clone()));
+        assert_eq!(signature.to_bytes().as_ref(), bytes.as_slice());
+        assert_eq!(signature.encoded_length(), bytes.len());
+        assert_eq!(signature.signature_type(), SignatureType::SlhDsa);
+
+        assert_eq!(derive_slh_dsa_address(&v.signature.public_key), v.address);
+        assert_eq!(signature.recover_owner(&v.digest).unwrap(), v.address);
+    }
+
+    #[test]
+    fn standalone_decoding_rejects_slh_dsa() {
+        let bytes = encoded(&vector().signature);
+        assert_eq!(
+            PrimitiveSignature::from_bytes(&bytes),
+            Err("Unknown signature type identifier")
+        );
+        assert_eq!(
+            TempoSignature::from_bytes(&bytes),
+            Err("Unknown signature type identifier")
+        );
+        let mut keychain = vec![SIGNATURE_TYPE_KEYCHAIN_V2];
+        keychain.extend_from_slice(Address::repeat_byte(1).as_slice());
+        keychain.extend_from_slice(&bytes);
+        assert_eq!(
+            TempoSignature::from_bytes(&keychain),
+            Err("Unknown signature type identifier")
+        );
+    }
+
+    #[test]
+    fn recover_signer_rejects_slh_dsa() {
+        let v = vector();
+        assert!(
+            PrimitiveSignature::SlhDsa(v.signature)
+                .recover_signer(&v.digest)
+                .is_err()
+        );
+    }
+
+    #[test_case(0x00)]
+    #[test_case(0x02)]
+    #[test_case(0xff)]
+    fn unknown_parameter_set_rejects(param_id: u8) {
+        let mut bytes = encoded(&vector().signature);
+        bytes[1] = param_id;
+        assert_eq!(
+            PrimitiveSignature::from_owner_approval_bytes(&bytes),
+            Err("Unknown SLH-DSA parameter set")
+        );
+    }
+
+    #[test_case(-1)]
+    #[test_case(1)]
+    #[test_case(-7_856)]
+    fn wrong_length_rejects(delta: isize) {
+        let mut bytes = encoded(&vector().signature);
+        bytes.resize(bytes.len().checked_add_signed(delta).unwrap(), 0);
+        assert_eq!(
+            PrimitiveSignature::from_owner_approval_bytes(&bytes),
+            Err("Invalid SLH-DSA signature length")
+        );
+    }
+
+    #[test_case(0)]
+    #[test_case(16)]
+    #[test_case(3_000)]
+    #[test_case(7_855)]
+    fn tampered_signature_does_not_recover(index: usize) {
+        let v = vector();
+        let mut signature = v.signature.signature.to_vec();
+        signature[index] ^= 1;
+        let tampered = PrimitiveSignature::SlhDsa(SlhDsaSignature {
+            public_key: v.signature.public_key,
+            signature: signature.into(),
+        });
+        assert!(tampered.recover_owner(&v.digest).is_err());
+    }
+
+    #[test]
+    fn other_digest_or_key_does_not_recover() {
+        let v = vector();
+        let signature = PrimitiveSignature::SlhDsa(v.signature.clone());
+        assert!(signature.recover_owner(&B256::repeat_byte(0x11)).is_err());
+        let mut public_key = v.signature.public_key;
+        public_key.0[31] ^= 1;
+        let other_key = PrimitiveSignature::SlhDsa(SlhDsaSignature {
+            public_key,
+            signature: v.signature.signature,
+        });
+        assert!(other_key.recover_owner(&v.digest).is_err());
+    }
+
+    #[test]
+    fn verification_gas_charges_verify_and_signature_bytes() {
+        let v = vector();
+        let signature = PrimitiveSignature::SlhDsa(v.signature);
+        assert_eq!(signature.base_verification_gas(), SLH_DSA_VERIFY_GAS);
+        assert_eq!(v.calldata_gas, 125_912);
+        assert_eq!(
+            signature.verification_gas(),
+            SLH_DSA_VERIFY_GAS + v.calldata_gas
+        );
+        assert_eq!(
+            signature.intrinsic_verification_gas(),
+            SLH_DSA_VERIFY_GAS + v.calldata_gas - SECP256K1_VERIFY_GAS
+        );
+    }
+
+    /// A 1-of-2 account owned by a secp256k1 key and an SLH-DSA key.
+    fn one_of_two(slh_owner: Address) -> (ConfigurableAccountConfig, Address, PrivateKeySigner) {
+        let secp = PrivateKeySigner::from_bytes(&B256::repeat_byte(7)).unwrap();
+        let mut owners =
+            [secp.address(), slh_owner].map(|owner| ConfigurableAccountOwner { owner, weight: 1 });
+        owners.sort_by_key(|owner| owner.owner);
+        let config = ConfigurableAccountConfig {
+            salt: B256::repeat_byte(9),
+            version: 0,
+            threshold: 1,
+            owners: owners.to_vec(),
+        };
+        let account = config.derive_account().unwrap();
+        (config, account, secp)
+    }
+
+    #[test]
+    fn slh_dsa_owner_meets_quorum_and_round_trips() {
+        let (sk, public_key) = slh_key(3);
+        let owner = derive_slh_dsa_address(&public_key);
+        let (config, account, _) = one_of_two(owner);
+        let inner = B256::repeat_byte(0x42);
+        let approval = slh_sign(
+            &sk,
+            public_key,
+            configurable_account_digest(inner, account, 0),
+        );
+        let signature =
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
+        assert!(signature.has_slh_dsa_approval());
+        assert_eq!(signature.verify_approvals(inner), Ok(()));
+
+        let outer = TempoSignature::ConfigurableAccount(signature);
+        let decoded = TempoSignature::from_bytes(&outer.to_bytes()).unwrap();
+        assert_eq!(decoded, outer);
+        assert_eq!(decoded.recover_signer(&inner).unwrap(), account);
+
+        // The approval binds the digest: another inner digest fails at the SLH-DSA approval.
+        let fresh = TempoSignature::from_bytes(&outer.to_bytes()).unwrap();
+        assert_eq!(
+            fresh
+                .as_configurable_account()
+                .unwrap()
+                .verify_approvals(B256::ZERO),
+            Err(ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index: 0 })
+        );
+    }
+
+    #[test]
+    fn keychain_rejects_slh_dsa_delegate_approvals() {
+        let (sk, public_key) = slh_key(4);
+        let (config, account, _) = one_of_two(derive_slh_dsa_address(&public_key));
+        let parent = Address::repeat_byte(0x55);
+        let sig_hash = B256::repeat_byte(0x24);
+        let inner = KeychainSignature::signing_hash(sig_hash, parent);
+        let approval = slh_sign(
+            &sk,
+            public_key,
+            configurable_account_digest(inner, account, 0),
+        );
+        let delegate =
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
+        assert_eq!(delegate.verify_approvals(inner), Ok(()));
+        let keychain = KeychainSignature::new(parent, delegate);
+        assert!(keychain.key_id(&sig_hash).is_err());
+    }
+
+    #[test]
+    fn slh_dsa_approval_must_be_exactly_its_encoded_length() {
+        let v = vector();
+        let (config, account, _) = one_of_two(v.address);
+        let short = PrimitiveSignature::SlhDsa(SlhDsaSignature {
+            public_key: v.signature.public_key,
+            signature: v.signature.signature.slice(..SLH_DSA_SIGNATURE_LENGTH - 1),
+        });
+        assert_eq!(
+            ConfigurableAccountSignature::try_new(account, config.clone(), vec![short]),
+            Err(ConfigurableAccountSignatureError::InvalidSlhDsaSignatureLength)
+        );
+        // A full-length SLH-DSA approval exceeds the 2,049-byte cap of other approval types.
+        const {
+            assert!(
+                SLH_DSA_SIGNATURE_ENCODED_LENGTH > MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES
+            )
+        };
+        assert!(
+            ConfigurableAccountSignature::try_new(
+                account,
+                config,
+                vec![PrimitiveSignature::SlhDsa(v.signature)]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn secp256k1_owner_still_signs_a_mixed_account() {
+        let (_, public_key) = slh_key(5);
+        let (config, account, secp) = one_of_two(derive_slh_dsa_address(&public_key));
+        let inner = B256::repeat_byte(0x43);
+        let digest = configurable_account_digest(inner, account, 0);
+        let approval = PrimitiveSignature::Secp256k1(secp.sign_hash_sync(&digest).unwrap());
+        let signature =
+            ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap();
+        assert!(!signature.has_slh_dsa_approval());
+        assert_eq!(signature.verify_approvals(inner), Ok(()));
+    }
+
+    /// The worked examples of the SLH-DSA gas note: one 1-of-2 passkey (WebAuthn) + SLH-DSA
+    /// account, with each owner's approval, registered and unregistered.
+    const WORKED_WITNESS_GAS: u64 = 1_680;
+    const WORKED_ROWS: [(u64, u64); 3] = [(212_912, 214_694), (10_656, 12_438), (8_000, 9_782)];
+
+    #[test]
+    fn gas_worked_examples() {
+        use crate::gas::keccak_gas;
+        use p256::ecdsa::SigningKey;
+
+        let v = vector();
+        let key = SigningKey::from_bytes(&[0x61; 32].into()).unwrap();
+        let point = key.verifying_key().to_encoded_point(false);
+        let (x, y) = (
+            B256::from_slice(point.x().unwrap()),
+            B256::from_slice(point.y().unwrap()),
+        );
+        let passkey = derive_p256_address(&x, &y);
+        let mut owners =
+            [passkey, v.address].map(|owner| ConfigurableAccountOwner { owner, weight: 1 });
+        owners.sort_by_key(|owner| owner.owner);
+        let config = ConfigurableAccountConfig {
+            salt: B256::repeat_byte(0x63),
+            version: 0,
+            threshold: 1,
+            owners: owners.to_vec(),
+        };
+        let account = config.derive_account().unwrap();
+        // authenticatorData (rpIdHash, flags UP|UV, zero counter) || clientDataJSON.
+        let mut webauthn_data = [0x5c; 32].to_vec();
+        webauthn_data.extend_from_slice(&[0x05, 0, 0, 0, 0]);
+        webauthn_data.extend_from_slice(
+            br#"{"type":"webauthn.get","challenge":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","origin":"https://example.com","crossOrigin":false}"#,
+        );
+        let webauthn = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: x,
+            pub_key_y: y,
+            webauthn_data: webauthn_data.into(),
+        });
+        let p256 = PrimitiveSignature::P256(P256SignatureWithPreHash {
+            r: B256::repeat_byte(0x11),
+            s: B256::repeat_byte(0x22),
+            pub_key_x: x,
+            pub_key_y: y,
+            pre_hash: false,
+        });
+        let slh = PrimitiveSignature::SlhDsa(v.signature.clone());
+
+        let mut witness = alloy_rlp::encode(account);
+        alloy_rlp::Encodable::encode(&config, &mut witness);
+        let witness_gas = tokens_in_calldata(&witness) * STANDARD_TOKEN_COST;
+        let commitment_gas = keccak_gas(config.commitment_preimage_len()).unwrap();
+        let digest_gas = keccak_gas(96).unwrap();
+        let derivation_gas = config.derivation_gas().unwrap();
+        println!(
+            "account {account} passkey {passkey} slh {} witness {} bytes {witness_gas} gas, \
+             commitment {commitment_gas}, digest {digest_gas}, derivation {derivation_gas}",
+            v.address,
+            witness.len()
+        );
+        let mut rows = Vec::new();
+        for (name, approval) in [("slh-dsa", slh), ("webauthn", webauthn), ("p256", p256)] {
+            let approval_cost = approval.verification_gas();
+            let signature =
+                ConfigurableAccountSignature::try_new(account, config.clone(), vec![approval])
+                    .unwrap();
+            let registered = signature.verification_gas().unwrap();
+            assert_eq!(
+                registered,
+                witness_gas + commitment_gas + digest_gas + approval_cost
+            );
+            assert_eq!(
+                signature.intrinsic_verification_gas().unwrap(),
+                registered - 3_000
+            );
+            println!(
+                "{name}: approval_cost {approval_cost}, V registered {registered} (intrinsic +{}), \
+                 V unregistered {} (intrinsic +{}), encoded signature {} bytes",
+                registered - 3_000,
+                registered + derivation_gas,
+                registered + derivation_gas - 3_000,
+                TempoSignature::ConfigurableAccount(signature)
+                    .to_bytes()
+                    .len()
+            );
+            rows.push((approval_cost, registered));
+        }
+        assert_eq!(witness_gas, WORKED_WITNESS_GAS);
+        assert_eq!((commitment_gas, digest_gas, derivation_gas), (54, 48, 54));
+        assert_eq!(rows, WORKED_ROWS);
+
+        // After the update that drops the passkey: version 1, owners [slh], same account.
+        let quantum_only = ConfigurableAccountConfig {
+            version: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: v.address,
+                weight: 1,
+            }],
+            ..config
+        };
+        let signature = ConfigurableAccountSignature::try_new(
+            account,
+            quantum_only.clone(),
+            vec![PrimitiveSignature::SlhDsa(v.signature)],
+        )
+        .unwrap();
+        let mut witness = alloy_rlp::encode(account);
+        alloy_rlp::Encodable::encode(&quantum_only, &mut witness);
+        let witness_gas = tokens_in_calldata(&witness) * STANDARD_TOKEN_COST;
+        let registered = signature.verification_gas().unwrap();
+        println!(
+            "quantum-only: witness {} bytes {witness_gas} gas, commitment {}, V {registered} \
+             (intrinsic +{})",
+            witness.len(),
+            keccak_gas(quantum_only.commitment_preimage_len()).unwrap(),
+            registered - 3_000
+        );
+        assert_eq!((witness_gas, registered), (1_312, 214_320));
     }
 }

@@ -326,6 +326,18 @@ fn validate_configurable_roles(
     if roles.iter().any(Option::is_some) && !spec.is_t14() {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
+    // SLH-DSA approvals authorize only the account's own transaction, and only where the chain
+    // enables them.
+    for role in roles.iter().flatten() {
+        if role.signature.has_slh_dsa_approval() {
+            if !host.block().ext.slh_dsa_owner_signatures {
+                return Err(ConfigurableAccountError::SlhDsaInactive.into());
+            }
+            if !matches!(role.signed, ConfigurableRoleSigned::Transaction) {
+                return Err(ConfigurableAccountError::InvalidSignatureContext.into());
+            }
+        }
+    }
     if spec.is_t14() && aa.signature().is_keychain() {
         let account = load_account(host, caller, spec)?;
         if !account.commitment.is_zero() && account.invalid_code {

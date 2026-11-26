@@ -15,10 +15,12 @@ use reth_rpc_eth_types::EthApiError;
 use tempo_evm::{RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv};
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
+    crypto::SLH_DSA_SIGNATURE_LENGTH,
     transaction::{
         ConfigurableAccountQuorumError, ConfigurableAccountSignature,
         ConfigurableAccountWeightAccumulator, KeychainSignature,
         MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, MAX_WEBAUTHN_SIGNATURE_LENGTH, PrimitiveSignature,
+        SlhDsaSignature,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -248,8 +250,8 @@ impl ConfigurableAccountSimulationSpec {
 
 /// Creates a mock AA signature for gas estimation based on key type hints.
 ///
-/// Returns `None` for a configurable-account key type: a primitive placeholder cannot stand in for
-/// its configuration witness.
+/// Returns `None` for a configurable-account key type, whose configuration witness a primitive
+/// placeholder cannot stand in for, and for SLH-DSA, which signs only as an owner approval.
 fn create_mock_tempo_sig(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
@@ -258,7 +260,7 @@ fn create_mock_tempo_sig(
     is_t1c: bool,
 ) -> Option<TempoSignature> {
     let key_type = match key_type {
-        SignatureType::ConfigurableAccount => return None,
+        SignatureType::ConfigurableAccount | SignatureType::SlhDsa => return None,
         SignatureType::Secp256k1 => PrimitiveSignatureType::Secp256k1,
         SignatureType::P256 => PrimitiveSignatureType::P256,
         SignatureType::WebAuthn => PrimitiveSignatureType::WebAuthn,
@@ -310,6 +312,10 @@ fn create_mock_primitive_signature(
             };
             mock_webauthn_signature(size.min(max_webauthn_data_len))
         }
+        PrimitiveSignatureType::SlhDsa => PrimitiveSignature::SlhDsa(SlhDsaSignature {
+            public_key: B256::repeat_byte(0xff),
+            signature: Bytes::from(vec![0xff; SLH_DSA_SIGNATURE_LENGTH]),
+        }),
     }
 }
 

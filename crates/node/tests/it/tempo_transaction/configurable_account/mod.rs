@@ -248,8 +248,8 @@ impl OwnerKey {
             SignatureType::WebAuthn => |digest, key, x, y| {
                 sign_webauthn_primitive(digest, key, x, y, "https://native.example")
             },
-            SignatureType::ConfigurableAccount => {
-                panic!("fixture owners must use primitive signatures")
+            SignatureType::ConfigurableAccount | SignatureType::SlhDsa => {
+                panic!("fixture owners must use secp256k1, P256 or WebAuthn signatures")
             }
         };
         let key = SigningKey::from_bytes(&[seed; 32].into()).unwrap();
@@ -401,9 +401,15 @@ async fn reject_with(
 }
 
 async fn environment() -> eyre::Result<Localnet> {
+    environment_with_genesis(|_| {}).await
+}
+
+/// [`environment`] with `edit` applied to its genesis.
+async fn environment_with_genesis(edit: impl FnOnce(&mut Value)) -> eyre::Result<Localnet> {
     init_test_tracing();
     let mut genesis: Value = from_str(&make_genesis_at(TempoHardfork::T14))?;
     genesis["config"]["t14Time"] = json!(0);
+    edit(&mut genesis);
     // Store the getter's result in slot zero, proving visibility inside the first signed call.
     let mut code = vec![0x63];
     code.extend_from_slice(&IConfigurableAccount::getConfigCommitmentCall::SELECTOR);
@@ -431,4 +437,5 @@ async fn environment() -> eyre::Result<Localnet> {
     })
 }
 
+mod slh_dsa;
 mod tests;

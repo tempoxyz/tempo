@@ -1156,6 +1156,7 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
             let (key_type, key_data) = match owner.sign(B256::ZERO)? {
                 PrimitiveSignature::Secp256k1(_) => (PrimitiveSignatureType::Secp256k1, None),
                 PrimitiveSignature::P256(_) => (PrimitiveSignatureType::P256, None),
+                PrimitiveSignature::SlhDsa(_) => (PrimitiveSignatureType::SlhDsa, None),
                 PrimitiveSignature::WebAuthn(signature) => (
                     PrimitiveSignatureType::WebAuthn,
                     Some(Bytes::from(

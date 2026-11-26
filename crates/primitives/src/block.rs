@@ -31,6 +31,10 @@ pub struct TempoBlockExt {
     /// `tempo-evm`) is skipped. That check only applies from T15 onwards, so
     /// in practice it is skipped only for blocks executed outside consensus.
     pub proposer_public_key: Option<PublicKey>,
+    /// Whether SLH-DSA owner approvals (signature type `0x06`) are valid in this block: set from
+    /// the chainspec's devnet-only `slhDsaTime`, so `false` on mainnet and testnet. While unset,
+    /// a configurable account signature carrying one is rejected everywhere.
+    pub slh_dsa_owner_signatures: bool,
 }
 
 impl Default for TempoBlockExt {
@@ -39,6 +43,7 @@ impl Default for TempoBlockExt {
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
             proposer_public_key: None,
+            slh_dsa_owner_signatures: false,
         }
     }
 }

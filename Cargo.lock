@@ -13679,6 +13679,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "slhdsa"
+version = "0.2.0"
+source = "git+https://github.com/danrobinson/rust-pq?rev=462724e2b5f8ffe63a2ce76c9b1ab07099c1807b#462724e2b5f8ffe63a2ce76c9b1ab07099c1807b"
+
+[[package]]
 name = "small_btree"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14723,6 +14728,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slhdsa",
  "sysinfo 0.38.4",
  "tempo-alloy",
  "tempo-chainspec",
@@ -14905,6 +14911,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slhdsa",
  "tempo-contracts",
  "test-case",
  "tracing-subscriber",

@@ -317,6 +317,7 @@ impl TempoInvalidTransaction {
                 | ConfigurableAccountError::InvalidSignatureContext
                 | ConfigurableAccountError::Quorum(_) => true,
                 ConfigurableAccountError::UnsupportedContext
+                | ConfigurableAccountError::SlhDsaInactive
                 | ConfigurableAccountError::InvalidAccount { .. }
                 | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
             },
@@ -367,6 +368,9 @@ pub enum ConfigurableAccountError {
     /// The approvals do not satisfy the configuration's quorum.
     #[error("{0}")]
     Quorum(ConfigurableAccountQuorumError),
+    /// An SLH-DSA owner approval on a chain or block where SLH-DSA owner signatures are inactive.
+    #[error("SLH-DSA owner signatures are not active on this chain")]
+    SlhDsaInactive,
 }
 
 /// Authority role a primitive key can fill in a transaction (TIP-1113).
