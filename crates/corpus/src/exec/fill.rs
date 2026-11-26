@@ -297,7 +297,7 @@ where
                         .ok_or_else(|| eyre::eyre!("missing historical canonical block {at}"))?;
                     Ok(StateProviderDatabase(
                         state
-                            .state_provider_from_database(provider, hash)
+                            .state_provider_from_database(provider, hash)?
                             .into_evm_state_provider(),
                     ))
                 },

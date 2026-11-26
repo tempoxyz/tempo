@@ -680,12 +680,20 @@ where
 
         // 2. Update AMM liquidity cache before revalidation/invalidation scans.
         let amm_start = Instant::now();
-        amm_cache.on_new_state(tip.execution_outcome());
-        if let Err(err) = amm_cache.on_new_blocks(
-            tip.blocks_iter().map(|block| block.sealed_header()),
-            pool.client(),
-        ) {
-            error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+        if amm_cache.is_empty() {
+            // The cache started during pipeline sync. Load the whole window now that state is
+            // readable, instead of only this update's blocks.
+            if let Err(err) = amm_cache.repopulate(pool.client()) {
+                error!(target: "txpool", ?err, "AMM liquidity cache repopulate failed");
+            }
+        } else {
+            amm_cache.on_new_state(tip.execution_outcome());
+            if let Err(err) = amm_cache.on_new_blocks(
+                tip.blocks_iter().map(|block| block.sealed_header()),
+                pool.client(),
+            ) {
+                error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+            }
         }
         metrics
             .amm_cache_update_duration_seconds

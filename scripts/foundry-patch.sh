@@ -280,6 +280,12 @@ if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs" ]]; then
     "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/stack.rs"
 fi
 
+# alloy-eip7928 made CodeChange's new_code private behind an accessor.
+if [[ -f "$FOUNDRY_ROOT/crates/evm/core/src/fork/bal.rs" ]]; then
+  sed -i -E 's/\b(change|code)\.new_code\b([^(]|$)/\1.new_code()\2/g' \
+    "$FOUNDRY_ROOT/crates/evm/core/src/fork/bal.rs"
+fi
+
 # The interpreter no longer tracks step costs; match the tracer's gas accounting.
 if [[ -f "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs" ]] &&
   grep -q 'interp.step_cost()' "$FOUNDRY_ROOT/crates/evm/evm/src/inspectors/debug_recorder.rs"; then
