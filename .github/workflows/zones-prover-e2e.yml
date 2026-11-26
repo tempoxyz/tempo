@@ -87,8 +87,15 @@ jobs:
             core.setOutput('base', base);
             core.setOutput('suite', suite);
             core.setOutput('status_context', statusContext);
+            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha, state: 'pending', context: statusContext,
+              description: `${owner}: Checking prover E2E changes`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
             // A group's commit holds its queue entry and every entry ahead of it, so compat runs when
-            // the reth-auto-bump PR is any of them. A group missing from the queue fails closed.
+            // the reth-auto-bump PR is any of them. The pending status comes first, so a failed lookup or a
+            // group missing from the queue reports failure instead of leaving no status.
             if (compat) {
               const branch = context.payload.merge_group.base_ref.replace(/^refs\/heads\//, '');
               const {repository} = await github.graphql(`query($owner: String!, $repo: String!, $branch: String!) {
@@ -102,12 +109,6 @@ jobs:
                 && entry.pullRequest.headRepository?.nameWithOwner === `${context.repo.owner}/${context.repo.repo}`);
               core.setOutput('relevant', bump ? 'true' : 'false');
             }
-            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
-            await github.rest.repos.createCommitStatus({
-              ...context.repo, sha, state: 'pending', context: statusContext,
-              description: `${owner}: Checking prover E2E changes`,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-            });
       - name: Detect merge-queue changes
         id: paths
         if: github.event_name == 'merge_group' && matrix.lane == 'main'

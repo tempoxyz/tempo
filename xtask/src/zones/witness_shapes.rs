@@ -23,6 +23,7 @@ const PREFIX: usize = 3;
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
+    /// L1 RPC URL that receives the policy transactions and serves the registry proofs.
     #[arg(long, env = "L1_RPC_URL")]
     l1_rpc_url: String,
 
@@ -111,6 +112,8 @@ impl WitnessShapes {
             .storage_proof
             .iter()
             .map(|storage| {
+                // Leaves at this depth encode to at least 32 bytes, so none is inlined into its
+                // branch: a proof ending at a branch means the selected child is empty.
                 let end = storage.proof.last().ok_or_eyre("empty proof")?;
                 TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")
             })
