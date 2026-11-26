@@ -5,6 +5,7 @@
 use alloy::{
     primitives::{Address, B256, keccak256},
     providers::{Provider, ProviderBuilder},
+    transports::http::reqwest::Url,
 };
 use alloy_rlp::Decodable as _;
 use alloy_trie::nodes::TrieNode;
@@ -20,14 +21,13 @@ const MAX_BATCHES: usize = 32;
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
     #[arg(long, env = "L1_RPC_URL")]
-    l1_rpc_url: String,
+    l1_rpc_url: Url,
 }
 
 impl WitnessShapes {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect(&self.l1_rpc_url)
-            .await?;
+        let provider =
+            ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(self.l1_rpc_url);
         let mut candidates = (0u64..).map(|i| Address::from_word(keccak256(i.to_be_bytes())));
         let (mut extension, mut empty_child) = (None, None);
         for _ in 0..MAX_BATCHES {
