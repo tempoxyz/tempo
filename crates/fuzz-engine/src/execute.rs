@@ -461,10 +461,9 @@ fn execute_block<E: Engine>(
     consensus
         .validate_block_pre_execution(sealed)
         .map_err(rejected)?;
-    let mut evm = evm_config
+    let evm = evm_config
         .evm_for_block(db.reader(), block.recovered.header())
         .map_err(rejected)?;
-    engine.record_storage_actions(evm_config, &mut evm);
     let ctx = evm_config.context_for_block(sealed).map_err(rejected)?;
     let mut executor = evm_config.create_executor(evm, ctx);
     let hooked = Updates::default();
@@ -603,9 +602,7 @@ impl<E: Engine> BlockRun<'_, E> {
         let sender = tx.signer();
         let effective_gas_price = tx.effective_gas_price(basefee);
         let authority = invariants::authority(tx.inner(), sender);
-        executor.evm().ext().actions.clear();
         let result = executor.execute_transaction_without_commit(tx)?;
-        let actions = executor.evm().ext().actions.take().unwrap_or_default();
         let execution = &result.result().result;
         let outcome = if execution.status {
             TxOutcome::Success
@@ -635,7 +632,6 @@ impl<E: Engine> BlockRun<'_, E> {
             effective_gas_price,
             output,
             logs: receipt.logs.clone(),
-            actions,
         };
         let tx = Tx {
             sender,

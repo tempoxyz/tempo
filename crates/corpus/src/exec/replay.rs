@@ -2,7 +2,7 @@
 
 use crate::{
     exec::{
-        block::{Executed, decode_block, execute_block, standalone_cases, verify_changesets},
+        block::{decode_block, execute_block, standalone_cases, verify_changesets},
         db::View,
     },
     store::{self, Catalog, MAX_RECORD_BYTES, Record, Store},
@@ -50,7 +50,7 @@ struct Ready {
 }
 
 /// Replays a published corpus range with `workers` execution threads and passes each verified
-/// block, its input and its execution to `on_block`. With `standalone`, only transactions with
+/// block and its input to `on_block`. With `standalone`, only transactions with
 /// ordinals in that range are replayed, each independently, and `on_block` is not called.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -62,7 +62,7 @@ pub fn run(
     workers: usize,
     standalone: Option<(u64, u64)>,
     cancellation: CancellationToken,
-    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>, &Executed) -> eyre::Result<()> + Sync,
+    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>) -> eyre::Result<()> + Sync,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -214,9 +214,9 @@ pub fn run(
                             )?;
                             (transactions, gas)
                         } else {
-                            let (block, executed) =
+                            let block =
                                 verify(config, consensus, &input, &ready.cases, &ready.record)?;
-                            on_block(&input, &block, &executed)?;
+                            on_block(&input, &block)?;
                             (ready.record.transactions, ready.record.gas)
                         };
                         records += 1;
@@ -303,7 +303,7 @@ async fn open(store: &Store, catalog: &Catalog, config: &TempoEvmConfig) -> eyre
 }
 
 /// Replays the listed `blocks` of a published corpus on `workers` threads, as [`run`] does a
-/// range, then passes each verified block, its input and its execution to `on_block`.
+/// range, then passes each verified block and its input to `on_block`.
 pub fn run_blocks(
     store: Store,
     mut catalog: Catalog,
@@ -311,7 +311,7 @@ pub fn run_blocks(
     config: TempoEvmConfig,
     consensus: TempoConsensus,
     workers: usize,
-    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>, &Executed) -> eyre::Result<()> + Sync,
+    on_block: impl Fn(&Arc<Input>, &RecoveredBlock<Block>) -> eyre::Result<()> + Sync,
 ) -> eyre::Result<()> {
     eyre::ensure!(workers > 0, "num-tasks must be positive");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -342,8 +342,8 @@ pub fn run_blocks(
                         eyre::Ok((record, input, cases))
                     });
                 if let Err(error) = replayed.and_then(|(record, input, cases)| {
-                    let (block, executed) = verify(&config, &consensus, &input, &cases, &record)?;
-                    on_block(&input, &block, &executed)
+                    let block = verify(&config, &consensus, &input, &cases, &record)?;
+                    on_block(&input, &block)
                 }) {
                     // Stop the other workers too.
                     next.store(blocks.len(), Ordering::Relaxed);
@@ -642,14 +642,14 @@ fn decode_record<'a>(
 
 /// Verifies one published block: executes it from its record alone and checks every
 /// transaction against its stored record, consensus rules and the historical changesets.
-/// Returns the block and its execution.
+/// Returns the block.
 pub fn verify(
     config: &TempoEvmConfig,
     consensus: &TempoConsensus,
     input: &Arc<Input>,
     cases: &[Bytes],
     record: &Record,
-) -> eyre::Result<(RecoveredBlock<Block>, Executed)> {
+) -> eyre::Result<RecoveredBlock<Block>> {
     let (expected, block, phases) = decode_record(input, cases, record)?;
     let executed = execute_block(
         config,
@@ -664,5 +664,5 @@ pub fn verify(
         executed.transactions.len() as u64 == record.transactions && executed.gas == record.gas,
         "transaction/gas totals mismatch"
     );
-    Ok((block, executed))
+    Ok(block)
 }

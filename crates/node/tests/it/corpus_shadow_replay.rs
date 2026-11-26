@@ -57,7 +57,7 @@ async fn replay_captured_blocks(
         )?;
         outcomes.push(
             replayer
-                .replay(&captured.input, &block, &captured.executed)
+                .replay(&captured.input, &block)
                 .map_err(eyre::Report::msg)?,
         );
         first_tx += block.body().transactions.len() as u64;

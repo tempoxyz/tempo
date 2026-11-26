@@ -36,12 +36,10 @@ All execution uses isolated in-memory overlays. State is never persisted or carr
 block. Every block starts independently from its own canonical parent. Replay executes only canonical transactions; it does
 not generate candidate-only transactions.
 
-The control also acts as a re-execution test for the binary: it checks that the binary can
-execute canonical blocks successfully and reproduce their receipts under the active rules,
-catching STF-breaking changes before shadow differences are interpreted. A control failure is an
-error because an unverified baseline cannot be attributed to the candidate rules. This validates
-receipt reproduction rather than full canonical state equality. A rejected shadow transaction is recorded as a finding; replay still commits the control result and executes
-later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
+Corpus verification has already checked the block's receipts and changesets before the control
+runs. A control failure is an error because an unverified baseline cannot be attributed to the
+candidate rules. A rejected shadow transaction is recorded as a finding; replay still commits the
+control result and executes later transactions. A failed pre- or post-block boundary is retained as a finding, and boundaries
 that could not execute are reported as incomplete coverage.
 
 ## Comparison model
@@ -49,7 +47,7 @@ that could not execute are reported as incomplete coverage.
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
 changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
 ordered receipt logs, and net account and storage transitions. Gas-only differences are not findings, although gas is still
-checked against canonical receipts and used to validate fee-derived effects. This compares
+used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later

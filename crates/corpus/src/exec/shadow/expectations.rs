@@ -221,7 +221,7 @@ pub(crate) fn between(
 mod tests {
     use super::{
         super::{
-            Block, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome,
+            Block, ExecError, RecoveredBlock, ReplayOutcome, TransitionState, TxOutcome,
             analysis::{MAX_SAMPLES, Report},
         },
         *,
@@ -579,12 +579,15 @@ mod tests {
     fn uncaptured_shadow_reads_are_inconclusive() {
         let real = evidence(&[21_000, 21_000]);
         let mut shadow = evidence(&[21_000, 21_000]);
-        shadow.txs[0] = Err("uncaptured account 0x00".into());
+        shadow.txs[0] = Err(ExecError::Uncaptured("uncaptured account 0x00".into()));
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.unexplained, 0);
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
 
-        let shadow = Evidence::default().fail(Boundary::PreBlock, "uncaptured account 0x00".into());
+        let shadow = Evidence::default().fail(
+            Boundary::PreBlock,
+            ExecError::Uncaptured("uncaptured account 0x00".into()),
+        );
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));
         assert_eq!(report.outcome(&shadow), ReplayOutcome::Inconclusive);
     }
@@ -593,7 +596,7 @@ mod tests {
     fn rejected_shadow_tx_does_not_hide_later_transaction_findings() {
         let real = evidence(&[21_000, 21_000]);
         let mut shadow = evidence(&[21_000, 21_000]);
-        shadow.txs[0] = Err("rejected".into());
+        shadow.txs[0] = Err(ExecError::Failed("rejected".into()));
         tx_mut(&mut shadow, 1).outcome = TxOutcome::Revert;
 
         let report = Report::analyze(&real, &shadow, &[], &block(vec![]));

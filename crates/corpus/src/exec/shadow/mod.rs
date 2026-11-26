@@ -11,8 +11,8 @@
 //! of every shadow transaction; candidate transaction writes are never persisted or used as
 //! prestate for another transaction or block.
 //!
-//! Control re-execution must reproduce canonical receipts. Failure or divergence indicates a
-//! non-canonical STF and is returned as an error. Shadow findings never stop replay.
+//! A control failure means the control arm can't be trusted and is returned as an error. Shadow
+//! findings never stop replay.
 //!
 //! Analysis compares completed pre-block, transaction, and post-block boundaries in order. It
 //! compares net effects at each boundary—not complete state equality or write history. Gas-only
@@ -24,8 +24,8 @@ mod expectations;
 mod fees;
 
 use super::{
-    block::{Executed, Updates, drain, hooked},
-    db::View,
+    block::{Updates, drain, hooked},
+    db::{Missing, View},
 };
 use crate::types::Input;
 use alloy_consensus::BlockHeader as _;
@@ -35,11 +35,13 @@ use alloy_sol_types::SolEvent as _;
 use analysis::Report;
 use evm2::evm::{Cache, PendingState, TxResultExt};
 use reth_chainspec::ForkCondition;
-use reth_evm::{BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _};
+use reth_evm::{
+    BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
+};
 use reth_execution_types::{BlockState, StateUpdate};
 use reth_primitives_traits::RecoveredBlock;
 use reth_trie_common::bundle_state::{AccountStatus, TransitionAccount, TransitionState};
-use std::{collections::hash_map::Entry, sync::Arc};
+use std::{collections::hash_map::Entry, fmt, sync::Arc};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -47,7 +49,7 @@ use tempo_chainspec::{
 use tempo_contracts::precompiles::{ITIP20, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::{TempoBlockExecutor, TempoEvmConfig, TempoTxResult};
 use tempo_precompiles::storage::{FeeHook, StorageAction};
-use tempo_primitives::{Block, TempoReceipt};
+use tempo_primitives::Block;
 use tracing::{debug, warn};
 
 /// Result of replaying one canonical block under candidate hardfork rules.
@@ -94,7 +96,6 @@ impl ShadowReplayer {
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
-        executed: &Executed,
     ) -> Result<Option<ReplayOutcome>, String> {
         let canonical = self
             .real_config
@@ -110,16 +111,6 @@ impl ShadowReplayer {
                 f.boundary, f.error
             ));
         }
-        let receipts = executed
-            .transactions
-            .iter()
-            .map(|transaction| alloy_rlp::decode_exact(&transaction.receipt))
-            .collect::<alloy_rlp::Result<Vec<TempoReceipt>>>()
-            .map_err(|e| format!("invalid corpus receipt: {e}"))?;
-        if !matches_receipts(&real.txs, &receipts) {
-            return Err("re-execution does not reproduce canonical receipts".into());
-        }
-
         let rules = expectations::between(canonical, self.shadow_hardfork);
         let report = Report::analyze(&real, &shadow, &rules, block);
         let outcome = report.outcome(&shadow);
@@ -135,7 +126,7 @@ impl ShadowReplayer {
             block_hash = ?block.hash(),
             findings = ?report,
             shadow_failure_boundary = ?failure.map(|f| f.boundary),
-            shadow_failure = failure.map(|f| f.error.as_str()).unwrap_or(""),
+            shadow_failure = ?failure.map(|f| &f.error),
             ?outcome,
             real_processed_txs = real.txs.len(),
             shadow_processed_txs = shadow.txs.len(),
@@ -171,7 +162,7 @@ impl ShadowReplayer {
                 let result = match executor.execute_transaction_without_commit(tx) {
                     Ok(result) => result,
                     Err(e) => {
-                        real = real.fail(Boundary::Transaction(index), e.to_string());
+                        real = real.fail(Boundary::Transaction(index), ExecError::new(&e));
                         break;
                     }
                 };
@@ -194,7 +185,7 @@ impl ShadowReplayer {
             if real.failure.is_none() {
                 match executor.finish() {
                     Ok(_) => real.post_block = Some(transition_of(drain(&updates))),
-                    Err(e) => real = real.fail(Boundary::PostBlock, e.to_string()),
+                    Err(e) => real = real.fail(Boundary::PostBlock, ExecError::new(&e)),
                 }
             }
             let shadow = worker
@@ -227,7 +218,7 @@ impl ShadowReplayer {
                 })),
                 Err(e) => {
                     executor.evm().ext().actions.clear();
-                    shadow.txs.push(Err(e.to_string()));
+                    shadow.txs.push(Err(ExecError::new(&e)));
                 }
             }
             let Ok(canonical) = canonical_results.recv() else {
@@ -250,7 +241,7 @@ impl ShadowReplayer {
 
         match executor.finish() {
             Ok(_) => shadow.post_block = Some(transition_of(drain(&updates))),
-            Err(e) => shadow = shadow.fail(Boundary::PostBlock, e.to_string()),
+            Err(e) => shadow = shadow.fail(Boundary::PostBlock, ExecError::new(&e)),
         }
         Ok(shadow)
     }
@@ -275,7 +266,7 @@ fn start<'a>(
     let mut evidence = Evidence::default();
     match executor.apply_pre_execution_changes() {
         Ok(_) => evidence.pre_block = Some(transition_of(drain(&updates))),
-        Err(e) => evidence = evidence.fail(Boundary::PreBlock, e.to_string()),
+        Err(e) => evidence = evidence.fail(Boundary::PreBlock, ExecError::new(&e)),
     }
     executor.evm().ext().actions.clear();
     Ok((executor, updates, evidence))
@@ -479,7 +470,44 @@ impl ObservedTx {
     }
 }
 
-type TxEvidence = Result<ObservedTx, String>;
+type TxEvidence = Result<ObservedTx, ExecError>;
+
+/// Why an arm could not complete a boundary.
+#[derive(Debug)]
+enum ExecError {
+    /// Execution read state the corpus did not capture, so the boundary cannot be compared.
+    Uncaptured(String),
+    /// Execution failed.
+    Failed(String),
+}
+
+impl ExecError {
+    fn new(error: &BlockExecutionError) -> Self {
+        // The database's `Missing` reaches the executor's error wrapped in evm2's `AnyError`.
+        let uncaptured =
+            std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+                error.source()
+            })
+            .any(|error| {
+                error
+                    .downcast_ref::<evm2::AnyError>()
+                    .is_some_and(|error| error.downcast_ref::<Missing>().is_some())
+            });
+        if uncaptured {
+            Self::Uncaptured(error.to_string())
+        } else {
+            Self::Failed(error.to_string())
+        }
+    }
+}
+
+impl fmt::Display for ExecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uncaptured(error) | Self::Failed(error) => error.fmt(f),
+        }
+    }
+}
 
 /// A logical execution boundary whose committed effects can be compared independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -493,7 +521,7 @@ enum Boundary {
 #[derive(Debug)]
 struct Failure {
     boundary: Boundary,
-    error: String,
+    error: ExecError,
 }
 
 /// Completed boundary evidence and, when present, the first execution failure.
@@ -509,28 +537,10 @@ struct Evidence {
 }
 
 impl Evidence {
-    fn fail(mut self, boundary: Boundary, error: String) -> Self {
+    fn fail(mut self, boundary: Boundary, error: ExecError) -> Self {
         self.failure = Some(Failure { boundary, error });
         self
     }
-}
-
-fn matches_receipts(txs: &[TxEvidence], receipts: &[TempoReceipt]) -> bool {
-    if txs.len() != receipts.len() {
-        return false;
-    }
-
-    let mut previous_gas = 0;
-    txs.iter().zip(receipts).all(|(tx, receipt)| {
-        let Ok(tx) = tx else {
-            return false;
-        };
-        let gas_used = receipt.cumulative_gas_used - previous_gas;
-        previous_gas = receipt.cumulative_gas_used;
-        (tx.outcome == TxOutcome::Success) == receipt.success
-            && tx.gas.tx_gas_used() == gas_used
-            && tx.receipt_logs_hash == hash_logs(&receipt.logs)
-    })
 }
 
 /// Only the post-fee hook's expected TIP-20 transfer amount can be normalized. Every other
@@ -620,6 +630,26 @@ mod tests {
         zones::{T13_ZONE_PORTAL_RUNTIME, ZONE_PORTAL_RUNTIME},
     };
     use tempo_precompiles::storage::FeeHook;
+
+    #[test]
+    fn only_values_the_corpus_lacks_are_uncaptured() {
+        let database = |error: evm2::DatabaseError| {
+            ExecError::new(&BlockExecutionError::other(evm2::AnyError::new(error)))
+        };
+        let missing = Missing("uncaptured account 0x00".into());
+        assert!(matches!(
+            database(evm2::DatabaseError::new(missing, true)),
+            ExecError::Uncaptured(_)
+        ));
+        assert!(matches!(
+            database(evm2::DatabaseError::new(fmt::Error, true)),
+            ExecError::Failed(_)
+        ));
+        assert!(matches!(
+            ExecError::new(&BlockExecutionError::msg("uncaptured account 0x00")),
+            ExecError::Failed(_)
+        ));
+    }
 
     #[test]
     fn fee_log_normalization_preserves_order_and_non_amount_fields() {

@@ -9,7 +9,6 @@ use evm2::interpreter::InstrStop;
 pub use invariants_core::{Counts, Violation};
 use serde::{Deserialize, Serialize};
 use tempo_hardfork::{TempoHardfork, constants::moderato::MODERATO_CHAIN_ID};
-pub use tempo_precompiles::storage::{FeeHook, StorageAction};
 
 /// What a C ABI function returns.
 pub type FuzzStatus = i32;
@@ -20,7 +19,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 7;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 6;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
@@ -433,7 +432,6 @@ pub struct TxReceiptOutput {
     pub effective_gas_price: u128,
     pub output: Bytes,
     pub logs: Vec<Log>,
-    pub actions: Vec<StorageAction>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

@@ -1,11 +1,10 @@
 //! Classify independent boundary differences before formatting bounded samples.
 
 use super::{
-    Boundary, Evidence, ReplayOutcome,
+    Boundary, Evidence, ExecError, ReplayOutcome,
     expectations::{Context, Expectation},
     fees::fee_wrote,
 };
-use crate::exec::db::Missing;
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{Address, U256};
 use reth_primitives_traits::RecoveredBlock;
@@ -34,7 +33,7 @@ impl Report {
             || shadow
                 .failure
                 .as_ref()
-                .is_some_and(|failure| !Missing::in_error(&failure.error))
+                .is_some_and(|failure| matches!(failure.error, ExecError::Failed(_)))
         {
             ReplayOutcome::Findings
         } else if self.boundaries_not_evaluated > 0 {
@@ -86,8 +85,8 @@ impl Report {
                     diff.record_values("receipt_logs", real_logs, shadow_logs);
                     report.record_state_diffs(&ctx, &real.state, &shadow.state, rules);
                 }
-                Err(error) if Missing::in_error(error) => continue,
-                Err(error) => report.record(
+                Err(ExecError::Uncaptured(_)) => continue,
+                Err(ExecError::Failed(error)) => report.record(
                     &ctx,
                     Field {
                         name: "execution",
