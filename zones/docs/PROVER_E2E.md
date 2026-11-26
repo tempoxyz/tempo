@@ -14,7 +14,7 @@ fail the check. Ancestry recovery against the real EIP-2935 window is covered by
 `zone-node` integration tests. T14 remains a separate opt-in
 scenario requiring distinct prover versions.
 
-The publisher requires the matching `prover-tests` and provisioning templates and event sensor to be deployed. The sensor pins the
+The publisher requires the matching `prover-tests` and provisioning templates and event sensor to be deployed. The sensor must route by `compat` alone (any other suite runs `prover-tests`) before the publisher sends `e2e`, or merge-queue events are dropped and the required status stays pending. The sensor pins the
 workflow code and prebuilt Tempo image. Configure `Tempo Zone Prover E2E` as the
 merge-queue required status after verifying both dispatch and irrelevant-change
 success.
