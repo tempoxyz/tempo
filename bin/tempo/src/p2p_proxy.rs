@@ -34,6 +34,7 @@ use std::{
 };
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
+use tempo_node::network::ETH_VERSIONS;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{debug, info};
@@ -299,6 +300,7 @@ async fn run_p2p_network(
     }
 
     let mut config = builder.build_with_noop_provider(chain_spec);
+    config.hello_message.set_eth_versions(ETH_VERSIONS);
     config.sessions_config.session_event_buffer = cfg.max_concurrent_inbound;
 
     let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(1024);
