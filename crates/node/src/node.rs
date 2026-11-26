@@ -1182,6 +1182,33 @@ mod tests {
     use super::*;
     use alloy_primitives::Address;
     use clap::Parser;
+    use reth_db_common::init::init_genesis;
+    use reth_provider::{
+        ProviderError, StageCheckpointWriter, providers::BlockchainProvider,
+        test_utils::create_test_provider_factory_with_node_types,
+    };
+    use reth_stages_types::{StageCheckpoint, StageId};
+    use tempo_chainspec::spec::DEV;
+
+    #[test]
+    fn amm_liquidity_cache_starts_during_interrupted_pipeline_sync() -> eyre::Result<()> {
+        let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+        init_genesis(&factory)?;
+        // Execution committed past Finish, as when the node stops mid pipeline run.
+        let provider_rw = factory.provider_rw()?;
+        provider_rw.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(1))?;
+        provider_rw.commit()?;
+
+        let provider = BlockchainProvider::new(factory)?;
+        let genesis_hash = DEV.genesis_hash();
+        assert!(matches!(
+            provider.state_by_block_hash(genesis_hash),
+            Err(ProviderError::StateUnavailableDuringSync)
+        ));
+        AmmLiquidityCache::new(&provider)?;
+
+        Ok(())
+    }
 
     #[test]
     fn build_time_multiplier_cli_rejects_values_outside_learned_range() {

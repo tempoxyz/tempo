@@ -26,6 +26,7 @@ use tempo_precompiles::{
     tip20,
 };
 use tempo_primitives::{TempoHeader, TempoReceipt};
+use tracing::warn;
 
 /// Number of recent validators/tokens to track.
 const LAST_SEEN_WINDOW: usize = 10;
@@ -38,6 +39,10 @@ pub struct AmmLiquidityCache {
 impl AmmLiquidityCache {
     /// Creates a new [`AmmLiquidityCache`] and pre-populates the cache with
     /// validator fee tokens of the latest blocks.
+    ///
+    /// Starts with an empty cache when an interrupted pipeline sync leaves historical state
+    /// unavailable; pool maintenance fills it from the blocks committed after the pipeline
+    /// resumes.
     pub fn new<Client>(client: Client) -> ProviderResult<Self>
     where
         Client: StateProviderFactory
@@ -47,7 +52,14 @@ impl AmmLiquidityCache {
         let this = Self {
             inner: Default::default(),
         };
-        this.repopulate(&client)?;
+        match this.repopulate(&client) {
+            // The pipeline only resumes after the node launches, so failing here would block it.
+            Err(ProviderError::StateUnavailableDuringSync) => warn!(
+                target: "txpool",
+                "historical state is unavailable during pipeline sync, starting with an empty AMM liquidity cache"
+            ),
+            result => result?,
+        }
 
         Ok(this)
     }
