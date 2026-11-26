@@ -93,13 +93,13 @@ type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
 static WARM_PREDECESSORS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_WARM_PREDECESSORS").map_or(true, |v| v != "0")
 });
-/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 4 by
+/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 0 by
 /// default); 0 reads none.
 static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
     std::env::var("TEMPO_QMDB_FLOOR_PREFETCH")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(4)
+        .unwrap_or(0)
 });
 /// Most open stages: opening another drops the oldest, whose block then builds without it.
 const MAX_STAGES: usize = 32;
