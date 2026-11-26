@@ -36,6 +36,7 @@ exec = [
   "dep:alloy-sol-types",
   "dep:tempo-contracts",
   "dep:tempo-precompiles",
+  "dep:tempo-fuzz-engine",
 ]
 
 [dependencies]
@@ -61,6 +62,7 @@ alloy-rlp.workspace = true
 alloy-eip7928 = { workspace = true, optional = true }
 alloy-eips.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-fuzz-engine = { workspace = true, optional = true }
 tempo-fuzz-types.workspace = true
 
 bincode.workspace = true

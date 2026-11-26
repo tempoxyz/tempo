@@ -478,9 +478,19 @@ fn reading_outside_an_exact_pre_state_is_reported() {
 
     let mut state = exact_genesis(StateInput::default(), &[transfer_block()]);
     path_usd(&mut state).storage.remove(&read);
-    let outcome = run(exact(state), vec![transfer_block()]);
+    let outcome = run(exact(state.clone()), vec![transfer_block()]);
     assert_eq!(outcome.error, ErrorClass::IncompletePreState);
     assert!(outcome.receipts.is_empty());
+
+    // Collecting reads the slot as zero and reports it.
+    let (_, missed) = crate::execute::run_collecting(
+        &Tempo,
+        TempoHarnessInput::Blockchain(input(exact(state), vec![transfer_block()])),
+    );
+    assert!(missed.iter().any(|missed| matches!(
+        missed,
+        crate::MissingPreState::Storage(PATH_USD_ADDRESS, slot) if *slot == read
+    )));
 }
 
 #[test]

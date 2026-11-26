@@ -6,7 +6,7 @@ use crate::{
         block::{Executed, execute_block, run_standalone, verify_changesets},
         db::{Keys, Recording, View},
     },
-    types::{Block as BlockInput, Case, ChangeSet, Info, Input},
+    types::{Block as BlockInput, Case, ChangeSet, ExtraPreState, Info, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
@@ -14,7 +14,7 @@ use evm2::evm::Database;
 use reth_consensus::FullConsensus;
 use reth_primitives_traits::{Account, RecoveredBlock};
 use reth_storage_api::{ChangeSetReader, StorageChangeSetReader};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{Block, TempoPrimitives};
 
@@ -125,44 +125,23 @@ where
         }
     }
 
-    let mut initial = db_at(number - 1)?;
+    let ExtraPreState {
+        accounts,
+        storage,
+        code,
+        hashes,
+        ..
+    } = pre_state(&mut db_at(number - 1)?, keys, block_input.hash)?;
     let mut input = Input {
         number,
         parent: block.parent_hash().0,
         block: block_input,
-        accounts: BTreeMap::new(),
-        storage: BTreeMap::new(),
-        code: Default::default(),
-        hashes: BTreeMap::new(),
+        accounts,
+        storage,
+        code,
+        hashes,
         phases: Some(std::mem::take(&mut executed.phases)),
     };
-    let mut code_hashes = keys.code;
-    for address in &keys.accounts {
-        let account = initial.get_account(address)?;
-        if let Some(account) = &account {
-            code_hashes.insert(account.code_hash);
-        }
-        let info = account.map(|a| Info::capture(&Account::from(&a)));
-        input.accounts.insert(address.into_array(), info);
-    }
-    for (address, key) in &keys.storage {
-        input.storage.insert(
-            (address.into_array(), key.to_be_bytes()),
-            initial.get_storage(address, key)?.to_be_bytes(),
-        );
-    }
-    code_hashes.remove(&KECCAK256_EMPTY);
-    for hash in code_hashes {
-        if !code::has_code(&hash.0) {
-            code::insert_code(&hash.0, &initial.get_code_by_hash(&hash)?.original_bytes())?;
-        }
-        input.code.insert(hash.0);
-    }
-    for at in &keys.hashes {
-        input
-            .hashes
-            .insert(*at, initial.get_block_hash(&U256::from(*at))?.0);
-    }
     (input.block.changed_accounts, input.block.changed_storage) = input.mark(&changeset)?;
     eyre::ensure!(
         input.changeset()? == changeset,
@@ -210,4 +189,45 @@ where
         view.apply(&expected.delta)?;
     }
     Ok(captured)
+}
+
+/// The values of `keys` in `db`, the state before block `hash`: accounts, with the code they hold,
+/// slots, code and block hashes. Their code is cached ([`code::insert_code`]).
+pub(crate) fn pre_state<D>(db: &mut D, keys: Keys, hash: [u8; 32]) -> eyre::Result<ExtraPreState>
+where
+    D: Database,
+    D::Error: std::error::Error + Send + Sync + 'static,
+{
+    let mut state = ExtraPreState {
+        hash,
+        ..Default::default()
+    };
+    let mut code_hashes = keys.code;
+    for address in &keys.accounts {
+        let account = db.get_account(address)?;
+        if let Some(account) = &account {
+            code_hashes.insert(account.code_hash);
+        }
+        let info = account.map(|a| Info::capture(&Account::from(&a)));
+        state.accounts.insert(address.into_array(), info);
+    }
+    for (address, key) in &keys.storage {
+        state.storage.insert(
+            (address.into_array(), key.to_be_bytes()),
+            db.get_storage(address, key)?.to_be_bytes(),
+        );
+    }
+    code_hashes.remove(&KECCAK256_EMPTY);
+    for hash in code_hashes {
+        if !code::has_code(&hash.0) {
+            code::insert_code(&hash.0, &db.get_code_by_hash(&hash)?.original_bytes())?;
+        }
+        state.code.insert(hash.0);
+    }
+    for at in &keys.hashes {
+        state
+            .hashes
+            .insert(*at, db.get_block_hash(&U256::from(*at))?.0);
+    }
+    Ok(state)
 }

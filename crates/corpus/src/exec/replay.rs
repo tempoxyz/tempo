@@ -190,7 +190,7 @@ pub fn run(
                         };
                         ready.space.notify_one();
                         let input = store::decode(&ready.bytes, &ready.record)?;
-                        runtime.block_on(store::resolve_code(reader, &input))?;
+                        runtime.block_on(store::resolve_code(reader, &input.code))?;
                         let (transactions, gas) = if let Some((from, to)) = standalone {
                             // The stored deltas restore each transaction's prestate, so the
                             // block itself is not executed.

@@ -14383,6 +14383,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-fuzz-engine",
  "tempo-fuzz-types",
  "tempo-precompiles",
  "tempo-primitives",

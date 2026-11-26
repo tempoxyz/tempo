@@ -4,14 +4,15 @@
 
 use crate::{
     code,
-    store::{self, Catalog, Lease, Store},
-    types::Input,
+    store::{self, Catalog, Lease, SLATEDB_RETRIES, Store},
+    types::{ExtraPreState, Input},
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use futures::{StreamExt, TryStreamExt, stream};
+use object_store::ObjectStore;
 use reth_chainspec::{EthChainSpec, ForkCondition};
-use slatedb::DbReader;
+use slatedb::{DbReader, DbReaderMode, config::DbReaderOptions};
 use std::{collections::BTreeMap, fs, iter, path::Path, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec,
@@ -51,14 +52,26 @@ pub struct Corpus {
     /// Keeps the snapshot readable while a fill extends the corpus; taken when dropped.
     lease: Option<Lease>,
     reader: Arc<DbReader>,
+    /// The blocks' extra pre-state, `None` when not read.
+    extra: Option<Arc<DbReader>>,
     catalog: Catalog,
     chain_spec: ChainSpecInput,
 }
 
 impl Corpus {
     /// Opens the published blocks of the corpus at `url` (`s3://bucket/prefix` or
-    /// `file:///directory`), with S3 reads going to `endpoint` when given.
+    /// `file:///directory`), with S3 reads going to `endpoint` when given. Their inputs include
+    /// the corpus's [`ExtraPreState`] when it has one.
     pub fn open(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
+        Self::init(url, endpoint, true)
+    }
+
+    /// Opens the corpus at `url` as [`Self::open`] does, without its [`ExtraPreState`].
+    pub fn open_base(url: &str, endpoint: Option<&str>) -> eyre::Result<Self> {
+        Self::init(url, endpoint, false)
+    }
+
+    fn init(url: &str, endpoint: Option<&str>, extra: bool) -> eyre::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(WORKERS)
             .enable_all()
@@ -72,10 +85,31 @@ impl Corpus {
             eyre::Ok((store, catalog))
         })?;
         let lease = store.lease_published(&runtime, &mut catalog, || {})?;
-        let (reader, tip) = runtime.block_on(async {
+        let (reader, extra, tip) = runtime.block_on(async {
             let reader = store.reader(&catalog).await?;
             let tip = store::tip_timestamp(&reader, &catalog.cursor).await?;
-            eyre::Ok((reader, tip))
+            // Followed without a checkpoint, so reading needs no write access. Widening never
+            // collects garbage.
+            let extra = if extra
+                && store
+                    .objects
+                    .list(Some(&store.extra()))
+                    .try_next()
+                    .await?
+                    .is_some()
+            {
+                let options = DbReaderOptions {
+                    object_store_max_retries: SLATEDB_RETRIES,
+                    ..Default::default()
+                };
+                let mode = DbReaderMode::FollowLatest;
+                Some(Arc::new(
+                    DbReader::open(store.extra(), store.objects.clone(), mode, options).await?,
+                ))
+            } else {
+                None
+            };
+            eyre::Ok((reader, extra, tip))
         })?;
         let chain_spec = chain_spec_input(&catalog, tip)?;
         Ok(Self {
@@ -83,6 +117,7 @@ impl Corpus {
             store,
             lease: Some(lease),
             reader: Arc::new(reader),
+            extra,
             catalog,
             chain_spec,
         })
@@ -105,11 +140,13 @@ impl Corpus {
     /// `block`'s harness input.
     pub fn input(&self, block: u64) -> eyre::Result<TempoHarnessInput> {
         self.ensure_leased()?;
-        let stored = self
-            .runtime
-            .block_on(store::published(&self.reader, block))?
-            .1;
-        harness_input(&stored, self.chain_spec.clone())
+        let ((_, stored), extra) = self.runtime.block_on(async {
+            tokio::try_join!(
+                store::published(&self.reader, block),
+                store::extra_pre_state(self.extra.as_deref(), block)
+            )
+        })?;
+        harness_input(&stored, extra.as_ref(), self.chain_spec.clone())
     }
 
     /// Each of `blocks` with its harness input, in the order given.
@@ -129,7 +166,11 @@ impl Corpus {
         blocks.sort_unstable();
         blocks.dedup();
         let (sender, receiver) = mpsc::channel(1);
-        let (reader, chain_spec) = (self.reader.clone(), self.chain_spec.clone());
+        let (reader, extra, chain_spec) = (
+            self.reader.clone(),
+            self.extra.clone(),
+            self.chain_spec.clone(),
+        );
         let task = AbortOnDropHandle::new(self.runtime.spawn(async move {
             // Each window is sized from the stored bytes per block of the one before, starting
             // from one block, so heavy blocks come in fewer at a time.
@@ -152,19 +193,25 @@ impl Corpus {
                     // Each block decodes in its own task, so a window decodes on every worker.
                     stream::iter(blocks.iter().copied().zip(payloads))
                         .map(|(block, payload)| {
-                            let (reader, chain_spec) = (reader.clone(), chain_spec.clone());
+                            let (reader, extra, chain_spec) =
+                                (reader.clone(), extra.clone(), chain_spec.clone());
                             // Aborted when dropped, so a dropped or failed window stops its reads.
                             AbortOnDropHandle::new(tokio::spawn(async move {
-                                let (record, bytes) = match payload {
-                                    Some(payload) => payload,
-                                    None => store::published_payload(&reader, block).await?,
-                                };
+                                let ((record, bytes), extra) = tokio::try_join!(
+                                    async {
+                                        match payload {
+                                            Some(payload) => Ok(payload),
+                                            None => store::published_payload(&reader, block).await,
+                                        }
+                                    },
+                                    store::extra_pre_state(extra.as_deref(), block)
+                                )?;
                                 let stored = store::decode(&bytes, &record)?;
-                                store::resolve_code(&reader, &stored).await?;
+                                store::resolve_code(&*reader, &stored.code).await?;
                                 eyre::Ok(BlockInput {
                                     block,
                                     size: record.block_bytes,
-                                    input: harness_input(&stored, chain_spec)?,
+                                    input: harness_input(&stored, extra.as_ref(), chain_spec)?,
                                 })
                             }))
                         })
@@ -292,12 +339,20 @@ fn chain_spec_input(catalog: &Catalog, tip: u64) -> eyre::Result<ChainSpecInput>
     })
 }
 
-/// `stored`'s block on the exact pre-state it read. Its code must be resolved
+/// The exact pre-state `stored`'s block read, with `extra` merged in. Its code must be resolved
 /// ([`store::resolve_code`]).
-fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<TempoHarnessInput> {
+pub(crate) fn pre_state(stored: &Input, extra: Option<&ExtraPreState>) -> eyre::Result<PreState> {
+    if let Some(extra) = extra {
+        eyre::ensure!(
+            extra.hash == stored.block.hash,
+            "extra pre-state of block {} is for another block",
+            stored.number
+        );
+    }
     let mut accounts = stored
         .accounts
         .iter()
+        .chain(extra.iter().flat_map(|extra| &extra.accounts))
         .map(|(address, info)| {
             let account = match info.as_ref().map(|info| info.account()) {
                 Some(account) => AccountInput {
@@ -315,13 +370,35 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
             Ok((Address::from(*address), account))
         })
         .collect::<eyre::Result<BTreeMap<_, _>>>()?;
-    for ((address, slot), value) in &stored.storage {
+    for ((address, slot), value) in stored
+        .storage
+        .iter()
+        .chain(extra.iter().flat_map(|extra| &extra.storage))
+    {
         accounts
             .entry(Address::from(*address))
             .or_default()
             .storage
             .insert(U256::from_be_bytes(*slot), U256::from_be_bytes(*value));
     }
+    Ok(PreState::Exact {
+        state: StateInput { accounts },
+        block_hashes: stored
+            .hashes
+            .iter()
+            .chain(extra.iter().flat_map(|extra| &extra.hashes))
+            .map(|(n, hash)| (*n, B256::from(*hash)))
+            .collect(),
+    })
+}
+
+/// `stored`'s block on the exact pre-state it read, with `extra` merged in.
+fn harness_input(
+    stored: &Input,
+    extra: Option<&ExtraPreState>,
+    chain_spec: ChainSpecInput,
+) -> eyre::Result<TempoHarnessInput> {
+    let pre_state = pre_state(stored, extra)?;
     let block: Block = alloy_rlp::decode_exact(&stored.block.rlp)?;
     let block = TempoBlock {
         header: BlockHeaderInput::Rlp(alloy_rlp::encode(&block.header).into()),
@@ -341,14 +418,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
     };
     Ok(TempoHarnessInput::Blockchain(TempoBlockchainInput {
         chain_spec,
-        pre_state: PreState::Exact {
-            state: StateInput { accounts },
-            block_hashes: stored
-                .hashes
-                .iter()
-                .map(|(n, hash)| (*n, B256::from(*hash)))
-                .collect(),
-        },
+        pre_state,
         blocks: NonEmpty::try_from(vec![block]).map_err(|error| eyre::eyre!(error))?,
     }))
 }
@@ -401,6 +471,89 @@ pub fn read_blocks(path: &Path, catalog: &Catalog) -> eyre::Result<Vec<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{self, Info};
+    use alloy_primitives::keccak256;
+    use reth_primitives_traits::Account;
+    use slatedb::{Db, WriteBatch};
+    use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn extra_pre_state_round_trips_into_the_pre_state() -> eyre::Result<()> {
+        let (listed, extra_account, code) = ([1; 20], [2; 20], vec![0x60, 0x00]);
+        let hash = keccak256(&code).0;
+        let input = Input {
+            number: 5,
+            parent: [0; 32],
+            block: types::Block {
+                hash: [9; 32],
+                rlp: Vec::new(),
+                senders: Vec::new(),
+                changed_accounts: Vec::new(),
+                changed_storage: Vec::new(),
+            },
+            accounts: BTreeMap::from([(listed, None)]),
+            storage: BTreeMap::new(),
+            code: BTreeSet::new(),
+            hashes: BTreeMap::from([(4, [4; 32])]),
+            phases: None,
+        };
+        let account = Account {
+            nonce: 1,
+            balance: U256::from(2),
+            bytecode_hash: Some(hash.into()),
+            ..Default::default()
+        };
+        let extra = ExtraPreState {
+            hash: input.block.hash,
+            accounts: BTreeMap::from([(extra_account, Some(Info::capture(&account)))]),
+            storage: BTreeMap::from([((extra_account, [0; 32]), [3; 32])]),
+            code: BTreeSet::from([hash]),
+            hashes: BTreeMap::from([(3, [3; 32])]),
+        };
+        let store = store::tests::in_memory("extra");
+        let db = Db::open(store.extra(), store.objects.clone()).await?;
+        let mut batch = WriteBatch::new();
+        batch.put(store::code_key(&hash), &code);
+        batch.put(
+            store::key(5),
+            wincode::config::serialize(&extra, store::WINCODE)?,
+        );
+        db.write(batch).await?;
+        let read = store::extra_pre_state(Some(&db), 5).await?;
+        assert!(store::extra_pre_state(Some(&db), 6).await?.is_none());
+        db.close().await?;
+
+        let PreState::Exact {
+            state,
+            block_hashes,
+        } = pre_state(&input, read.as_ref())?
+        else {
+            panic!("a corpus block has an exact pre-state");
+        };
+        assert_eq!(
+            block_hashes,
+            BTreeMap::from([(3, B256::repeat_byte(3)), (4, B256::repeat_byte(4))])
+        );
+        assert_eq!(
+            state.accounts[&Address::from(listed)],
+            AccountInput::default()
+        );
+        assert_eq!(
+            state.accounts[&Address::from(extra_account)],
+            AccountInput {
+                balance: U256::from(2),
+                nonce: 1,
+                code: code.into(),
+                storage: BTreeMap::from([(U256::ZERO, U256::from_be_bytes([3; 32]))]),
+            }
+        );
+        let other = ExtraPreState::default();
+        assert_eq!(
+            pre_state(&input, Some(&other)).unwrap_err().to_string(),
+            "extra pre-state of block 5 is for another block"
+        );
+        Ok(())
+    }
 
     #[test]
     fn window_len_cuts() {

@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Case, Input},
+    types::{Case, ExtraPreState, Input},
 };
 use alloy_consensus::BlockHeader;
 use alloy_primitives::B256;
@@ -16,13 +16,13 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize};
 use slatedb::{
-    Db, DbIterator, DbReader, DbReaderMode,
+    Db, DbIterator, DbReadOps, DbReader, DbReaderMode,
     admin::Admin,
     config::{
         CheckpointOptions, CheckpointScope, DbReaderOptions, FlushOptions, FlushType, ScanOptions,
     },
 };
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tempo_primitives::Block;
 use tracing::warn;
 use url::Url;
@@ -235,6 +235,11 @@ impl Store {
     /// Location of the corpus' SlateDB data.
     pub(crate) fn data(&self) -> Path {
         self.path.clone().join("data")
+    }
+
+    /// Location of the SlateDB of the blocks' [`ExtraPreState`]s, which gc does not touch.
+    pub(crate) fn extra(&self) -> Path {
+        self.path.clone().join("extra-pre-state")
     }
 
     pub(crate) fn catalog_path(&self) -> Path {
@@ -530,10 +535,13 @@ pub fn code_key(hash: &[u8; 32]) -> [u8; 33] {
     key
 }
 
-/// Loads every code hash the input reads that is not cached yet from the corpus' shared
-/// code entries, verifying each against its hash.
-pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> {
-    for hash in input.code.iter().filter(|hash| !code::has_code(hash)) {
+/// Loads every hash of `code` that is not cached yet from the shared code entries of `reader`'s
+/// store, verifying each against its hash.
+pub async fn resolve_code(
+    reader: &(impl DbReadOps + Sync),
+    code: &BTreeSet<[u8; 32]>,
+) -> eyre::Result<()> {
+    for hash in code.iter().filter(|hash| !code::has_code(hash)) {
         let bytes = reader
             .get(code_key(hash))
             .await?
@@ -551,8 +559,27 @@ pub async fn resolve_code(reader: &DbReader, input: &Input) -> eyre::Result<()> 
 pub async fn published(reader: &DbReader, block: u64) -> eyre::Result<(Record, Arc<Input>)> {
     let (record, bytes) = published_payload(reader, block).await?;
     let input = decode(&bytes, &record)?;
-    resolve_code(reader, &input).await?;
+    resolve_code(reader, &input.code).await?;
     Ok((record, input))
+}
+
+/// `block`'s [`ExtraPreState`] in `extra`, the extra pre-state store, with its code resolved.
+/// `None` without a store or a record for the block.
+pub(crate) async fn extra_pre_state(
+    extra: Option<&(impl DbReadOps + Sync)>,
+    block: u64,
+) -> eyre::Result<Option<ExtraPreState>> {
+    let Some(extra) = extra else { return Ok(None) };
+    let Some(bytes) = extra.get(key(block)).await? else {
+        return Ok(None);
+    };
+    eyre::ensure!(
+        bytes.len() <= MAX_RECORD_BYTES,
+        "extra pre-state record too large"
+    );
+    let state: ExtraPreState = wincode::config::deserialize_exact(&bytes, WINCODE)?;
+    resolve_code(extra, &state.code).await?;
+    Ok(Some(state))
 }
 
 /// The published record of `block` and its undecoded block payload, checked as [published] checks.
@@ -698,7 +725,7 @@ pub async fn for_each_published(
             let (block, cases) = payloads.next(record).await?;
             if resolve {
                 let input = decode(&block, record)?;
-                resolve_code(reader, &input).await?;
+                resolve_code(reader, &input.code).await?;
             }
             f(record, block, cases)?;
         }

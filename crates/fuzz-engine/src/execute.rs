@@ -99,6 +99,42 @@ pub fn run<E: Engine>(
     }
 }
 
+/// Executes `input` on `engine` as [`run`] does, except that a read an exact pre-state does not
+/// hold reads as empty state, as a genesis pre-state does. Returns the outcome and every such read,
+/// in order.
+pub(crate) fn run_collecting<E: Engine>(
+    engine: &E,
+    input: TempoHarnessInput,
+) -> (TempoHarnessOutcome, Vec<state::MissingPreState>) {
+    state::COLLECTED.set(Some(Vec::new()));
+    let (outcome, _) = run(engine, input);
+    (outcome, state::COLLECTED.take().unwrap_or_default())
+}
+
+/// An exact pre-state seeded once, for [`run_collecting_on`].
+pub struct Seeded(evm2::evm::Cache);
+
+/// Seeds `pre_state` on `engine` as executing an input that carries it does.
+pub fn seed<E: Engine>(engine: &E, pre_state: &PreState) -> Result<Seeded, ErrorClass> {
+    Ok(Seeded(
+        state::seed(pre_state, engine.genesis())?.cache.into_inner(),
+    ))
+}
+
+/// Executes `input` on `engine` as [`run`] does, except that a read its exact pre-state does not
+/// hold reads as empty state, on that pre-state as `seeded` already seeded it. Returns the outcome
+/// and every such read, in order.
+pub fn run_collecting_on<E: Engine>(
+    engine: &E,
+    seeded: &Seeded,
+    input: TempoHarnessInput,
+) -> (TempoHarnessOutcome, Vec<state::MissingPreState>) {
+    state::SEEDED.set(Some(seeded.0.clone()));
+    let result = run_collecting(engine, input);
+    state::SEEDED.set(None);
+    result
+}
+
 /// An outcome that executed nothing, with `error`.
 fn stopped(error: ErrorClass) -> TempoExecutionOutcome {
     TempoExecutionOutcome {

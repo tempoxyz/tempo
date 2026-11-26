@@ -73,12 +73,10 @@ jobs:
               - '!tips/*.md'
               - '!crates/node/tests/it/**'
               - '!crates/zones/node/tests/**'
-              # The fuzzer crates are never linked into these images. corpus and
-              # fuzz-types are, through the network-e2e image's corpus feature.
-              - '!crates/fuzz-engine/**'
+              # The fuzz harness crates are never linked into these images. corpus, fuzz-engine,
+              # invariants and fuzz-types are, through the network-e2e image's corpus feature.
               - '!crates/zones/fuzz-harness/**'
               - '!crates/fuzz-harness/**'
-              - '!crates/invariants/**'
               - '!crates/nitro-attestation/fuzz/**'
       - name: Detect Reth revision changes
         id: reth

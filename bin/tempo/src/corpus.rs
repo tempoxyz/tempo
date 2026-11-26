@@ -25,6 +25,7 @@ use tempo_corpus::{
         block::Executed,
         fill, replay,
         shadow::{ReplayOutcome, ShadowReplayer},
+        widen,
     },
     fuzz, gc,
     store::Store,
@@ -44,6 +45,8 @@ pub enum CorpusCommand {
     Replay(ReplayCommand),
     /// Delete the superseded checkpoints and unreferenced files of a complete corpus.
     Gc(GcCommand),
+    /// Read the extra pre-state inputs derived from corpus blocks need from an archive datadir.
+    Widen(Box<WidenCommand>),
 }
 
 impl CorpusCommand {
@@ -52,6 +55,7 @@ impl CorpusCommand {
             Self::Fill(cmd) => cmd.execute(runtime).await,
             Self::Replay(cmd) => cmd.execute().await,
             Self::Gc(cmd) => cmd.execute().await,
+            Self::Widen(cmd) => cmd.execute(runtime).await,
         }
     }
 }
@@ -131,6 +135,44 @@ impl FillCommand {
             )
         })
         .await?
+    }
+}
+
+/// Run inputs derived from corpus blocks on each block's pre-state and store the archive's values
+/// of the keys they read that it does not hold, next to the corpus.
+#[derive(Debug, Parser)]
+pub struct WidenCommand {
+    #[command(flatten)]
+    env: EnvironmentArgs<TempoChainSpecParser>,
+    /// Corpus s3://bucket/prefix or file:///directory.
+    #[arg(long)]
+    corpus: String,
+    /// Optional S3-compatible endpoint. Credentials come from AWS env vars, web identity, ECS or IMDS.
+    #[arg(long)]
+    s3_endpoint: Option<String>,
+    /// Directory of harness inputs, `<block>/<name>.bin`, each derived from that corpus block.
+    #[arg(long)]
+    inputs: PathBuf,
+    /// Most rounds of running a block's inputs and reading the keys they missed.
+    #[arg(long, default_value = "16")]
+    rounds: usize,
+    /// Worker threads; defaults to the available parallelism.
+    #[arg(long)]
+    workers: Option<usize>,
+}
+
+impl WidenCommand {
+    async fn execute(self, runtime: Runtime) -> eyre::Result<()> {
+        let store = Store::open(&self.corpus, self.s3_endpoint.as_deref()).await?;
+        let Environment {
+            provider_factory, ..
+        } = self.env.init::<TempoNode>(AccessRights::RO, runtime)?;
+        let args = widen::WidenArgs {
+            inputs: self.inputs,
+            rounds: self.rounds,
+            workers: workers(self.workers),
+        };
+        tokio::task::spawn_blocking(move || widen::widen(provider_factory, store, args)).await?
     }
 }
 
