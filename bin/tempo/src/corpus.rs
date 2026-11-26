@@ -64,6 +64,11 @@ pub struct FillCommand {
     /// Exclusive end, clamped to the available head; defaults to the head.
     #[arg(long)]
     to: Option<u64>,
+    /// Recapture an existing corpus from this block on, overwriting the blocks it already
+    /// published from here. Must be within the published range, and the fill must reach the
+    /// published tip.
+    #[arg(long, value_name = "BLOCK")]
+    overwrite_from: Option<u64>,
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
@@ -88,6 +93,7 @@ impl FillCommand {
         let args = fill::FillArgs {
             from: self.from,
             to: self.to,
+            overwrite_from: self.overwrite_from,
             verify_existing: self.verify_existing,
             workers: workers(self.workers),
         };

@@ -38,6 +38,10 @@ pub struct FillArgs {
     pub from: u64,
     /// Exclusive end, clamped to the available head; `None` fills up to the head.
     pub to: Option<u64>,
+    /// Recapture an existing corpus from this block on, overwriting the blocks it already
+    /// published from here. Must be within the published range, and the fill must reach the
+    /// published tip. `None` appends after the published tip.
+    pub overwrite_from: Option<u64>,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
     /// Capture worker threads.
@@ -106,8 +110,11 @@ where
         first_tx: first_tx(args.from)?,
     };
     let tip = canonical_hash(end - 1)?;
+    // Blocks below this were published before an overwriting fill rewound the cursor; their
+    // stored keys are replaced without comparing.
+    let mut overwrite_end = 0;
     let (mut catalog, prior) = match handle.block_on(store.catalog())? {
-        Some((catalog, version)) => {
+        Some((mut catalog, version)) => {
             // Published blocks were captured under the stored fork schedule, so the current
             // one must agree up to the published tip; later blocks are captured under it.
             let published = catalog.cursor.next - 1;
@@ -132,20 +139,50 @@ where
                 canonical_hash(published)?.0 == catalog.cursor.parent,
                 "published corpus tip is not canonical in the source archive"
             );
+            if let Some(from) = args.overwrite_from {
+                eyre::ensure!(
+                    (catalog.context.start..=catalog.cursor.next).contains(&from),
+                    "overwrite start {from} is outside the published corpus [{}, {}]",
+                    catalog.context.start,
+                    catalog.cursor.next
+                );
+                eyre::ensure!(
+                    end >= catalog.cursor.next,
+                    "an overwriting fill must reach the published tip {}",
+                    catalog.cursor.next
+                );
+                warn!(
+                    from,
+                    published = catalog.cursor.next,
+                    "Overwriting published corpus blocks"
+                );
+                overwrite_end = catalog.cursor.next;
+                catalog.cursor = store::Cursor {
+                    next: from,
+                    tx: first_tx(from)?,
+                    parent: canonical_hash(from - 1)?.0,
+                };
+            }
             (catalog, Some(version))
         }
-        None => (
-            Catalog {
-                cursor: store::Cursor::initial(&context)?,
-                context: context.clone(),
-                checkpoint: None,
-                records: Vec::new(),
-                complete: false,
-                generation: 0,
-                collecting: false,
-            },
-            None,
-        ),
+        None => {
+            eyre::ensure!(
+                args.overwrite_from.is_none(),
+                "no published corpus to overwrite"
+            );
+            (
+                Catalog {
+                    cursor: store::Cursor::initial(&context)?,
+                    context: context.clone(),
+                    checkpoint: None,
+                    records: Vec::new(),
+                    complete: false,
+                    generation: 0,
+                    collecting: false,
+                },
+                None,
+            )
+        }
     };
     // Each worker opens its own transaction; holding this one through the capture would
     // keep the archive from reusing pages for the whole fill.
@@ -378,7 +415,8 @@ where
                 let mut metadata_bytes = 0;
                 // A superseded writer can only have written blocks of the page it
                 // never published, so reading keys back is needed for one page only.
-                let recheck_end = begin.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64);
+                let recheck_start = begin.max(overwrite_end);
+                let recheck_end = recheck_start.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64);
                 // One write per page (or per 64 MiB) instead of one durable write per
                 // block.
                 let mut batch = WriteBatch::new();
@@ -439,7 +477,7 @@ where
                             .enumerate()
                             .map(|(i, b)| (store::transaction_key(record.first_tx + i as u64), b)),
                     ) {
-                        let stored = if start < recheck_end {
+                        let stored = if (recheck_start..recheck_end).contains(&start) {
                             handle.block_on(db.get(key))?
                         } else {
                             None
@@ -447,7 +485,7 @@ where
                         if let Some(stored) = stored {
                             eyre::ensure!(
                                 stored.as_ref() == value,
-                                "unpublished record conflicts with canonical capture"
+                                "unpublished record conflicts with canonical capture; rerun with --overwrite-from if an overwriting fill was interrupted"
                             );
                         } else {
                             batch_bytes += value.len();
