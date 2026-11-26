@@ -329,12 +329,13 @@ impl TempoHandlerHooks {
         let spec = host.config_spec_id();
 
         StorageCtx::enter_evm_without_tip1060_accounting(host, || {
-            AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
+            AccountKeychain::set_tx_origin_direct(envelope.evm_tx().signer())?;
             if spec.is_t14() {
                 envelope.seed_upgrade_authority()?;
             }
-            TIP20ChannelReserve::new()
-                .set_channel_open_context_hash(envelope.channel_open_context_hash())
+            TIP20ChannelReserve::set_channel_open_context_hash_direct(
+                envelope.channel_open_context_hash(),
+            )
         })?;
 
         let fee_manager = host.ext().fee_manager.clone();

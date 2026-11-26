@@ -175,10 +175,13 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        const USD_SHORT_STRING_WORD: U256 = U256::from_be_bytes([
+            b'U', b'S', b'D', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 6,
+        ]);
         self.with_read_only_storage_ctx(spec, actions, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
+            let raw = StorageCtx.sload(fee_token, tempo_precompiles::tip20::slots::CURRENCY)?;
+            Ok(raw == USD_SHORT_STRING_WORD)
         })
     }
 
@@ -194,8 +197,15 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        const USD_SHORT_STRING_WORD: U256 = U256::from_be_bytes([
+            b'U', b'S', b'D', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 6,
+        ]);
         self.with_read_only_storage_ctx(spec, actions, || {
-            // SAFETY: caller must ensure prefix is already checked
+            let raw = StorageCtx.sload(fee_token, tempo_precompiles::tip20::slots::CURRENCY)?;
+            if raw == USD_SHORT_STRING_WORD {
+                return Ok(Ok(()));
+            }
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
 
