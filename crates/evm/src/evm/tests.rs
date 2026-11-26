@@ -216,7 +216,7 @@ fn fund_account_with_nonce(evm: &mut TempoEvm<'static>, address: Address, nonce:
     );
 }
 
-/// Create an EVM at `spec` and `timestamp` and a funded account at `address`.
+/// Create an EVM at `spec` and `timestamp` with a funded account at `address`.
 fn funded_evm(spec: TempoHardfork, timestamp: u64, address: Address) -> TempoEvm<'static> {
     let mut evm = configured_evm(spec, timestamp, false, InMemoryDB::default());
     fund_account(&mut evm, address);

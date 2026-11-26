@@ -14,18 +14,16 @@ use crate::{
     signature_gas::{calldata_tokens, tempo_signature_verification_gas},
     transaction_error::ConfigurableAccountError,
 };
-use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256, map::AddressSet};
 use evm2::{
     Evm, EvmFeatures, TxResult, Version,
     env::TxEnv,
     ethereum::{
-        LazyAuthorization, access_list_counts, eip7702, execute_initial_frame,
-        initial_gas_and_reservoir, prepare_initial_frame, validate_block_gas_limit,
-        validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
-        validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-        validate_nonce_not_overflow, validate_priority_fee, validate_tx_gas_limit_cap,
-        warm_access_list,
+        access_list_counts, eip7702, execute_initial_frame, initial_gas_and_reservoir,
+        prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
+        validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
+        validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{
@@ -986,6 +984,30 @@ fn apply_key_authorization(
     Ok(gas_used)
 }
 
+/// Adapts Tempo's recovered signature to EVM2's shared authorization validator.
+struct RecoveredTempoAuthorization<'a> {
+    authorization: &'a tempo_primitives::transaction::TempoSignedAuthorization,
+    authority: Address,
+}
+
+impl eip7702::Eip7702Authorization for RecoveredTempoAuthorization<'_> {
+    fn chain_id(&self) -> U256 {
+        self.authorization.chain_id
+    }
+
+    fn nonce(&self) -> u64 {
+        self.authorization.nonce
+    }
+
+    fn address(&self) -> Address {
+        self.authorization.address
+    }
+
+    fn authority(&self) -> Option<Address> {
+        Some(self.authority)
+    }
+}
+
 fn apply_authorization_list(
     host: &mut Evm<'_, TempoEvmTypes>,
     authorizations: &[tempo_primitives::transaction::TempoSignedAuthorization],
@@ -1008,10 +1030,10 @@ fn apply_authorization_list(
         let Ok(authority) = authorization.recover_authority() else {
             continue;
         };
-        let recovered = LazyAuthorization::Recovered(RecoveredAuthorization::new_unchecked(
-            authorization.inner().clone(),
-            RecoveredAuthority::Valid(authority),
-        ));
+        let recovered = RecoveredTempoAuthorization {
+            authorization,
+            authority,
+        };
         let Some((authority, _)) = eip7702::validate_one_auth(host, chain_id, &recovered)? else {
             continue;
         };

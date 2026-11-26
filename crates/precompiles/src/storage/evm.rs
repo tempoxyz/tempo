@@ -2501,7 +2501,7 @@ mod tests {
             &CALLEE,
             AccountInfo::default().with_code(Bytecode::new_raw(code)),
         );
-        TestEvm::with_database(TempoHardfork::default(), false, database)
+        TestEvm::with_database(TempoHardfork::default(), database)
     }
 
     #[test]
@@ -2632,7 +2632,7 @@ mod tests {
             &delegator,
             AccountInfo::default().with_code(Bytecode::new_eip7702(CALLEE)),
         );
-        let mut evm = TestEvm::with_database(TempoHardfork::default(), false, database);
+        let mut evm = TestEvm::with_database(TempoHardfork::default(), database);
         let gas_params = evm.gas_params();
         let access_cost =
             gas_params.get(GasId::WarmStorageReadCost) + gas_params.cold_account_additional_cost();

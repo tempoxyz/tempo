@@ -1253,7 +1253,57 @@ mod tests {
     use crate::test_utils::{
         TestExecutorBuilder, chainspec_with_general_gas_limit, test_chainspec,
     };
-    use alloy_consensus::Signed;
+    use alloy_consensus::{SignableTransaction, Signed, TxLegacy, transaction::Recovered};
+    use alloy_eips::{
+        eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+        eip4788::BEACON_ROOTS_ADDRESS,
+        eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+    };
+    use alloy_primitives::{
+        Bytes, Keccak256, Log, Signature, TxKind, address, bytes::BytesMut, keccak256,
+    };
+    use alloy_rlp::Encodable;
+    use commonware_codec::Encode as _;
+    use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use commonware_utils::ordered;
+    use evm2::{
+        evm::{
+            AccountInfo,
+            BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
+            DynDatabase as _, InMemoryDB,
+        },
+        interpreter::Host as _,
+    };
+    use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+    use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
+    use tempo_contracts::{
+        precompiles::{
+            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
+            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        },
+        zones::{
+            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        },
+    };
+    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_precompiles::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
+    };
+    use tempo_primitives::{
+        SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
+        subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+        transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
+    };
+    use test_case::{test_case, test_matrix};
 
     #[test]
     fn tip1016_stale_nonce_is_an_invalid_transaction() {
@@ -1295,15 +1345,17 @@ mod tests {
 
     #[test]
     fn tip1016_blocks_and_receipts_meter_different_gas_dimensions() {
-        let chainspec = test_chainspec();
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000_000);
         let caller = Address::repeat_byte(0x77);
         let mut db = InMemoryDB::default();
         db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T15)
-            .with_epoch_length(100)
-            .with_general_gas_limit(30_000_000)
-            .build(db, &chainspec);
+        let mut executor = TestExecutorBuilder {
+            general_gas_limit: 30_000_000,
+            ..Default::default()
+        }
+        .with_spec(TempoHardfork::T15)
+        .with_epoch_length(100)
+        .build(db, &chainspec);
         let mut block = *executor.evm().block();
         block.basefee = U256::ZERO;
         executor.evm_mut().set_block(block);
@@ -1382,12 +1434,14 @@ mod tests {
 
     #[test]
     fn test_commit_accumulates_refund_aware_block_gas() {
-        let chainspec = test_chainspec();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T15)
-            .with_epoch_length(100)
-            .with_general_gas_limit(30_000_000)
-            .build(InMemoryDB::default(), &chainspec);
+        let chainspec = chainspec_with_general_gas_limit(&test_chainspec(), 30_000_000);
+        let mut executor = TestExecutorBuilder {
+            general_gas_limit: 30_000_000,
+            ..Default::default()
+        }
+        .with_spec(TempoHardfork::T15)
+        .with_epoch_length(100)
+        .build(InMemoryDB::default(), &chainspec);
         let previous_regular_gas = 123_000;
         executor.block_gas_used = previous_regular_gas;
         for index in 1..=2 {
@@ -1427,57 +1481,6 @@ mod tests {
             );
         }
     }
-    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
-    use alloy_eips::{
-        eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
-        eip4788::BEACON_ROOTS_ADDRESS,
-        eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
-        eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
-    };
-    use alloy_primitives::{
-        Bytes, Keccak256, Log, Signature, TxKind, address, bytes::BytesMut, keccak256,
-    };
-    use alloy_rlp::Encodable;
-    use commonware_codec::Encode as _;
-    use commonware_cryptography::{Signer, ed25519::PrivateKey};
-    use commonware_utils::ordered;
-    use evm2::{
-        evm::{
-            AccountInfo,
-            BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
-            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
-            DynDatabase as _, InMemoryDB,
-        },
-        interpreter::Host as _,
-    };
-    use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
-    use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::DEV};
-    use tempo_contracts::{
-        precompiles::{
-            CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, PATH_USD_ADDRESS, ZONE_FACTORY_ADDRESS,
-            ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-        },
-        zones::{
-            T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            T14_ZONE_PORTAL_RUNTIME, T15_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME,
-            ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
-        },
-    };
-    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-    use tempo_precompiles::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD, ValidatorConfigV2},
-    };
-    use tempo_primitives::{
-        SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
-        subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
-        transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
-    };
-    use test_case::{test_case, test_matrix};
 
     /// The zone portal, verifier and messenger runtimes of the initial allocation.
     const INITIAL_ZONE_RUNTIMES: [Bytes; 3] = [
