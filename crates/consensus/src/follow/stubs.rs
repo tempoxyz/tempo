@@ -5,15 +5,16 @@
 
 use std::num::NonZeroUsize;
 
+use commonware_actor::Feedback;
 use commonware_broadcast::buffered;
 use commonware_cryptography::{
     Signer as _,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
-use commonware_p2p::utils::StaticProvider;
+use commonware_p2p::{BlockedSubscription, Blocker, utils::StaticProvider};
 use commonware_runtime::{Clock, Metrics, Spawner};
-use commonware_utils::ordered::Set;
+use commonware_utils::{NZUsize, channel::ring, ordered::Set};
 use rand::SeedableRng as _;
 
 use crate::consensus::block::Block;
@@ -39,9 +40,27 @@ pub(super) fn null_broadcast<E: Clock + Spawner + Metrics>(
         priority: false,
         codec_config: (),
         peer_provider: StaticProvider::new(0, Set::default()),
+        blocker: NullBlocker,
         strategy: commonware_parallel::Sequential,
     };
 
     let (_engine, mailbox) = buffered::Engine::new(context, config);
     mailbox
+}
+
+/// Blocker for the unused broadcast engine, which never receives messages.
+#[derive(Clone)]
+struct NullBlocker;
+
+impl Blocker for NullBlocker {
+    type PublicKey = PublicKey;
+
+    fn block(&mut self, _peer: Self::PublicKey) -> Feedback {
+        Feedback::Ok
+    }
+
+    fn blocked(&mut self) -> BlockedSubscription<Self::PublicKey> {
+        let (_, receiver) = ring::channel(NZUsize!(1));
+        receiver
+    }
 }

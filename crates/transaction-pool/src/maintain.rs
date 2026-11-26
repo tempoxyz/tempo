@@ -6,7 +6,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Map, B256Set, Entry},
+    map::{AddressMap, AddressSet, B256Map, B256Set, Entry, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::{
@@ -69,10 +69,14 @@ pub struct TempoPoolUpdates {
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
     pub user_token_changes: AddressSet,
-    /// TIP403 blacklist additions: (policy_id, account).
-    pub blacklist_additions: Vec<(u64, Address)>,
-    /// TIP403 whitelist removals: (policy_id, account).
-    pub whitelist_removals: Vec<(u64, Address)>,
+    /// TIP403 blacklist additions: account to the policy IDs that blacklisted it.
+    ///
+    /// Keyed by account so duplicate events are processed once and each pooled transaction
+    /// looks up only its fee payer.
+    pub blacklist_additions: AddressMap<HashSet<u64>>,
+    /// TIP403 whitelist removals: account to the policy IDs that removed it, keyed like
+    /// [`Self::blacklist_additions`].
+    pub whitelist_removals: AddressMap<HashSet<u64>>,
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
@@ -233,12 +237,16 @@ impl TempoPoolUpdates {
                     Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
                         updates
                             .blacklist_additions
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
                         updates
                             .whitelist_removals
-                            .push((event.policyId, event.account));
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.policyId);
                     }
                     Some(_) | None => {}
                 }
@@ -570,6 +578,7 @@ impl RevalidationQueue {
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
 /// - Evicting transactions when their fee token is paused
+/// - Releasing delayed transactions shortly before their `valid_after`
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
@@ -828,6 +837,10 @@ where
                 revalidate_txs.extend(removed_txs);
             }
         }
+
+        // Delayed transactions that are about to become valid enter the live pool the same way:
+        // resubmitted, so they are validated against current state first.
+        revalidate_txs.extend(pool.take_due_delayed_transactions());
 
         revalidation_queue.remove_mined(tip.transaction_hashes());
         let dropped = revalidation_queue.extend(revalidate_txs);

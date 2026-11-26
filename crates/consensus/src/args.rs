@@ -1,4 +1,9 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
+
+// The clap `Args` derive generates large unoptimized stack frames, and item-level lint
+// attributes on the struct do not reach the generated impl.
+#![allow(clippy::large_unopt_stack_frames)]
+
 use std::{
     net::SocketAddr,
     num::{NonZeroU32, NonZeroUsize},
@@ -149,8 +154,14 @@ pub struct Args {
     ///
     /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
     /// immediate before T14, deferred from T14.
-    /// Immediate and deferred override the schedule.
-    #[arg(long = "consensus.verification-mode", value_enum, default_value_t)]
+    /// Immediate and deferred override the schedule; the flag is hidden and kept for
+    /// compatibility and testing.
+    #[arg(
+        long = "consensus.verification-mode",
+        value_enum,
+        default_value_t,
+        hide = true
+    )]
     pub verification_mode: VerificationMode,
 
     /// Deprecated compatibility flag. P2P queue capacities are derived from
@@ -718,7 +729,7 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
     use commonware_codec::Encode as _;
 
     use super::*;
@@ -768,6 +779,21 @@ mod tests {
             parse(&["--dev"]).consensus.verification_mode,
             VerificationMode::Hardfork,
         );
+    }
+
+    #[test]
+    fn verification_mode_is_hidden_from_help() {
+        let help = TestCli::command().render_long_help().to_string();
+        assert!(!help.contains("--consensus.verification-mode"));
+    }
+
+    #[test_case("immediate" => VerificationMode::Immediate)]
+    #[test_case("deferred" => VerificationMode::Deferred)]
+    #[test_case("hardfork" => VerificationMode::Hardfork)]
+    fn hidden_verification_mode_parses(value: &str) -> VerificationMode {
+        parse(&["--dev", "--consensus.verification-mode", value])
+            .consensus
+            .verification_mode
     }
 
     #[test]

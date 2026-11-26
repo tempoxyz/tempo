@@ -350,7 +350,7 @@ impl DemoSwapAndDeposit {
         .await?;
         let l1_from_block = l1.get_block_number().await.unwrap_or(0);
         let receipt = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &l2_operator)
-            .requestWithdrawal(
+            .requestWithdrawal_0(
                 alpha,
                 router,
                 self.amount,
@@ -620,7 +620,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
     let receipt = portal
-        .deposit(
+        .deposit_0(
             token,
             amount,
             key_index,
@@ -679,6 +679,8 @@ async fn build_router_callback<P: Provider<TempoNetwork>>(
         },
         tempo_refund_recipient: request.tempo_refund_recipient,
         min_amount_out: request.min_amount_out,
+        // The legacy callback works on every portal runtime.
+        max_fee: None,
     };
 
     Ok(Bytes::from(callback.abi_encode()))

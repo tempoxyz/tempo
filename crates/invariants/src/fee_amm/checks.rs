@@ -4,7 +4,7 @@ use alloy_primitives::{Address, U256};
 use invariants_core::{check, ensure};
 
 use super::{Books, Burn, MIN_LIQUIDITY, Mint, PoolState, RebalanceSwap, Unminted};
-use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
+use crate::{Check, Checked, Ran, Replay, Step, StepChecked, TempoHardfork, Verdict, or_text};
 
 /// The fee manager's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-FEE-VIEW";
@@ -17,10 +17,9 @@ pub const MINT_RESERVE: &str = "TEMPO-AMM4";
 pub const CUSTODY_STEP: &str = "TEMPO-FEE5-STEP";
 
 pub const CHECKS: &[Check<Books>] = &[
-    // The fee manager holds, of each token, at least its pools' reserves of it plus the fees it
-    // collected in it.
     check! {
         id: FEE_CUSTODY,
+        doc: "The fee manager holds, of each token, at least its pools' reserves of it plus the fees it collected in it.",
         over: |books: &Books| books.holdings.keys(),
         judge: |b, token| {
             let held = b.holdings[*token];
@@ -35,10 +34,9 @@ pub const CHECKS: &[Check<Books>] = &[
             )
         },
     },
-    // A pool is uninitialized (no LP supply, reserves or LP) or has at least the locked minimum
-    // LP supply.
     check! {
         id: POOL_SHAPE,
+        doc: "A pool is uninitialized (no LP supply, reserves or LP) or has at least the locked minimum LP supply.",
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply.is_zero() {
@@ -58,9 +56,9 @@ pub const CHECKS: &[Check<Books>] = &[
             }
         },
     },
-    // An initialized pool's LP holders hold at most its LP supply less the locked minimum.
     check! {
         id: LP_SUPPLY,
+        doc: "An initialized pool's LP holders hold at most its LP supply less the locked minimum.",
         over: |books: &Books| &books.pools,
         judge: |_, p| {
             if p.total_supply < MIN_LIQUIDITY {
@@ -79,13 +77,13 @@ pub const CHECKS: &[Check<Books>] = &[
 ];
 
 /// The step's effect on each pool the fee manager's books read before and after it.
-pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
-    // The fee manager's holdings of each token never fall by more than what it owes in it: a
-    // token that leaves it must leave a pool reserve or a validator's collected fees. More can
+pub const STEP_CHECKS: &[Check<Step<Books, Ran>>] = &[
+    // A token that leaves it must leave a pool reserve or a validator's collected fees. More can
     // come in than it comes to owe, such as a plain transfer or mint to it.
     check! {
         id: CUSTODY_STEP,
-        over: |step: &Step<Books, Option<Tx>>| step.post.holdings.keys(),
+        doc: "The fee manager's holdings of each token never fall by more than what it owes in it.",
+        over: |step: &Step<Books, Ran>| step.post.holdings.keys(),
         judge: |s, token| {
             let token = **token;
             let (Some(&held_before), Some(&held_after)) =
@@ -108,11 +106,10 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
             )
         },
     },
-    // The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first
-    // mint.
     check! {
         id: MINT_SUPPLY,
-        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
+        doc: "The LP supply grows by exactly the minted liquidity, plus `MIN_LIQUIDITY` on a pool's first mint.",
+        over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -126,10 +123,10 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
             )
         },
     },
-    // The recipient's LP balance grows by exactly the liquidity minted to it.
     check! {
         id: MINT_BALANCE,
-        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
+        doc: "The recipient's LP balance grows by exactly the liquidity minted to it.",
+        over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -138,10 +135,10 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
             ensure!(want.lp == pool.lp, "LP balances {:?} after mints, expected {:?}", pool.lp, want.lp)
         },
     },
-    // The validator reserve grows by exactly the validator tokens deposited.
     check! {
         id: MINT_RESERVE,
-        over: |step: &Step<Books, Option<Tx>>| &step.post.pools,
+        doc: "The validator reserve grows by exactly the validator tokens deposited.",
+        over: |step: &Step<Books, Ran>| &step.post.pools,
         judge: |s, pool| {
             let want = match minted(s, pool)? {
                 Ok(want) => want,
@@ -157,18 +154,18 @@ pub const STEP_CHECKS: &[Check<Step<Books, Option<Tx>>>] = &[
     },
 ];
 
-impl Checked for Books {
+impl Checked<TempoHardfork> for Books {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked<Option<Tx>> for Books {
-    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
+impl StepChecked<Ran, TempoHardfork> for Books {
+    const STEP_CHECKS: &'static [Check<Step<Self, Ran>>] = STEP_CHECKS;
 }
 
 /// `pool` as the step's `Mint`s into it predict it from its state before the step, or why it
 /// cannot be predicted. `None` (not armed) unless the step only minted into the pool: no burn,
 /// rebalance or fee swap (which moves the user reserve) touched it.
-fn minted(step: &Step<Books, Option<Tx>>, pool: &PoolState) -> Option<Result<PoolState, Unminted>> {
+fn minted(step: &Step<Books, Ran>, pool: &PoolState) -> Option<Result<PoolState, Unminted>> {
     let pre = step
         .pre
         .pools

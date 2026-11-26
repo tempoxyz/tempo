@@ -233,7 +233,10 @@ fn evm_storage_reads_and_writes_commitments() {
             .set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
             .unwrap();
         assert_eq!(storage.gas_used() - before, 2 * new_account);
-        assert_eq!(storage.state_gas_used(), 2 * params.new_account_state_gas());
+        assert_eq!(
+            storage.state_gas_used(),
+            2 * params.new_account_state_gas() as i64
+        );
         assert_eq!(storage.config_commitment(ACCOUNT).unwrap(), INITIAL);
 
         // Rotation pays only the update charge; the account already exists.
@@ -345,7 +348,7 @@ fn evm_write_gas_boundary(previous: B256) {
             if shortfall == 0 {
                 result.unwrap();
                 assert_eq!(storage.gas_used(), cost);
-                assert_eq!(storage.state_gas_used(), state_gas);
+                assert_eq!(storage.state_gas_used(), state_gas as i64);
                 assert_eq!(storage.reservoir(), reservoir - state_gas);
             } else {
                 assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
@@ -379,7 +382,7 @@ fn evm_registration_state_gas_spills_into_regular_gas() {
         .set_config_commitment(ACCOUNT, INITIAL, ConfigCommitmentWriteGas::Precompile)
         .unwrap();
     let spill = state_gas - reservoir;
-    assert_eq!(storage.state_gas_used(), state_gas);
+    assert_eq!(storage.state_gas_used(), state_gas as i64);
     assert_eq!(storage.state_gas_spilled(), spill);
     assert_eq!(storage.reservoir(), 0);
     assert_eq!(storage.gas_used(), regular + spill);

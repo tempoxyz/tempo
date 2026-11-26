@@ -29,13 +29,17 @@ pub use action_replay::{
     StorageActionReplayOutcome, StorageActionReplayState,
 };
 pub use assemble::TempoBlockAssembler;
-pub use block::{ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    ExecutorState, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+    deploy_precompile_at_boundary,
+};
 pub use common::{DkgCeremonyConfig, TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
 pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoFeeManager,
+    fee_token_inference_target,
 };
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,

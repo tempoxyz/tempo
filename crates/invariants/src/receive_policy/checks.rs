@@ -3,12 +3,13 @@
 use invariants_core::check;
 
 use super::{Claim, Signer};
-use crate::{Check, Checked, Verdict};
+use crate::{Check, Checked, TempoHardfork, Verdict};
 
 pub const CLAIM_AUTHORITY: &str = "TEMPO-RECEIVE-POLICY-CLAIM-AUTHORITY";
 
 pub const CHECKS: &[Check<Claim>] = &[check! {
     id: CLAIM_AUTHORITY,
+    doc: "Blocked value claimed to a third party is claimed under a recovery authority the receiver's root or an admin key set.",
     judge: |c: &Claim| {
         let claim = &c.claim;
         let (receiver, authority) = (claim.receiver, claim.recoveryAuthority);
@@ -26,6 +27,6 @@ pub const CHECKS: &[Check<Claim>] = &[check! {
     },
 }];
 
-impl Checked for Claim {
+impl Checked<TempoHardfork> for Claim {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }

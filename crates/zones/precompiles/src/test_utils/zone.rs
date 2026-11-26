@@ -199,6 +199,9 @@ impl ZoneEnv {
         self.write_portal(self.child_header.inner.number, |portal| {
             let head = portal.current_deposit_queue_hash.read()?;
             portal
+                .deposit_count
+                .write(portal.deposit_count.read()? + 1)?;
+            portal
                 .current_deposit_queue_hash
                 .write(keccak256((deposit_type, deposit, head).abi_encode_params()))
         });
@@ -247,9 +250,30 @@ impl ZoneEnv {
     pub(crate) fn request_withdrawal(
         &mut self,
         sender: Address,
-        call: IZoneOutbox::requestWithdrawalCall,
+        call: IZoneOutbox::requestWithdrawal_0Call,
     ) -> PrecompileResult {
         let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, sender);
+        self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
+    }
+
+    /// [`Self::request_withdrawal`] through the `requestWithdrawal` overload, with `revealOrg` set.
+    pub(crate) fn request_withdrawal_revealing_org(
+        &mut self,
+        sender: Address,
+        call: IZoneOutbox::requestWithdrawal_0Call,
+    ) -> PrecompileResult {
+        let _tx = tx_context::set_current_transaction(WITHDRAWAL_TX_HASH, sender);
+        let call = IZoneOutbox::requestWithdrawal_1Call {
+            token: call.token,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+            gasLimit: call.gasLimit,
+            zoneFallbackRecipient: call.zoneFallbackRecipient,
+            data: call.data,
+            revealTo: call.revealTo,
+            revealOrg: true,
+        };
         self.call(sender, ZONE_OUTBOX_ADDRESS, call.abi_encode())
     }
 

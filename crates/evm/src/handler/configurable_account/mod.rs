@@ -288,7 +288,8 @@ fn zone_commitment_reads_gas(
     Ok(gas)
 }
 
-/// Loads and warms `address` once, reading its code, emptiness, nonce and commitment.
+/// Loads and warms `address` once, reading its code, emptiness, nonce and commitment, and adds it
+/// to the pre-warmed set.
 fn load_account(
     host: &mut Evm<'_, TempoEvmTypes>,
     address: Address,
@@ -298,13 +299,18 @@ fn load_account(
     let was_cold = account.warm();
     let info = account.get();
     let commitment = info.map_or(Ok(B256::ZERO), |info| account_config_commitment(info, spec))?;
-    Ok(LoadedAccount {
+    let loaded = LoadedAccount {
         was_cold,
         invalid_code: !valid_account_code(account.code_hash(), commitment),
         is_empty: info.is_none_or(AccountInfo::is_empty),
         nonce: account.nonce(),
         commitment,
-    })
+    };
+    drop(account);
+    // Validation charges this access, so the per-call batch pricing, which only consults the
+    // pre-warmed set, must see the account as warm when a later call targets it.
+    host.state_mut().prewarm(&address);
+    Ok(loaded)
 }
 
 /// Configurable roles only: returns extra gas, state gas, and the role accounts already loaded.

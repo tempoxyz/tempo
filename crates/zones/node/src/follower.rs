@@ -38,7 +38,10 @@ use zone_payload::{
 };
 use zone_primitives::constants::MAX_TEMPO_HEADERS_PER_ZONE_BLOCK;
 use zone_prover::VerifierMode;
-use zone_sequencer::attestation::{SettlementAttestation, SignedSettlementAttestation};
+use zone_sequencer::{
+    DurableBlockReader,
+    attestation::{SettlementAttestation, SignedSettlementAttestation},
+};
 
 use crate::{
     replication::{PeerBlock, decode_peer_block},
@@ -230,6 +233,7 @@ impl<P> FollowerBlockSync<P>
 where
     P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
+        + DurableBlockReader
         + StateProviderFactory
         + Clone
         + 'static,
@@ -417,15 +421,31 @@ where
             .zoneHeight
             .try_into()
             .wrap_err("settlement height does not fit in u64")?;
-        let persisted_head = self
+        let durable = self
             .context
             .provider
-            .last_block_number()
+            .last_durable_block_num_hash()
             .wrap_err("failed reading persisted zone head")?;
+        let persisted_head = durable.number;
         eyre::ensure!(
             height <= persisted_head,
             "settlement proposal at height {height} is not durable; persisted head is {persisted_head}"
         );
+        if height == persisted_head {
+            // The attestation is rebuilt from the canonical header, which may be served from
+            // memory. At the durable tip it must be the block a restart keeps.
+            let canonical = self
+                .context
+                .provider
+                .sealed_header(height)?
+                .ok_or_eyre("durable zone header is missing")?
+                .hash();
+            eyre::ensure!(
+                canonical == durable.hash,
+                "canonical block {canonical} at durable height {height} is not the committed block {}",
+                durable.hash
+            );
+        }
         let verifier_mode = VerifierMode::try_from(proposal.verifierConfigHash)?;
         let expected = build_settlement_attestation(
             &self.context.provider,
@@ -750,10 +770,10 @@ where
                 .wrap_err_with(|| {
                     format!("cannot defer checkpoint work from block {block_number}")
                 })?,
-            DecodedTempoImport::Full { .. } => self
+            DecodedTempoImport::Full { deposits, .. } => self
                 .context
                 .deposit_queue
-                .confirm_operational_through(anchor)
+                .confirm_operational_through(anchor, deposits.len())
                 .wrap_err_with(|| {
                     format!("cannot advance the deposit queue past block {block_number}")
                 })?,
@@ -804,7 +824,9 @@ fn reconcile_canonical_import(
         .num_hash();
     match tempo_import {
         DecodedTempoImport::CheckpointOnly { .. } => deposit_queue.defer_through(anchor),
-        DecodedTempoImport::Full { .. } => deposit_queue.confirm_operational_through(anchor),
+        DecodedTempoImport::Full { deposits, .. } => {
+            deposit_queue.confirm_operational_through(anchor, deposits.len())
+        }
     }
 }
 
@@ -814,7 +836,8 @@ fn validate_full_portal_inputs(
     deposits: &[zone_payload::abi::QueuedDeposit],
     enabled_tokens: &[zone_payload::abi::EnabledToken],
 ) -> eyre::Result<()> {
-    let work = deposit_queue.operational_work(anchor)?;
+    // A full import's range is a prefix of the owed entries. Longer calldata fails the count check.
+    let work = deposit_queue.operational_work(anchor, deposits.len())?;
     let mut deposit_offset = 0usize;
     let mut token_offset = 0usize;
     for block in work {

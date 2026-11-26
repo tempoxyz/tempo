@@ -32,9 +32,10 @@ use std::{
 };
 
 use alloy_eips::eip1559::Eip1559Estimation;
-use alloy_network::ReceiptResponse;
+use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_primitives::{Address, U256};
 use alloy_provider::{DynProvider, Provider};
+use alloy_sol_types::SolCall as _;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
@@ -44,15 +45,20 @@ use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
-    abi::{self, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
+    abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
+    prover_config::active_l1_hardfork,
     settlement::{WithdrawalPage, find_processed_offset},
 };
 use tempo_alloy::rpc::TempoCallBuilderExt;
-use zone_primitives::constants::{MAX_UNPROCESSED_DEPOSITS, WITHDRAWAL_BOUNCEBACK_RESERVE};
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks as _};
+use zone_chainspec::ZoneChainSpec;
 
 const PROCESS_WITHDRAWAL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+
+const PRE_T15_MAX_UNPROCESSED_DEPOSITS: u64 = 230;
+const PRE_T15_WITHDRAWAL_BOUNCEBACK_RESERVE: usize = 20;
 
 fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
     let max_fee_per_gas = fees.max_fee_per_gas.min(crate::TEMPO_L1_MAX_FEE_PER_GAS);
@@ -70,7 +76,8 @@ fn bound_l1_fees(fees: Eip1559Estimation) -> Eip1559Estimation {
 
 /// Planner-only gas reserved once per `processWithdrawals` transaction for batch-level portal
 /// work.
-const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 500_000;
+/// Covers three uncredited slot creations: one bounce-back that bootstraps or stores a checkpoint.
+const PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS: u64 = 1_250_000;
 
 /// Planner-only gas reserved for a simple withdrawal.
 const PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS: u64 = 1_000_000;
@@ -137,6 +144,8 @@ pub struct WithdrawalProcessorConfig {
     pub sequencer_address: Address,
     /// Gas and concurrency limits for withdrawal transactions.
     pub batch_limits: WithdrawalBatchLimits,
+    /// Zone chainspec, for the L1 hardfork schedule.
+    pub chain_spec: Arc<ZoneChainSpec>,
 }
 
 /// Limits applied while packing and submitting `processWithdrawals` transactions.
@@ -603,30 +612,35 @@ impl WithdrawalProcessor {
                 return Ok(());
             }
 
-            let (deposit_count, last_processed_deposit_number): (u64, u64) = self
-                .provider
-                .multicall()
-                .add(self.portal.depositCount())
-                .add(self.portal.lastProcessedDepositNumber())
-                .aggregate()
-                .await?;
-            let headroom =
-                withdrawal_deposit_headroom(deposit_count, last_processed_deposit_number)?;
-            if headroom == 0 {
-                debug!(
-                    deposit_count,
-                    last_processed_deposit_number,
-                    "Portal deposit backlog leaves no withdrawal bounce-back headroom"
-                );
-                return Ok(());
-            }
-            // Public deposits cannot consume the reserved suffix. Restricting each submission to
-            // that reserve prevents a public deposit landing after this read from racing the
-            // portal's withdrawal-capacity preflight.
-            let admitted = remaining
-                .len()
-                .min(headroom)
-                .min(WITHDRAWAL_BOUNCEBACK_RESERVE);
+            // TODO: remove after T15
+            // Pre-T15 Portals cap unprocessed deposits, including bounce-backs.
+            let admitted = if active_l1_hardfork(&self.provider, self.config.chain_spec.as_ref())
+                .await?
+                .is_t15()
+            {
+                remaining.len()
+            } else {
+                let (deposit_count, last_processed_deposit_number): (u64, u64) = self
+                    .provider
+                    .multicall()
+                    .add(self.portal.depositCount())
+                    .add(self.portal.lastProcessedDepositNumber())
+                    .aggregate()
+                    .await?;
+                let headroom =
+                    withdrawal_deposit_headroom(deposit_count, last_processed_deposit_number)?;
+                if headroom == 0 {
+                    debug!(
+                        last_processed_deposit_number,
+                        "Portal deposit backlog leaves no withdrawal bounce-back headroom"
+                    );
+                    return Ok(());
+                }
+                remaining
+                    .len()
+                    .min(headroom)
+                    .min(PRE_T15_WITHDRAWAL_BOUNCEBACK_RESERVE)
+            };
             let fully_admitted = admitted == remaining.len();
             let batches = build_withdrawal_batches(
                 &remaining[..admitted],
@@ -639,7 +653,6 @@ impl WithdrawalProcessor {
                 slot = head_val,
                 withdrawals = remaining.len(),
                 admitted,
-                deposit_headroom = headroom,
                 transactions = batches.len(),
                 total_gas,
                 "Processing withdrawal batches"
@@ -691,6 +704,16 @@ impl WithdrawalProcessor {
         }
     }
 
+    /// Whether the L1 portal still runs a runtime from before T15, which takes withdrawals without
+    /// `senderOrg`. Skips the L1 header read when T15 is active from genesis.
+    async fn l1_portal_is_pre_t15(&self) -> eyre::Result<bool> {
+        let chain_spec = self.config.chain_spec.as_ref();
+        if chain_spec.is_t15_active_at_timestamp(0) {
+            return Ok(false);
+        }
+        Ok(active_l1_hardfork(&self.provider, chain_spec).await? < TempoHardfork::T15)
+    }
+
     /// Run all batches through a bounded queue of consecutive-nonce transactions.
     ///
     /// A failure stops new submissions. Already submitted transactions are still drained because
@@ -722,6 +745,7 @@ impl WithdrawalProcessor {
         let mut submitted = 0usize;
         let mut retry = false;
         let fees = bound_l1_fees(self.provider.estimate_eip1559_fees().await?);
+        let legacy_portal = self.l1_portal_is_pre_t15().await?;
 
         loop {
             while !retry
@@ -760,9 +784,20 @@ impl WithdrawalProcessor {
                     "📤 Broadcasting withdrawal batch to L1"
                 );
 
+                let legacy_input = legacy_portal.then(|| {
+                    LegacyZonePortal::processWithdrawalsCall {
+                        withdrawals: batch_withdrawals.iter().map(|w| w.to_legacy()).collect(),
+                        remainingQueue: remaining_queue,
+                    }
+                    .abi_encode()
+                });
                 let call = self
                     .portal
                     .processWithdrawals(batch_withdrawals, remaining_queue)
+                    .map(|request| match legacy_input {
+                        Some(input) => request.with_input(input),
+                        None => request,
+                    })
                     .from(self.config.sequencer_address)
                     .nonce_key(PROCESS_WITHDRAWAL_NONCE_KEY)
                     .nonce(nonce)
@@ -890,9 +925,8 @@ impl WithdrawalProcessor {
     }
 }
 
-/// Return the number of withdrawals that can each append one deposit without exceeding the
-/// portal's unprocessed-deposit cap. This mirrors the `processWithdrawals` preflight using a live
-/// portal snapshot; the portal revalidates the bound when the transaction executes.
+// TODO: remove after T15
+/// Return the number of withdrawals that can each append one deposit without exceeding the cap.
 fn withdrawal_deposit_headroom(
     deposit_count: u64,
     last_processed_deposit_number: u64,
@@ -902,10 +936,10 @@ fn withdrawal_deposit_headroom(
             "portal lastProcessedDepositNumber {last_processed_deposit_number} exceeds depositCount {deposit_count}"
         )
     })?;
-    let maximum =
-        u64::try_from(MAX_UNPROCESSED_DEPOSITS).expect("MAX_UNPROCESSED_DEPOSITS fits in u64");
-    Ok(usize::try_from(maximum.saturating_sub(outstanding))
-        .expect("withdrawal headroom fits in usize"))
+    Ok(
+        usize::try_from(PRE_T15_MAX_UNPROCESSED_DEPOSITS.saturating_sub(outstanding))
+            .expect("withdrawal headroom fits in usize"),
+    )
 }
 
 struct SubmitBatches<'a> {
@@ -1091,6 +1125,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         }
     }
 
@@ -1118,8 +1153,23 @@ mod tests {
         let w = test_withdrawal(Address::with_last_byte(0x42), 1000);
         let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
 
-        let expected = keccak256((w, B256::ZERO).abi_encode_params());
+        let expected = keccak256((w.to_legacy(), B256::ZERO).abi_encode_params());
         assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn org_withdrawal_hash_commits_sender_org() {
+        let mut w = test_withdrawal(Address::with_last_byte(0x42), 1000);
+        w.senderOrg = 7;
+        let hash = abi::Withdrawal::queue_hash(std::slice::from_ref(&w));
+
+        assert_eq!(hash, keccak256((w.clone(), B256::ZERO).abi_encode_params()));
+        assert_ne!(
+            hash,
+            keccak256((w.to_legacy(), B256::ZERO).abi_encode_params())
+        );
+        w.senderOrg = 8;
+        assert_ne!(hash, abi::Withdrawal::queue_hash(std::slice::from_ref(&w)));
     }
 
     #[test]
@@ -1129,8 +1179,8 @@ mod tests {
 
         let hash = abi::Withdrawal::queue_hash(&[w0.clone(), w1.clone()]);
 
-        let inner = keccak256((w1, B256::ZERO).abi_encode_params());
-        let expected = keccak256((w0, inner).abi_encode_params());
+        let inner = keccak256((w1.to_legacy(), B256::ZERO).abi_encode_params());
+        let expected = keccak256((w0.to_legacy(), inner).abi_encode_params());
         assert_eq!(hash, expected);
     }
 
@@ -1146,6 +1196,7 @@ mod tests {
             fallbackNonce: 1,
             callbackData: Default::default(),
             encryptedSender: Default::default(),
+            senderOrg: 0,
         };
 
         let tuple_value_hash = keccak256((w.clone(), B256::ZERO).abi_encode());
@@ -1204,30 +1255,6 @@ mod tests {
         assert_eq!(batches[0].end, 2);
         assert_eq!(batches[1].start, 2);
         assert_eq!(batches[1].end, 3);
-    }
-
-    #[test]
-    fn maximum_batch_fits_portal_bounceback_reserve() {
-        let withdrawals = simple_withdrawals(WITHDRAWAL_BOUNCEBACK_RESERVE);
-        let batches = build_withdrawal_batches(&withdrawals, MAX_WITHDRAWAL_BATCH_GAS);
-
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].len(), 19);
-        assert_eq!(batches[1].len(), 1);
-        assert!(
-            batches
-                .iter()
-                .all(|batch| batch.len() <= WITHDRAWAL_BOUNCEBACK_RESERVE)
-        );
-    }
-
-    #[test]
-    fn withdrawal_admission_respects_global_deposit_headroom() {
-        assert_eq!(withdrawal_deposit_headroom(0, 0).unwrap(), 230);
-        assert_eq!(withdrawal_deposit_headroom(229, 0).unwrap(), 1);
-        assert_eq!(withdrawal_deposit_headroom(230, 0).unwrap(), 0);
-        assert_eq!(withdrawal_deposit_headroom(300, 100).unwrap(), 30);
-        assert!(withdrawal_deposit_headroom(9, 10).is_err());
     }
 
     #[test]
@@ -1395,6 +1422,64 @@ mod tests {
         assert!(!store.has_batch(MAX_CACHED_WITHDRAWAL_SLOTS as u64));
     }
 
+    const T15_ACTIVATION: u64 = 1_000;
+
+    fn chain_spec_with_t15(activation: u64) -> Arc<ZoneChainSpec> {
+        let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+        zone_chainspec::test_utils::set_tempo_fork(
+            &mut genesis,
+            tempo_chainspec::hardfork::TempoHardfork::T15,
+            activation,
+        );
+        Arc::new(ZoneChainSpec {
+            inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+        })
+    }
+
+    #[tokio::test]
+    async fn pre_t15_portal_without_deposit_headroom_leaves_withdrawals_queued() {
+        let l1 = Asserter::new();
+        let withdrawals = simple_withdrawals(1);
+        l1.push_success(&abi_encode_u64(0));
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(5),
+            abi_encode_u64(6),
+        ]));
+        l1.push_success(&abi_encode_u64(0));
+        l1.push_success(&abi_encode_b256(abi::Withdrawal::queue_hash(&withdrawals)));
+        l1.push_success(&tempo_alloy::rpc::TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header::new(tempo_primitives::TempoHeader::default()),
+            timestamp_millis: 0,
+        });
+        l1.push_success(&abi_encode_multicall(vec![
+            abi_encode_u64(230),
+            abi_encode_u64(0),
+        ]));
+        let store = SharedWithdrawalStore::new();
+        store.lock().add_batch(5, withdrawals);
+        let processor = test_processor(l1.clone(), store.clone(), Arc::new(Notify::new()));
+
+        processor
+            .process_queue(&sync::CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(store.lock().has_batch(5));
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[test_case::test_case(0, 0 => Some(230))]
+    #[test_case::test_case(229, 0 => Some(1))]
+    #[test_case::test_case(230, 0 => Some(0))]
+    #[test_case::test_case(300, 100 => Some(30))]
+    #[test_case::test_case(9, 10 => None)]
+    fn withdrawal_deposit_headroom_is_the_remaining_pre_t15_capacity(
+        deposit_count: u64,
+        last_processed: u64,
+    ) -> Option<usize> {
+        withdrawal_deposit_headroom(deposit_count, last_processed).ok()
+    }
+
     fn abi_encode_b256(value: B256) -> Bytes {
         value.into()
     }
@@ -1409,6 +1494,7 @@ mod tests {
             fallback_poll_interval: Duration::from_secs(1),
             sequencer_address: Address::repeat_byte(0x77),
             batch_limits: WithdrawalBatchLimits::default(),
+            chain_spec: chain_spec_with_t15(T15_ACTIVATION),
         };
         WithdrawalProcessor::new(
             config,
@@ -1472,6 +1558,8 @@ mod tests {
             SharedWithdrawalStore::new(),
             Arc::new(Notify::new()),
         );
+        // T15 from genesis, so encoding withdrawals reads no L1 header.
+        processor.config.chain_spec = chain_spec_with_t15(0);
         processor.config.batch_limits = WithdrawalBatchLimits {
             max_batch_gas: PROCESS_WITHDRAWAL_TX_OVERHEAD_GAS
                 + PROCESS_SIMPLE_WITHDRAWAL_ITEM_OVERHEAD_GAS,

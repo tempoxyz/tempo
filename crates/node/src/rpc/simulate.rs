@@ -9,7 +9,10 @@ use parking_lot::Mutex;
 use reth_evm::database::StateProviderDatabase;
 use reth_primitives_traits::AlloyBlockHeader as _;
 use reth_provider::{ChainSpecProvider, StateProvider as _};
-use reth_rpc_eth_api::{RpcBlock, helpers::EthCall};
+use reth_rpc_eth_api::{
+    RpcBlock, SimulateV1Request,
+    helpers::{Call, EthCall},
+};
 use reth_rpc_eth_types::EthApiError;
 use reth_tracing::tracing;
 use schnellru::{ByLength, LruMap};
@@ -56,9 +59,7 @@ pub trait TempoSimulateApi {
     #[method(name = "simulateV1")]
     async fn simulate_v1(
         &self,
-        payload: alloy_rpc_types_eth::simulate::SimulatePayload<
-            tempo_alloy::rpc::TempoTransactionRequest,
-        >,
+        payload: SimulateV1Request<tempo_alloy::rpc::TempoTransactionRequest>,
         block: Option<alloy_eips::BlockId>,
     ) -> RpcResult<TempoSimulateV1Response<RpcBlock<tempo_alloy::TempoNetwork>>>;
 }
@@ -126,11 +127,20 @@ where
 {
     async fn simulate_v1(
         &self,
-        payload: alloy_rpc_types_eth::simulate::SimulatePayload<
-            tempo_alloy::rpc::TempoTransactionRequest,
-        >,
+        payload: SimulateV1Request<tempo_alloy::rpc::TempoTransactionRequest>,
         block: Option<alloy_eips::BlockId>,
     ) -> RpcResult<TempoSimulateV1Response<RpcBlock<tempo_alloy::TempoNetwork>>> {
+        // Decoding allocates a request per simulated call, so it runs under the same permit as
+        // the simulation.
+        let _permit = self
+            .eth_api
+            .tracing_task_guard()
+            .clone()
+            .acquire_owned()
+            .await;
+        let max_blocks =
+            usize::try_from(Call::max_simulate_blocks(&self.eth_api)).unwrap_or(usize::MAX);
+        let payload = payload.into_inner(max_blocks)?;
         let mut tokens = extract_tip20_targets(&payload);
 
         let block = block.unwrap_or_default();

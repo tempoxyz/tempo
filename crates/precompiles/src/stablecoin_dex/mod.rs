@@ -16,7 +16,7 @@ use orderbook::BookId;
 pub use orderbook::{
     MAX_TICK, MIN_TICK, OrderStep, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel,
     base_to_quote, quote_to_base, step_exact_in, step_exact_out, taker_output, tick_to_price,
-    validate_tick_spacing,
+    validate_order_terms, validate_tick_spacing,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
@@ -668,20 +668,7 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick is within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, None, is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
@@ -835,41 +822,10 @@ impl StablecoinDEX {
         let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
-        // Validate tick and flip_tick are within bounds
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
-
-        if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
-            return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
-        }
-
-        // Enforce that the tick adheres to tick spacing
-        if flip_tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate flip_tick relationship to tick based on order side.
-        // TIP-1030 (T5): allow flip_tick == tick for same-tick flip orders.
         // NOTE: `Order::new_flip` performs the same check defensively below; the early
         // check here is preserved to keep error semantics backwards-compatible
         // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
-        if (flip_tick == tick && !self.storage.spec().is_t5())
-            || (is_bid && flip_tick < tick)
-            || (!is_bid && flip_tick > tick)
-        {
-            return Err(StablecoinDEXError::invalid_flip_tick().into());
-        }
-
-        // Validate order amount meets minimum requirement
-        if amount < MIN_ORDER_AMOUNT {
-            return Err(StablecoinDEXError::below_minimum_order_size(amount).into());
-        }
+        validate_order_terms(amount, tick, Some(flip_tick), is_bid, self.storage.spec())?;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
@@ -1916,7 +1872,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, TIP403Setup},
+        test_util::{DexSetup, TIP20Setup, TIP403Setup},
         tip20::PAUSE_ROLE,
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
@@ -1927,37 +1883,14 @@ mod tests {
     use proptest::prelude::*;
     use test_case::test_case;
 
-    fn setup_test_tokens(
-        admin: Address,
-        user: Address,
-        exchange_address: Address,
-        amount: u128,
-    ) -> Result<(Address, Address)> {
-        // Configure pathUSD
-        let quote = TIP20Setup::path_usd(admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange_address, U256::from(amount))
-            .apply()?;
-
-        // Configure base token (uses pathUSD as quote by default)
-        let base = TIP20Setup::create("BASE", "BASE", admin)
-            .with_mint(user, U256::from(amount))
-            .with_approval(user, exchange_address, U256::from(amount))
-            .apply()?;
-
-        Ok((base.address(), quote.address()))
-    }
-
     #[test]
     fn test_t8_book_index_state_is_one_based() -> eyre::Result<()> {
         with_storage(TempoHardfork::T8, || {
             let mut exchange = StablecoinDEX::initialized()?;
 
-            let [admin, user] = actors();
-            let (base, quote) = setup_test_tokens(admin, user, exchange.address, 0)?;
+            let [admin] = actors();
+            let (base, quote) = DexSetup::new(admin).apply()?;
             let book_key = compute_book_key(base, quote);
-
-            exchange.create_pair(base)?;
 
             assert_eq!(exchange.book_key_index(book_key)?, Some(0));
             assert_eq!(exchange.book_key_for_index(0)?, book_key);
@@ -1978,8 +1911,8 @@ mod tests {
 
         let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::initialized()?;
-            let (base, quote) = setup_test_tokens(admin, maker, exchange.address, amount * 4)?;
-            let book_key = exchange.create_pair(base)?;
+            let (base, quote) = DexSetup::new(admin).trader(maker, amount * 4).apply()?;
+            let book_key = compute_book_key(base, quote);
             let first_order = exchange.place(maker, base, amount, true, tick)?;
             exchange.place(maker, base, amount, true, tick)?;
 
@@ -2188,23 +2121,10 @@ mod tests {
 
             let max_escrow = expected_quote_ceil * 2;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(alice, U256::from(base_amount * 2))
-                .with_mint(bob, U256::from(base_amount * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, base_amount * 2)
+                .trader(bob, max_escrow)
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(max_escrow))
-                .with_mint(bob, U256::from(max_escrow))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-
-            exchange.create_pair(base_token)?;
 
             exchange.place(alice, base_token, base_amount, false, tick)?;
 
@@ -2244,16 +2164,8 @@ mod tests {
             let price = u128::from(orderbook::tick_to_price(tick));
             let escrow_ceil = (base_amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
-            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(escrow_ceil))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .apply()?;
-
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) =
+                DexSetup::new(admin).trader(alice, escrow_ceil).apply()?;
 
             let order_id = exchange.place(alice, base_token, base_amount, true, tick)?;
 
@@ -2288,9 +2200,7 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let (base_token, _quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, amount)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, _quote_token) = DexSetup::new(admin).trader(alice, amount).apply()?;
 
             let order_id = exchange.place(alice, base_token, amount, true, tick)?;
             assert_eq!(exchange.storage_credits(alice)?, 0);
@@ -2316,17 +2226,10 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
-            let base_token = base.address();
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(amount))
-                .with_mint(bob, U256::from(amount))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, _) = DexSetup::new(admin)
+                .trader(alice, amount)
+                .trader(bob, amount)
                 .apply()?;
-
-            exchange.create_pair(base_token)?;
 
             let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
             let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
@@ -2353,21 +2256,11 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(alice, U256::from(amount))
-                .with_mint(bob, U256::from(amount))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, amount)
+                .trader(bob, amount)
+                .trader(taker, amount)
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(taker, U256::from(amount))
-                .with_approval(taker, exchange.address, U256::MAX)
-                .apply()?;
-
-            exchange.create_pair(base_token)?;
 
             let alice_order_id = exchange.place(alice, base_token, amount, false, tick)?;
             let bob_order_id = exchange.place(bob, base_token, amount, false, tick)?;
@@ -2394,17 +2287,10 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 0i16;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
-            let base_token = base.address();
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(amount))
-                .with_mint(bob, U256::from(amount))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, _) = DexSetup::new(admin)
+                .trader(alice, amount)
+                .trader(bob, amount)
                 .apply()?;
-
-            exchange.create_pair(base_token)?;
 
             let alice_order_id = exchange.place(alice, base_token, amount, true, tick)?;
             let bob_order_id = exchange.place(bob, base_token, amount, true, tick)?;
@@ -2439,8 +2325,7 @@ mod tests {
                 (below_minimum * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, escrow_amount)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, escrow_amount).apply()?;
 
             let expected = Err(StablecoinDEXError::below_minimum_order_size(below_minimum).into());
             assert_eq!(
@@ -2476,9 +2361,7 @@ mod tests {
                 MIN_ORDER_AMOUNT
             };
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin).trader(alice, escrow).apply()?;
 
             let order_id = match flip_tick {
                 Some(flip_tick) => exchange.place_flip(
@@ -2542,104 +2425,6 @@ mod tests {
         })
     }
 
-    /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
-    /// is rejected pre-T5 and accepted on T5+ (with the order stored verbatim).
-    #[test]
-    fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T4, TempoHardfork::T5] {
-            with_storage(spec, || {
-                let mut exchange = StablecoinDEX::initialized()?;
-
-                let [alice, admin] = actors();
-                let tick = 100i16;
-
-                let price = orderbook::tick_to_price(tick);
-                let escrow =
-                    (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
-
-                let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-                exchange.create_pair(base_token)?;
-
-                let result = exchange.place_flip(
-                    alice,
-                    base_token,
-                    MIN_ORDER_AMOUNT,
-                    true,
-                    tick,
-                    tick,
-                    false,
-                );
-
-                if spec.is_t5() {
-                    let order_id = result?;
-                    let stored = exchange.orders[order_id].read()?;
-                    assert_eq!(stored.tick(), tick);
-                    assert_eq!(stored.flip_tick(), tick);
-                    assert!(stored.is_bid());
-                    assert!(stored.is_flip());
-                } else {
-                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
-                }
-
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
-    }
-
-    /// TIP-1030 invariant: even on T5, `flip_tick` strictly on the wrong side
-    /// of `tick` is still rejected at the `place_flip` precompile entrypoint.
-    /// `Order::new_flip` enforces this in `order.rs`, but the precompile is the
-    /// security boundary so we pin the behavior here too.
-    #[test]
-    fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
-        with_storage(TempoHardfork::T5, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-            let tick = 100i16;
-
-            let price = orderbook::tick_to_price(tick);
-            let escrow =
-                (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
-
-            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
-
-            // Bid with flip_tick < tick is still rejected on T5.
-            let bid_result = exchange.place_flip(
-                alice,
-                base_token,
-                MIN_ORDER_AMOUNT,
-                true,
-                tick,
-                tick - TICK_SPACING,
-                false,
-            );
-            assert_eq!(
-                bid_result,
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            // Ask with flip_tick > tick is still rejected on T5.
-            let ask_result = exchange.place_flip(
-                alice,
-                base_token,
-                MIN_ORDER_AMOUNT,
-                false,
-                tick,
-                tick + TICK_SPACING,
-                false,
-            );
-            assert_eq!(
-                ask_result,
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            Ok(())
-        })
-    }
-
     /// TIP-1030 (T5): pins down the "locked book" implication called out in
     /// the spec. Same-tick flip orders can produce `best_bid_tick ==
     /// best_ask_tick`. When a same-tick flip bid fills while another resting
@@ -2668,21 +2453,10 @@ mod tests {
             // so that decrement_balance_or_transfer_from actually moves tokens
             // into the exchange (so the exchange has the inventory it needs to
             // pay out the second swap).
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(bob, U256::from(amount * 4))
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, expected_escrow * 4)
+                .trader(bob, expected_escrow * 4)
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(expected_escrow * 4))
-                .with_mint(bob, U256::from(expected_escrow * 4))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-
-            exchange.create_pair(base_token)?;
 
             // Place same-tick flip bid FIRST so it sits at the head of the bid
             // level and is the order consumed by the next swap-sell.
@@ -2795,9 +2569,9 @@ mod tests {
                 (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             // Setup tokens
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, expected_escrow)
+                .apply()?;
 
             // Place the bid order and cancel
             let order_id = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
@@ -2835,8 +2609,10 @@ mod tests {
 
             let [alice, admin] = actors();
 
-            let (_base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT)?;
+            let (_base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, MIN_ORDER_AMOUNT)
+                .without_pair()
+                .apply()?;
 
             // Alice has 0 balance on the exchange
             assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
@@ -2862,8 +2638,7 @@ mod tests {
             let tick = 10;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, false, tick)?;
 
@@ -2891,8 +2666,7 @@ mod tests {
             let tick = 10;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
 
@@ -2921,8 +2695,7 @@ mod tests {
             let tick = 0;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             // Alice places a bid: willing to BUY base using quote
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
@@ -2951,8 +2724,7 @@ mod tests {
             let [alice, admin] = actors();
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             let tick = 10;
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
@@ -2987,8 +2759,7 @@ mod tests {
             let tick = 10;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, false, tick)?;
 
@@ -3029,8 +2800,7 @@ mod tests {
             let tick = 10;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
 
@@ -3074,9 +2844,9 @@ mod tests {
             let price = orderbook::tick_to_price(tick);
             let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, expected_escrow * 2)
+                .apply()?;
 
             // Place a flip bid order
             let flip_order_id =
@@ -3124,9 +2894,9 @@ mod tests {
             let price = orderbook::tick_to_price(tick);
             let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, expected_escrow * 2)
+                .apply()?;
 
             let flip_order_id =
                 exchange.place_flip(alice, base_token, amount, true, tick, flip_tick, false)?;
@@ -3323,9 +3093,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::initialized()?;
 
-            let [admin, alice] = actors();
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT)?;
+            let [admin] = actors();
+            let (base_token, quote_token) = DexSetup::new(admin).without_pair().apply()?;
 
             let key = exchange.create_pair(base_token)?;
             exchange.assert_emitted_events(vec![StablecoinDEXEvents::pair_created(
@@ -3399,9 +3168,9 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let exchange = StablecoinDEX::initialized()?;
 
-            let [admin, user] = actors();
+            let [admin] = actors();
 
-            let (token, _) = setup_test_tokens(admin, user, exchange.address, MIN_ORDER_AMOUNT)?;
+            let (token, _) = DexSetup::new(admin).without_pair().apply()?;
 
             // Trading same token should error with IdenticalTokens
             assert_eq!(
@@ -3418,14 +3187,12 @@ mod tests {
     fn test_find_trade_path_direct_pair() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::initialized()?;
+            let exchange = StablecoinDEX::initialized()?;
 
-            let [admin, user] = actors();
+            let [admin] = actors();
 
             // Setup: pathUSD <- Token (direct pair)
-            let (token, path_usd) =
-                setup_test_tokens(admin, user, exchange.address, MIN_ORDER_AMOUNT)?;
-            exchange.create_pair(token)?;
+            let (token, path_usd) = DexSetup::new(admin).apply()?;
 
             // Both directions of a direct pair are a single hop
             for (token_in, token_out) in [(token, path_usd), (path_usd, token)] {
@@ -3645,8 +3412,7 @@ mod tests {
             let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             let tick_50 = 50i16;
             let tick_100 = 100i16;
@@ -3686,8 +3452,7 @@ mod tests {
             let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 1_000_000_000).apply()?;
 
             let tick = 1000i16;
             let price = tick_to_price(tick);
@@ -3726,8 +3491,7 @@ mod tests {
             let [alice, bob, admin] = actors();
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 1_000_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 1_000_000_000).apply()?;
 
             let tick = 1000i16;
             let price = tick_to_price(tick);
@@ -3757,9 +3521,7 @@ mod tests {
             let mut exchange = StablecoinDEX::initialized()?;
 
             let [maker, taker, admin] = actors();
-            let (base, quote) =
-                setup_test_tokens(admin, maker, exchange.address, 1_000_000_000u128)?;
-            exchange.create_pair(base)?;
+            let (base, quote) = DexSetup::new(admin).trader(maker, 1_000_000_000).apply()?;
 
             let tick = 480;
             let order_id = exchange.place(maker, base, MIN_ORDER_AMOUNT, true, tick)?;
@@ -3816,9 +3578,7 @@ mod tests {
 
             let [alice, bob, carol, admin] = actors();
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, AMOUNT)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin).trader(alice, AMOUNT).apply()?;
 
             // Give bob base tokens and carol quote tokens
             TIP20Setup::config(base_token)
@@ -3885,9 +3645,9 @@ mod tests {
                 (amount * u128::from(bid_price_2)) / u128::from(orderbook::PRICE_SCALE);
             let total_bid_escrow = bid_escrow_1 + bid_escrow_2;
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, total_bid_escrow)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, total_bid_escrow)
+                .apply()?;
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place bid orders at two different ticks
@@ -3958,8 +3718,7 @@ mod tests {
             let total_escrow = escrow_1 * 2 + escrow_2;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, total_escrow)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, total_escrow).apply()?;
             let book_key = compute_book_key(base_token, quote_token);
 
             // Place 2 bid orders at tick 100, 1 at tick 90
@@ -4020,70 +3779,14 @@ mod tests {
     }
 
     #[test]
-    fn test_place() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-
-            let (base_token, _quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 1_000_000_000)?;
-            exchange.create_pair(base_token)?;
-
-            // Test invalid tick spacing
-            assert_eq!(
-                exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, 15),
-                Err(StablecoinDEXError::invalid_tick().into())
-            );
-
-            // Test valid tick spacing
-            exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, -20)?;
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_place_flip_checks() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::initialized()?;
-
-            let [alice, admin] = actors();
-
-            let (base_token, _quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 1_000_000_000)?;
-            exchange.create_pair(base_token)?;
-
-            // Test invalid tick spacing
-            assert_eq!(
-                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 15, 25, false),
-                Err(StablecoinDEXError::invalid_tick().into())
-            );
-
-            // Test valid tick spacing with invalid flip tick spacing
-            assert_eq!(
-                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 25, false),
-                Err(StablecoinDEXError::invalid_flip_tick().into())
-            );
-
-            exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, 20, 30, false)?;
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_find_trade_path_rejects_non_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let exchange = StablecoinDEX::initialized()?;
 
-            let [admin, user] = actors();
+            let [admin] = actors();
 
-            let (_, quote_token) =
-                setup_test_tokens(admin, user, exchange.address, MIN_ORDER_AMOUNT)?;
+            let (_, quote_token) = DexSetup::new(admin).without_pair().apply()?;
 
             let non_tip20_address = Address::random();
             assert_eq!(
@@ -4110,8 +3813,10 @@ mod tests {
             // Calculate escrow for bid order (quote needed to buy `amount` base)
             let bid_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, bid_escrow)
+                .without_pair()
+                .apply()?;
 
             TIP20Setup::config(base_token)
                 .with_mint(alice, U256::from(amount))
@@ -4153,8 +3858,10 @@ mod tests {
             let mut exchange = StablecoinDEX::initialized()?;
             let [admin, user] = actors();
 
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, user, exchange.address, 100_000_000)?;
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(user, 100_000_000)
+                .without_pair()
+                .apply()?;
 
             // Before placing the order, verify pair doesn't exist
             let book_key = compute_book_key(base_token, quote_token);
@@ -4382,10 +4089,10 @@ mod tests {
 
                 let [alice, admin] = actors();
 
-                let (base_addr, quote_addr) =
-                    setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
+                let (base_addr, quote_addr) = DexSetup::new(admin)
+                    .trader(alice, MIN_ORDER_AMOUNT * 2)
+                    .apply()?;
 
-                exchange.create_pair(base_addr)?;
                 let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
 
                 TIP20Setup::config(quote_addr)
@@ -4419,8 +4126,10 @@ mod tests {
 
             let [alice, admin] = actors();
 
-            let (base_addr, quote_addr) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+            let (base_addr, quote_addr) = DexSetup::new(admin)
+                .trader(alice, MIN_ORDER_AMOUNT * 4)
+                .without_pair()
+                .apply()?;
 
             TIP20Setup::config(if is_bid { base_addr } else { quote_addr })
                 .with_transfer_policy(TIP403Setup::blacklist(admin).with_members([alice]))
@@ -4461,8 +4170,10 @@ mod tests {
             // Don't add alice to the recipient whitelist - she cannot receive
 
             // Setup tokens
-            let (base_addr, quote_addr) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+            let (base_addr, quote_addr) = DexSetup::new(admin)
+                .trader(alice, MIN_ORDER_AMOUNT * 4)
+                .without_pair()
+                .apply()?;
 
             // Apply compound policy to quote token (the non-escrow token for asks):
             // anyone can send, but only whitelisted can receive
@@ -4505,8 +4216,7 @@ mod tests {
             let tick = 10;
 
             let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
-            exchange.create_pair(base_token)?;
+                DexSetup::new(admin).trader(alice, 200_000_000).apply()?;
 
             let order_amount = 100000000u128;
 
@@ -4573,9 +4283,7 @@ mod tests {
             let escrow =
                 (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-            let (base_token, _quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, escrow)?;
-            exchange.create_pair(base_token)?;
+            let (base_token, _quote_token) = DexSetup::new(admin).trader(alice, escrow).apply()?;
 
             let order_id = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, tick)?;
 
@@ -4626,9 +4334,9 @@ mod tests {
         let price = orderbook::tick_to_price(tick);
         let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-        let (base_token, quote_token) =
-            setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
-        exchange.create_pair(base_token)?;
+        let (base_token, quote_token) = DexSetup::new(admin)
+            .trader(alice, expected_escrow * 2)
+            .apply()?;
 
         let book_key = compute_book_key(base_token, quote_token);
 
@@ -4773,24 +4481,11 @@ mod tests {
             let price = u128::from(orderbook::tick_to_price(tick));
             let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(alice, U256::from(amount * 4))
-                .with_mint(bob, U256::from(amount * 4))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, quote_amount * 4)
+                .trader(bob, quote_amount * 4)
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(quote_amount * 4))
-                .with_mint(bob, U256::from(quote_amount * 4))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .with_approval(bob, exchange.address, U256::MAX)
-                .apply()?;
-
             let book_key = compute_book_key(base_token, quote_token);
-            exchange.create_pair(base_token)?;
 
             // Place a bid and an ask
             assert_eq!(exchange.place(alice, base_token, amount, true, tick)?, 1);
@@ -4882,20 +4577,10 @@ mod tests {
             let price = u128::from(orderbook::tick_to_price(tick));
             let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(alice, U256::from(amount * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
+            let (base_token, quote_token) = DexSetup::new(admin)
+                .trader(alice, quote_amount * 2)
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(alice, U256::from(quote_amount * 2))
-                .with_approval(alice, exchange.address, U256::MAX)
-                .apply()?;
-
             let book_key = compute_book_key(base_token, quote_token);
-            exchange.create_pair(base_token)?;
 
             // Place a bid and an ask
             let bid_id = exchange.place(alice, base_token, amount, true, tick)?;
@@ -5050,8 +4735,7 @@ mod tests {
                 let tick = 10;
 
                 let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                exchange.create_pair(base_token)?;
+                    DexSetup::new(admin).trader(alice, 500_000_000).apply()?;
 
                 // Alice places orders so Bob can swap base→quote (enough for both swaps)
                 exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
@@ -5120,8 +4804,7 @@ mod tests {
                     let amount = MIN_ORDER_AMOUNT;
 
                     let (base_token, quote_token) =
-                        setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                    exchange.create_pair(base_token)?;
+                        DexSetup::new(admin).trader(alice, 500_000_000).apply()?;
 
                     let (escrow_token, non_escrow_token) = if is_bid {
                         (quote_token, base_token)
@@ -5244,7 +4927,7 @@ mod tests {
         for actor in actors {
             setup = setup
                 .with_mint(actor, amount)
-                .with_approval(actor, spender, U256::MAX);
+                .with_approval(actor, spender, amount);
         }
         setup
     }
@@ -5264,24 +4947,13 @@ mod tests {
             let [admin, taker] = actors();
             let makers = actors_vec(book.len());
 
-            let fund = U256::from(1_000_000_000_000_000_000u128);
-            let actors = makers.iter().copied().chain([taker]);
-
-            // Base token (uses pathUSD as its quote token).
-            let base = fund_and_approve(
-                TIP20Setup::create("BASE", "BASE", admin),
-                actors.clone(),
-                exchange.address,
-                fund,
-            )
-            .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            fund_and_approve(TIP20Setup::path_usd(admin), actors, exchange.address, fund)
+            let (base_token, quote_token) = makers
+                .iter()
+                .chain([&taker])
+                .fold(DexSetup::new(admin), |dex, &trader| {
+                    dex.trader(trader, 1_000_000_000_000_000_000)
+                })
                 .apply()?;
-
-            exchange.create_pair(base_token)?;
             for (&maker, &(size, tick)) in makers.iter().zip(book) {
                 exchange.place(maker, base_token, size, maker_is_bid, tick)?;
             }
@@ -5414,23 +5086,13 @@ mod tests {
             let size_1 = 100_000_005;
             let size_2 = 100_000_007;
             let amount_in = size_1 + 1;
-            let fund = U256::from(1_000_000_000_000_000_000u128);
+            let fund = 1_000_000_000_000_000_000;
 
-            let base = TIP20Setup::create("BASE", "BASE", admin)
-                .with_mint(taker, fund)
-                .with_approval(taker, exchange.address, U256::MAX)
+            let (base_token, quote_token) = [taker, maker_1, maker_2]
+                .into_iter()
+                .fold(DexSetup::new(admin), |dex, trader| dex.trader(trader, fund))
                 .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            TIP20Setup::path_usd(admin)
-                .with_mint(maker_1, fund)
-                .with_mint(maker_2, fund)
-                .with_approval(maker_1, exchange.address, U256::MAX)
-                .with_approval(maker_2, exchange.address, U256::MAX)
-                .apply()?;
-
-            let book_key = exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
             let order_1 = exchange.place(maker_1, base_token, size_1, true, tick)?;
             let order_2 = exchange.place(maker_2, base_token, size_2, true, tick)?;
 
@@ -5623,23 +5285,13 @@ mod tests {
             let tick = 10;
             let flip_tick = 20;
             let amount = MIN_ORDER_AMOUNT;
-            let fund = U256::from(1_000_000_000_000_000_000u128);
-            let actors = [maker_flip, maker_next, taker];
-
-            let base = fund_and_approve(
-                TIP20Setup::create("BASE", "BASE", admin),
-                actors,
-                exchange.address,
-                fund,
-            )
-            .apply()?;
-            let base_token = base.address();
-            let quote_token = base.quote_token()?;
-
-            fund_and_approve(TIP20Setup::path_usd(admin), actors, exchange.address, fund)
+            let (base_token, quote_token) = [maker_flip, maker_next, taker]
+                .into_iter()
+                .fold(DexSetup::new(admin), |dex, trader| {
+                    dex.trader(trader, 1_000_000_000_000_000_000)
+                })
                 .apply()?;
-
-            let book_key = exchange.create_pair(base_token)?;
+            let book_key = compute_book_key(base_token, quote_token);
             let flip_order = exchange
                 .place_flip(maker_flip, base_token, amount, true, tick, flip_tick, false)?;
             let next_order = exchange.place(maker_next, base_token, amount + 7, true, tick)?;

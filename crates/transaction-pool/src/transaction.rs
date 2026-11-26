@@ -854,6 +854,13 @@ pub enum TempoPoolTransactionError {
         address: Address,
     },
 
+    /// A fallback-fee transaction would infer its fee token from a TIP-20 that isn't created yet.
+    #[error("Fee token would be inferred from TIP-20 {token}, which isn't created yet")]
+    UncreatedTip20 {
+        /// The uncreated TIP-20.
+        token: Address,
+    },
+
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
     /// Thrown when an EVM2 handler rejects the transaction with an error that is
@@ -866,24 +873,22 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
-                || {
-                    matches!(
-                        err,
-                        HandlerError::InvalidChainId { .. }
-                            | HandlerError::MissingChainId
-                            | HandlerError::NonceOverflow
-                            | HandlerError::TxGasLimitGreaterThanCap { .. }
-                            | HandlerError::CreateInitCodeSizeLimit { .. }
-                            | HandlerError::EmptyAuthorizationList
-                            | HandlerError::EmptyBlobs
-                            | HandlerError::TooManyBlobs { .. }
-                            | HandlerError::BlobVersionNotSupported
-                            | HandlerError::PriorityFeeGreaterThanMaxFee
-                            | HandlerError::UnsupportedTransactionType(_)
-                            | HandlerError::WrongTransactionType { .. }
-                    )
-                },
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or(
+                matches!(
+                    err,
+                    HandlerError::InvalidChainId { .. }
+                        | HandlerError::MissingChainId
+                        | HandlerError::NonceOverflow
+                        | HandlerError::TxGasLimitGreaterThanCap { .. }
+                        | HandlerError::CreateInitCodeSizeLimit { .. }
+                        | HandlerError::EmptyAuthorizationList
+                        | HandlerError::EmptyBlobs
+                        | HandlerError::TooManyBlobs { .. }
+                        | HandlerError::BlobVersionNotSupported
+                        | HandlerError::PriorityFeeGreaterThanMaxFee
+                        | HandlerError::UnsupportedTransactionType(_)
+                        | HandlerError::WrongTransactionType { .. }
+                ),
                 TempoInvalidTransaction::is_bad_transaction,
             ),
             Self::ExceedsNonPaymentLimit
@@ -893,9 +898,12 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            | Self::UncreatedTip20 { .. }
+            // The limit is this node's `--txpool.max-tempo-authorizations`, which peers may set
+            // differently.
+            | Self::TooManyAuthorizations { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
-            | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
@@ -1672,6 +1680,8 @@ mod tests {
     #[test_case(TempoPoolTransactionError::AccessKeyExpired { expiry: 100, min_allowed: 200 } => false)]
     #[test_case(TempoPoolTransactionError::KeyAuthorizationExpired { expiry: 100, min_allowed: 200 } => false)]
     #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
+    #[test_case(TempoPoolTransactionError::TooManyAuthorizations { count: 17, max_allowed: 16 } => false)]
+    #[test_case(TempoPoolTransactionError::TooManyCalls { count: 33, max_allowed: 32 } => true)]
     // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
     #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
     #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]

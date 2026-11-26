@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-// Must remain identical to PendingWithdrawal in the deleted ZoneOutbox reference contract's
-// IZone.sol dependency (removed in zones#1198).
+// Must remain identical to the native outbox's PendingWithdrawal. `senderOrg` packs into the
+// `gasLimit`/`fallbackNonce` slot, so the element size matches the pre-T15 layout.
 struct PendingWithdrawal {
     address token;
     address sender;
@@ -12,6 +12,7 @@ struct PendingWithdrawal {
     bytes32 memo;
     uint64 gasLimit;
     uint64 fallbackNonce;
+    uint64 senderOrg;
     bytes callbackData;
     bytes revealTo;
 }
