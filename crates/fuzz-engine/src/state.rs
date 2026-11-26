@@ -116,6 +116,11 @@ pub(crate) struct PreStateDb {
 }
 
 impl PreStateDb {
+    /// Whether the pre-state is exact, holding only what execution touched.
+    pub(crate) fn exact(&self) -> bool {
+        self.exact
+    }
+
     /// Whether a read missed an exact pre-state.
     pub(crate) fn missed(&self) -> bool {
         self.missed.get()

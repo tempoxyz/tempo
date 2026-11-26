@@ -262,7 +262,8 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
         over: |l: &ZoneLeaves| l.of.keys(),
         judge: |l, account| {
             let stored = l.of.get(*account)?.stored;
-            let marker = stored.code_hash == MARKER_CODE_HASH && reserved(**account).is_none();
+            let marker =
+                stored.code_hash == MARKER_CODE_HASH && reserved(**account, l.spec).is_none();
             ensure!(
                 stored.commitment.is_zero() && !marker,
                 "zone state stores commitment {} and code hash {}",
@@ -284,7 +285,8 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
         judge: |l, account| {
             let leaf = l.of.get(*account)?;
             let (served, stored) = (leaf.served?, leaf.stored.code_hash);
-            let overlaid = l.active && reserved(**account).is_none() && stored == KECCAK256_EMPTY;
+            let overlaid =
+                l.active && reserved(**account, l.spec).is_none() && stored == KECCAK256_EMPTY;
             let want = match overlaid {
                 true if leaf.tempo?.is_zero() => KECCAK256_EMPTY,
                 true => MARKER_CODE_HASH,
