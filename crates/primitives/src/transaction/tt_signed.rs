@@ -585,7 +585,6 @@ mod serde_impl {
 pub(crate) mod tests {
     use super::*;
     use crate::transaction::{
-        PrimitiveSignature,
         tempo_transaction::Call,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
