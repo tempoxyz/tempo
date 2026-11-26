@@ -39,6 +39,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
+    account::encode_config_commitment,
     crypto::mock,
     is_tip20_prefix,
     transaction::{
@@ -190,7 +191,7 @@ fn an_exact_pre_state_keeps_account_extensions() {
     let state = one_account(
         RECIPIENT,
         AccountInput {
-            extension: Bytes::from_static(&[0x82, 0xaa]),
+            extension: encode_config_commitment(B256::repeat_byte(0xaa)),
             ..Default::default()
         },
     );
@@ -492,6 +493,7 @@ fn an_empty_account_a_transaction_touches_is_destroyed() {
         balance: None,
         nonce: None,
         code: None,
+        extension: None,
         storage_cleared: true,
     };
     assert!(
@@ -753,6 +755,13 @@ fn bad_inputs_are_classified_rather_than_executed() {
             ..Default::default()
         },
     );
+    let early_commitment = one_account(
+        RECIPIENT,
+        AccountInput {
+            extension: encode_config_commitment(B256::repeat_byte(0xaa)),
+            ..Default::default()
+        },
+    );
     let mut extra_sender = transfer_block();
     extra_sender.senders.push(SENDER);
     let mut trailing_tx = tx.to_vec();
@@ -775,6 +784,7 @@ fn bad_inputs_are_classified_rather_than_executed() {
                 ("protocol code replaced", on_pre(PreState::Genesis(recoded))),
                 ("7702, genesis", on_pre(PreState::Genesis(bad_code.clone()))),
                 ("7702, exact", on_pre(exact(bad_code))),
+                ("commitment before T14", on_pre(exact(early_commitment))),
                 ("extra sender", on_blocks(vec![extra_sender])),
             ],
         ),

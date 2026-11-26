@@ -370,6 +370,8 @@ pub struct AccountDiff {
     pub balance: Option<U256>,
     pub nonce: Option<u64>,
     pub code: Option<Bytes>,
+    /// Its extension, if it changed; empty when it no longer has one.
+    pub extension: Option<Bytes>,
     /// Whether all of its storage was cleared first.
     pub storage_cleared: bool,
 }

@@ -18,9 +18,11 @@ use reth_trie_common::{
     bundle_state::{PlainAccount, StorageSlot},
     root::{state_root_unhashed, storage_root_unhashed},
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_fuzz_types::{
     AccountDiff, AccountInput, ErrorClass, PreState, StateChanges, StateInput, StorageChangeOutput,
 };
+use tempo_primitives::account::decode_config_commitment;
 
 /// The state blocks execute on: what the pre-state and the blocks before left in `cache`, over
 /// `pre`, which answers what the cache does not hold.
@@ -295,6 +297,21 @@ pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
     })
 }
 
+/// `InvalidInput` unless every account extension in `pre_state` is a config commitment the chain
+/// can hold at `hardfork`, the fork of the first block: the node treats any other extension as an
+/// invariant violation, which would read as an executor bug.
+pub(crate) fn check_extensions(
+    pre_state: &PreState,
+    hardfork: TempoHardfork,
+) -> Result<(), ErrorClass> {
+    let (PreState::Genesis(state) | PreState::Exact { state, .. }) = pre_state;
+    state.accounts.values().try_for_each(|account| {
+        decode_config_commitment(&account.extension, hardfork)
+            .map(drop)
+            .map_err(|_| ErrorClass::InvalidInput)
+    })
+}
+
 /// Whether `account` holds nothing: an extractor lists the slots a block read even for an account
 /// that does not exist, all of them zero.
 fn is_empty(account: &AccountInput) -> bool {
@@ -551,12 +568,15 @@ pub(crate) fn changes(net: &Net, contracts: &Contracts<'_>) -> StateChanges {
             balance: (before.balance != after.balance).then_some(after.balance),
             nonce: (before.nonce != after.nonce).then_some(after.nonce),
             code: (before.code_hash != after.code_hash).then(|| contracts.code(after)),
+            extension: (before.extension != after.extension)
+                .then(|| Bytes::copy_from_slice(&after.extension)),
             storage_cleared: change.storage_cleared,
         };
         if diff.exists.is_some()
             || diff.balance.is_some()
             || diff.nonce.is_some()
             || diff.code.is_some()
+            || diff.extension.is_some()
             || diff.storage_cleared
         {
             out.accounts.push(diff);
