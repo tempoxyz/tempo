@@ -595,12 +595,6 @@ jobs:
             # Gate checks that every CI run reports; until all of them appear, CI hasn't fully
             # started and an empty pending list doesn't mean it passed.
             EXPECTED_CHECKS='["lint success","specs success","test success"]'
-            # External reviews run after this loop posts their commands, so they must not block the
-            # pre-audit CI gate. Failed reviews are still handled below. Tempo Network E2E and Tempo
-            # Zone Prover Compat run on Argo and can take longer than CI_TIMEOUT_MINUTES, so they are
-            # not waited on: only a failure reported before the other checks finish is handled, and a
-            # later failure is left to reviewers.
-            UNAWAITED_CHECKS='["Review","Cyclops audit run","Tempo Network E2E","Tempo Zone Prover Compat"]'
             while true; do
 
               STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
@@ -618,8 +612,12 @@ jobs:
                 break
               fi
 
-              PENDING_NAMES=$(echo "$STATUS" | jq -c --argjson unawaited "$UNAWAITED_CHECKS" '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and (.name | IN($unawaited[]) | not)) | .name]')
-              PENDING=$(echo "$PENDING_NAMES" | jq length)
+              # External reviews run after this loop posts their commands, so they must not
+              # block the pre-audit CI gate. Failed reviews are still handled above.
+              # Tempo Network E2E runs on Argo and can take longer than CI_TIMEOUT_MINUTES,
+              # so it is not waited on: only a failure reported before the other checks
+              # finish is handled above, and a later E2E failure is left to reviewers.
+              PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | length')
               MISSING=$(echo "$STATUS" | jq -r --argjson expected "$EXPECTED_CHECKS" '$expected - map(.name) | join(", ")')
               if [ "$PENDING" = "0" ] 2>/dev/null && [ -n "$MISSING" ]; then
                 if [ $(( (SECONDS - WAIT_START) / 60 )) -ge "$CI_TIMEOUT_MINUTES" ]; then
@@ -656,7 +654,7 @@ jobs:
               ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
               if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$PENDING_NAMES" | jq -r 'join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run" and .name != "Tempo Network E2E")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
                 HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
