@@ -1,41 +1,102 @@
-//! Finds receive-policy slots in the TIP-403 registry's L1 storage trie whose absence proofs end
-//! inside an extension and at a branch's empty child, and prints their recipients as JSON, for
-//! deposits that make a Zone verify both proof shapes.
+//! Shapes the TIP-403 registry's L1 storage trie so two absent receive-policy slots prove through
+//! an extension node and through a branch's empty child, and prints their recipients as JSON, for
+//! deposits that make a Zone verify both proof shapes. It whitelists two ground accounts on a new
+//! policy, whose `policy_set` keys share a trie path prefix and so hang below an extension.
 
 use alloy::{
-    primitives::{Address, B256, keccak256},
+    primitives::{Address, B256, U256, keccak256},
     providers::{Provider, ProviderBuilder},
-    transports::http::reqwest::Url,
 };
 use alloy_rlp::Decodable as _;
 use alloy_trie::nodes::TrieNode;
 use eyre::{OptionExt as _, WrapErr as _, bail};
 use tempo_alloy::TempoNetwork;
+use tempo_contracts::precompiles::ITIP403Registry as TIP403Registry;
 use tempo_precompiles::{
     TIP403_REGISTRY_ADDRESS, storage::StorageKey, tip403_registry::tip403_registry_slots,
 };
 
-const BATCH: usize = 256;
-const MAX_BATCHES: usize = 32;
+use crate::zone_utils::{check, normalize_http_rpc, parse_private_key};
+
+/// Nibbles the two whitelisted keys share: an extension spans the last ones.
+const PREFIX: usize = 3;
+/// Prefixes to try when existing keys already take one.
+const ATTEMPTS: u64 = 8;
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
     #[arg(long, env = "L1_RPC_URL")]
-    l1_rpc_url: Url,
+    l1_rpc_url: String,
+
+    /// Private key (hex) that creates the policy and whitelists the ground accounts.
+    #[arg(long, env = "PRIVATE_KEY", hide_env_values = true)]
+    private_key: String,
+}
+
+fn nibble(path: &B256, index: usize) -> u8 {
+    (path[index / 2] >> if index % 2 == 0 { 4 } else { 0 }) & 0xf
+}
+
+/// The storage trie path of a slot.
+fn path(slot: U256) -> B256 {
+    keccak256(B256::from(slot))
+}
+
+/// The first ground address, from seed, whose slot path satisfies accept.
+fn grind(seed: u64, slot: impl Fn(Address) -> U256, accept: impl Fn(&B256) -> bool) -> Address {
+    (0u64..)
+        .map(|i| Address::from_word(keccak256([seed.to_be_bytes(), i.to_be_bytes()].concat())))
+        .find(|address| accept(&path(slot(*address))))
+        .expect("an unbounded search finds a match")
 }
 
 impl WitnessShapes {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let provider =
-            ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(self.l1_rpc_url);
-        let mut candidates = (0u64..).map(|i| Address::from_word(keccak256(i.to_be_bytes())));
-        let (mut extension, mut empty_child) = (None, None);
-        for _ in 0..MAX_BATCHES {
-            let recipients: Vec<_> = candidates.by_ref().take(BATCH).collect();
-            let slots = recipients
-                .iter()
-                .map(|r| B256::from(r.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES)))
-                .collect();
+        let signer = parse_private_key(&self.private_key)?;
+        let admin = signer.address();
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .wallet(signer)
+            .connect(&normalize_http_rpc(&self.l1_rpc_url))
+            .await?;
+        let registry = TIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
+        let receipt = registry
+            .createPolicy(admin, TIP403Registry::PolicyType::WHITELIST)
+            .send_sync()
+            .await?;
+        check(&receipt, "createPolicy(whitelist)")?;
+        let policy_id = receipt
+            .decoded_log::<TIP403Registry::PolicyCreated>()
+            .map(|event| event.policyId)
+            .ok_or_eyre("no PolicyCreated event")?;
+        let policy_slot = policy_id.mapping_slot(tip403_registry_slots::POLICY_SET);
+        let whitelisted = |account: Address| account.mapping_slot(policy_slot);
+        let receive = |account: Address| account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+
+        for attempt in 0..ATTEMPTS {
+            // Both keys share the prefix and part at its next nibble, so the trie keeps a branch
+            // there below an extension, unless an existing key already shares the prefix.
+            let first = grind(attempt << 32, whitelisted, |_| true);
+            let prefix = path(whitelisted(first));
+            let shares = |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
+            let second = grind((attempt << 32) | 1, whitelisted, |p| {
+                shares(p, PREFIX) && nibble(p, PREFIX) != nibble(&prefix, PREFIX)
+            });
+            let children = [nibble(&prefix, PREFIX), nibble(&path(whitelisted(second)), PREFIX)];
+            // Diverging inside the extension ends at it; below it, an unused nibble is empty.
+            let extension = grind((attempt << 32) | 2, receive, |p| {
+                shares(p, PREFIX - 1) && nibble(p, PREFIX - 1) != nibble(&prefix, PREFIX - 1)
+            });
+            let empty_child = grind((attempt << 32) | 3, receive, |p| {
+                shares(p, PREFIX) && !children.contains(&nibble(p, PREFIX))
+            });
+            for account in [first, second] {
+                let receipt = registry
+                    .modifyPolicyWhitelist(policy_id, account, true)
+                    .send_sync()
+                    .await?;
+                check(&receipt, "modifyPolicyWhitelist")?;
+            }
+            let slots = [extension, empty_child].map(|r| B256::from(receive(r))).to_vec();
             let proof = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 provider.get_proof(TIP403_REGISTRY_ADDRESS, slots),
@@ -43,17 +104,15 @@ impl WitnessShapes {
             .await
             .wrap_err("timed out reading registry proofs")?
             .wrap_err("failed to read registry proofs")?;
-            for (recipient, storage) in recipients.into_iter().zip(proof.storage_proof) {
-                // A proof ends where its key diverges. Leaves this deep are never embedded, so a
-                // set slot ends at its leaf and an absent one at an extension or a branch.
-                let end = storage.proof.last().ok_or_eyre("empty proof")?;
-                match TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")? {
-                    TrieNode::Extension(_) => extension = extension.or(Some(recipient)),
-                    TrieNode::Branch(_) => empty_child = empty_child.or(Some(recipient)),
-                    _ => {}
-                }
-            }
-            if let (Some(extension), Some(empty_child)) = (extension, empty_child) {
+            let ends = proof
+                .storage_proof
+                .iter()
+                .map(|storage| {
+                    let end = storage.proof.last().ok_or_eyre("empty proof")?;
+                    TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")
+                })
+                .collect::<eyre::Result<Vec<_>>>()?;
+            if matches!(ends.as_slice(), [TrieNode::Extension(_), TrieNode::Branch(_)]) {
                 println!(
                     "{}",
                     serde_json::json!({ "recipients": [extension, empty_child] })
@@ -61,9 +120,6 @@ impl WitnessShapes {
                 return Ok(());
             }
         }
-        bail!(
-            "no extension and empty-child proofs among {} slots",
-            BATCH * MAX_BATCHES
-        )
+        bail!("existing registry keys took every ground prefix in {ATTEMPTS} attempts")
     }
 }
