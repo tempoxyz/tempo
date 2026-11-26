@@ -1,6 +1,5 @@
 use alloy::{
     consensus::Transaction,
-    primitives::Bytes,
     network::ReceiptResponse,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
@@ -18,10 +17,14 @@ use reth_transaction_pool::{
 };
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
-use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS};
+use tempo_contracts::precompiles::{
+    IFeeManager, ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS,
+};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::TipFeeManager, tip20::{TIP20Token, slots}, TIP403_REGISTRY_ADDRESS, };
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Token, slots},
+};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -327,7 +330,7 @@ async fn test_fee_token_choice_follows_new_chain_after_reorg() -> eyre::Result<(
         ousd["storage"][format!("{slot:#066x}")] = format!("{:#066x}", fee * U256::from(4)).into();
     }
     genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
-    let mut setup = crate::utils::TestNodeBuilder::new()
+    let mut setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
         .await?;
