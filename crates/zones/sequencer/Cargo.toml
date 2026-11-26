@@ -53,7 +53,7 @@ eyre.workspace = true
 futures.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
-serde = { workspace = true, features = ["alloc"] }
+serde = { workspace = true, features = ["alloc", "rc"] }
 serde_json = { workspace = true, default-features = true }
 antithesis_sdk = { workspace = true, optional = true }
 schnellru.workspace = true

@@ -116,7 +116,7 @@ pub struct ProofBundle {
 }
 
 /// Request to verify a Zone batch witness against a trusted Tempo chain.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VerifyRequest {
     /// Wire-format version expected by the sender.

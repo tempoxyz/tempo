@@ -2,7 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
 };
 
@@ -29,9 +29,34 @@ use tempo_fuzz_types::{
 pub(crate) struct Db {
     pub(crate) cache: RefCell<Cache>,
     pub(crate) pre: PreStateDb,
+    /// The accounts execution read or changed.
+    touched: RefCell<BTreeSet<Address>>,
 }
 
 impl Db {
+    fn new(cache: Cache, exact: bool) -> Self {
+        Self {
+            cache: RefCell::new(cache),
+            pre: PreStateDb {
+                exact,
+                missed: Cell::new(false),
+            },
+            touched: RefCell::default(),
+        }
+    }
+
+    /// The accounts invariants hold over, sorted: for an exact pre-state those execution touched,
+    /// as the pre-state may list many more, for a genesis one every account. Either may not exist,
+    /// as a TIP-20 balance needs no account.
+    pub(crate) fn held(&self) -> Vec<Address> {
+        if self.pre.exact {
+            return self.touched.borrow().iter().copied().collect();
+        }
+        let mut held: Vec<Address> = self.cache.borrow().accounts.keys().copied().collect();
+        held.sort_unstable();
+        held
+    }
+
     /// A database that records what it loads in the cache, as an executing EVM reads it.
     pub(crate) fn reader(&self) -> Reader<'_> {
         Reader {
@@ -51,6 +76,7 @@ impl Db {
     /// Writes the net changes of an execution step to the cache. `code` finds the bytecode of an
     /// account the step gave new code.
     pub(crate) fn commit(&self, net: &Net, code: impl Fn(&B256) -> Option<Bytecode>) {
+        self.touched.borrow_mut().extend(net.0.keys().copied());
         let mut cache = self.cache.borrow_mut();
         for (address, change) in &net.0 {
             let info = change.current.clone().map(|mut info| {
@@ -168,6 +194,9 @@ impl Database for Reader<'_> {
     }
 
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if self.record {
+            self.db.touched.borrow_mut().insert(*address);
+        }
         if let Some(account) = self.db.cache.borrow().accounts.get(address) {
             return Ok(account.clone());
         }
@@ -283,13 +312,7 @@ pub(crate) fn seed(pre_state: &PreState, genesis: &Cache) -> Result<Db, ErrorCla
             .block_hashes
             .extend(block_hashes.iter().map(|(n, h)| (U256::from(*n), *h)));
     }
-    Ok(Db {
-        cache: RefCell::new(cache),
-        pre: PreStateDb {
-            exact,
-            missed: Cell::new(false),
-        },
-    })
+    Ok(Db::new(cache, exact))
 }
 
 /// Whether `account` holds nothing: an extractor lists the slots a block read even for an account
@@ -426,6 +449,11 @@ impl Net {
     /// The accounts the span changed.
     pub(crate) fn addresses(&self) -> impl Iterator<Item = &Address> {
         self.0.keys()
+    }
+
+    /// The accounts the span changed, with what it changed in each.
+    pub(crate) fn accounts(&self) -> impl Iterator<Item = (&Address, &AccountNet)> {
+        self.0.iter()
     }
 
     /// What the span changed in the account at `address`.

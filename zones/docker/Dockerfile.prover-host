@@ -1,4 +1,4 @@
-FROM rust:1.96-alpine@sha256:a41f7740f8b45d45795624eec13a8b42263cc700f19f7e4e86e04d3dda08a479 AS proxy-chef
+FROM rust:1.100-alpine@sha256:8d0e82abfdf9a38071e07cabc5afba4ddbe077631a80e4e742a760c38beadc33 AS proxy-chef
 RUN cargo install cargo-chef@0.1.77 --locked
 WORKDIR /build
 
