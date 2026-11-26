@@ -628,6 +628,15 @@ impl AccountSignature {
         }
     }
 
+    /// Returns the primitive signatures of this approval: the direct approval, or the owner
+    /// approvals of a configurable account.
+    pub fn primitive_signatures(&self) -> &[PrimitiveSignature] {
+        match self {
+            Self::Primitive(signature) => core::slice::from_ref(signature),
+            Self::ConfigurableAccount(signature) => signature.signatures(),
+        }
+    }
+
     /// Returns the signature's access-key type, including configurable account.
     pub fn signature_type(&self) -> SignatureType {
         match self {
@@ -787,6 +796,16 @@ pub enum TempoSignature {
 }
 
 impl TempoSignature {
+    /// Returns the primitive signatures this signature carries, including the approvals inside
+    /// a keychain or configurable account signature.
+    pub fn primitive_signatures(&self) -> &[PrimitiveSignature] {
+        match self {
+            Self::Primitive(signature) => core::slice::from_ref(signature),
+            Self::Keychain(signature) => signature.signature.primitive_signatures(),
+            Self::ConfigurableAccount(signature) => signature.signatures(),
+        }
+    }
+
     /// Parse signature from bytes with backward compatibility
     ///
     /// For backward compatibility with existing secp256k1 signatures:
