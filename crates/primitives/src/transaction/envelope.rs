@@ -295,28 +295,39 @@ impl TempoTxEnvelope {
         self.is_tip1045_payment(PaymentRules::V3)
     }
 
+    /// Returns T15+ payment eligibility without checking whether the access list is empty.
+    ///
+    /// All other [`Self::is_payment_v3`] checks still apply. Callers caching this result must
+    /// check the current access list separately before selecting payment-lane pricing.
+    pub fn is_payment_v3_without_access_list(&self) -> bool {
+        self.is_tip1045_payment_without_access_list(PaymentRules::V3)
+    }
+
     /// TIP-1045 classification under `rules`.
     fn is_tip1045_payment(&self, rules: PaymentRules) -> bool {
+        self.access_list().is_none_or(|list| list.is_empty())
+            && self.is_tip1045_payment_without_access_list(rules)
+    }
+
+    /// TIP-1045 classification under `rules`, apart from the access list.
+    fn is_tip1045_payment_without_access_list(&self, rules: PaymentRules) -> bool {
         match self {
             Self::Legacy(tx) => is_tip1045_call(tx.tx().to.to(), &tx.tx().input, rules),
             Self::Eip2930(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
+                is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip1559(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty() && is_tip1045_call(tx.to.to(), &tx.input, rules)
+                is_tip1045_call(tx.to.to(), &tx.input, rules)
             }
             Self::Eip7702(tx) => {
                 let tx = tx.tx();
-                tx.access_list.is_empty()
-                    && tx.authorization_list.is_empty()
-                    && is_tip1045_call(Some(&tx.to), &tx.input, rules)
+                tx.authorization_list.is_empty() && is_tip1045_call(Some(&tx.to), &tx.input, rules)
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
                 !tx.calls.is_empty()
-                    && tx.access_list.is_empty()
                     && tx.tempo_authorization_list.is_empty()
                     && tx
                         .key_authorization
@@ -974,6 +985,7 @@ mod tests {
             for envelope in payment_envelopes(calldata) {
                 assert!(envelope.is_payment_v1(), "V1 must accept valid calldata");
                 assert!(envelope.is_payment_v2(), "V2 must accept valid calldata");
+                assert!(envelope.is_payment_v3_without_access_list());
             }
         }
     }
@@ -1117,6 +1129,7 @@ mod tests {
                 {
                     assert!(!envelope.is_payment_v2());
                     assert_eq!(envelope.is_payment_v3(), v3);
+                    assert_eq!(envelope.is_payment_v3_without_access_list(), v3);
                 }
             }
         }
@@ -1231,6 +1244,7 @@ mod tests {
             !envelope.is_payment_v2(),
             "V2 must reject EIP-7702 tx with non-empty authorization_list"
         );
+        assert!(!envelope.is_payment_v3_without_access_list());
     }
 
     fn aa_with_key_authorization(limits: Option<Vec<TokenLimit>>) -> TempoTxEnvelope {
@@ -1314,6 +1328,7 @@ mod tests {
             !envelope.is_payment_v2(),
             "V2 must reject AA tx with tempo_authorization_list"
         );
+        assert!(!envelope.is_payment_v3_without_access_list());
     }
 
     #[test]
@@ -1332,6 +1347,8 @@ mod tests {
         for envelope in payment_envelopes_with_access_list(calldata, access_list) {
             assert!(envelope.is_payment_v1(), "V1 must ignore access_list");
             assert!(!envelope.is_payment_v2(), "V2 must reject access_list");
+            assert!(!envelope.is_payment_v3(), "V3 must reject access_list");
+            assert!(envelope.is_payment_v3_without_access_list());
         }
     }
 

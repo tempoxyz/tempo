@@ -4,12 +4,65 @@ use crate::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoBlockExecutor, TempoBlockExt, TempoEvmConfig,
     TempoEvmEnv, block::BlockSection,
 };
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+use alloy_eips::eip2930::AccessList;
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use evm2::{EvmFeatures, SpecId, evm::DynDatabase};
 use reth_chainspec::EthChainSpec;
 use reth_evm::BlockExecutorFactory;
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_chainspec::{TempoChainSpec, TempoHardfork, spec::MODERATO};
+use tempo_primitives::{
+    TempoTransaction, TempoTxEnvelope, TempoTxType,
+    transaction::{Call, TempoTypedTransaction},
+};
+
+/// Builds a signed call envelope for any supported transaction type (legacy ignores the access list).
+pub(crate) fn test_tx_envelope(
+    tx_type: TempoTxType,
+    to: Address,
+    input: Bytes,
+    access_list: AccessList,
+) -> TempoTxEnvelope {
+    let mut transaction = match tx_type {
+        TempoTxType::Legacy => TempoTypedTransaction::Legacy(TxLegacy {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(to),
+            input,
+            ..Default::default()
+        }),
+        TempoTxType::Eip2930 => TempoTypedTransaction::Eip2930(TxEip2930 {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(to),
+            input,
+            access_list,
+            ..Default::default()
+        }),
+        TempoTxType::Eip1559 => TempoTypedTransaction::Eip1559(TxEip1559 {
+            gas_limit: 1_000_000,
+            to: TxKind::Call(to),
+            input,
+            access_list,
+            ..Default::default()
+        }),
+        TempoTxType::Eip7702 => TempoTypedTransaction::Eip7702(TxEip7702 {
+            gas_limit: 1_000_000,
+            to,
+            input,
+            access_list,
+            ..Default::default()
+        }),
+        TempoTxType::AA => TempoTypedTransaction::AA(TempoTransaction {
+            gas_limit: 1_000_000,
+            calls: vec![Call::new(to, input)],
+            access_list,
+            valid_before: Some(NonZeroU64::MAX),
+            ..Default::default()
+        }),
+    };
+    transaction.as_dyn_signable_mut().set_chain_id(1);
+    transaction.into_envelope(Signature::test_signature())
+}
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
