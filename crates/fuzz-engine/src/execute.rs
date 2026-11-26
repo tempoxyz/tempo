@@ -14,7 +14,7 @@ use alloy_consensus::{
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
-use invariants_core::{Frame, Report};
+use invariants_core::{Effects, Frame, Report};
 use reth_chainspec::EthChainSpec as _;
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
@@ -340,18 +340,40 @@ fn broken_start<E: Engine>(
         .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
+    let mut report = Report::default();
     invariants::check(
         engine,
         &start,
         evm_config,
-        env,
+        env.clone(),
         &InvariantScope::Execution,
         |address| listed.accounts.contains_key(address),
         &holders,
         None,
         &invariants::ViewCache::default(),
         &mut failures,
-        &mut Report::default(),
+        &mut report,
+    );
+    // The chain's own checks judge the start too, over every account the pre-state lists, so a
+    // failure the pre-state caused counts against it.
+    let state = StepState {
+        db: &start,
+        evm_config,
+        env: &env,
+        changed: listed.accounts.keys().copied().collect(),
+        effects: Arc::new(Effects {
+            changes: Vec::new(),
+            logs: Vec::new(),
+            calls: None,
+            ran: Ran::PreBlock,
+        }),
+    };
+    step::check(
+        engine,
+        &state,
+        &InvariantScope::Execution,
+        &mut failures,
+        &mut report,
     );
     failures
 }
@@ -573,22 +595,34 @@ fn execute_block<E: Engine>(
     run.outputs.changes.post_block = state::changes(&net, &contracts);
     drop(cache);
     db.commit(&net, |hash| output.state.contracts.get(hash).cloned());
+    let scope = InvariantScope::PostBlock { block_index };
+    let effects = invariants::StepEffects::new(&net, &[], None, Ran::PostBlock, spec);
+    let shared = effects.shared();
     invariants::check(
         engine,
         db,
         evm_config,
-        env,
-        &InvariantScope::PostBlock { block_index },
+        env.clone(),
+        &scope,
         |_| true,
         &[],
-        Some(invariants::StepEffects::new(
-            &net,
-            &[],
-            None,
-            Ran::PostBlock,
-            spec,
-        )),
+        Some(effects),
         &run.view_cache,
+        &mut run.outputs.invariant_failures,
+        &mut run.outputs.invariant_report,
+    );
+    // The chain's own checks see what `finish` wrote, such as a zone stripping its overlays.
+    let state = StepState {
+        db,
+        evm_config,
+        env: &env,
+        changed: net.addresses().copied().collect(),
+        effects: shared,
+    };
+    step::check(
+        engine,
+        &state,
+        &scope,
         &mut run.outputs.invariant_failures,
         &mut run.outputs.invariant_report,
     );
@@ -777,7 +811,7 @@ impl<E: Engine> BlockRun<'_, E> {
             db: self.db,
             evm_config: self.evm_config,
             env: &env,
-            net: &net,
+            changed: net.addresses().copied().collect(),
             effects: shared,
         };
         step::check(

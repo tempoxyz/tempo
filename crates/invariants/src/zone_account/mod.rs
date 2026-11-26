@@ -16,17 +16,12 @@ use alloy_sol_types::SolCall;
 use invariants_core::{Call, Outcome};
 use tempo_contracts::{
     precompiles::IConfigurableAccountShim::onERC721ReceivedCall,
-    zones::{
-        TEMPO_STATE_ADDRESS,
-        TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
-        ZONE_ADDRESS_REGISTRY_ADDRESS, ZONE_FEE_MANAGER_ADDRESS, ZONE_IDENTITY_ADDRESS,
-        ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
-    },
+    zones::TempoState::{tempoBlockHashCall, tempoBlockNumberCall},
 };
 
 use crate::{
-    Observe, ObserveError, Ran, Step, TempoHardfork, Views,
-    configurable_account::{Leaf, read_commitments, spec as account_spec},
+    Observe, ObserveError, Ran, Step, Views,
+    configurable_account::{Leaf, read_commitments},
     view,
 };
 
@@ -62,8 +57,8 @@ pub struct Zone {
     marked: BTreeMap<Address, bool>,
     /// The observed accounts that hold zone code, so never read Tempo.
     coded: BTreeSet<Address>,
-    /// The hardfork the zone runs, which decides its system contracts.
-    spec: TempoHardfork,
+    /// The observed accounts the zone never reads Tempo for, whatever their code.
+    reserved: BTreeSet<Address>,
 }
 
 impl Zone {
@@ -81,8 +76,10 @@ pub struct ZoneAt<'a> {
     pub precompile: Address,
     pub accounts: &'a [Address],
     pub coded: &'a [Address],
-    /// The hardfork the zone runs.
-    pub spec: TempoHardfork,
+    /// Those of `accounts` the zone never reads Tempo for whatever their code, as the zone
+    /// decides it at its hardfork: TIP-1154's ineligible addresses (zero, virtual, TIP-20 or
+    /// ZonePortal prefix, a precompile active on the zone, a zone system contract).
+    pub reserved: &'a [Address],
 }
 
 impl Observe for Zone {
@@ -98,6 +95,7 @@ impl Observe for Zone {
         };
         let of = read_commitments(views, at.precompile, at.accounts)?;
         let coded: BTreeSet<Address> = at.coded.iter().copied().collect();
+        let reserved: BTreeSet<Address> = at.reserved.iter().copied().collect();
         let input: Bytes = onERC721ReceivedCall {
             operator: Address::ZERO,
             from: Address::ZERO,
@@ -109,7 +107,7 @@ impl Observe for Zone {
         let calls: Vec<Call> = at
             .accounts
             .iter()
-            .filter(|&&account| !coded.contains(&account) && reserved(account, at.spec).is_none())
+            .filter(|&&account| !coded.contains(&account) && !reserved.contains(&account))
             .map(|&account| Call {
                 from: None,
                 to: account,
@@ -145,7 +143,7 @@ impl Observe for Zone {
             of,
             marked,
             coded,
-            spec: at.spec,
+            reserved,
         })
     }
 }
@@ -227,12 +225,14 @@ impl Mirror {
 
     /// Why `account` reads nothing from Tempo on this zone, `None` when it is eligible.
     fn ineligible(&self, account: Address) -> Option<&'static str> {
-        reserved(account, self.zone.spec).or_else(|| {
+        if self.zone.reserved.contains(&account) {
+            Some("an address the zone never reads Tempo for")
+        } else {
             self.zone
                 .coded
                 .contains(&account)
                 .then_some("an account with zone code")
-        })
+        }
     }
 
     /// Tempo's commitment of `account` at the anchor; `None` when unread.
@@ -248,8 +248,13 @@ pub type ZoneStep = Step<Mirror, Ran>;
 /// One account's leaf in zone state after a step, beside what the zone serves for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneLeaf {
-    /// The leaf the zone's state root commits to.
+    /// The leaf the zone's state root commits to. An extension that does not decode leaves the
+    /// commitment zero, and is caught by `extension`.
     pub stored: Leaf,
+    /// Whether the account stores an extension, which no zone account does.
+    pub extension: bool,
+    /// Whether the zone never reads Tempo for the account, whatever its code.
+    pub reserved: bool,
     /// The code hash the zone serves: what an account load inside a zone transaction yields, or
     /// the hash of its operator RPC's `eth_getCode`; `None` when not read.
     pub served: Option<B256>,
@@ -262,57 +267,5 @@ pub struct ZoneLeaf {
 pub struct ZoneLeaves {
     /// Whether TIP-1154 is active (T14) at the zone block.
     pub active: bool,
-    /// The hardfork the zone block runs, which decides its system contracts.
-    pub spec: TempoHardfork,
     pub of: BTreeMap<Address, ZoneLeaf>,
-}
-
-/// Why `account` never reads Tempo on a zone running `spec`, whatever its code; `None` when its
-/// address is eligible: Tempo's reserved address spaces and the zone's system contracts active at
-/// `spec`, as the zone itself excludes them (`zone_precompiles::is_zone_precompile`).
-// <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L59>
-pub(crate) fn reserved(account: Address, spec: TempoHardfork) -> Option<&'static str> {
-    const SYSTEM: [Address; 4] = [
-        TEMPO_STATE_ADDRESS,
-        ZONE_INBOX_ADDRESS,
-        ZONE_OUTBOX_ADDRESS,
-        ZONE_FEE_MANAGER_ADDRESS,
-    ];
-    // Zones gain these at T15.
-    const T15: [Address; 2] = [ZONE_IDENTITY_ADDRESS, ZONE_ADDRESS_REGISTRY_ADDRESS];
-    if SYSTEM.contains(&account) || (spec.is_t15() && T15.contains(&account)) {
-        Some("a zone system contract")
-    } else {
-        account_spec::reserved(account)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloy_primitives::address;
-
-    use super::*;
-
-    #[test]
-    fn a_zone_reserves_its_system_contracts_active_at_its_hardfork() {
-        let unused = address!("1c00000000000000000000000000000000000004");
-        for spec in [TempoHardfork::T14, TempoHardfork::T15] {
-            for system in [
-                TEMPO_STATE_ADDRESS,
-                ZONE_INBOX_ADDRESS,
-                ZONE_OUTBOX_ADDRESS,
-                ZONE_FEE_MANAGER_ADDRESS,
-            ] {
-                assert!(reserved(system, spec).is_some(), "{system} at {spec:?}");
-            }
-            assert_eq!(reserved(unused, spec), None, "{spec:?}");
-            for t15 in [ZONE_IDENTITY_ADDRESS, ZONE_ADDRESS_REGISTRY_ADDRESS] {
-                assert_eq!(
-                    reserved(t15, spec).is_some(),
-                    spec.is_t15(),
-                    "{t15} at {spec:?}"
-                );
-            }
-        }
-    }
 }

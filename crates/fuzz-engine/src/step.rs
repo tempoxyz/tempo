@@ -10,18 +10,15 @@ use tempo_evm::TempoEvmEnv;
 use tempo_fuzz_types::{InvariantFailure, InvariantScope};
 use tempo_invariants::{Ran, configurable_account::Leaf};
 
-use crate::{
-    engine::Engine,
-    invariants,
-    state::{Db, Net},
-};
+use crate::{engine::Engine, invariants, state::Db};
 
 /// The state after an execution step, with what the step did, as [`Engine::check_step`] reads it.
 pub struct StepState<'a, C> {
     pub(crate) db: &'a Db,
     pub(crate) evm_config: &'a C,
     pub(crate) env: &'a TempoEvmEnv,
-    pub(crate) net: &'a Net,
+    /// The accounts the step changed or, for a pre-state checked on its own, the ones it lists.
+    pub(crate) changed: Vec<Address>,
     pub(crate) effects: Arc<Effects<Ran>>,
 }
 
@@ -51,9 +48,10 @@ impl<C> StepState<'_, C> {
         Arc::clone(&self.effects)
     }
 
-    /// The accounts the step changed.
+    /// The accounts the step changed or, for a pre-state checked on its own, the accounts it
+    /// lists, which a broken one may have put anything in.
     pub fn changed(&self) -> impl Iterator<Item = Address> + '_ {
-        self.net.addresses().copied()
+        self.changed.iter().copied()
     }
 
     /// The account at `address` after the step: `Some(None)` if it does not exist, `None` if the
