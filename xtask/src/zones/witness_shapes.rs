@@ -9,7 +9,7 @@ use alloy::{
 };
 use alloy_rlp::Decodable as _;
 use alloy_trie::nodes::TrieNode;
-use eyre::{OptionExt as _, WrapErr as _, bail};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::ITIP403Registry as TIP403Registry;
 use tempo_precompiles::{
@@ -20,8 +20,6 @@ use crate::zone_utils::{check, normalize_http_rpc, parse_private_key};
 
 /// Nibbles the two whitelisted keys share: an extension spans the last ones.
 const PREFIX: usize = 3;
-/// Prefixes to try when existing keys already take one.
-const ATTEMPTS: u64 = 8;
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct WitnessShapes {
@@ -73,63 +71,61 @@ impl WitnessShapes {
         let receive =
             |account: Address| account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
 
-        for attempt in 0..ATTEMPTS {
-            // Both keys share the prefix and part at its next nibble, so the trie keeps a branch
-            // there below an extension, unless an existing key already shares the prefix.
-            let first = grind(attempt << 32, whitelisted, |_| true);
-            let prefix = path(whitelisted(first));
-            let shares =
-                |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
-            let second = grind((attempt << 32) | 1, whitelisted, |p| {
-                shares(p, PREFIX) && nibble(p, PREFIX) != nibble(&prefix, PREFIX)
-            });
-            let children = [
-                nibble(&prefix, PREFIX),
-                nibble(&path(whitelisted(second)), PREFIX),
-            ];
-            // Diverging inside the extension ends at it; below it, an unused nibble is empty.
-            let extension = grind((attempt << 32) | 2, receive, |p| {
-                shares(p, PREFIX - 1) && nibble(p, PREFIX - 1) != nibble(&prefix, PREFIX - 1)
-            });
-            let empty_child = grind((attempt << 32) | 3, receive, |p| {
-                shares(p, PREFIX) && !children.contains(&nibble(p, PREFIX))
-            });
-            for account in [first, second] {
-                let receipt = registry
-                    .modifyPolicyWhitelist(policy_id, account, true)
-                    .send_sync()
-                    .await?;
-                check(&receipt, "modifyPolicyWhitelist")?;
-            }
-            let slots = [extension, empty_child]
-                .map(|r| B256::from(receive(r)))
-                .to_vec();
-            let proof = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                provider.get_proof(TIP403_REGISTRY_ADDRESS, slots),
-            )
-            .await
-            .wrap_err("timed out reading registry proofs")?
-            .wrap_err("failed to read registry proofs")?;
-            let ends = proof
-                .storage_proof
-                .iter()
-                .map(|storage| {
-                    let end = storage.proof.last().ok_or_eyre("empty proof")?;
-                    TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")
-                })
-                .collect::<eyre::Result<Vec<_>>>()?;
-            if matches!(
+        // Both keys share the prefix and part at its next nibble, so the trie keeps a branch
+        // there below an extension, unless an existing key shares it: the proofs catch that.
+        let first = grind(0, whitelisted, |_| true);
+        let prefix = path(whitelisted(first));
+        let shares = |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
+        let second = grind(1, whitelisted, |p| {
+            shares(p, PREFIX) && nibble(p, PREFIX) != nibble(&prefix, PREFIX)
+        });
+        let children = [
+            nibble(&prefix, PREFIX),
+            nibble(&path(whitelisted(second)), PREFIX),
+        ];
+        // Diverging inside the extension ends at it; below it, an unused nibble is empty.
+        let extension = grind(2, receive, |p| {
+            shares(p, PREFIX - 1) && nibble(p, PREFIX - 1) != nibble(&prefix, PREFIX - 1)
+        });
+        let empty_child = grind(3, receive, |p| {
+            shares(p, PREFIX) && !children.contains(&nibble(p, PREFIX))
+        });
+        for account in [first, second] {
+            let receipt = registry
+                .modifyPolicyWhitelist(policy_id, account, true)
+                .send_sync()
+                .await?;
+            check(&receipt, "modifyPolicyWhitelist")?;
+        }
+        let slots = [extension, empty_child]
+            .map(|r| B256::from(receive(r)))
+            .to_vec();
+        let proof = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            provider.get_proof(TIP403_REGISTRY_ADDRESS, slots),
+        )
+        .await
+        .wrap_err("timed out reading registry proofs")?
+        .wrap_err("failed to read registry proofs")?;
+        let ends = proof
+            .storage_proof
+            .iter()
+            .map(|storage| {
+                let end = storage.proof.last().ok_or_eyre("empty proof")?;
+                TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+        ensure!(
+            matches!(
                 ends.as_slice(),
                 [TrieNode::Extension(_), TrieNode::Branch(_)]
-            ) {
-                println!(
-                    "{}",
-                    serde_json::json!({ "recipients": [extension, empty_child] })
-                );
-                return Ok(());
-            }
-        }
-        bail!("existing registry keys took every ground prefix in {ATTEMPTS} attempts")
+            ),
+            "an existing registry key shares the ground prefix"
+        );
+        println!(
+            "{}",
+            serde_json::json!({ "recipients": [extension, empty_child] })
+        );
+        Ok(())
     }
 }
