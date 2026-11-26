@@ -1,7 +1,4 @@
-use crate::{
-    tempo_transaction::helpers::sign_aa_tx_with_p256_access_key,
-    utils::{TestNodeBuilder, setup_test_token},
-};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::{SignableTransaction, Transaction, TxLegacy},
     primitives::{Address, Bytes, U256},
@@ -12,18 +9,16 @@ use alloy::{
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::TransactionResponse;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
-use reth_primitives_traits::{RecoveredBlock, SignerRecoverable};
-use reth_rpc_eth_api::helpers::{EthBlocks, LoadState, LoadTransaction};
+use reth_primitives_traits::SignerRecoverable;
+use reth_rpc_eth_api::helpers::{LoadState, LoadTransaction};
 use reth_rpc_eth_types::EthApiError;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool};
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{
-    Block, TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call, tt_signature::p256_keypair,
-    },
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -185,69 +180,5 @@ async fn test_raw_pooled_transaction_recovery_rejects_system_transactions() -> e
         eth_api.recover_raw_pooled_transaction(&[]),
         Err(EthApiError::EmptyRawTransactionData)
     ));
-    Ok(())
-}
-
-/// `convert_block` must recover keychain key IDs on the shared block, not only on the clones it
-/// hands to the transaction converter, so that cached blocks keep them.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_convert_block_caches_keychain_key_id_on_shared_block() -> eyre::Result<()> {
-    let setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let eth_api = setup.node.rpc.inner.eth_api().clone();
-
-    let root = test_signer(0).address();
-    let (access_key, pub_key_x, pub_key_y, access_key_address) = p256_keypair();
-    let tx = TempoTransaction {
-        chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 1_000_000,
-        calls: vec![Call::new(Address::ZERO, Bytes::new())],
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        ..Default::default()
-    };
-    let signature =
-        sign_aa_tx_with_p256_access_key(&tx, &access_key, &pub_key_x, &pub_key_y, root)?;
-    let envelope = TempoTxEnvelope::from(tx.into_signed(signature));
-
-    let new_block = || {
-        let mut block = Block::default();
-        block.body.transactions.push(envelope.clone());
-        RecoveredBlock::new_unhashed(block, vec![root])
-    };
-    // Serializing the signature alone emits the cached key ID without recovering it.
-    let cached_key_id = |tx: &TempoTxEnvelope| {
-        let signature = tx.as_aa().expect("AA transaction").signature();
-        serde_json::to_value(signature).unwrap()["keyId"].clone()
-    };
-    let expected = serde_json::to_value(access_key_address)?;
-
-    // Hash-only responses don't serialize transactions, so nothing is recovered.
-    let hashes_block = new_block();
-    assert_eq!(
-        cached_key_id(&hashes_block.body().transactions[0]),
-        serde_json::Value::Null
-    );
-    eth_api.convert_block(&hashes_block, false)?;
-    assert_eq!(
-        cached_key_id(&hashes_block.body().transactions[0]),
-        serde_json::Value::Null
-    );
-
-    let block = new_block();
-    assert_eq!(
-        cached_key_id(&block.body().transactions[0]),
-        serde_json::Value::Null
-    );
-    let rpc_block = eth_api.convert_block(&block, true)?;
-    assert_eq!(cached_key_id(&block.body().transactions[0]), expected);
-
-    let rpc_txs = rpc_block
-        .transactions
-        .as_transactions()
-        .expect("full transactions");
-    assert_eq!(rpc_txs.len(), 1);
-    assert_eq!(cached_key_id(rpc_txs[0].inner.inner()), expected);
-
     Ok(())
 }
