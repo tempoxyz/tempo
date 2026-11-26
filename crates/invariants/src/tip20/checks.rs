@@ -5,7 +5,7 @@ use std::fmt;
 use invariants_core::{check, ensure};
 
 use super::{Ledger, moves};
-use crate::{Check, Checked, Replay, Step, StepChecked, Tx, Verdict, or_text};
+use crate::{Check, Checked, Ran, Replay, Step, StepChecked, TempoHardfork, Verdict, or_text};
 
 /// A TIP-20's views answer. Counted by runners that read the model, not judged by a check here.
 pub const VIEW: &str = "TEMPO-TIP20-VIEW";
@@ -43,14 +43,14 @@ pub const CHECKS: &[Check<Ledger>] = &[
 ];
 
 /// A step's effect on one token, its ledgers read over the same accounts before and after it.
-pub const STEP_CHECKS: &[Check<Step<Ledger, Option<Tx>>>] = &[
-    // A balance never goes negative. A (-T3) mint to the zero address credits its balance, and a
-    // burn from it debits it. A transfer between an observed and an unobserved account moves only
-    // the observed side.
+pub const STEP_CHECKS: &[Check<Step<Ledger, Ran>>] = &[
+    // Balances never go negative, the supply moves by the mints (from the zero address) and burns
+    // (to it), a (-T3) mint to the zero address credits its balance and a burn from it debits it,
+    // and a transfer between an observed and an unobserved account moves only the observed side.
     check! {
         id: TRANSFER_EVENTS,
         doc: "Each observed balance moves by exactly the step's `Transfer` events into and out of it, and the supply by its mints and burns.",
-        over: |step: &Step<Ledger, Option<Tx>>| [&step.post],
+        over: |step: &Step<Ledger, Ran>| [&step.post],
         judge: |s, _| {
             let transfers = moves(s.logs_from(s.post.token));
             let (pre, post) = s.pre.common(&s.post);
@@ -73,10 +73,10 @@ impl fmt::Display for Ledger {
     }
 }
 
-impl Checked for Ledger {
+impl Checked<TempoHardfork> for Ledger {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }
 
-impl StepChecked<Option<Tx>> for Ledger {
-    const STEP_CHECKS: &'static [Check<Step<Self, Option<Tx>>>] = STEP_CHECKS;
+impl StepChecked<Ran, TempoHardfork> for Ledger {
+    const STEP_CHECKS: &'static [Check<Step<Self, Ran>>] = STEP_CHECKS;
 }

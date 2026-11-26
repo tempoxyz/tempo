@@ -3,7 +3,7 @@
 use invariants_core::check;
 
 use super::{Claim, Signer};
-use crate::{Check, Checked, Verdict};
+use crate::{Check, Checked, TempoHardfork, Verdict};
 
 pub const CLAIM_AUTHORITY: &str = "TEMPO-RECEIVE-POLICY-CLAIM-AUTHORITY";
 
@@ -27,6 +27,6 @@ pub const CHECKS: &[Check<Claim>] = &[check! {
     },
 }];
 
-impl Checked for Claim {
+impl Checked<TempoHardfork> for Claim {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }

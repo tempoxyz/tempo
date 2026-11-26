@@ -3,7 +3,7 @@
 use invariants_core::{check, ensure};
 
 use super::Spend;
-use crate::{Check, Checked};
+use crate::{Check, Checked, TempoHardfork};
 
 pub const REVOKED: &str = "TEMPO-KEYCHAIN-REVOKED-KEY-SPENDS";
 pub const EXPIRED: &str = "TEMPO-KEYCHAIN-EXPIRED-KEY-SPENDS";
@@ -50,6 +50,6 @@ pub const CHECKS: &[Check<Spend>] = &[
     },
 ];
 
-impl Checked for Spend {
+impl Checked<TempoHardfork> for Spend {
     const CHECKS: &'static [Check<Self>] = CHECKS;
 }

@@ -91,3 +91,24 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
 
     Ok(())
 }
+
+/// `tempo_simulateV1` rejects a payload over the call limit before decoding its calls, like
+/// `eth_simulateV1`.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tempo_simulate_v1_bounds_calls() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+
+    let payload = json!({ "blockStateCalls": [{ "calls": vec![json!({}); 4097] }] });
+    let err = provider
+        .raw_request::<_, serde_json::Value>("tempo_simulateV1".into(), (payload,))
+        .await
+        .unwrap_err();
+    let err = err.as_error_resp().expect("JSON-RPC error");
+    assert_eq!(err.code, -32602);
+    assert_eq!(err.message, "too many calls in simulation payload");
+
+    Ok(())
+}
