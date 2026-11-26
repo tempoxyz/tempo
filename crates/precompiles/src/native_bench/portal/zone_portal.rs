@@ -21,12 +21,11 @@ use alloy::{
         sol_data::{FixedBytes, Uint},
     },
 };
-use std::sync::LazyLock;
 use tempo_contracts::{
     precompiles::{IStorageCredits::Mode, ITIP403Registry::BlockedReason},
     zones::{
-        BlockTransition, Deposit, DepositQueueTransition, T15_ZONE_PORTAL_RUNTIME,
-        TokenEnablementTransition, Withdrawal, ZonePortal,
+        BlockTransition, Deposit, DepositQueueTransition, TokenEnablementTransition, Withdrawal,
+        ZonePortal,
     },
 };
 use tempo_primitives::TempoAddressExt;
@@ -37,7 +36,6 @@ const HISTORY_STORAGE_ADDRESS: Address = address!("0x0000F90827F1C53a10cb7A02335
 const HISTORY_SERVE_WINDOW: u64 = 8191;
 
 /// keccak256 of the T15 ZonePortal runtime, the only implementation this port follows.
-static T15_RUNTIME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(&T15_ZONE_PORTAL_RUNTIME));
 
 /// Opcode gas when `_snapshotCongestionTier` fixes this block's tier instead of reading it.
 pub(super) const SNAPSHOT_WRITE_GAS: u64 = 150;
@@ -199,15 +197,11 @@ pub(super) struct Portal {
 
 impl Portal {
     /// The portal proxy at `address`, after touching the implementation as the proxy's
-    /// `DELEGATECALL` does. Fails fatally unless the implementation is the T15 runtime.
+    /// `DELEGATECALL` does. The bench's genesis installs the T15 runtime (T15_ZONE_PORTAL_RUNTIME)
+    /// at the implementation address; its code hash is not checked here because the payload
+    /// builder's state caches can report account info without it.
     pub(super) fn enter(address: Address) -> Result<Self> {
-        let code_hash =
-            StorageCtx.with_account_info(ZONE_PORTAL_IMPL_ADDRESS, |info| Ok(info.code_hash))?;
-        if code_hash != *T15_RUNTIME_HASH {
-            return Err(TempoPrecompileError::Fatal(
-                "native portal supports only the T15 ZonePortal runtime".into(),
-            ));
-        }
+        StorageCtx.with_account_info(ZONE_PORTAL_IMPL_ADDRESS, |_| Ok(()))?;
         Ok(Self { address })
     }
 
