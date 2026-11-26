@@ -622,6 +622,17 @@ where
         self.gas_tracker.record_refund(gas);
     }
 
+    fn reimburse_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if gas > self.gas_tracker.spent() {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "cannot reimburse {gas} gas, {} spent",
+                self.gas_tracker.spent()
+            )));
+        }
+        self.gas_tracker.erase_cost(gas);
+        Ok(())
+    }
+
     #[inline]
     fn gas_limit(&self) -> u64 {
         self.gas_tracker.limit()

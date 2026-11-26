@@ -211,6 +211,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
+    /// Returns `gas` charged earlier to the remaining gas, see
+    /// [`PrecompileStorageProvider::reimburse_gas`].
+    pub(crate) fn reimburse_gas(&self, gas: u64) -> Result<()> {
+        Self::try_with_storage(|s| s.reimburse_gas(gas))
+    }
+
     /// Returns the gas limit for this precompile call.
     pub fn gas_limit(&self) -> u64 {
         Self::with_storage(|s| s.gas_limit())
