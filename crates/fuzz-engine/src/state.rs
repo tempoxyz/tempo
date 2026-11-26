@@ -4,7 +4,6 @@ use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::LazyLock,
 };
 
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, map::B256Map};
@@ -262,11 +261,10 @@ impl Database for Reader<'_> {
     }
 }
 
-/// The dev genesis allocation, seeded once per process: seeding analyses and hashes every genesis
-/// contract, which costs more than executing a transfer.
-static GENESIS: LazyLock<Cache> = LazyLock::new(|| {
+/// `genesis`'s allocation as a cache, which a genesis pre-state starts from.
+pub fn genesis_cache(genesis: &alloy_genesis::Genesis) -> Cache {
     let mut cache = Cache::default();
-    for (address, account) in &tempo_chainspec::spec::DEV.inner.genesis.alloc {
+    for (address, account) in &genesis.alloc {
         let account = AccountInput {
             balance: account.balance,
             nonce: account.nonce.unwrap_or_default(),
@@ -278,31 +276,31 @@ static GENESIS: LazyLock<Cache> = LazyLock::new(|| {
                 .map(|(slot, value)| ((*slot).into(), (*value).into()))
                 .collect(),
         };
-        insert(&mut cache, *address, &account).expect("the dev genesis code is well-formed");
+        insert(&mut cache, *address, &account).expect("the genesis code is well-formed");
     }
     cache
-});
+}
 
 /// `pre_state` as a database. A genesis pre-state's account at a genesis address replaces it whole,
 /// but must keep the genesis code: a protocol contract's code marks it deployed. `InvalidInput` if it
 /// does not, or if an account's code starts with the EIP-7702 prefix `0xef01` but is not a valid
 /// delegation.
-pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
+pub(crate) fn seed(pre_state: &PreState, genesis: &Cache) -> Result<Db, ErrorClass> {
     let (state, mut cache, exact) = match pre_state {
         PreState::Genesis(state) => {
             let keeps_code = |(address, account): (&Address, &AccountInput)| {
-                GENESIS
+                genesis
                     .accounts
                     .get(address)
                     .and_then(Option::as_ref)
-                    .is_none_or(|genesis| {
-                        account.code == Contracts(&[&GENESIS.contracts]).code(genesis)
+                    .is_none_or(|genesis_account| {
+                        account.code == Contracts(&[&genesis.contracts]).code(genesis_account)
                     })
             };
             if !state.accounts.iter().all(keeps_code) {
                 return Err(ErrorClass::InvalidInput);
             }
-            (state, GENESIS.clone(), false)
+            (state, genesis.clone(), false)
         }
         PreState::Exact { state, .. } => (state, Cache::default(), true),
     };

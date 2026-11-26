@@ -28,6 +28,7 @@ members = [
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
+  "crates/fuzz-engine",
   "crates/fuzz-harness",
   "crates/fuzz-types",
   "crates/invariants",
@@ -54,6 +55,7 @@ members = [
   "crates/zones/checker",
   "crates/zones/evm",
   "crates/zones/exithatch",
+  "crates/zones/fuzz-harness",
   "crates/zones/l1",
   "crates/zones/node",
   "crates/zones/p2p",
@@ -229,6 +231,7 @@ tempo-corpus = { path = "crates/corpus" }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-fuzz-engine = { path = "crates/fuzz-engine" }
 tempo-fuzz-types = { path = "crates/fuzz-types", default-features = false }
 tempo-invariants = { path = "crates/invariants" }
 tempo-evm = { path = "crates/evm", default-features = false }

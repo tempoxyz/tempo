@@ -19,7 +19,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 5;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 6;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
@@ -29,7 +29,8 @@ pub enum ErrorClass {
     #[default]
     None = 0,
     /// The input contradicts itself or this harness's contract, e.g. a decreasing hardfork
-    /// schedule, senders that do not match the transactions or blocks out of timestamp order.
+    /// schedule, senders that do not match the transactions, blocks out of timestamp order, or a
+    /// hardfork or input mode the harness's capabilities do not list.
     InvalidInput = 1,
     /// A transaction or header does not decode, or has trailing bytes.
     RlpDecode = 2,
@@ -237,10 +238,13 @@ pub struct TempoBlock {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum BlockHeaderInput {
     /// The fields a fuzzer picks. The harness fills in the rest, and moves the timestamp into the
-    /// window where the requested hardfork is active.
+    /// window where the requested hardfork is active. The chain adds the transactions its node's
+    /// block builder adds around the input's, such as a zone's `advanceTempo`
+    /// ([`TxIndex::Synthesized`]); the header commits only to the input's.
     Context(BlockContextInput),
     /// An RLP-encoded Tempo header, executed as given if the node's header checks accept it. It is
-    /// not checked against a parent or against what the block produced.
+    /// not checked against a parent or against what the block produced. The block holds exactly
+    /// the input's transactions, as a node imports it.
     Rlp(Bytes),
 }
 
@@ -263,10 +267,21 @@ pub struct InvariantFailure {
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum InvariantScope {
-    Transaction { block_index: u64, tx_index: u64 },
+    Transaction { block_index: u64, tx: TxIndex },
     Block { block_index: u64 },
     PostBlock { block_index: u64 },
     Execution,
+}
+
+/// Which transaction of a block a receipt or an invariant failure is about. Receipts list both
+/// kinds in execution order; each kind is counted on its own.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum TxIndex {
+    /// The transaction at this index of the block's [`TempoBlock::txs`].
+    Input(u64),
+    /// The transaction at this index among those the chain's block builder added, such as a
+    /// zone's `advanceTempo`.
+    Synthesized(u64),
 }
 
 /// The outcome of a [`TempoHarnessInput`], in the variant of the same name.
@@ -345,8 +360,11 @@ pub struct StateDiff {
 pub struct BlockChanges {
     /// System calls before the transactions.
     pub pre_block: StateChanges,
-    /// One entry per transaction, in order.
+    /// One entry per transaction of the input, in order: `txs[i]` is [`TxIndex::Input`]`(i)`'s.
     pub txs: Vec<StateChanges>,
+    /// One entry per transaction the chain added, in order: `synthesized[i]` is
+    /// [`TxIndex::Synthesized`]`(i)`'s.
+    pub synthesized: Vec<StateChanges>,
     /// System calls after the transactions.
     pub post_block: StateChanges,
 }
@@ -407,7 +425,7 @@ impl ResultGas {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct TxReceiptOutput {
     pub block_index: u64,
-    pub tx_index: u64,
+    pub tx: TxIndex,
     pub outcome: TxOutcome,
     pub gas: ResultGas,
     pub cumulative_gas_used: u64,

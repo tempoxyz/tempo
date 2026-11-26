@@ -10,7 +10,7 @@ use tempo_primitives::crypto::mock;
 static MODE: OnceLock<bool> = OnceLock::new();
 
 /// Turns mocks on unless an input already ran. Returns whether they are on.
-pub(crate) fn enable() -> bool {
+pub fn enable() -> bool {
     *MODE.get_or_init(install)
 }
 

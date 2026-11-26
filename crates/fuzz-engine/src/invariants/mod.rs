@@ -13,7 +13,8 @@ use std::{
     sync::{Arc, LazyLock},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
+use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_evm::TempoEvmEnv;
 use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope, TxReceiptOutput};
 use tempo_invariants::{
     Check, Checked as _, Ran, VIEWS, block, configurable_account as account, dex, fee_amm, model,
@@ -21,7 +22,10 @@ use tempo_invariants::{
 };
 use tempo_primitives::is_tip20_prefix;
 
-use crate::state::{Db, Net};
+use crate::{
+    engine::Engine,
+    state::{Db, Net},
+};
 
 /// Whether invariants are checked: unless the process sets `TEMPO_FUZZ_INVARIANTS=0`, as callers that only
 /// need coverage, such as a corpus minimizer, do.
@@ -132,8 +136,9 @@ fn take_failures(
     }));
 }
 
-/// Every invariant the harness checks, and each model's counter of reads that failed.
-pub(crate) fn catalog() -> Vec<InvariantInfo> {
+/// Every invariant `E`'s harness checks, and each model's counter of reads that failed: the fee
+/// AMM's and DEX's only on a chain that runs them.
+pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
     fn infos<C>(checks: &[Check<C>]) -> impl Iterator<Item = InvariantInfo> + '_ {
         checks.iter().map(|check| InvariantInfo {
             id: check.id.to_string(),
@@ -158,18 +163,31 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
             since: None,
             until: None,
         });
+    let fee_amm = E::FEE_AMM.into_iter().flat_map(|_| {
+        infos(fee_amm::CHECKS)
+            .chain(infos(fee_amm::STEP_CHECKS))
+            .chain(infos(fee_amm::exit::CHECKS))
+    });
+    let dex = E::DEX
+        .into_iter()
+        .flat_map(|_| infos(dex::CHECKS).chain(infos(dex::STEP_CHECKS)));
+    let skipped = [
+        E::FEE_AMM.is_none().then_some(fee_amm::VIEW),
+        E::DEX.is_none().then_some(dex::VIEW),
+    ];
     infos(tip20::CHECKS)
         .chain(infos(tip20::STEP_CHECKS))
         .chain(infos(tip20::roles::STEP_CHECKS))
-        .chain(infos(fee_amm::CHECKS))
-        .chain(infos(fee_amm::STEP_CHECKS))
-        .chain(infos(fee_amm::exit::CHECKS))
-        .chain(infos(dex::CHECKS))
-        .chain(infos(dex::STEP_CHECKS))
+        .chain(fee_amm)
+        .chain(dex)
         .chain(infos(account::STEP_CHECKS))
         .chain(infos(account::LEAF_CHECKS))
         .chain(infos(block::CHECKS))
-        .chain(views)
+        .chain(
+            views
+                .into_iter()
+                .filter(|info| !skipped.contains(&Some(info.id.as_str()))),
+        )
         .collect()
 }
 
@@ -181,10 +199,12 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
 /// except at the block's first step. With a transaction's `effects`, a model's step checks also run
 /// on it before the step against it after. Views are answered from `view_cache`, the calls the block's
 /// earlier steps made that this step left as they were.
+/// Only the protocol contracts `engine`'s chain runs are checked, and views run as it calls them.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn check(
+pub(crate) fn check<E: Engine>(
+    engine: &E,
     db: &Db,
-    evm_config: &TempoEvmConfig,
+    evm_config: &E::EvmConfig,
     env: TempoEvmEnv,
     scope: &InvariantScope,
     selected: impl Fn(&Address) -> bool,
@@ -204,6 +224,13 @@ pub(crate) fn check(
         .map(|effects| effects.net);
     let selected =
         |contract: &Address| selected(contract) && changed.is_none_or(|net| net.contains(contract));
+    // The fee AMM's and DEX's models apply only on a chain that runs them.
+    let runs = |contract: &Address| {
+        let protocol = |runs: Option<Address>, at: Address| *contract != at || runs == Some(at);
+        selected(contract)
+            && protocol(E::FEE_AMM, TIP_FEE_MANAGER_ADDRESS)
+            && protocol(E::DEX, STABLECOIN_DEX_ADDRESS)
+    };
     let missed = db.pre.missed();
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
@@ -234,7 +261,15 @@ pub(crate) fn check(
 
     let start = report.violations.len();
     {
-        let mut reader = EvmReader::new(db, evm_config, &env, effects.as_ref(), view_cache, report);
+        let mut reader = EvmReader::new(
+            engine,
+            db,
+            evm_config,
+            &env,
+            effects.as_ref(),
+            view_cache,
+            report,
+        );
         model::check(
             &mut reader,
             &model::Scope {
@@ -242,7 +277,7 @@ pub(crate) fn check(
                 holders: &all_holders,
                 beneficiary: env.block.beneficiary,
                 effects: effects.as_deref(),
-                selected: &selected,
+                selected: &runs,
             },
         );
         if let Some(effects) = &effects

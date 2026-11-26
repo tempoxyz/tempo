@@ -6,31 +6,33 @@ use alloy_primitives::{Address, KECCAK256_EMPTY};
 use invariants_core::{
     Check, Checked, Observe, ObserveError, Probe, Report, StepChecked, Violation,
 };
-use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
+use tempo_evm::TempoEvmEnv;
 use tempo_invariants::{Ran, TempoHardfork, model};
 
 use super::{
     StepEffects,
     views::{EvmViews, PreView, ViewCache, ViewFailed},
 };
-use crate::state::Db;
+use crate::{engine::Engine, state::Db};
 
 /// Reads models from the state after a step and, with its `effects`, from the state before it, and
-/// checks them into a report at the step's hardfork.
-pub(super) struct EvmReader<'a> {
+/// checks them into a report at the step's hardfork. Views run as `E` calls them.
+pub(super) struct EvmReader<'a, E> {
     /// Views of the state after the step.
-    after: EvmViews<'a>,
+    after: EvmViews<'a, E>,
     /// The step's effects and views of the state before it, which undo them.
-    before: Option<(&'a StepEffects<'a>, EvmViews<'a>)>,
+    before: Option<(&'a StepEffects<'a>, EvmViews<'a, E>)>,
     report: &'a mut Report,
     spec: TempoHardfork,
 }
 
-impl<'a> EvmReader<'a> {
-    /// Reads `db` in `env`, answering views from `view_cache`, and checks into `report`.
+impl<'a, E: Engine> EvmReader<'a, E> {
+    /// Reads `db` in `env` on `engine`'s chain, answering views from `view_cache`, and checks
+    /// into `report`.
     pub(super) fn new(
+        engine: &'a E,
         db: &'a Db,
-        evm_config: &TempoEvmConfig,
+        evm_config: &E::EvmConfig,
         env: &TempoEvmEnv,
         effects: Option<&'a StepEffects<'a>>,
         view_cache: &'a ViewCache,
@@ -38,6 +40,7 @@ impl<'a> EvmReader<'a> {
     ) -> Self {
         Self {
             after: EvmViews::new(
+                engine,
                 db.view(),
                 evm_config,
                 env.clone(),
@@ -53,6 +56,7 @@ impl<'a> EvmReader<'a> {
                 (
                     effects,
                     EvmViews::new(
+                        engine,
                         db_before,
                         evm_config,
                         env.clone(),
@@ -73,10 +77,10 @@ impl<'a> EvmReader<'a> {
     }
 }
 
-impl<'a> model::Reader for EvmReader<'a> {
-    type Views = EvmViews<'a>;
+impl<'a, E: Engine> model::Reader for EvmReader<'a, E> {
+    type Views = EvmViews<'a, E>;
 
-    fn after(&mut self) -> &mut EvmViews<'a> {
+    fn after(&mut self) -> &mut EvmViews<'a, E> {
         &mut self.after
     }
 
