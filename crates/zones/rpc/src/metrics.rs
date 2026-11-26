@@ -37,6 +37,13 @@ pub(crate) struct RedactedRpcAuthMetrics {
 }
 
 #[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_redacted_rpc_connections")]
+pub(crate) struct RedactedRpcConnectionMetrics {
+    /// Number of HTTP requests and WebSocket upgrades rejected at the connection limit.
+    pub(crate) rejected_total: Counter,
+}
+
+#[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_redacted_rpc_provider")]
 pub(crate) struct ZoneProviderMetrics {
     /// Number of redacted RPC provider token refresh attempts.

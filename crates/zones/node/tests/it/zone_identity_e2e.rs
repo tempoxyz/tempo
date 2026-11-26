@@ -517,6 +517,7 @@ async fn test_t14_to_t15_zone_identity_orgs() -> eyre::Result<()> {
         chain_id,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 16 * 1024 * 1024,
+        max_connections: 500,
         zone_portal: Address::ZERO,
     };
     let redacted = start_redacted_rpc_url(&zone, config).await?;

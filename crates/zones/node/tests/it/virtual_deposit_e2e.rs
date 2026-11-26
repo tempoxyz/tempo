@@ -267,6 +267,7 @@ async fn test_recipient_derives_addresses_and_reads_results_over_rpc() -> eyre::
         chain_id: zone.provider().get_chain_id().await?,
         max_auth_token_validity: zone_node::rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
         max_response_size: 16 * 1024 * 1024,
+        max_connections: 500,
         zone_portal: portal_address,
     };
     let rpc_url = format!(
