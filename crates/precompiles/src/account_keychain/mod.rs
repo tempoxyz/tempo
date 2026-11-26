@@ -802,7 +802,13 @@ impl AccountKeychain {
         if transaction_key.is_zero() {
             return Ok(());
         }
-        Self::new().authorize_transfer(account, token, amount)
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        Self::new().verify_and_update_spending(account, transaction_key, token, amount)
     }
 
     /// Fast path for `refund_spending_limit` that skips constructing `AccountKeychain` for main-key txs.
@@ -818,7 +824,13 @@ impl AccountKeychain {
         if transaction_key.is_zero() {
             return Ok(());
         }
-        Self::new().refund_spending_limit(account, token, amount)
+        let tx_origin =
+            crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+        Self::new().refund_spending_limit_for_key(account, transaction_key, token, amount)
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
@@ -1579,6 +1591,16 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        self.refund_spending_limit_for_key(account, transaction_key, token, amount)
+    }
+
+    fn refund_spending_limit_for_key(
+        &mut self,
+        account: Address,
+        transaction_key: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
