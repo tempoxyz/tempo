@@ -161,6 +161,15 @@ pub trait PrecompileStorageProvider {
     /// Add refund to the refund gas counter.
     fn refund_gas(&mut self, gas: i64);
 
+    /// Returns `gas` charged earlier to the remaining gas. Used by the native benchmark entries
+    /// ([`crate::native_bench`]) to undo the gas of a native callee that the bytecode runs out of
+    /// gas in. Providers without a gas tracker of their own fail.
+    fn reimburse_gas(&mut self, _gas: u64) -> Result<()> {
+        Err(TempoPrecompileError::Fatal(
+            "storage provider cannot reimburse gas".to_string(),
+        ))
+    }
+
     /// Returns the gas limit for this precompile call.
     fn gas_limit(&self) -> u64;
 
