@@ -590,8 +590,8 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
 #[test]
 fn a_pre_state_that_breaks_an_invariant_is_invalid() {
     // pathUSD's supply is below its holders' balances and above its cap. The second token's supply
-    // is missing from the pre-state, so its views are skipped, and checking goes on to the third,
-    // whose cap is broken.
+    // is missing from the pre-state and the third's cap is broken, but the block touches neither,
+    // so neither is checked.
     fn token(index: u8) -> Address {
         Address::with_last_byte(index) | PATH_USD_ADDRESS
     }
@@ -622,11 +622,7 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
         })
         .collect();
     let start = InvariantScope::Execution;
-    let expected = [
-        ("SUPPLY-CAP", &start, 0),
-        ("BALANCE-SUM", &start, 0),
-        ("SUPPLY-CAP", &start, 2),
-    ];
+    let expected = [("SUPPLY-CAP", &start, 0), ("BALANCE-SUM", &start, 0)];
     assert_eq!(
         failures,
         expected

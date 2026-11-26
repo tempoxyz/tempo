@@ -208,14 +208,7 @@ pub(crate) fn check(
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
     }
-    let accounts: Vec<Address> = db
-        .cache
-        .borrow()
-        .accounts
-        .iter()
-        .filter(|(_, account)| account.is_some())
-        .map(|(address, _)| *address)
-        .collect();
+    let accounts = db.held();
     // A step's own logs name holders its transitions touched only through a token's storage,
     // such as a transfer's recipient.
     let logged = model::logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
@@ -227,12 +220,17 @@ pub(crate) fn check(
         .collect();
     all_holders.sort_unstable();
     all_holders.dedup();
-    let mut tokens: Vec<Address> = accounts
-        .iter()
-        .copied()
-        .filter(|account| is_tip20_prefix(*account))
-        .collect();
-    tokens.sort_unstable();
+    let tokens: Vec<Address> = {
+        let cache = db.cache.borrow();
+        all_holders
+            .iter()
+            .copied()
+            .filter(|&account| {
+                is_tip20_prefix(account)
+                    && cache.accounts.get(&account).is_some_and(Option::is_some)
+            })
+            .collect()
+    };
 
     let start = report.violations.len();
     {

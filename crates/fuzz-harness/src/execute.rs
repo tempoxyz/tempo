@@ -271,11 +271,8 @@ fn broken_start(
         .flat_map(|receipt| &receipt.logs)
         .chain(failed_logs);
     let holders: Vec<Address> = db
-        .cache
-        .borrow()
-        .accounts
-        .keys()
-        .copied()
+        .held()
+        .into_iter()
         .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
