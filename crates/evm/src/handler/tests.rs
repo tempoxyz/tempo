@@ -1217,9 +1217,9 @@ fn test_key_authorization_gas_with_limits() {
     let t1b_version =
         tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1B, false);
     let t1b_gas_params = &t1b_version.gas_params;
-    let sstore = u64::from(t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let sload = u64::from(t1b_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t1b_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let sstore = t1b_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let sload = t1b_gas_params.get(GasId::WarmStorageReadCost)
+        + t1b_gas_params.get(GasId::ColdStorageAdditionalCost);
     const BUFFER: u64 = 2_000;
 
     for num_limits in 0..=3 {
@@ -1235,9 +1235,9 @@ fn test_key_authorization_gas_with_limits() {
 
     let t3_version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T3, false);
     let t3_gas_params = &t3_version.gas_params;
-    let t3_sstore = u64::from(t3_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t3_sload = u64::from(t3_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t3_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t3_sstore = t3_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t3_sload = t3_gas_params.get(GasId::WarmStorageReadCost)
+        + t3_gas_params.get(GasId::ColdStorageAdditionalCost);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1254,10 +1254,10 @@ fn test_key_authorization_gas_with_limits() {
     // T4 retains execution-only SSTORE pricing before TIP-1016 activation.
     let t4_version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, false);
     let t4_gas_params = &t4_version.gas_params;
-    let t4_sstore = u64::from(t4_gas_params.get(GasId::SstoreSetWithoutLoadCost));
-    let t4_sload = u64::from(t4_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t4_gas_params.get(GasId::ColdStorageAdditionalCost));
-    let t4_sstore_state = u64::from(t4_gas_params.get(GasId::SstoreSetState));
+    let t4_sstore = t4_gas_params.get(GasId::SstoreSetWithoutLoadCost);
+    let t4_sload = t4_gas_params.get(GasId::WarmStorageReadCost)
+        + t4_gas_params.get(GasId::ColdStorageAdditionalCost);
+    let t4_sstore_state = t4_gas_params.get(GasId::SstoreSetState);
 
     for num_limits in 0..=3 {
         let num_sstores = 1 + 2 * num_limits as u64;
@@ -1278,8 +1278,8 @@ fn test_key_authorization_gas_with_limits() {
 
     let t5_version = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T5, false);
     let t5_gas_params = &t5_version.gas_params;
-    let t5_sload = u64::from(t5_gas_params.get(GasId::WarmStorageReadCost))
-        + u64::from(t5_gas_params.get(GasId::ColdStorageAdditionalCost));
+    let t5_sload = t5_gas_params.get(GasId::WarmStorageReadCost)
+        + t5_gas_params.get(GasId::ColdStorageAdditionalCost);
     let base_t5_key_auth = create_key_auth(0);
     let witness_t5_key_auth = create_key_auth(0);
     let witness_t5_key_auth = witness_t5_key_auth

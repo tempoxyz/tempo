@@ -450,7 +450,10 @@ where
         self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
-        let mut execution_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+        let mut execution_gas = self
+            .version
+            .gas_params
+            .get(GasId::CodeDepositCost)
             .saturating_mul(code_len as u64);
         let state_gas = self.state_gas_enabled();
         if state_gas {
@@ -470,7 +473,7 @@ where
         if state_gas {
             // Finish charging execution work before drawing on the state reservoir.
             if was_empty {
-                self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
+                self.deduct_gas(self.version.gas_params.get(GasId::Create))?;
                 self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
             }
             self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
@@ -2145,9 +2148,10 @@ mod tests {
             gas: &mut GasTracker,
         ) -> PrecompileResult {
             let address = message.destination;
-            let commit = message.input[0] != 0;
-            let ending = message.input[1];
-            let refund = if message.input[2] == 0 { 400 } else { -1_400 };
+            let input = evm.message_input(message);
+            let commit = input[0] != 0;
+            let ending = input[1];
+            let refund = if input[2] == 0 { 400 } else { -1_400 };
             let mut storage =
                 EvmPrecompileStorageProvider::new(evm, gas, TempoHardfork::T15, false);
             write(&mut storage, address, 0, 11, 150, 1_000);
@@ -2203,11 +2207,15 @@ mod tests {
                             code_address: address,
                             gas_limit: 10_000,
                             reservoir,
-                            input: vec![u8::from(commit), ending, u8::from(refund < 0)].into(),
+                            input: Bytes::from(vec![
+                                u8::from(commit),
+                                ending,
+                                u8::from(refund < 0),
+                            ])
+                            .into(),
                             ..Default::default()
                         };
-                        let result =
-                            Host::execute_message(&mut evm.evm, &Default::default(), &mut message)?;
+                        let result = Host::execute_message(&mut evm.evm, &mut message)?;
 
                         // Equivalent parent/child accounting using evm2's frame-return helpers.
                         let mut expected =
@@ -2243,7 +2251,7 @@ mod tests {
                             assert_eq!(
                                 evm.evm
                                     .state_mut()
-                                    .storage(&address)
+                                    .storage(&address)?
                                     .into_slot(U256::from(slot))?
                                     .current(),
                                 value

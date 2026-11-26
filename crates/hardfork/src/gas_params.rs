@@ -47,7 +47,6 @@ pub fn configure_version(
         // TIP-1016 limits execution gas, not the user's execution + state budget.
         version.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
         version.tx_total_gas_cap = u64::MAX;
-        version.tx_total_gas_cap = u64::MAX;
         apply_amsterdam(&mut version);
     } else {
         version.features.remove(EvmFeatures::EIP8037);
@@ -469,7 +468,7 @@ mod tests {
     }
 
     /// Every hardfork's gas schedule: Ethereum values before T1, the TIP-1000 creation costs from
-    /// T1 and the TIP-1060 SSTORE residual and uncapped refunds from T7.
+    /// T1, the TIP-1060 SSTORE residual and uncapped refunds from T7, and the T15 gas split.
     #[test]
     fn test_gas_params_per_hardfork() {
         for &spec in TempoHardfork::VARIANTS {
@@ -485,7 +484,9 @@ mod tests {
             assert_eq!(gas[GasId::SstoreResetRefund], 2_800, "{case}");
 
             let (set, set_refund, clear_refund, create, new_account, code_deposit, auth_refund) =
-                if spec.is_t7() {
+                if spec.is_t15() {
+                    (5_000, 5_000, 0, 32_000, 25_000, 200, 0)
+                } else if spec.is_t7() {
                     (5_000, 5_000, 0, 500_000, 250_000, 1_000, 0)
                 } else if spec.is_t1() {
                     (250_000, 19_900, 4_800, 500_000, 250_000, 1_000, 0)

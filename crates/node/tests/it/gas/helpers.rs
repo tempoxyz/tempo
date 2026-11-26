@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
     consensus::{SignableTransaction, TxEip1559, TxEnvelope},
-    network::EthereumWallet,
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
