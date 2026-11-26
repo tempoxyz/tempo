@@ -8,6 +8,7 @@ mod e2e;
 mod earn_zone_e2e;
 mod enable_token;
 mod handoff_e2e;
+mod hankie_e2e;
 mod hardfork_e2e;
 mod hardfork_settlement_e2e;
 mod l1_e2e;

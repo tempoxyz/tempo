@@ -124,7 +124,7 @@ pub(crate) fn l1_dev_signer() -> alloy_signer_local::PrivateKeySigner {
 }
 
 /// Returns the signer every test portal is created with as admin.
-fn portal_admin_signer() -> alloy_signer_local::PrivateKeySigner {
+pub(crate) fn portal_admin_signer() -> alloy_signer_local::PrivateKeySigner {
     signer_at(2)
 }
 
@@ -222,6 +222,13 @@ pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::B
     Ok(alloy_primitives::Bytes::from(
         alloy_primitives::hex::decode(hex_str)?,
     ))
+}
+
+pub(crate) fn t15_hankie_test_genesis() -> eyre::Result<Genesis> {
+    let mut genesis: Genesis = serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    set_tempo_fork(&mut genesis, TempoHardfork::T15, 0);
+    install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
+    Ok(genesis)
 }
 
 fn install_native_zone_factory(genesis: &mut Genesis, owner: Address) -> eyre::Result<()> {
@@ -714,7 +721,7 @@ impl ZoneTestNode {
             .graceful_shutdown_with_timeout(Duration::from_secs(5));
     }
 
-    async fn spawn_sequencer(
+    pub(crate) async fn spawn_sequencer(
         &self,
         config: zone_sequencer::ZoneSequencerConfig,
         signer: alloy_signer_local::PrivateKeySigner,
@@ -2331,7 +2338,7 @@ impl L1TestNode {
 }
 
 /// Builds a `createZone` transaction with pathUSD as the initial token.
-fn create_zone_request(
+pub(crate) fn create_zone_request(
     factory_address: Address,
     admin: Address,
     sequencers: Vec<Address>,
