@@ -655,9 +655,11 @@ where
     ) -> Pin<Box<dyn Future<Output = zone_sequencer::ZoneSequencerHandle> + Send + '_>> {
         let provider = self.node.provider().clone();
         Box::pin(async move {
+            let nonces = zone_sequencer::nonce_keys::NonceLane::new(signer.address());
             zone_sequencer::spawn_zone_sequencer(
                 config,
                 signer,
+                nonces,
                 provider,
                 None,
                 None,

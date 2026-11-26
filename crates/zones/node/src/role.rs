@@ -41,7 +41,7 @@ use zone_p2p::{
 use zone_payload::ZonePayloadTypes;
 use zone_sequencer::{
     SettlementManager, SettlementProver, ZoneSequencerConfig, ZoneSequencerHandle,
-    ZoneSequencerProvider, resolve_portal_zone_anchor, spawn_zone_sequencer,
+    ZoneSequencerProvider, nonce_keys::NonceLane, resolve_portal_zone_anchor, spawn_zone_sequencer,
 };
 use zone_transaction_pool_alias::TempoPooledTransaction;
 
@@ -93,6 +93,8 @@ pub(crate) struct RoleControllerContext<P, Pool> {
     /// Sequencer resources constructed unconditionally at startup; activation is gated by
     /// the leader generation. `None` means this node can never lead.
     pub sequencer: Option<LeaderSequencerDeps>,
+    /// Nonces of this node's individual L1 account, shared with the `setLeader` relayer.
+    pub individual_nonces: Option<NonceLane>,
     /// Tip evidence advertised by peers via backfill completions.
     pub peer_tips: PeerTipRegistry,
     /// Live role/readiness snapshot shared with the status RPC.
@@ -1033,6 +1035,11 @@ where
                 .l1_transaction_signer
                 .clone()
                 .unwrap_or_else(|| sequencer.config.sequencer_signer.clone());
+            let nonces = context
+                .individual_nonces
+                .clone()
+                .filter(|nonces| nonces.address() == signer.address())
+                .unwrap_or_else(|| NonceLane::new(signer.address()));
             let zone_provider = context.provider.clone();
             let prover = sequencer.prover.clone();
             let sequencer_token = token.clone();
@@ -1040,6 +1047,7 @@ where
                 let handle = spawn_zone_sequencer(
                     sequencer_config,
                     signer,
+                    nonces,
                     zone_provider,
                     prover,
                     Some(settlements),

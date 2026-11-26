@@ -18,6 +18,8 @@ use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoT
 use tokio::sync::Notify;
 use zone_chainspec::ZoneChainSpec;
 
+use crate::nonce_keys::NonceLane;
+
 pub mod abi {
     pub use tempo_contracts::zones::*;
 }
@@ -144,14 +146,15 @@ pub struct ZoneSequencerHandle {
 ///   SPF execution and Nitro NSM attestation before submitting the batch. The prover is owned by
 ///   the caller so it outlives individual leader generations.
 ///
-/// Both tasks share a single L1 provider and nonce manager to prevent signing/nonce contention
-/// when submitting concurrent L1 transactions.
+/// Both tasks share a single L1 provider and take their nonces from `nonces`, which must belong
+/// to `signer`'s address. Pass the lane of any other task that sends from the same account.
 ///
 /// `shutdown` stops both tasks gracefully: it is observed at their poll boundaries, so an
 /// in-flight L1 transaction resolves before teardown.
 pub async fn spawn_zone_sequencer<P>(
     config: ZoneSequencerConfig,
     signer: PrivateKeySigner,
+    nonces: NonceLane,
     zone_provider: P,
     prover: Option<SettlementProver>,
     settlements: Option<SettlementManager>,
@@ -160,6 +163,11 @@ pub async fn spawn_zone_sequencer<P>(
 where
     P: ZoneSequencerProvider + PersistedBlockSubscriptions,
 {
+    assert_eq!(
+        nonces.address(),
+        signer.address(),
+        "nonce lane of another account"
+    );
     // Build a single shared L1 provider with the sequencer wallet.
     // Both the batch submitter (inside the zone monitor) and the withdrawal
     // processor use this provider, ensuring nonces are tracked in one place.
@@ -180,6 +188,7 @@ where
         portal_address: config.portal_address,
         fallback_poll_interval: config.withdrawal_poll_interval,
         sequencer_address,
+        nonces: nonces.clone(),
         batch_limits: config.withdrawal_batch_limits,
         chain_spec: config.chain_spec.clone(),
     };
@@ -192,6 +201,7 @@ where
         portal_address: config.portal_address,
         batch_anchor_config: config.batch_anchor_config,
         settlements,
+        nonces,
     };
     let withdrawal_handle = withdrawals::spawn_withdrawal_processor(
         withdrawal_config,

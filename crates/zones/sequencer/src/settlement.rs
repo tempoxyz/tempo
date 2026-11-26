@@ -59,7 +59,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use parking_lot::RwLock;
 use reth_storage_api::BlockNumReader;
 use schnellru::{ByLength, LruMap};
-use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
+use tempo_alloy::{TempoNetwork, rpc::TempoCallBuilderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{Block, TempoReceipt};
 use tokio::time::{Instant, sleep};
@@ -67,7 +67,7 @@ use tracing::{info, instrument, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::{ProofBundle, VerifierMode};
 
-use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
+use crate::nonce_keys::{NonceLane, SUBMIT_BATCH_NONCE_KEY};
 
 #[derive(Debug)]
 pub enum BatchSubmitError {
@@ -301,6 +301,8 @@ pub struct BatchSubmitter {
     stable_portal_metadata: OnceLock<StablePortalMetadata>,
     /// Local sequencer key used to produce a 1-of-1 TIP-1091 settlement certificate.
     signer: Option<PrivateKeySigner>,
+    /// Nonces of the signer's L1 account, shared with other tasks that send from it.
+    nonces: Option<NonceLane>,
     /// Concurrency for pipelined L1 header fetching in ancestry mode.
     l1_fetch_concurrency: usize,
     /// EIP-2935 history and safety-margin limits used for anchor decisions.
@@ -379,6 +381,9 @@ impl BatchSubmitter {
             chain_spec,
             portal,
             stable_portal_metadata: OnceLock::new(),
+            nonces: signer
+                .as_ref()
+                .map(|signer| NonceLane::new(signer.address())),
             signer,
             l1_fetch_concurrency: 16,
             anchor_config,
@@ -386,6 +391,12 @@ impl BatchSubmitter {
                 DEFAULT_ANCESTRY_HEADER_CACHE_CAPACITY,
             ))),
         }
+    }
+
+    /// Takes submission nonces from `nonces` instead of a lane of its own.
+    pub fn with_nonce_lane(mut self, nonces: NonceLane) -> Self {
+        self.nonces = Some(nonces);
+        self
     }
 
     /// Resolve the single immutable anchor shared by proving, quorum, and submission.
@@ -506,17 +517,14 @@ impl BatchSubmitter {
             )?]
         };
 
-        // Refetch the committed lane nonce for every submission attempt. The provider's
-        // process-local nonce cache advances before a send is known to have succeeded, so
-        // relying on it after a failed send can create an unfillable 2D-nonce gap.
-        let submission_address = signer
+        let lease = self
+            .nonces
+            .as_ref()
             .ok_or_eyre("batch submission requires the local sequencer signer")?
-            .address();
-        let nonce = self
-            .l1_provider
-            .get_transaction_count_with_nonce_key(submission_address, SUBMIT_BATCH_NONCE_KEY)
+            .lease(&self.l1_provider)
             .await
             .map_err(|error| BatchSubmitError::Other(error.into()))?;
+        let nonce = lease.nonce();
 
         info!(
             anchor_mode = prepared.anchor.mode_name(),
@@ -589,6 +597,7 @@ impl BatchSubmitter {
         }
         .map_err(|_| eyre::eyre!("submitBatch sync submission timed out after 30 seconds"))?
         .map_err(|error| BatchSubmitError::Other(error.into()))?;
+        lease.landed();
 
         let tx_hash = receipt.transaction_hash();
         if !receipt.status() {

@@ -38,7 +38,7 @@ use alloy_provider::{DynProvider, Provider};
 use alloy_sol_types::SolCall as _;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
-use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
+use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::{ITIP20, OUSD_ADDRESS, PATH_USD_ADDRESS};
 use tokio::sync::Notify;
 use tokio_util::sync;
@@ -47,7 +47,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::{
     abi::{self, LegacyZonePortal, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
-    nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
+    nonce_keys::{NonceLane, PROCESS_WITHDRAWAL_NONCE_KEY},
     prover_config::active_l1_hardfork,
     settlement::{WithdrawalPage, find_processed_offset},
 };
@@ -140,8 +140,10 @@ pub struct WithdrawalProcessorConfig {
     pub portal_address: Address,
     /// Fallback timeout for checking the withdrawal queue if no notification arrives.
     pub fallback_poll_interval: Duration,
-    /// Address whose lane-2 nonces order withdrawal processing transactions.
+    /// Address that sends withdrawal processing transactions.
     pub sequencer_address: Address,
+    /// Nonces of `sequencer_address`, shared with every task that sends from it.
+    pub nonces: NonceLane,
     /// Gas and concurrency limits for withdrawal transactions.
     pub batch_limits: WithdrawalBatchLimits,
     /// Zone chainspec, for the L1 hardfork schedule.
@@ -329,7 +331,7 @@ struct StoreSnapshot {
 /// so it can safely run at any time from any state (crash, timeout, restart).
 ///
 /// Withdrawals are first split by the configured per-transaction gas limit, then submitted through
-/// a bounded queue of consecutive-nonce transactions. On any failure, the next cycle reconciles
+/// a bounded queue of transactions with increasing nonces. On any failure, the next cycle reconciles
 /// the portal queue and retries its unfinished suffix.
 pub struct WithdrawalProcessor {
     config: WithdrawalProcessorConfig,
@@ -551,17 +553,6 @@ impl WithdrawalProcessor {
                 }
             };
 
-            // Read the committed nonce before the slot. If an older pending transaction lands
-            // between these reads, reusing its now-stale nonce fails safely instead of pairing a
-            // stale slot snapshot with a newer nonce.
-            let first_nonce = self
-                .provider
-                .get_transaction_count_with_nonce_key(
-                    self.config.sequencer_address,
-                    PROCESS_WITHDRAWAL_NONCE_KEY,
-                )
-                .await?;
-
             // Read the head slot's current on-chain hash and skip withdrawals the portal has
             // already consumed.
             let slot_hash = self
@@ -666,7 +657,6 @@ impl WithdrawalProcessor {
                     SubmitBatches {
                         slot: head_val,
                         offset,
-                        first_nonce,
                         withdrawals: remaining,
                         batches,
                     },
@@ -714,7 +704,7 @@ impl WithdrawalProcessor {
         Ok(active_l1_hardfork(&self.provider, chain_spec).await? < TempoHardfork::T15)
     }
 
-    /// Run all batches through a bounded queue of consecutive-nonce transactions.
+    /// Run all batches through a bounded queue of transactions with increasing nonces.
     ///
     /// A failure stops new submissions. Already submitted transactions are still drained because
     /// dropping their receipt futures would not cancel them. The next cycle then reconciles the
@@ -728,15 +718,9 @@ impl WithdrawalProcessor {
         let SubmitBatches {
             slot,
             offset,
-            first_nonce,
             withdrawals,
             batches,
         } = submission;
-        let nonce_count = u64::try_from(batches.len())
-            .map_err(|_| eyre::eyre!("processWithdrawals batch count overflow"))?;
-        first_nonce.checked_add(nonce_count).ok_or_else(|| {
-            eyre::eyre!("processWithdrawals nonce range exhausted at {first_nonce}")
-        })?;
 
         let limits = self.config.batch_limits;
         let batch_count = batches.len();
@@ -751,12 +735,27 @@ impl WithdrawalProcessor {
             while !retry
                 && !shutdown.is_cancelled()
                 && in_flight.len() < limits.max_in_flight_batches
+                && !batches.as_slice().is_empty()
             {
-                let Some(batch) = batches.next() else {
+                // The leases in `in_flight` end only while this loop polls it, so it waits for
+                // the lane only when nothing is in flight. Otherwise it drains one transaction
+                // and tries again.
+                let lease = if in_flight.is_empty() {
+                    match self.config.nonces.lease(&self.provider).await {
+                        Ok(lease) => lease,
+                        Err(error) => {
+                            error!(slot, %error, "failed to read the L1 nonce for withdrawals");
+                            retry = true;
+                            break;
+                        }
+                    }
+                } else if let Some(lease) = self.config.nonces.try_lease() {
+                    lease
+                } else {
                     break;
                 };
-
-                let nonce = first_nonce + submitted as u64;
+                let batch = batches.next().expect("a batch is left");
+                let nonce = lease.nonce();
                 let absolute_start = offset + batch.start;
                 let batch_withdrawals = withdrawals[batch.start..batch.end].to_vec();
                 let remaining_queue = abi::Withdrawal::queue_hash(&withdrawals[batch.end..]);
@@ -817,17 +816,19 @@ impl WithdrawalProcessor {
                             )
                         })
                         .and_then(|result| result.map_err(Into::into));
-                    (batch, nonce, remaining_queue, receipt)
+                    (batch, lease, remaining_queue, receipt)
                 });
                 submitted += 1;
             }
 
-            let Some((batch, nonce, remaining_queue, receipt)) = in_flight.next().await else {
+            let Some((batch, lease, remaining_queue, receipt)) = in_flight.next().await else {
                 break;
             };
+            let nonce = lease.nonce();
 
             match receipt {
                 Ok(receipt) => {
+                    lease.landed();
                     let tx_hash = receipt.transaction_hash();
                     self.metrics
                         .withdrawals_processed_total
@@ -945,7 +946,6 @@ fn withdrawal_deposit_headroom(
 struct SubmitBatches<'a> {
     slot: u64,
     offset: usize,
-    first_nonce: u64,
     withdrawals: &'a [abi::Withdrawal],
     batches: Vec<WithdrawalBatch>,
 }
@@ -1445,7 +1445,6 @@ mod tests {
             abi_encode_u64(5),
             abi_encode_u64(6),
         ]));
-        l1.push_success(&abi_encode_u64(0));
         l1.push_success(&abi_encode_b256(abi::Withdrawal::queue_hash(&withdrawals)));
         l1.push_success(&tempo_alloy::rpc::TempoHeaderResponse {
             inner: alloy_rpc_types_eth::Header::new(tempo_primitives::TempoHeader::default()),
@@ -1493,6 +1492,7 @@ mod tests {
             portal_address: address!("0x7069DeC4E64Fd07334A0933eDe836C17259c9B23"),
             fallback_poll_interval: Duration::from_secs(1),
             sequencer_address: Address::repeat_byte(0x77),
+            nonces: NonceLane::new(Address::repeat_byte(0x77)),
             batch_limits: WithdrawalBatchLimits::default(),
             chain_spec: chain_spec_with_t15(T15_ACTIVATION),
         };
@@ -1552,6 +1552,7 @@ mod tests {
     async fn cancellation_stops_refill_but_drains_submitted_batches() {
         let l1 = Asserter::new();
         l1.push_success(&fee_history());
+        l1.push_success(&"0xa");
 
         let mut processor = test_processor(
             l1.clone(),
@@ -1581,7 +1582,6 @@ mod tests {
                 SubmitBatches {
                     slot: 7,
                     offset: 0,
-                    first_nonce: 10,
                     withdrawals: &withdrawals,
                     batches,
                 },
@@ -1621,7 +1621,6 @@ mod tests {
             abi_encode_u64(5),
             abi_encode_u64(6),
         ]));
-        l1.push_success(&abi_encode_u64(0));
         l1.push_success(&abi_encode_b256(B256::repeat_byte(0xde)));
 
         let store = SharedWithdrawalStore::new();
@@ -1653,7 +1652,6 @@ mod tests {
             abi_encode_u64(5),
             abi_encode_u64(6),
         ]));
-        l1.push_success(&abi_encode_u64(0));
         l1.push_success(&abi_encode_b256(B256::ZERO));
 
         let store = SharedWithdrawalStore::new();

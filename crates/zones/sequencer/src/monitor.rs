@@ -46,6 +46,7 @@ use crate::{
     SettlementManager, ZoneSequencerProvider,
     abi::{self, NO_QUEUE_INDEX},
     attestation::SettlementCertificate,
+    nonce_keys::NonceLane,
     prover::{SettlementProof, SettlementProver},
     prover_config::active_l1_hardfork,
     resolve_portal_zone_anchor,
@@ -86,6 +87,8 @@ pub struct ZoneMonitorConfig {
     pub batch_anchor_config: BatchAnchorConfig,
     /// Settlement preparation for a P2P leader generation.
     pub settlements: Option<SettlementManager>,
+    /// Nonces of the sequencer's L1 account, shared with every task that sends from it.
+    pub nonces: NonceLane,
 }
 
 /// Withdrawal state shared between the zone monitor and withdrawal processor.
@@ -278,13 +281,16 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         settlement_prover: Option<SettlementProver>,
     ) -> Result<Self> {
         let metrics = crate::metrics::ZoneMonitorMetrics::default();
-        let batch_submitter = Arc::new(BatchSubmitter::with_optional_signer_and_anchor_config(
-            config.portal_address,
-            l1_provider,
-            config.chain_spec.clone(),
-            signer,
-            config.batch_anchor_config,
-        ));
+        let batch_submitter = Arc::new(
+            BatchSubmitter::with_optional_signer_and_anchor_config(
+                config.portal_address,
+                l1_provider,
+                config.chain_spec.clone(),
+                signer,
+                config.batch_anchor_config,
+            )
+            .with_nonce_lane(config.nonces.clone()),
+        );
         let portal_anchor = resolve_portal_zone_anchor(
             &provider,
             config.portal_address,
@@ -1173,6 +1179,7 @@ mod tests {
             portal_address,
             batch_anchor_config: BatchAnchorConfig::default(),
             settlements: None,
+            nonces: NonceLane::new(Address::ZERO),
         };
         let l1_provider = mock_provider(l1);
         let chain_spec = config.chain_spec.clone();
@@ -1474,6 +1481,7 @@ mod tests {
             portal_address,
             batch_anchor_config: BatchAnchorConfig::default(),
             settlements: None,
+            nonces: NonceLane::new(Address::ZERO),
         };
 
         l1.push_failure_msg("boom");

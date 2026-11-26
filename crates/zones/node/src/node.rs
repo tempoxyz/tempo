@@ -116,7 +116,7 @@ use zone_sequencer::{
     BatchAnchorConfig, ProofCollectorConfig, ProofCollectorHandle, ProverAddresses,
     SettlementManager, SettlementProver, SettlementProverConfig, WithdrawalBatchLimits,
     ZoneSequencerConfig, attestation::AttestationDomain, create_proof_collector,
-    spawn_settlement_prover, spawn_zone_sequencer,
+    nonce_keys::NonceLane, spawn_settlement_prover, spawn_zone_sequencer,
 };
 
 fn validate_zone_chain_id(parent_chain_id: u64, zone_id: u32, chain_id: u64) -> eyre::Result<()> {
@@ -589,6 +589,8 @@ struct P2PRuntime {
     allowlist: Option<AllowlistPorts>,
     /// RPC-only nodes relay allowlist requests; quorum members answer them.
     is_rpc_only: bool,
+    /// Nonces of this node's individual L1 account, which the `setLeader` relayer sends from.
+    individual_nonces: Option<NonceLane>,
 }
 
 impl<N> NodeAddOns<N> for ZoneAddOns<N>
@@ -966,6 +968,7 @@ where
             role_status,
             peer_tips,
             backfill_requests_rx,
+            individual_nonces,
             ..
         }) = p2p_runtime
         {
@@ -1012,6 +1015,7 @@ where
                 portal_address: self.portal_address,
                 l1_state: l1_state.clone(),
                 sequencer,
+                individual_nonces,
                 peer_tips,
                 status: role_status,
             };
@@ -1330,6 +1334,9 @@ where
         let is_rpc_only = config.is_rpc_only();
         let local_secp256k1_address = config.secp256k1_address();
         let individual_signer = config.block_attestation_signer();
+        let individual_nonces = individual_signer
+            .as_ref()
+            .map(|signer| NonceLane::new(signer.address()));
         let (backfill_requests_tx, backfill_requests_rx) =
             tokio::sync::mpsc::channel(BACKFILL_SERVE_QUEUE_CAPACITY);
         let (sinks, commands, backfill_commands, allowlist) =
@@ -1383,6 +1390,7 @@ where
                 local_secp256k1_address,
                 local_ed25519_public_key.clone(),
                 relayer,
+                individual_nonces.clone(),
                 encryption_keys,
             ))
             .expect("the sequencer RPC context is installed exactly once");
@@ -1400,6 +1408,7 @@ where
             backfill_requests_rx,
             allowlist: Some(allowlist),
             is_rpc_only,
+            individual_nonces,
         })
     }
 
@@ -1698,10 +1707,12 @@ where
         let l1_transaction_signer = config
             .l1_transaction_signer
             .unwrap_or(config.sequencer_signer);
+        let nonces = NonceLane::new(l1_transaction_signer.address());
         // Legacy single-sequencer mode: the tasks run for the process lifetime.
         let seq_handle = spawn_zone_sequencer(
             sequencer_config,
             l1_transaction_signer,
+            nonces,
             zone_provider,
             settlement_prover,
             None,
