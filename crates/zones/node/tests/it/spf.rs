@@ -15,6 +15,7 @@ use alloy::{
     providers::Provider as _,
     rpc::types::TransactionRequest,
 };
+use alloy_eips::eip2935::HISTORY_SERVE_WINDOW;
 use reth_chainspec::EthChainSpec as _;
 use reth_trie_common::{EMPTY_ROOT_HASH, HashBuilder, Nibbles, TrieAccount, proof::ProofRetainer};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
@@ -25,6 +26,7 @@ use tempo_precompiles::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::TempoHeader;
+use test_case::test_case;
 use zone_chainspec::ZoneChainSpec;
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_spf::{
@@ -39,8 +41,11 @@ use crate::utils::{
 
 const ZONE_ID: u32 = 1;
 
+/// The ancestry case anchors one block past the real EIP-2935 window.
+#[test_case(0 ; "direct")]
+#[test_case(HISTORY_SERVE_WINDOW as u64 + 1 ; "ancestry")]
 #[tokio::test(flavor = "multi_thread")]
-async fn spf_batch_execute() -> eyre::Result<()> {
+async fn spf_batch_execute(ancestry_len: u64) -> eyre::Result<()> {
     let genesis = funded_zone_genesis();
     let (zone, mut fixture) =
         start_local_zone_with_fixture_and_withdrawal_batch_interval(ZONE_ID, 2, 2, genesis.clone())
@@ -115,13 +120,19 @@ async fn spf_batch_execute() -> eyre::Result<()> {
     let first_hash = first_built_block.header.hash;
     let expected_hash = second_built_block.header.hash;
 
+    let mut ancestry = fixture.fork_of(&second_tempo_block);
+    let ancestry = (0..ancestry_len)
+        .map(|_| ancestry.next_block().header)
+        .collect::<Vec<_>>();
+    let anchor = ancestry.last().unwrap_or(&second_tempo_block.header);
+
     let witness = BatchWitness {
         public_inputs: PublicInputs {
             parent_chain_id: 1_337,
             zone_id: ZONE_ID,
             tempo_block_number: second_tempo_block.header.number(),
-            anchor_block_number: second_tempo_block.header.number(),
-            anchor_block_hash: second_tempo_block.header.hash_slow(),
+            anchor_block_number: anchor.number(),
+            anchor_block_hash: anchor.hash_slow(),
             expected_withdrawal_batch_index: 1,
         },
         zone_blocks: vec![
@@ -166,7 +177,10 @@ async fn spf_batch_execute() -> eyre::Result<()> {
             initial_tempo_header_rlp: tempo_header_rlp,
             node_pool: vec![],
         },
-        tempo_ancestry_headers: vec![],
+        tempo_ancestry_headers: ancestry
+            .iter()
+            .map(|header| Bytes::from(alloy_rlp::encode(header)))
+            .collect(),
     };
 
     let output = prove_zone_batch(&config, witness)?;

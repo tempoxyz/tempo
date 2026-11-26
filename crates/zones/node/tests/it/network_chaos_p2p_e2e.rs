@@ -11,6 +11,7 @@ use alloy::{
     primitives::{Address, B256, U256},
     providers::Provider as _,
 };
+use alloy_eips::eip2935::HISTORY_SERVE_WINDOW;
 use alloy_network::ReceiptResponse as _;
 use eyre::OptionExt as _;
 use tempo_alloy::test_utils::CallBuilderExt;
@@ -19,7 +20,7 @@ use test_case::test_case;
 
 use crate::utils::{
     ClusterConfig, L1ProxyMode, P2pChaosNetwork, RealP2pCluster, ZoneAccount, assert_same_block,
-    batch_count, poll_until, start_real_p2p_cluster, wait_all_at,
+    batch_count, fetch_submit_batch_call, poll_until, start_real_p2p_cluster, wait_all_at,
 };
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,6 +33,9 @@ const RECOVERY_GAP: u64 = 6;
 const REPLICATION_BATCH_INTERVAL_BLOCKS: u64 = 1_000;
 const INITIAL_DEPOSIT: u128 = 10_000_000;
 const WITHDRAWAL_AMOUNT: u128 = 250_000;
+// Crosses the real EIP-2935 window in about 90 seconds, under nextest's 3-minute kill.
+const ANCESTRY_L1_BLOCK_TIME: Duration = Duration::from_millis(10);
+const ANCESTRY_TIMEOUT: Duration = Duration::from_secs(150);
 
 const OUTGOING_LEADER: usize = 0;
 const INCOMING_LEADER: usize = 1;
@@ -74,10 +78,21 @@ async fn start_cluster(
     P2pChaosNetwork,
     [crate::utils::TcpChaosProxy; 3],
 )> {
+    start_cluster_with(withdrawal_batch_interval_blocks, L1_BLOCK_TIME).await
+}
+
+async fn start_cluster_with(
+    withdrawal_batch_interval_blocks: u64,
+    l1_block_time: Duration,
+) -> eyre::Result<(
+    RealP2pCluster,
+    P2pChaosNetwork,
+    [crate::utils::TcpChaosProxy; 3],
+)> {
     let mut cluster = start_real_p2p_cluster(ClusterConfig {
         withdrawal_batch_interval_blocks,
         l1_proxy: L1ProxyMode::PerNode,
-        l1_block_time: Some(L1_BLOCK_TIME),
+        l1_block_time: Some(l1_block_time),
         proxy_p2p: true,
         ..Default::default()
     })
@@ -1245,5 +1260,64 @@ async fn test_follower_keeps_up_with_high_l1_latency() -> eyre::Result<()> {
         .await?;
     wait_all_at(&cluster.nodes, target_head, NETWORK_TIMEOUT).await?;
     assert_same_block(&cluster.nodes, target_head).await?;
+    Ok(())
+}
+
+/// Isolating both followers withholds the 2-of-3 settlement certificate while the leader keeps
+/// finalizing batches. Once L1 is past the real EIP-2935 window of the oldest pending batch, the
+/// restored quorum must settle it in ancestry mode, contiguously and without a leadership change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_pending_batch_settles_via_ancestry_after_quorum_outage() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (cluster, network, _l1_proxies) = start_cluster_with(4, ANCESTRY_L1_BLOCK_TIME).await?;
+    let l1 = cluster.l1.provider();
+    let portal = ZonePortal::new(cluster.portal_address, l1.clone());
+    wait_for_settlement_after(&portal, 0).await?;
+    let epoch = portal.leaderEpoch().call().await?;
+
+    network.disconnect_nodes(&[1, 2]);
+    network
+        .wait_for_nodes_disconnected(&[1, 2], NETWORK_TIMEOUT)
+        .await?;
+    let target = l1.get_block_number().await? + HISTORY_SERVE_WINDOW as u64;
+    let resumed_at = poll_until(
+        ANCESTRY_TIMEOUT,
+        POLL_INTERVAL,
+        "L1 to pass the EIP-2935 window of the pending batch",
+        || async {
+            let height = l1.get_block_number().await?;
+            Ok((height > target).then_some(height))
+        },
+    )
+    .await?;
+    let settled = u64::try_from(portal.zoneHeight().call().await?)?;
+    network.resume_nodes(&[1, 2]);
+    wait_for_settlement_after(&portal, settled).await?;
+
+    let (_, log) = portal
+        .BatchSubmitted_1_filter()
+        .from_block(resumed_at)
+        .query()
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_eyre("no batch settled after the quorum returned")?;
+    let tx_hash = log
+        .transaction_hash
+        .ok_or_eyre("settlement log has no transaction")?;
+    let (call, inclusion) = fetch_submit_batch_call(&cluster.l1, tx_hash).await?;
+    eyre::ensure!(
+        inclusion - call.tempoBlockNumber > HISTORY_SERVE_WINDOW as u64
+            && call.recentTempoBlockNumber != 0,
+        "pending batch with checkpoint {} settled at L1 block {inclusion} without an ancestry anchor ({})",
+        call.tempoBlockNumber,
+        call.recentTempoBlockNumber
+    );
+    eyre::ensure!(
+        portal.leaderEpoch().call().await? == epoch,
+        "leadership changed during the quorum outage"
+    );
+    assert_batch_history_is_canonical(&cluster, &portal).await?;
     Ok(())
 }
