@@ -39,11 +39,9 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage, revert_bytes, with_storage},
     };
-    use alloy::sol_types::{SolCall, SolInterface};
+    use alloy::sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
-    };
+    use tempo_contracts::precompiles::{IStorageCredits, IStorageCredits::IStorageCreditsCalls};
 
     #[test]
     fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
@@ -133,14 +131,7 @@ mod tests {
             with_storage(spec, || -> eyre::Result<()> {
                 let output = StorageCredits::new().call(&calldata, caller);
                 assert!(output.is_err());
-                if spec.is_t11() {
-                    assert!(revert_bytes(&output).is_empty());
-                } else {
-                    assert_eq!(
-                        &revert_bytes(&output)[..4],
-                        StorageCreditsError::invalid_mode().selector().as_slice()
-                    );
-                }
+                assert!(revert_bytes(&output).is_empty());
                 Ok(())
             })?;
         }

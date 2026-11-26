@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn t11_defers_noncanonical_address_calldata_to_upstream() {
+    fn noncanonical_address_calldata_is_deferred_to_upstream() {
         let owner = Address::repeat_byte(0x11);
         let outsider = Address::repeat_byte(0x22);
         let mut data = IStorageCredits::balanceOfCall { account: owner }.abi_encode();
@@ -125,7 +125,7 @@ mod tests {
 
         assert!(matches!(
             admit_at(&data, outsider, TempoHardfork::T8),
-            CallCheck::Revert(data) if data == Unauthorized {}.abi_encode()
+            CallCheck::Continue
         ));
         assert!(matches!(
             admit_at(&data, outsider, TempoHardfork::T11),

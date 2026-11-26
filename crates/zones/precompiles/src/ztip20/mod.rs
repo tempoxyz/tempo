@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn non_canonical_address_padding_cannot_bypass_read_privacy() -> eyre::Result<()> {
+    fn non_canonical_address_padding_is_rejected_before_read_privacy() -> eyre::Result<()> {
         let mut harness = PrecompileHarness::new()?;
         let mut calldata = ITIP20::balanceOfCall {
             account: harness.alice,
@@ -795,12 +795,11 @@ mod tests {
             harness.alice
         );
 
-        let allowed = harness.call(harness.alice, calldata.clone().into(), 100_000, true)?;
-        assert!(allowed.is_success());
-
-        let blocked = harness.call(harness.bob, calldata.into(), 100_000, true)?;
-        assert!(blocked.is_revert());
-        assert_eq!(blocked.bytes, Bytes::from(Unauthorized {}.abi_encode()));
+        for caller in [harness.alice, harness.bob] {
+            let output = harness.call(caller, calldata.clone().into(), 100_000, true)?;
+            assert!(output.is_revert());
+            assert!(output.bytes.is_empty());
+        }
 
         Ok(())
     }
