@@ -94,6 +94,10 @@ const MAX_STAGES: usize = 32;
 /// `None` only after a failed apply, import or rewind consumed it.
 type Shared<D> = Arc<RwLock<Option<D>>>;
 type Reply<T> = Box<dyn FnOnce(Result<T, Error>) + Send>;
+/// The syncs that make a finalize's applied batches durable.
+type FinalizeSync = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<((), ()), commonware_runtime::Error>> + Send>,
+>;
 
 /// Configuration of a [`Store`].
 #[derive(Clone, Debug)]
@@ -318,6 +322,8 @@ impl Store {
         let runtime = RuntimeConfig::new()
             .with_storage_directory(config.directory.clone())
             .with_worker_threads(config.threads.get());
+        // The actor sends itself the end of each finalize's sync, so it keeps serving builds meanwhile.
+        let finalized_tx = commands.clone();
         let thread = std::thread::Builder::new()
             .name("qmdb-state".into())
             .spawn(move || {
@@ -330,7 +336,7 @@ impl Store {
                                 slots: actor.slots.clone(),
                             };
                             if opened_tx.send(Ok(readers)).is_ok() {
-                                actor.run(receiver).await;
+                                actor.run(receiver, finalized_tx).await;
                             }
                         }
                         Err(err) => {
@@ -796,6 +802,12 @@ enum Command {
     Status {
         reply: Reply<Status>,
     },
+    /// Sent by a finalize's sync task once the applied batches are durable.
+    Synced {
+        result: Result<(), Error>,
+        records: Vec<Commit>,
+        reply: Reply<()>,
+    },
     SetBase {
         hash: B256,
         reply: Reply<()>,
@@ -896,6 +908,10 @@ struct Actor {
     pending: HashMap<B256, QmdbBatch>,
     max_pending: usize,
     stages: BTreeMap<StageId, SharedStage>,
+    /// Whether a finalize's sync is still running; finalizes, rewinds and imports wait for it.
+    syncing: bool,
+    /// Commands that arrived while a sync was running, in arrival order.
+    deferred: std::collections::VecDeque<Command>,
 }
 
 impl Actor {
@@ -989,12 +1005,46 @@ impl Actor {
             pending: HashMap::new(),
             max_pending: config.max_pending.get(),
             stages: BTreeMap::new(),
+            syncing: false,
+            deferred: std::collections::VecDeque::new(),
         })
     }
 
-    async fn run(mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
-        while let Some(command) = commands.next().await {
+    async fn run(
+        mut self,
+        mut commands: async_mpsc::UnboundedReceiver<Command>,
+        finalized_tx: async_mpsc::UnboundedSender<Command>,
+    ) {
+        loop {
+            let command = match (!self.syncing).then(|| self.deferred.pop_front()).flatten() {
+                Some(command) => command,
+                None => match commands.next().await {
+                    Some(command) => command,
+                    None => break,
+                },
+            };
+            if self.syncing
+                && matches!(
+                    command,
+                    Command::Finalize { .. } | Command::RewindTo { .. } | Command::Import { .. }
+                )
+            {
+                self.deferred.push_back(command);
+                continue;
+            }
             match command {
+                Command::Synced {
+                    result,
+                    records,
+                    reply,
+                } => {
+                    self.syncing = false;
+                    let result = match result {
+                        Ok(()) => self.record(records).await,
+                        Err(err) => Err(err),
+                    };
+                    reply(result);
+                }
                 Command::Status { reply } => reply(Ok(self.status())),
                 Command::SetBase { hash, reply } => {
                     self.base = Some(hash);
@@ -1035,22 +1085,33 @@ impl Actor {
                 }
                 Command::Register { hash, batch, reply } => reply(self.register(hash, batch)),
                 Command::Root { hash, reply } => reply(Ok(self.root(hash))),
-                Command::Finalize { hash, reply } => {
-                    let result = self.finalize(hash).await;
-                    // Applying moved the committed state under every open stage: look up their
-                    // predecessors again while their blocks still execute.
-                    if result.is_ok() {
-                        for stage in self.stages.values() {
-                            self.spawn_stage(
-                                stage.clone(),
-                                Vec::new(),
-                                Vec::new(),
-                                Box::new(|_| {}),
-                            );
-                        }
+                Command::Finalize { hash, reply } => match self.finalize(hash).await {
+                    Ok(None) => reply(Ok(())),
+                    Ok(Some((records, syncs))) => {
+                        // The applied state is visible to builds now; only the reply waits for
+                        // it to be durable, so builds queued behind this finalize go first.
+                        self.syncing = true;
+                        let tx = finalized_tx.clone();
+                        self.context
+                            .child("finalize_sync")
+                            .spawn(move |_| async move {
+                                let syncing = Instant::now();
+                                let result = syncs.await.map(|_| ()).map_err(Error::from);
+                                metrics::histogram!("qmdb_state_finalize_sync_seconds")
+                                    .record(syncing.elapsed());
+                                if let Err(async_mpsc::TrySendError { .. }) =
+                                    tx.unbounded_send(Command::Synced {
+                                        result,
+                                        records,
+                                        reply,
+                                    })
+                                {
+                                    debug!("QMDB store stopped before a finalize synced");
+                                }
+                            });
                     }
-                    reply(result)
-                }
+                    Err(err) => reply(Err(err)),
+                },
                 Command::Import { writes, end, reply } => reply(self.import(writes, end).await),
                 Command::RewindTo { number, reply } => reply(self.rewind_to(number).await),
                 Command::Prefetch {
@@ -1335,9 +1396,12 @@ impl Actor {
         Ok(())
     }
 
-    async fn finalize(&mut self, hash: B256) -> Result<(), Error> {
+    /// Applies the batches up to block `hash` and makes the applied state current, returning
+    /// the commit records and the sync that makes them durable, or `None` when `hash` is already
+    /// applied.
+    async fn finalize(&mut self, hash: B256) -> Result<Option<(Vec<Commit>, FinalizeSync)>, Error> {
         if self.base == Some(hash) {
-            return Ok(());
+            return Ok(None);
         }
         let pending = self.pending.get(&hash).ok_or(Error::UnknownBlock(hash))?;
         let (number, accounts_batch, slots_batch) = (
@@ -1380,14 +1444,11 @@ impl Actor {
         *slots_lock = Some(slots);
         drop((accounts_lock, slots_lock));
         metrics::histogram!("qmdb_state_finalize_lock_held_seconds").record(locked.elapsed());
-        // Readers see the applied state while it persists: only the commit journal, which
-        // reopening trusts, must wait until it is durable.
-        let syncing = Instant::now();
-        try_join!(accounts_sync, slots_sync)?;
-        metrics::histogram!("qmdb_state_finalize_sync_seconds").record(syncing.elapsed());
+        // Readers and builds see the applied state while it persists: only the commit journal,
+        // which reopening trusts, waits until it is durable, recorded once the sync ends.
         self.applied = Some(number);
         self.base = Some(hash);
-        self.record(applied.into_iter().rev()).await?;
+        let syncs: FinalizeSync = Box::pin(async move { try_join!(accounts_sync, slots_sync) });
 
         let descends = |mut hash: B256, pending: &HashMap<B256, QmdbBatch>| loop {
             if hash == self.base.expect("set above") {
@@ -1407,7 +1468,13 @@ impl Actor {
             .map(|(hash, _)| *hash)
             .collect();
         self.pending.retain(|hash, _| keep.contains(hash));
-        Ok(())
+        // Applying moved the committed state under every open stage: look up their reads again
+        // while their blocks still execute.
+        for stage in self.stages.values() {
+            self.spawn_stage(stage.clone(), Vec::new(), Vec::new(), Box::new(|_| {}));
+        }
+        applied.reverse();
+        Ok(Some((applied, syncs)))
     }
 
     async fn import(&mut self, writes: Writes, end: Option<(u64, B256)>) -> Result<(), Error> {
