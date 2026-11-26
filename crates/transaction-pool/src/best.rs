@@ -1,7 +1,42 @@
 //! A state-aware iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{Address, U256};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
+
+/// Fast hasher for `(Address, U256)` keys where the `U256` storage slot is already a Keccak-256 hash.
+#[derive(Default)]
+struct BalanceSlotHasher(u64);
+
+impl Hasher for BalanceSlotHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        if bytes.len() == 20 {
+            let lo = u64::from_ne_bytes(bytes[12..20].try_into().unwrap());
+            let hi = u64::from_ne_bytes(bytes[4..12].try_into().unwrap());
+            self.0 ^= lo.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hi;
+        } else if bytes.len() >= 8 {
+            let w = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+            self.0 ^= w;
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = self.0.wrapping_mul(0x517C_C1B7_2722_0A95) ^ i;
+    }
+}
+
+type BalanceMap = HashMap<(Address, U256), U256, BuildHasherDefault<BalanceSlotHasher>>;
+pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -14,11 +49,12 @@ use tempo_precompiles::tip20::is_tip20_prefix;
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
-struct DecreasedBalancesSink<'a>(&'a mut HashMap<(Address, U256), U256>);
+struct DecreasedBalancesSink<'a>(&'a mut BalanceMap);
 
 impl StateChangeSink for DecreasedBalancesSink<'_> {
     type Error = core::convert::Infallible;
 
+    #[inline]
     fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         if !is_tip20_prefix(change.address) {
             return Ok(());
@@ -26,22 +62,10 @@ impl StateChangeSink for DecreasedBalancesSink<'_> {
 
         if change.current < change.original {
             self.0.insert((change.address, change.key), change.current);
-        } else if let Some(balance) = self.0.get_mut(&(change.address, change.key)) {
-            *balance = change.current;
-        }
-        Ok(())
-    }
-
-    fn storage_read(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<(), Self::Error> {
-        if is_tip20_prefix(address)
-            && let Some(balance) = self.0.get_mut(&(address, key))
+        } else if !self.0.is_empty()
+            && let Some(balance) = self.0.get_mut(&(change.address, change.key))
         {
-            *balance = value;
+            *balance = change.current;
         }
         Ok(())
     }
@@ -55,7 +79,7 @@ pub struct StateAwareBestTransactions<I> {
     /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    decreased_balances: BalanceMap,
     /// Ordered fallback fee tokens active for the block being built.
     fallback_fee_tokens: &'static [Address],
 }
@@ -72,7 +96,7 @@ where
     pub fn new(inner: I, fallback_fee_tokens: &'static [Address]) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            decreased_balances: BalanceMap::default(),
             fallback_fee_tokens,
         }
     }
@@ -80,9 +104,13 @@ where
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {
-        result
-            .result()
-            .pending_state
+        self.on_state_changes(&result.result().pending_state);
+    }
+
+    /// Processes a transaction's state changes in place without requiring a detached `PendingState`.
+    #[inline]
+    pub fn on_state_changes(&mut self, state_changes: &impl StateChangeSource) {
+        state_changes
             .visit(&mut DecreasedBalancesSink(&mut self.decreased_balances))
             .unwrap();
     }

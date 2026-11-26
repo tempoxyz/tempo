@@ -31,7 +31,7 @@ use std::{
     },
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
@@ -131,6 +131,7 @@ pub struct AA2dPool {
     queued_size: SizeTracker,
     /// Used to broadcast new pending transactions to active [`BestAA2dTransactions`] iterators.
     new_transaction_notifier: broadcast::Sender<AA2dStoredTransaction>,
+    broadcast_seq: Arc<AtomicU64>,
 }
 
 impl Default for AA2dPool {
@@ -165,6 +166,7 @@ impl AA2dPool {
             pending_size: Default::default(),
             queued_size: Default::default(),
             new_transaction_notifier,
+            broadcast_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -172,6 +174,7 @@ impl AA2dPool {
     fn notify_new_pending(&self, tx: &AA2dStoredTransaction) {
         if self.new_transaction_notifier.receiver_count() > 0 {
             let _ = self.new_transaction_notifier.send(tx.clone());
+            self.broadcast_seq.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -574,6 +577,7 @@ impl AA2dPool {
         // Notify active BestAA2dTransactions iterators about the new pending transaction
         if let Some(pending_tx) = pending_tx_update {
             let _ = self.new_transaction_notifier.send(pending_tx);
+            self.broadcast_seq.fetch_add(1, Ordering::Release);
         }
 
         // Expiring nonce transactions are always immediately pending
@@ -804,23 +808,31 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool at `base_fee`.
-    #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
-            self.expiring_nonce_eviction_order.clone()
+            self.expiring_nonce_eviction_order
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
         } else {
-            self.expiring_nonce_txs
+            let mut order = self
+                .expiring_nonce_txs
                 .values()
                 .map(|tx| ExpiringNonceEvictionKey::from_pending_with_base_fee(tx, base_fee))
-                .collect()
+                .collect::<Vec<_>>();
+            order.sort_unstable();
+            order
         };
 
         BestAA2dTransactions {
             independent: self.independent_transactions.eviction_order_for(base_fee),
             by_id: self.by_id.clone(),
             expiring_nonce_order,
+            live_expiring_nonce_order: BTreeSet::new(),
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            broadcast_seq: Arc::clone(&self.broadcast_seq),
+            last_seen_broadcast_seq: self.broadcast_seq.load(Ordering::Acquire),
             last_priority: None,
             base_fee,
         }
@@ -2438,12 +2450,15 @@ pub(crate) struct BestAA2dTransactions {
     /// Expiring nonce pending transactions in eviction order. The best
     /// transaction is at the back of the set, and the key carries the pending
     /// transaction so this snapshot does not clone the pool's expiring hash map.
-    expiring_nonce_order: BTreeSet<ExpiringNonceEvictionKey>,
+    expiring_nonce_order: Vec<ExpiringNonceEvictionKey>,
+    live_expiring_nonce_order: BTreeSet<ExpiringNonceEvictionKey>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
     /// Live feed of new pending transactions arriving after this iterator was created.
     new_transaction_receiver: Option<broadcast::Receiver<AA2dStoredTransaction>>,
+    broadcast_seq: Arc<AtomicU64>,
+    last_seen_broadcast_seq: u64,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u64>>,
     /// Base fee used to filter and prioritize this block-building snapshot.
@@ -2464,9 +2479,36 @@ impl BestAA2dTransactions {
         Some((id, tx))
     }
 
-    /// Removes the best expiring nonce transaction from the set.
+    /// Peeks at the best expiring nonce transaction across the snapshot and live updates.
+    #[inline]
+    fn peek_best_expiring_nonce(&self) -> Option<&ExpiringNonceEvictionKey> {
+        match (
+            self.expiring_nonce_order.last(),
+            self.live_expiring_nonce_order.last(),
+        ) {
+            (Some(a), Some(b)) => Some(if a >= b { a } else { b }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    /// Removes the best expiring nonce transaction from the snapshot or live set.
+    #[inline]
     fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
-        let key = self.expiring_nonce_order.pop_last()?;
+        let key = if self.live_expiring_nonce_order.is_empty() {
+            self.expiring_nonce_order.pop()?
+        } else {
+            match (
+                self.expiring_nonce_order.last(),
+                self.live_expiring_nonce_order.last(),
+            ) {
+                (Some(a), Some(b)) if a >= b => self.expiring_nonce_order.pop()?,
+                (_, Some(_)) => self.live_expiring_nonce_order.pop_last()?,
+                (Some(_), None) => self.expiring_nonce_order.pop()?,
+                (None, None) => return None,
+            }
+        };
         Some(key.into_transaction())
     }
 
@@ -2474,7 +2516,7 @@ impl BestAA2dTransactions {
     fn pop_best(&mut self) -> Option<PoppedAA2dTransaction> {
         match (
             self.independent.last_key_value().map(|(key, _)| key),
-            self.expiring_nonce_order.last(),
+            self.peek_best_expiring_nonce(),
         ) {
             (Some(regular), Some(expiring)) => {
                 if regular
@@ -2534,6 +2576,14 @@ impl BestAA2dTransactions {
 
     /// Drains new pending transactions from the broadcast channel and inserts them.
     fn add_new_transactions(&mut self) {
+        if self.new_transaction_receiver.is_none() {
+            return;
+        }
+        let current_seq = self.broadcast_seq.load(Ordering::Acquire);
+        if current_seq == self.last_seen_broadcast_seq {
+            return;
+        }
+        self.last_seen_broadcast_seq = current_seq;
         for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
             if let Some(incoming) = self.try_recv() {
                 let (tx, process) = match incoming {
@@ -2542,7 +2592,7 @@ impl BestAA2dTransactions {
                 };
                 if tx.transaction.transaction.is_expiring_nonce() {
                     if process && can_pay_base_fee(&tx, self.base_fee) {
-                        self.expiring_nonce_order
+                        self.live_expiring_nonce_order
                             .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
                     }
                 } else {
