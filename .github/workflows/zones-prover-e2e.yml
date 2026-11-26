@@ -46,6 +46,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     steps:
@@ -86,11 +87,19 @@ jobs:
             core.setOutput('base', base);
             core.setOutput('suite', suite);
             core.setOutput('status_context', statusContext);
-            // A merge group's ref names its last PR; compat tests only the reth-auto-bump PR.
+            // A group's commit holds its queue entry and every entry ahead of it, so compat runs when
+            // the reth-auto-bump PR is any of them. A group missing from the queue fails closed.
             if (compat) {
-              const pr = /\/pr-(\d+)-[0-9a-f]{40}$/.exec(context.payload.merge_group.head_ref)?.[1];
-              const {data: pull} = pr ? await github.rest.pulls.get({...context.repo, pull_number: Number(pr)}) : {data: null};
-              const bump = pull?.head.ref === 'reth-auto-bump' && pull.head.repo?.full_name === pull.base.repo.full_name;
+              const branch = context.payload.merge_group.base_ref.replace(/^refs\/heads\//, '');
+              const {repository} = await github.graphql(`query($owner: String!, $repo: String!, $branch: String!) {
+                repository(owner: $owner, name: $repo) { mergeQueue(branch: $branch) { entries(first: 100) { nodes {
+                  position headCommit { oid } pullRequest { headRefName headRepository { nameWithOwner } } } } } }
+              }`, {...context.repo, branch});
+              const entries = repository.mergeQueue?.entries.nodes ?? [];
+              const group = entries.find(entry => entry.headCommit?.oid === sha);
+              if (!group) throw new Error('Merge group is not in the queue');
+              const bump = entries.some(entry => entry.position <= group.position && entry.pullRequest.headRefName === 'reth-auto-bump'
+                && entry.pullRequest.headRepository?.nameWithOwner === `${context.repo.owner}/${context.repo.repo}`);
               core.setOutput('relevant', bump ? 'true' : 'false');
             }
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
