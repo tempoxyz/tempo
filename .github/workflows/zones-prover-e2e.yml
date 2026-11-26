@@ -4,8 +4,9 @@ name: Prover E2E
 # this repository; the publisher never checks out or executes candidate code.
 # The compat suite runs the candidate L1 and Zone nodes against the provers pinned in
 # crates/precompiles/src/zone_verifier/pcrs.json for active and scheduled forks, and reports
-# "Tempo Zone Prover Compat". In the merge queue it runs for the reth-auto-bump PR and reports
-# success for every other group, so the queue can require it. Dispatch it for a release commit.
+# "Tempo Zone Prover Compat", a non-blocking backstop behind the eth_getMultiProof snapshots. In
+# the merge queue it runs for the reth-auto-bump PR's own entry and reports success for every
+# other group. Dispatch it for a release commit.
 "on": # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
     inputs:
@@ -93,20 +94,14 @@ jobs:
               description: `${owner}: Checking prover E2E changes`,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
-            // A group's commit holds its queue entry and every entry ahead of it, so compat runs when
-            // the reth-auto-bump PR is any of them. The pending status comes first, so a failed lookup or a
-            // group missing from the queue reports failure instead of leaving no status.
+            // Only the reth-auto-bump PR's own queue entry, which its group's ref names, runs compat;
+            // groups behind it would repeat the run. The pending status comes first, so a failed
+            // lookup reports failure instead of leaving no status.
             if (compat) {
-              const branch = context.payload.merge_group.base_ref.replace(/^refs\/heads\//, '');
-              const {repository} = await github.graphql(`query($owner: String!, $repo: String!, $branch: String!) {
-                repository(owner: $owner, name: $repo) { mergeQueue(branch: $branch) { entries(first: 100) { nodes {
-                  position headCommit { oid } pullRequest { headRefName headRepository { nameWithOwner } } } } } }
-              }`, {...context.repo, branch});
-              const entries = repository.mergeQueue?.entries.nodes ?? [];
-              const group = entries.find(entry => entry.headCommit?.oid === sha);
-              if (!group) throw new Error('Merge group is not in the queue');
-              const bump = entries.some(entry => entry.position <= group.position && entry.pullRequest.headRefName === 'reth-auto-bump'
-                && entry.pullRequest.headRepository?.nameWithOwner === `${context.repo.owner}/${context.repo.repo}`);
+              const pr = /\/pr-(\d+)-[0-9a-f]{40}$/.exec(context.payload.merge_group.head_ref)?.[1];
+              if (!pr) throw new Error('Merge group ref names no PR');
+              const {data: pull} = await github.rest.pulls.get({...context.repo, pull_number: Number(pr)});
+              const bump = pull.head.ref === 'reth-auto-bump' && pull.head.repo?.full_name === pull.base.repo.full_name;
               core.setOutput('relevant', bump ? 'true' : 'false');
             }
       - name: Detect merge-queue changes

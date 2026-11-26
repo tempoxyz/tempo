@@ -8,7 +8,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
 };
 use alloy_rlp::Decodable as _;
-use alloy_trie::nodes::TrieNode;
+use alloy_trie::{Nibbles, nodes::TrieNode};
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::ITIP403Registry as TIP403Registry;
@@ -32,17 +32,13 @@ pub(crate) struct WitnessShapes {
     private_key: String,
 }
 
-fn nibble(path: &B256, index: usize) -> u8 {
-    (path[index / 2] >> if index.is_multiple_of(2) { 4 } else { 0 }) & 0xf
-}
-
 /// The storage trie path of a slot.
-fn path(slot: U256) -> B256 {
-    keccak256(B256::from(slot))
+fn path(slot: U256) -> Nibbles {
+    Nibbles::unpack(keccak256(B256::from(slot)))
 }
 
 /// The first ground address, from seed, whose slot path satisfies accept.
-fn grind(seed: u64, slot: impl Fn(Address) -> U256, accept: impl Fn(&B256) -> bool) -> Address {
+fn grind(seed: u64, slot: impl Fn(Address) -> U256, accept: impl Fn(&Nibbles) -> bool) -> Address {
     (0u64..)
         .map(|i| Address::from_word(keccak256([seed.to_be_bytes(), i.to_be_bytes()].concat())))
         .find(|address| accept(&path(slot(*address))))
@@ -76,20 +72,20 @@ impl WitnessShapes {
         // there below an extension, unless an existing key shares it: the proofs catch that.
         let first = grind(0, whitelisted, |_| true);
         let prefix = path(whitelisted(first));
-        let shares = |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
+        let shares = |p: &Nibbles, len: usize| p.common_prefix_length(&prefix) >= len;
         let second = grind(1, whitelisted, |p| {
-            shares(p, PREFIX) && nibble(p, PREFIX) != nibble(&prefix, PREFIX)
+            shares(p, PREFIX) && p.get_unchecked(PREFIX) != prefix.get_unchecked(PREFIX)
         });
         let children = [
-            nibble(&prefix, PREFIX),
-            nibble(&path(whitelisted(second)), PREFIX),
+            prefix.get_unchecked(PREFIX),
+            path(whitelisted(second)).get_unchecked(PREFIX),
         ];
         // Diverging inside the extension ends at it; below it, an unused nibble is empty.
         let extension = grind(2, receive, |p| {
-            shares(p, PREFIX - 1) && nibble(p, PREFIX - 1) != nibble(&prefix, PREFIX - 1)
+            shares(p, PREFIX - 1) && p.get_unchecked(PREFIX - 1) != prefix.get_unchecked(PREFIX - 1)
         });
         let empty_child = grind(3, receive, |p| {
-            shares(p, PREFIX) && !children.contains(&nibble(p, PREFIX))
+            shares(p, PREFIX) && !children.contains(&p.get_unchecked(PREFIX))
         });
         for account in [first, second] {
             let receipt = registry
