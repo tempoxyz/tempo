@@ -8,17 +8,19 @@ use std::{
     sync::Arc,
 };
 
-use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, Signature, TxKind, U256};
 use evm2::EvmFeatures;
 use invariants_core::{Call, Observe as _, ObserveError, Outcome, Report, Views};
 use reth_evm::ConfigureEvm as _;
 use reth_primitives_traits::Recovered;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, PATH_USD_ADDRESS};
 use tempo_evm::{TempoEvm, TempoEvmEnv};
 use tempo_fuzz_engine::{StepState, invariant_infos, observed};
 use tempo_fuzz_types::InvariantInfo;
 use tempo_invariants::{
     Checked as _, Ran, StepChecked as _,
+    configurable_account::Leaf,
     zone_account::{
         self, Mirror, Tempo, VIEW, Zone as ZoneModel, ZoneAt, ZoneLeaf, ZoneLeaves, ZoneStep,
     },
@@ -157,13 +159,20 @@ impl AccountChecks {
                 )
             })
             .collect();
+        let spec = state.env().spec;
+        let reserved: Vec<Address> = self
+            .watched
+            .iter()
+            .copied()
+            .filter(|address| reserved(*address, spec))
+            .collect();
         let mut views = ZoneViews::new(state, state.env().clone());
         let at = ZoneAt {
             tempo_state: TEMPO_STATE_ADDRESS,
             precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
             accounts: &self.watched,
             coded: &coded,
-            spec: state.env().spec,
+            reserved: &reserved,
         };
         observed(report, VIEW, "the zone", ZoneModel::observe(&mut views, at))
     }
@@ -190,9 +199,19 @@ impl AccountChecks {
         overlay.l1_state().begin_transaction(U256::from(anchor));
         let mut of = BTreeMap::new();
         for &address in accounts {
-            let Some(stored) = state.leaf(address) else {
+            let Some(account) = state.account(address) else {
                 continue;
             };
+            let extension = account
+                .as_ref()
+                .is_some_and(|info| !info.extension.is_empty());
+            // An extension that does not encode leaves no commitment, which `extension` catches.
+            let stored = state.leaf(address).unwrap_or_else(|| Leaf {
+                commitment: B256::ZERO,
+                code_hash: account
+                    .as_ref()
+                    .map_or(KECCAK256_EMPTY, |info| info.code_hash),
+            });
             state.forget_missed();
             let served = overlay.get_account(&address);
             let served = if state.missed() {
@@ -209,6 +228,8 @@ impl AccountChecks {
                 address,
                 ZoneLeaf {
                     stored,
+                    extension,
+                    reserved: reserved(address, spec),
                     served,
                     tempo,
                 },
@@ -216,10 +237,16 @@ impl AccountChecks {
         }
         ZoneLeaves {
             active: spec.is_t14(),
-            spec,
             of,
         }
     }
+}
+
+/// Whether the zone never reads Tempo for `address` at `spec`: an address no native account
+/// may hold, or one of the zone's precompiles.
+fn reserved(address: Address, spec: TempoHardfork) -> bool {
+    !tempo_chainspec::is_valid_native_account(address, spec)
+        || zone_precompiles::is_zone_precompile(address, spec)
 }
 
 /// The portal of the zone `env`'s chain ID names.

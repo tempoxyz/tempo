@@ -3,12 +3,11 @@
 use std::fmt;
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
-use alloy_sol_types::SolEvent;
 use invariants_core::{check, ensure};
-use tempo_contracts::{precompiles::ITIP20::Approval, zones::TempoState::TempoBlockFinalized};
+use tempo_contracts::{precompiles::ITIP20::permitCall, zones::TempoState::TempoBlockFinalized};
 use tempo_primitives::is_tip20_prefix;
 
-use super::{Mirror, ZoneLeaves, ZoneStep, reserved};
+use super::{Mirror, ZoneLeaves, ZoneStep};
 use crate::{
     Check, Checked, Ran, StepChecked, TempoHardfork, Verdict,
     configurable_account::{
@@ -149,8 +148,8 @@ pub const STEP_CHECKS: &[Check<ZoneStep>] = &[
             ensure!(logs == 0, "emitted {logs} configuration events on a zone")
         },
     },
-    // A TIP-20 approval for another account than the sender's is a `permit`, whose owner's root
-    // key Tempo's commitment at the anchor must not have retired.
+    // A committed TIP-20 `permit` is signed by its owner's root key, which Tempo's commitment at
+    // the anchor must not have retired.
     // <https://github.com/tempoxyz/tempo/blob/4008a2986ad18fa3bf55838d2d63bbb878ee7da7/tips/tip-1154.md#L60>
     check! {
         id: "TEMPO-ZONE-ACCOUNT-PERMIT-RETIRED",
@@ -261,12 +260,13 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
         since: TempoHardfork::T14,
         over: |l: &ZoneLeaves| l.of.keys(),
         judge: |l, account| {
-            let stored = l.of.get(*account)?.stored;
-            let marker =
-                stored.code_hash == MARKER_CODE_HASH && reserved(**account, l.spec).is_none();
+            let leaf = l.of.get(*account)?;
+            let stored = leaf.stored;
+            let marker = stored.code_hash == MARKER_CODE_HASH && !leaf.reserved;
             ensure!(
-                stored.commitment.is_zero() && !marker,
-                "zone state stores commitment {} and code hash {}",
+                !leaf.extension && stored.commitment.is_zero() && !marker,
+                "zone state stores {}commitment {} and code hash {}",
+                if leaf.extension { "an extension, " } else { "" },
                 stored.commitment,
                 stored.code_hash
             )
@@ -285,8 +285,7 @@ pub const LEAF_CHECKS: &[Check<ZoneLeaves>] = &[
         judge: |l, account| {
             let leaf = l.of.get(*account)?;
             let (served, stored) = (leaf.served?, leaf.stored.code_hash);
-            let overlaid =
-                l.active && reserved(**account, l.spec).is_none() && stored == KECCAK256_EMPTY;
+            let overlaid = l.active && !leaf.reserved && stored == KECCAK256_EMPTY;
             let want = match overlaid {
                 true if leaf.tempo?.is_zero() => KECCAK256_EMPTY,
                 true => MARKER_CODE_HASH,
@@ -327,22 +326,20 @@ impl fmt::Display for Permit {
     }
 }
 
-/// The token and owner of each TIP-20 approval in a user transaction's step whose owner is not the
-/// sender. Zones run no contracts, so only `permit` approves for another account.
+/// The token and owner of each committed TIP-20 `permit` call in the step's call trace; none when
+/// the trace was not kept.
 fn permits(step: &ZoneStep) -> impl Iterator<Item = Permit> + '_ {
-    let sender = step.ran.tx().filter(|tx| tx.success).map(|tx| tx.sender);
-    step.logs
+    step.calls
         .iter()
-        .filter(move |_| sender.is_some())
-        .filter(|log| is_tip20_prefix(log.address))
-        .filter_map(|log| {
-            Some((
-                log.address,
-                Approval::decode_log_data(&log.data).ok()?.owner,
-            ))
+        .flatten()
+        .filter(|frame| frame.committed && is_tip20_prefix(frame.target))
+        .filter_map(|frame| {
+            let permit = frame.decode::<permitCall>()?;
+            Some(Permit {
+                token: frame.target,
+                owner: permit.owner,
+            })
         })
-        .filter(move |(_, owner)| Some(*owner) != sender)
-        .map(|(token, owner)| Permit { token, owner })
 }
 
 /// The quorums of the step's transaction.
@@ -357,4 +354,436 @@ fn quorums(step: &ZoneStep) -> impl Iterator<Item = &Quorum> {
 /// the anchor (a step that moved it is judged by ANCHOR-ADVANCE).
 fn at_tx(s: &ZoneStep) -> Option<&Mirror> {
     (s.pre.zone.anchor == s.post.zone.anchor).then_some(&s.pre)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, address};
+    use invariants_core::{Effects, Outcome, Report};
+    use tempo_contracts::precompiles::IConfigurableAccount::ConfigurableAccountOwner;
+
+    use super::*;
+    use crate::{
+        Tx,
+        configurable_account::{Authority, ConfigurableAccountConfig, Key, Leaf, Quorum, Role},
+        zone_account::{Anchor, Tempo, Zone, ZoneLeaf},
+    };
+
+    const TEMPO_STATE: Address = address!("0x1c00000000000000000000000000000000000000");
+    const PRECOMPILE: Address = address!("0xaaaa000000000000000000000000000000000000");
+    const TOKEN: Address = address!("0x20c0000000000000000000000000000000000001");
+    const ALICE: Address = address!("0x00000000000000000000000000000000000a11ce");
+    const SENDER: Address = address!("0x0000000000000000000000000000000000005e1d");
+
+    fn word(byte: u8) -> B256 {
+        B256::with_last_byte(byte)
+    }
+
+    fn anchor(number: u64) -> Anchor {
+        Anchor {
+            number,
+            hash: word(number as u8),
+        }
+    }
+
+    /// A zone at `number` reading `of`, with nothing marked, coded or reserved.
+    fn zone(number: u64, of: &[(Address, B256)]) -> Zone {
+        Zone {
+            tempo_state: TEMPO_STATE,
+            precompile: PRECOMPILE,
+            anchor: anchor(number),
+            of: of.iter().copied().collect(),
+            marked: BTreeMap::new(),
+            coded: Default::default(),
+            reserved: Default::default(),
+        }
+    }
+
+    fn mirror(zone: Zone, tempo: &[(Address, B256)]) -> Mirror {
+        let block = zone.anchor.number;
+        Mirror::new(
+            zone,
+            Some(Tempo::new(block, tempo.iter().copied().collect())),
+        )
+        .unwrap()
+    }
+
+    fn tx(authority: Authority) -> Ran {
+        Ran::Tx(Tx {
+            sender: SENDER,
+            success: true,
+            authority,
+        })
+    }
+
+    fn effects(ran: Ran) -> Effects<Ran> {
+        Effects {
+            changes: Vec::new(),
+            logs: Vec::new(),
+            calls: None,
+            ran,
+        }
+    }
+
+    /// A step from `pre` to `post` whose transaction `authority` signed.
+    fn step(pre: Mirror, post: Mirror, effects: Effects<Ran>) -> ZoneStep {
+        ZoneStep::new(pre, post, effects)
+    }
+
+    /// The (ID, subject, detail) of each violation `checks` find on `ctx` at T14.
+    fn broken<C>(checks: &[Check<C>], ctx: &C) -> Vec<(String, String, String)> {
+        let mut report = Report::default();
+        report.run(checks, ctx, Some(&TempoHardfork::T14));
+        report
+            .violations
+            .into_iter()
+            .map(|v| (v.id.into_owned(), v.subject, v.detail))
+            .collect()
+    }
+
+    fn one(id: &str, subject: impl ToString, detail: &str) -> Vec<(String, String, String)> {
+        vec![(id.to_owned(), subject.to_string(), detail.to_owned())]
+    }
+
+    #[test]
+    fn a_commitment_other_than_tempos_breaks_the_mirror() {
+        let m = mirror(zone(7, &[(ALICE, word(1))]), &[(ALICE, word(2))]);
+        assert_eq!(
+            broken(CHECKS, &m),
+            one(
+                "TEMPO-ZONE-ACCOUNT-COMMITMENT-MIRROR",
+                ALICE,
+                &format!(
+                    "the zone reads commitment {}, Tempo holds {} at {}",
+                    word(1),
+                    word(2),
+                    anchor(7)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_reserved_address_reading_a_commitment_breaks_ineligible() {
+        let mut z = zone(7, &[(ALICE, word(1))]);
+        z.reserved.insert(ALICE);
+        let m = mirror(z, &[(ALICE, word(1))]);
+        assert_eq!(
+            broken(CHECKS, &m),
+            one(
+                "TEMPO-ZONE-ACCOUNT-INELIGIBLE",
+                ALICE,
+                &format!(
+                    "is an address the zone never reads Tempo for, yet the zone reads commitment {}",
+                    word(1)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_coded_account_reading_a_commitment_breaks_ineligible() {
+        let mut z = zone(7, &[(ALICE, word(1))]);
+        z.coded.insert(ALICE);
+        let m = mirror(z, &[(ALICE, word(1))]);
+        assert_eq!(
+            broken(CHECKS, &m),
+            one(
+                "TEMPO-ZONE-ACCOUNT-INELIGIBLE",
+                ALICE,
+                &format!(
+                    "is an account with zone code, yet the zone reads commitment {}",
+                    word(1)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_marker_without_a_tempo_commitment_breaks_marker_call() {
+        let mut z = zone(7, &[(ALICE, B256::ZERO)]);
+        z.marked.insert(ALICE, true);
+        let m = mirror(z, &[(ALICE, B256::ZERO)]);
+        assert_eq!(
+            broken(CHECKS, &m),
+            one(
+                "TEMPO-ZONE-ACCOUNT-MARKER-CALL",
+                ALICE,
+                &format!(
+                    "answers as the account marker, Tempo's commitment at {} is {}",
+                    anchor(7),
+                    B256::ZERO
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_user_transaction_moving_the_anchor_breaks_anchor_advance() {
+        let s = step(
+            mirror(zone(7, &[]), &[]),
+            mirror(zone(8, &[]), &[]),
+            effects(tx(Authority::default())),
+        );
+        assert_eq!(
+            broken(STEP_CHECKS, &s),
+            one(
+                "TEMPO-ZONE-ACCOUNT-ANCHOR-ADVANCE",
+                anchor(8),
+                &format!(
+                    "moved from {} without a TempoBlockFinalized event",
+                    anchor(7)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_commitment_changing_at_the_same_anchor_breaks_commitment_anchored() {
+        let s = step(
+            mirror(zone(7, &[(ALICE, word(1))]), &[]),
+            mirror(zone(7, &[(ALICE, word(2))]), &[]),
+            effects(Ran::PreBlock),
+        );
+        assert_eq!(
+            broken(STEP_CHECKS, &s),
+            one(
+                "TEMPO-ZONE-ACCOUNT-COMMITMENT-ANCHORED",
+                ALICE,
+                &format!(
+                    "commitment {} -> {}, marker (None, None), while the zone stayed at {}",
+                    word(1),
+                    word(2),
+                    anchor(7)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_configuration_event_breaks_no_write() {
+        let mut e = effects(Ran::PreBlock);
+        e.logs.push(Log {
+            address: PRECOMPILE,
+            data: LogData::new_unchecked(vec![word(9)], Bytes::new()),
+        });
+        let s = step(mirror(zone(7, &[]), &[]), mirror(zone(7, &[]), &[]), e);
+        assert_eq!(
+            broken(STEP_CHECKS, &s),
+            one(
+                "TEMPO-ZONE-ACCOUNT-NO-WRITE",
+                PRECOMPILE,
+                "emitted 1 configuration events on a zone",
+            )
+        );
+    }
+
+    fn permit(owner: Address) -> permitCall {
+        permitCall {
+            owner,
+            spender: SENDER,
+            value: U256::from(1),
+            deadline: U256::MAX,
+            v: 27,
+            r: word(1),
+            s: word(2),
+        }
+    }
+
+    #[test]
+    fn a_permit_of_a_committed_owner_breaks_permit_retired() {
+        let m = || mirror(zone(7, &[]), &[(ALICE, word(1))]);
+        let e = effects(tx(Authority::default())).call(
+            SENDER,
+            TOKEN,
+            &permit(ALICE),
+            Outcome::Return(Bytes::new()),
+        );
+        assert_eq!(
+            broken(STEP_CHECKS, &step(m(), m(), e)),
+            one(
+                "TEMPO-ZONE-ACCOUNT-PERMIT-RETIRED",
+                format!("permit of {ALICE} on {TOKEN}"),
+                &format!(
+                    "{TOKEN} accepted a permit signed by the root key of {ALICE}, Tempo's \
+                     commitment at {} is {}",
+                    anchor(7),
+                    word(1)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn a_reverted_permit_is_not_judged() {
+        let m = || mirror(zone(7, &[]), &[(ALICE, word(1))]);
+        let e = effects(tx(Authority::default())).call(
+            SENDER,
+            TOKEN,
+            &permit(ALICE),
+            Outcome::Revert(Bytes::new()),
+        );
+        assert_eq!(broken(STEP_CHECKS, &step(m(), m(), e)), vec![]);
+    }
+
+    #[test]
+    fn an_authorization_list_breaks_no_authorization_list() {
+        let m = || mirror(zone(7, &[]), &[]);
+        let authority = Authority {
+            authorization_list: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            broken(STEP_CHECKS, &step(m(), m(), effects(tx(authority)))),
+            one(
+                "TEMPO-ZONE-ACCOUNT-NO-AUTHORIZATION-LIST",
+                SENDER,
+                "sent a zone transaction with an authorization list",
+            )
+        );
+    }
+
+    #[test]
+    fn a_quorum_off_tempos_commitment_breaks_quorum_commitment() {
+        let m = || mirror(zone(7, &[]), &[(ALICE, word(1))]);
+        let config = ConfigurableAccountConfig {
+            salt: word(3),
+            version: 1,
+            threshold: 1,
+            owners: vec![ConfigurableAccountOwner {
+                owner: SENDER,
+                weight: 1,
+            }],
+        };
+        let hash = spec::commitment(&config);
+        let quorum = Quorum {
+            role: Role::Sender,
+            account: ALICE,
+            config,
+            approvals: Vec::new(),
+        };
+        let subject = quorum.to_string();
+        let authority = Authority {
+            quorums: vec![quorum],
+            ..Default::default()
+        };
+        assert_eq!(
+            broken(STEP_CHECKS, &step(m(), m(), effects(tx(authority)))),
+            one(
+                "TEMPO-ZONE-ACCOUNT-QUORUM-COMMITMENT",
+                subject,
+                &format!(
+                    "carries a configuration hashing to {hash:?}, Tempo's commitment at {} is {}",
+                    anchor(7),
+                    word(1)
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn an_ordinary_key_of_a_committed_account_breaks_root_key_retired() {
+        let m = || mirror(zone(7, &[]), &[(ALICE, word(1))]);
+        let key = Key {
+            role: Role::Sender,
+            account: ALICE,
+        };
+        let authority = Authority {
+            keys: vec![key],
+            ..Default::default()
+        };
+        assert_eq!(
+            broken(STEP_CHECKS, &step(m(), m(), effects(tx(authority)))),
+            one(
+                "TEMPO-ZONE-ACCOUNT-ROOT-KEY-RETIRED",
+                key,
+                &format!(
+                    "signed with an ordinary key, Tempo's commitment at {} is {}",
+                    anchor(7),
+                    word(1)
+                ),
+            )
+        );
+    }
+
+    fn leaves(leaf: ZoneLeaf) -> ZoneLeaves {
+        ZoneLeaves {
+            active: true,
+            of: [(ALICE, leaf)].into(),
+        }
+    }
+
+    fn leaf(code_hash: B256) -> ZoneLeaf {
+        ZoneLeaf {
+            stored: Leaf {
+                commitment: B256::ZERO,
+                code_hash,
+            },
+            extension: false,
+            reserved: false,
+            served: Some(code_hash),
+            tempo: Some(B256::ZERO),
+        }
+    }
+
+    #[test]
+    fn a_stored_extension_breaks_state_clean() {
+        let l = leaves(ZoneLeaf {
+            extension: true,
+            ..leaf(KECCAK256_EMPTY)
+        });
+        assert_eq!(
+            broken(LEAF_CHECKS, &l),
+            one(
+                "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
+                ALICE,
+                &format!(
+                    "zone state stores an extension, commitment {} and code hash {KECCAK256_EMPTY}",
+                    B256::ZERO
+                ),
+            )
+        );
+    }
+
+    #[test]
+    fn stored_marker_code_breaks_state_clean_unless_reserved() {
+        assert_eq!(
+            broken(LEAF_CHECKS, &leaves(leaf(MARKER_CODE_HASH))),
+            one(
+                "TEMPO-ZONE-ACCOUNT-STATE-CLEAN",
+                ALICE,
+                &format!(
+                    "zone state stores commitment {} and code hash {MARKER_CODE_HASH}",
+                    B256::ZERO
+                ),
+            )
+        );
+        let reserved = leaves(ZoneLeaf {
+            reserved: true,
+            ..leaf(MARKER_CODE_HASH)
+        });
+        assert_eq!(broken(LEAF_CHECKS, &reserved), vec![]);
+    }
+
+    #[test]
+    fn no_marker_served_for_a_committed_account_breaks_code_served() {
+        let l = leaves(ZoneLeaf {
+            tempo: Some(word(1)),
+            ..leaf(KECCAK256_EMPTY)
+        });
+        assert_eq!(
+            broken(LEAF_CHECKS, &l),
+            one(
+                "TEMPO-ZONE-ACCOUNT-CODE-SERVED",
+                ALICE,
+                &format!(
+                    "serves code hash {KECCAK256_EMPTY}, not {MARKER_CODE_HASH} (stored code hash \
+                     {KECCAK256_EMPTY}, Tempo commitment {:?})",
+                    Some(word(1))
+                ),
+            )
+        );
+    }
 }
