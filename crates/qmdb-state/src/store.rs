@@ -768,6 +768,14 @@ impl Readers {
         name: &'static str,
         keys: &[Key],
     ) -> Result<Vec<Option<D::Value>>, Error> {
+        // Reads the page cache serves complete on the calling thread, without waiting on the
+        // lock, the runtime or another pool. Only a finalize's apply holds the lock exclusively.
+        if let Ok(guard) = db.try_read()
+            && let Some(db) = guard.as_ref()
+            && let Some(values) = db.try_read_cached(keys)
+        {
+            return Ok(values);
+        }
         // A rayon worker that waits on the database's pool runs other jobs of its own pool
         // meanwhile, such as a prewarming job that re-enters state the waiting one borrows:
         // such callers read on the runtime's blocking pool instead.
@@ -1785,6 +1793,9 @@ trait Readable: Send + Sync + 'static {
         &self,
         keys: &[Key],
     ) -> impl Future<Output = Result<Vec<Option<Self::Value>>, Error>> + Send;
+
+    /// Reads `keys` from the page cache on the calling thread, or `None` if any misses.
+    fn try_read_cached(&self, keys: &[Key]) -> Option<Vec<Option<Self::Value>>>;
 }
 
 impl<const N: usize, const P: usize> Readable for Db<N, P> {
@@ -1793,6 +1804,10 @@ impl<const N: usize, const P: usize> Readable for Db<N, P> {
     async fn read_many(&self, keys: &[Key]) -> Result<Vec<Option<FixedBytes<N>>>, Error> {
         let keys: Vec<&Key> = keys.iter().collect();
         Ok(self.get_many(&keys).await?)
+    }
+
+    fn try_read_cached(&self, keys: &[Key]) -> Option<Vec<Option<FixedBytes<N>>>> {
+        self.try_get_many_cached(keys)
     }
 }
 
