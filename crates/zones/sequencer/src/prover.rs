@@ -623,12 +623,14 @@ async fn verify_remotely<P>(
             validate_response_header(version, request_id.as_deref(), &expected_id)?;
             // A local run tells prover version or format skew apart from a really invalid witness.
             if code == ErrorCode::VerificationFailed
-                && Arc::clone(&context.local_spf).try_acquire_owned().is_ok()
+                && let Ok(permit) = Arc::clone(&context.local_spf).try_acquire_owned()
             {
                 let spf_config = SpfConfig::new(Arc::clone(&context.config.chain_spec));
                 let witness = Arc::unwrap_or_clone(request).witness;
                 let (zone_from, zone_to) = (job.from, job.to);
                 tokio::task::spawn_blocking(move || {
+                    // Moved in so the permit is held until the run ends.
+                    let _permit = permit;
                     let result = prove_zone_batch(&spf_config, witness);
                     // PRIVACY: Assumes `zone_spf` errors never include a slot value.
                     warn!(
