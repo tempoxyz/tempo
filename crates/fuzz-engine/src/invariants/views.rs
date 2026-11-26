@@ -9,11 +9,11 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes, U256, map::HashMap};
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, SystemTx},
+    evm::{AccountInfo, SystemTx, TxResult},
 };
-use invariants_core::{Call, Outcome, Views};
+use invariants_core::{Call, Outcome, Simulate, Views};
 use reth_evm::Database;
-use tempo_evm::{TempoEvm, TempoEvmEnv};
+use tempo_evm::{TempoEvm, TempoEvmEnv, TempoEvmTypes};
 
 use crate::{
     engine::Engine,
@@ -67,49 +67,53 @@ impl<'a, E: Engine> EvmViews<'a, E> {
         }
         // The EVM caches what it loads, so a call reaches the database for every key it reads
         // only on an empty cache.
-        let cache = &mut self.evm.overlay_db_mut().cache;
-        cache.accounts.clear();
-        cache.storage.clear();
+        self.clear_overlay();
         self.pre_state.restore_missed(false);
-        let caller = call
-            .from
-            .unwrap_or_else(|| self.engine.view_caller(call.to, &call.input));
-        let result = self
-            .evm
-            .system_call(SystemTx::new(call.to, call.input.clone()).with_caller(caller));
+        let result = self.evm.system_call(self.system_tx(call));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
             match result {
-                Err(err) => Err(ViewFailed {
-                    selector: call
-                        .input
-                        .get(..4)
-                        .map(Bytes::copy_from_slice)
-                        .unwrap_or_default(),
-                    target: call.to,
-                    reason: err.to_string(),
-                }),
-                Ok(executed) => {
-                    let result = executed.result();
-                    Ok(if result.is_success() {
-                        Some(result.output.clone())
-                            .filter(|o| !o.is_empty())
-                            .map(Outcome::Return)
-                    } else if result.is_revert() {
-                        Some(Outcome::Revert(result.output.clone()))
-                    } else {
-                        Some(Outcome::Halt)
-                    })
-                }
+                Err(err) => Err(ViewFailed::new(call, err)),
+                Ok(executed) => Ok(outcome(executed.result())),
             }
         };
-        let mut reads = self.reads.take();
+        let mut reads = self.reads.borrow_mut();
         reads.sort_unstable();
         reads.dedup();
         self.view_cache
-            .insert(call, self.before, output.clone(), reads);
+            .insert(call, self.before, output.clone(), &reads);
+        reads.clear();
         output
+    }
+
+    /// Drops what the EVM loaded and wrote since it was last cleared.
+    fn clear_overlay(&mut self) {
+        let cache = &mut self.evm.overlay_db_mut().cache;
+        cache.accounts.clear();
+        cache.storage.clear();
+    }
+
+    /// The system call that makes `call`, from its caller or else the one the engine calls such a
+    /// view as.
+    fn system_tx(&self, call: &Call) -> SystemTx {
+        let caller = call
+            .from
+            .unwrap_or_else(|| self.engine.view_caller(call.to, &call.input));
+        SystemTx::new(call.to, call.input.clone()).with_caller(caller)
+    }
+}
+
+/// How an executed call ended, with an empty return as no answer, since no view returns nothing.
+fn outcome(result: &TxResult<TempoEvmTypes>) -> Option<Outcome> {
+    if result.is_success() {
+        Some(result.output.clone())
+            .filter(|o| !o.is_empty())
+            .map(Outcome::Return)
+    } else if result.is_revert() {
+        Some(Outcome::Revert(result.output.clone()))
+    } else {
+        Some(Outcome::Halt)
     }
 }
 
@@ -117,7 +121,11 @@ impl<E: Engine> Views for EvmViews<'_, E> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
-        calls.iter().map(|call| self.call_one(call)).collect()
+        let mut answers = Vec::with_capacity(calls.len());
+        for call in calls {
+            answers.push(self.call_one(call)?);
+        }
+        Ok(answers)
     }
 
     /// The seeded pre-state may hold only the accounts and slots execution touched.
@@ -126,21 +134,50 @@ impl<E: Engine> Views for EvmViews<'_, E> {
     }
 }
 
+/// Runs the calls on the EVM's own overlay, cleared before and after, so nothing persists and
+/// nothing is cached: an answer depends on the calls before it.
+impl<E: Engine> Simulate for EvmViews<'_, E> {
+    fn simulate(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
+        self.clear_overlay();
+        self.pre_state.restore_missed(false);
+        let answers = calls
+            .iter()
+            .map(|call| {
+                // A call that read a key the pre-state lacks leaves the state after it unknown, so
+                // neither it nor any call after it is answered.
+                if self.pre_state.missed() {
+                    return Ok(None);
+                }
+                let tx = self.system_tx(call);
+                match self.evm.system_call(tx) {
+                    Ok(executed) => {
+                        Ok(outcome(&executed.commit()).filter(|_| !self.pre_state.missed()))
+                    }
+                    Err(_) if self.pre_state.missed() => Ok(None),
+                    Err(err) => Err(ViewFailed::new(call, err)),
+                }
+            })
+            .collect();
+        self.clear_overlay();
+        self.reads.borrow_mut().clear();
+        answers
+    }
+}
+
 /// The view calls a block's steps made, with their outputs, indexed by what each read: storage
-/// slots, and accounts as `None`. A transaction step undoes only the calls that read what it
-/// changed, so only those and calls not made before are read again after it.
+/// slots, and accounts as `None`. A step undoes only the calls that read what it changed, so only
+/// those and calls not made before are read again after it.
 #[derive(Default)]
 pub(crate) struct ViewCache(RefCell<Calls>);
 
 impl ViewCache {
-    /// Advances to the next transaction step, which made `net`'s changes, undoing the calls that
-    /// read a slot or account it changed.
+    /// Advances to the next step, which made `net`'s changes, undoing the calls that read a slot or
+    /// account it changed.
     pub(crate) fn advance(&self, net: &Net) {
         let calls = &mut *self.0.borrow_mut();
         calls.step += 1;
         calls.before.clear();
-        for address in net.addresses() {
-            let account = net.get(address).expect("the span changed it");
+        for (address, account) in net.accounts() {
             let slots = account.changed_slots().map(|(slot, _)| Some(*slot));
             for read in account.changed().then_some(None).into_iter().chain(slots) {
                 for call in calls.readers.remove(&(*address, read)).unwrap_or_default() {
@@ -166,13 +203,13 @@ impl ViewCache {
         output.cloned()
     }
 
-    fn insert(&self, call: &Call, before: bool, output: Output, reads: Vec<Read>) {
+    fn insert(&self, call: &Call, before: bool, output: Output, reads: &[Read]) {
         let calls = &mut *self.0.borrow_mut();
         if before {
             calls.before.insert(call.clone(), output);
             return;
         }
-        for read in reads {
+        for &read in reads {
             calls.readers.entry(read).or_default().push(call.clone());
         }
         calls.after.insert(call.clone(), (calls.step, output));
@@ -186,7 +223,7 @@ type Read = (Address, Option<U256>);
 
 #[derive(Default)]
 struct Calls {
-    /// The transaction step being checked, counted from the block's first.
+    /// The step being checked, counted from the block's first.
     step: u64,
     /// Outputs on the state after it, with the step each was read at.
     after: HashMap<Call, (u64, Output)>,
@@ -276,6 +313,20 @@ pub(super) struct ViewFailed {
     selector: Bytes,
     target: Address,
     reason: String,
+}
+
+impl ViewFailed {
+    fn new(call: &Call, reason: impl Display) -> Self {
+        Self {
+            selector: call
+                .input
+                .get(..4)
+                .map(Bytes::copy_from_slice)
+                .unwrap_or_default(),
+            target: call.to,
+            reason: reason.to_string(),
+        }
+    }
 }
 
 impl Display for ViewFailed {

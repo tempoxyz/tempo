@@ -164,7 +164,8 @@ fn classify_provider_error(error: ProviderError, block: B256) -> AttemptError {
         | ProviderError::UnknownBlockHash(_)
         | ProviderError::StateForHashNotFound(_)
         | ProviderError::StateForNumberNotFound(_)
-        | ProviderError::BlockNotExecuted { .. }) => AttemptError::retry(report(error)),
+        | ProviderError::BlockNotExecuted { .. }
+        | ProviderError::StateUnavailableDuringSync) => AttemptError::retry(report(error)),
         error @ ProviderError::StateAtBlockPruned(_) => AttemptError::disable(
             report(error).wrap_err("checker requires unpruned historical Zone state"),
         ),
@@ -182,6 +183,10 @@ mod tests {
         let block = B256::repeat_byte(1);
         assert!(matches!(
             classify_provider_error(ProviderError::StateForHashNotFound(block), block),
+            AttemptError::Retry(_)
+        ));
+        assert!(matches!(
+            classify_provider_error(ProviderError::StateUnavailableDuringSync, block),
             AttemptError::Retry(_)
         ));
 

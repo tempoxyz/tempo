@@ -19,6 +19,7 @@ mod invariants;
 mod rejection;
 mod state;
 mod step;
+mod trace;
 
 pub use anchor::Anchor;
 pub use chain::chain_spec_on;

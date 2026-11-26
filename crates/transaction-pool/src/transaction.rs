@@ -122,6 +122,7 @@ impl TempoPooledTransaction {
                 transaction,
                 cost,
                 encoded_length,
+                blobless_encoded_length: None,
                 in_memory_size,
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 blob_cell_availability: None,
