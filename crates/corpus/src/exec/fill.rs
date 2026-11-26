@@ -34,14 +34,14 @@ use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct FillArgs {
     /// First block of a new corpus; genesis is context, not a captured block. An existing
-    /// corpus must start here.
+    /// corpus must start here, unless `overwrite` is set.
     pub from: u64,
     /// Exclusive end, clamped to the available head; `None` fills up to the head.
     pub to: Option<u64>,
-    /// Recapture an existing corpus from this block on, overwriting the blocks it already
-    /// published from here. Must be within the published range, and the fill must reach the
-    /// published tip. `None` appends after the published tip.
-    pub overwrite_from: Option<u64>,
+    /// Recapture an existing corpus from `from` on, overwriting the blocks it already published
+    /// from there. `from` must be within the published range, and the fill must reach the
+    /// published tip. No effect on a new corpus.
+    pub overwrite: bool,
     /// Re-read and fully replay published records instead of checking metadata only.
     pub verify_existing: bool,
     /// Capture worker threads.
@@ -122,12 +122,23 @@ where
                 .header_by_number(published)?
                 .ok_or_else(|| eyre::eyre!("missing header at {published}"))?
                 .timestamp();
+            // An overwriting fill starts inside the corpus, not at its start.
+            let requested = if args.overwrite {
+                Context {
+                    forks: catalog.context.forks.clone(),
+                    start: catalog.context.start,
+                    parent: catalog.context.parent.clone(),
+                    first_tx: catalog.context.first_tx,
+                    ..context.clone()
+                }
+            } else {
+                Context {
+                    forks: catalog.context.forks.clone(),
+                    ..context.clone()
+                }
+            };
             eyre::ensure!(
-                catalog.context
-                    == Context {
-                        forks: catalog.context.forks.clone(),
-                        ..context.clone()
-                    }
+                catalog.context == requested
                     && store::forks_agree(
                         &catalog.context.forks,
                         &context.forks,
@@ -139,10 +150,11 @@ where
                 canonical_hash(published)?.0 == catalog.cursor.parent,
                 "published corpus tip is not canonical in the source archive"
             );
-            if let Some(from) = args.overwrite_from {
+            if args.overwrite {
                 eyre::ensure!(
-                    (catalog.context.start..=catalog.cursor.next).contains(&from),
-                    "overwrite start {from} is outside the published corpus [{}, {}]",
+                    (catalog.context.start..=catalog.cursor.next).contains(&args.from),
+                    "overwrite start {} is outside the published corpus [{}, {}]",
+                    args.from,
                     catalog.context.start,
                     catalog.cursor.next
                 );
@@ -152,37 +164,27 @@ where
                     catalog.cursor.next
                 );
                 warn!(
-                    from,
+                    from = args.from,
                     published = catalog.cursor.next,
                     "Overwriting published corpus blocks"
                 );
                 overwrite_end = catalog.cursor.next;
-                catalog.cursor = store::Cursor {
-                    next: from,
-                    tx: first_tx(from)?,
-                    parent: canonical_hash(from - 1)?.0,
-                };
+                catalog.cursor = store::Cursor::initial(&context)?;
             }
             (catalog, Some(version))
         }
-        None => {
-            eyre::ensure!(
-                args.overwrite_from.is_none(),
-                "no published corpus to overwrite"
-            );
-            (
-                Catalog {
-                    cursor: store::Cursor::initial(&context)?,
-                    context: context.clone(),
-                    checkpoint: None,
-                    records: Vec::new(),
-                    complete: false,
-                    generation: 0,
-                    collecting: false,
-                },
-                None,
-            )
-        }
+        None => (
+            Catalog {
+                cursor: store::Cursor::initial(&context)?,
+                context: context.clone(),
+                checkpoint: None,
+                records: Vec::new(),
+                complete: false,
+                generation: 0,
+                collecting: false,
+            },
+            None,
+        ),
     };
     // Each worker opens its own transaction; holding this one through the capture would
     // keep the archive from reusing pages for the whole fill.
@@ -485,7 +487,7 @@ where
                         if let Some(stored) = stored {
                             eyre::ensure!(
                                 stored.as_ref() == value,
-                                "unpublished record conflicts with canonical capture; rerun with --overwrite-from if an overwriting fill was interrupted"
+                                "unpublished record conflicts with canonical capture; rerun with --overwrite if an overwriting fill was interrupted"
                             );
                         } else {
                             batch_bytes += value.len();
