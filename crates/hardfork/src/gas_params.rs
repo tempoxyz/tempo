@@ -46,6 +46,8 @@ pub fn configure_version(
         version.features.insert(EvmFeatures::EIP8037);
         // TIP-1016 limits execution gas, not the user's execution + state budget.
         version.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
+        version.tx_total_gas_cap = u64::MAX;
+        version.tx_total_gas_cap = u64::MAX;
         apply_amsterdam(&mut version);
     } else {
         version.features.remove(EvmFeatures::EIP8037);
@@ -208,11 +210,32 @@ mod tests {
     }
 
     #[test]
+    fn tip1016_disables_total_gas_cap_but_keeps_execution_cap() {
+        let mut inherited = Version::new(SpecId::OSAKA);
+        inherited.tx_total_gas_cap = 4_294_967_295;
+        let previous = configure_version(inherited, TempoHardfork::T14, false);
+        assert_eq!(previous.tx_total_gas_cap, inherited.tx_total_gas_cap);
+        assert_eq!(
+            previous.tx_gas_caps(),
+            (inherited.tx_gas_limit_cap, u64::MAX)
+        );
+
+        let enabled = configure_version(inherited, TempoHardfork::T15, false);
+        assert_eq!(enabled.tx_total_gas_cap, u64::MAX);
+        assert_eq!(
+            enabled.tx_gas_caps(),
+            (u64::MAX, inherited.tx_gas_limit_cap)
+        );
+        assert!(evm2::ethereum::validate_tx_gas_limit_cap(&enabled, u64::MAX).is_ok());
+    }
+
+    #[test]
     fn tip1016_preserves_tip1060_credits_and_execution_refunds() {
         let version = version(SpecId::OSAKA, TempoHardfork::T15, false);
         let gas = version.gas_params;
         assert!(version.feature(EvmFeatures::EIP8037));
         assert!(!version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert_eq!(version.tx_total_gas_cap, u64::MAX);
         assert_eq!(gas[GasId::SstoreSetWithoutLoadCost], 5_000);
         assert_eq!(gas[GasId::SstoreSetState], 245_000);
         assert_eq!(gas[GasId::SstoreSetRefund], 5_000);
