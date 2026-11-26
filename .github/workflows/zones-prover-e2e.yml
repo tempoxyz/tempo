@@ -2,10 +2,9 @@ name: Prover E2E
 
 # workflow_run runs trusted default-branch code only, for scheduled upstream runs of
 # this repository; the publisher never checks out or executes candidate code.
-# The compat suite runs the candidate L1 and Zone nodes against the provers pinned in
-# crates/precompiles/src/zone_verifier/pcrs.json for active and scheduled forks, and reports
-# "Tempo Zone Prover Compat". In the merge queue it runs for the reth-auto-bump PR and reports
-# success for every other group, so the queue can require it. Dispatch it for a release commit.
+# Dispatch the compat suite for a release candidate: it runs the candidate L1 and Zone nodes
+# against the provers pinned in crates/precompiles/src/zone_verifier/pcrs.json for active and
+# scheduled forks, and reports "Tempo Zone Prover Compat".
 "on": # zizmor: ignore[dangerous-triggers]
   workflow_dispatch:
     inputs:
@@ -37,16 +36,10 @@ jobs:
       github.repository == 'tempoxyz/tempo' && (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository))
-    # The compat lane only runs in the merge queue; dispatches select their suite on the main lane.
-    strategy:
-      fail-fast: false
-      matrix:
-        lane: [main, compat]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
       statuses: write
       id-token: write
     steps:
@@ -59,13 +52,10 @@ jobs:
         env:
           INPUT_SHA: ${{ inputs.sha }}
           INPUT_SUITE: ${{ inputs.suite }}
-          LANE: ${{ matrix.lane }}
         with:
           script: |
             const event = context.eventName;
             if (!['workflow_dispatch', 'merge_group', 'workflow_run'].includes(event)) throw new Error('Unsupported trigger');
-            const compat = process.env.LANE === 'compat';
-            if (compat && event !== 'merge_group') return;
             const run = context.payload.workflow_run;
             if (event === 'workflow_run' && (run.event !== 'schedule' || run.conclusion !== 'success' || run.head_branch !== 'main')) {
               throw new Error('Full suite requires a successful nightly Zones image build on main');
@@ -76,8 +66,7 @@ jobs:
             if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
               throw new Error('Exact lowercase commit SHAs are required');
             }
-            const suite = compat ? 'compat' : event === 'workflow_run' ? 'full' : event === 'merge_group' ? 'fast'
-              : (process.env.INPUT_SUITE || 'fast');
+            const suite = event === 'workflow_run' ? 'full' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
             const contexts = {fast: 'Tempo Zone Prover E2E', full: 'Tempo Zone Prover E2E (full)', compat: 'Tempo Zone Prover Compat'};
             if (!Object.hasOwn(contexts, suite)) throw new Error('Unknown suite');
             const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
@@ -87,21 +76,6 @@ jobs:
             core.setOutput('base', base);
             core.setOutput('suite', suite);
             core.setOutput('status_context', statusContext);
-            // A group's commit holds its queue entry and every entry ahead of it, so compat runs when
-            // the reth-auto-bump PR is any of them. A group missing from the queue fails closed.
-            if (compat) {
-              const branch = context.payload.merge_group.base_ref.replace(/^refs\/heads\//, '');
-              const {repository} = await github.graphql(`query($owner: String!, $repo: String!, $branch: String!) {
-                repository(owner: $owner, name: $repo) { mergeQueue(branch: $branch) { entries(first: 100) { nodes {
-                  position headCommit { oid } pullRequest { headRefName headRepository { nameWithOwner } } } } } }
-              }`, {...context.repo, branch});
-              const entries = repository.mergeQueue?.entries.nodes ?? [];
-              const group = entries.find(entry => entry.headCommit?.oid === sha);
-              if (!group) throw new Error('Merge group is not in the queue');
-              const bump = entries.some(entry => entry.position <= group.position && entry.pullRequest.headRefName === 'reth-auto-bump'
-                && entry.pullRequest.headRepository?.nameWithOwner === `${context.repo.owner}/${context.repo.repo}`);
-              core.setOutput('relevant', bump ? 'true' : 'false');
-            }
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             await github.rest.repos.createCommitStatus({
               ...context.repo, sha, state: 'pending', context: statusContext,
@@ -110,7 +84,7 @@ jobs:
             });
       - name: Detect merge-queue changes
         id: paths
-        if: github.event_name == 'merge_group' && matrix.lane == 'main'
+        if: github.event_name == 'merge_group'
         uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           base: ${{ steps.candidate.outputs.base }}
@@ -135,10 +109,7 @@ jobs:
               - '.github/workflows/zones-prover-e2e.yml'
       - name: Publish prover E2E event
         id: publish
-        if: >-
-          steps.candidate.outputs.sha != '' && (github.event_name != 'merge_group' ||
-          (matrix.lane == 'compat' && steps.candidate.outputs.relevant == 'true') ||
-          contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover'))
+        if: github.event_name != 'merge_group' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover')
         env:
           SHA: ${{ steps.candidate.outputs.sha }}
           SUITE: ${{ steps.candidate.outputs.suite }}
@@ -169,13 +140,12 @@ jobs:
           STATUS_CONTEXT: ${{ steps.candidate.outputs.status_context }}
           PATHS_RESULT: ${{ steps.paths.outcome }}
           CHANGES: ${{ steps.paths.outputs.changes || '[]' }}
-          RELEVANT: ${{ steps.candidate.outputs.relevant }}
         with:
           script: |
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             const statusContext = process.env.STATUS_CONTEXT;
-            const skipped = context.eventName === 'merge_group' && (process.env.RELEVANT === 'false'
-              || (process.env.PATHS_RESULT === 'success' && !JSON.parse(process.env.CHANGES).includes('prover')));
+            const skipped = context.eventName === 'merge_group' && process.env.PATHS_RESULT === 'success'
+              && !JSON.parse(process.env.CHANGES).includes('prover');
             let latest;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,
