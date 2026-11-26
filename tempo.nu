@@ -441,8 +441,8 @@ def resolve-git-ref-label [sha: string, fallback: string] {
 }
 
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool, profile: string, rustflags: string] {
-    # Include build settings so older binaries without frame pointers are not reused.
-    let build_key = ([$profile $rustflags] | to json --raw | hash sha256 | str substring 0..15)
+    # Include build settings and the compiler so binaries built differently are not reused.
+    let build_key = ([$profile $rustflags (^rustc -vV)] | to json --raw | hash sha256 | str substring 0..15)
     if (not $no_default_features) and $features == $DEFAULT_FEATURES {
         return $"($commit_sha)-($build_key)"
     }

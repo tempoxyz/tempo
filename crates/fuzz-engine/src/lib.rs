@@ -17,6 +17,7 @@ pub mod ffi;
 mod invariants;
 mod rejection;
 mod state;
+mod trace;
 
 pub use chain::chain_spec_on;
 pub use engine::{BlockConsensus, Chain, Engine, EvmConfig, Tempo};

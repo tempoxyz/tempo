@@ -16,10 +16,12 @@ pub use invariants_core::{
 use invariants_core::{Batch, optional, view_many};
 pub use tempo_hardfork::TempoHardfork;
 
+pub mod block;
 pub mod configurable_account;
 pub mod dex;
 pub mod fee_amm;
 pub mod keychain;
+pub mod model;
 pub mod receive_policy;
 pub mod tip20;
 
@@ -76,14 +78,17 @@ pub fn all() -> impl Iterator<Item = &'static dyn AnyCheck<TempoHardfork>> {
     }
     erased(tip20::CHECKS)
         .chain(erased(tip20::STEP_CHECKS))
+        .chain(erased(tip20::roles::STEP_CHECKS))
         .chain(erased(fee_amm::CHECKS))
         .chain(erased(fee_amm::STEP_CHECKS))
+        .chain(erased(fee_amm::exit::CHECKS))
         .chain(erased(dex::CHECKS))
         .chain(erased(dex::STEP_CHECKS))
         .chain(erased(configurable_account::STEP_CHECKS))
         .chain(erased(configurable_account::LEAF_CHECKS))
         .chain(erased(keychain::CHECKS))
         .chain(erased(receive_policy::CHECKS))
+        .chain(erased(block::CHECKS))
 }
 
 /// `value` as text, `missing` when there is none.
@@ -103,5 +108,23 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), count);
+    }
+
+    /// `INVARIANTS.md` is the catalog [`all`] renders, rewritten when `UPDATE_CATALOG` is set.
+    #[test]
+    fn the_catalog_lists_every_check() {
+        let catalog = format!(
+            "# Tempo invariants\n\nGenerated from each check's metadata by `the_catalog_lists_every_check`.\n\n{}",
+            invariants_core::markdown(all())
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/INVARIANTS.md");
+        if std::env::var_os("UPDATE_CATALOG").is_some() {
+            std::fs::write(path, &catalog).unwrap();
+        }
+        let written = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            written == catalog,
+            "{path} is stale: rerun with UPDATE_CATALOG=1"
+        );
     }
 }

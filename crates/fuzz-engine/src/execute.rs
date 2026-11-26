@@ -14,7 +14,7 @@ use alloy_consensus::{
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::{block::BlockTransactionResult as _, bytecode::Bytecode};
-use invariants_core::Report;
+use invariants_core::{Frame, Report};
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory as _, BlockValidationError,
@@ -42,6 +42,7 @@ use crate::{
     invariants,
     rejection::{Check, Rejection},
     state::{self, Contracts, Db, Net},
+    trace::Calls,
 };
 
 /// The state updates an executor has emitted since they were last taken.
@@ -279,12 +280,9 @@ fn broken_start<E: Engine>(
         .flat_map(|receipt| &receipt.logs)
         .chain(failed_logs);
     let holders: Vec<Address> = db
-        .cache
-        .borrow()
-        .accounts
-        .keys()
-        .copied()
-        .chain(invariants::logged_addresses(logged))
+        .held()
+        .into_iter()
+        .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
     invariants::check(
@@ -482,6 +480,7 @@ fn execute_block<E: Engine>(
         hooked_updates: hooked,
         block_index,
         view_cache: invariants::ViewCache::default(),
+        calls: None,
         state_updates: Vec::new(),
         outputs: BlockOutputs::default(),
     };
@@ -492,6 +491,13 @@ fn execute_block<E: Engine>(
     run.execute_txs(&mut executor, block)
         .map_err(|err| failed(&mut run, &err))?;
     let (spec, env) = env(executor.evm());
+    invariants::check_block(
+        &run.outputs.receipts,
+        spec,
+        &InvariantScope::Block { block_index },
+        &mut run.outputs.invariant_failures,
+        &mut run.outputs.invariant_report,
+    );
     let output = executor.finish().map_err(|err| failed(&mut run, &err))?;
     let post_block = take(&run.hooked_updates);
     let net = Net::of(&post_block);
@@ -511,6 +517,7 @@ fn execute_block<E: Engine>(
         Some(invariants::StepEffects::new(
             &net,
             &[],
+            None,
             Ran::PostBlock,
             spec,
         )),
@@ -531,6 +538,8 @@ struct BlockRun<'a, E: Engine> {
     hooked_updates: Updates,
     state_updates: Vec<StateUpdate>,
     view_cache: invariants::ViewCache,
+    /// The call frames of each transaction, recorded once invariants are checked.
+    calls: Option<Calls>,
     outputs: BlockOutputs,
 }
 
@@ -546,7 +555,9 @@ impl<E: Engine> BlockRun<'_, E> {
         let scope = InvariantScope::Block {
             block_index: self.block_index,
         };
-        self.outputs.changes.pre_block = self.step(executor, scope, Ran::PreBlock, &[]);
+        self.outputs.changes.pre_block = self.step(executor, scope, Ran::PreBlock, &[], None);
+        // Only invariant checks read the trace.
+        self.calls = invariants::ENABLED.then(|| Calls::install(executor.evm_mut()));
 
         let header = block.recovered.header();
         let basefee = header.base_fee_per_gas();
@@ -631,20 +642,25 @@ impl<E: Engine> BlockRun<'_, E> {
             block_index: self.block_index,
             tx: index,
         };
-        let changes = self.step(executor, scope, Ran::Tx(tx), &receipt.logs);
+        let calls = self
+            .calls
+            .as_ref()
+            .and_then(|calls| calls.take(receipt.logs.len(), &receipt.outcome));
+        let changes = self.step(executor, scope, Ran::Tx(tx), &receipt.logs, calls);
         self.outputs.receipts.push(receipt);
         Ok(changes)
     }
 
-    /// Ends a step that ran `ran` and emitted `logs`: writes its changes to the db, checks
-    /// invariants at `scope`, reading again only the views that read what it changed, and returns
-    /// the step's changes.
+    /// Ends a step that ran `ran`, emitted `logs` and, when traced, made `calls`: writes its
+    /// changes to the db, checks invariants at `scope`, reading again only the views that read what
+    /// it changed, and returns the step's changes.
     fn step<'e>(
         &mut self,
         executor: &impl BlockExecutor<Evm = TempoEvm<'e>>,
         scope: InvariantScope,
         ran: Ran,
         logs: &[Log],
+        calls: Option<Vec<Frame>>,
     ) -> StateChanges {
         let step = take(&self.hooked_updates);
         let net = Net::of(&step);
@@ -664,7 +680,7 @@ impl<E: Engine> BlockRun<'_, E> {
             &scope,
             |_| true,
             &[],
-            Some(invariants::StepEffects::new(&net, logs, ran, spec)),
+            Some(invariants::StepEffects::new(&net, logs, calls, ran, spec)),
             &self.view_cache,
             &mut self.outputs.invariant_failures,
             &mut self.outputs.invariant_report,
