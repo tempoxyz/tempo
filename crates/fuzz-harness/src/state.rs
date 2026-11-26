@@ -22,6 +22,42 @@ use tempo_fuzz_types::{
     AccountDiff, AccountInput, ErrorClass, PreState, StateChanges, StateInput, StorageChangeOutput,
 };
 
+thread_local! {
+    /// The accounts and slots executing EVMs read on this thread since the last [`clear_read_trace`],
+    /// in order, as the records [`crate::tempo_fuzz_last_read_trace_v1`] describes.
+    static READ_TRACE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The most records one input's read trace keeps: about 3.5 MB.
+pub(crate) const READ_TRACE_MAX_RECORDS: usize = 1 << 16;
+
+const READ_TRACE_RECORD_LEN: usize = 1 + 20 + 32;
+
+fn trace_read(address: &Address, slot: Option<&U256>) {
+    READ_TRACE.with_borrow_mut(|trace| {
+        if trace.len() >= READ_TRACE_MAX_RECORDS * READ_TRACE_RECORD_LEN {
+            return;
+        }
+        trace.push(slot.is_some().into());
+        trace.extend_from_slice(address.as_slice());
+        trace.extend_from_slice(&slot.copied().unwrap_or_default().to_be_bytes::<32>());
+    });
+}
+
+/// Empties this thread's read trace, before an input executes, keeping at most a full trace's
+/// allocation.
+pub(crate) fn clear_read_trace() {
+    READ_TRACE.with_borrow_mut(|trace| {
+        trace.clear();
+        trace.shrink_to(READ_TRACE_MAX_RECORDS * READ_TRACE_RECORD_LEN);
+    });
+}
+
+/// Calls `f` with this thread's read trace.
+pub(crate) fn with_read_trace<T>(f: impl FnOnce(&[u8]) -> T) -> T {
+    READ_TRACE.with_borrow(|trace| f(trace))
+}
+
 /// The state blocks execute on: what the pre-state and the blocks before left in `cache`, over
 /// `pre`, which answers what the cache does not hold.
 ///
@@ -169,6 +205,10 @@ impl Database for Reader<'_> {
     }
 
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        // An executing EVM caches what it reads, so this is its first read of the key.
+        if self.record {
+            trace_read(address, None);
+        }
         if let Some(account) = self.db.cache.borrow().accounts.get(address) {
             return Ok(account.clone());
         }
@@ -193,6 +233,9 @@ impl Database for Reader<'_> {
     }
 
     fn get_storage(&mut self, address: &Address, key: &U256) -> Result<U256, Self::Error> {
+        if self.record {
+            trace_read(address, Some(key));
+        }
         {
             let cache = self.db.cache.borrow();
             if let Some(storage) = cache.storage.get(address) {
