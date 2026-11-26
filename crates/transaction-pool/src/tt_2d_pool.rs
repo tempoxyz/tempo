@@ -5573,7 +5573,7 @@ mod tests {
     }
 
     /// Evicting a lane whose head is the cheapest pending transaction removes the lane's last
-    /// pending transaction, so the rest of the lane stays pending and refilling it promotes nothing.
+    /// pending transaction, so the rest of the lane stays pending and nothing is demoted.
     #[test]
     fn test_pending_eviction_keeps_lane_contiguous() {
         let config = AA2dPoolConfig {
@@ -5635,13 +5635,15 @@ mod tests {
         assert_eq!(pending, 4);
         assert_eq!(queued, 0);
 
-        // Re-adding the evicted transaction extends the lane without promoting anything.
+        // Re-adding the evicted transaction exceeds the limit again, and the lane loses its new end
+        // rather than its head.
         let tail = TxBuilder::aa(sender)
             .nonce_key(nonce_key)
             .nonce(2)
             .max_fee(max_fee)
             .max_priority_fee(6_000_000_000)
             .build();
+        let tail_hash = *tail.hash();
         let added = pool
             .add_transaction(
                 Arc::new(wrap_valid_tx(tail, TransactionOrigin::Local)),
@@ -5649,7 +5651,12 @@ mod tests {
                 TempoHardfork::T1,
             )
             .unwrap();
-        assert!(added.as_pending().unwrap().promoted.is_empty());
+        let discarded = &added.as_pending().unwrap().discarded;
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(*discarded[0].hash(), tail_hash);
+        assert!(pool.contains(&lane[0]));
+        assert!(pool.contains(&lane[1]));
+        assert_eq!(pool.pending_and_queued_txn_count(), (4, 0));
         pool.assert_invariants();
     }
 
