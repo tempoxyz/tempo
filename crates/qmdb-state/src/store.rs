@@ -88,6 +88,19 @@ type Batch<const N: usize> = Arc<
     MerkleizedBatch<Family, <Sha256 as Hasher>::Digest, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
 >;
 type Commits = fixed::Journal<Context, FixedBytes<COMMIT_LEN>>;
+/// Whether staging also reads the predecessors of keys the block may create; set
+/// `TEMPO_QMDB_WARM_PREDECESSORS=0` to stop it.
+static WARM_PREDECESSORS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("TEMPO_QMDB_WARM_PREDECESSORS").map_or(true, |v| v != "0")
+});
+/// Floor-walk candidates staging reads ahead per staged key (`TEMPO_QMDB_FLOOR_PREFETCH`, 4 by
+/// default); 0 reads none.
+static FLOOR_PREFETCH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    std::env::var("TEMPO_QMDB_FLOOR_PREFETCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4)
+});
 /// Most open stages: opening another drops the oldest, whose block then builds without it.
 const MAX_STAGES: usize = 32;
 /// A database shared between the store thread, which alone writes it, and concurrent reads.
@@ -876,6 +889,8 @@ pub struct StageId(u64);
 struct StagedDb<const N: usize> {
     staged: Staged<Family, Sha256, Update<Key, FixedBytes<N>>, CHUNK, Rayon>,
     index: alloy_primitives::map::HashMap<Key, usize>,
+    /// Floor-walk candidates already read ahead for this stage.
+    floor_read: usize,
 }
 
 /// The staged reads of a block on `parent_hash`.
@@ -1214,10 +1229,12 @@ impl Actor {
                 StagedDb {
                     staged: accounts,
                     index: Default::default(),
+                    floor_read: 0,
                 },
                 StagedDb {
                     staged: slots,
                     index: Default::default(),
+                    floor_read: 0,
                 },
             )),
         };
@@ -1642,7 +1659,7 @@ async fn merkleize_db<const N: usize, const P: usize>(
     writes: Vec<Write<FixedBytes<N>>>,
     number: Option<u64>,
 ) -> Result<Batch<N>, Error> {
-    if let Some(StagedDb { staged, index }) = staged {
+    if let Some(StagedDb { staged, index, .. }) = staged {
         let mut slots: Vec<Slot<FixedBytes<N>>> = std::iter::repeat_with(|| Slot::Keep)
             .take(staged.len())
             .collect();
@@ -1682,7 +1699,11 @@ async fn stage_db<const N: usize, const P: usize>(
     staged: StagedDb<N>,
     keys: &[Key],
 ) -> Result<StagedDb<N>, Error> {
-    let StagedDb { staged, mut index } = staged;
+    let StagedDb {
+        staged,
+        mut index,
+        mut floor_read,
+    } = staged;
     let mut new = Vec::new();
     for key in keys {
         if !index.contains_key(key) {
@@ -1691,13 +1712,39 @@ async fn stage_db<const N: usize, const P: usize>(
         }
     }
     if new.is_empty() {
-        return Ok(StagedDb { staged, index });
+        return Ok(StagedDb {
+            staged,
+            index,
+            floor_read,
+        });
     }
-    let (staged, range, _) = staged.expand(&new, db).await?;
+    let (staged, range, values) = staged.expand(&new, db).await?;
+    // Creating a key rewrites its predecessor, whose operation merkleize then reads: read it now,
+    // while the block executes, so building the block finds it cached.
+    if *WARM_PREDECESSORS {
+        let spans = new
+            .iter()
+            .zip(&values)
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| db.get_span(key));
+        futures::future::try_join_all(spans).await?;
+    }
     for (key, slot) in new.into_iter().zip(range) {
         index.insert(key.clone(), slot);
     }
-    Ok(StagedDb { staged, index })
+    // The floor walk moves about one active operation per key the block writes: read the
+    // candidates for every staged key now, only those past what earlier reads covered.
+    let floor_target = index.len().saturating_mul(*FLOOR_PREFETCH);
+    if floor_target > floor_read {
+        db.prefetch_floor(floor_read, floor_target - floor_read)
+            .await?;
+        floor_read = floor_target;
+    }
+    Ok(StagedDb {
+        staged,
+        index,
+        floor_read,
+    })
 }
 
 /// Applies `batch` to `db` and commits it, which also flushes its Merkle nodes out of memory.
