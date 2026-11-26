@@ -326,10 +326,6 @@ where
 
         self.marshal.set_floor(finalization);
 
-        // Marshal drops its in-flight acks below a newly installed floor and
-        // redelivers from the floor, so their pending acknowledgements are stale.
-        self.pending_acknowledgements = self.pending_acknowledgements.split_off(&floor_height);
-
         self.floor = floor_height;
         self.floor_candidate = None;
 
