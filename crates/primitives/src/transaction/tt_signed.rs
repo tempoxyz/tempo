@@ -306,6 +306,18 @@ impl AASigned {
 
         Ok(tx.into_signed(signature))
     }
+
+    /// Recovers a keychain signature's access key ID and caches it on the signature, so later
+    /// [`key_id`](super::tt_signature::KeychainSignature::key_id) calls, clones, and serialization
+    /// reuse it.
+    ///
+    /// Does nothing for other signature types. A failed recovery caches nothing, and the
+    /// transaction then serializes without `keyId`.
+    pub fn populate_key_id(&self) {
+        if let TempoSignature::Keychain(keychain_sig) = &self.signature {
+            let _ = keychain_sig.key_id(&self.signature_hash());
+        }
+    }
 }
 
 impl TxHashRef for AASigned {
@@ -497,10 +509,8 @@ mod serde_impl {
         where
             S: Serializer,
         {
-            if let TempoSignature::Keychain(keychain_sig) = &self.signature {
-                // Initialize the `key_id` field for keychain signatures so that it's serialized.
-                let _ = keychain_sig.key_id(&self.signature_hash());
-            }
+            // Initialize the `key_id` field for keychain signatures so that it's serialized.
+            self.populate_key_id();
             AASignedHelper {
                 tx: Cow::Borrowed(&self.tx),
                 signature: Cow::Borrowed(&self.signature),
