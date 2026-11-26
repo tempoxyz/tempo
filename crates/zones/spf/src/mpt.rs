@@ -249,7 +249,7 @@ impl<'a> WitnessPathReader<'a> {
         &self,
         address: Address,
     ) -> Result<Option<TrieAccount>, StatelessSparseTrieError> {
-        match self.walk(self.state_root, keccak256(address), |_, _, _| {})? {
+        match self.walk(self.state_root, keccak256(address))? {
             PathEnd::Leaf(value) => decode_account(&value, address).map(Some),
             PathEnd::Absent => Ok(None),
             PathEnd::Blinded => {
@@ -268,8 +268,7 @@ impl<'a> WitnessPathReader<'a> {
         let Some(account) = self.account(address)? else {
             return Ok(U256::ZERO);
         };
-        let key = keccak256(slot.to_be_bytes::<32>());
-        match self.walk(account.storage_root, key, |_, _, _| {})? {
+        match self.walk(account.storage_root, keccak256(slot.to_be_bytes::<32>()))? {
             PathEnd::Leaf(value) => decode_storage_value(&value, address, slot),
             PathEnd::Absent => Ok(U256::ZERO),
             PathEnd::Blinded => Err(StatelessSparseTrieError::IncompleteStorageProof {
@@ -279,52 +278,20 @@ impl<'a> WitnessPathReader<'a> {
         }
     }
 
-    /// Shape of the path a read of `address`, and of `slot` if any, follows from the root.
-    /// Only computed to diagnose a failed read, so successful reads never pay for it.
-    pub(crate) fn shape(&self, address: Address, slot: Option<B256>) -> PathShape {
-        let mut shape = PathShape::default();
-        let mut end = self.walk(self.state_root, keccak256(address), |node, path, depth| {
-            shape.visit(node, path, depth)
-        });
-        if let (Some(slot), Ok(PathEnd::Leaf(value))) = (slot, &end) {
-            end = decode_hashed_account(value).and_then(|account| {
-                shape = PathShape {
-                    storage: true,
-                    ..Default::default()
-                };
-                self.walk(
-                    account.storage_root,
-                    keccak256(slot),
-                    |node, path, depth| shape.visit(node, path, depth),
-                )
-            });
-        }
-        shape.error = end.err();
-        shape
-    }
-
     /// Follow `key` from `root` until it ends at a leaf, proves absence, or
-    /// reaches a node the pool does not hold. `visit` sees each node on the way with the key's
-    /// nibbles and the depth the node sits at, or `None` for a node the pool does not hold.
-    fn walk(
-        &self,
-        root: B256,
-        key: B256,
-        mut visit: impl FnMut(Option<&TrieNode>, &Nibbles, usize),
-    ) -> Result<PathEnd, StatelessSparseTrieError> {
+    /// reaches a node the pool does not hold.
+    fn walk(&self, root: B256, key: B256) -> Result<PathEnd, StatelessSparseTrieError> {
         if root == EMPTY_ROOT_HASH {
             return Ok(PathEnd::Absent);
         }
-        let path = Nibbles::unpack(key);
-        let mut depth = 0;
         let Some(mut node) = self.nodes.0.get(&root) else {
-            visit(None, &path, depth);
             return Ok(PathEnd::Blinded);
         };
+        let path = Nibbles::unpack(key);
+        let mut depth = 0;
         // Holds a child embedded in its parent's encoding, which has no pool entry.
         let mut inline;
         loop {
-            visit(Some(node), &path, depth);
             let child = match node {
                 TrieNode::EmptyRoot => return Ok(PathEnd::Absent),
                 TrieNode::Leaf(leaf) => {
@@ -362,10 +329,7 @@ impl<'a> WitnessPathReader<'a> {
             node = match child.as_hash() {
                 Some(hash) => match self.nodes.0.get(&hash) {
                     Some(node) => node,
-                    None => {
-                        visit(None, &path, depth);
-                        return Ok(PathEnd::Blinded);
-                    }
+                    None => return Ok(PathEnd::Blinded),
                 },
                 None => {
                     inline = alloy_rlp::decode_exact::<TrieNode>(child.as_ref())
@@ -374,53 +338,6 @@ impl<'a> WitnessPathReader<'a> {
                 }
             };
         }
-    }
-}
-
-/// Kind of node on a read's path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NodeKind {
-    /// The empty trie node.
-    Empty,
-    /// A branch node.
-    Branch,
-    /// An extension node.
-    Extension,
-    /// A leaf node.
-    Leaf,
-    /// A node the witness does not hold.
-    Blinded,
-}
-
-/// Trie shape of the path one read follows through a witness. It holds no key, hash or value,
-/// so it can be logged.
-#[derive(Debug, Default)]
-pub struct PathShape {
-    /// Whether the path ends in a storage trie rather than the account trie.
-    pub storage: bool,
-    /// Kinds of the nodes on the path from the root, in order. Empty for an empty trie.
-    pub nodes: Vec<NodeKind>,
-    /// Nibbles of the key the path matches before it ends or diverges.
-    pub depth: usize,
-    /// Why the walk stopped early, when a node on the path has an impossible shape.
-    pub error: Option<StatelessSparseTrieError>,
-}
-
-impl PathShape {
-    fn visit(&mut self, node: Option<&TrieNode>, path: &Nibbles, depth: usize) {
-        let rest = path.slice(depth..);
-        let (kind, matched) = match node {
-            None => (NodeKind::Blinded, 0),
-            Some(TrieNode::EmptyRoot) => (NodeKind::Empty, 0),
-            Some(TrieNode::Branch(_)) => (NodeKind::Branch, 0),
-            Some(TrieNode::Extension(extension)) => (
-                NodeKind::Extension,
-                rest.common_prefix_length(&extension.key),
-            ),
-            Some(TrieNode::Leaf(leaf)) => (NodeKind::Leaf, rest.common_prefix_length(&leaf.key)),
-        };
-        self.nodes.push(kind);
-        self.depth = depth + matched;
     }
 }
 
@@ -563,7 +480,6 @@ mod tests {
         BranchNode, ExtensionNode, HashBuilder, LeafNode, RlpNode, TrieMask, proof::ProofRetainer,
     };
     use std::collections::BTreeMap;
-    use test_case::test_case;
 
     /// Builds the trie over `leaves` and returns its root with the proof nodes for `targets`.
     fn prove(leaves: &BTreeMap<B256, Vec<u8>>, targets: &[B256]) -> (B256, Vec<Bytes>) {
@@ -730,14 +646,10 @@ mod tests {
         assert!(extension.child.as_hash().is_none());
 
         let reader = WitnessPathReader::new(root, &nodes);
-        assert!(
-            matches!(reader.walk(root, first, |_, _, _| {}), Ok(PathEnd::Leaf(value)) if value == [0x01])
-        );
-        assert!(
-            matches!(reader.walk(root, second, |_, _, _| {}), Ok(PathEnd::Leaf(value)) if value == [0x02])
-        );
+        assert!(matches!(reader.walk(root, first), Ok(PathEnd::Leaf(value)) if value == [0x01]));
+        assert!(matches!(reader.walk(root, second), Ok(PathEnd::Leaf(value)) if value == [0x02]));
         assert!(matches!(
-            reader.walk(root, B256::with_last_byte(0x02), |_, _, _| {}),
+            reader.walk(root, B256::with_last_byte(0x02)),
             Ok(PathEnd::Absent)
         ));
     }
@@ -750,7 +662,7 @@ mod tests {
             RlpNode::from_raw(&[0xc1, 0x80]).unwrap(),
         ))]);
         assert!(matches!(
-            WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO, |_, _, _| {}),
+            WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO),
             Err(StatelessSparseTrieError::InvalidNodeEncoding)
         ));
     }
@@ -773,28 +685,10 @@ mod tests {
         for node in [extension_mismatch, unset_mask_bit, leaf_key_mismatch] {
             let (root, nodes) = pool(&[node]);
             assert!(matches!(
-                WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO, |_, _, _| {}),
+                WitnessPathReader::new(root, &nodes).walk(root, B256::ZERO),
                 Ok(PathEnd::Absent)
             ));
         }
-    }
-
-    /// A branch with a hashed child at every set bit of `mask`.
-    fn branch(mask: u16) -> TrieNode {
-        let children = vec![RlpNode::word_rlp(&B256::ZERO); mask.count_ones() as usize];
-        TrieNode::Branch(BranchNode::new(children, TrieMask::new(mask)))
-    }
-
-    // The account key `keccak256(Address::ZERO)` starts with nibbles 5, 3.
-    #[test_case(branch(0b110) => (vec![NodeKind::Branch], 0))]
-    #[test_case(branch(1 << 5) => (vec![NodeKind::Branch, NodeKind::Blinded], 1))]
-    #[test_case(TrieNode::Extension(ExtensionNode::new(Nibbles::from_nibbles([5, 0]), RlpNode::word_rlp(&B256::ZERO))) => (vec![NodeKind::Extension], 1))]
-    #[test_case(TrieNode::Leaf(LeafNode::new(Nibbles::unpack(keccak256(Address::ZERO)), vec![0x80])) => (vec![NodeKind::Leaf], 64))]
-    fn path_shape(root: TrieNode) -> (Vec<NodeKind>, usize) {
-        let (root, nodes) = pool(&[root]);
-        let shape = WitnessPathReader::new(root, &nodes).shape(Address::ZERO, None);
-        assert_eq!(shape.error, None);
-        (shape.nodes, shape.depth)
     }
 
     #[test]

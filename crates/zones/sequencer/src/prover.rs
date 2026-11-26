@@ -15,7 +15,7 @@ use std::{
 
 use alloy_consensus::{BlockHeader as _, Sealable as _, Transaction as _};
 use alloy_eips::eip2718::Encodable2718 as _;
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_provider::DynProvider;
 use alloy_sol_types::{SolCall as _, SolInterface as _};
 #[cfg(feature = "fuzz")]
@@ -39,13 +39,13 @@ use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::TempoStateExt as _;
 use zone_prover::{
-    DEFAULT_MAX_REQUEST_BYTES, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
+    DEFAULT_MAX_REQUEST_BYTES, ErrorCode, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
     ProverConnection, VerifierMode, VerifyRequest, VerifyResponse,
     attested_transport::RemoteProverConfig,
 };
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, TempoImport, TempoStateWitness, VirtualAddressKeyInit,
-    ZoneBlock, ZoneStateWitness, tempo_read_shape,
+    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness,
+    VirtualAddressKeyInit, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 use crate::{
@@ -69,8 +69,6 @@ pub struct SettlementProverConfig {
     pub chain_spec: Arc<ZoneChainSpec>,
     /// Authenticated remote Nitro prover endpoints, routed by the live L1 hardfork.
     pub prover_addresses: ProverAddresses,
-    /// Zone node client version, logged when a prover rejects a batch.
-    pub client_version: &'static str,
 }
 
 /// Validation worker whose attested proofs gate L1 settlement.
@@ -335,8 +333,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         zone_to = job.to,
         "Selected remote prover"
     );
-    let (output, bundle) =
-        verify_remotely(remote, hardfork, &context.config, job, witness, metrics).await?;
+    let (output, bundle) = verify_remotely(remote, &context.config, job, witness, metrics).await?;
     let proof = SettlementProof { bundle, hardfork };
     metrics
         .spf_execution_duration_seconds
@@ -534,14 +531,13 @@ async fn build_witness<P: ZoneSequencerProvider>(
 
 async fn verify_remotely(
     remote: &RemoteProverConfig,
-    hardfork: TempoHardfork,
     config: &SettlementProverConfig,
     job: &ProverJob,
     witness: BatchWitness,
     metrics: &ProverMetrics,
 ) -> Result<(BatchOutput, ProofBundle)> {
     let address = remote.address();
-    // Shared with the encoder so a rejection can still be diagnosed from the witness.
+    // Shared with the encoder so a rejected witness can be re-run locally.
     let request = Arc::new(VerifyRequest {
         version: PROTOCOL_VERSION,
         request_id: format!(
@@ -568,6 +564,7 @@ async fn verify_remotely(
     let mut connection = ProverConnection::new(stream, DEFAULT_MAX_REQUEST_BYTES);
 
     let started = Instant::now();
+    let expected_id = request.request_id.clone();
     let send_result = connection.send(Arc::clone(&request)).await;
     metrics
         .spf_remote_request_send_duration_seconds
@@ -608,7 +605,7 @@ async fn verify_remotely(
             output,
             proof_bundle,
         } => {
-            validate_response_header(version, Some(&request_id), &request.request_id)?;
+            validate_response_header(version, Some(&request_id), &expected_id)?;
             validate_proof_bundle(&proof_bundle)?;
             Ok((*output, proof_bundle))
         }
@@ -618,42 +615,26 @@ async fn verify_remotely(
             code,
             message,
         } => {
-            validate_response_header(version, request_id.as_deref(), &request.request_id)?;
-            let witness = &request.witness;
-            // Never log the message itself here: it names the read's account and slot.
-            warn!(
-                target: "zone::sequencer::prover",
-                zone_from = job.from,
-                zone_to = job.to,
-                client_version = config.client_version,
-                prover_hardfork = %hardfork,
-                ?code,
-                tempo_block_number = job.batch.tempo_block_number,
-                zone_state_nodes = witness.zone_state_witness.node_pool.len(),
-                tempo_state_nodes = witness.tempo_state_witness.node_pool.len(),
-                read_shape = ?missing_tempo_read(&message).and_then(|(account, slot, block)| {
-                    tempo_read_shape(witness, account, slot, block)
-                }),
-                "Prover rejected batch witness"
-            );
+            validate_response_header(version, request_id.as_deref(), &expected_id)?;
+            // A local run tells prover version or format skew apart from a really invalid witness.
+            let local_spf = if code == ErrorCode::VerificationFailed {
+                let spf_config = SpfConfig::new(Arc::clone(&config.chain_spec));
+                let witness = Arc::unwrap_or_clone(request).witness;
+                match tokio::task::spawn_blocking(move || prove_zone_batch(&spf_config, witness))
+                    .await
+                {
+                    Ok(Ok(_)) => "; local SPF accepts the witness".to_owned(),
+                    Ok(Err(error)) => format!("; local SPF rejects it too: {error}"),
+                    Err(error) => format!("; local SPF panicked: {error}"),
+                }
+            } else {
+                String::new()
+            };
             Err(eyre::eyre!(
-                "remote prover rejected request ({code:?}): {message}"
+                "remote prover rejected request ({code:?}): {message}{local_spf}"
             ))
         }
     }
-}
-
-/// Parses the Tempo read a `zone_spf::Error::MissingTempoStorage` message names, the only form in
-/// which a pinned prover reports it.
-fn missing_tempo_read(message: &str) -> Option<(Address, Option<B256>, u64)> {
-    let (read, block_number) = message
-        .strip_prefix("Tempo witness is missing account ")?
-        .split_once(" at block ")?;
-    let (account, slot) = match read.split_once(" slot ") {
-        Some((account, slot)) => (account, Some(slot.parse().ok()?)),
-        None => (read, None),
-    };
-    Some((account.parse().ok()?, slot, block_number.parse().ok()?))
 }
 
 fn validate_response_header(
@@ -1157,7 +1138,6 @@ fn witness_size(witness: &BatchWitness) -> usize {
 mod tests {
     use super::*;
     use alloy_consensus::Header as ConsensusHeader;
-    use test_case::test_case;
     use zone_rpc::types::ZoneExecutionWitness;
     use zone_spf::{
         BlockTransition, DepositQueueTransition, LastBatchCommitment, TokenEnablementTransition,
@@ -1330,22 +1310,6 @@ mod tests {
                 .contains("previous token count mismatch")
         );
     }
-
-    #[test_case(None)]
-    #[test_case(Some(B256::repeat_byte(2)))]
-    fn missing_tempo_read_parses_spf_error(slot: Option<B256>) {
-        let account = Address::repeat_byte(1);
-        let message = zone_spf::Error::MissingTempoStorage {
-            account,
-            slot,
-            block_number: 7,
-        };
-        assert_eq!(
-            missing_tempo_read(&message.to_string()),
-            Some((account, slot, 7))
-        );
-    }
-
     fn zone_block(number: u64) -> ZoneBlock {
         ZoneBlock {
             number,

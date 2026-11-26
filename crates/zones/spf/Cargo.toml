@@ -41,9 +41,6 @@ reth-trie-sparse.workspace = true
 serde = { workspace = true, optional = true, features = ["alloc"] }
 thiserror = "2"
 
-[dev-dependencies]
-test-case.workspace = true
-
 [features]
 default = ["serde"]
 serde = [

@@ -17775,7 +17775,6 @@ dependencies = [
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
- "test-case",
  "thiserror 2.0.21",
  "zone-chainspec",
  "zone-evm",
