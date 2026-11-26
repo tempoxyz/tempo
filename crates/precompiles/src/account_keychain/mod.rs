@@ -786,6 +786,41 @@ impl AccountKeychain {
         self.tx_origin.t_write(origin)
     }
 
+    /// Writes `tx_origin` directly to transient storage without constructing `AccountKeychain`.
+    #[inline]
+    pub fn set_tx_origin_direct(origin: Address) -> Result<()> {
+        crate::storage::Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS)
+            .t_write(origin)
+    }
+
+    /// Fast path for `authorize_transfer` that skips constructing `AccountKeychain` for main-key txs.
+    #[inline]
+    pub fn authorize_transfer_direct(account: Address, token: Address, amount: U256) -> Result<()> {
+        let transaction_key =
+            crate::storage::Slot::<Address>::new(slots::TRANSACTION_KEY, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if transaction_key.is_zero() {
+            return Ok(());
+        }
+        Self::new().authorize_transfer(account, token, amount)
+    }
+
+    /// Fast path for `refund_spending_limit` that skips constructing `AccountKeychain` for main-key txs.
+    #[inline]
+    pub fn refund_spending_limit_direct(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key =
+            crate::storage::Slot::<Address>::new(slots::TRANSACTION_KEY, ACCOUNT_KEYCHAIN_ADDRESS)
+                .t_read()?;
+        if transaction_key.is_zero() {
+            return Ok(());
+        }
+        Self::new().refund_spending_limit(account, token, amount)
+    }
+
     /// Persists the authorization-time restrictions for a freshly created key.
     ///
     /// T0-T2 only store raw spending limits. T3 additionally seeds periodic metadata and replaces

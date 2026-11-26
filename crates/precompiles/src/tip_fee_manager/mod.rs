@@ -66,7 +66,7 @@ impl TipFeeManager {
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
-        let token = self.validator_tokens[beneficiary].read()?;
+        let token = self.validator_tokens.entry(&beneficiary).read()?;
 
         if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN)
@@ -132,7 +132,7 @@ impl TipFeeManager {
         // T3+: skip write and event if the token is already set to the requested value.
         // Prevents permissionless callers from forcing redundant pool invalidation scans.
         if self.storage.spec().is_t3() {
-            let current = self.user_tokens[sender].read()?;
+            let current = self.user_tokens.entry(&sender).read()?;
             if current == call.token {
                 return Ok(());
             }
@@ -166,15 +166,18 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
-
         // TIP-1042: T8 fee collection exempts FeeManager recipient authorization.
         if self.storage.spec().is_t8() {
-            tip20_token.ensure_authorized_as(&[(fee_payer, AuthRole::sender())])?;
+            TIP20Token::ensure_authorized_as_direct(
+                user_token,
+                &[(fee_payer, AuthRole::sender())],
+            )?;
+            TIP20Token::transfer_fee_pre_tx_direct(user_token, fee_payer, max_amount)?;
         } else {
+            let mut tip20_token = TIP20Token::from_address(user_token)?;
             tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
+            tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
         }
-        tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
@@ -240,8 +243,12 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
-        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        TIP20Token::transfer_fee_post_tx_direct(
+            fee_token,
+            fee_payer,
+            refund_amount,
+            actual_spending,
+        )?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
@@ -280,7 +287,10 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        self.collected_fees[validator][token].sinc(amount)?;
+        self.collected_fees
+            .entry(&validator)
+            .entry(&token)
+            .sinc(amount)?;
 
         Ok(())
     }

@@ -9,8 +9,7 @@ use evm2::{
     precompiles::{PrecompileError, PrecompileResult},
     version::GasParams,
 };
-use scoped_tls::scoped_thread_local;
-use std::cell::RefCell;
+use std::{cell::Cell, ptr::NonNull};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{TempoBlockEnv, TempoBlockExt, TempoEvmKind};
 
@@ -22,7 +21,36 @@ use crate::{
     },
 };
 
-scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+type StorageSlot = Option<NonNull<dyn PrecompileStorageProvider>>;
+
+thread_local! {
+    static STORAGE: Cell<*mut StorageSlot> = const { Cell::new(core::ptr::null_mut()) };
+}
+
+struct EnterGuard<'a> {
+    cell: &'a Cell<*mut StorageSlot>,
+    prev: *mut StorageSlot,
+}
+
+impl Drop for EnterGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.cell.set(self.prev);
+    }
+}
+
+struct BorrowGuard {
+    slot: *mut StorageSlot,
+    ptr: NonNull<dyn PrecompileStorageProvider>,
+}
+
+impl Drop for BorrowGuard {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: `slot` points to the active stack local in `enter`.
+        unsafe { *self.slot = Some(self.ptr) };
+    }
+}
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -51,54 +79,66 @@ impl StorageCtx {
     ///    callee of [`StorageCtx::call`], which enters its own context while the caller waits.
     /// 2. If multiple storage providers are instantiated in parallel threads,
     ///    they CANNOT point to the same storage addresses.
+    #[inline]
     pub fn enter<S, R>(storage: &mut S, f: impl FnOnce() -> R) -> R
     where
         S: PrecompileStorageProvider,
     {
-        // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let storage: &mut dyn PrecompileStorageProvider = storage;
+        // SAFETY: `EnterGuard` restores the previous pointer before `storage` and `slot` go out of scope.
         let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
             unsafe { std::mem::transmute(storage) };
-        let cell = RefCell::new(storage_static);
-        STORAGE.set(&cell, f)
+        let mut slot: StorageSlot = Some(NonNull::from(storage_static));
+        let slot_ptr: *mut StorageSlot = &mut slot;
+        STORAGE.with(|cell| {
+            let prev = cell.replace(slot_ptr);
+            let _guard = EnterGuard { cell, prev };
+            f()
+        })
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
     ///
     /// # Panics
-    /// Panics if no storage context is set.
+    /// Panics if no storage context is set or on re-entrant access without `enter`.
+    #[inline(always)]
     fn with_storage<F, R>(f: F) -> R
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
     {
+        let slot = STORAGE.get();
         assert!(
-            STORAGE.is_set(),
+            !slot.is_null(),
             "No storage context. 'StorageCtx::enter' must be called first"
         );
-        STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
-        })
+        // SAFETY: Non-null `slot` points to the active stack local in `enter`.
+        let mut ptr = unsafe { (*slot).take() }.expect("StorageCtx already borrowed");
+        let _guard = BorrowGuard { slot, ptr };
+        // SAFETY: Unique access is guaranteed because the pointer was taken out of `slot`.
+        f(unsafe { ptr.as_mut() })
     }
 
     /// Execute a (fallible) function with access to the current thread-local storage provider.
+    #[inline(always)]
     fn try_with_storage<F, R>(f: F) -> Result<R>
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
     {
-        if !STORAGE.is_set() {
+        let slot = STORAGE.get();
+        if slot.is_null() {
             return Err(TempoPrecompileError::Fatal(
                 "No storage context. 'StorageCtx::enter' must be called first".to_string(),
             ));
         }
-        STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
-        })
+        // SAFETY: Non-null `slot` points to the active stack local in `enter`.
+        let Some(mut ptr) = (unsafe { (*slot).take() }) else {
+            return Err(TempoPrecompileError::Fatal(
+                "No storage context. 'StorageCtx::enter' must be called first".to_string(),
+            ));
+        };
+        let _guard = BorrowGuard { slot, ptr };
+        // SAFETY: Unique access is guaranteed because the pointer was taken out of `slot`.
+        f(unsafe { ptr.as_mut() })
     }
 
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)
@@ -142,11 +182,13 @@ impl StorageCtx {
     }
 
     /// Returns the current block timestamp.
+    #[inline]
     pub fn timestamp(&self) -> U256 {
         self.with_block_env(|block_env| block_env.timestamp)
     }
 
     /// Returns the current block beneficiary (coinbase).
+    #[inline]
     pub fn beneficiary(&self) -> Address {
         self.with_block_env(|block_env| block_env.beneficiary)
     }
@@ -157,6 +199,7 @@ impl StorageCtx {
     }
 
     /// Executes a closure with access to the current Tempo block environment.
+    #[inline]
     pub fn with_block_env<R>(&self, f: impl FnOnce(&TempoBlockEnv) -> R) -> R {
         Self::with_storage(|s| f(s.block_env()))
     }
@@ -172,36 +215,43 @@ impl StorageCtx {
     }
 
     /// Performs an SLOAD operation (persistent storage read).
+    #[inline]
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
     /// Performs a TLOAD operation (transient storage read).
+    #[inline]
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
     /// Performs an SSTORE operation (persistent storage write).
+    #[inline]
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
     /// Increments a persistent storage slot by `delta`.
+    #[inline]
     pub fn sinc(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sinc(address, key, delta))
     }
 
     /// Decrements a persistent storage slot by `delta`.
+    #[inline]
     pub fn sdec(&mut self, address: Address, key: U256, delta: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sdec(address, key, delta))
     }
 
     /// Performs a TSTORE operation (transient storage write).
+    #[inline]
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
     }
 
     /// Emits an event from the given contract address.
+    #[inline]
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
@@ -258,6 +308,7 @@ impl StorageCtx {
     }
 
     /// Returns the currently active hardfork.
+    #[inline]
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }

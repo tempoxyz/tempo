@@ -208,15 +208,25 @@ impl TIP20Token {
     }
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
-    pub fn transfer_policy_id(&self) -> Result<u64> {
+    /// Fast-path lookup of `transfer_policy_id` without constructing `TIP20Token` or `TIP403Registry`.
+    #[inline]
+    pub fn transfer_policy_id_direct(token: Address) -> Result<u64> {
         if StorageCtx.spec().is_t9()
             && let Some(policy_id) =
-                TIP403Registry::new().registered_token_transfer_policy_id(self.address)?
+                TIP403Registry::registered_token_transfer_policy_id_direct(token)?
         {
             return Ok(policy_id);
         }
+        crate::storage::Slot::<u64>::new_with_ctx(
+            slots::TRANSFER_POLICY_ID,
+            crate::storage::LayoutCtx::packed(slots::TRANSFER_POLICY_ID_OFFSET),
+            token,
+        )
+        .read()
+    }
 
-        self.legacy_transfer_policy_id()
+    pub fn transfer_policy_id(&self) -> Result<u64> {
+        Self::transfer_policy_id_direct(self.address)
     }
 
     /// Returns the policy ID stored in the legacy TIP-20 storage slot.
@@ -1186,15 +1196,15 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances[account].read()
+        self.balances.entry(&account).read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].write(amount)
+        self.balances.entry(&account).write(amount)
     }
 
     pub fn increment_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].sinc(amount).map_err(|err| {
+        self.balances.entry(&account).sinc(amount).map_err(|err| {
             if err == TempoPrecompileError::under_overflow() {
                 TIP20Error::supply_cap_exceeded().into()
             } else {
@@ -1204,7 +1214,8 @@ impl TIP20Token {
     }
 
     pub fn decrement_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account]
+        self.balances
+            .entry(&account)
             .sdec(amount)
             .map_err(|err| match err {
                 TempoPrecompileError::StorageDeltaUnderflow(current) => {
@@ -1364,8 +1375,21 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — a user is not authorized for the requested role by the active transfer policy
-    pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
-        let policy_id = self.transfer_policy_id()?;
+    ///
+    /// Fast-path transfer policy check without constructing `TIP20Token` or `TIP403Registry` for policy 1 (always-allow).
+    #[inline]
+    pub fn ensure_authorized_as_direct(
+        token: Address,
+        user_auth: &[(Address, AuthRole)],
+    ) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        let policy_id = Self::transfer_policy_id_direct(token)?;
+        // Policy ID 1 is the built-in always-allow policy.
+        if policy_id == 1 {
+            return Ok(());
+        }
         let registry = TIP403Registry::new();
         for &(user, role) in user_auth {
             if !registry.is_authorized_as(policy_id, user, role)? {
@@ -1375,12 +1399,16 @@ impl TIP20Token {
         Ok(())
     }
 
+    pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
+        Self::ensure_authorized_as_direct(self.address, user_auth)
+    }
+
     /// Checks and deducts `amount` from the caller's [`AccountKeychain`] spending limit.
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        AccountKeychain::authorize_transfer_direct(from, self.address, amount)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
@@ -1448,7 +1476,7 @@ impl TIP20Token {
 
         let token = self.address;
         let Some((reason, recovery)) =
-            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+            TIP403Registry::check_receive_policy_direct(token, originator, to.target)?
         else {
             return Ok(false);
         };
@@ -1522,6 +1550,113 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    ///
+    /// Fast-path fee pre-tx transfer that skips constructing `TIP20Token` on T8+ (where rewards are disabled).
+    #[inline]
+    pub fn transfer_fee_pre_tx_direct(token: Address, from: Address, amount: U256) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        if !StorageCtx.spec().is_t8() {
+            return Self::from_address_unchecked(token).transfer_fee_pre_tx(from, amount);
+        }
+        if crate::storage::Slot::<bool>::new(slots::PAUSED, token).read()? {
+            return Err(TIP20Error::contract_paused().into());
+        }
+        AccountKeychain::authorize_transfer_direct(from, token, amount)?;
+
+        use crate::storage::StorageKey as _;
+        crate::storage::Slot::<U256>::new(from.mapping_slot(slots::BALANCES), token)
+            .sdec(amount)
+            .map_err(|err| match err {
+                TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                    TIP20Error::insufficient_balance(current, amount, token).into()
+                }
+                err => err,
+            })?;
+        crate::storage::Slot::<U256>::new(
+            TIP_FEE_MANAGER_ADDRESS.mapping_slot(slots::BALANCES),
+            token,
+        )
+        .sinc(amount)
+        .map_err(|err| {
+            if err == TempoPrecompileError::under_overflow() {
+                TIP20Error::supply_cap_exceeded().into()
+            } else {
+                err
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Fast-path fee post-tx refund that skips constructing `TIP20Token` on T8+ (where rewards are disabled).
+    #[inline]
+    pub fn transfer_fee_post_tx_direct(
+        token: Address,
+        to: Address,
+        refund: U256,
+        actual_spending: U256,
+    ) -> Result<()> {
+        if !token.is_tip20() {
+            return Err(TIP20Error::invalid_token().into());
+        }
+        if !StorageCtx.spec().is_t8() {
+            return Self::from_address_unchecked(token).transfer_fee_post_tx(
+                to,
+                refund,
+                actual_spending,
+            );
+        }
+        let mut storage = StorageCtx;
+        storage.emit_event(
+            token,
+            alloy::primitives::IntoLogData::to_log_data(&TIP20Event::transfer(
+                to,
+                TIP_FEE_MANAGER_ADDRESS,
+                actual_spending,
+            )),
+        )?;
+        if refund.is_zero() {
+            return Ok(());
+        }
+        if storage.spec().is_t1c() {
+            AccountKeychain::refund_spending_limit_direct(to, token, refund)?;
+        }
+        use crate::storage::StorageKey as _;
+        let refund_debit = crate::storage::Slot::<U256>::new(
+            TIP_FEE_MANAGER_ADDRESS.mapping_slot(slots::BALANCES),
+            token,
+        )
+        .sdec(refund)
+        .map_err(|err| match err {
+            TempoPrecompileError::StorageDeltaUnderflow(current) => {
+                TIP20Error::insufficient_balance(current, refund, token).into()
+            }
+            err => err,
+        });
+        #[cfg(feature = "fuzz")]
+        antithesis_sdk::assert_always!(
+            !matches!(refund_debit, Err(TempoPrecompileError::TIP20(_))),
+            "Fee manager custody covers the unused fee refund",
+            &serde_json::json!({
+                "token": token.to_string(),
+                "refund": refund.to_string(),
+                "actual_spending": actual_spending.to_string(),
+            })
+        );
+        refund_debit?;
+        crate::storage::Slot::<U256>::new(to.mapping_slot(slots::BALANCES), token)
+            .sinc(refund)
+            .map_err(|err| {
+                if err == TempoPrecompileError::under_overflow() {
+                    TIP20Error::supply_cap_exceeded().into()
+                } else {
+                    err
+                }
+            })?;
+        Ok(())
+    }
+
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
@@ -1573,7 +1708,7 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            AccountKeychain::refund_spending_limit_direct(to, self.address, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient

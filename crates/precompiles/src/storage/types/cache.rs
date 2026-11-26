@@ -135,15 +135,15 @@ enum HandlerCacheState<K, H> {
 /// Re-entrant access will panic rather than cause undefined behavior.
 #[derive(Debug)]
 pub(crate) struct HandlerCache<K, H, const THRESHOLD: usize = CACHE_THRESHOLD> {
-    inner: RefCell<HandlerCacheState<K, H>>,
+    inner: RefCell<Option<Box<HandlerCacheState<K, H>>>>,
 }
 
 impl<K, H, const THRESHOLD: usize> HandlerCache<K, H, THRESHOLD> {
     /// Creates a new empty handler cache.
     #[inline]
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
-            inner: RefCell::new(HandlerCacheState::Linear(LinearCache::default())),
+            inner: RefCell::new(None),
         }
     }
 }
@@ -163,8 +163,10 @@ where
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
     pub(crate) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
-        let mut cache = self.inner.borrow_mut();
-        let ptr = match &mut *cache {
+        let mut slot = self.inner.borrow_mut();
+        let cache =
+            slot.get_or_insert_with(|| Box::new(HandlerCacheState::Linear(LinearCache::default())));
+        let ptr = match &mut **cache {
             HandlerCacheState::Linear(linear) => {
                 if let Some(ptr) = linear.find(key) {
                     ptr
@@ -172,8 +174,8 @@ where
                     linear.insert(key, f)
                 } else {
                     let map = Self::promote_to_map(linear);
-                    *cache = HandlerCacheState::Mapped(map);
-                    match &mut *cache {
+                    **cache = HandlerCacheState::Mapped(map);
+                    match &mut **cache {
                         HandlerCacheState::Mapped(map) => map.get_or_insert(key, f),
                         HandlerCacheState::Linear(_) => unreachable!("handler cache was promoted"),
                     }
@@ -189,8 +191,11 @@ where
     #[inline]
     pub(crate) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         // `&mut self` already guarantees exclusive access, so skip the `RefCell` borrow tracking.
-        let cache = self.inner.get_mut();
-        let ptr = match cache {
+        let cache = self
+            .inner
+            .get_mut()
+            .get_or_insert_with(|| Box::new(HandlerCacheState::Linear(LinearCache::default())));
+        let ptr = match &mut **cache {
             HandlerCacheState::Linear(linear) => {
                 if let Some(ptr) = linear.find_mut(key) {
                     ptr
@@ -198,8 +203,8 @@ where
                     linear.insert_mut(key, f)
                 } else {
                     let map = Self::promote_to_map(linear);
-                    *cache = HandlerCacheState::Mapped(map);
-                    match cache {
+                    **cache = HandlerCacheState::Mapped(map);
+                    match &mut **cache {
                         HandlerCacheState::Mapped(map) => map.get_or_insert_mut(key, f),
                         HandlerCacheState::Linear(_) => unreachable!("handler cache was promoted"),
                     }

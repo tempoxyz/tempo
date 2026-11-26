@@ -148,6 +148,16 @@ impl TIP20ChannelReserve {
         self.channel_open_context_hash.t_write(hash)
     }
 
+    /// Writes `channel_open_context_hash` directly without constructing `TIP20ChannelReserve`.
+    #[inline]
+    pub fn set_channel_open_context_hash_direct(hash: B256) -> Result<()> {
+        crate::storage::Slot::<B256>::new(
+            slots::CHANNEL_OPEN_CONTEXT_HASH,
+            crate::TIP20_CHANNEL_RESERVE_ADDRESS,
+        )
+        .t_write(hash)
+    }
+
     /// Returns the number of reusable channel storage credits owned by `payer`.
     pub fn storage_credits(&self, payer: Address) -> Result<u64> {
         self.channel_storage_credits[payer].read()
