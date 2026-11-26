@@ -583,6 +583,13 @@ where
     }
 }
 
+/// Returns whether a Solidity short-string storage word encodes `"USD"` (length 3, lowest bit 0).
+#[inline]
+fn is_usd_currency_word(raw: U256) -> bool {
+    let bytes = raw.to_be_bytes::<32>();
+    bytes[31] == 6 && bytes[..3] == *b"USD"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,11 +988,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Returns whether a Solidity short-string storage word encodes `"USD"` (length 3, lowest bit 0).
-#[inline]
-fn is_usd_currency_word(raw: U256) -> bool {
-    let bytes = raw.to_be_bytes::<32>();
-    bytes[31] == 6 && bytes[..3] == *b"USD"
 }
