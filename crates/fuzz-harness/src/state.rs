@@ -46,23 +46,16 @@ impl Db {
         }
     }
 
-    /// The existing accounts invariants hold over, sorted: for an exact pre-state those execution
-    /// touched, as the pre-state may list many more, for a genesis one every account.
+    /// The accounts invariants hold over, sorted: for an exact pre-state those execution touched,
+    /// as the pre-state may list many more, for a genesis one every account. Either may not exist,
+    /// as a TIP-20 balance needs no account.
     pub(crate) fn held(&self) -> Vec<Address> {
-        let cache = self.cache.borrow();
-        let exists = |address: &Address| cache.accounts.get(address).is_some_and(Option::is_some);
         if self.pre.exact {
-            self.touched
-                .borrow()
-                .iter()
-                .copied()
-                .filter(exists)
-                .collect()
-        } else {
-            let mut held: Vec<Address> = cache.accounts.keys().copied().filter(exists).collect();
-            held.sort_unstable();
-            held
+            return self.touched.borrow().iter().copied().collect();
         }
+        let mut held: Vec<Address> = self.cache.borrow().accounts.keys().copied().collect();
+        held.sort_unstable();
+        held
     }
 
     /// A database that records what it loads in the cache, as an executing EVM reads it.

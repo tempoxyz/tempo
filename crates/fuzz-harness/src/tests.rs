@@ -1085,6 +1085,17 @@ fn mock_signatures_verify_end_to_end() {
     &["TEMPO-TIP20-ROLE-AUTHZ"];
     "a role-gated call"
 )]
+// A call that leaves the token as it was is judged too.
+#[test_case(
+    call(
+        0,
+        Address::with_last_byte(1) | PATH_USD_ADDRESS,
+        ITIP20::mintCall { to: RECIPIENT, amount: U256::ZERO }.abi_encode().into(),
+        1_000_000,
+    ),
+    &["TEMPO-TIP20-ROLE-AUTHZ"];
+    "a role-gated call with no effect"
+)]
 // Minting LP names its pool, whose holders then each burn it all on a throwaway state.
 #[test_case(mint_lp(0), &["TEMPO-AMM5", "TEMPO-AMM-EXIT"]; "an LP mint")]
 fn a_call_is_judged_by_the_checks_it_arms_and_holds(tx: Bytes, ids: &[&str]) {

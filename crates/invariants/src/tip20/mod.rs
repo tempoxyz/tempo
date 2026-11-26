@@ -26,14 +26,17 @@ pub use checks::{BALANCE_SUM, CHECKS, STEP_CHECKS, SUPPLY_CAP, TRANSFER_EVENTS, 
 pub use roles::{ROLE_AUTHZ, Roles};
 
 /// Checks the ledger of each token the scope selects and, when the step's calls were traced, the
-/// roles its committed privileged calls needed.
+/// roles the committed privileged calls into any token needed, as calls such as a pause and an
+/// unpause can leave its state as it was.
 pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
-    for &token in scope.tokens.iter().filter(|token| (scope.selected)(token)) {
-        let at = At {
-            token,
-            holders: scope.holders,
-        };
-        reader.check::<Ledger>(at, token, VIEW);
+    for &token in scope.tokens {
+        if (scope.selected)(&token) {
+            let at = At {
+                token,
+                holders: scope.holders,
+            };
+            reader.check::<Ledger>(at, token, VIEW);
+        }
         let queries = scope
             .effects
             .map(|effects| roles::queries(effects, token))
