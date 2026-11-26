@@ -31,6 +31,8 @@ pub mod validator_config_v2;
 pub mod zone_factory;
 pub mod zone_verifier;
 
+pub mod native_bench;
+
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
 

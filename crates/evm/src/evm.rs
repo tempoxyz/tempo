@@ -133,16 +133,21 @@ impl TempoEvmFactory {
     pub(crate) fn set_jit_support(&mut self, enabled: bool) {
         self.jit_support = enabled;
     }
+}
 
-    /// Installs compiled execution if JIT support is enabled for this factory.
-    pub(crate) fn configure_jit(&self, evm: &mut TempoEvm<'_>) {
+impl TempoEvmFactory {
+    /// Installs the interpreter runner: native benchmark entries first, then compiled execution
+    /// if JIT support is enabled for this factory.
+    pub(crate) fn configure_runner(&self, evm: &mut TempoEvm<'_>) {
+        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
+        let mut runner = crate::native_bench::NativeBenchRunner::default();
+        #[cfg(feature = "jit")]
         if self.jit_support
             && let Some(backend) = self.jit_backend()
         {
-            evm.set_interpreter_runner(evm2_jit::evm2_evm::JitInterpreterRunner::new(
-                backend.clone(),
-            ));
+            runner.jit = Some(backend.clone());
         }
+        evm.set_interpreter_runner(runner);
     }
 }
 
@@ -209,8 +214,7 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let precompiles = self.precompiles(&env, &ext);
         *evm.ext_mut() = ext;
         evm.set_precompiles(precompiles);
-        #[cfg(feature = "jit")]
-        self.configure_jit(evm);
+        self.configure_runner(evm);
     }
 }
 

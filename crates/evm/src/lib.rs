@@ -18,6 +18,7 @@ mod handler;
 mod instructions;
 #[cfg(feature = "jit")]
 pub mod jit;
+pub mod native_bench;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
@@ -170,7 +171,6 @@ impl TempoEvmConfig {
     where
         DB: DynDatabase + 'a,
     {
-        #[cfg_attr(not(feature = "jit"), allow(unused_mut))]
         let mut evm = evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
@@ -180,8 +180,7 @@ impl TempoEvmConfig {
             precompiles,
             ext,
         );
-        #[cfg(feature = "jit")]
-        self.evm_factory.configure_jit(&mut evm);
+        self.evm_factory.configure_runner(&mut evm);
         evm
     }
 }
