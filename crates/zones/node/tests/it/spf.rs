@@ -41,7 +41,6 @@ use crate::utils::{
 
 const ZONE_ID: u32 = 1;
 
-/// The ancestry case anchors one block past the real EIP-2935 window.
 #[test_case(0 ; "direct")]
 #[test_case(HISTORY_SERVE_WINDOW as u64 + 1 ; "ancestry")]
 #[tokio::test(flavor = "multi_thread")]
