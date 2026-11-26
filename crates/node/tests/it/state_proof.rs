@@ -3,16 +3,16 @@ use alloy::{
     hex,
     primitives::{Address, B256, U256, keccak256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::EIP1186AccountProofResponse,
 };
-use alloy_eips::BlockId;
+use futures::future::try_join_all;
+use reth_trie_common::AccountProof;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// Snapshots the `eth_getMultiProof` response for each way a proof can end, in both the account
-/// trie and a storage trie. Both tries hold keys hashed to `1230..`, `1231..` and `20..`, so the
-/// root is a branch whose child `1` is an extension `23` over a branch and whose child `2` is a
-/// leaf. Absent keys end at the root branch (`3..`), inside the extension (`124..`) or at the leaf
-/// (`21..`).
+/// Snapshots and verifies `eth_getMultiProof` per proof ending. Both tries hash keys to `1230..`,
+/// `1231..` and `20..`; absent keys end at the root (`3..`), extension (`124..`) or leaf (`21..`).
 #[tokio::test(flavor = "multi_thread")]
 async fn multi_proof_snapshots() -> eyre::Result<()> {
     let address = |prefix| grind(prefix, |i| Address::from_word(i.into()));
@@ -34,30 +34,38 @@ async fn multi_proof_snapshots() -> eyre::Result<()> {
         .build_http_only()
         .await?;
     let provider = ProviderBuilder::new().connect_http(setup.http_url);
-
-    for (name, target, slots) in [
-        ("account_present_below_extension", account, vec![]),
-        ("account_present_leaf", leaf_account, vec![]),
-        ("account_absent_at_branch", address("3"), vec![]),
-        ("account_absent_at_extension", address("124"), vec![]),
-        ("account_absent_at_leaf", address("21"), vec![]),
-        ("storage_present", account, vec![slot("1230"), slot("20")]),
-        ("storage_absent_at_branch", account, vec![slot("3")]),
-        ("storage_absent_at_extension", account, vec![slot("124")]),
-        ("storage_absent_at_leaf", account, vec![slot("21")]),
-        ("storage_absent_empty_trie", leaf_account, vec![slot("3")]),
-    ] {
-        // Untyped so the snapshot holds the exact wire output.
-        let response: Value = provider
+    // Untyped so the snapshot holds the exact wire output.
+    let multi_proof = async |targets: &[(Address, Vec<B256>)]| {
+        provider
             .client()
-            .request(
-                "eth_getMultiProof",
-                (vec![(target, slots)], BlockId::number(0)),
-            )
-            .await?;
-        insta::assert_snapshot!(name, serde_json::to_string_pretty(&response)?);
+            .request::<_, Vec<Value>>("eth_getMultiProof", (targets, "0x0"))
+            .await
+    };
+    let (names, targets) = <(Vec<_>, Vec<_>)>::from_iter([
+        ("account_present_below_extension", (account, vec![])),
+        ("account_present_leaf", (leaf_account, vec![])),
+        ("account_absent_at_branch", (address("3"), vec![])),
+        ("account_absent_at_extension", (address("124"), vec![])),
+        ("account_absent_at_leaf", (address("21"), vec![])),
+        ("storage_present", (account, vec![slot("1230"), slot("20")])),
+        ("storage_absent_at_branch", (account, vec![slot("3")])),
+        ("storage_absent_at_extension", (account, vec![slot("124")])),
+        ("storage_absent_at_leaf", (account, vec![slot("21")])),
+        ("storage_absent_empty_trie", (leaf_account, vec![slot("3")])),
+    ]);
+    let (block, singles, combined) = tokio::try_join!(
+        provider.get_block_by_number(0.into()),
+        try_join_all(targets.chunks(1).map(&multi_proof)),
+        multi_proof(&targets),
+    )?;
+    for (name, response) in names.into_iter().zip(&singles) {
+        insta::assert_snapshot!(name, serde_json::to_string_pretty(response)?);
     }
-
+    assert_eq!(combined, singles.concat());
+    let state_root = block.expect("genesis block").header.state_root;
+    for proof in &combined {
+        AccountProof::from(EIP1186AccountProofResponse::deserialize(proof)?).verify(state_root)?;
+    }
     Ok(())
 }
 
