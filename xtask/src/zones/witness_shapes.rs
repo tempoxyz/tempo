@@ -34,7 +34,7 @@ pub(crate) struct WitnessShapes {
 }
 
 fn nibble(path: &B256, index: usize) -> u8 {
-    (path[index / 2] >> if index % 2 == 0 { 4 } else { 0 }) & 0xf
+    (path[index / 2] >> if index.is_multiple_of(2) { 4 } else { 0 }) & 0xf
 }
 
 /// The storage trie path of a slot.
@@ -70,18 +70,23 @@ impl WitnessShapes {
             .ok_or_eyre("no PolicyCreated event")?;
         let policy_slot = policy_id.mapping_slot(tip403_registry_slots::POLICY_SET);
         let whitelisted = |account: Address| account.mapping_slot(policy_slot);
-        let receive = |account: Address| account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+        let receive =
+            |account: Address| account.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
 
         for attempt in 0..ATTEMPTS {
             // Both keys share the prefix and part at its next nibble, so the trie keeps a branch
             // there below an extension, unless an existing key already shares the prefix.
             let first = grind(attempt << 32, whitelisted, |_| true);
             let prefix = path(whitelisted(first));
-            let shares = |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
+            let shares =
+                |p: &B256, len: usize| (0..len).all(|i| nibble(p, i) == nibble(&prefix, i));
             let second = grind((attempt << 32) | 1, whitelisted, |p| {
                 shares(p, PREFIX) && nibble(p, PREFIX) != nibble(&prefix, PREFIX)
             });
-            let children = [nibble(&prefix, PREFIX), nibble(&path(whitelisted(second)), PREFIX)];
+            let children = [
+                nibble(&prefix, PREFIX),
+                nibble(&path(whitelisted(second)), PREFIX),
+            ];
             // Diverging inside the extension ends at it; below it, an unused nibble is empty.
             let extension = grind((attempt << 32) | 2, receive, |p| {
                 shares(p, PREFIX - 1) && nibble(p, PREFIX - 1) != nibble(&prefix, PREFIX - 1)
@@ -96,7 +101,9 @@ impl WitnessShapes {
                     .await?;
                 check(&receipt, "modifyPolicyWhitelist")?;
             }
-            let slots = [extension, empty_child].map(|r| B256::from(receive(r))).to_vec();
+            let slots = [extension, empty_child]
+                .map(|r| B256::from(receive(r)))
+                .to_vec();
             let proof = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 provider.get_proof(TIP403_REGISTRY_ADDRESS, slots),
@@ -112,7 +119,10 @@ impl WitnessShapes {
                     TrieNode::decode(&mut end.as_ref()).wrap_err("invalid proof node")
                 })
                 .collect::<eyre::Result<Vec<_>>>()?;
-            if matches!(ends.as_slice(), [TrieNode::Extension(_), TrieNode::Branch(_)]) {
+            if matches!(
+                ends.as_slice(),
+                [TrieNode::Extension(_), TrieNode::Branch(_)]
+            ) {
                 println!(
                     "{}",
                     serde_json::json!({ "recipients": [extension, empty_child] })
