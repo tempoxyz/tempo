@@ -235,9 +235,10 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
         if host.feature(EvmFeatures::EIP8037) {
-            *initial_state_gas = initial_state_gas.saturating_add(
-                authorizations.saturating_mul(host.version().gas_params.eip7702_auth_state_gas()),
-            );
+            *initial_state_gas = initial_state_gas.saturating_add(authorizations.saturating_mul(
+                host.version().gas_params.new_account_state_gas()
+                    + host.version().gas_params.get(GasId::TxEip7702PerAuthState),
+            ));
         }
         Ok(())
     }
