@@ -76,12 +76,17 @@ pub struct FillCommand {
     #[command(flatten)]
     env: EnvironmentArgs<TempoChainSpecParser>,
     /// First block of a new corpus (genesis is context, not a captured block); an existing
-    /// corpus must start here.
+    /// corpus must start here, unless `--overwrite` is set.
     #[arg(long, default_value = "1")]
     from: u64,
     /// Exclusive end, clamped to the available head; defaults to the head.
     #[arg(long)]
     to: Option<u64>,
+    /// Recapture an existing corpus from `--from` on, overwriting the blocks it already
+    /// published from there. `--from` must be within the published range, and the fill must
+    /// reach the published tip.
+    #[arg(long)]
+    overwrite: bool,
     /// Destination s3://bucket/prefix. Existing incompatible data is rejected.
     #[arg(long)]
     corpus: String,
@@ -106,6 +111,7 @@ impl FillCommand {
         let args = fill::FillArgs {
             from: self.from,
             to: self.to,
+            overwrite: self.overwrite,
             verify_existing: self.verify_existing,
             workers: workers(self.workers),
         };

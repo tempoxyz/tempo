@@ -2,9 +2,8 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::LazyLock,
 };
 
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, map::B256Map};
@@ -30,9 +29,34 @@ use tempo_fuzz_types::{
 pub(crate) struct Db {
     pub(crate) cache: RefCell<Cache>,
     pub(crate) pre: PreStateDb,
+    /// The accounts execution read or changed.
+    touched: RefCell<BTreeSet<Address>>,
 }
 
 impl Db {
+    fn new(cache: Cache, exact: bool) -> Self {
+        Self {
+            cache: RefCell::new(cache),
+            pre: PreStateDb {
+                exact,
+                missed: Cell::new(false),
+            },
+            touched: RefCell::default(),
+        }
+    }
+
+    /// The accounts invariants hold over, sorted: for an exact pre-state those execution touched,
+    /// as the pre-state may list many more, for a genesis one every account. Either may not exist,
+    /// as a TIP-20 balance needs no account.
+    pub(crate) fn held(&self) -> Vec<Address> {
+        if self.pre.exact {
+            return self.touched.borrow().iter().copied().collect();
+        }
+        let mut held: Vec<Address> = self.cache.borrow().accounts.keys().copied().collect();
+        held.sort_unstable();
+        held
+    }
+
     /// A database that records what it loads in the cache, as an executing EVM reads it.
     pub(crate) fn reader(&self) -> Reader<'_> {
         Reader {
@@ -52,6 +76,7 @@ impl Db {
     /// Writes the net changes of an execution step to the cache. `code` finds the bytecode of an
     /// account the step gave new code.
     pub(crate) fn commit(&self, net: &Net, code: impl Fn(&B256) -> Option<Bytecode>) {
+        self.touched.borrow_mut().extend(net.0.keys().copied());
         let mut cache = self.cache.borrow_mut();
         for (address, change) in &net.0 {
             let info = change.current.clone().map(|mut info| {
@@ -169,6 +194,9 @@ impl Database for Reader<'_> {
     }
 
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if self.record {
+            self.db.touched.borrow_mut().insert(*address);
+        }
         if let Some(account) = self.db.cache.borrow().accounts.get(address) {
             return Ok(account.clone());
         }
@@ -233,11 +261,10 @@ impl Database for Reader<'_> {
     }
 }
 
-/// The dev genesis allocation, seeded once per process: seeding analyses and hashes every genesis
-/// contract, which costs more than executing a transfer.
-static GENESIS: LazyLock<Cache> = LazyLock::new(|| {
+/// `genesis`'s allocation as a cache, which a genesis pre-state starts from.
+pub fn genesis_cache(genesis: &alloy_genesis::Genesis) -> Cache {
     let mut cache = Cache::default();
-    for (address, account) in &tempo_chainspec::spec::DEV.inner.genesis.alloc {
+    for (address, account) in &genesis.alloc {
         let account = AccountInput {
             balance: account.balance,
             nonce: account.nonce.unwrap_or_default(),
@@ -249,31 +276,31 @@ static GENESIS: LazyLock<Cache> = LazyLock::new(|| {
                 .map(|(slot, value)| ((*slot).into(), (*value).into()))
                 .collect(),
         };
-        insert(&mut cache, *address, &account).expect("the dev genesis code is well-formed");
+        insert(&mut cache, *address, &account).expect("the genesis code is well-formed");
     }
     cache
-});
+}
 
 /// `pre_state` as a database. A genesis pre-state's account at a genesis address replaces it whole,
 /// but must keep the genesis code: a protocol contract's code marks it deployed. `InvalidInput` if it
 /// does not, or if an account's code starts with the EIP-7702 prefix `0xef01` but is not a valid
 /// delegation.
-pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
+pub(crate) fn seed(pre_state: &PreState, genesis: &Cache) -> Result<Db, ErrorClass> {
     let (state, mut cache, exact) = match pre_state {
         PreState::Genesis(state) => {
             let keeps_code = |(address, account): (&Address, &AccountInput)| {
-                GENESIS
+                genesis
                     .accounts
                     .get(address)
                     .and_then(Option::as_ref)
-                    .is_none_or(|genesis| {
-                        account.code == Contracts(&[&GENESIS.contracts]).code(genesis)
+                    .is_none_or(|genesis_account| {
+                        account.code == Contracts(&[&genesis.contracts]).code(genesis_account)
                     })
             };
             if !state.accounts.iter().all(keeps_code) {
                 return Err(ErrorClass::InvalidInput);
             }
-            (state, GENESIS.clone(), false)
+            (state, genesis.clone(), false)
         }
         PreState::Exact { state, .. } => (state, Cache::default(), true),
     };
@@ -285,13 +312,7 @@ pub(crate) fn seed(pre_state: &PreState) -> Result<Db, ErrorClass> {
             .block_hashes
             .extend(block_hashes.iter().map(|(n, h)| (U256::from(*n), *h)));
     }
-    Ok(Db {
-        cache: RefCell::new(cache),
-        pre: PreStateDb {
-            exact,
-            missed: Cell::new(false),
-        },
-    })
+    Ok(Db::new(cache, exact))
 }
 
 /// Whether `account` holds nothing: an extractor lists the slots a block read even for an account
@@ -306,7 +327,11 @@ fn is_empty(account: &AccountInput) -> bool {
 /// Replaces the account at `address` with `account`, its code and the slots the pre-state holds for
 /// it, or records that it does not exist if it holds nothing. Other slots are read from the
 /// database. `InvalidInput` if its code is a malformed EIP-7702 delegation.
-fn insert(cache: &mut Cache, address: Address, account: &AccountInput) -> Result<(), ErrorClass> {
+pub(crate) fn insert(
+    cache: &mut Cache,
+    address: Address,
+    account: &AccountInput,
+) -> Result<(), ErrorClass> {
     cache.storage.remove(&address);
     if is_empty(account) {
         cache.accounts.insert(address, None);
@@ -424,6 +449,11 @@ impl Net {
     /// The accounts the span changed.
     pub(crate) fn addresses(&self) -> impl Iterator<Item = &Address> {
         self.0.keys()
+    }
+
+    /// The accounts the span changed, with what it changed in each.
+    pub(crate) fn accounts(&self) -> impl Iterator<Item = (&Address, &AccountNet)> {
+        self.0.iter()
     }
 
     /// What the span changed in the account at `address`.

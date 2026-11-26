@@ -1,15 +1,22 @@
 //! Configurable account checks: the signatures' authority and the accounts' leaves.
 
-use super::{Reader, StepEffects};
-use crate::state::{Db, Net};
+use super::{EvmReader, StepEffects};
+use crate::{
+    engine::Engine,
+    state::{Db, Net},
+};
 use alloy_primitives::{Address, B256};
 use evm2::evm::{AccountInfo, Database as _};
-use invariants_core::{Checked, Report};
+use invariants_core::Checked as _;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS};
-use tempo_invariants::configurable_account::{
-    Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role, VIEW,
-    delegate_grants, spec,
+use tempo_invariants::{
+    Tx,
+    configurable_account::{
+        Approval, At, Authority, Commitments, Grant, Key, Leaf, LeafChange, Leaves, Quorum, Role,
+        VIEW, delegate_grants, spec,
+    },
+    model::Reader as _,
 };
 use tempo_precompiles::storage::account_config_commitment;
 use tempo_primitives::{
@@ -20,9 +27,8 @@ use tempo_primitives::{
 };
 
 /// What `tx`'s signatures authorize it for; signers that don't recover are left out.
-pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> Authority {
+pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address) -> Authority {
     let mut authority = Authority {
-        active,
         authorization_list: tx.authorization_list().is_some_and(|list| !list.is_empty())
             || tx
                 .tempo_authorization_list()
@@ -89,8 +95,12 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address, active: bool) -> 
 }
 
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
-pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, report: &mut Report) {
-    let tx = effects.tx();
+pub(super) fn check(
+    reader: &mut EvmReader<'_, impl Engine>,
+    db: &Db,
+    effects: &StepEffects<'_>,
+    tx: &Tx,
+) {
     let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, &effects.logs, tx);
     let mut accounts: Vec<Address> = effects
         .net
@@ -115,7 +125,7 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
         admins: &admins,
         keys: &keys,
     };
-    reader.check::<Commitments>(report, at, CONFIGURABLE_ACCOUNT_ADDRESS, VIEW);
+    reader.check::<Commitments>(at, CONFIGURABLE_ACCOUNT_ADDRESS, VIEW);
     let leaves = Leaves {
         of: accounts
             .iter()
@@ -128,7 +138,7 @@ pub(super) fn check(reader: &Reader<'_>, db: &Db, effects: &StepEffects<'_>, rep
         tx: tx.clone(),
         delegates,
     };
-    report.run(Leaves::CHECKS, &leaves, None);
+    reader.run(Leaves::CHECKS, &leaves);
 }
 
 /// `signature`'s quorum, its approvals recovered over the TIP-1107 digest.

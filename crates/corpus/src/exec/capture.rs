@@ -83,13 +83,8 @@ where
     let changeset = ChangeSet {
         accounts: accounts
             .iter()
-            .map(|a| {
-                Ok((
-                    a.address.into_array(),
-                    a.info.as_ref().map(Info::capture).transpose()?,
-                ))
-            })
-            .collect::<eyre::Result<_>>()?,
+            .map(|a| (a.address.into_array(), a.info.as_ref().map(Info::capture)))
+            .collect(),
         storage: storage
             .iter()
             .map(|(address, slot)| {
@@ -147,9 +142,7 @@ where
         if let Some(account) = &account {
             code_hashes.insert(account.code_hash);
         }
-        let info = account
-            .map(|a| Info::capture(&Account::from(&a)))
-            .transpose()?;
+        let info = account.map(|a| Info::capture(&Account::from(&a)));
         input.accounts.insert(address.into_array(), info);
     }
     for (address, key) in &keys.storage {

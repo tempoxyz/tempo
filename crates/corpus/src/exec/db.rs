@@ -2,7 +2,7 @@
 
 use crate::{
     code,
-    types::{Change, Delta, InfoChange, Input},
+    types::{Change, CodeChange, Delta, InfoChange, Input},
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use evm2::{
@@ -131,9 +131,20 @@ impl View {
                 };
                 account.nonce = info.nonce.unwrap_or(account.nonce);
                 account.balance = info.balance.map_or(account.balance, U256::from_be_bytes);
-                account.code_hash = info.code_hash.map_or(account.code_hash, |hash| {
+                let (code_hash, extension) = match &info.code {
+                    CodeChange::Keep => (None, None),
+                    CodeChange::Hash(hash) => (Some(*hash), None),
+                    CodeChange::Extended {
+                        code_hash,
+                        extension,
+                    } => (*code_hash, Some(extension)),
+                };
+                account.code_hash = code_hash.map_or(account.code_hash, |hash| {
                     hash.map_or(KECCAK256_EMPTY, B256::from)
                 });
+                if let Some(extension) = extension {
+                    account.extension = extension.clone().into();
+                }
                 if let Some(bytes) = &change.code {
                     code::insert_code(&account.code_hash.0, bytes)?;
                     self.overlay.code.insert(account.code_hash);
@@ -253,11 +264,20 @@ pub fn change_from_update(
         .unwrap_or(&empty);
     let code_changed = current.code_hash != base.code_hash;
     let has_code = current.code_hash != KECCAK256_EMPTY;
+    let code_hash = code_changed.then_some(has_code.then_some(current.code_hash.0));
+    let code_change = if current.extension != base.extension {
+        CodeChange::Extended {
+            code_hash,
+            extension: current.extension.to_vec(),
+        }
+    } else {
+        code_hash.map_or(CodeChange::Keep, CodeChange::Hash)
+    };
     Ok(Change {
         info: Some(InfoChange {
             nonce: (current.nonce != base.nonce).then_some(current.nonce),
             balance: (current.balance != base.balance).then_some(current.balance.to_be_bytes()),
-            code_hash: code_changed.then_some(has_code.then_some(current.code_hash.0)),
+            code: code_change,
         }),
         created,
         storage: update
