@@ -33,7 +33,7 @@ use tempo_contracts::zones::{
 use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
 };
 use tracing::{debug, info, warn};
 use zone_chainspec::ZoneChainSpec;
@@ -105,10 +105,12 @@ struct ValidationStats {
     tempo_state_nodes: usize,
 }
 
+/// Prover worker state. Admits one local SPF run at a time to diagnose remote rejections.
 struct ProverContext<P> {
     config: SettlementProverConfig,
     zone_provider: P,
     l1_provider: DynProvider<TempoNetwork>,
+    local_spf: Arc<Semaphore>,
 }
 
 struct ZoneInputs {
@@ -177,6 +179,7 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
         config,
         zone_provider,
         l1_provider,
+        local_spf: Arc::new(Semaphore::new(1)),
     };
     let metrics = ProverMetrics::default();
 
@@ -333,7 +336,8 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         zone_to = job.to,
         "Selected remote prover"
     );
-    let (output, bundle) = verify_remotely(remote, &context.config, job, witness, metrics).await?;
+    let (output, bundle) =
+        verify_remotely(remote, hardfork, context, job, witness, metrics).await?;
     let proof = SettlementProof { bundle, hardfork };
     metrics
         .spf_execution_duration_seconds
@@ -529,9 +533,10 @@ async fn build_witness<P: ZoneSequencerProvider>(
     Ok((witness, stats))
 }
 
-async fn verify_remotely(
+async fn verify_remotely<P>(
     remote: &RemoteProverConfig,
-    config: &SettlementProverConfig,
+    hardfork: TempoHardfork,
+    context: &ProverContext<P>,
     job: &ProverJob,
     witness: BatchWitness,
     metrics: &ProverMetrics,
@@ -542,7 +547,7 @@ async fn verify_remotely(
         version: PROTOCOL_VERSION,
         request_id: format!(
             "zone-{}-{}-{}-{}",
-            config.zone_id, job.from, job.to, job.batch.next_block_hash
+            context.config.zone_id, job.from, job.to, job.batch.next_block_hash
         ),
         witness,
     });
@@ -617,21 +622,27 @@ async fn verify_remotely(
         } => {
             validate_response_header(version, request_id.as_deref(), &expected_id)?;
             // A local run tells prover version or format skew apart from a really invalid witness.
-            let local_spf = if code == ErrorCode::VerificationFailed {
-                let spf_config = SpfConfig::new(Arc::clone(&config.chain_spec));
+            if code == ErrorCode::VerificationFailed
+                && let Ok(permit) = Arc::clone(&context.local_spf).try_acquire_owned()
+            {
+                let spf_config = SpfConfig::new(Arc::clone(&context.config.chain_spec));
                 let witness = Arc::unwrap_or_clone(request).witness;
-                match tokio::task::spawn_blocking(move || prove_zone_batch(&spf_config, witness))
-                    .await
-                {
-                    Ok(Ok(_)) => "; local SPF accepts the witness".to_owned(),
-                    Ok(Err(error)) => format!("; local SPF rejects it too: {error}"),
-                    Err(error) => format!("; local SPF panicked: {error}"),
-                }
-            } else {
-                String::new()
-            };
+                let (zone_from, zone_to) = (job.from, job.to);
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    let result = prove_zone_batch(&spf_config, witness);
+                    warn!(
+                        target: "zone::sequencer::prover",
+                        zone_from,
+                        zone_to,
+                        local_spf_accepts = result.is_ok(),
+                        error = result.err().map(tracing::field::display),
+                        "Re-ran a witness the prover rejected"
+                    );
+                });
+            }
             Err(eyre::eyre!(
-                "remote prover rejected request ({code:?}): {message}{local_spf}"
+                "remote prover@{hardfork} rejected request ({code:?}): {message}"
             ))
         }
     }
