@@ -217,7 +217,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                     .authorizations()
                     .filter(|authorization| authorization.nonce() == 0)
                     .count() as u64,
-                transaction.authorization_list().len() as u64,
+                transaction.authorizations().len() as u64,
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
