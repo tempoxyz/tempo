@@ -110,9 +110,6 @@ where
         first_tx: first_tx(args.from)?,
     };
     let tip = canonical_hash(end - 1)?;
-    // Blocks below this were published before an overwriting fill rewound the cursor; their
-    // stored keys are replaced without comparing.
-    let mut overwrite_end = 0;
     // Where an overwriting fill restarts. The catalog keeps its published cursor, which its
     // checkpoint stores, until the writer is claimed.
     let mut rewind = None;
@@ -171,7 +168,6 @@ where
                     published = catalog.cursor.next,
                     "Overwriting published corpus blocks"
                 );
-                overwrite_end = catalog.cursor.next;
                 rewind = Some(store::Cursor::initial(&context)?);
             }
             (catalog, Some(version))
@@ -423,9 +419,14 @@ where
                 let mut pending = BTreeMap::new();
                 let mut metadata_bytes = 0;
                 // A superseded writer can only have written blocks of the page it
-                // never published, so reading keys back is needed for one page only.
-                let recheck_start = begin.max(overwrite_end);
-                let recheck_end = recheck_start.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64);
+                // never published, so reading keys back is needed for one page only. An
+                // overwriting fill replaces stored keys without comparing: past its cursor they
+                // may hold the blocks it overwrites, or an interrupted overwrite's leftovers.
+                let recheck_end = if args.overwrite {
+                    begin
+                } else {
+                    begin.saturating_add(PAGE_RECORDS_PER_PUBLISH as u64)
+                };
                 // One write per page (or per 64 MiB) instead of one durable write per
                 // block.
                 let mut batch = WriteBatch::new();
@@ -486,7 +487,7 @@ where
                             .enumerate()
                             .map(|(i, b)| (store::transaction_key(record.first_tx + i as u64), b)),
                     ) {
-                        let stored = if (recheck_start..recheck_end).contains(&start) {
+                        let stored = if start < recheck_end {
                             handle.block_on(db.get(key))?
                         } else {
                             None
