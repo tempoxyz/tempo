@@ -91,6 +91,10 @@ pub trait Engine {
         Address::ZERO
     }
 
+    /// Starts recording the storage actions `evm`'s transactions take, which receipts report. Does
+    /// nothing by default, leaving receipts' actions empty.
+    fn record_storage_actions(&self, _evm_config: &Self::EvmConfig, _evm: &mut TempoEvm<'_>) {}
+
     /// Transactions that open a block (header built by the harness) before the input's, built
     /// against the state after pre-execution changes: None by default, `advanceTempo` on zones.
     fn open_block(
@@ -142,5 +146,9 @@ impl Engine for Tempo {
 
     fn genesis(&self) -> &Cache {
         &GENESIS
+    }
+
+    fn record_storage_actions(&self, evm_config: &TempoEvmConfig, evm: &mut TempoEvm<'_>) {
+        evm_config.record_storage_actions(evm);
     }
 }

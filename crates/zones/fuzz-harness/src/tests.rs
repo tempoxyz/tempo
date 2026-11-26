@@ -208,6 +208,13 @@ fn t15_transfers_follow_the_portal_opt_in() {
         receipts(&outcome),
         [ADVANCED, (TxIndex::Input(0), TxOutcome::Success)]
     );
+    // Zones do not record storage actions.
+    assert!(
+        outcome
+            .receipts
+            .iter()
+            .all(|receipt| receipt.actions.is_empty())
+    );
     // The Tempo protocol invariants judge zone steps, not only Tempo L1's.
     for id in ["TEMPO-TIP20-TRANSFER-EVENTS", "TEMPO-TIP20-BALANCE-SUM"] {
         let counts = &outcome.invariant_counts[id];

@@ -14620,6 +14620,7 @@ dependencies = [
  "invariants-core",
  "serde",
  "tempo-hardfork",
+ "tempo-precompiles",
 ]
 
 [[package]]

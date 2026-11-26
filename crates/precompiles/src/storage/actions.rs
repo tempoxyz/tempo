@@ -3,7 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use alloy_primitives::{Address, B256, U256};
 use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StorageAction {
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
@@ -63,7 +64,8 @@ pub enum StorageAction {
 
 /// Brackets a protocol fee hook. The actions between a hook's start marker and the next
 /// [`Self::End`] are the hook's own. A hook that fails records no end marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FeeHook {
     /// Pre-tx fee hook starts, charging `amount` of `token` to `payer`. Emits no logs.
     PreTx {
