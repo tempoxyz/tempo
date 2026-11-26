@@ -248,6 +248,7 @@ static GENESIS: LazyLock<Cache> = LazyLock::new(|| {
                 .flatten()
                 .map(|(slot, value)| ((*slot).into(), (*value).into()))
                 .collect(),
+            extension: Bytes::copy_from_slice(&account.extension),
         };
         insert(&mut cache, *address, &account).expect("the dev genesis code is well-formed");
     }
@@ -300,6 +301,7 @@ fn is_empty(account: &AccountInput) -> bool {
     account.balance.is_zero()
         && account.nonce == 0
         && account.code.is_empty()
+        && account.extension.is_empty()
         && account.storage.values().all(U256::is_zero)
 }
 
@@ -323,6 +325,7 @@ pub(crate) fn insert(
         .with_nonce(account.nonce)
         .with_code(code.clone());
     info.code = None;
+    info.extension = account.extension.clone().into();
     if info.code_hash != KECCAK256_EMPTY {
         cache.contracts.insert(info.code_hash, code);
     }
@@ -493,6 +496,7 @@ pub(crate) fn encode(
                 nonce: account.info.nonce,
                 code: contracts.code(&account.info),
                 storage: account.storage.iter().map(|(k, v)| (*k, *v)).collect(),
+                extension: Bytes::copy_from_slice(&account.info.extension),
             };
             (*address, account)
         })
@@ -525,7 +529,7 @@ pub(crate) fn state_root(accounts: &BTreeMap<Address, PlainAccount>) -> B256 {
             balance: account.info.balance,
             storage_root: storage_root_unhashed(storage),
             code_hash: account.info.code_hash,
-            extension: Default::default(),
+            extension: Bytes::copy_from_slice(&account.info.extension).into(),
         };
         (*address, trie_account)
     }))

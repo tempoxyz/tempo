@@ -183,6 +183,29 @@ fn genesis_state() -> StateInput {
     state::encode(&accounts, &Contracts(&[&cache.contracts]))
 }
 
+#[test]
+fn an_exact_pre_state_keeps_account_extensions() {
+    // A T14 configurable account's config commitment lives in its extension; an account holding
+    // only an extension still exists.
+    let state = one_account(
+        RECIPIENT,
+        AccountInput {
+            extension: Bytes::from_static(&[0x82, 0xaa]),
+            ..Default::default()
+        },
+    );
+    let db = state::seed(&exact(state.clone())).unwrap();
+    let cache = db.cache.borrow();
+    let accounts = state::after(&cache, &Net::default());
+    assert_eq!(
+        state::encode(&accounts, &Contracts(&[&cache.contracts])),
+        state
+    );
+    let mut without = accounts.clone();
+    without.get_mut(&RECIPIENT).unwrap().info.extension = Default::default();
+    assert_ne!(state::state_root(&accounts), state::state_root(&without));
+}
+
 /// The dev genesis with the accounts of `edits` replaced, as an exact pre-state for `blocks`,
 /// listing what they read, as an extractor reading a witness would: every account and slot
 /// execution loads, zeros included, with its value before the blocks.
@@ -905,7 +928,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 5);
+    assert_eq!(capabilities.schema_version, 6);
     let info = |id: &str| {
         capabilities
             .invariants
