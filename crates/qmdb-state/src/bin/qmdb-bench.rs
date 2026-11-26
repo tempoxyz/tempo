@@ -43,6 +43,8 @@ struct Args {
     account_writes: usize,
     persist_every: u64,
     prefetch: bool,
+    stage: bool,
+    overlap: bool,
     reads: usize,
     read_batch: usize,
     read_threads: usize,
@@ -65,6 +67,8 @@ fn parse() -> Result<Args, String> {
         account_writes: 2_000,
         persist_every: 3,
         prefetch: false,
+        stage: false,
+        overlap: false,
         reads: 2_000,
         read_batch: 1_000,
         read_threads: 8,
@@ -97,6 +101,8 @@ fn parse() -> Result<Args, String> {
             "--account-writes" => args.account_writes = num!(),
             "--persist-every" => args.persist_every = num!(),
             "--prefetch" => args.prefetch = true,
+            "--stage" => args.stage = true,
+            "--overlap" => args.overlap = true,
             "--reads" => args.reads = num!(),
             "--read-batch" => args.read_batch = num!(),
             "--read-threads" => args.read_threads = num!(),
@@ -339,89 +345,132 @@ fn run(args: &Args) -> Result<(), String> {
     let (mut prefetches, mut builds, mut finalizes, mut totals) = (vec![], vec![], vec![], vec![]);
     let mut parent = base;
     let blocks_started = Instant::now();
-    for number in first..first + args.blocks {
-        let mut used = HashSet::new();
-        let mut pick = |rng: &mut Rng| loop {
-            let i = rng.below(args.slots);
-            if !deleted.contains(&i) && used.insert(i) {
-                return i;
+    std::thread::scope(|scope| -> Result<(), String> {
+        let mut finalizing: Option<
+            std::thread::ScopedJoinHandle<'_, Result<(u64, Duration), tempo_qmdb_state::Error>>,
+        > = None;
+        for number in first..first + args.blocks {
+            let mut used = HashSet::new();
+            let mut pick = |rng: &mut Rng| loop {
+                let i = rng.below(args.slots);
+                if !deleted.contains(&i) && used.insert(i) {
+                    return i;
+                }
+            };
+            let mut slots = Vec::with_capacity(args.updates + args.creates + args.deletes);
+            for _ in 0..args.updates {
+                let i = pick(&mut rng);
+                slots.push(Write {
+                    key: base_key(2, i, args.slots),
+                    value: Some(slot_value(rng.next())),
+                });
             }
-        };
-        let mut slots = Vec::with_capacity(args.updates + args.creates + args.deletes);
-        for _ in 0..args.updates {
-            let i = pick(&mut rng);
-            slots.push(Write {
-                key: base_key(2, i, args.slots),
-                value: Some(slot_value(rng.next())),
-            });
-        }
-        let mut doomed = Vec::with_capacity(args.deletes);
-        for _ in 0..args.deletes {
-            let i = pick(&mut rng);
-            doomed.push(i);
-            slots.push(Write {
-                key: base_key(2, i, args.slots),
-                value: None,
-            });
-        }
-        for _ in 0..args.creates {
-            slots.push(Write {
-                key: rng.key(),
-                value: Some(slot_value(rng.next())),
-            });
-        }
-        deleted.extend(doomed);
-        let mut seen = HashSet::new();
-        let mut accounts: Vec<_> = (0..args.account_writes)
-            .filter_map(|_| {
-                let i = rng.below(args.accounts);
-                seen.insert(i).then(|| Write {
-                    key: base_key(1, i, args.accounts),
-                    value: Some(account_value(rng.next())),
+            let mut doomed = Vec::with_capacity(args.deletes);
+            for _ in 0..args.deletes {
+                let i = pick(&mut rng);
+                doomed.push(i);
+                slots.push(Write {
+                    key: base_key(2, i, args.slots),
+                    value: None,
+                });
+            }
+            for _ in 0..args.creates {
+                slots.push(Write {
+                    key: rng.key(),
+                    value: Some(slot_value(rng.next())),
+                });
+            }
+            deleted.extend(doomed);
+            let mut seen = HashSet::new();
+            let mut accounts: Vec<_> = (0..args.account_writes)
+                .filter_map(|_| {
+                    let i = rng.below(args.accounts);
+                    seen.insert(i).then(|| Write {
+                        key: base_key(1, i, args.accounts),
+                        value: Some(account_value(rng.next())),
+                    })
                 })
-            })
-            .collect();
-        slots.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        accounts.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+                .collect();
+            slots.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+            accounts.sort_unstable_by(|a, b| a.key.cmp(&b.key));
 
-        let block_started = Instant::now();
-        if args.prefetch {
+            let block_started = Instant::now();
+            if args.prefetch {
+                let started = Instant::now();
+                store
+                    .prefetch(
+                        accounts.iter().map(|w| w.key.clone()).collect(),
+                        slots.iter().map(|w| w.key.clone()).collect(),
+                    )
+                    .map_err(err("prefetch"))?;
+                prefetches.push((number, started.elapsed()));
+            }
+            let mut stage_id = None;
+            if args.stage {
+                let started = Instant::now();
+                let id = store.open_stage(parent, false).map_err(err("open_stage"))?;
+                store
+                    .stage(
+                        id,
+                        accounts.iter().map(|w| w.key.clone()).collect(),
+                        slots.iter().map(|w| w.key.clone()).collect(),
+                    )
+                    .map_err(err("stage"))?;
+                prefetches.push((number, started.elapsed()));
+                stage_id = Some(id);
+            }
+            let hash = block_hash(number);
             let started = Instant::now();
             store
-                .prefetch(
-                    accounts.iter().map(|w| w.key.clone()).collect(),
-                    slots.iter().map(|w| w.key.clone()).collect(),
+                .build_staged(
+                    BlockRef {
+                        number,
+                        hash,
+                        parent_hash: parent,
+                    },
+                    Writes { accounts, slots },
+                    stage_id,
                 )
-                .map_err(err("prefetch"))?;
-            prefetches.push((number, started.elapsed()));
+                .map_err(err("build"))?;
+            builds.push((number, started.elapsed()));
+            totals.push((number, block_started.elapsed()));
+            if (number - first + 1) % args.persist_every == 0 {
+                if args.overlap {
+                    // Like the node's persistence: finalize runs beside the next blocks' builds.
+                    if let Some(previous) = finalizing.take() {
+                        let (n, d) = std::thread::ScopedJoinHandle::join(previous)
+                            .expect("finalize thread")
+                            .map_err(err("finalize"))?;
+                        finalizes.push((n, d));
+                    }
+                    let store = &store;
+                    finalizing = Some(scope.spawn(move || {
+                        let started = Instant::now();
+                        store.finalize(hash).map(|()| (number, started.elapsed()))
+                    }));
+                } else {
+                    let started = Instant::now();
+                    store.finalize(hash).map_err(err("finalize"))?;
+                    finalizes.push((number, started.elapsed()));
+                }
+            }
+            parent = hash;
+            if (number - first + 1) % 50 == 0 {
+                println!(
+                    "  block {number}: build {:.1} ms",
+                    ms(builds.last().expect("built").1)
+                );
+            }
         }
-        let hash = block_hash(number);
-        let started = Instant::now();
-        store
-            .build(
-                BlockRef {
-                    number,
-                    hash,
-                    parent_hash: parent,
-                },
-                Writes { accounts, slots },
-            )
-            .map_err(err("build"))?;
-        builds.push((number, started.elapsed()));
-        totals.push((number, block_started.elapsed()));
-        if (number - first + 1) % args.persist_every == 0 {
-            let started = Instant::now();
-            store.finalize(hash).map_err(err("finalize"))?;
-            finalizes.push((number, started.elapsed()));
+        if let Some(previous) = finalizing.take() {
+            let (n, d) = previous
+                .join()
+                .expect("finalize thread")
+                .map_err(err("finalize"))?;
+            finalizes.push((n, d));
         }
-        parent = hash;
-        if (number - first + 1) % 50 == 0 {
-            println!(
-                "  block {number}: build {:.1} ms",
-                ms(builds.last().expect("built").1)
-            );
-        }
-    }
+        Ok(())
+    })?;
     let wall = blocks_started.elapsed();
     let warm = |v: &[(u64, Duration)]| {
         Percentiles::of(
@@ -448,11 +497,11 @@ fn run(args: &Args) -> Result<(), String> {
         wall.as_secs_f64(),
         args.warmup
     );
-    if args.prefetch {
+    if args.prefetch || args.stage {
         println!("  prefetch       {}", row(&prefetch));
     }
     println!("  build          {}", row(&build));
-    if args.prefetch {
+    if args.prefetch || args.stage {
         println!("  prefetch+build {}", row(&total));
     }
     println!("  finalize x{}    {}", args.persist_every, row(&finalize));
