@@ -63,6 +63,13 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     unsafe { ffi::capabilities::<Zone>(out_ptr, out_len, out_written) }
 }
 
+/// Makes every check also accept mock signatures, if no input ran yet, as the Tempo harness does.
+/// Returns the mock format's version, or 0 when mocks stay off.
+#[unsafe(no_mangle)]
+pub extern "C" fn tempo_fuzz_enable_mock_crypto_v1() -> u32 {
+    ffi::enable_mock_crypto()
+}
+
 /// Writes why the last input this thread executed stopped short, as the Tempo harness does.
 ///
 /// # Safety
