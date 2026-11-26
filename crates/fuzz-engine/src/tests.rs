@@ -23,7 +23,9 @@ use tempo_chainspec::{
     constants::moderato::MODERATO_CHAIN_ID,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_contracts::precompiles::{CURRENT_COMMITTEE_ADDRESS, ITIP20, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{
+    CURRENT_COMMITTEE_ADDRESS, ITIP20, ITIPFeeAMM, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::{TempoEvm, TempoEvmConfig, consensus::TempoConsensus};
 use tempo_fuzz_types::{
@@ -48,10 +50,12 @@ use tempo_primitives::{
         tt_signature::{PrimitiveSignature, TempoSignature, p256_keypair},
     },
 };
+use test_case::test_case;
 
 use crate::{
     Chain, Engine, Rejection, Tempo, chain, execute,
     ffi::bincode_options,
+    invariants,
     state::{self, Contracts, Net},
 };
 
@@ -69,6 +73,23 @@ fn transfer(nonce: u64, amount: u64) -> Bytes {
 fn tip20_transfer(nonce: u64, to: Address, amount: U256, gas_limit: u64) -> Bytes {
     let input = ITIP20::transferCall { to, amount }.abi_encode();
     call(nonce, PATH_USD_ADDRESS, input.into(), gas_limit)
+}
+
+/// An LP mint, from [`SENDER`] to itself, of only validator tokens into the pool of pathUSD and the
+/// token after it.
+fn mint_lp(nonce: u64) -> Bytes {
+    let input = ITIPFeeAMM::mintCall {
+        userToken: Address::with_last_byte(1) | PATH_USD_ADDRESS,
+        validatorToken: PATH_USD_ADDRESS,
+        amountValidatorToken: U256::from(10_000_000u64),
+        to: SENDER,
+    };
+    call(
+        nonce,
+        TIP_FEE_MANAGER_ADDRESS,
+        input.abi_encode().into(),
+        2_000_000,
+    )
 }
 
 /// A call without value, signed with a placeholder: tests give its sender.
@@ -146,8 +167,8 @@ fn run_input(input: TempoBlockchainInput) -> TempoExecutionOutcome {
 }
 
 /// `input`'s outcome on `engine`, and why it stopped short.
-fn run_on(
-    engine: &impl Engine,
+fn run_on<E: Engine>(
+    engine: &E,
     input: TempoBlockchainInput,
 ) -> (TempoExecutionOutcome, Option<Rejection>) {
     let (TempoHarnessOutcome::Blockchain(outcome), rejection) =
@@ -160,7 +181,20 @@ fn run_on(
         Some(outcome.error).filter(|error| *error != ErrorClass::None),
         "a rejection explains every error"
     );
+    let catalog = invariants::catalog::<E>();
+    for id in outcome.invariant_counts.keys() {
+        assert!(
+            catalog.iter().any(|info| &info.id == id),
+            "{id} is counted but not in the catalog"
+        );
+    }
     (outcome, rejection)
+}
+
+/// How many subjects `outcome` judged for `id`, was armed for and found broken.
+fn counts(outcome: &TempoExecutionOutcome, id: &str) -> (u64, u64, u64) {
+    let counts = outcome.invariant_counts[id];
+    (counts.evaluated, counts.armed, counts.fired)
 }
 
 /// The storage changes `changes` records at `address`.
@@ -581,8 +615,8 @@ fn an_epoch_boundary_block_updates_the_committee_after_its_transactions() {
 #[test]
 fn a_pre_state_that_breaks_an_invariant_is_invalid() {
     // pathUSD's supply is below its holders' balances and above its cap. The second token's supply
-    // is missing from the pre-state, so its views are skipped, and checking goes on to the third,
-    // whose cap is broken.
+    // is missing from the pre-state and the third's cap is broken, but the block touches neither,
+    // so neither is checked.
     fn token(index: u8) -> Address {
         Address::with_last_byte(index) | PATH_USD_ADDRESS
     }
@@ -613,11 +647,7 @@ fn a_pre_state_that_breaks_an_invariant_is_invalid() {
         })
         .collect();
     let start = InvariantScope::Execution;
-    let expected = [
-        ("SUPPLY-CAP", &start, 0),
-        ("BALANCE-SUM", &start, 0),
-        ("SUPPLY-CAP", &start, 2),
-    ];
+    let expected = [("SUPPLY-CAP", &start, 0), ("BALANCE-SUM", &start, 0)];
     assert_eq!(
         failures,
         expected
@@ -1082,4 +1112,88 @@ fn mock_signatures_verify_end_to_end() {
         sent(3, p256_sender, 1),
         "the WebAuthn key's account sent it"
     );
+}
+
+// The dev account holds pathUSD's issuer role, so its traced mint is judged.
+#[test_case(
+    call(
+        0,
+        PATH_USD_ADDRESS,
+        ITIP20::mintCall { to: RECIPIENT, amount: U256::from(5) }.abi_encode().into(),
+        1_000_000,
+    ),
+    &["TEMPO-TIP20-ROLE-AUTHZ"];
+    "a role-gated call"
+)]
+// A call that leaves the token as it was is judged too.
+#[test_case(
+    call(
+        0,
+        Address::with_last_byte(1) | PATH_USD_ADDRESS,
+        ITIP20::mintCall { to: RECIPIENT, amount: U256::ZERO }.abi_encode().into(),
+        1_000_000,
+    ),
+    &["TEMPO-TIP20-ROLE-AUTHZ"];
+    "a role-gated call with no effect"
+)]
+// Minting LP names its pool, whose holders then each burn it all on a throwaway state.
+#[test_case(mint_lp(0), &["TEMPO-AMM5", "TEMPO-AMM-EXIT"]; "an LP mint")]
+fn a_call_is_judged_by_the_checks_it_arms_and_holds(tx: Bytes, ids: &[&str]) {
+    let outcome = run(genesis(), vec![t4_block(vec![tx])]);
+    assert_eq!(outcome.receipts[0].outcome, TxOutcome::Success);
+    for &id in ids.iter().chain(&["TEMPO-TRACE"]) {
+        assert_eq!(counts(&outcome, id), (1, 1, 0), "{id}");
+    }
+    assert_eq!(outcome.invariant_failures, []);
+}
+
+#[test]
+fn every_pool_is_exited_at_a_block_start_and_the_pools_lp_events_name_after_each_step() {
+    // The exits judged over a block minting LP and then one holding `txs`.
+    let exits = |txs: Vec<Bytes>| {
+        let outcome = run(genesis(), vec![t4_block(vec![mint_lp(0)]), t4_block(txs)]);
+        assert_eq!(outcome.invariant_failures, []);
+        counts(&outcome, "TEMPO-AMM-EXIT").0
+    };
+    // The mint alone is judged once, so the second block's start exits pools no event named.
+    let at_start = exits(Vec::new());
+    assert!(at_start > 1, "{at_start}");
+    let burn_lp = ITIPFeeAMM::burnCall {
+        userToken: Address::with_last_byte(1) | PATH_USD_ADDRESS,
+        validatorToken: PATH_USD_ADDRESS,
+        liquidity: U256::from(1000),
+        to: SENDER,
+    };
+    let burn = call(
+        1,
+        TIP_FEE_MANAGER_ADDRESS,
+        burn_lp.abi_encode().into(),
+        2_000_000,
+    );
+    assert_eq!(exits(vec![burn]), at_start + 1, "a burn names its pool");
+    assert_eq!(
+        exits(vec![transfer(1, 7)]),
+        at_start,
+        "a transfer names none"
+    );
+}
+
+#[test]
+fn an_exit_that_reads_outside_an_exact_pre_state_is_not_answered() {
+    // The exact pre-state lists only what the mint read, and burning reads more.
+    let block = t4_block(vec![mint_lp(0)]);
+    let state = exact_genesis(StateInput::default(), std::slice::from_ref(&block));
+    let outcome = run(exact(state), vec![block]);
+    assert_eq!(outcome.error, ErrorClass::None);
+    for id in ["TEMPO-AMM5", "TEMPO-AMM-EXIT"] {
+        assert_eq!(counts(&outcome, id), (1, 0, 0), "{id}");
+    }
+    assert_eq!(outcome.invariant_failures, []);
+}
+
+#[test]
+fn each_receipt_after_a_blocks_first_is_judged_for_its_cumulative_gas() {
+    let block = t4_block(vec![transfer(0, 7), transfer(1, 7), transfer(2, 7)]);
+    let outcome = run(genesis(), vec![block]);
+    assert_eq!(counts(&outcome, "TEMPO-BLOCK-GAS-MONOTONIC"), (2, 2, 0));
 }

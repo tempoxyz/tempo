@@ -7,16 +7,19 @@
 //! failing.
 
 use alloy_primitives::{Address, Log};
-use invariants_core::{Effects, Report, SlotChange, Step};
+use invariants_core::{Effects, Frame, Report, SlotChange, Step};
 use std::{
     ops::Deref,
     sync::{Arc, LazyLock},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IStablecoinDEX;
+use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_evm::TempoEvmEnv;
-use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope};
-use tempo_invariants::{Check, Ran, VIEWS, configurable_account as account, dex, fee_amm, tip20};
+use tempo_fuzz_types::{InvariantFailure, InvariantInfo, InvariantScope, TxReceiptOutput};
+use tempo_invariants::{
+    Check, Checked as _, Ran, VIEWS, block, configurable_account as account, dex, fee_amm, model,
+    tip20,
+};
 use tempo_primitives::is_tip20_prefix;
 
 use crate::{
@@ -29,7 +32,7 @@ use crate::{
 pub(crate) static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("TEMPO_FUZZ_INVARIANTS").is_none_or(|value| value != "0"));
 
-use reader::Reader;
+use reader::EvmReader;
 pub(crate) use views::ViewCache;
 
 mod configurable_account;
@@ -38,8 +41,8 @@ mod views;
 
 pub(crate) use configurable_account::authority;
 
-/// How many of the newest DEX orders the books are read over.
-const MAX_ORDERS: u128 = 256;
+/// Counts transactions, armed for each whose call trace was kept for the checks that read calls.
+const TRACE: &str = "TEMPO-TRACE";
 
 /// What a step did: its net state changes, already written to the database, and what
 /// every model's step shares, which it derefs to.
@@ -50,12 +53,18 @@ pub(crate) struct StepEffects<'a> {
 }
 
 impl<'a> StepEffects<'a> {
-    /// The effects of `ran`, which made `net`'s changes and emitted `logs`.
-    pub(crate) fn new(net: &'a Net, logs: &[Log], ran: Ran, spec: TempoHardfork) -> Self {
+    /// The effects of `ran`, which made `net`'s changes, emitted `logs` and, when traced, made
+    /// `calls`.
+    pub(crate) fn new(
+        net: &'a Net,
+        logs: &[Log],
+        calls: Option<Vec<Frame>>,
+        ran: Ran,
+        spec: TempoHardfork,
+    ) -> Self {
         let changes = net
-            .addresses()
-            .flat_map(|&address| {
-                let account = net.get(&address).expect("the step changed it");
+            .accounts()
+            .flat_map(|(&address, account)| {
                 account
                     .changed_slots()
                     .map(move |(slot, value)| SlotChange {
@@ -69,7 +78,7 @@ impl<'a> StepEffects<'a> {
         let shared = Effects {
             changes,
             logs: logs.to_vec(),
-            calls: None,
+            calls,
             ran,
         };
         Self {
@@ -93,6 +102,40 @@ impl Deref for StepEffects<'_> {
     }
 }
 
+/// Appends to `failures`, at `scope`, each invariant the block's `receipts` break at `spec`, and adds
+/// the counts to `report`.
+pub(crate) fn check_block(
+    receipts: &[TxReceiptOutput],
+    spec: TempoHardfork,
+    scope: &InvariantScope,
+    failures: &mut Vec<InvariantFailure>,
+    report: &mut Report,
+) {
+    if !*ENABLED {
+        return;
+    }
+    let start = report.violations.len();
+    let receipts = block::Receipts {
+        cumulative_gas_used: receipts.iter().map(|r| r.cumulative_gas_used).collect(),
+    };
+    report.run(block::Receipts::CHECKS, &receipts, Some(&spec));
+    take_failures(report, start, scope, failures);
+}
+
+/// Moves the violations `report` found past its first `start` to `failures`, at `scope`.
+fn take_failures(
+    report: &mut Report,
+    start: usize,
+    scope: &InvariantScope,
+    failures: &mut Vec<InvariantFailure>,
+) {
+    let violations = report.violations.drain(start..);
+    failures.extend(violations.map(|violation| InvariantFailure {
+        violation,
+        scope: scope.clone(),
+    }));
+}
+
 /// Every invariant `E`'s harness checks, and each model's counter of reads that failed: the fee
 /// AMM's and DEX's only on a chain that runs them.
 pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
@@ -106,17 +149,25 @@ pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
             until: check.meta.until,
         })
     }
-    let views = VIEWS.map(|(id, doc)| InvariantInfo {
-        id: id.to_string(),
-        doc: doc.to_string(),
-        tip: None,
-        covers: Vec::new(),
-        since: None,
-        until: None,
-    });
-    let fee_amm = E::FEE_AMM
+    let views = VIEWS
         .into_iter()
-        .flat_map(|_| infos(fee_amm::CHECKS).chain(infos(fee_amm::STEP_CHECKS)));
+        .chain([(
+            TRACE,
+            "A transaction's call trace is kept for the checks that read its calls.",
+        )])
+        .map(|(id, doc)| InvariantInfo {
+            id: id.to_string(),
+            doc: doc.to_string(),
+            tip: None,
+            covers: Vec::new(),
+            since: None,
+            until: None,
+        });
+    let fee_amm = E::FEE_AMM.into_iter().flat_map(|_| {
+        infos(fee_amm::CHECKS)
+            .chain(infos(fee_amm::STEP_CHECKS))
+            .chain(infos(fee_amm::exit::CHECKS))
+    });
     let dex = E::DEX
         .into_iter()
         .flat_map(|_| infos(dex::CHECKS).chain(infos(dex::STEP_CHECKS)));
@@ -126,26 +177,18 @@ pub(crate) fn catalog<E: Engine>() -> Vec<InvariantInfo> {
     ];
     infos(tip20::CHECKS)
         .chain(infos(tip20::STEP_CHECKS))
+        .chain(infos(tip20::roles::STEP_CHECKS))
         .chain(fee_amm)
         .chain(dex)
         .chain(infos(account::STEP_CHECKS))
         .chain(infos(account::LEAF_CHECKS))
+        .chain(infos(block::CHECKS))
         .chain(
             views
                 .into_iter()
                 .filter(|info| !skipped.contains(&Some(info.id.as_str()))),
         )
         .collect()
-}
-
-/// The addresses in the topics of `logs`, such as the holders a `Transfer` names.
-pub(crate) fn logged_addresses<'a>(
-    logs: impl IntoIterator<Item = &'a Log>,
-) -> impl Iterator<Item = Address> {
-    logs.into_iter()
-        .flat_map(|log| log.topics())
-        .filter(|topic| topic[..12] == [0; 12])
-        .map(|topic| Address::from_word(*topic))
 }
 
 /// Appends to `failures` each invariant `db` breaks, at `scope`, over the accounts `db` holds,
@@ -181,22 +224,21 @@ pub(crate) fn check<E: Engine>(
         .map(|effects| effects.net);
     let selected =
         |contract: &Address| selected(contract) && changed.is_none_or(|net| net.contains(contract));
+    // The fee AMM's and DEX's models apply only on a chain that runs them.
+    let runs = |contract: &Address| {
+        let protocol = |runs: Option<Address>, at: Address| *contract != at || runs == Some(at);
+        selected(contract)
+            && protocol(E::FEE_AMM, TIP_FEE_MANAGER_ADDRESS)
+            && protocol(E::DEX, STABLECOIN_DEX_ADDRESS)
+    };
     let missed = db.pre.missed();
     if let Some(effects) = &effects {
         view_cache.advance(effects.net);
     }
-    let mut accounts: Vec<Address> = db
-        .cache
-        .borrow()
-        .accounts
-        .iter()
-        .filter(|(_, account)| account.is_some())
-        .map(|(address, _)| *address)
-        .collect();
-    accounts.sort_unstable();
+    let accounts = db.held();
     // A step's own logs name holders its transitions touched only through a token's storage,
     // such as a transfer's recipient.
-    let logged = logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
+    let logged = model::logged_addresses(effects.iter().flat_map(|effects| &effects.logs));
     let mut all_holders: Vec<Address> = accounts
         .iter()
         .chain(holders)
@@ -205,79 +247,53 @@ pub(crate) fn check<E: Engine>(
         .collect();
     all_holders.sort_unstable();
     all_holders.dedup();
-    let tokens: Vec<Address> = accounts
-        .iter()
-        .copied()
-        .filter(|account| is_tip20_prefix(*account))
-        .collect();
-
-    let reader = Reader {
-        engine,
-        db,
-        evm_config,
-        env: &env,
-        effects: effects.as_ref(),
-        view_cache,
-    };
-    let start = report.violations.len();
-
-    for &token in tokens.iter().filter(|token| selected(token)) {
-        let at = tip20::At {
-            token,
-            holders: &all_holders,
-        };
-        reader.check::<tip20::Ledger>(report, at, token, tip20::VIEW);
-    }
-    if let Some(fee_manager) = E::FEE_AMM.filter(|fee_manager| selected(fee_manager)) {
-        let pairs: Vec<(Address, Address)> = tokens
+    let tokens: Vec<Address> = {
+        let cache = db.cache.borrow();
+        all_holders
             .iter()
-            .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
-            .filter(|(user, validator)| user != validator)
-            .collect();
-        // Fees are collected for the block's beneficiary; a step that distributes another
-        // validator's fees names it in its logs.
-        let mut validators: Vec<Address> = logged_addresses(effects.iter().flat_map(|e| &e.logs))
-            .chain([env.block.beneficiary])
-            .collect();
-        validators.sort_unstable();
-        validators.dedup();
-        let at = fee_amm::At {
-            fee_manager,
-            tokens: &tokens,
-            pairs: &pairs,
-            validators: &validators,
-            holders: &all_holders,
-        };
-        reader.check::<fee_amm::Books>(report, at, fee_manager, fee_amm::VIEW);
-    }
-    if let Some(dex) = E::DEX.filter(|dex| selected(dex)) {
-        // The newest orders the DEX numbered (ids start at 1), so DEX10 counts their escrow.
-        let mut views = reader.views(db.view(), false);
-        let next =
-            invariants_core::view(&mut views, dex, IStablecoinDEX::nextOrderIdCall {}).unwrap_or(0);
-        let orders: Vec<u128> = (next.saturating_sub(MAX_ORDERS).max(1)..next).collect();
-        let at = dex::At {
-            dex,
-            tokens: &tokens,
-            users: &all_holders,
-            orders: &orders,
-        };
-        reader.check::<dex::Books>(report, at, dex, dex::VIEW);
+            .copied()
+            .filter(|&account| {
+                is_tip20_prefix(account)
+                    && cache.accounts.get(&account).is_some_and(Option::is_some)
+            })
+            .collect()
+    };
+
+    let start = report.violations.len();
+    {
+        let mut reader = EvmReader::new(
+            engine,
+            db,
+            evm_config,
+            &env,
+            effects.as_ref(),
+            view_cache,
+            report,
+        );
+        model::check(
+            &mut reader,
+            &model::Scope {
+                tokens: &tokens,
+                holders: &all_holders,
+                beneficiary: env.block.beneficiary,
+                effects: effects.as_deref(),
+                selected: &runs,
+            },
+        );
+        if let Some(effects) = &effects
+            && let Some(tx) = effects.ran.tx()
+        {
+            configurable_account::check(&mut reader, db, effects, tx);
+        }
     }
     if let Some(effects) = &effects
-        && let Some(tx) = effects.ran.tx()
+        && effects.ran.tx().is_some()
     {
-        configurable_account::check(&reader, db, effects, tx, report);
+        let traced = report.counts.entry(TRACE).or_default();
+        traced.evaluated += 1;
+        traced.armed += u64::from(effects.calls.is_some());
     }
 
-    failures.extend(
-        report
-            .violations
-            .drain(start..)
-            .map(|violation| InvariantFailure {
-                violation,
-                scope: scope.clone(),
-            }),
-    );
+    take_failures(report, start, scope, failures);
     db.pre.restore_missed(missed);
 }

@@ -328,7 +328,7 @@ def main():
         else:
             meta = {
                 'edition': '"2024"',
-                'rust-version': '"1.96.0"',
+                'rust-version': '"1.100.0"',
                 'authors': '["Tempo Contributors"]',
                 'license': '"MIT OR Apache-2.0"',
                 'homepage': '"https://docs.tempo.xyz"',

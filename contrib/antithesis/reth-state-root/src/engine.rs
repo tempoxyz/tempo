@@ -126,10 +126,11 @@ impl Engine {
             .with(WithConfigs { config: NodeConfig::new(chain), toml_config: Default::default() })
             .attach(db);
         println!("{}", json!({"recovery": "start"}));
+        let (in_memory_blocks, in_memory_blocks_writer) = InMemoryState::new();
         let factory = runtime.handle().block_on(
             context.create_provider_factory_with_recovery::<Node, EthEvmConfig>(
                 OverlayManager::with_worker_pool(
-                    InMemoryState::default(),
+                    in_memory_blocks,
                     runtime.state_trie_overlay_worker_pool(),
                 ),
                 None,
@@ -163,7 +164,7 @@ impl Engine {
             .ok_or_else(|| eyre::eyre!("missing header {base}"))?;
         let in_memory_state = CanonicalInMemoryStateWriter::new(
             ChainInfoHeaders { canonical_head: parent.clone(), safe: None, finalized: None },
-            factory.in_memory_state().clone(),
+            in_memory_blocks_writer,
         );
         Ok(Self {
             persistence: Persistence::new(factory.clone()),

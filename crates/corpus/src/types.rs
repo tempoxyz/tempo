@@ -52,27 +52,59 @@ pub struct ChangeSet {
 pub struct Info {
     nonce: u64,
     balance: [u8; 32],
-    code_hash: Option<[u8; 32]>,
+    code: Code,
+}
+
+/// An account's code hash and chain-specific extension. Tags 0 and 1 encode like the
+/// `Option<[u8; 32]>` code hash corpora stored before extensions, so those still decode.
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+#[wincode(tag_encoding = "u8")]
+enum Code {
+    #[wincode(tag = 0)]
+    Empty,
+    #[wincode(tag = 1)]
+    Hash([u8; 32]),
+    #[wincode(tag = 2)]
+    Extended {
+        code_hash: Option<[u8; 32]>,
+        extension: Vec<u8>,
+    },
 }
 
 impl Info {
-    pub fn capture(account: &Account) -> eyre::Result<Self> {
-        let info = Self {
+    pub fn capture(account: &Account) -> Self {
+        let code_hash = account.bytecode_hash.map(|h| h.0);
+        let code = if account.extension.is_empty() {
+            code_hash.map_or(Code::Empty, Code::Hash)
+        } else {
+            Code::Extended {
+                code_hash,
+                extension: account.extension.to_vec(),
+            }
+        };
+        Self {
             nonce: account.nonce,
             balance: account.balance.to_be_bytes(),
-            code_hash: account.bytecode_hash.map(|h| h.0),
-        };
-        eyre::ensure!(info.account() == *account, "unsupported account extension");
-        Ok(info)
+            code,
+        }
     }
 
     pub fn account(&self) -> Account {
+        let (code_hash, extension) = match &self.code {
+            Code::Empty => (None, Vec::new()),
+            Code::Hash(hash) => (Some(*hash), Vec::new()),
+            Code::Extended {
+                code_hash,
+                extension,
+            } => (*code_hash, extension.clone()),
+        };
         Account {
             nonce: self.nonce,
             balance: U256::from_be_bytes(self.balance),
-            bytecode_hash: self.code_hash.map(B256::from),
+            bytecode_hash: code_hash.map(B256::from),
             ..Default::default()
         }
+        .with_extension(extension)
     }
 }
 
@@ -222,7 +254,28 @@ pub struct Change {
 pub struct InfoChange {
     pub nonce: Option<u64>,
     pub balance: Option<[u8; 32]>,
-    pub code_hash: Option<Option<[u8; 32]>>,
+    pub code: CodeChange,
+}
+
+/// Change to an account's code hash and extension. Tags 0 and 1 encode like the
+/// `Option<Option<[u8; 32]>>` code hash change corpora stored before extensions, so those still
+/// decode.
+#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
+#[wincode(tag_encoding = "u8")]
+pub enum CodeChange {
+    /// Code hash and extension unchanged.
+    #[wincode(tag = 0)]
+    Keep,
+    /// Sets the code hash (None: no code); the extension is unchanged.
+    #[wincode(tag = 1)]
+    Hash(Option<[u8; 32]>),
+    /// Sets the extension (empty: none), and the code hash as [`Self::Hash`] does when
+    /// `code_hash` is Some.
+    #[wincode(tag = 2)]
+    Extended {
+        code_hash: Option<Option<[u8; 32]>>,
+        extension: Vec<u8>,
+    },
 }
 
 /// Pre- and post-execution system changes of a block.
@@ -277,4 +330,87 @@ fn marked<K: Ord + Copy, V: Clone>(witness: &BTreeMap<K, V>, bits: &[u8]) -> BTr
         .filter(|(i, _)| bits[i / 8] & (1 << (i % 8)) != 0)
         .map(|(_, (key, value))| (*key, value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wincode::config::{deserialize_exact, serialize};
+
+    /// `Info` as corpora stored it before account extensions.
+    #[derive(SchemaWrite)]
+    struct LegacyInfo {
+        nonce: u64,
+        balance: [u8; 32],
+        code_hash: Option<[u8; 32]>,
+    }
+
+    /// `InfoChange` as corpora stored it before account extensions.
+    #[derive(SchemaWrite)]
+    struct LegacyInfoChange {
+        nonce: Option<u64>,
+        balance: Option<[u8; 32]>,
+        code_hash: Option<Option<[u8; 32]>>,
+    }
+
+    fn account(code_hash: Option<B256>, extension: &[u8]) -> Account {
+        Account {
+            nonce: 7,
+            balance: U256::from(42),
+            bytecode_hash: code_hash,
+            ..Default::default()
+        }
+        .with_extension(extension.to_vec())
+    }
+
+    #[test]
+    fn legacy_info_decodes() {
+        for code_hash in [None, Some([0xab; 32])] {
+            let legacy = LegacyInfo {
+                nonce: 7,
+                balance: U256::from(42).to_be_bytes(),
+                code_hash,
+            };
+            let bytes = serialize(&legacy, WINCODE).unwrap();
+            let info: Info = deserialize_exact(&bytes, WINCODE).unwrap();
+            let account = account(code_hash.map(B256::from), &[]);
+            assert_eq!(info.account(), account);
+            assert_eq!(serialize(&Info::capture(&account), WINCODE).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn legacy_info_change_decodes() {
+        for (legacy, expected) in [
+            (None, CodeChange::Keep),
+            (Some(None), CodeChange::Hash(None)),
+            (Some(Some([0xab; 32])), CodeChange::Hash(Some([0xab; 32]))),
+        ] {
+            let legacy = LegacyInfoChange {
+                nonce: Some(1),
+                balance: None,
+                code_hash: legacy,
+            };
+            let bytes = serialize(&legacy, WINCODE).unwrap();
+            let change: InfoChange = deserialize_exact(&bytes, WINCODE).unwrap();
+            assert_eq!(
+                change,
+                InfoChange {
+                    nonce: Some(1),
+                    balance: None,
+                    code: expected,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn extension_round_trips() {
+        for code_hash in [None, Some(B256::repeat_byte(0xab))] {
+            let account = account(code_hash, &[0x82, 0xaa]);
+            let bytes = serialize(&Info::capture(&account), WINCODE).unwrap();
+            let info: Info = deserialize_exact(&bytes, WINCODE).unwrap();
+            assert_eq!(info.account(), account);
+        }
+    }
 }
