@@ -14,10 +14,10 @@ name: Prover E2E
         type: string
         required: true
       suite:
-        description: Fast suite, or compat against the pinned provers
+        description: Prover E2E, or compat against the pinned provers
         type: choice
-        options: [fast, compat]
-        default: fast
+        options: [e2e, compat]
+        default: e2e
   merge_group:
 
 permissions:
@@ -61,8 +61,8 @@ jobs:
             if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
               throw new Error('Exact lowercase commit SHAs are required');
             }
-            const suite = compat ? 'compat' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
-            const contexts = {fast: 'Tempo Zone Prover E2E', compat: 'Tempo Zone Prover Compat'};
+            const suite = compat ? 'compat' : event === 'merge_group' ? 'e2e' : (process.env.INPUT_SUITE || 'e2e');
+            const contexts = {e2e: 'Tempo Zone Prover E2E', compat: 'Tempo Zone Prover Compat'};
             if (!Object.hasOwn(contexts, suite)) throw new Error('Unknown suite');
             const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
             if (commit.sha !== sha) throw new Error('Candidate SHA mismatch');
