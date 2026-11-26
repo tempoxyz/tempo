@@ -1580,18 +1580,7 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        let transaction_key = self.transaction_key.t_read()?;
-
-        if transaction_key.is_zero() {
-            return Ok(());
-        }
-
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
-        self.refund_spending_limit_for_key(account, transaction_key, token, amount)
+        Self::refund_spending_limit_direct(account, token, amount)
     }
 
     fn refund_spending_limit_for_key(
@@ -1662,22 +1651,7 @@ impl AccountKeychain {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        // Get the transaction key for this account
-        let transaction_key = self.transaction_key.t_read()?;
-
-        // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key.is_zero() {
-            return Ok(());
-        }
-
-        // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.tx_origin.t_read()?;
-        if account != tx_origin {
-            return Ok(());
-        }
-
-        // Verify and update spending limits for this access key
-        self.verify_and_update_spending(account, transaction_key, token, amount)
+        Self::authorize_transfer_direct(account, token, amount)
     }
 
     /// Authorize a token approval with access key spending limits.

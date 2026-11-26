@@ -2583,7 +2583,6 @@ impl BestAA2dTransactions {
         if current_seq == self.last_seen_broadcast_seq {
             return;
         }
-        self.last_seen_broadcast_seq = current_seq;
         for _ in 0..MAX_NEW_TRANSACTIONS_PER_BATCH {
             if let Some(incoming) = self.try_recv() {
                 let (tx, process) = match incoming {
@@ -2627,6 +2626,7 @@ impl BestAA2dTransactions {
                     }
                 }
             } else {
+                self.last_seen_broadcast_seq = current_seq;
                 break;
             }
         }

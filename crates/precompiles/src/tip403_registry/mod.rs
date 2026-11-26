@@ -491,26 +491,7 @@ impl TIP403Registry {
         if !config.has_receive_policy {
             return Ok(None);
         }
-
-        let token_filter_data = config.token_filter_data();
-        if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
-            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
-            return Ok(Some((
-                ITIP403Registry::BlockedReason::TOKEN_FILTER,
-                recovery_address,
-            )));
-        }
-
-        let sender_policy_data = config.sender_policy_data();
-        if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
-            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
-            return Ok(Some((
-                ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                recovery_address,
-            )));
-        }
-
-        Ok(None)
+        self.check_receive_policy_with_config(token, sender, receiver, config)
     }
 
     /// Returns the recovery authority encoded by `mode` for `account`.

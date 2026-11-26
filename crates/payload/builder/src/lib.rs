@@ -1342,6 +1342,19 @@ impl<H: OnStateHook> BatchedStateHook<H> {
                     let existing = o.get_mut();
                     existing.current = acc.current;
                     if !acc.storage.is_empty() {
+                        if !self.storage_indices.contains_key(&addr)
+                            && existing.storage.len() + acc.storage.len() > Self::LINEAR_SCAN_LIMIT
+                        {
+                            let mut idx_map =
+                                alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
+                                    existing.storage.len() + acc.storage.len(),
+                                    Default::default(),
+                                );
+                            for (idx, (k, _)) in existing.storage.iter().enumerate() {
+                                idx_map.insert(*k, idx);
+                            }
+                            self.storage_indices.insert(addr, idx_map);
+                        }
                         if let Some(idx_map) = self.storage_indices.get_mut(&addr) {
                             for (k, slot) in acc.storage {
                                 if let Some(&idx) = idx_map.get(&k) {
@@ -1361,17 +1374,6 @@ impl<H: OnStateHook> BatchedStateHook<H> {
                                 } else {
                                     existing.storage.push((k, slot));
                                 }
-                            }
-                            if existing.storage.len() > Self::LINEAR_SCAN_LIMIT {
-                                let mut idx_map =
-                                    alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
-                                        existing.storage.len(),
-                                        Default::default(),
-                                    );
-                                for (idx, (k, _)) in existing.storage.iter().enumerate() {
-                                    idx_map.insert(*k, idx);
-                                }
-                                self.storage_indices.insert(addr, idx_map);
                             }
                         }
                     }

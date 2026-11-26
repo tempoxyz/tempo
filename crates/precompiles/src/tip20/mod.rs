@@ -1386,8 +1386,7 @@ impl TIP20Token {
             return Err(TIP20Error::invalid_token().into());
         }
         let policy_id = Self::transfer_policy_id_direct(token)?;
-        // Policy ID 1 is the built-in always-allow policy.
-        if policy_id == 1 {
+        if policy_id == ALLOW_ALL_POLICY_ID {
             return Ok(());
         }
         let registry = TIP403Registry::new();
@@ -1658,6 +1657,9 @@ impl TIP20Token {
     }
 
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Self::transfer_fee_pre_tx_direct(self.address, from, amount);
+        }
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
@@ -1696,6 +1698,9 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
+        if self.storage.spec().is_t8() {
+            return Self::transfer_fee_post_tx_direct(self.address, to, refund, actual_spending);
+        }
         self.emit_event(TIP20Event::transfer(
             to,
             TIP_FEE_MANAGER_ADDRESS,

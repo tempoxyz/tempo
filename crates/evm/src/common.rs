@@ -175,13 +175,9 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        const USD_SHORT_STRING_WORD: U256 = U256::from_be_bytes([
-            b'U', b'S', b'D', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 6,
-        ]);
         self.with_read_only_storage_ctx(spec, actions, || {
             let raw = StorageCtx.sload(fee_token, tempo_precompiles::tip20::slots::CURRENCY)?;
-            Ok(raw == USD_SHORT_STRING_WORD)
+            Ok(is_usd_currency_word(raw))
         })
     }
 
@@ -197,13 +193,9 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        const USD_SHORT_STRING_WORD: U256 = U256::from_be_bytes([
-            b'U', b'S', b'D', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 6,
-        ]);
         self.with_read_only_storage_ctx(spec, actions, || {
             let raw = StorageCtx.sload(fee_token, tempo_precompiles::tip20::slots::CURRENCY)?;
-            if raw == USD_SHORT_STRING_WORD {
+            if is_usd_currency_word(raw) {
                 return Ok(Ok(()));
             }
             let token = TIP20Token::from_address_unchecked(fee_token);
@@ -989,4 +981,11 @@ mod tests {
             );
         }
     }
+}
+
+/// Returns whether a Solidity short-string storage word encodes `"USD"` (length 3, lowest bit 0).
+#[inline]
+fn is_usd_currency_word(raw: U256) -> bool {
+    let bytes = raw.to_be_bytes::<32>();
+    bytes[31] == 6 && bytes[..3] == *b"USD"
 }

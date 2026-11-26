@@ -1,41 +1,9 @@
 //! A state-aware iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, U256};
-use std::{
-    collections::HashMap,
-    hash::{BuildHasherDefault, Hasher},
-};
+use alloy_primitives::{Address, U256, map::HashMap};
 
-/// Fast hasher for `(Address, U256)` keys where the `U256` storage slot is already a Keccak-256 hash.
-#[derive(Default)]
-struct BalanceSlotHasher(u64);
-
-impl Hasher for BalanceSlotHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        if bytes.len() == 20 {
-            let lo = u64::from_ne_bytes(bytes[12..20].try_into().unwrap());
-            let hi = u64::from_ne_bytes(bytes[4..12].try_into().unwrap());
-            self.0 ^= lo.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hi;
-        } else if bytes.len() >= 8 {
-            let w = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
-            self.0 ^= w;
-        }
-    }
-
-    #[inline]
-    fn write_u64(&mut self, i: u64) {
-        self.0 = self.0.wrapping_mul(0x517C_C1B7_2722_0A95) ^ i;
-    }
-}
-
-type BalanceMap = HashMap<(Address, U256), U256, BuildHasherDefault<BalanceSlotHasher>>;
+type BalanceMap = HashMap<(Address, U256), U256>;
 pub use evm2::TxStateChanges;
 use evm2::evm::{StateChangeSink, StateChangeSource, StorageChange};
 use reth_evm::BlockTransactionResult;
