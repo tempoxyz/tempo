@@ -33,9 +33,6 @@ const RECOVERY_GAP: u64 = 6;
 const REPLICATION_BATCH_INTERVAL_BLOCKS: u64 = 1_000;
 const INITIAL_DEPOSIT: u128 = 10_000_000;
 const WITHDRAWAL_AMOUNT: u128 = 250_000;
-// A loaded debug L1 lags its 10ms target, so crossing the real EIP-2935 window takes 2-4 minutes.
-// The nextest config extends this test's slow timeout to match.
-const ANCESTRY_TIMEOUT: Duration = Duration::from_secs(360);
 
 const OUTGOING_LEADER: usize = 0;
 const INCOMING_LEADER: usize = 1;
@@ -1276,7 +1273,7 @@ async fn test_pending_batch_settles_via_ancestry_after_quorum_outage() -> eyre::
         .await?;
     let target = l1.get_block_number().await? + HISTORY_SERVE_WINDOW as u64;
     let resumed_at = poll_until(
-        ANCESTRY_TIMEOUT,
+        Duration::from_secs(360),
         POLL_INTERVAL,
         "L1 to pass the EIP-2935 window of the pending batch",
         || async {
