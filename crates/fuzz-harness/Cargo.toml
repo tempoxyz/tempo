@@ -44,6 +44,7 @@ commonware-codec.workspace = true
 criterion.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["test-utils"] }
+test-case.workspace = true
 
 [[bench]]
 name = "execute"

@@ -1,12 +1,13 @@
 //! Reading models through views and checking them.
 
-use std::fmt::Display;
+use std::fmt::{self, Display};
 
 use alloy_primitives::{Address, KECCAK256_EMPTY};
-use invariants_core::{Checked, Observe, ObserveError, Report, StepChecked, Violation};
-use reth_evm::Database;
+use invariants_core::{
+    Check, Checked, Observe, ObserveError, Probe, Report, StepChecked, Violation,
+};
 use tempo_evm::{TempoEvmConfig, TempoEvmEnv};
-use tempo_invariants::{Ran, TempoHardfork};
+use tempo_invariants::{Ran, TempoHardfork, model};
 
 use super::{
     StepEffects,
@@ -14,45 +15,81 @@ use super::{
 };
 use crate::state::Db;
 
-/// Reads models from the state after a step and, with its `effects`, from the state before it.
-pub(super) struct Reader<'a> {
-    pub(super) db: &'a Db,
-    pub(super) evm_config: &'a TempoEvmConfig,
-    pub(super) env: &'a TempoEvmEnv,
-    pub(super) effects: Option<&'a StepEffects<'a>>,
-    pub(super) view_cache: &'a ViewCache,
+/// Reads models from the state after a step and, with its `effects`, from the state before it, and
+/// checks them into a report at the step's hardfork.
+pub(super) struct EvmReader<'a> {
+    /// Views of the state after the step.
+    after: EvmViews<'a>,
+    /// The step's effects and views of the state before it, which undo them.
+    before: Option<(&'a StepEffects<'a>, EvmViews<'a>)>,
+    report: &'a mut Report,
+    spec: TempoHardfork,
 }
 
-impl Reader<'_> {
-    /// Views of the state `db` reads, the one before the step with `before`.
-    pub(super) fn views<'b>(&'b self, db: impl Database + 'b, before: bool) -> EvmViews<'b> {
-        let (config, env) = (self.evm_config, self.env.clone());
-        EvmViews::new(db, config, env, &self.db.pre, self.view_cache, before)
+impl<'a> EvmReader<'a> {
+    /// Reads `db` in `env`, answering views from `view_cache`, and checks into `report`.
+    pub(super) fn new(
+        db: &'a Db,
+        evm_config: &TempoEvmConfig,
+        env: &TempoEvmEnv,
+        effects: Option<&'a StepEffects<'a>>,
+        view_cache: &'a ViewCache,
+        report: &'a mut Report,
+    ) -> Self {
+        Self {
+            after: EvmViews::new(
+                db.view(),
+                evm_config,
+                env.clone(),
+                &db.pre,
+                view_cache,
+                false,
+            ),
+            before: effects.map(|effects| {
+                let db_before = PreView {
+                    reader: db.view(),
+                    net: effects.net,
+                };
+                (
+                    effects,
+                    EvmViews::new(
+                        db_before,
+                        evm_config,
+                        env.clone(),
+                        &db.pre,
+                        view_cache,
+                        true,
+                    ),
+                )
+            }),
+            report,
+            spec: env.spec,
+        }
     }
 
-    /// The hardfork the step ran at, which gates the checks.
-    pub(super) fn fork(&self) -> Option<&TempoHardfork> {
-        Some(&self.env.spec)
+    /// Runs `checks` on `ctx` at the step's hardfork.
+    pub(super) fn run<C>(&mut self, checks: &[Check<C, TempoHardfork>], ctx: &C) {
+        self.report.run(checks, ctx, Some(&self.spec));
+    }
+}
+
+impl<'a> model::Reader for EvmReader<'a> {
+    type Views = EvmViews<'a>;
+
+    fn after(&mut self) -> &mut EvmViews<'a> {
+        &mut self.after
     }
 
-    /// Reads the model `at` names at `contract` after the step and checks it into `report`; with
-    /// the step's effects, also reads it before the step and checks the step. A read that fails
-    /// is counted under `view` as [`observed`] does.
-    pub(super) fn check<M>(
-        &self,
-        report: &mut Report,
-        at: M::At<'_>,
-        contract: Address,
-        view: &'static str,
-    ) where
+    fn check<M>(&mut self, at: M::At<'_>, contract: Address, view: &'static str)
+    where
         M: Observe + Checked<TempoHardfork> + StepChecked<Ran, TempoHardfork>,
     {
-        let after = self.views(self.db.view(), false);
-        let Some(post) = observed(report, view, contract, M::observe(&mut { after }, at)) else {
+        let read = M::observe(&mut self.after, at);
+        let Some(post) = observed(self.report, view, contract, read) else {
             return;
         };
-        report.run(M::CHECKS, &post, self.fork());
-        let Some(effects) = self.effects else {
+        self.report.run(M::CHECKS, &post, Some(&self.spec));
+        let Some((effects, before)) = &mut self.before else {
             return;
         };
         // The executor drops a system call's logs, so a system step's step checks would judge its
@@ -71,23 +108,29 @@ impl Reader<'_> {
         if deployed(&contract) {
             return;
         }
-        let before = PreView {
-            reader: self.db.view(),
-            net: effects.net,
-        };
-        let before = self.views(before, true);
-        let subject = format!("{contract} before the step");
-        let read = M::observe(&mut { before }, at);
+        let read = M::observe(before, at);
         // Nor does one it reads, such as a token the step created, whose views revert.
         if let Err(ObserveError::Unexpected { to, .. }) = &read
             && deployed(to)
         {
             return;
         }
-        let Some(pre) = observed(report, view, subject, read) else {
+        let subject = fmt::from_fn(|f| write!(f, "{contract} before the step"));
+        let Some(pre) = observed(self.report, view, subject, read) else {
             return;
         };
-        report.run(M::STEP_CHECKS, &effects.step(pre, post), self.fork());
+        self.report
+            .run(M::STEP_CHECKS, &effects.step(pre, post), Some(&self.spec));
+    }
+
+    fn probe<M>(&mut self, at: M::At<'_>, contract: Address, view: &'static str)
+    where
+        M: Probe + Checked<TempoHardfork>,
+    {
+        let read = M::probe(&mut self.after, at);
+        if let Some(model) = observed(self.report, view, contract, read) {
+            self.report.run(M::CHECKS, &model, Some(&self.spec));
+        }
     }
 }
 

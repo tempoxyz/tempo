@@ -10,22 +10,94 @@
 use std::{collections::BTreeMap, fmt};
 
 use alloy_primitives::{Address, B256, U256};
+use alloy_sol_types::SolEventInterface;
 
 use tempo_contracts::precompiles::ITIP20;
 
-use crate::{Batch, Observe, ObserveError, Replay, Views};
+use crate::{
+    Batch, Observe, ObserveError, Ran, Replay, Views,
+    model::{Reader, Scope, logged_addresses},
+};
 
 pub use tempo_contracts::precompiles::{
     IFeeManager,
-    ITIPFeeAMM::{self, Burn, Mint, RebalanceSwap},
+    ITIPFeeAMM::{self, Burn, ITIPFeeAMMEvents, Mint, RebalanceSwap},
+    TIP_FEE_MANAGER_ADDRESS,
 };
 
 mod checks;
+pub mod exit;
 
 pub use checks::{
     CHECKS, CUSTODY_STEP, FEE_CUSTODY, LP_SUPPLY, MINT_BALANCE, MINT_RESERVE, MINT_SUPPLY,
     POOL_SHAPE, STEP_CHECKS, VIEW,
 };
+pub use exit::Exit;
+
+/// Checks the fee manager's books when the scope selects them, and probes the exits of the pools
+/// whose LP the step's events name, or of every pool at a block's start, but none for a state
+/// checked on its own.
+pub(crate) fn check<R: Reader>(reader: &mut R, scope: &Scope<'_>) {
+    let fee_manager = TIP_FEE_MANAGER_ADDRESS;
+    if !(scope.selected)(&fee_manager) {
+        return;
+    }
+    let tokens = scope.tokens;
+    let pairs: Vec<(Address, Address)> = tokens
+        .iter()
+        .flat_map(|&user| tokens.iter().map(move |&validator| (user, validator)))
+        .filter(|(user, validator)| user != validator)
+        .collect();
+    // Fees are collected for the block's beneficiary, and a step that distributes another
+    // validator's fees names it in its logs.
+    let mut validators: Vec<Address> = logged_addresses(scope.logs())
+        .chain([scope.beneficiary])
+        .collect();
+    validators.sort_unstable();
+    validators.dedup();
+    let at = At {
+        fee_manager,
+        tokens,
+        pairs: &pairs,
+        validators: &validators,
+        holders: scope.holders,
+    };
+    reader.check::<Books>(at, fee_manager, VIEW);
+
+    let exits = match scope.effects.map(|effects| &effects.ran) {
+        // A state checked on its own is a pre-state under judgment, which a defect in `burn` must
+        // not discredit.
+        None => return,
+        Some(Ran::PreBlock) => pairs,
+        Some(_) => {
+            let mut named: Vec<(Address, Address)> = scope
+                .logs()
+                .iter()
+                .filter(|log| log.address == fee_manager)
+                .filter_map(|log| {
+                    ITIPFeeAMMEvents::decode_raw_log(log.topics(), &log.data.data).ok()
+                })
+                .map(|event| match event {
+                    ITIPFeeAMMEvents::Mint(e) => (e.userToken, e.validatorToken),
+                    ITIPFeeAMMEvents::Burn(e) => (e.userToken, e.validatorToken),
+                    ITIPFeeAMMEvents::RebalanceSwap(e) => (e.userToken, e.validatorToken),
+                })
+                .collect();
+            named.sort_unstable();
+            named.dedup();
+            named
+        }
+    };
+    for (user_token, validator_token) in exits {
+        let at = exit::At {
+            fee_manager,
+            user_token,
+            validator_token,
+            holders: scope.holders,
+        };
+        reader.probe::<Exit>(at, fee_manager, VIEW);
+    }
+}
 
 /// The LP supply a pool's first mint locks, as `tempo_precompiles::tip_fee_manager::amm::MIN_LIQUIDITY`
 /// (not depended on: it pulls in revm).
@@ -277,5 +349,71 @@ impl fmt::Display for Unminted {
             Self::Balance => "an LP balance",
         };
         write!(f, "minting overflows {what}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::convert::Infallible;
+
+    use invariants_core::{Call, Effects, FnViews, Outcome, Probe};
+    use test_case::test_case;
+
+    use crate::{Checked, Observe, StepChecked, TempoHardfork};
+
+    type NoViews = FnViews<fn(&[Call]) -> Result<Vec<Option<Outcome>>, Infallible>>;
+
+    /// Counts the exits a check probes.
+    struct Probes(usize, NoViews);
+
+    impl Reader for Probes {
+        type Views = NoViews;
+
+        fn after(&mut self) -> &mut NoViews {
+            &mut self.1
+        }
+
+        fn check<M>(&mut self, _: M::At<'_>, _: Address, _: &'static str)
+        where
+            M: Observe + Checked<TempoHardfork> + StepChecked<Ran, TempoHardfork>,
+        {
+        }
+
+        fn probe<M>(&mut self, _: M::At<'_>, _: Address, _: &'static str)
+        where
+            M: Probe + Checked<TempoHardfork>,
+        {
+            self.0 += 1;
+        }
+    }
+
+    #[test_case(None, 0 ; "a state checked on its own")]
+    #[test_case(Some(Ran::PreBlock), 2 ; "a block's start")]
+    #[test_case(Some(Ran::PostBlock), 0 ; "a step whose events name no pool")]
+    fn exits_are_probed_for_every_pool_only_at_a_blocks_start(ran: Option<Ran>, probed: usize) {
+        let effects = ran.map(|ran| Effects {
+            changes: Vec::new(),
+            logs: Vec::new(),
+            calls: None,
+            ran,
+        });
+        let mut reader = Probes(
+            0,
+            FnViews {
+                call: |_| unreachable!("the check reads nothing through `after`"),
+                partial: false,
+            },
+        );
+        let scope = Scope {
+            tokens: &[Address::with_last_byte(1), Address::with_last_byte(2)],
+            holders: &[],
+            beneficiary: Address::ZERO,
+            effects: effects.as_ref(),
+            selected: &|_| true,
+        };
+        check(&mut reader, &scope);
+        assert_eq!(reader.0, probed);
     }
 }
