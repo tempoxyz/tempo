@@ -14,6 +14,14 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 #[unsafe(export_name = "_rjem_malloc_conf")]
 static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
+/// Keep large freed allocations mapped: blocks allocate the same multi-megabyte buffers each
+/// time, and purging them at once makes the next block fault every page back in, which stalls in
+/// reclaim when the node's memory is full of page cache.
+#[cfg(all(feature = "jemalloc", not(feature = "jemalloc-prof"), unix))]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+static MALLOC_CONF: &[u8] =
+    b"oversize_threshold:0,background_thread:true,dirty_decay_ms:30000,muzzy_decay_ms:30000\0";
+
 fn main() -> eyre::Result<()> {
     tempo::tempo_main()
 }
