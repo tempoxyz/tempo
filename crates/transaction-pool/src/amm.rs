@@ -41,8 +41,8 @@ impl AmmLiquidityCache {
     /// validator fee tokens of the latest blocks.
     ///
     /// Starts with an empty cache when an interrupted pipeline sync leaves historical state
-    /// unavailable; pool maintenance fills it from the blocks committed after the pipeline
-    /// resumes.
+    /// unavailable; pool maintenance repopulates it on the first block committed after the
+    /// pipeline finishes.
     pub fn new<Client>(client: Client) -> ProviderResult<Self>
     where
         Client: StateProviderFactory
@@ -175,6 +175,12 @@ impl AmmLiquidityCache {
                 },
             )
             .map_err(ProviderError::other)
+    }
+
+    /// Returns `true` while the cache has not seen any block, which happens when [`Self::new`]
+    /// ran during an interrupted pipeline sync.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().last_seen_validators.is_empty()
     }
 
     /// Clears all cached state. Used on reorg to invalidate stale entries

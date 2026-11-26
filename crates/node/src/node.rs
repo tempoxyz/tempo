@@ -1199,13 +1199,21 @@ mod tests {
         provider_rw.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(1))?;
         provider_rw.commit()?;
 
-        let provider = BlockchainProvider::new(factory)?;
+        let provider = BlockchainProvider::new(factory.clone())?;
         let genesis_hash = DEV.genesis_hash();
         assert!(matches!(
             provider.state_by_block_hash(genesis_hash),
             Err(ProviderError::StateUnavailableDuringSync)
         ));
-        AmmLiquidityCache::new(&provider)?;
+        let cache = AmmLiquidityCache::new(&provider)?;
+        assert!(cache.is_empty());
+
+        // The pipeline finishes, so pool maintenance can repopulate the cache.
+        let provider_rw = factory.provider_rw()?;
+        provider_rw.save_stage_checkpoint(StageId::Execution, StageCheckpoint::new(0))?;
+        provider_rw.commit()?;
+        cache.repopulate(&provider)?;
+        assert!(!cache.is_empty());
 
         Ok(())
     }
