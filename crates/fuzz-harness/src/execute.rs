@@ -13,7 +13,7 @@ use alloy_consensus::{
 use alloy_eips::Decodable2718 as _;
 use alloy_primitives::{Address, Log};
 use evm2::bytecode::Bytecode;
-use invariants_core::Report;
+use invariants_core::{Frame, Report};
 use reth_consensus::{Consensus as _, HeaderValidator as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutor as _, BlockExecutorFactory as _, BlockValidationError,
@@ -37,6 +37,7 @@ use tempo_primitives::{Block, BlockBody, TempoTxEnvelope};
 use crate::{
     chain, invariants,
     state::{self, Contracts, Db, Net},
+    trace::Calls,
 };
 
 type ExecutionBlock = RecoveredBlock<Block>;
@@ -270,12 +271,9 @@ fn broken_start(
         .flat_map(|receipt| &receipt.logs)
         .chain(failed_logs);
     let holders: Vec<Address> = db
-        .cache
-        .borrow()
-        .accounts
-        .keys()
-        .copied()
-        .chain(invariants::logged_addresses(logged))
+        .held()
+        .into_iter()
+        .chain(tempo_invariants::model::logged_addresses(logged))
         .collect();
     let mut failures = Vec::new();
     invariants::check(
@@ -484,6 +482,13 @@ fn execute_block(
         partial: Some(Box::new(mem::take(&mut outputs))),
     })?;
     let (spec, env) = env(&executor);
+    invariants::check_block(
+        &outputs.receipts,
+        spec,
+        &InvariantScope::Block { block_index },
+        &mut outputs.invariant_failures,
+        &mut outputs.invariant_report,
+    );
     let output = executor.finish().map_err(|err| BlockFailure {
         class: class(&err),
         partial: Some(Box::new(mem::take(&mut outputs))),
@@ -505,6 +510,7 @@ fn execute_block(
         Some(invariants::StepEffects::new(
             &net,
             &[],
+            None,
             Ran::PostBlock,
             spec,
         )),
@@ -539,12 +545,15 @@ fn execute_txs(
         InvariantScope::Block { block_index },
         Ran::PreBlock,
         &[],
+        None,
         view_cache,
         updates,
         &mut outputs.invariant_failures,
         &mut outputs.invariant_report,
     );
 
+    // Only invariant checks read the trace.
+    let calls = invariants::ENABLED.then(|| Calls::install(executor.evm_mut()));
     let basefee = block.header().base_fee_per_gas();
     for (tx_index, tx) in block.transactions_recovered().enumerate() {
         let tx_index = tx_index as u64;
@@ -601,6 +610,9 @@ fn execute_txs(
             scope,
             Ran::Tx(tx),
             &receipt.logs,
+            calls
+                .as_ref()
+                .and_then(|calls| calls.take(receipt.logs.len(), &receipt.outcome)),
             view_cache,
             updates,
             &mut outputs.invariant_failures,
@@ -616,9 +628,9 @@ fn take(hooked: &Updates) -> Vec<StateUpdate> {
     std::mem::take(&mut *hooked.lock().expect("the hook does not panic"))
 }
 
-/// Ends an execution step that ran `ran` and emitted `logs`: writes its changes to `db`, checks
-/// invariants at `scope`, reading again only the views of `view_cache` that read what it changed,
-/// and returns the step's changes.
+/// Ends an execution step that ran `ran`, emitted `logs` and, when traced, made `calls`: writes its
+/// changes to `db`, checks invariants at `scope`, reading again only the views of `view_cache` that
+/// read what it changed, and returns the step's changes.
 #[allow(clippy::too_many_arguments)]
 fn step(
     evm_config: &TempoEvmConfig,
@@ -628,6 +640,7 @@ fn step(
     scope: InvariantScope,
     ran: Ran,
     logs: &[Log],
+    calls: Option<Vec<Frame>>,
     view_cache: &invariants::ViewCache,
     updates: &mut Vec<StateUpdate>,
     failures: &mut Vec<InvariantFailure>,
@@ -650,7 +663,7 @@ fn step(
         &scope,
         |_| true,
         &[],
-        Some(invariants::StepEffects::new(&net, logs, ran, spec)),
+        Some(invariants::StepEffects::new(&net, logs, calls, ran, spec)),
         view_cache,
         failures,
         report,

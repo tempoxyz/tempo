@@ -70,7 +70,8 @@ target "tempo-xtask" {
 }
 
 # tempo with the corpus and fuzz features, for corpus replay and fuzzing jobs. Built only
-# with the nightly and pushed as tempo:fuzz, so production images keep their features.
+# with the nightly (pushed as tempo:fuzz) and for pre-release/* candidates (pushed as
+# sha-<short>-fuzz only), so production images keep their features.
 target "tempo-fuzz" {
   inherits = ["_common", "docker-metadata"]
   target = "tempo"

@@ -1,5 +1,11 @@
 name: Prover E2E
 
+# The publisher never checks out or executes candidate code.
+# The compat suite runs the candidate L1 and Zone nodes against the provers pinned in
+# crates/precompiles/src/zone_verifier/pcrs.json for active and scheduled forks, and reports
+# "Tempo Zone Prover Compat", a non-blocking backstop behind the eth_getMultiProof snapshots. In
+# the merge queue it runs for the reth-auto-bump PR's own entry and reports success for every
+# other group. Dispatch it for a release commit.
 "on":
   workflow_dispatch:
     inputs:
@@ -7,6 +13,11 @@ name: Prover E2E
         description: Exact 40-character Zones commit SHA to test
         type: string
         required: true
+      suite:
+        description: Fast suite, or compat against the pinned provers
+        type: choice
+        options: [fast, compat]
+        default: fast
   merge_group:
 
 permissions:
@@ -16,10 +27,16 @@ permissions:
 jobs:
   dispatch:
     if: github.repository == 'tempoxyz/tempo'
+    # The compat lane only runs in the merge queue; dispatches select their suite on the main lane.
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [main, compat]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
       statuses: write
       id-token: write
     steps:
@@ -31,28 +48,48 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_SHA: ${{ inputs.sha }}
+          INPUT_SUITE: ${{ inputs.suite }}
+          LANE: ${{ matrix.lane }}
         with:
           script: |
             const event = context.eventName;
             if (!['workflow_dispatch', 'merge_group'].includes(event)) throw new Error('Unsupported trigger');
+            const compat = process.env.LANE === 'compat';
+            if (compat && event !== 'merge_group') return;
             const sha = event === 'workflow_dispatch' ? process.env.INPUT_SHA : context.payload.merge_group.head_sha;
             const base = event === 'merge_group' ? context.payload.merge_group.base_sha : '';
             if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
               throw new Error('Exact lowercase commit SHAs are required');
             }
+            const suite = compat ? 'compat' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
+            const contexts = {fast: 'Tempo Zone Prover E2E', compat: 'Tempo Zone Prover Compat'};
+            if (!Object.hasOwn(contexts, suite)) throw new Error('Unknown suite');
             const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
             if (commit.sha !== sha) throw new Error('Candidate SHA mismatch');
+            const statusContext = contexts[suite];
             core.setOutput('sha', sha);
             core.setOutput('base', base);
+            core.setOutput('suite', suite);
+            core.setOutput('status_context', statusContext);
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
             await github.rest.repos.createCommitStatus({
-              ...context.repo, sha, state: 'pending', context: 'Tempo Zone Prover E2E',
+              ...context.repo, sha, state: 'pending', context: statusContext,
               description: `${owner}: Checking prover E2E changes`,
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
+            // Only the reth-auto-bump PR's own queue entry, which its group's ref names, runs compat;
+            // groups behind it would repeat the run. The pending status comes first, so a failed
+            // lookup reports failure instead of leaving no status.
+            if (compat) {
+              const pr = /\/pr-(\d+)-[0-9a-f]{40}$/.exec(context.payload.merge_group.head_ref)?.[1];
+              if (!pr) throw new Error('Merge group ref names no PR');
+              const {data: pull} = await github.rest.pulls.get({...context.repo, pull_number: Number(pr)});
+              const bump = pull.head.ref === 'reth-auto-bump' && pull.head.repo?.full_name === pull.base.repo.full_name;
+              core.setOutput('relevant', bump ? 'true' : 'false');
+            }
       - name: Detect merge-queue changes
         id: paths
-        if: github.event_name == 'merge_group'
+        if: github.event_name == 'merge_group' && matrix.lane == 'main'
         uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           base: ${{ steps.candidate.outputs.base }}
@@ -77,9 +114,13 @@ jobs:
               - '.github/workflows/zones-prover-e2e.yml'
       - name: Publish prover E2E event
         id: publish
-        if: github.event_name != 'merge_group' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover')
+        if: >-
+          steps.candidate.outputs.sha != '' && (github.event_name != 'merge_group' ||
+          (matrix.lane == 'compat' && steps.candidate.outputs.relevant == 'true') ||
+          contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover'))
         env:
           SHA: ${{ steps.candidate.outputs.sha }}
+          SUITE: ${{ steps.candidate.outputs.suite }}
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
           EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
           EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
@@ -92,8 +133,8 @@ jobs:
           printf '%s' "$EVENTS_KEY" > "$key"
           printf '%s' "$EVENTS_CERT" > "$cert"
           payload=$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --arg trigger "$GITHUB_EVENT_NAME" --arg ref "$GITHUB_REF" \
-            '{repository:"tempoxyz/tempo",event:"tempo_zone_prover_e2e",data:{sha:$sha,run:$run,trigger:$trigger,suite:"fast",ref:$ref}}')
+            --arg trigger "$GITHUB_EVENT_NAME" --arg suite "$SUITE" --arg ref "$GITHUB_REF" \
+            '{repository:"tempoxyz/tempo",event:"tempo_zone_prover_e2e",data:{sha:$sha,run:$run,trigger:$trigger,suite:$suite,ref:$ref}}')
           mapfile -t events_args < <(python3 -c 'import os,shlex; print("\n".join(shlex.split(os.environ["EVENTS_ARGS"])))')
           [[ ${#events_args[@]} -gt 0 && -n "${events_args[0]}" ]]
           curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
@@ -104,14 +145,16 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ steps.candidate.outputs.sha }}
+          STATUS_CONTEXT: ${{ steps.candidate.outputs.status_context }}
           PATHS_RESULT: ${{ steps.paths.outcome }}
           CHANGES: ${{ steps.paths.outputs.changes || '[]' }}
+          RELEVANT: ${{ steps.candidate.outputs.relevant }}
         with:
           script: |
             const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
-            const statusContext = 'Tempo Zone Prover E2E';
-            const skipped = context.eventName === 'merge_group' && process.env.PATHS_RESULT === 'success'
-              && !JSON.parse(process.env.CHANGES).includes('prover');
+            const statusContext = process.env.STATUS_CONTEXT;
+            const skipped = context.eventName === 'merge_group' && (process.env.RELEVANT === 'false'
+              || (process.env.PATHS_RESULT === 'success' && !JSON.parse(process.env.CHANGES).includes('prover')));
             let latest;
             for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
               ...context.repo, ref: process.env.SHA, per_page: 100,

@@ -6,7 +6,7 @@ The publisher resolves exact commit SHAs without executing candidate code.
 | --- | --- | --- |
 | Merge queue, shared Rust crates, prover binaries, packaging, dependency graph or toolchain changes | `prover-tests`: hardfork, settlement, fallback, recovery | `Tempo Zone Prover E2E` |
 | Merge queue, no matching changes | No build or devnet; immediate success | `Tempo Zone Prover E2E` |
-| Manual dispatch | Exact SHA, regardless of changed paths | `Tempo Zone Prover E2E` |
+| Manual dispatch | Exact SHA and selected fast or compat suite, regardless of changed paths | Corresponding suite status |
 
 Merge-queue detection compares the event's base SHA with its head SHA using the
 same pinned changed-paths action as the Tempo CI Image workflow. Detection or dispatch errors
