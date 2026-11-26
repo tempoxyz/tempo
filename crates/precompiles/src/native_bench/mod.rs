@@ -27,12 +27,19 @@ use std::{rc::Rc, sync::LazyLock};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoBlockExt;
 
-static ENABLED: LazyLock<bool> =
-    LazyLock::new(|| std::env::var("TEMPO_NATIVE_BENCH").map_or(true, |value| value != "0"));
+/// Which native entries replace bytecode: TEMPO_NATIVE_BENCH unset or "1" runs both, "0" none,
+/// and "vault" or "portal" only that one.
+static ENABLED: LazyLock<(bool, bool)> =
+    LazyLock::new(|| match std::env::var("TEMPO_NATIVE_BENCH").as_deref() {
+        Ok("0") => (false, false),
+        Ok("vault") => (true, false),
+        Ok("portal") => (false, true),
+        _ => (true, true),
+    });
 
-/// Whether native entries replace bytecode.
+/// Whether any native entry replaces bytecode.
 pub fn enabled() -> bool {
-    *ENABLED
+    ENABLED.0 || ENABLED.1
 }
 
 /// A native replacement for one bytecode entry point.
@@ -91,7 +98,11 @@ pub fn select<T: EvmTypes>(
         return None;
     }
     let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
-    vault::select(message.destination, selector).or_else(|| portal::select(selector, code))
+    let vault = ENABLED
+        .0
+        .then(|| vault::select(message.destination, selector))
+        .flatten();
+    vault.or_else(|| ENABLED.1.then(|| portal::select(selector, code)).flatten())
 }
 
 /// Runs entry natively over the frame of message, charging gas to gas.
