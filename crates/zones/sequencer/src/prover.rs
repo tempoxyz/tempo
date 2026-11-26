@@ -255,6 +255,7 @@ pub fn spawn_settlement_prover<P: ZoneSequencerProvider>(
                         zone_to = job.to,
                         prev_block_hash = %job.batch.prev_block_hash,
                         next_block_hash = %job.batch.next_block_hash,
+                        anchor_block_number = job.anchor.block_number(job.batch.tempo_block_number),
                         elapsed_ms = started.elapsed().as_millis(),
                         error = ?err,
                         "Prover could not complete batch validation"
@@ -631,12 +632,14 @@ async fn verify_remotely<P>(
                 tokio::task::spawn_blocking(move || {
                     // Moved in so the permit is held until the run ends.
                     let _permit = permit;
+                    let anchor_block_number = witness.public_inputs.anchor_block_number;
                     let result = prove_zone_batch(&spf_config, witness);
                     // PRIVACY: Assumes `zone_spf` errors never include a slot value.
                     warn!(
                         target: "zone::sequencer::prover",
                         zone_from,
                         zone_to,
+                        anchor_block_number,
                         local_spf_accepts = result.is_ok(),
                         error = result.err().map(tracing::field::display),
                         "Re-ran a witness the prover rejected"
