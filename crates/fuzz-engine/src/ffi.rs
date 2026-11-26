@@ -1,6 +1,7 @@
 //! The C ABI every harness exports, minus the symbols: a harness's cdylib declares
-//! `tempo_fuzz_execute_with_result_v1`, `tempo_fuzz_capabilities_v1` and
-//! `tempo_fuzz_last_rejection_v1` and implements each with these.
+//! `tempo_fuzz_execute_with_result_v1`, `tempo_fuzz_capabilities_v1`,
+//! `tempo_fuzz_enable_mock_crypto_v1` and `tempo_fuzz_last_rejection_v1` and implements each
+//! with these.
 
 use core::ffi::c_int;
 use std::cell::RefCell;
