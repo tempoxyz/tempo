@@ -51,6 +51,7 @@ threads-required = 4
 [[profile.default.overrides]]
 filter = "package(zone-node) & test(test_pending_batch_settles_via_ancestry_after_quorum_outage)"
 slow-timeout = { period = "8m", terminate-after = 1 }
+retries = 0
 priority = 100
 
 [[profile.default.overrides]]
