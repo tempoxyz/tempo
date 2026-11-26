@@ -39,6 +39,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoHeader, TempoTxEnvelope,
+    account::encode_config_commitment,
     crypto::mock,
     is_tip20_prefix,
     transaction::{
@@ -181,6 +182,29 @@ fn genesis_state() -> StateInput {
     let cache = db.cache.borrow();
     let accounts = state::after(&cache, &Net::default());
     state::encode(&accounts, &Contracts(&[&cache.contracts]))
+}
+
+#[test]
+fn an_exact_pre_state_keeps_account_extensions() {
+    // A T14 configurable account's config commitment lives in its extension; an account holding
+    // only an extension still exists.
+    let state = one_account(
+        RECIPIENT,
+        AccountInput {
+            extension: encode_config_commitment(B256::repeat_byte(0xaa)),
+            ..Default::default()
+        },
+    );
+    let db = state::seed(&exact(state.clone())).unwrap();
+    let cache = db.cache.borrow();
+    let accounts = state::after(&cache, &Net::default());
+    assert_eq!(
+        state::encode(&accounts, &Contracts(&[&cache.contracts])),
+        state
+    );
+    let mut without = accounts.clone();
+    without.get_mut(&RECIPIENT).unwrap().info.extension = Default::default();
+    assert_ne!(state::state_root(&accounts), state::state_root(&without));
 }
 
 /// The dev genesis with the accounts of `edits` replaced, as an exact pre-state for `blocks`,
@@ -469,6 +493,7 @@ fn an_empty_account_a_transaction_touches_is_destroyed() {
         balance: None,
         nonce: None,
         code: None,
+        extension: None,
         storage_cleared: true,
     };
     assert!(
@@ -730,6 +755,13 @@ fn bad_inputs_are_classified_rather_than_executed() {
             ..Default::default()
         },
     );
+    let early_commitment = one_account(
+        RECIPIENT,
+        AccountInput {
+            extension: encode_config_commitment(B256::repeat_byte(0xaa)),
+            ..Default::default()
+        },
+    );
     let mut extra_sender = transfer_block();
     extra_sender.senders.push(SENDER);
     let mut trailing_tx = tx.to_vec();
@@ -752,6 +784,7 @@ fn bad_inputs_are_classified_rather_than_executed() {
                 ("protocol code replaced", on_pre(PreState::Genesis(recoded))),
                 ("7702, genesis", on_pre(PreState::Genesis(bad_code.clone()))),
                 ("7702, exact", on_pre(exact(bad_code))),
+                ("commitment before T14", on_pre(exact(early_commitment))),
                 ("extra sender", on_blocks(vec![extra_sender])),
             ],
         ),
@@ -905,7 +938,7 @@ fn the_c_abi_round_trips_and_rejects_what_does_not_decode() {
     assert_eq!(status, FUZZ_ACCEPT);
     let capabilities: TempoHarnessCapabilities =
         bincode_options().deserialize(&out[..written]).unwrap();
-    assert_eq!(capabilities.schema_version, 5);
+    assert_eq!(capabilities.schema_version, 6);
     let info = |id: &str| {
         capabilities
             .invariants

@@ -309,6 +309,7 @@ fn harness_input(stored: &Input, chain_spec: ChainSpecInput) -> eyre::Result<Tem
                         None => Bytes::new(),
                     },
                     storage: BTreeMap::new(),
+                    extension: account.extension.to_vec().into(),
                 },
                 None => AccountInput::default(),
             };

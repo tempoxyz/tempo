@@ -21,7 +21,10 @@ use reth_evm::{
 };
 use reth_execution_types::StateUpdate;
 use reth_primitives_traits::{RecoveredBlock, transaction::signed::SignedTransaction as _};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_evm::{
     TempoBlockExecutor, TempoEvmConfig, TempoEvmEnv, TempoInvalidTransaction,
     consensus::TempoConsensus,
@@ -195,6 +198,13 @@ fn execute(
                 .collect::<Result<Vec<_>, _>>()?;
             if !blocks.is_sorted_by_key(|block| block.header().timestamp()) {
                 return Err(reject(ErrorClass::InvalidInput, Check::TimestampOrder));
+            }
+            if let Some(first) = blocks.first() {
+                state::check_extensions(
+                    pre_state,
+                    spec.tempo_hardfork_at(first.header().timestamp()),
+                )
+                .map_err(|class| reject(class, Check::PreState))?;
             }
             let db = state::seed(pre_state).map_err(|class| reject(class, Check::PreState))?;
             Ok((Arc::new(spec), blocks, db))

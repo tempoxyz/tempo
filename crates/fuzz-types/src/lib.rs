@@ -19,7 +19,7 @@ pub const FUZZ_REJECT: FuzzStatus = 0;
 pub const FUZZ_ACCEPT: FuzzStatus = 1;
 
 /// The version of these types' encoding, reported in [`TempoHarnessCapabilities`].
-pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 5;
+pub const TYPED_HARNESS_SCHEMA_VERSION: u32 = 6;
 
 /// Why an input, or part of it, did not execute.
 #[repr(u8)]
@@ -92,6 +92,9 @@ pub struct AccountInput {
     pub nonce: u64,
     pub code: Bytes,
     pub storage: BTreeMap<U256, U256>,
+    /// Chain-specific data committed to the account's trie leaf, such as a T14 configurable
+    /// account's config commitment; empty for none.
+    pub extension: Bytes,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -367,6 +370,8 @@ pub struct AccountDiff {
     pub balance: Option<U256>,
     pub nonce: Option<u64>,
     pub code: Option<Bytes>,
+    /// Its extension, if it changed; empty when it no longer has one.
+    pub extension: Option<Bytes>,
     /// Whether all of its storage was cleared first.
     pub storage_cleared: bool,
 }
