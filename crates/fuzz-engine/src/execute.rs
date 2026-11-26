@@ -361,6 +361,7 @@ fn broken_start<E: Engine>(
         evm_config,
         env: &env,
         changed: listed.accounts.keys().copied().collect(),
+        start: true,
         effects: Arc::new(Effects {
             changes: Vec::new(),
             logs: Vec::new(),
@@ -617,6 +618,7 @@ fn execute_block<E: Engine>(
         evm_config,
         env: &env,
         changed: net.addresses().copied().collect(),
+        start: false,
         effects: shared,
     };
     step::check(
@@ -812,6 +814,7 @@ impl<E: Engine> BlockRun<'_, E> {
             evm_config: self.evm_config,
             env: &env,
             changed: net.addresses().copied().collect(),
+            start: false,
             effects: shared,
         };
         step::check(

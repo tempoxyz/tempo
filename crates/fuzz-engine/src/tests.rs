@@ -1211,7 +1211,7 @@ const FLAGGED_NONCE: u64 = 7;
 #[derive(Default)]
 struct Watching {
     flag: Option<Address>,
-    seen: std::cell::RefCell<Vec<(tempo_invariants::Ran, bool)>>,
+    seen: std::cell::RefCell<Vec<(tempo_invariants::Ran, bool, bool)>>,
 }
 
 impl Engine for Watching {
@@ -1248,7 +1248,7 @@ impl Engine for Watching {
         let _ = state.account(UNLISTED);
         self.seen
             .borrow_mut()
-            .push((state.ran().clone(), state.missed()));
+            .push((state.ran().clone(), state.missed(), state.start()));
         if let Some(flag) = self.flag
             && let Some(Some(info)) = state.account(flag)
             && info.nonce == FLAGGED_NONCE
@@ -1304,7 +1304,7 @@ fn the_chains_own_check_missing_an_exact_pre_state_leaves_execution_complete() {
     // Every check's read missed, and none counted against execution.
     let seen = engine.seen.borrow();
     assert!(!seen.is_empty());
-    assert!(seen.iter().all(|(_, missed)| *missed), "{seen:?}");
+    assert!(seen.iter().all(|(_, missed, _)| *missed), "{seen:?}");
 }
 
 #[test]
@@ -1316,7 +1316,10 @@ fn the_chains_own_check_sees_the_blocks_post_execution_changes() {
         .seen
         .borrow()
         .iter()
-        .map(|(ran, _)| ran.clone())
+        .map(|(ran, _, start)| {
+            assert!(!start, "only a pre-state checked on its own is a start");
+            ran.clone()
+        })
         .collect();
     assert!(
         matches!(ran.first(), Some(tempo_invariants::Ran::PreBlock)),
@@ -1349,6 +1352,8 @@ fn a_pre_state_breaking_the_chains_own_check_is_broken() {
         rejection.map(|r| r.class()),
         Some(ErrorClass::BrokenPreState)
     );
+    // The pre-state was checked on its own, after the steps that broke the check.
+    assert!(matches!(engine.seen.borrow().last(), Some((_, _, true))));
     let failures: Vec<_> = outcome
         .invariant_failures
         .iter()

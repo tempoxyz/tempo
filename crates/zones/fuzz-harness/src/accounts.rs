@@ -97,6 +97,17 @@ impl AccountChecks {
         state: &StepState<'_, ZoneEvmConfig<L1>>,
         report: &mut Report,
     ) {
+        let fork = Some(&state.env().spec);
+        // A pre-state can break only what the zone stores: how it reads and serves Tempo is the
+        // zone's own, and a zone that gets it wrong would on any pre-state.
+        if state.start() {
+            if state.env().spec.is_t14() {
+                let accounts: Vec<Address> = state.changed().collect();
+                let leaves = self.leaves(l1, state, &accounts, None, report);
+                report.run(ZoneLeaves::CHECKS, &leaves, fork);
+            }
+            return;
+        }
         let pre = self.pre.take();
         let Some(zone) = self.zone(state, report) else {
             return;
@@ -104,7 +115,6 @@ impl AccountChecks {
         let anchor = zone.anchor().number;
         let tempo = Tempo::new(anchor, l1.commitments(&self.watched, anchor));
         let post = Mirror::new(zone, Some(tempo)).expect("Tempo is read at the zone's anchor");
-        let fork = Some(&state.env().spec);
         report.run(Mirror::CHECKS, &post, fork);
 
         // The sequencer's own transactions act for no account.
@@ -133,7 +143,7 @@ impl AccountChecks {
             let step = ZoneStep::new(pre, post.clone(), effects);
             report.run(Mirror::STEP_CHECKS, &step, fork);
         }
-        let leaves = self.leaves(l1, state, &accounts, anchor, report);
+        let leaves = self.leaves(l1, state, &accounts, Some(anchor), report);
         report.run(ZoneLeaves::CHECKS, &leaves, fork);
         *self.pre.borrow_mut() = Some(post);
     }
@@ -179,13 +189,14 @@ impl AccountChecks {
 
     /// The TIP-1108 leaves of `accounts`: what the zone stores, what it serves through Tempo's
     /// overlay at `anchor`, and what Tempo commits to there. A read that fails breaks [`VIEW`]
-    /// in `report`; one that needs a key an exact pre-state lacks is left unread.
+    /// in `report`; one that needs a key an exact pre-state lacks is left unread. Without `anchor`
+    /// only what the zone stores is read.
     fn leaves(
         &self,
         l1: &L1,
         state: &StepState<'_, ZoneEvmConfig<L1>>,
         accounts: &[Address],
-        anchor: u64,
+        anchor: Option<u64>,
         report: &mut Report,
     ) -> ZoneLeaves {
         use evm2::evm::DynDatabase as _;
@@ -196,7 +207,9 @@ impl AccountChecks {
             portal(state.env()),
             spec,
         );
-        overlay.l1_state().begin_transaction(U256::from(anchor));
+        if let Some(anchor) = anchor {
+            overlay.l1_state().begin_transaction(U256::from(anchor));
+        }
         let mut of = BTreeMap::new();
         for &address in accounts {
             let Some(account) = state.account(address) else {
@@ -212,18 +225,24 @@ impl AccountChecks {
                     .as_ref()
                     .map_or(KECCAK256_EMPTY, |info| info.code_hash),
             });
-            state.forget_missed();
-            let served = overlay.get_account(&address);
-            let served = if state.missed() {
-                None
-            } else {
-                let read = served.map_err(|err| ObserveError::Views(err.to_string()));
-                observed(report, VIEW, address, read)
-                    .map(|info| info.map_or(KECCAK256_EMPTY, |info| info.code_hash))
+            let (served, tempo) = match anchor {
+                None => (None, None),
+                Some(anchor) => {
+                    state.forget_missed();
+                    let served = overlay.get_account(&address);
+                    let served = if state.missed() {
+                        None
+                    } else {
+                        let read = served.map_err(|err| ObserveError::Views(err.to_string()));
+                        observed(report, VIEW, address, read)
+                            .map(|info| info.map_or(KECCAK256_EMPTY, |info| info.code_hash))
+                    };
+                    // An unread commitment leaves the checks on Tempo's side unarmed.
+                    let read = l1.read_l1_commitment(address, anchor);
+                    let tempo = observed(report, VIEW, address, read.map_err(ObserveError::Views));
+                    (served, tempo)
+                }
             };
-            // An unread commitment leaves the checks on Tempo's side unarmed.
-            let read = l1.read_l1_commitment(address, anchor);
-            let tempo = observed(report, VIEW, address, read.map_err(ObserveError::Views));
             of.insert(
                 address,
                 ZoneLeaf {
