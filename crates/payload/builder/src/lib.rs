@@ -117,6 +117,18 @@ impl PayloadTransactions {
             }
         }
     }
+
+    #[inline]
+    fn on_state_changes(
+        &mut self,
+        state_changes: &tempo_transaction_pool::best::TxStateChanges<'_>,
+    ) {
+        match self {
+            Self::Sequential(txs) => txs.on_state_changes(state_changes),
+            Self::Prewarming(txs) => txs.on_state_changes(state_changes),
+            Self::Parallel(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -433,8 +445,8 @@ where
         check_cancel!();
 
         if let Some(handle) = state_root_handle.as_mut() {
-            let mut hook = handle.take_state_hook();
-            executor.set_state_hook(move |state| hook.on_state(state));
+            let mut batched = BatchedStateHook::new(handle.take_state_hook(), 32);
+            executor.set_state_hook(move |state| batched.on_state(state));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -446,6 +458,9 @@ where
         debug!("building new payload");
 
         let (roots_tx, roots_rx) = self.spawn_roots_task();
+        const ROOTS_BATCH_SIZE: usize = 64;
+        let mut roots_batch = Vec::with_capacity(ROOTS_BATCH_SIZE);
+        let use_regular_gas = executor.uses_regular_gas();
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -635,36 +650,43 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let mut result_closure = |result: &TempoTxResult| {
-                cumulative_gas_used += result.block_gas_used();
-                cumulative_state_gas_used += result.state_gas_used();
-                if !is_payment {
-                    non_payment_gas_used += result.block_gas_used();
-                }
-
-                // Score payload value by the validator-credited fee amount that the
-                // FeeManager precompile actually wrote during this transaction.
-                total_fees += result.validator_fee();
-
-                // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
-            };
-
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
+                    |result: &TempoTxResult| {
+                        cumulative_gas_used += result.block_gas_used();
+                        cumulative_state_gas_used += result.state_gas_used();
+                        if !is_payment {
+                            non_payment_gas_used += result.block_gas_used();
+                        }
+                        total_fees += result.validator_fee();
+                        best_txs.on_new_result(result);
+                    },
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
+                    .execute_transaction_with_commit_condition(
+                        tx.transaction.executable(),
+                        |result, state_changes| {
+                            let block_gas_used = if use_regular_gas {
+                                result.execution_gas_spent()
+                            } else {
+                                result.tx_gas_used()
+                            };
+                            cumulative_gas_used += block_gas_used;
+                            cumulative_state_gas_used += result.state_gas_spent();
+                            if !is_payment {
+                                non_payment_gas_used += block_gas_used;
+                            }
+                            total_fees += result.ext.validator_fee;
+                            best_txs.on_state_changes(&state_changes);
+                            reth_evm::CommitChanges::Yes
+                        },
+                    )
+                    .map(|_| ())
             };
 
             if let Err(err) = execution_result {
@@ -745,7 +767,12 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let _ = roots_tx.send((tx, receipt));
+            roots_batch.push((tx, receipt));
+            if roots_batch.len() >= ROOTS_BATCH_SIZE {
+                let batch =
+                    std::mem::replace(&mut roots_batch, Vec::with_capacity(ROOTS_BATCH_SIZE));
+                let _ = roots_tx.send(batch);
+            }
         };
 
         // cancel pre-warming, if any, by dropping the iter
@@ -799,6 +826,9 @@ where
 
         let builder_finish_start = Instant::now();
 
+        if !roots_batch.is_empty() {
+            let _ = roots_tx.send(roots_batch);
+        }
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
@@ -1138,11 +1168,11 @@ where
     fn spawn_roots_task(
         &self,
     ) -> (
-        Sender<(BestTransaction, TempoReceipt)>,
+        Sender<Vec<(BestTransaction, TempoReceipt)>>,
         oneshot::Receiver<RootsTaskResult>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
+            crossbeam_channel::unbounded::<Vec<(BestTransaction, TempoReceipt)>>();
         let (result_tx, result_rx) = oneshot::channel();
         let parent = Span::current();
 
@@ -1151,31 +1181,33 @@ where
                 let _span =
                     debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
                         .entered();
-                let mut transactions = Vec::new();
-                let mut senders = Vec::new();
+                let mut transactions = Vec::with_capacity(4096);
+                let mut senders = Vec::with_capacity(4096);
 
                 let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
                 let mut encoded_block_transactions = EncodedBlockTransactionsBuilder::default();
 
-                let mut buf = Vec::new();
+                let mut buf = Vec::with_capacity(512);
 
-                for (tx, receipt) in transactions_rx.into_iter() {
-                    let (tx, sender) = tx.transaction.inner().clone().into_parts();
-                    buf.clear();
-                    tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
-                    encoded_block_transactions.push(&tx, &buf);
-                    transactions.push(tx);
-                    senders.push(sender);
+                for batch in transactions_rx.into_iter() {
+                    for (tx, receipt) in batch {
+                        let (tx, sender) = tx.transaction.inner().clone().into_parts();
+                        buf.clear();
+                        tx.encode_2718(&mut buf);
+                        transactions_root.push_next(&buf);
+                        encoded_block_transactions.push(&tx, &buf);
+                        transactions.push(tx);
+                        senders.push(sender);
 
-                    let receipt = receipt.with_bloom_ref();
+                        let receipt = receipt.with_bloom_ref();
 
-                    buf.clear();
-                    receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
-                    receipts_bloom |= receipt.bloom();
+                        buf.clear();
+                        receipt.encode_2718(&mut buf);
+                        receipts_root.push_next(&buf);
+                        receipts_bloom |= receipt.bloom();
+                    }
                 }
                 let transactions_root = transactions_root.finalize();
                 let receipts_root = receipts_root.finalize();
@@ -1237,6 +1269,131 @@ pub(crate) struct RootsTaskResult {
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Batches per-transaction StateUpdates before forwarding them to the sparse trie task,
+/// deduplicating hot account and storage writes within each batch while preserving exact
+/// ordering around account creations, deletions, and storage wipes.
+struct BatchedStateHook<H: OnStateHook> {
+    inner: H,
+    batch_txs: usize,
+    buffered_txs: usize,
+    accounts: alloy_primitives::map::AddressHashMap<reth_execution_types::AccountUpdate>,
+    storage_indices:
+        alloy_primitives::map::AddressHashMap<alloy_primitives::map::U256HashMap<usize>>,
+}
+
+impl<H: OnStateHook> BatchedStateHook<H> {
+    const LINEAR_SCAN_LIMIT: usize = 8;
+
+    fn new(inner: H, batch_txs: usize) -> Self {
+        Self {
+            inner,
+            batch_txs: batch_txs.max(1),
+            buffered_txs: 0,
+            accounts: Default::default(),
+            storage_indices: Default::default(),
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.accounts.is_empty() {
+            self.buffered_txs = 0;
+            return;
+        }
+        let accounts = self.accounts.drain().map(|(_, acc)| acc).collect();
+        self.storage_indices.clear();
+        self.buffered_txs = 0;
+        self.inner
+            .on_state(reth_execution_types::StateUpdate { accounts });
+    }
+
+    fn on_state(&mut self, state: reth_execution_types::StateUpdate) {
+        if state.is_empty() {
+            return;
+        }
+        // Flush around lifecycle transitions (creation, deletion, storage wipe) to keep semantics exact.
+        if state
+            .accounts
+            .iter()
+            .any(|acc| acc.created || acc.wiped || acc.current.is_none() || acc.original.is_none())
+        {
+            self.flush();
+            self.inner.on_state(state);
+            return;
+        }
+
+        for acc in state.accounts {
+            let addr = acc.address;
+            match self.accounts.entry(addr) {
+                alloy_primitives::map::Entry::Vacant(v) => {
+                    if acc.storage.len() > Self::LINEAR_SCAN_LIMIT {
+                        let mut idx_map =
+                            alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
+                                acc.storage.len(),
+                                Default::default(),
+                            );
+                        for (idx, (k, _)) in acc.storage.iter().enumerate() {
+                            idx_map.insert(*k, idx);
+                        }
+                        self.storage_indices.insert(addr, idx_map);
+                    }
+                    v.insert(acc);
+                }
+                alloy_primitives::map::Entry::Occupied(mut o) => {
+                    let existing = o.get_mut();
+                    existing.current = acc.current;
+                    if !acc.storage.is_empty() {
+                        if let Some(idx_map) = self.storage_indices.get_mut(&addr) {
+                            for (k, slot) in acc.storage {
+                                if let Some(&idx) = idx_map.get(&k) {
+                                    existing.storage[idx].1 = slot;
+                                } else {
+                                    let idx = existing.storage.len();
+                                    existing.storage.push((k, slot));
+                                    idx_map.insert(k, idx);
+                                }
+                            }
+                        } else {
+                            for (k, slot) in acc.storage {
+                                if let Some((_, prev)) =
+                                    existing.storage.iter_mut().find(|(ek, _)| *ek == k)
+                                {
+                                    *prev = slot;
+                                } else {
+                                    existing.storage.push((k, slot));
+                                }
+                            }
+                            if existing.storage.len() > Self::LINEAR_SCAN_LIMIT {
+                                let mut idx_map =
+                                    alloy_primitives::map::U256HashMap::with_capacity_and_hasher(
+                                        existing.storage.len(),
+                                        Default::default(),
+                                    );
+                                for (idx, (k, _)) in existing.storage.iter().enumerate() {
+                                    idx_map.insert(*k, idx);
+                                }
+                                self.storage_indices.insert(addr, idx_map);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.buffered_txs += 1;
+        if self.buffered_txs >= self.batch_txs {
+            self.flush();
+        }
+    }
+}
+
+impl<H: OnStateHook> Drop for BatchedStateHook<H> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.flush();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1254,5 +1411,145 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    #[test]
+    fn batched_state_hook_merges_and_flushes_equivalently() {
+        use alloy_primitives::{Address, U256};
+        use evm2::{block::bundle_state::StorageSlot, evm::AccountInfo};
+        use reth_execution_types::{AccountUpdate, StateUpdate};
+        use std::sync::{Arc, Mutex};
+
+        let received: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec_clone = Arc::clone(&received);
+        let addr = Address::repeat_byte(0x11);
+        let created_addr = Address::repeat_byte(0x22);
+
+        let info0 = AccountInfo {
+            balance: U256::from(100),
+            ..Default::default()
+        };
+        let info1 = AccountInfo {
+            balance: U256::from(200),
+            ..Default::default()
+        };
+        let info2 = AccountInfo {
+            balance: U256::from(300),
+            ..Default::default()
+        };
+
+        {
+            let mut hook = BatchedStateHook::new(
+                move |state: StateUpdate| {
+                    rec_clone.lock().unwrap().push(state);
+                },
+                3,
+            );
+
+            let mut storage1 = Vec::new();
+            for k in 0u64..10 {
+                storage1.push((
+                    U256::from(k),
+                    StorageSlot {
+                        previous_or_original_value: U256::ZERO,
+                        present_value: U256::from(k + 1),
+                    },
+                ));
+            }
+            hook.on_state(StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: addr,
+                    original: Some(info0.clone()),
+                    current: Some(info1.clone()),
+                    created: false,
+                    wiped: false,
+                    storage: storage1,
+                }],
+            });
+            hook.on_state(StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: addr,
+                    original: Some(info1),
+                    current: Some(info2.clone()),
+                    created: false,
+                    wiped: false,
+                    storage: vec![
+                        (
+                            U256::from(3),
+                            StorageSlot {
+                                previous_or_original_value: U256::from(4),
+                                present_value: U256::from(99),
+                            },
+                        ),
+                        (
+                            U256::from(10),
+                            StorageSlot {
+                                previous_or_original_value: U256::ZERO,
+                                present_value: U256::from(100),
+                            },
+                        ),
+                    ],
+                }],
+            });
+            assert_eq!(received.lock().unwrap().len(), 0);
+
+            hook.on_state(StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: created_addr,
+                    original: None,
+                    current: Some(info0.clone()),
+                    created: true,
+                    wiped: false,
+                    storage: vec![],
+                }],
+            });
+            assert_eq!(received.lock().unwrap().len(), 2);
+
+            hook.on_state(StateUpdate {
+                accounts: vec![AccountUpdate {
+                    address: addr,
+                    original: Some(info2.clone()),
+                    current: Some(info0.clone()),
+                    created: false,
+                    wiped: false,
+                    storage: vec![],
+                }],
+            });
+        }
+
+        let updates = received.lock().unwrap();
+        assert_eq!(updates.len(), 3);
+        let merged = updates[0].account(&addr).unwrap();
+        assert_eq!(merged.original, Some(info0));
+        assert_eq!(merged.current, Some(info2));
+        assert_eq!(merged.storage.len(), 11);
+        assert_eq!(
+            merged
+                .storage
+                .iter()
+                .find(|(k, _)| *k == U256::from(3))
+                .unwrap()
+                .1
+                .present_value,
+            U256::from(99)
+        );
+        assert_eq!(
+            merged
+                .storage
+                .iter()
+                .find(|(k, _)| *k == U256::from(10))
+                .unwrap()
+                .1
+                .present_value,
+            U256::from(100)
+        );
+        assert!(updates[1].account(&created_addr).unwrap().created);
+        assert_eq!(
+            updates[2].account(&addr).unwrap().current,
+            Some(AccountInfo {
+                balance: U256::from(100),
+                ..Default::default()
+            })
+        );
     }
 }
