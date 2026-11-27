@@ -38,5 +38,7 @@ Zones run no fee AMM or stablecoin DEX, so their invariants are skipped. A zone 
 configurable account commitments rather than keeping its own, so in place of the TIP-1107 account
 invariants every step from T14 checks TIP-1154 (`TEMPO-ZONE-ACCOUNT-*`, in
 [`tempo-invariants`](../../invariants/src/zone_account)): what the zone shows of its system
-contracts, the input's accounts and those L1 commits to (up to 32), against L1's commitments at the
-zone's anchor.
+contracts, the input's accounts and those L1 commits to, against L1's commitments at the zone's
+anchor. On L1 state given as storage, the same at every block, they cannot see a commitment change
+from one anchor to the next, and they compare the zone with the same commitments its overlay reads;
+on a Tempo chain the harness executes, commitments change as its transactions configure accounts.

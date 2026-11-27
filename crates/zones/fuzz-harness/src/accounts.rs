@@ -2,7 +2,6 @@
 //! beside what Tempo holds for them at the zone's anchor, after every step.
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashSet},
     fmt, iter,
     sync::Arc,
@@ -15,14 +14,15 @@ use reth_evm::ConfigureEvm as _;
 use reth_primitives_traits::Recovered;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, PATH_USD_ADDRESS};
-use tempo_evm::{TempoEvm, TempoEvmEnv};
+use tempo_evm::TempoEvm;
 use tempo_fuzz_engine::{StepState, invariant_infos, observed};
 use tempo_fuzz_types::InvariantInfo;
 use tempo_invariants::{
-    Checked as _, Ran, StepChecked as _,
+    Checked as _, StepChecked as _,
     configurable_account::Leaf,
     zone_account::{
-        self, Mirror, Tempo, VIEW, Zone as ZoneModel, ZoneAt, ZoneLeaf, ZoneLeaves, ZoneStep,
+        self, Mirror, Tempo, VIEW, VIEW_DOC, Zone as ZoneModel, ZoneAt, ZoneLeaf, ZoneLeaves,
+        ZoneStep,
     },
 };
 use tempo_primitives::{
@@ -33,13 +33,12 @@ use zone_evm::{L1OverlayDB, ZoneEvmConfig};
 use zone_precompiles::L1StorageReader as _;
 use zone_primitives::constants::{
     TEMPO_STATE_ADDRESS, ZONE_FEE_MANAGER_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
-    decode_zone_chain_id,
 };
 
 use crate::engine::L1;
 
 /// The most accounts the checks watch, as each costs views at every step.
-pub(crate) const MAX_WATCHED: usize = 32;
+const MAX_WATCHED: usize = 32;
 
 /// The gas each zone view's simulated transaction may use.
 const VIEW_GAS_LIMIT: u64 = 10_000_000;
@@ -51,7 +50,7 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         .chain(invariant_infos(zone_account::LEAF_CHECKS))
         .chain(iter::once(InvariantInfo {
             id: VIEW.to_string(),
-            doc: "The zone's views of configurable accounts answer.".to_string(),
+            doc: VIEW_DOC.to_string(),
             tip: Some("TIP-1154".to_string()),
             covers: Vec::new(),
             since: None,
@@ -60,40 +59,40 @@ pub(crate) fn catalog() -> Vec<InvariantInfo> {
         .collect()
 }
 
-/// The zone's configurable account checks, with what the last step showed.
-#[derive(Debug, Clone, Default)]
+/// The zone's configurable account checks over the accounts they watch.
+#[derive(Debug, Clone)]
 pub(crate) struct AccountChecks {
     /// The accounts the checks read: the zone's system contracts first.
     watched: Vec<Address>,
-    /// What the zone showed after the last step, which the next is checked against.
-    pre: RefCell<Option<Mirror>>,
 }
 
 impl AccountChecks {
-    /// Checks watching the zone's system contracts, then the accounts `l1` holds a commitment for,
-    /// the ones TIP-1154 treats differently, then `watched`, up to [`MAX_WATCHED`] in all.
-    pub(crate) fn new(l1: &L1, watched: impl IntoIterator<Item = Address>) -> Self {
+    /// Checks watching the zone's system contracts, then the accounts L1 holds a commitment for,
+    /// `committed`, the ones TIP-1154 treats differently, then `watched`, up to [`MAX_WATCHED`] in
+    /// all.
+    pub(crate) fn new(
+        committed: impl IntoIterator<Item = Address>,
+        watched: impl IntoIterator<Item = Address>,
+    ) -> Self {
         let mut accounts = vec![
             TEMPO_STATE_ADDRESS,
             ZONE_INBOX_ADDRESS,
             ZONE_OUTBOX_ADDRESS,
             ZONE_FEE_MANAGER_ADDRESS,
         ];
-        accounts.extend(l1.committed());
+        accounts.extend(committed);
         accounts.extend(watched);
         let mut seen = HashSet::new();
         accounts.retain(|account| seen.insert(*account));
         accounts.truncate(MAX_WATCHED);
-        Self {
-            watched: accounts,
-            pre: RefCell::default(),
-        }
+        Self { watched: accounts }
     }
 
-    /// Checks what the zone shows after the step `state` ends, reading Tempo from `l1`.
+    /// Checks what the zone shows after the step `state` ends against what it showed after the
+    /// run's last step, `last`, which it then replaces.
     pub(crate) fn check(
         &self,
-        l1: &L1,
+        last: &mut Option<Mirror>,
         state: &StepState<'_, ZoneEvmConfig<L1>>,
         report: &mut Report,
     ) {
@@ -103,25 +102,23 @@ impl AccountChecks {
         if state.start() {
             if state.env().spec.is_t14() {
                 let accounts: Vec<Address> = state.changed().collect();
-                let leaves = self.leaves(l1, state, &accounts, None, report);
+                let leaves = self.leaves(state, &accounts, None, report);
                 report.run(ZoneLeaves::CHECKS, &leaves, fork);
             }
             return;
         }
-        let pre = self.pre.take();
+        let pre = last.take();
         let Some(zone) = self.zone(state, report) else {
             return;
         };
         let anchor = zone.anchor().number;
-        let tempo = Tempo::new(anchor, l1.commitments(&self.watched, anchor));
-        let post = Mirror::new(zone, Some(tempo)).expect("Tempo is read at the zone's anchor");
+        let tempo = Tempo::new(self.commitments(state, anchor, report));
+        let post = Mirror::new(zone, Some(tempo));
         report.run(Mirror::CHECKS, &post, fork);
 
+        let ran = &state.effects().ran;
         // The sequencer's own transactions act for no account.
-        let tx = state
-            .ran()
-            .tx()
-            .filter(|tx| tx.sender != TEMPO_SYSTEM_TX_SENDER);
+        let tx = ran.tx().filter(|tx| tx.sender != TEMPO_SYSTEM_TX_SENDER);
         let mut accounts: Vec<Address> = state
             .changed()
             .chain(
@@ -131,21 +128,36 @@ impl AccountChecks {
             .collect();
         accounts.sort_unstable();
         accounts.dedup();
-        // A block's pre- and post-execution changes emit no logs the step checks could read. The
-        // sequencer's own transactions, such as `advanceTempo`, are judged as no user's.
-        if let Some(pre) = pre
-            && let Some(ran) = state.ran().tx()
-        {
-            let mut effects = state.effects();
-            if ran.sender == TEMPO_SYSTEM_TX_SENDER {
-                Arc::make_mut(&mut effects).ran = Ran::PreBlock;
-            }
-            let step = ZoneStep::new(pre, post.clone(), effects);
-            report.run(Mirror::STEP_CHECKS, &step, fork);
-        }
-        let leaves = self.leaves(l1, state, &accounts, Some(anchor), report);
+        let leaves = self.leaves(state, &accounts, Some(anchor), report);
         report.run(ZoneLeaves::CHECKS, &leaves, fork);
-        *self.pre.borrow_mut() = Some(post);
+        // A block's pre- and post-execution changes emit no logs the step checks could read.
+        *last = Some(match pre {
+            Some(pre) if ran.tx().is_some() => {
+                let step = ZoneStep::new(pre, post, Arc::clone(state.effects()));
+                report.run(Mirror::STEP_CHECKS, &step, fork);
+                step.post
+            }
+            _ => post,
+        });
+    }
+
+    /// Tempo's commitment of each watched account at `anchor`, as the zone's L1 reader answers;
+    /// one whose read fails breaks [`VIEW`] in `report` and is left out.
+    fn commitments(
+        &self,
+        state: &StepState<'_, ZoneEvmConfig<L1>>,
+        anchor: u64,
+        report: &mut Report,
+    ) -> BTreeMap<Address, B256> {
+        let l1 = state.evm_config().l1_reader();
+        self.watched
+            .iter()
+            .filter_map(|&address| {
+                let read = l1.read_l1_commitment(address, anchor);
+                let read = observed(report, VIEW, address, read.map_err(ObserveError::Views))?;
+                Some((address, read))
+            })
+            .collect()
     }
 
     /// What the zone shows of the watched accounts after the step, from T14, when TIP-1154
@@ -176,7 +188,7 @@ impl AccountChecks {
             .copied()
             .filter(|address| reserved(*address, spec))
             .collect();
-        let mut views = ZoneViews::new(state, state.env().clone());
+        let mut views = ZoneViews::new(state);
         let at = ZoneAt {
             tempo_state: TEMPO_STATE_ADDRESS,
             precompile: CONFIGURABLE_ACCOUNT_ADDRESS,
@@ -193,7 +205,6 @@ impl AccountChecks {
     /// only what the zone stores is read.
     fn leaves(
         &self,
-        l1: &L1,
         state: &StepState<'_, ZoneEvmConfig<L1>>,
         accounts: &[Address],
         anchor: Option<u64>,
@@ -201,10 +212,11 @@ impl AccountChecks {
     ) -> ZoneLeaves {
         use evm2::evm::DynDatabase as _;
         let spec = state.env().spec;
+        let l1 = state.evm_config().l1_reader();
         let mut overlay = L1OverlayDB::new(
             evm2::evm::Db::new(state.database()),
             l1.clone(),
-            portal(state.env()),
+            state.evm_config().portal_address(),
             spec,
         );
         if let Some(anchor) = anchor {
@@ -254,10 +266,7 @@ impl AccountChecks {
                 },
             );
         }
-        ZoneLeaves {
-            active: spec.is_t14(),
-            of,
-        }
+        ZoneLeaves { of }
     }
 }
 
@@ -266,13 +275,6 @@ impl AccountChecks {
 fn reserved(address: Address, spec: TempoHardfork) -> bool {
     !tempo_chainspec::is_valid_native_account(address, spec)
         || zone_precompiles::is_zone_precompile(address, spec)
-}
-
-/// The portal of the zone `env`'s chain ID names.
-fn portal(env: &TempoEvmEnv) -> Address {
-    decode_zone_chain_id(env.version.chain_id)
-        .map(|(_, zone_id)| tempo_precompiles::zone_factory::portal_address(zone_id))
-        .unwrap_or_default()
 }
 
 /// Read-only calls against zone state, each run as a simulated zone transaction from the zero
@@ -287,8 +289,9 @@ struct ZoneViews<'a, 's> {
 }
 
 impl<'a, 's> ZoneViews<'a, 's> {
-    /// Views of the state after `state`'s step, in the zone block environment `env`.
-    fn new(state: &'a StepState<'s, ZoneEvmConfig<L1>>, mut env: TempoEvmEnv) -> Self {
+    /// Views of the state after `state`'s step, in its zone block environment.
+    fn new(state: &'a StepState<'s, ZoneEvmConfig<L1>>) -> Self {
+        let mut env = state.env().clone();
         // A view pays no fee, so neither the sender's balance nor the block's base fee applies.
         for feature in [
             EvmFeatures::FEE_CHARGE,
@@ -381,18 +384,13 @@ impl fmt::Display for ViewFailed {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::B256;
-
     use super::*;
-    use crate::L1StateInput;
 
     #[test]
     fn accounts_l1_commits_to_are_watched_ahead_of_the_inputs() {
         let committed = Address::repeat_byte(0xc0);
-        let mut l1 = L1StateInput::default();
-        l1.commitments.insert(committed, B256::repeat_byte(1));
         let many = (1..=2 * MAX_WATCHED as u8).map(Address::repeat_byte);
-        let checks = AccountChecks::new(&L1::state(l1), many);
+        let checks = AccountChecks::new([committed], many);
         assert_eq!(checks.watched.len(), MAX_WATCHED);
         assert_eq!(checks.watched[4], committed);
     }

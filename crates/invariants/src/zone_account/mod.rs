@@ -2,8 +2,8 @@
 //! holds for it at the zone's anchor.
 //!
 //! A zone reads Tempo state at a fixed anchor and never stores a commitment, so its checks compare
-//! two chains. A producer observes [`Zone`] through the zone's views, then [`Tempo`] through
-//! Tempo's views at the anchor the zone reported, and joins them into a [`Mirror`]. Without Tempo
+//! two chains. A producer observes [`Zone`] through the zone's views, reads [`Tempo`]'s
+//! commitments at the anchor the zone reported, and joins them into a [`Mirror`]. Without Tempo
 //! only the zone's own checks are armed.
 
 use std::{
@@ -27,7 +27,7 @@ use crate::{
 
 mod checks;
 
-pub use checks::{CHECKS, LEAF_CHECKS, STEP_CHECKS, VIEW};
+pub use checks::{CHECKS, LEAF_CHECKS, STEP_CHECKS, VIEW, VIEW_DOC};
 
 /// The Tempo block a zone reads Tempo at: `TempoState`'s checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,39 +148,17 @@ impl Observe for Zone {
     }
 }
 
-/// Tempo's commitments of the observed accounts at one block.
+/// Tempo's commitments of the observed accounts at the zone's anchor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tempo {
-    /// The block the views answered at, as the producer states it.
-    block: u64,
     of: BTreeMap<Address, B256>,
 }
 
 impl Tempo {
-    /// Tempo's commitments `of` the accounts at block `block`, as a producer that holds Tempo's
-    /// state itself states them; an account left out was not read.
-    pub const fn new(block: u64, of: BTreeMap<Address, B256>) -> Self {
-        Self { block, of }
-    }
-}
-
-/// The Tempo block the views answer at, and the accounts to read.
-#[derive(Debug, Clone, Copy)]
-pub struct TempoAt<'a> {
-    pub block: u64,
-    pub precompile: Address,
-    pub accounts: &'a [Address],
-}
-
-impl Observe for Tempo {
-    type At<'a> = TempoAt<'a>;
-
-    /// Reads each account's commitment, leaving out unanswered ones.
-    fn observe<V: Views>(views: &mut V, at: TempoAt<'_>) -> Result<Self, ObserveError<V::Error>> {
-        Ok(Self {
-            block: at.block,
-            of: read_commitments(views, at.precompile, at.accounts)?,
-        })
+    /// Tempo's commitments `of` the accounts at the zone's anchor, as a producer that holds
+    /// Tempo's state itself reads them; an account left out was not read.
+    pub const fn new(of: BTreeMap<Address, B256>) -> Self {
+        Self { of }
     }
 }
 
@@ -191,36 +169,11 @@ pub struct Mirror {
     tempo: Option<Tempo>,
 }
 
-/// Tempo was read at `read`, while the zone's anchor is `anchor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Misanchored {
-    pub anchor: u64,
-    pub read: u64,
-}
-
-impl fmt::Display for Misanchored {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Tempo read at block {}, the zone's anchor is block {}",
-            self.read, self.anchor
-        )
-    }
-}
-
-impl std::error::Error for Misanchored {}
-
 impl Mirror {
-    /// `zone` beside `tempo`; without `tempo` only the zone's own checks are armed. Fails when
-    /// `tempo` was read at another block than the zone's anchor.
-    pub fn new(zone: Zone, tempo: Option<Tempo>) -> Result<Self, Misanchored> {
-        match &tempo {
-            Some(tempo) if tempo.block != zone.anchor.number => Err(Misanchored {
-                anchor: zone.anchor.number,
-                read: tempo.block,
-            }),
-            _ => Ok(Self { zone, tempo }),
-        }
+    /// `zone` beside `tempo`, read at the zone's anchor; without `tempo` only the zone's own checks
+    /// are armed.
+    pub const fn new(zone: Zone, tempo: Option<Tempo>) -> Self {
+        Self { zone, tempo }
     }
 
     /// Why `account` reads nothing from Tempo on this zone, `None` when it is eligible.
@@ -265,7 +218,5 @@ pub struct ZoneLeaf {
 /// Each changed or signing account's zone leaf after a step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneLeaves {
-    /// Whether TIP-1154 is active (T14) at the zone block.
-    pub active: bool,
     pub of: BTreeMap<Address, ZoneLeaf>,
 }

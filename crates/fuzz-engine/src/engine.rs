@@ -68,6 +68,9 @@ pub trait Engine {
     type EvmConfig: EvmConfig;
     /// The chain's consensus rules.
     type Consensus: BlockConsensus;
+    /// What the chain's own checks carry from one step of a run to the next, such as what the state
+    /// showed after the last step. Every run starts from its default.
+    type Checks: Default;
 
     /// The implementation the harness's capabilities name.
     const IMPLEMENTATION: &'static str;
@@ -116,9 +119,16 @@ pub trait Engine {
     }
 
     /// Checks the chain's own invariants on the state after each step, beyond the protocol's,
-    /// recording what they find in `report`. Runs after the protocol invariants, unless the
-    /// process turns invariants off. None by default; a zone's TIP-1154 account checks.
-    fn check_step(&self, _state: &StepState<'_, Self::EvmConfig>, _report: &mut Report) {}
+    /// recording what they find in `report`, with what the run's earlier steps left in `checks`.
+    /// Runs after the protocol invariants, unless the process turns invariants off. None by
+    /// default.
+    fn check_step(
+        &self,
+        _checks: &mut Self::Checks,
+        _state: &StepState<'_, Self::EvmConfig>,
+        _report: &mut Report,
+    ) {
+    }
 
     /// Whether a block the harness builds leaves out each of the input's transactions that the
     /// chain's block builder would, rather than failing: one invalid at its position or needing
@@ -144,6 +154,7 @@ impl Engine for Tempo {
     type ChainSpec = TempoChainSpec;
     type EvmConfig = TempoEvmConfig;
     type Consensus = TempoConsensus;
+    type Checks = ();
 
     const IMPLEMENTATION: &'static str = "tempo";
     const HARDFORKS: &'static [TempoHardfork] = TempoHardfork::VARIANTS;

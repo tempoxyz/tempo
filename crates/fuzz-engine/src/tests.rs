@@ -936,6 +936,7 @@ impl Engine for Opening {
     type ChainSpec = <Tempo as Engine>::ChainSpec;
     type EvmConfig = <Tempo as Engine>::EvmConfig;
     type Consensus = <Tempo as Engine>::Consensus;
+    type Checks = ();
 
     const IMPLEMENTATION: &'static str = "opening";
     const HARDFORKS: &'static [TempoHardfork] = Tempo::HARDFORKS;
@@ -1212,12 +1213,15 @@ const FLAGGED_NONCE: u64 = 7;
 struct Watching {
     flag: Option<Address>,
     seen: std::cell::RefCell<Vec<(tempo_invariants::Ran, bool, bool)>>,
+    /// How many steps of its run each check came after.
+    steps: std::cell::RefCell<Vec<usize>>,
 }
 
 impl Engine for Watching {
     type ChainSpec = <Tempo as Engine>::ChainSpec;
     type EvmConfig = <Tempo as Engine>::EvmConfig;
     type Consensus = <Tempo as Engine>::Consensus;
+    type Checks = usize;
 
     const IMPLEMENTATION: &'static str = "watching";
     const HARDFORKS: &'static [TempoHardfork] = Tempo::HARDFORKS;
@@ -1243,12 +1247,19 @@ impl Engine for Watching {
         Tempo.genesis()
     }
 
-    fn check_step(&self, state: &crate::StepState<'_, Self::EvmConfig>, report: &mut Report) {
+    fn check_step(
+        &self,
+        steps: &mut usize,
+        state: &crate::StepState<'_, Self::EvmConfig>,
+        report: &mut Report,
+    ) {
+        self.steps.borrow_mut().push(*steps);
+        *steps += 1;
         state.forget_missed();
         let _ = state.account(UNLISTED);
         self.seen
             .borrow_mut()
-            .push((state.ran().clone(), state.missed(), state.start()));
+            .push((state.effects().ran.clone(), state.missed(), state.start()));
         if let Some(flag) = self.flag
             && let Some(Some(info)) = state.account(flag)
             && info.nonce == FLAGGED_NONCE
@@ -1330,6 +1341,19 @@ fn the_chains_own_check_sees_the_blocks_post_execution_changes() {
         "{ran:?}"
     );
     assert_eq!(ran.iter().filter(|ran| ran.tx().is_some()).count(), 1);
+}
+
+#[test]
+fn each_run_starts_the_chains_own_checks_afresh() {
+    let engine = Watching::default();
+    for _ in 0..2 {
+        let (outcome, _) = run_on(&engine, input(genesis(), vec![transfer_block()]));
+        assert_eq!(outcome.error, ErrorClass::None);
+    }
+    let steps = engine.steps.borrow();
+    let per_run = steps.len() / 2;
+    let expected: Vec<usize> = (0..per_run).chain(0..per_run).collect();
+    assert_eq!(*steps, expected);
 }
 
 #[test]

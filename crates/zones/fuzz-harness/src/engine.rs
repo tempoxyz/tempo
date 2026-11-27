@@ -3,7 +3,6 @@
 
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
     sync::{Arc, LazyLock},
 };
 
@@ -26,6 +25,7 @@ use tempo_fuzz_engine::{
     Anchor, Chain, Engine, Rejection, StepState, chain_spec_on, genesis_cache,
 };
 use tempo_fuzz_types::{ChainSpecInput, ErrorClass, HarnessInputKind, InvariantInfo};
+use tempo_invariants::zone_account::Mirror;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STORAGE_CREDITS_ADDRESS,
     storage::account_config_commitment, tip20::is_tip20_prefix,
@@ -94,7 +94,7 @@ impl Zone {
                 Cow::Owned(genesis)
             }
         };
-        let accounts = AccountChecks::new(&l1, watched);
+        let accounts = AccountChecks::new(l1.committed(), watched);
         Self {
             l1,
             genesis,
@@ -107,6 +107,9 @@ impl Engine for Zone {
     type ChainSpec = ZoneChainSpec;
     type EvmConfig = ZoneEvmConfig<L1>;
     type Consensus = ZoneConsensus;
+    /// What the zone showed after the run's last step, which the account checks judge the next
+    /// against.
+    type Checks = Option<Mirror>;
 
     const IMPLEMENTATION: &'static str = "tempo-zone";
     const HARDFORKS: &'static [TempoHardfork] = TempoHardfork::VARIANTS
@@ -140,8 +143,13 @@ impl Engine for Zone {
         &self.genesis
     }
 
-    fn check_step(&self, state: &StepState<'_, Self::EvmConfig>, report: &mut Report) {
-        self.accounts.check(&self.l1, state, report);
+    fn check_step(
+        &self,
+        last: &mut Option<Mirror>,
+        state: &StepState<'_, Self::EvmConfig>,
+        report: &mut Report,
+    ) {
+        self.accounts.check(last, state, report);
     }
 
     /// The sequencer leaves out the transactions the zone rejects.
@@ -321,14 +329,6 @@ impl L1 {
                 })
                 .collect(),
         }
-    }
-
-    /// The commitment of each of `accounts` at block `number`, leaving out those L1 cannot read.
-    pub(crate) fn commitments(&self, accounts: &[Address], number: u64) -> BTreeMap<Address, B256> {
-        accounts
-            .iter()
-            .filter_map(|account| Some((*account, self.read_l1_commitment(*account, number).ok()?)))
-            .collect()
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use alloy_primitives::{Address, Log};
+use alloy_primitives::Address;
 use evm2::evm::AccountInfo;
 use invariants_core::{Effects, Report};
 use reth_evm::Database;
@@ -35,19 +35,9 @@ impl<C> StepState<'_, C> {
         self.env
     }
 
-    /// What the step ran: a block's pre- or post-execution changes, or a transaction.
-    pub fn ran(&self) -> &Ran {
-        &self.effects.ran
-    }
-
-    /// The logs the step emitted.
-    pub fn logs(&self) -> &[Log] {
-        &self.effects.logs
-    }
-
-    /// What the step did, as a model's step over it shares it.
-    pub fn effects(&self) -> Arc<Effects<Ran>> {
-        Arc::clone(&self.effects)
+    /// What the step did and ran, shared with a model's step over it.
+    pub const fn effects(&self) -> &Arc<Effects<Ran>> {
+        &self.effects
     }
 
     /// Whether the state is a pre-state checked on its own, before anything executed on it:
@@ -103,6 +93,7 @@ impl<C> StepState<'_, C> {
 /// `report`.
 pub(crate) fn check<E: Engine>(
     engine: &E,
+    checks: &mut E::Checks,
     state: &StepState<'_, E::EvmConfig>,
     scope: &InvariantScope,
     failures: &mut Vec<InvariantFailure>,
@@ -114,7 +105,7 @@ pub(crate) fn check<E: Engine>(
     // The engine's reads are not part of execution.
     let missed = state.db.pre.missed();
     let start = report.violations.len();
-    engine.check_step(state, report);
+    engine.check_step(checks, state, report);
     failures.extend(
         report
             .violations
