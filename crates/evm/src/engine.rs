@@ -66,6 +66,7 @@ struct RecoveredInBlock {
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
+    tx_env: Option<TempoTxEnv>,
 }
 
 impl RecoveredInBlock {
@@ -95,11 +96,17 @@ impl RecoveredInBlock {
         } else {
             tx.try_recover()?
         };
+        // Populate lazy hashes and recover sponsored fee payers on the parallel recovery worker
+        // so into_parts moves a ready TempoTxEnv on the serial execution thread.
+        let _ = tx.tx_hash();
+        let mut tx_env = TempoTxEnv::from(Recovered::new_unchecked(tx.clone(), sender));
+        tx_env.set_expiring_nonce_idx(expiring_nonce_idx);
         Ok(Self {
             block,
             index,
             sender,
             expiring_nonce_idx,
+            tx_env: Some(tx_env),
         })
     }
 }
@@ -117,14 +124,15 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBlock {
     type Recovered = Self;
 
-    fn into_parts(self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
+    fn into_parts(mut self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
         let signer = *self.signer();
-        // Populate the original envelope's lazy hash before cloning it into the EVM transaction
-        // environment so both copies carry the cached value.
-        let _ = self.tx().tx_hash();
-        let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
-        let mut tx_env = TempoTxEnv::from(recovered);
-        tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
+        let tx_env = self.tx_env.take().unwrap_or_else(|| {
+            let _ = self.tx().tx_hash();
+            let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
+            let mut tx_env = TempoTxEnv::from(recovered);
+            tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
+            tx_env
+        });
         (Recovered::new_unchecked(tx_env, signer), self)
     }
 }
