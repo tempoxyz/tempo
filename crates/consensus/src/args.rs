@@ -16,7 +16,6 @@ use std::{
 use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
-use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
 use tempo_payload_types::estimator::{DEFAULT_NETWORK_BUDGET, DEFAULT_TARGET_BLOCK_TIME};
 
@@ -31,53 +30,6 @@ const GOSSIP_FRAME_QUEUE: usize = 256;
 
 /// Capacity of the queue carrying outbound frames to the transport coordinator.
 const GOSSIP_ROUTE_QUEUE: usize = 256;
-
-/// When consensus waits for application verification of a block.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum VerificationMode {
-    /// Complete application verification before voting to notarize.
-    Immediate,
-    /// Defer completion of application verification until voting to finalize.
-    Deferred,
-    /// Follow T14 at the previous epoch boundary: deferred at or after activation.
-    #[default]
-    Hardfork,
-}
-
-impl VerificationMode {
-    /// Resolves the policy using the previous epoch boundary timestamp (genesis for epoch zero).
-    pub(crate) fn is_deferred_at(self, chainspec: &TempoChainSpec, timestamp: u64) -> bool {
-        match self {
-            Self::Immediate => false,
-            Self::Deferred => true,
-            Self::Hardfork => chainspec.is_t14_active_at_timestamp(timestamp),
-        }
-    }
-}
-
-impl std::fmt::Display for VerificationMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Immediate => "immediate",
-            Self::Deferred => "deferred",
-            Self::Hardfork => "hardfork",
-        })
-    }
-}
-
-impl clap::ValueEnum for VerificationMode {
-    fn value_variants<'a>() -> &'a [Self] {
-        &[Self::Immediate, Self::Deferred, Self::Hardfork]
-    }
-
-    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
-        Some(clap::builder::PossibleValue::new(match self {
-            Self::Immediate => "immediate",
-            Self::Deferred => "deferred",
-            Self::Hardfork => "hardfork",
-        }))
-    }
-}
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
@@ -150,20 +102,6 @@ pub struct Args {
     #[arg(long = "consensus.worker-threads", default_value_t = 3)]
     pub worker_threads: usize,
 
-    /// When to complete application verification of proposed blocks.
-    ///
-    /// Hardfork uses the previous epoch boundary timestamp (genesis for epoch zero):
-    /// immediate before T14, deferred from T14.
-    /// Immediate and deferred override the schedule; the flag is hidden and kept for
-    /// compatibility and testing.
-    #[arg(
-        long = "consensus.verification-mode",
-        value_enum,
-        default_value_t,
-        hide = true
-    )]
-    pub verification_mode: VerificationMode,
-
     /// Deprecated compatibility flag. P2P queue capacities are derived from
     /// peer-set limits and channel quotas, so this value is ignored.
     #[arg(
@@ -172,6 +110,16 @@ pub struct Args {
         help = "Deprecated: ignored; P2P queue capacities are derived from peer-set limits and channel quotas."
     )]
     pub message_backlog: Option<usize>,
+
+    /// Deprecated compatibility flag. Consensus always uses deferred
+    /// verification, so any value is accepted and ignored.
+    #[arg(
+        long = "consensus.verification-mode",
+        value_name = "MODE",
+        hide = true,
+        help = "Deprecated: ignored; consensus always uses deferred verification. Will be removed in a future release."
+    )]
+    pub verification_mode: Option<String>,
 
     /// The overall number of items that can be received on the various consensus
     /// channels before blocking.
@@ -729,12 +677,10 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use clap::{CommandFactory as _, Parser as _};
+    use clap::Parser as _;
     use commonware_codec::Encode as _;
 
     use super::*;
-    use reth_ethereum::chainspec::ForkCondition;
-    use tempo_chainspec::TempoHardfork;
     use test_case::test_case;
 
     const SIGNING_KEY_HEX: &str =
@@ -771,50 +717,6 @@ mod tests {
 
     fn parse(args: &[&str]) -> TestCli {
         TestCli::try_parse_from(std::iter::once("test").chain(args.iter().copied())).unwrap()
-    }
-
-    #[test]
-    fn verification_mode_defaults_to_hardfork() {
-        assert_eq!(
-            parse(&["--dev"]).consensus.verification_mode,
-            VerificationMode::Hardfork,
-        );
-    }
-
-    #[test]
-    fn verification_mode_is_hidden_from_help() {
-        let help = TestCli::command().render_long_help().to_string();
-        assert!(!help.contains("--consensus.verification-mode"));
-    }
-
-    #[test_case("immediate" => VerificationMode::Immediate)]
-    #[test_case("deferred" => VerificationMode::Deferred)]
-    #[test_case("hardfork" => VerificationMode::Hardfork)]
-    fn hidden_verification_mode_parses(value: &str) -> VerificationMode {
-        parse(&["--dev", "--consensus.verification-mode", value])
-            .consensus
-            .verification_mode
-    }
-
-    #[test]
-    fn verification_mode_resolves_t14_and_overrides() {
-        for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
-            chainspec.inner.hardforks.remove(&TempoHardfork::T14);
-            // An unscheduled fork keeps the original immediate verification policy.
-            assert!(!VerificationMode::Hardfork.is_deferred_at(&chainspec, u64::MAX));
-            chainspec
-                .inner
-                .hardforks
-                .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
-            for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
-                assert_eq!(
-                    VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
-                    deferred
-                );
-                assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
-                assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
-            }
-        }
     }
 
     #[test_case("--consensus.time-to-prepare-proposal-transactions")]
@@ -951,6 +853,20 @@ mod tests {
                 .message_backlog,
             Some(16384),
         );
+    }
+
+    #[test]
+    fn deprecated_verification_mode_accepts_any_value() {
+        assert_eq!(parse(&["--dev"]).consensus.verification_mode, None);
+        for value in ["immediate", "deferred", "hardfork", "anything"] {
+            assert_eq!(
+                parse(&["--dev", "--consensus.verification-mode", value])
+                    .consensus
+                    .verification_mode
+                    .as_deref(),
+                Some(value),
+            );
+        }
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

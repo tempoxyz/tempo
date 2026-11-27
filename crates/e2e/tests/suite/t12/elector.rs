@@ -25,7 +25,7 @@ fn validators_transition_to_v1_elector_at_t12() {
 
     // Genesis selects V0 for epoch zero. Although its blocks have T12 active,
     // the V1 leader schedule starts only in epoch one.
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(4)
         .epoch_length(EPOCH_LENGTH)
         .t12_time(ACTIVATION);

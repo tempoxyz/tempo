@@ -42,7 +42,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
     // history to exercise catch-up across the full DKG epoch.
     let epoch_length = 30;
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(how_many_signers)
         .epoch_length(epoch_length);
 

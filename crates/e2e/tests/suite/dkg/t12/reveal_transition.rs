@@ -32,7 +32,7 @@ fn validators_switch_dkg_reveal_version_at_t12() {
 
     // Genesis starts a V0 ceremony. All proposed blocks are at or after T12,
     // but V1 must wait for the next ceremony.
-    let setup = Setup::new(crate::VERIFICATION_MODE)
+    let setup = Setup::new()
         .how_many_signers(4)
         .epoch_length(EPOCH_LENGTH)
         .t12_time(ACTIVATION);

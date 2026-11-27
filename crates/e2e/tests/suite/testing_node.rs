@@ -38,7 +38,7 @@ async fn just_restart() {
 
     std::thread::spawn(move || {
         runner.start(|mut context| async move {
-            let setup = Setup::new(crate::VERIFICATION_MODE)
+            let setup = Setup::new()
                 .how_many_signers(1)
                 .linkage(Link {
                     latency: Duration::from_millis(10),

@@ -31,7 +31,6 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
-    "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.disable-prewarming=false"
     "--rpc.max-connections" "10000"

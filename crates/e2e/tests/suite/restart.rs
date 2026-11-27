@@ -66,7 +66,7 @@ impl SimpleRestart {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new(crate::VERIFICATION_MODE)
+        let setup = Setup::new()
             .how_many_signers(committee_size)
             .seed(0)
             .epoch_length(epoch_length);
@@ -176,9 +176,7 @@ fn node_recovers_after_restart_with_unprocessed_boundary() {
     let epoch_length = 30;
     // The second boundary, once the execution layer persists in steady state.
     let boundary = 2 * epoch_length - 1;
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
-        .epoch_length(epoch_length);
+    let setup = Setup::new().how_many_signers(4).epoch_length(epoch_length);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {
@@ -266,7 +264,7 @@ impl RestartSetup {
         } = self;
         let _ = tempo_eyre::install();
 
-        let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(epoch_length);
+        let setup = Setup::new().epoch_length(epoch_length);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -355,9 +353,7 @@ fn max_consensus_height(metrics: &Metrics) -> Option<u64> {
 fn backfill_on_start_after_crash() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(1)
-        .epoch_length(100);
+    let setup = Setup::new().how_many_signers(1).epoch_length(100);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {
@@ -412,9 +408,7 @@ fn backfill_on_start_large_gap_does_not_trigger_pipeline_sync() {
     let _ = tempo_eyre::install();
     let metrics_recorder = install_prometheus_recorder();
 
-    let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(4)
-        .epoch_length(100);
+    let setup = Setup::new().how_many_signers(4).epoch_length(100);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     Runner::from(cfg).start(|mut context| async move {

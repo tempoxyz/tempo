@@ -35,8 +35,7 @@ use std::{
 use tempo_consensus::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, VerificationMode, consensus,
-    feed::FeedStateHandle,
+    RESOLVER_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT, consensus, feed::FeedStateHandle,
 };
 use tempo_evm::TempoEvmConfig;
 use tempo_node::{
@@ -97,8 +96,6 @@ where
     /// engine whenever they start. Uses a fixed network reservation and the constructor's
     /// proposal return allowance, reduced when preparation exceeds the reservation.
     pub estimator: tempo_node::Estimator,
-    /// Verification mode used whenever the consensus engine starts.
-    pub verification_mode: VerificationMode,
     n_starts: u32,
 }
 
@@ -123,7 +120,6 @@ where
         network_identity: tempo_chainspec::NetworkIdentity,
         feed_state: FeedStateHandle,
         proposal_return_budget: Duration,
-        verification_mode: VerificationMode,
         execution_runtime: ExecutionRuntimeHandle,
         mut execution_config: ExecutionNodeConfig,
         network_address: SocketAddr,
@@ -153,7 +149,6 @@ where
             network_identity,
             feed_state,
             estimator,
-            verification_mode,
             consensus_handle: None,
             execution_node: None,
             execution_node_datadir,
@@ -207,7 +202,6 @@ where
         self.feed_state = identity_source.feed_state;
         self.estimator = identity_source.estimator;
         self.execution_config.estimator = Some(self.estimator.clone());
-        self.verification_mode = identity_source.verification_mode;
         self.network_address = identity_source.network_address;
         self.chain_address = identity_source.chain_address;
     }
@@ -348,7 +342,6 @@ where
             mailbox_size: commonware_utils::NZUsize!(1024),
             max_peers: commonware_utils::NZU32!(128),
             deque_size: 10,
-            verification_mode: self.verification_mode,
             // Simulated time costs wall time under the `external` runtime, so
             // these are tighter than production: every offline leader costs a
             // proposal timeout, and lost nullifies wait for the rebroadcast.
