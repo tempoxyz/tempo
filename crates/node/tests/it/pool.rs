@@ -16,8 +16,10 @@ use reth_transaction_pool::{
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
 };
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS};
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use tempo_contracts::precompiles::{
+    IFeeManager, ITIP20, ITIP403Registry, ITIPFeeAMM, OUSD_ADDRESS,
+};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip_fee_manager::TipFeeManager,
@@ -290,6 +292,194 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
             "fallback balance updates must leave inferred-token transactions untouched"
         );
     }
+    Ok(())
+}
+
+/// A reorg revalidates transactions whose cached fee-token choice came from the orphaned chain,
+/// even when the new chain leaves the payer's fallback balances and user token untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fee_token_choice_follows_new_chain_after_reorg() -> eyre::Result<()> {
+    let payer = PrivateKeySigner::random();
+    let user_token_payer = PrivateKeySigner::random();
+    let funder = test_signer(0);
+    let price = TEMPO_T1_BASE_FEE as u128;
+    let fee = calc_gas_balance_spending(1_000_000, price);
+    let slot =
+        TIP20Token::from_address_unchecked(DEFAULT_FEE_TOKEN).balances[payer.address()].slot();
+    let user_token_payer_slot = TIP20Token::from_address_unchecked(DEFAULT_FEE_TOKEN).balances
+        [user_token_payer.address()]
+    .slot();
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(&crate::utils::make_genesis_at(TempoHardfork::T13))?;
+    let beneficiary: Address = serde_json::from_value(genesis["coinbase"].clone())?;
+    let validator_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
+    genesis["alloc"][format!("{TIP_FEE_MANAGER_ADDRESS:#x}")]["storage"]
+        [format!("{validator_slot:#066x}")] = format!(
+        "{:#066x}",
+        U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
+    )
+    .into();
+    // The payers start with enough OUSD, and no pathUSD, to pay the fee.
+    let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
+    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+        "{:#066x}",
+        U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
+    )
+    .into();
+    for slot in [slot, user_token_payer_slot] {
+        ousd["storage"][format!("{slot:#066x}")] = format!("{:#066x}", fee * U256::from(4)).into();
+    }
+    genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+    // Keep genesis finalized, so the blocks below can be reorged.
+    setup.node.set_finality(Finality::Keep);
+    let chain_id = setup.node.inner.chain_spec().chain_id();
+    let signed_tx = |signer: &PrivateKeySigner,
+                     nonce: u64,
+                     gas_limit: u64,
+                     fee_token: Option<Address>,
+                     to: Address,
+                     input: Bytes|
+     -> eyre::Result<_> {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: price,
+            gas_limit,
+            fee_token,
+            calls: vec![Call {
+                to: to.into(),
+                value: U256::ZERO,
+                input,
+            }],
+            ..Default::default()
+        };
+        let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+        Ok(envelope.try_into_recovered()?)
+    };
+    let pool = setup.node.inner.pool.clone();
+
+    // Supply the OUSD route to pathUSD, so the pool accepts OUSD as a fee token.
+    let mint = signed_tx(
+        &funder,
+        0,
+        10_000_000,
+        Some(DEFAULT_FEE_TOKEN),
+        TIP_FEE_MANAGER_ADDRESS,
+        ITIPFeeAMM::mintCall {
+            userToken: OUSD_ADDRESS,
+            validatorToken: DEFAULT_FEE_TOKEN,
+            amountValidatorToken: U256::from(1_000_000),
+            to: funder.address(),
+        }
+        .abi_encode()
+        .into(),
+    )?;
+    let mint_hash = *mint.tx_hash();
+    pool.add_consensus_transaction(mint, TransactionOrigin::Local)
+        .await?;
+    setup.node.advance_block_synced().await?;
+    setup.node.wait_for_pool_removal([mint_hash]).await?;
+    let fork_point = setup.node.block_hash(1);
+
+    // The missing nonces keep this transaction queued throughout.
+    let queued = signed_tx(
+        &payer,
+        100,
+        1_000_000,
+        None,
+        Address::repeat_byte(0x71),
+        Bytes::new(),
+    )?;
+    let hash = *queued.tx_hash();
+    pool.add_consensus_transaction(queued, TransactionOrigin::Local)
+        .await?;
+    // The pool briefly lacks the transaction while it is revalidated.
+    let fallback_token = || {
+        pool.get(&hash)
+            .and_then(|tx| tx.transaction.fee_balance_slot())
+    };
+    assert_eq!(fallback_token(), Some((OUSD_ADDRESS, slot)));
+
+    // The orphaned block credits pathUSD, which the earlier fallback token makes the choice.
+    let credit = signed_tx(
+        &funder,
+        1,
+        2_000_000,
+        Some(DEFAULT_FEE_TOKEN),
+        DEFAULT_FEE_TOKEN,
+        ITIP20::transferCall {
+            to: payer.address(),
+            amount: fee,
+        }
+        .abi_encode()
+        .into(),
+    )?;
+    let credit_hash = *credit.tx_hash();
+    pool.add_consensus_transaction(credit, TransactionOrigin::Local)
+        .await?;
+    // It also sets a user token, which the new chain does not.
+    let set_user_token = signed_tx(
+        &user_token_payer,
+        0,
+        1_000_000,
+        Some(OUSD_ADDRESS),
+        TIP_FEE_MANAGER_ADDRESS,
+        IFeeManager::setUserTokenCall {
+            token: OUSD_ADDRESS,
+        }
+        .abi_encode()
+        .into(),
+    )?;
+    let set_user_token_hash = *set_user_token.tx_hash();
+    pool.add_consensus_transaction(set_user_token, TransactionOrigin::Local)
+        .await?;
+    setup.node.advance_block_synced().await?;
+    setup
+        .node
+        .wait_for_pool_removal([credit_hash, set_user_token_hash])
+        .await?;
+    setup
+        .node
+        .wait_for_pool(|_| fallback_token() == Some((DEFAULT_FEE_TOKEN, slot)))
+        .await?;
+    // Only now does the pool validate against the orphaned user token.
+    let user_token_queued = signed_tx(
+        &user_token_payer,
+        100,
+        1_000_000,
+        None,
+        Address::repeat_byte(0x73),
+        Bytes::new(),
+    )?;
+    let user_token_hash = *user_token_queued.tx_hash();
+    pool.add_consensus_transaction(user_token_queued, TransactionOrigin::Local)
+        .await?;
+    let is_fallback = || {
+        pool.get(&user_token_hash)
+            .map(|tx| tx.transaction.is_fallback_fee_token())
+    };
+    assert_eq!(is_fallback(), Some(false));
+
+    // The new chain never mines the credit, so execution picks OUSD again.
+    let new_chain = setup.node.advance_block_on(fork_point).await?;
+    setup
+        .node
+        .wait_for_pool_head(new_chain.block().hash())
+        .await?;
+    setup
+        .node
+        .wait_for_pool(|_| fallback_token() == Some((OUSD_ADDRESS, slot)))
+        .await?;
+    setup
+        .node
+        .wait_for_pool(|_| is_fallback() == Some(true))
+        .await?;
     Ok(())
 }
 

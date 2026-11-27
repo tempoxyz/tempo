@@ -660,6 +660,9 @@ where
 
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
+        let orphaned_state = orphaned
+            .as_ref()
+            .map(|old| old.execution_outcome().state().state());
         let tip_timestamp = tip.tip().header().timestamp();
         let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
         let fallback_tokens = spec.fallback_fee_tokens();
@@ -730,6 +733,15 @@ where
                             // fee writes, which may change the choice without Transfer logs.
                             let fee = tx.transaction.fee_token_cost();
                             for token in fallback_tokens {
+                                // The cached choice may come from the orphaned chain, which the
+                                // new segment's diff against the fork point cannot show.
+                                if orphaned_state.is_some_and(|state| {
+                                    state
+                                        .get(token)
+                                        .is_some_and(|account| account.storage.contains_key(&slot))
+                                }) {
+                                    return true;
+                                }
                                 if bundle_state
                                     .get(token)
                                     .and_then(|account| account.storage.get(&slot))
@@ -757,6 +769,33 @@ where
                 removed_this_iteration.insert(*tx.hash());
             }
             revalidate_txs.extend(transactions);
+        }
+
+        // A user token set only by an orphaned block may have chosen the cached fee token of a
+        // transaction without an explicit one, and the new segment has no event to show it.
+        if let Some(orphaned) = &orphaned {
+            let user_token_changes = TempoPoolUpdates::from_chain(orphaned).user_token_changes;
+            let hashes: Vec<TxHash> = {
+                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
+                all_txs
+                    .iter()
+                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+                    .filter(|tx| tx.transaction.inner().fee_token().is_none())
+                    .filter(|tx| {
+                        tx.transaction
+                            .fee_payer()
+                            .is_ok_and(|payer| user_token_changes.contains(&payer))
+                    })
+                    .map(|tx| *tx.hash())
+                    .collect()
+            };
+            if !hashes.is_empty() {
+                let transactions = pool.remove_transactions(hashes);
+                for tx in &transactions {
+                    removed_this_iteration.insert(*tx.hash());
+                }
+                revalidate_txs.extend(transactions);
+            }
         }
 
         // Revalidate transactions whose authorities' configuration commitment changed,
