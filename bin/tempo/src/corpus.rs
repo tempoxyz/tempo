@@ -214,10 +214,15 @@ impl ReplayCommand {
             None => None,
         };
         let (config, consensus) = components(self.chain);
-        let shadow = self.shadow.map(|hardfork| Shadow {
-            replayer: ShadowReplayer::new(config.clone(), hardfork),
-            counts: Default::default(),
-        });
+        let shadow = self
+            .shadow
+            .map(|hardfork| {
+                eyre::Ok(Shadow {
+                    replayer: ShadowReplayer::new(config.clone(), hardfork)?,
+                    counts: Default::default(),
+                })
+            })
+            .transpose()?;
         let cancellation = CancellationToken::new();
         let _guard = cancellation.drop_guard();
         tokio::task::spawn_blocking(move || {

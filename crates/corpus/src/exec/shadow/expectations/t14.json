@@ -1,0 +1,19 @@
+[
+  {
+    "id": "t14.zone-portal-upgrade",
+    "fork": "T14",
+    "kind": "runtime-upgrade",
+    "accounts": [
+      {
+        "address": "ZONE_PORTAL_IMPL_ADDRESS",
+        "from": ["T13_ZONE_PORTAL_RUNTIME"],
+        "to": "T14_ZONE_PORTAL_RUNTIME"
+      }
+    ]
+  },
+  {
+    "id": "t14.proposer-fee-recipient-check",
+    "fork": "T14",
+    "kind": "skip-header-checks"
+  }
+]

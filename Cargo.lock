@@ -14386,6 +14386,7 @@ dependencies = [
  "tempo-fuzz-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "test-case",
  "tokio",
  "tokio-util",
  "tracing",

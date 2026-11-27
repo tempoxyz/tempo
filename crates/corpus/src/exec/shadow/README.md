@@ -59,21 +59,40 @@ other state differences still require fork expectations.
 
 ## Expectations
 
-`expectations.rs` always enables the fee-state check and registers feature-specific checks at
-their introducing hardfork. For each block, replay selects the baseline check followed by those in
-`(canonical fork, candidate fork]`.
+The fee-state check is built in and always runs first. Fork-specific rules come from one JSON file
+per candidate hardfork in `expectations/` (`t15.json` for `--shadow T15`), compiled into the
+binary. Each rule names the fork that introduces it; replay applies the rules for forks in
+`(canonical fork, candidate fork]`, in file order. A candidate without a rule file is rejected
+before replay starts. Replays cover blocks from the latest hardfork active on every network, so
+files hold rules only for forks after it, and a fork's rules are deleted once it is active
+everywhere. Blocks from before that fork would report its changes as findings.
 
-A check receives existing execution evidence and a changed field descriptor. It returns `None` when
-it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
-attribution. The baseline check runs first, followed by fork-specific checks in fork and
-registration order. Fee-slot provenance alone never accepts a difference.
+A `skip-header-checks` rule makes the candidate skip the checks of a block's header against state
+that its fork introduces, such as T14's proposer fee recipient check. They read state blocks of
+earlier forks never read, so the corpus lacks it, and they change no state, so skipping them
+hides no compared effect. The executor can only skip all such checks at once, so the candidate
+skips them all on a block whose canonical fork predates any skip rule's fork. Each such block
+counts the skip rules as expected differences, so it never reports a plain `Match`.
+
+A rule's `kind` selects a check implemented in Rust, and its other fields configure it, naming
+`tempo-contracts` constants such as `ZONE_PORTAL_IMPL_ADDRESS` or `T14_ZONE_PORTAL_RUNTIME`. Rule
+files are strict: unknown fields, kinds or constant names, duplicate ids, an account listed twice
+in one rule, and rules out of fork order or after the candidate are errors.
+
+A check receives existing execution evidence and a changed field descriptor, and either accepts
+the difference or leaves it unexplained. The first accepting check owns attribution. Fee-slot
+provenance alone never accepts a difference.
 
 ## Adding an expectation
 
-1. Add a stable, unique rule ID under the introducing fork, keeping registry entries ordered
-   (unless the rule applies to every fork pair).
-2. Match `Field` metadata and read typed values from `Context`; do not parse diagnostic strings.
-3. Return `None` when evidence is insufficient.
+1. Add the rule to the file of its introducing fork and of every later candidate that still
+   replays blocks from before that fork, with a stable, unique id. Copies of a rule must be
+   identical.
+2. If the rule names a new constant, add it to the matching `named_constants!` list.
+3. If no existing `kind` expresses the rule, add one: a `Rule` variant, a `Check` variant, and its
+   arm in `Expectation::accepts`, matching `Field` metadata and reading typed values from
+   `Context`, never diagnostic strings.
+   Leave a difference unexplained when evidence is insufficient.
 4. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
 
 ## Reporting

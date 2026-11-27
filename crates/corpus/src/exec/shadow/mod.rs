@@ -31,6 +31,7 @@ use alloy_rlp::{encode_list, list_length};
 use alloy_sol_types::SolEvent as _;
 use analysis::{Report, StepChanges};
 use evm2::AnyError;
+use expectations::{Check, Rules};
 use eyre::OptionExt as _;
 use reth_chainspec::ForkCondition;
 use reth_evm::{BlockExecutionError, InternalBlockExecutionError};
@@ -65,17 +66,20 @@ pub struct ShadowReplayer {
     real_config: TempoEvmConfig,
     shadow_config: TempoEvmConfig,
     shadow_hardfork: TempoHardfork,
+    rules: Rules,
 }
 
 impl ShadowReplayer {
     /// Compares execution under `real_config` with execution under `shadow_hardfork`'s rules.
-    pub fn new(real_config: TempoEvmConfig, shadow_hardfork: TempoHardfork) -> Self {
+    /// Errors if `shadow_hardfork` has no shadow expectations.
+    pub fn new(real_config: TempoEvmConfig, shadow_hardfork: TempoHardfork) -> eyre::Result<Self> {
         let shadow_spec = shadow_spec(real_config.chain_spec(), shadow_hardfork);
-        Self {
+        Ok(Self {
             real_config,
             shadow_config: TempoEvmConfig::new(Arc::new(shadow_spec)),
             shadow_hardfork,
-        }
+            rules: expectations::load(shadow_hardfork)?,
+        })
     }
 
     /// The candidate hardfork blocks are replayed under.
@@ -99,8 +103,11 @@ impl ShadowReplayer {
         if canonical >= self.shadow_hardfork {
             return Ok(None);
         }
-        let evidence = self.execute(input, block, executed)?;
-        let rules = expectations::between(canonical, self.shadow_hardfork);
+        let rules = self.rules.between(canonical);
+        let check_header = !rules
+            .iter()
+            .any(|rule| matches!(rule.check, Check::SkipHeaderChecks));
+        let evidence = self.execute(input, block, executed, check_header)?;
         let report = Report::analyze(&evidence, &rules, block);
         let outcome = report.outcome(&evidence);
         if matches!(outcome, ReplayOutcome::Match | ReplayOutcome::Expected) {
@@ -133,25 +140,28 @@ impl ShadowReplayer {
     }
 
     /// Runs the candidate's steps of `block` and pairs each with its canonical counterpart.
+    /// Without `check_header`, the candidate skips its checks of the header against state.
     fn execute(
         &self,
         input: &Arc<Input>,
         block: &RecoveredBlock<Block>,
         executed: &Executed,
+        check_header: bool,
     ) -> eyre::Result<Evidence> {
         let phases = input
             .phases
             .as_ref()
             .ok_or_eyre("missing phase expectations")?;
         let origin = View::new(input.clone());
-        let (real_pre, real_pre_state) = block::run_pre_block(&self.real_config, block, &origin)?;
+        let (real_pre, real_pre_state) =
+            block::run_pre_block(&self.real_config, block, &origin, true)?;
         eyre::ensure!(
             real_pre == phases.pre,
             "canonical pre-block changes differ from their verified record"
         );
         let mut evidence = Evidence::default();
         let (shadow_pre, shadow_pre_state) =
-            match block::run_pre_block(&self.shadow_config, block, &origin) {
+            match block::run_pre_block(&self.shadow_config, block, &origin, check_header) {
                 Ok(pre) => pre,
                 Err(error) => return Ok(evidence.fail(Boundary::PreBlock, error)),
             };

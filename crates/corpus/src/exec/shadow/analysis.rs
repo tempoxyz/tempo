@@ -2,7 +2,7 @@
 
 use super::{
     Arms, Boundary, Evidence, ReplayOutcome, TxEvidence,
-    expectations::{Context, Expectation},
+    expectations::{Check, Context, Expectation},
     fees::fee_wrote,
     uncaptured,
 };
@@ -58,6 +58,13 @@ impl Report {
         block: &RecoveredBlock<Block>,
     ) -> Self {
         let mut report = Self::default();
+        // The candidate's verdict on a skipped header check is assumed, so it counts as expected.
+        for rule in rules
+            .iter()
+            .filter(|rule| matches!(rule.check, Check::SkipHeaderChecks))
+        {
+            *report.expected.entry(rule.id).or_default() += 1;
+        }
         let base_fee = block.header().base_fee_per_gas();
         let context = |boundary| Context {
             boundary,
@@ -109,8 +116,8 @@ impl Report {
             report.boundaries_evaluated += 1;
         }
         // Every transaction plus the pre- and post-block boundaries.
-        let total = block.body().transactions.len() + 2;
-        report.boundaries_not_evaluated = total - report.boundaries_evaluated;
+        report.boundaries_not_evaluated =
+            block.body().transactions.len() + 2 - report.boundaries_evaluated;
         report
     }
 
@@ -132,19 +139,13 @@ impl Report {
             field.fee_associated = fee_wrote(&arms.real.actions, address, slot)
                 || fee_wrote(&arms.shadow.actions, address, slot);
         }
-        let accepted = rules
+        let rule_id = rules
             .iter()
-            .find_map(|rule| (rule.check)(ctx, &field).map(|()| rule.id));
-        let rule_id = match accepted {
-            Some(id) => {
-                *self.expected.entry(id).or_default() += 1;
-                Some(id)
-            }
-            None => {
-                self.unexplained += 1;
-                None
-            }
-        };
+            .find_map(|rule| rule.accepts(ctx, &field).map(|()| rule.id));
+        match rule_id {
+            Some(id) => *self.expected.entry(id).or_default() += 1,
+            None => self.unexplained += 1,
+        }
         // Rank by metadata before formatting: only retained samples allocate strings.
         let key = (rule_id.is_some(), ctx.boundary, field);
         let index = self.samples.partition_point(|(boundary, diff, rule)| {

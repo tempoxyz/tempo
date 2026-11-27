@@ -1,0 +1,36 @@
+[
+  {
+    "id": "t14.zone-portal-upgrade",
+    "fork": "T14",
+    "kind": "runtime-upgrade",
+    "accounts": [
+      {
+        "address": "ZONE_PORTAL_IMPL_ADDRESS",
+        "from": ["T13_ZONE_PORTAL_RUNTIME"],
+        "to": "T14_ZONE_PORTAL_RUNTIME"
+      }
+    ]
+  },
+  {
+    "id": "t14.proposer-fee-recipient-check",
+    "fork": "T14",
+    "kind": "skip-header-checks"
+  },
+  {
+    "id": "t15.zone-runtime-upgrade",
+    "fork": "T15",
+    "kind": "runtime-upgrade",
+    "accounts": [
+      {
+        "address": "ZONE_PORTAL_IMPL_ADDRESS",
+        "from": ["T13_ZONE_PORTAL_RUNTIME", "T14_ZONE_PORTAL_RUNTIME"],
+        "to": "T15_ZONE_PORTAL_RUNTIME"
+      }
+    ]
+  },
+  {
+    "id": "t15.boundary-dkg-outcome-check",
+    "fork": "T15",
+    "kind": "skip-header-checks"
+  }
+]

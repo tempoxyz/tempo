@@ -244,13 +244,21 @@ pub fn run_standalone(
 }
 
 /// Applies `block`'s pre-execution changes alone over `view`, the state before the block.
-/// Returns them and the executor state they leave.
+/// Without `check_header`, skips the checks of the header's consensus context against state.
+/// Returns the changes and the executor state they leave.
 pub fn run_pre_block(
     config: &TempoEvmConfig,
     block: &RecoveredBlock<Block>,
     view: &View<'_>,
+    check_header: bool,
 ) -> eyre::Result<(Delta, ExecutorState)> {
     let mut executor = executor(config, view, block, false)?;
+    if !check_header {
+        // The executor checks the header against state only for blocks with a proposer.
+        let mut env = *executor.evm().block();
+        env.ext.proposer_public_key = None;
+        executor.evm_mut().set_block(env);
+    }
     let updates = hooked(&mut executor)?;
     executor.apply_pre_execution_changes()?;
     let state = executor.executor_state();
@@ -435,8 +443,50 @@ fn boundary() -> impl bincode::Options {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ChangeSet;
+    use crate::{exec::db::tests::input, types::ChangeSet};
+    use alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS;
+    use reth_chainspec::ForkCondition;
     use reth_trie_common::bundle_state::{AccountRevert, Reverts};
+    use tempo_chainspec::{
+        TempoChainSpec,
+        hardfork::{TempoHardfork, TempoHardforks as _},
+    };
+    use tempo_primitives::{TempoConsensusContext, ed25519::PublicKey};
+
+    #[test]
+    fn pre_block_skips_header_checks_on_request() {
+        let spec = TempoChainSpec::moderato();
+        let ForkCondition::Timestamp(t14) = spec.tempo_fork_activation(TempoHardfork::T14) else {
+            panic!("T14 activates at a timestamp");
+        };
+        let mut block = Block::default();
+        block.header.inner.number = 1;
+        block.header.inner.timestamp = t14;
+        block.header.inner.parent_beacon_block_root = Some(B256::ZERO);
+        block.header.inner.base_fee_per_gas = Some(0);
+        block.header.consensus_context = Some(TempoConsensusContext {
+            epoch: 0,
+            view: 0,
+            parent_view: 0,
+            proposer: PublicKey::from_seed(1),
+        });
+        let block = RecoveredBlock::new_unhashed(block, vec![]);
+        let config = TempoEvmConfig::new(Arc::new(spec));
+        let view = View::new(input(&[], &[]));
+        let error = |check_header| {
+            run_pre_block(&config, &block, &view, check_header)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            error(true),
+            "uncaptured account 0xCcCCCCcC00000000000000000000000000000001"
+        );
+        assert_eq!(
+            error(false),
+            format!("uncaptured account {HISTORY_STORAGE_ADDRESS}")
+        );
+    }
 
     fn bundle(reverts: Vec<(Address, AccountRevert)>) -> BundleState {
         BundleState {
