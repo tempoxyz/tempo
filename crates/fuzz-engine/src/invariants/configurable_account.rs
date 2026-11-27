@@ -1,7 +1,10 @@
 //! Configurable account checks: the signatures' authority and the accounts' leaves.
 
 use super::{EvmReader, StepEffects};
-use crate::state::{Db, Net};
+use crate::{
+    engine::Engine,
+    state::{Db, Net},
+};
 use alloy_primitives::{Address, B256};
 use evm2::evm::{AccountInfo, Database as _};
 use invariants_core::Checked as _;
@@ -92,7 +95,12 @@ pub(crate) fn authority(tx: &TempoTxEnvelope, sender: Address) -> Authority {
 }
 
 /// Checks the commitments and leaves of the accounts a transaction changed or its signatures name.
-pub(super) fn check(reader: &mut EvmReader<'_>, db: &Db, effects: &StepEffects<'_>, tx: &Tx) {
+pub(super) fn check(
+    reader: &mut EvmReader<'_, impl Engine>,
+    db: &Db,
+    effects: &StepEffects<'_>,
+    tx: &Tx,
+) {
     let delegates = delegate_grants(ACCOUNT_KEYCHAIN_ADDRESS, &effects.logs, tx);
     let mut accounts: Vec<Address> = effects
         .net

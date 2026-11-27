@@ -3,22 +3,13 @@
 //! An input is a chain, a pre-state and blocks ([`tempo_fuzz_types`]). The harness executes the
 //! blocks with Tempo's block executor on an in-memory state and reports receipts, the resulting
 //! state, what changed, and which protocol invariants broke. A panic inside the executor aborts the
-//! process: the node would crash on the same block.
+//! process: the node would crash on the same block. The executor is [`tempo_fuzz_engine`]'s, on
+//! [`Tempo`] L1; this crate exports its C ABI.
 
-mod chain;
-mod crypto;
-mod execute;
-mod invariants;
-mod state;
-mod trace;
-
-use bincode::Options as _;
 use core::ffi::c_int;
-use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_fuzz_types::{
-    ErrorClass, FUZZ_ACCEPT, FUZZ_REJECT, HarnessInputKind, TYPED_HARNESS_SCHEMA_VERSION,
-    TempoHarnessCapabilities, TempoHarnessInput,
-};
+
+use tempo_fuzz_engine::{Tempo, ffi};
+use tempo_fuzz_types::TempoHarnessInput;
 
 /// Executes a bincode-encoded [`TempoHarnessInput`] and writes the bincode-encoded
 /// [`tempo_fuzz_types::TempoHarnessOutcome`] to `out_ptr`.
@@ -39,23 +30,22 @@ pub unsafe extern "C" fn tempo_fuzz_execute_with_result_v1(
     in_len: usize,
 ) -> c_int {
     if in_ptr.is_null() {
-        execute::reject(ErrorClass::InvalidInput, execute::Check::Null);
-        return FUZZ_REJECT;
+        return ffi::reject_null();
     }
     let input = unsafe { core::slice::from_raw_parts(in_ptr, in_len) };
-    let Ok(input) = bincode_options().deserialize::<TempoHarnessInput>(input) else {
-        execute::reject(ErrorClass::InvalidInput, execute::Check::HarnessInput);
-        return FUZZ_REJECT;
-    };
-    let Ok(outcome) = bincode_options().serialize(&execute::run(input)) else {
-        execute::reject(ErrorClass::Internal, execute::Check::OutcomeEncoding);
-        return FUZZ_REJECT;
-    };
-    unsafe { write_output(out_ptr, out_len, out_written, &outcome) }
+    unsafe {
+        ffi::execute(
+            out_ptr,
+            out_len,
+            out_written,
+            input,
+            |input: TempoHarnessInput| tempo_fuzz_engine::run(&Tempo, input),
+        )
+    }
 }
 
-/// Writes the bincode-encoded [`TempoHarnessCapabilities`] to `out_ptr`, with the same return
-/// values and safety contract as [`tempo_fuzz_execute_with_result_v1`].
+/// Writes the bincode-encoded [`tempo_fuzz_types::TempoHarnessCapabilities`] to `out_ptr`, with
+/// the same return values and safety contract as [`tempo_fuzz_execute_with_result_v1`].
 ///
 /// # Safety
 ///
@@ -66,40 +56,14 @@ pub unsafe extern "C" fn tempo_fuzz_capabilities_v1(
     out_len: usize,
     out_written: *mut usize,
 ) -> c_int {
-    let capabilities = TempoHarnessCapabilities {
-        schema_version: TYPED_HARNESS_SCHEMA_VERSION,
-        implementation: "tempo".to_string(),
-        git_revision: option_env!("TEMPO_GIT_REVISION")
-            .unwrap_or("unknown")
-            .to_string(),
-        supported_hardforks: TempoHardfork::VARIANTS
-            .to_vec()
-            .try_into()
-            .expect("there are hardforks"),
-        supported_inputs: vec![
-            HarnessInputKind::Transaction,
-            HarnessInputKind::State,
-            HarnessInputKind::Blockchain,
-        ]
-        .try_into()
-        .expect("the harness supports inputs"),
-        invariants: invariants::catalog(),
-    };
-    let Ok(capabilities) = bincode_options().serialize(&capabilities) else {
-        return FUZZ_REJECT;
-    };
-    unsafe { write_output(out_ptr, out_len, out_written, &capabilities) }
+    unsafe { ffi::capabilities::<Tempo>(out_ptr, out_len, out_written) }
 }
 
-/// Makes every check also accept [`tempo_primitives::crypto::mock`] signatures, if no input ran yet.
+/// Makes every check also accept mock signatures, if no input ran yet.
 /// Returns the mock format's version, or 0 when mocks stay off.
 #[unsafe(no_mangle)]
 pub extern "C" fn tempo_fuzz_enable_mock_crypto_v1() -> u32 {
-    if crypto::enable() {
-        tempo_primitives::crypto::mock::VERSION
-    } else {
-        0
-    }
+    ffi::enable_mock_crypto()
 }
 
 /// Writes why the last input this thread executed stopped short, as UTF-8 (empty when every block
@@ -117,32 +81,7 @@ pub unsafe extern "C" fn tempo_fuzz_last_rejection_v1(
     out_len: usize,
     out_written: *mut usize,
 ) -> c_int {
-    execute::with_rejection(|why| {
-        if why.is_empty() && !out_written.is_null() {
-            unsafe { *out_written = 0 };
-            return FUZZ_ACCEPT;
-        }
-        unsafe { write_output(out_ptr, out_len, out_written, why.as_bytes()) }
-    })
-}
-
-/// `bincode::serialize`'s encoding, rejecting trailing bytes.
-fn bincode_options() -> impl bincode::Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .reject_trailing_bytes()
-}
-
-unsafe fn write_output(dst: *mut u8, dst_len: usize, written: *mut usize, bytes: &[u8]) -> c_int {
-    if written.is_null() {
-        return FUZZ_REJECT;
-    }
-    unsafe { *written = bytes.len() };
-    if dst.is_null() || dst_len < bytes.len() {
-        return FUZZ_REJECT;
-    }
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len()) };
-    FUZZ_ACCEPT
+    unsafe { ffi::last_rejection(out_ptr, out_len, out_written) }
 }
 
 #[cfg(test)]

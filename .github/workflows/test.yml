@@ -69,6 +69,8 @@ jobs:
               - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
               - '.github/workflows/{test,lint,bench}.yml'
               - '!crates/corpus/**'
+              - '!crates/fuzz-engine/**'
+              - '!crates/zones/fuzz-harness/**'
               - '!crates/fuzz-harness/**'
               - '!crates/fuzz-types/**'
               - '!crates/invariants/**'

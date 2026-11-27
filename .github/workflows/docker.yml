@@ -267,8 +267,10 @@ jobs:
           labels: |
             ${{ steps.docker-labels.outputs.value }}
             ${{ steps.source.outputs.revision_label }}
+          # Pre-release candidates get only sha-<short>-fuzz, for the release gate's corpus
+          # replay; the floating fuzz tag moves only with the nightly.
           tags: |
-            type=raw,value=fuzz
+            type=raw,value=fuzz,enable=${{ (inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }}-fuzz
 
       - name: Log in to Container Registry
@@ -344,7 +346,8 @@ jobs:
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
             ${{ steps.meta-tempo-fuzz.outputs.bake-file }}
             ${{ steps.hold-tags.outputs.bake-file }}
-          targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
+          # pre-release/* candidates also build tempo-fuzz, which the release gate's corpus replay runs.
+          targets: ${{ ((inputs.pr_number == '' && (github.event_name == 'schedule' || startsWith(github.ref, 'refs/heads/pre-release/'))) || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
           no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
@@ -409,7 +412,7 @@ jobs:
             tags_var="${target^^}_TAGS"
             tags_var="${tags_var//-/_}"
             digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
-            # tempo-fuzz is built only with the nightly.
+            # tempo-fuzz is built only with the nightly and for pre-release/* candidates.
             if [ "$target" = tempo-fuzz ] && [ -z "$digest" ]; then
               continue
             fi

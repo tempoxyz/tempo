@@ -763,6 +763,18 @@ pub enum TempoPoolTransactionError {
         max_allowed: usize,
     },
 
+    /// An AA transaction carries a WebAuthn signature longer than RLP decoding accepts.
+    ///
+    /// Thrown during AA field-limit validation. Decoded transactions never hit this; it rejects
+    /// transactions built in memory that peers could not decode.
+    #[error("WebAuthn signature size {size} exceeds maximum allowed {max_allowed} bytes")]
+    WebAuthnSignatureTooLarge {
+        /// Byte length of the signature after its type identifier.
+        size: usize,
+        /// The maximum byte length RLP decoding accepts.
+        max_allowed: usize,
+    },
+
     /// An AA transaction access list contains too many accounts.
     ///
     /// Thrown during AA field-limit validation when the number of access-list
@@ -907,6 +919,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::SubblockNonceKey
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
+            | Self::WebAuthnSignatureTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
@@ -1683,6 +1696,7 @@ mod tests {
     #[test_case(TempoPoolTransactionError::AddressCheck { address: Address::repeat_byte(0x20) } => false)]
     #[test_case(TempoPoolTransactionError::TooManyAuthorizations { count: 17, max_allowed: 16 } => false)]
     #[test_case(TempoPoolTransactionError::TooManyCalls { count: 33, max_allowed: 32 } => true)]
+    #[test_case(TempoPoolTransactionError::WebAuthnSignatureTooLarge { size: 2049, max_allowed: 2048 } => true)]
     // Tempo intrinsic gas reads state, e.g. the caller's nonce for a 2D-nonce CREATE.
     #[test_case(TempoPoolTransactionError::Evm(HandlerError::IntrinsicGasTooLow { got: 21_000, required: 271_000 }) => false)]
     #[test_case(TempoPoolTransactionError::SubblockNonceKey => true)]

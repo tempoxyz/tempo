@@ -12,14 +12,19 @@ use evm2::{
     evm::{AccountInfo, SystemTx, TxResult},
 };
 use invariants_core::{Call, Outcome, Simulate, Views};
-use reth_evm::{ConfigureEvm as _, Database};
-use tempo_evm::{TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoEvmTypes};
+use reth_evm::Database;
+use tempo_evm::{TempoEvm, TempoEvmEnv, TempoEvmTypes};
 
-use crate::state::{Net, PreStateDb, Reader};
+use crate::{
+    engine::Engine,
+    state::{Net, PreStateDb, Reader},
+};
 
-/// Read-only calls against the state an EVM reads, noting reads the seeded pre-state misses, and
-/// answered from `view_cache` when the same call was made on the same state before.
-pub(super) struct EvmViews<'a> {
+/// Read-only calls against the state an EVM reads, made as `engine` calls them, noting reads the
+/// seeded pre-state misses, and answered from `view_cache` when the same call was made on the
+/// same state before.
+pub(super) struct EvmViews<'a, E> {
+    engine: &'a E,
     evm: TempoEvm<'a>,
     /// What the call being made has read.
     reads: Rc<RefCell<Vec<Read>>>,
@@ -29,10 +34,11 @@ pub(super) struct EvmViews<'a> {
     before: bool,
 }
 
-impl<'a> EvmViews<'a> {
+impl<'a, E: Engine> EvmViews<'a, E> {
     pub(super) fn new(
+        engine: &'a E,
         db: impl Database + 'a,
-        evm_config: &TempoEvmConfig,
+        evm_config: &E::EvmConfig,
         env: TempoEvmEnv,
         pre_state: &'a PreStateDb,
         view_cache: &'a ViewCache,
@@ -44,7 +50,8 @@ impl<'a> EvmViews<'a> {
             reads: Rc::clone(&reads),
         };
         Self {
-            evm: evm_config.evm_with_env(db, env),
+            engine,
+            evm: reth_evm::ConfigureEvm::evm_with_env(evm_config, db, env),
             reads,
             pre_state,
             view_cache,
@@ -62,7 +69,7 @@ impl<'a> EvmViews<'a> {
         // only on an empty cache.
         self.clear_overlay();
         self.pre_state.restore_missed(false);
-        let result = self.evm.system_call(system_tx(call));
+        let result = self.evm.system_call(self.system_tx(call));
         let output = if self.pre_state.missed() {
             Ok(None)
         } else {
@@ -86,11 +93,15 @@ impl<'a> EvmViews<'a> {
         cache.accounts.clear();
         cache.storage.clear();
     }
-}
 
-/// The system call that makes `call`.
-fn system_tx(call: &Call) -> SystemTx {
-    SystemTx::new(call.to, call.input.clone()).with_caller(call.from.unwrap_or(Address::ZERO))
+    /// The system call that makes `call`, from its caller or else the one the engine calls such a
+    /// view as.
+    fn system_tx(&self, call: &Call) -> SystemTx {
+        let caller = call
+            .from
+            .unwrap_or_else(|| self.engine.view_caller(call.to, &call.input));
+        SystemTx::new(call.to, call.input.clone()).with_caller(caller)
+    }
 }
 
 /// How an executed call ended, with an empty return as no answer, since no view returns nothing.
@@ -106,7 +117,7 @@ fn outcome(result: &TxResult<TempoEvmTypes>) -> Option<Outcome> {
     }
 }
 
-impl Views for EvmViews<'_> {
+impl<E: Engine> Views for EvmViews<'_, E> {
     type Error = ViewFailed;
 
     fn call(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
@@ -125,7 +136,7 @@ impl Views for EvmViews<'_> {
 
 /// Runs the calls on the EVM's own overlay, cleared before and after, so nothing persists and
 /// nothing is cached: an answer depends on the calls before it.
-impl Simulate for EvmViews<'_> {
+impl<E: Engine> Simulate for EvmViews<'_, E> {
     fn simulate(&mut self, calls: &[Call]) -> Result<Vec<Option<Outcome>>, ViewFailed> {
         self.clear_overlay();
         self.pre_state.restore_missed(false);
@@ -137,7 +148,8 @@ impl Simulate for EvmViews<'_> {
                 if self.pre_state.missed() {
                     return Ok(None);
                 }
-                match self.evm.system_call(system_tx(call)) {
+                let tx = self.system_tx(call);
+                match self.evm.system_call(tx) {
                     Ok(executed) => {
                         Ok(outcome(&executed.commit()).filter(|_| !self.pre_state.missed()))
                     }
