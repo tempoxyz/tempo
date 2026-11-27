@@ -32,15 +32,12 @@ pub(crate) struct Expectation {
 }
 
 impl Expectation {
-    /// `Some` if this expectation explains the difference in `field`, `None` if it leaves it
-    /// unexplained.
+    /// Whether this expectation explains the difference in `field`.
     pub(super) fn accepts(&self, ctx: &Context<'_>, field: &Field) -> Option<()> {
         let upgrades = match &self.check {
             Check::Fn(check) => return check(ctx, field),
             Check::RuntimeUpgrade(upgrades) => upgrades,
         };
-        // Accepts a pre-block code change made by the shadow arm, from empty code or one of an
-        // upgrade's old runtimes to its new runtime.
         if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
             return None;
         }
@@ -48,8 +45,7 @@ impl Expectation {
         let upgrade = upgrades.iter().find(|upgrade| upgrade.address == address)?;
         let Arms { real, shadow } = ctx.evidence.pre_block.as_ref()?;
 
-        // The canonical arm may activate an earlier expected runtime on this block, while the
-        // shadow arm advances directly to the candidate runtime.
+        // The canonical arm may stop at an earlier runtime the shadow arm skips.
         if real
             .account(address)
             .info(|info| info.code_hash)
