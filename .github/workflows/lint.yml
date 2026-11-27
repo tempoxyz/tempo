@@ -103,26 +103,17 @@ jobs:
           RUSTFLAGS: -D warnings
 
   fmt:
-    name: fmt
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: depot-ubuntu-latest
-    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          toolchain: nightly
-          components: rustfmt
-      - run: cargo fmt --all --check
+    uses: tempoxyz/gh-actions/.github/workflows/rust-fmt.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+    with:
+      rust-toolchain: nightly
+      flags: --all --check
+      runner: depot-ubuntu-latest
+      timeout-minutes: 30
 
   crate-checks:
     runs-on: depot-ubuntu-latest-4
